@@ -241,6 +241,35 @@ final class GatewayController {
             return
         }
 
+        // Adopt a gateway that is already serving our port rather than fighting
+        // it for the bind. This is the normal state after quitting the app while
+        // leaving the gateway running -- which is deliberate -- and without this
+        // check the new app would report a failure it had caused itself.
+        probeExisting { [weak self] alive in
+            guard let self else { return }
+            if alive {
+                self.publish(.starting)
+                self.startHealthPolling()
+            } else {
+                self.spawn()
+            }
+        }
+    }
+
+    private func probeExisting(_ completion: @escaping (Bool) -> Void) {
+        guard let url = URL(string: "http://127.0.0.1:\(port)/health") else {
+            completion(false)
+            return
+        }
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 2.0
+        URLSession.shared.dataTask(with: request) { _, response, _ in
+            let alive = (response as? HTTPURLResponse)?.statusCode == 200
+            DispatchQueue.main.async { completion(alive) }
+        }.resume()
+    }
+
+    private func spawn() {
         let task = Process()
         task.executableURL = URL(fileURLWithPath: pythonPath)
         task.arguments = [
@@ -842,6 +871,31 @@ if arguments.contains("--status") {
     } else {
         print("no state file at \(path.path) — the app has not run yet")
     }
+    exit(0)
+}
+
+// Single-instance guard.
+//
+// `open` on an already-running app just activates it, but a LaunchAgent
+// bootstrap starts a *new* process unconditionally -- so installing
+// launch-at-login while the app is already running leaves two copies, both
+// trying to own the menu bar item and both trying to bind the same port. The
+// second one then reports a failure it caused itself, overwriting the first
+// one's healthy state. Exiting quietly is the correct behaviour: an existing
+// instance is already doing the job.
+//
+// Exit code 0 is deliberate: the LaunchAgent's KeepAlive is keyed on
+// unsuccessful exit, so a duplicate must NOT look like a crash to launchd.
+let ownPID = ProcessInfo.processInfo.processIdentifier
+let bundleIdentifier = Bundle.main.bundleIdentifier ?? "kh.gateway.menubar"
+let duplicates = NSRunningApplication
+    .runningApplications(withBundleIdentifier: bundleIdentifier)
+    .filter { $0.processIdentifier != ownPID }
+
+if !duplicates.isEmpty {
+    FileHandle.standardError.write(
+        Data("gateway-kh is already running; exiting this copy.\n".utf8)
+    )
     exit(0)
 }
 
