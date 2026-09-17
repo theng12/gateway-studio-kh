@@ -309,6 +309,37 @@ rule (so `foo-image-v2` silently fell into the chat bucket), and the mock's `HTT
 `socket.getfqdn()` *after* bind but *before* listen — which presents as a connect timeout, not a
 refusal.
 
+### UI tests — real clicks, not just layout
+
+```bash
+.venv/bin/python tests/test_ui.py
+```
+
+39 checks that drive the macOS **accessibility layer**: they open windows through the real menus,
+read what the windows render, type into fields, tick checkboxes and press buttons — then verify the
+*gateway* changed, not merely that the widget repainted.
+
+```
+View → Voices opens "gateway-kh — Voices"      PASS
+typing filters the table (66 → 3)              PASS
+ticking a voice reaches the gateway (12 → 11)  PASS
+selecting a job reveals its detail             PASS
+```
+
+This is the layer that catches what the e2e suite cannot: a window that builds perfectly while a
+button does nothing. It found three such issues, all in the test rather than the app — but each
+looked exactly like a broken feature until diagnosed:
+
+- an **accessory app is never frontmost**, so System Events sent keystrokes to whatever was — the
+  search box stayed empty and looked broken;
+- `keystroke` nested inside `tell process` resolves against the process and goes nowhere;
+- with several windows open, the target window must be **raised**, or a web view behind the field
+  swallows the keys.
+
+Requires **Accessibility permission** for the terminal running it (System Settings → Privacy &
+Security → Accessibility). Without it, `osascript` fails and the suite reports that rather than
+pretending to pass.
+
 ### Verified against the real Studio Hub
 
 Not just the mock. On this Mac, with Studio Hub 0.5.0 and 28 GB of local models:
