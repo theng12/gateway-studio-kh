@@ -11,11 +11,16 @@
 
 import Cocoa
 
-final class VoicesWindow: NSObject, NSTableViewDataSource, NSTableViewDelegate,
-                          NSSearchFieldDelegate {
-    static let shared = VoicesWindow()
+final class VoicesSection: NSObject, AppSection, NSTableViewDataSource, NSTableViewDelegate,
+                           NSSearchFieldDelegate {
+    static let shared = VoicesSection()
 
-    private var window: NSWindow?
+    let title = "Voices"
+    let symbol = "waveform"
+    // Browsing is interactive: a timed refresh would rebuild the table
+    // under the cursor and fight the checkbox just clicked.
+    let refreshesAutomatically = false
+
     private var table: NSTableView!
     private var providerPopup: NSPopUpButton!
     private var libraryCheck: NSButton!
@@ -29,29 +34,11 @@ final class VoicesWindow: NSObject, NSTableViewDataSource, NSTableViewDelegate,
     private var sound: NSSound?
     private var searchTimer: Timer?
 
-    func show() {
-        if let existing = window {
-            existing.makeKeyAndOrderFront(nil)
-            NSApp.activate(ignoringOtherApps: true)
-            reload()
-            return
-        }
+    /// The section's content, built once and hosted by the main window.
+    /// Lazy so it can be built by a method on self.
+    lazy var view: NSView = buildContent()
 
-        let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 900, height: 600),
-            styleMask: [.titled, .closable, .resizable, .miniaturizable],
-            backing: .buffered,
-            defer: false
-        )
-        window.title = "gateway-kh — Voices"
-        window.isReleasedWhenClosed = false
-        window.setFrameAutosaveName("GatewayVoicesWindow")
-        window.center()
-        window.contentView = buildContent()
-
-        self.window = window
-        window.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
+    func activated() {
         reload()
     }
 
@@ -188,7 +175,7 @@ final class VoicesWindow: NSObject, NSTableViewDataSource, NSTableViewDelegate,
     }
 
     func reload() {
-        guard let window, window.isVisible else { return }
+
 
         let providerId = selectedProviderId()
         let library = libraryCheck.state == .on && supportsLibrary(providerId)
@@ -213,7 +200,7 @@ final class VoicesWindow: NSObject, NSTableViewDataSource, NSTableViewDelegate,
         }
 
         GatewayAPI.get(path) { [weak self] result in
-            guard let self, let window = self.window, window.isVisible else { return }
+            guard let self else { return }
             switch result {
             case .success(let payload):
                 self.rows = payload["voices"] as? [[String: Any]] ?? []

@@ -6,17 +6,23 @@
 
 import Cocoa
 
-final class JobsWindow: NSObject, NSTableViewDataSource, NSTableViewDelegate {
-    static let shared = JobsWindow()
+final class JobsSection: NSObject, AppSection, NSTableViewDataSource, NSTableViewDelegate {
+    static let shared = JobsSection()
 
-    private var window: NSWindow?
+    let title = "Jobs"
+    let symbol = "list.bullet.rectangle"
+    let refreshesAutomatically = true
+
     private var table: NSTableView!
     private var scroll: NSScrollView!
     private var filterPopup: NSPopUpButton!
     private var summaryLabel: NSTextField!
     private var detailLabel: NSTextField!
     private var rows: [[String: Any]] = []
-    private var timer: Timer?
+
+    /// The section's content, built once and hosted by the main window.
+    /// Lazy so it can be built by a method on self.
+    lazy var view: NSView = buildContent()
 
     private let columns: [(id: String, title: String, width: CGFloat)] = [
         ("time", "When", 70),
@@ -27,36 +33,8 @@ final class JobsWindow: NSObject, NSTableViewDataSource, NSTableViewDelegate {
         ("duration", "Took", 66),
     ]
 
-    func show() {
-        if let existing = window {
-            existing.makeKeyAndOrderFront(nil)
-            NSApp.activate(ignoringOtherApps: true)
-            reload()
-            return
-        }
-
-        let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 800, height: 520),
-            styleMask: [.titled, .closable, .resizable, .miniaturizable],
-            backing: .buffered,
-            defer: false
-        )
-        window.title = "gateway-kh — Jobs"
-        window.isReleasedWhenClosed = false
-        window.setFrameAutosaveName("GatewayJobsWindow")
-        window.center()
-        window.contentView = buildContent()
-
-        self.window = window
-        window.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
-
+    func activated() {
         reload()
-        timer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
-            guard let self, self.window?.isVisible == true else { return }
-            self.reload()
-        }
-        RunLoop.main.add(timer!, forMode: .common)
     }
 
     // MARK: Layout
@@ -140,7 +118,7 @@ final class JobsWindow: NSObject, NSTableViewDataSource, NSTableViewDelegate {
     // MARK: Data
 
     @objc func reload() {
-        guard let window, window.isVisible else { return }
+
 
         var path = "/admin/api/jobs?limit=200"
         switch filterPopup.indexOfSelectedItem {
@@ -151,7 +129,7 @@ final class JobsWindow: NSObject, NSTableViewDataSource, NSTableViewDelegate {
         }
 
         GatewayAPI.get(path) { [weak self] result in
-            guard let self, let window = self.window, window.isVisible else { return }
+            guard let self else { return }
             switch result {
             case .success(let payload):
                 self.rows = payload["jobs"] as? [[String: Any]] ?? []

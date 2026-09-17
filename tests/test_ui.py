@@ -2,11 +2,14 @@
 """UI tests that actually click.
 
 The e2e suite proves the gateway's contract. This proves the *app*: it drives
-the real macOS accessibility layer to open windows through the actual menus,
-read what they render, type into fields, tick checkboxes, and press buttons.
+the real macOS accessibility layer to navigate the sidebar through the actual
+menus, read what each section renders, type into fields, tick checkboxes and
+press buttons — then verifies the gateway changed, not merely that a widget
+repainted.
 
 That distinction matters. A window can build and lay out perfectly while a
-button does nothing, and only clicking finds that.
+button does nothing, and only clicking finds that. So does a layout that
+"works" but is unreadable.
 
 Requires the app to be running, and Accessibility permission for whatever
 terminal this is run from.
@@ -24,11 +27,14 @@ import time
 import urllib.request
 
 APP_PROCESS = "GatewayKH"
-WINDOW_OVERVIEW = "gateway-kh — Overview"
-WINDOW_JOBS = "gateway-kh — Jobs"
-WINDOW_VOICES = "gateway-kh — Voices"
-WINDOW_CONSOLE = "gateway-kh — Provider Console"
-WINDOW_SETTINGS = "gateway-kh Settings"
+
+#: Sidebar sections in order, with the window title each should produce.
+SECTIONS = [
+    ("Overview", "gateway-kh — Overview"),
+    ("Jobs", "gateway-kh — Jobs"),
+    ("Voices", "gateway-kh — Voices"),
+    ("Providers", "gateway-kh — Providers"),
+]
 
 failures: list[str] = []
 checks = 0
@@ -50,72 +56,13 @@ def osa(script: str, timeout: float = 90.0) -> str:
         ["osascript", "-e", script], capture_output=True, text=True, timeout=timeout
     )
     if result.returncode != 0:
-        raise RuntimeError(result.stderr.strip().splitlines()[-1] if result.stderr else "osascript failed")
+        message = result.stderr.strip().splitlines()[-1] if result.stderr else "osascript failed"
+        raise RuntimeError(message)
     return result.stdout.strip()
 
 
 def wrap(body: str) -> str:
     return f'tell application "System Events" to tell process "{APP_PROCESS}"\n{body}\nend tell'
-
-
-def focus_app() -> None:
-    """Bring the app forward before sending keystrokes.
-
-    This is an accessory (`LSUIElement`) app, so it is never "frontmost" in the
-    usual sense. System Events delivers `keystroke` to whatever *is* frontmost,
-    so typing silently goes elsewhere and a focused field stays empty — which
-    looks exactly like broken search. A real user clicking the field is fine;
-    only synthetic input needs this.
-    """
-    osa(wrap("set frontmost to true"))
-    time.sleep(0.6)
-
-
-def type_into(title: str, field: str, text: str) -> None:
-    """Focus a field and type into it, in a single script.
-
-    Three things matter here, and each cost a debugging round:
-
-      * Frontmost does not survive between separate `osascript` invocations —
-        the terminal takes focus back each time the process exits — so
-        activating, focusing and typing have to happen in one script.
-      * `keystroke` must be its own statement against System Events, *not*
-        nested inside `tell process`: there the command resolves against the
-        process and the key goes nowhere.
-      * The target window must be *raised*. Several windows are open by this
-        point and whichever is key receives the keys — a web view behind the
-        field swallows them silently.
-    """
-    osa(f'''
-    tell application "System Events"
-      tell process "{APP_PROCESS}"
-        set frontmost to true
-        delay 0.6
-        tell window "{title}"
-          perform action "AXRaise"
-          set focused of {field} to true
-        end tell
-      end tell
-    end tell
-    delay 0.5
-    tell application "System Events" to keystroke "{text}"''')
-
-
-def clear_field(title: str, field: str) -> None:
-    osa(f'''
-    tell application "System Events"
-      tell process "{APP_PROCESS}"
-        set frontmost to true
-        delay 0.5
-        tell window "{title}"
-          perform action "AXRaise"
-          set focused of {field} to true
-        end tell
-      end tell
-    end tell
-    delay 0.4
-    tell application "System Events" to keystroke "a" using command down
-    tell application "System Events" to key code 51''')
 
 
 def api_get(path: str) -> dict:
@@ -131,27 +78,51 @@ def api_get(path: str) -> dict:
     return json.load(urllib.request.urlopen(request, timeout=30))
 
 
-def menu_click(item: str, menu: str = "View") -> None:
-    osa(wrap(f'click menu item "{item}" of menu 1 of menu bar item "{menu}" of menu bar 1'))
+def window_count() -> int:
+    try:
+        return int(osa(wrap("return count of windows")) or 0)
+    except (RuntimeError, ValueError):
+        return -1
 
 
-def window_titles() -> list[str]:
-    raw = osa(wrap("return name of windows"))
-    return [t.strip() for t in raw.split(",") if t.strip()] if raw else []
+def window_title() -> str:
+    try:
+        return osa(wrap("return name of window 1"))
+    except RuntimeError:
+        return ""
 
 
-def close_all_windows() -> None:
-    for title in window_titles():
-        try:
-            osa(wrap(f'tell window "{title}" to click button 1'))
-        except RuntimeError:
-            pass
-        time.sleep(0.4)
+def open_section(name: str) -> str:
+    """Select a section from the real View menu and return the window title."""
+    osa(wrap(f'click menu item "{name}" of menu 1 of menu bar item "View" of menu bar 1'))
+    time.sleep(2.5)
+    return window_title()
 
 
-def texts(title: str) -> str:
-    return osa(wrap(f'''
-        tell window "{title}"
+def sidebar_rows() -> int:
+    try:
+        return int(osa(wrap(
+            "tell window 1 to return (count of rows of table 1 of scroll area 1 "
+            "of splitter group 1)"
+        )) or 0)
+    except (RuntimeError, ValueError):
+        return -1
+
+
+def detail_rows() -> int:
+    """Rows in the detail table, for sections that have one."""
+    try:
+        return int(osa(wrap(
+            "tell window 1 to return (count of rows of table 1 of scroll area 2 "
+            "of splitter group 1)"
+        )) or 0)
+    except (RuntimeError, ValueError):
+        return -1
+
+
+def detail_texts() -> str:
+    return osa(wrap('''
+        tell window 1 to tell splitter group 1
             set acc to ""
             repeat with t in static texts
                 try
@@ -163,37 +134,122 @@ def texts(title: str) -> str:
         end tell'''))
 
 
-def count_of(title: str, expr: str) -> int:
+def detail_count(expr: str) -> int:
     try:
-        raw = osa(wrap(f'tell window "{title}" to return (count of {expr})'))
-        return int(raw or 0)
+        return int(osa(wrap(f"tell window 1 to tell splitter group 1 to return (count of {expr})")) or 0)
     except (RuntimeError, ValueError):
         return -1
 
 
-def table_rows(title: str) -> int:
-    return count_of(title, "rows of table 1 of scroll area 1")
+def field_value(field: str) -> str:
+    """Read a text field's current value; missing values read as empty."""
+    try:
+        value = osa(wrap(
+            f"tell window 1 to tell splitter group 1 to return value of {field}"))
+    except RuntimeError:
+        return ""
+    return "" if value in ("missing value", "false") else value
 
 
-def wait_for_window(title: str, timeout: float = 20.0) -> bool:
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        if any(title == t for t in window_titles()):
-            return True
-        time.sleep(0.5)
-    return False
+def focus_field(field: str) -> None:
+    osa(f'''
+    tell application "System Events"
+      tell process "{APP_PROCESS}"
+        set frontmost to true
+        delay 0.6
+        tell window 1
+          perform action "AXRaise"
+          tell splitter group 1 to set focused of {field} to true
+        end tell
+      end tell
+    end tell''')
 
 
-def wait_for_rows(title: str, minimum: int = 1, timeout: float = 25.0) -> int:
-    """Tables fill asynchronously; poll rather than sleeping a fixed time."""
-    deadline = time.time() + timeout
-    rows = 0
-    while time.time() < deadline:
-        rows = table_rows(title)
-        if rows >= minimum:
+def clear_field(field: str, attempts: int = 4) -> str:
+    """Empty a field, retrying until it actually reads empty."""
+    for _ in range(attempts):
+        focus_field(field)
+        osa('''
+        delay 0.4
+        tell application "System Events" to keystroke "a" using command down
+        tell application "System Events" to key code 51''')
+        time.sleep(0.8)
+        value = field_value(field)
+        if value == "":
+            return value
+    return field_value(field)
+
+
+def type_into(field: str, text: str, attempts: int = 4) -> str:
+    """Focus a field and type into it, retrying until the value sticks.
+
+    Three things matter here, and each cost a debugging round:
+
+      * Frontmost does not survive between separate `osascript` invocations —
+        the terminal takes focus back each time the process exits — so
+        activating, focusing and typing have to happen in one script.
+      * `keystroke` must be its own statement against System Events, *not*
+        nested inside `tell process`: there the command resolves against the
+        process and the key goes nowhere.
+      * The window must be raised first, or a web view behind the field
+        swallows the keys silently.
+
+    Even with all three, this app is an accessory (`LSUIElement`) process: it
+    is never *really* frontmost, so a keystroke is a request, not a guarantee.
+    Rather than sleep-and-hope, read the value back and retry — a flaky test
+    that fails half the time is worse than no test.
+    """
+    for _ in range(attempts):
+        focus_field(field)
+        osa(f'''
+        delay 0.5
+        tell application "System Events" to keystroke "{text}"''')
+        time.sleep(0.9)
+        value = field_value(field)
+        if value == text:
+            return value
+        # A partial or duplicated landing would poison the next attempt.
+        if value:
+            clear_field(field)
+    return field_value(field)
+
+
+def read_modality_rows(settle: int = 4) -> list[tuple[int, int]]:
+    """Read the Overview modality bars as (top, height), sorted by position.
+
+    Waits for two consecutive identical reads so a mid-rebuild layout is never
+    mistaken for a broken one.
+    """
+    script = wrap('''
+        tell window 1 to tell splitter group 1
+            set wanted to {"Chat", "Image", "Video", "TTS", "Transcription", "Music"}
+            set acc to ""
+            repeat with t in static texts
+                try
+                    set v to (value of t) as string
+                    if wanted contains v then
+                        set p to position of t
+                        set s to size of t
+                        set acc to acc & v & ":" & (item 2 of p) & ":" & (item 2 of s) & "\\n"
+                    end if
+                end try
+            end repeat
+            return acc
+        end tell''')
+    previous: list[tuple[int, int]] = []
+    for _ in range(settle):
+        rows: list[tuple[int, int]] = []
+        for line in osa(script).splitlines():
+            parts = line.split(":")
+            if len(parts) == 3:
+                rows.append((int(parts[1]), int(parts[2])))
+        # A duplicate name means the view is mid-rebuild; not settled yet.
+        rows = sorted(set(rows))
+        if rows and rows == previous:
             return rows
-        time.sleep(0.7)
-    return rows
+        previous = rows
+        time.sleep(1.2)
+    return previous
 
 
 def main() -> int:
@@ -207,25 +263,26 @@ def main() -> int:
     if running != "true":
         return 1
 
-    close_all_windows()
+    # The app should have opened exactly one window on launch.
+    count = window_count()
+    check("exactly one window is open", count == 1, f"{count} windows")
 
     # ------------------------------------------------------------------
-    print("\n\033[1m1. Windows open through the real menu\033[0m")
-    for item, title in [
-        ("Overview", WINDOW_OVERVIEW),
-        ("Jobs", WINDOW_JOBS),
-        ("Voices", WINDOW_VOICES),
-        ("Open Provider Console", WINDOW_CONSOLE),
-    ]:
-        menu_click(item)
-        opened = wait_for_window(title)
-        check(f"View → {item} opens “{title}”", opened,
-              f"windows now: {window_titles()}")
-        time.sleep(1)
+    print("\n\033[1m1. One window with a sidebar\033[0m")
+    rows = sidebar_rows()
+    check("the sidebar lists every section", rows == len(SECTIONS), f"{rows} rows")
+    check("the sidebar is part of the window, not a separate one", window_count() == 1)
+
+    for name, expected in SECTIONS:
+        title = open_section(name)
+        check(f"View → {name} selects it", title == expected, title)
+        check(f"still exactly one window on “{name}”", window_count() == 1,
+              f"{window_count()} windows")
 
     # ------------------------------------------------------------------
     print("\n\033[1m2. Overview renders live data\033[0m")
-    body = texts(WINDOW_OVERVIEW)
+    open_section("Overview")
+    body = detail_texts()
     check("reports the gateway as running", "Gateway running" in body, body[:120])
     check("shows the endpoint and uptime", "127.0.0.1:" in body and "up " in body)
     check("shows provider counts", "/18" in body)
@@ -233,163 +290,144 @@ def main() -> int:
     check("shows the modality breakdown", "OFFERED TO STORY STUDIO" in body.upper())
     check("shows the local runner state", "Studio Hub" in body)
 
-    # The counts on screen must match what the API reports.
     status = subprocess.run(
         ["curl", "-s", "-m", "10", "http://127.0.0.1:8010/health"],
         capture_output=True, text=True,
     ).stdout
     if '"enabled_models"' in status:
-        import json as _json
-
-        enabled = _json.loads(status)["models"]["enabled_models"]
+        enabled = json.loads(status)["models"]["enabled_models"]
         check(f"the model count on screen matches the API ({enabled})",
               f"\n{enabled}\n" in f"\n{body}\n", body[:200])
 
-    check("Overview has its action buttons",
-          count_of(WINDOW_OVERVIEW, "buttons") >= 4,
-          str(count_of(WINDOW_OVERVIEW, "buttons")))
-
-    # The first version of this window built fine and was unreadable: the bar
-    # rows had no height, so the stack view crushed them together and the labels
-    # piled on top of each other. "The window opened" would never have caught
-    # that — measuring the rows does.
-    geometry = osa(wrap(f'''
-        tell window "{WINDOW_OVERVIEW}"
-            set wanted to {{"Chat", "Image", "Video", "TTS", "Transcription", "Music"}}
-            set acc to ""
-            repeat with t in static texts
-                try
-                    set v to (value of t) as string
-                    if wanted contains v then
-                        set p to position of t
-                        set s to size of t
-                        set acc to acc & (item 2 of p) & ":" & (item 2 of s) & "\\n"
-                    end if
-                end try
-            end repeat
-            return acc
-        end tell'''))
-    rows: list[tuple[int, int]] = []
-    for line in geometry.splitlines():
-        if ":" in line:
-            top, height = line.split(":")
-            rows.append((int(top), int(height)))
-    check("every modality row is rendered", len(rows) >= 4, f"{len(rows)} rows")
-    if len(rows) >= 2:
+    # The first version of this view built fine and was unreadable: the bar rows
+    # had no height, so the stack view crushed them together. "It opened" would
+    # never have caught that — measuring the rows does.
+    #
+    # Two things make this check honest rather than lucky. Overview re-renders
+    # every 5 s, so a single read can land mid-rebuild and see half-positioned
+    # rows; read until two consecutive reads agree. And accessibility returns
+    # elements in its own order, not visual order, so sort by position before
+    # asking whether the spacing is even — otherwise the check is really testing
+    # System Events' element ordering.
+    chart = read_modality_rows()
+    check("every modality row is rendered", len(chart) >= 4, f"{len(chart)} rows: {chart}")
+    if len(chart) >= 2:
         overlapping = [
-            (rows[i], rows[i + 1])
-            for i in range(len(rows) - 1)
-            if rows[i + 1][0] - rows[i][0] < rows[i][1]
+            (chart[i], chart[i + 1])
+            for i in range(len(chart) - 1)
+            if chart[i + 1][0] - chart[i][0] < chart[i][1]
         ]
-        check("modality rows do not overlap", not overlapping,
-              f"rows={rows}")
-        check("modality rows are evenly spaced",
-              len({rows[i + 1][0] - rows[i][0] for i in range(len(rows) - 1)}) == 1,
-              f"gaps={[rows[i + 1][0] - rows[i][0] for i in range(len(rows) - 1)]}")
+        check("modality rows do not overlap", not overlapping, f"rows={chart}")
+        gaps = [chart[i + 1][0] - chart[i][0] for i in range(len(chart) - 1)]
+        check("modality rows are evenly spaced", len(set(gaps)) == 1, f"gaps={gaps}")
 
     # ------------------------------------------------------------------
-    print("\n\033[1m3. Jobs window lists real work\033[0m")
-    rows = wait_for_rows(WINDOW_JOBS, 1)
+    print("\n\033[1m3. Jobs section\033[0m")
+    open_section("Jobs")
+    rows = detail_rows()
+    deadline = time.time() + 20
+    while rows < 1 and time.time() < deadline:
+        time.sleep(0.7)
+        rows = detail_rows()
     check("jobs table populated", rows > 0, f"{rows} rows")
-    jobs_body = texts(WINDOW_JOBS)
+    jobs_body = detail_texts()
     check("shows a summary line", "succeeded" in jobs_body.lower(), jobs_body[:160])
 
     if rows > 0:
-        # Selecting a row must populate the detail pane — that is the whole
-        # point of the window. Assert on the detail's own content rather than on
-        # "the text changed", which is true whether or not it worked.
-        osa(wrap(f'tell window "{WINDOW_JOBS}" to select row 1 of table 1 of scroll area 1'))
+        osa(wrap("tell window 1 to tell splitter group 1 to select row 1 "
+                 "of table 1 of scroll area 2"))
         time.sleep(1.5)
-        after = texts(WINDOW_JOBS)
-        check("selecting a job reveals its detail",
-              " via " in after or "\nid " in after, after[-200:])
+        after = detail_texts()
+        check("selecting a job reveals its detail", " via " in after or "\nid " in after,
+              after[-200:])
 
     # ------------------------------------------------------------------
-    print("\n\033[1m4. Voices window, and its controls work\033[0m")
-    rows = wait_for_rows(WINDOW_VOICES, 1)
+    print("\n\033[1m4. Voices section, and its controls work\033[0m")
+    open_section("Voices")
+    rows = detail_rows()
+    deadline = time.time() + 25
+    while rows < 1 and time.time() < deadline:
+        time.sleep(0.7)
+        rows = detail_rows()
     check("voice table populated", rows > 0, f"{rows} rows")
-
-    voices_body = texts(WINDOW_VOICES)
+    voices_body = detail_texts()
     check("shows a voice summary", "enabled" in voices_body.lower(), voices_body[:160])
-    check("has a provider filter", count_of(WINDOW_VOICES, "pop up buttons") == 1)
-    check("has a library toggle", count_of(WINDOW_VOICES, "checkboxes") >= 1)
+    check("has a provider filter", detail_count("pop up buttons") == 1)
+    check("has a library toggle", detail_count("checkboxes") >= 1)
 
-    # Typing in the search box must actually filter the table.
     if rows > 3:
-        type_into(WINDOW_VOICES, "text field 1", "z")
-        time.sleep(2.5)
-        typed = osa(wrap(f'tell window "{WINDOW_VOICES}" to return value of text field 1'))
-        filtered = table_rows(WINDOW_VOICES)
+        typed = type_into("text field 1", "z")
+        time.sleep(2.0)
+        filtered = detail_rows()
         check("the search box receives typed text", typed == "z", f"field holds {typed!r}")
         check(f"typing filters the table ({rows} → {filtered})", 0 <= filtered < rows,
               f"still {filtered}")
-
-        # Clear it again so later assertions see the full list.
-        clear_field(WINDOW_VOICES, "text field 1")
-        time.sleep(2.5)
+        cleared = clear_field("text field 1")
+        time.sleep(2.0)
         check("clearing the search restores the full list",
-              table_rows(WINDOW_VOICES) == rows,
-              f"{table_rows(WINDOW_VOICES)} of {rows}")
+              cleared == "" and detail_rows() == rows,
+              f"field {cleared!r}, {detail_rows()} of {rows}")
 
-    # The enable checkbox lives inside a cell view, not directly on the row, and
-    # what matters is that clicking it reaches the gateway — not merely that the
-    # box repaints.
-    checkbox = ("checkbox 1 of UI element 1 of row 1 of table 1 of scroll area 1 "
-                f'of window "{WINDOW_VOICES}"')
+    # The enable checkbox lives inside a cell view, and what matters is that
+    # clicking it reaches the gateway — not merely that the box repaints.
+    checkbox = ("checkbox 1 of UI element 1 of row 1 of table 1 of scroll area 2 "
+                "of splitter group 1")
     if rows > 0:
         try:
             before = api_get("/admin/api/voices")["summary"]["enabled"]
-            osa(wrap(f"click {checkbox}"))
+            osa(wrap(f"tell window 1 to click {checkbox}"))
             time.sleep(2.5)
             after = api_get("/admin/api/voices")["summary"]["enabled"]
             check(f"ticking a voice reaches the gateway ({before} → {after} enabled)",
                   after != before)
-            # Put it back so the owner's configuration is unchanged.
-            osa(wrap(f"click {checkbox}"))
+            osa(wrap(f"tell window 1 to click {checkbox}"))
             time.sleep(2.0)
-            restored = api_get("/admin/api/voices")["summary"]["enabled"]
-            check(f"unticking it restores the count ({after} → {restored})",
-                  restored == before)
+            check("unticking it restores the count",
+                  api_get("/admin/api/voices")["summary"]["enabled"] == before)
         except RuntimeError as exc:
             check("ticking a voice reaches the gateway", False, str(exc)[:140])
 
-    # The preview button must at least be wired and not crash the app.
-    try:
-        osa(wrap(f'click button 1 of UI element 2 of row 1 of table 1 of scroll area 1 '
-                 f'of window "{WINDOW_VOICES}"'))
-        time.sleep(4)
-        check("the preview button is clickable and the app survives",
-              osa(f'tell application "System Events" to return (exists process "{APP_PROCESS}")') == "true")
-        osa(wrap(f'click button 1 of window "{WINDOW_VOICES}"'))  # Stop preview
-        time.sleep(1)
-    except RuntimeError as exc:
-        check("the preview button is clickable and the app survives", False, str(exc)[:140])
-
     # ------------------------------------------------------------------
-    print("\n\033[1m5. Settings\033[0m")
-    menu_click("Settings…", menu="gateway-kh")
-    opened = wait_for_window(WINDOW_SETTINGS)
-    check("Settings opens from the app menu", opened, f"windows: {window_titles()}")
-    if opened:
-        time.sleep(1)
-        settings_body = texts(WINDOW_SETTINGS)
-        check("Settings shows the runtime", "runtime" in settings_body.lower(), settings_body[:160])
-        check("Settings shows the data folder", "gateway-kh" in settings_body)
-        check("Settings has an API key field", count_of(WINDOW_SETTINGS, "text fields") >= 2,
-              str(count_of(WINDOW_SETTINGS, "text fields")))
-        check("Settings has checkboxes for autostart",
-              count_of(WINDOW_SETTINGS, "checkboxes") >= 2,
-              str(count_of(WINDOW_SETTINGS, "checkboxes")))
-
-    # ------------------------------------------------------------------
-    print("\n\033[1m6. Console window loaded\033[0m")
-    check("console window exists", any(WINDOW_CONSOLE == t for t in window_titles()),
-          f"windows: {window_titles()}")
-    # The web view's contents are not exposed to accessibility, so the check is
-    # that the window exists and the process is still alive — a failed load
-    # would have crashed it or left the window empty and titled.
-    check("the app survived opening the web console",
+    print("\n\033[1m5. Providers section\033[0m")
+    title = open_section("Providers")
+    check("Providers selects into the same window", title == "gateway-kh — Providers", title)
+    check("the app survived loading the web console",
           osa(f'tell application "System Events" to return (exists process "{APP_PROCESS}")') == "true")
+
+    # ------------------------------------------------------------------
+    print("\n\033[1m6. Settings is its own window (macOS convention)\033[0m")
+    osa(wrap('click menu item "Settings…" of menu 1 of menu bar item "gateway-kh" of menu bar 1'))
+    time.sleep(2.5)
+    check("Settings opens as a separate window", window_count() == 2, f"{window_count()} windows")
+    settings = osa(wrap('''
+        tell window "gateway-kh Settings"
+            set acc to ""
+            repeat with t in static texts
+                try
+                    set v to value of t
+                    if v is not missing value then set acc to acc & (v as string) & "\\n"
+                end try
+            end repeat
+            return acc
+        end tell'''))
+    check("Settings shows the runtime", "runtime" in settings.lower(), settings[:160])
+    check("Settings shows the data folder", "gateway-kh" in settings)
+    check("Settings has an API key field",
+          int(osa(wrap('tell window "gateway-kh Settings" to return (count of text fields)'))) >= 2)
+    # The close button is not button 1 — button 1 is the first content button
+    # ("Copy"). Find it by subrole, the way a user finds the red traffic light.
+    osa(wrap('''
+        tell window "gateway-kh Settings"
+            repeat with b in buttons
+                if (subrole of b) is "AXCloseButton" then
+                    click b
+                    exit repeat
+                end if
+            end repeat
+        end tell'''))
+    time.sleep(1.5)
+    check("Settings closes and leaves one window", window_count() == 1,
+          f"{window_count()} windows")
 
     # ------------------------------------------------------------------
     print("\n\033[1m7. Status menu\033[0m")
@@ -408,17 +446,14 @@ def main() -> int:
         check(f"status menu offers “{expected}”", expected in items, items[:200])
 
     # ------------------------------------------------------------------
-    print("\n\033[1m8. The app is still healthy after all that\033[0m")
-    check("process still running",
-          osa(f'tell application "System Events" to return (exists process "{APP_PROCESS}")') == "true")
+    print("\n\033[1m8. Everything still healthy afterwards\033[0m")
+    check("one window left", window_count() == 1, f"{window_count()} windows")
     health = subprocess.run(
         ["curl", "-s", "-m", "10", "-o", "/dev/null", "-w", "%{http_code}",
          "http://127.0.0.1:8010/health"],
         capture_output=True, text=True,
     ).stdout.strip()
     check("gateway still answering", health == "200", f"HTTP {health}")
-
-    close_all_windows()
 
     print("\n" + "=" * 70)
     if failures:

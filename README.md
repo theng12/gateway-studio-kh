@@ -109,21 +109,37 @@ app was running but effectively unfindable. `build.sh` now prefers `/Application
 stale copy from the other location.)
 
 A bolt icon appears in the menu bar. It is a real native app (Swift + AppKit, `LSUIElement`), so
-there is no Dock icon and no window until you ask for one.
+there is no Dock icon.
+
+**Everything lives in one window.** An earlier version opened a separate window per view, which
+meant that checking a job and then checking the model that produced it left two windows fighting
+for the same screen. It is now a single window with a sidebar:
+
+| Section | Shortcut | What it shows |
+|---|---|---|
+| **Overview** | ⌘1 | dashboard — status, counts, per-modality breakdown, recent activity |
+| **Jobs** | ⌘2 | what has actually run, with failure reasons and artifact URLs |
+| **Voices** | ⌘3 | voice sources, search, preview, enable |
+| **Providers** | ⌘4 | the provider console — keys, discovery, model search and enable |
+
+The window title tracks the section (`gateway-kh — Jobs`), so it is still obvious what you are
+looking at in a window list or a screenshot. Sections that display live data refresh every 5
+seconds while they are visible; Voices does not, because a refresh would discard a half-typed
+search.
 
 **The menu:**
 
 | Item | What it does |
 |---|---|
 | status line | live: provider and model counts, read from the gateway's own `/health` |
-| **Overview** (⌘1) | dashboard — status, counts, per-modality breakdown, recent activity |
-| **Jobs** (⌘2) | what has actually run, with failure reasons and artifact URLs |
-| **Open Provider Console** (⌘P) | add provider keys, discover and enable models |
+| Overview / Jobs / Voices / Providers | select a section in the main window |
+| Open Provider Console (⌘P) | jump straight to the Providers section |
 | Start / Stop / Restart Gateway | supervises the service directly |
 | Studio Hub status | whether your local runner is up, and a shortcut to start it |
-| **Settings…** (⌘,) | port, API key, launch at login |
+| **Settings…** (⌘,) | port, API key, launch at login — a separate window, per macOS convention |
 | Open data folder / Open log | where credentials and logs live |
 | Quit | quits the menu bar app; **leaves the gateway running** |
+
 
 ## The app is self-contained
 
@@ -159,9 +175,10 @@ moved**, so the old directory remains as a fallback.
 **Requirements:** Apple Silicon, macOS 13 or newer. The bundle is arm64-only and ad-hoc signed, so
 Gatekeeper warns on first launch of a copied copy (right-click → Open).
 
-**First run** opens the Overview window, and the app generates an API key if none exists — the
-gateway treats an empty key as "accept any bearer token", which should never be the state you are
-left in without being told.
+**First run** opens the main window on Overview, and the app generates an API key if none exists —
+the gateway treats an empty key as "accept any bearer token", which should never be the state you
+are left in without being told. Launching with `--background` (which is what the login item does)
+skips the window and leaves only the menu bar icon.
 
 **Settings** is where the gateway's own API key lives, with a **Copy** button — that is the value
 Story Studio needs. Paste it into **Story Studio → Settings → This Mac → GenStudio API key**, and set
@@ -244,7 +261,7 @@ withheld from Story Studio** — offering a model that fails on use is worse tha
 ## Voices
 
 Providers do not agree about what a voice *is*, and the app shows the difference rather than hiding
-it. The **Voices** window (⌘3) has three sources:
+it. The **Voices** section (⌘3) has three sources:
 
 | Source | What it is | Default |
 |---|---|---|
@@ -255,7 +272,7 @@ it. The **Voices** window (⌘3) has three sources:
 Only **enabled** voices reach Story Studio. That is not a nicety: ElevenLabs' public library alone
 holds tens of thousands of voices, and Fish's `/model` list returns a thousand unfiltered.
 
-The window lets you filter by provider, search, **preview** a voice before choosing it, tick the
+The section lets you filter by provider, search, **preview** a voice before choosing it, tick the
 ones Story Studio should offer, and — for library voices — add one to your own account. Library
 search is live and uncached, because browsing is a query rather than a download.
 
@@ -298,11 +315,11 @@ the provider ships but does not list, use **Add model manually** in that provide
 .venv/bin/python tests/test_e2e.py
 ```
 
-68 checks against a **real HTTP upstream** (a local mock provider), exercising the admin API,
+110 checks against a **real HTTP upstream** (a local mock provider), exercising the admin API,
 credential storage, live discovery, modality inference, the Story catalogue contract, chat/image/TTS
 generation, transcription upload, the worker, artifacts, idempotency, provider/model enable-disable
-on both the catalogue and the dispatch path, manual model addition, and the 402 invariant. Nothing
-inside the gateway is stubbed.
+on both the catalogue and the dispatch path, manual model addition, the voice registry, and the 402
+invariant. Nothing inside the gateway is stubbed.
 
 Bugs this caught that were invisible until it ran: modality inference had no generic `image`/`video`
 rule (so `foo-image-v2` silently fell into the chat bucket), and the mock's `HTTPServer` stalled in
@@ -315,26 +332,39 @@ refusal.
 .venv/bin/python tests/test_ui.py
 ```
 
-39 checks that drive the macOS **accessibility layer**: they open windows through the real menus,
-read what the windows render, type into fields, tick checkboxes and press buttons — then verify the
+47 checks that drive the macOS **accessibility layer**: they open the window through the real menus,
+read what it renders, type into fields, tick checkboxes and press buttons — then verify the
 *gateway* changed, not merely that the widget repainted.
 
 ```
-View → Voices opens "gateway-kh — Voices"      PASS
+View → Voices selects it                       PASS
+still exactly one window on "Voices"           PASS
+modality rows do not overlap                   PASS
 typing filters the table (66 → 3)              PASS
 ticking a voice reaches the gateway (12 → 11)  PASS
-selecting a job reveals its detail             PASS
 ```
 
 This is the layer that catches what the e2e suite cannot: a window that builds perfectly while a
-button does nothing. It found three such issues, all in the test rather than the app — but each
+button does nothing. It found four such issues — three in the test rather than the app, but each
 looked exactly like a broken feature until diagnosed:
 
 - an **accessory app is never frontmost**, so System Events sent keystrokes to whatever was — the
   search box stayed empty and looked broken;
 - `keystroke` nested inside `tell process` resolves against the process and goes nowhere;
 - with several windows open, the target window must be **raised**, or a web view behind the field
-  swallows the keys.
+  swallows the keys;
+- **button 1 of a window is not the close button.** The test meant to close Settings and instead
+  clicked "Copy", so the next run started with two windows and every single-window check failed.
+  Only content buttons sit at window level; the traffic lights are identified by
+  `subrole is "AXCloseButton"`.
+
+Because the first three are timing-dependent rather than deterministic, `type_into` now **reads the
+field back and retries** instead of sleeping and hoping. A test that fails half the time is worse
+than no test.
+
+The layout checks are regression tests with numbers attached, not vibes: the modality bars were once
+unreadable because the rows had no height constraint and collapsed into each other. The suite now
+asserts that rows do not overlap and are evenly spaced.
 
 Requires **Accessibility permission** for the terminal running it (System Settings → Privacy &
 Security → Accessibility). Without it, `osascript` fails and the suite reports that rather than
@@ -406,7 +436,13 @@ data/voices.json              voice catalogue
 data/providers.local.json     user-defined providers (gitignored)
 tests/mock_upstream.py        local mock provider
 tests/test_e2e.py             the end-to-end suite
-menubar/main.swift            the native menu bar app
+tests/test_ui.py              drives the real app through the accessibility layer
+menubar/main.swift            app shell: gateway supervision, status menu, settings, launch agent
+menubar/MainWindow.swift      the one window: sidebar + section container
+menubar/OverviewWindow.swift  Overview section, including the modality bars
+menubar/JobsWindow.swift      Jobs section
+menubar/VoicesWindow.swift    Voices section
+menubar/GatewayAPI.swift      authenticated admin client + formatting helpers
 menubar/build.sh              compiles and installs the .app
 menubar/make_icon.py          generates the app icon (stdlib only)
 scripts/import_voices.py      imports voices from the old Voice Studio

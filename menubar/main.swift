@@ -539,7 +539,9 @@ enum LaunchAgent {
 
         let plist: [String: Any] = [
             "Label": label,
-            "ProgramArguments": [executable],
+            // `--background` keeps a login launch quiet: starting at login should
+            // put the icon in the menu bar, not open a window in your face.
+            "ProgramArguments": [executable, "--background"],
             "RunAtLoad": true,
             // Only auto-launch if it died; a user quit stays quit.
             "KeepAlive": ["SuccessfulExit": false],
@@ -758,94 +760,10 @@ final class SettingsWindow: NSObject {
         GatewayController.shared.restart()
     }
 
-    @objc private func openConsole() { ConsoleWindow.shared.show() }
+    @objc private func openConsole() { MainWindow.shared.show(section: "providers") }
 
     @objc private func revealData() {
         NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: AppPaths.data.path)
-    }
-}
-
-// MARK: - Provider console window
-
-/// The provider console is a local web UI served by the gateway, so it is shown
-/// in a real app window via `WKWebView` rather than being handed to a browser.
-///
-/// The console stays a plain web page underneath -- that is why it works from
-/// any browser on the LAN and why it needs no separate build -- but the owner
-/// should not have to leave the app to use it. An explicit "open in browser"
-/// item is kept for debugging and for reaching it from another machine.
-final class ConsoleWindow: NSObject, WKNavigationDelegate {
-    static let shared = ConsoleWindow()
-    private var window: NSWindow?
-    private var webView: WKWebView?
-
-    func show() {
-        guard let url = GatewayController.shared.consoleURL else { return }
-
-        if let existing = window, let web = webView {
-            existing.makeKeyAndOrderFront(nil)
-            NSApp.activate(ignoringOtherApps: true)
-            web.load(URLRequest(url: url))
-            return
-        }
-
-        let web = WKWebView(frame: .zero, configuration: WKWebViewConfiguration())
-        web.navigationDelegate = self
-
-        let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 1180, height: 820),
-            styleMask: [.titled, .closable, .resizable, .miniaturizable],
-            backing: .buffered,
-            defer: false
-        )
-        window.title = "gateway-kh — Provider Console"
-        window.contentView = web
-        window.isReleasedWhenClosed = false
-        // Remembers size and position between launches.
-        window.setFrameAutosaveName("GatewayConsoleWindow")
-        window.center()
-
-        self.window = window
-        self.webView = web
-
-        load(url, into: web)
-        window.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
-    }
-
-    /// If the gateway is not listening yet, say so plainly instead of showing a
-    /// raw connection error, and load for real once it should be up.
-    private func load(_ url: URL, into web: WKWebView, attempt: Int = 0) {
-        if GatewayController.shared.isRunning || attempt > 0 {
-            web.load(URLRequest(url: url))
-            return
-        }
-        web.loadHTMLString(Self.startingPage, baseURL: nil)
-        GatewayController.shared.start()
-        DispatchQueue.main.asyncAfter(deadline: .now() + 5.0) { [weak self, weak web] in
-            guard let self, let web else { return }
-            self.load(url, into: web, attempt: attempt + 1)
-        }
-    }
-
-    private static let startingPage = """
-    <!doctype html><meta charset="utf-8">
-    <style>
-      body { background:#0e1117; color:#e6eaf2;
-             font:14px -apple-system, BlinkMacSystemFont, sans-serif;
-             display:flex; align-items:center; justify-content:center;
-             height:100vh; margin:0 }
-      div { text-align:center } h2 { font-weight:600 } p { color:#8b95a8 }
-    </style>
-    <div>
-      <h2>Starting the gateway…</h2>
-      <p>This window will load the provider console automatically.</p>
-    </div>
-    """
-
-    func reload() {
-        guard let web = webView, let url = GatewayController.shared.consoleURL else { return }
-        web.load(URLRequest(url: url))
     }
 }
 
@@ -950,9 +868,9 @@ enum MainMenuBuilder {
         ).target = target
         viewMenu.addItem(.separator())
         viewMenu.addItem(
-            withTitle: "Open Provider Console",
+            withTitle: "Providers",
             action: #selector(AppDelegate.openConsole),
-            keyEquivalent: "p"
+            keyEquivalent: "4"
         ).target = target
         viewMenu.addItem(
             withTitle: "Reload Console",
@@ -1051,15 +969,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             EnvFile.writeApiKey(EnvFile.generateKey())
         }
 
-        // Open the Overview on the very first launch. A menu bar app with no
-        // window gives a new owner nothing to look at; one window explaining
-        // what this is and what to do next is the whole onboarding.
-        if ConfigStore.shared.config.hasLaunchedBefore != true {
-            ConfigStore.shared.update { $0.hasLaunchedBefore = true }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
-                OverviewWindow.shared.show()
-            }
+        // Show the window on a normal launch. An app you double-click in
+        // Applications that opens nothing looks broken; the menu bar icon is a
+        // convenience, not the whole interface. A login launch passes
+        // `--background` and stays quiet.
+        let backgroundLaunch = arguments.contains("--background")
+        if !backgroundLaunch {
+            MainWindow.shared.show(section: "overview")
         }
+        ConfigStore.shared.update { $0.hasLaunchedBefore = true }
 
         // Editing shortcuts (⌘A/⌘C/⌘V/⌘X/⌘Z) are dispatched through the main
         // menu, so it has to exist even though an accessory app never shows a
@@ -1068,12 +986,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         if let requested = launchWindow?.lowercased() {
             switch requested {
-            case "overview": OverviewWindow.shared.show()
-            case "jobs": JobsWindow.shared.show()
-            case "voices": VoicesWindow.shared.show()
-            case "console": ConsoleWindow.shared.show()
             case "settings": SettingsWindow.shared.show()
-            default: break
+            case "console": MainWindow.shared.show(section: "providers")
+            default: MainWindow.shared.show(section: requested)
             }
         }
 
@@ -1192,15 +1107,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     // Not `private`: MainMenuBuilder references these by selector from another
     // type in this file.
-    @objc func openOverview() { OverviewWindow.shared.show() }
+    @objc func openOverview() { MainWindow.shared.show(section: "overview") }
 
-    @objc func openJobs() { JobsWindow.shared.show() }
+    @objc func openJobs() { MainWindow.shared.show(section: "jobs") }
 
-    @objc func openVoices() { VoicesWindow.shared.show() }
+    @objc func openVoices() { MainWindow.shared.show(section: "voices") }
 
-    @objc func openConsole() { ConsoleWindow.shared.show() }
+    @objc func openConsole() { MainWindow.shared.show(section: "providers") }
 
-    @objc func reloadConsole() { ConsoleWindow.shared.reload() }
+    @objc func reloadConsole() { MainWindow.shared.reloadCurrentSection() }
 
     @objc func openConsoleInBrowser() {
         if let url = GatewayController.shared.consoleURL { NSWorkspace.shared.open(url) }

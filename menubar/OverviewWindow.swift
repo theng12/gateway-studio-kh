@@ -130,8 +130,12 @@ final class ModalityBar: NSView {
     }
 }
 
-final class OverviewWindow: NSObject {
-    static let shared = OverviewWindow()
+final class OverviewSection: NSObject, AppSection {
+    static let shared = OverviewSection()
+
+    let title = "Overview"
+    let symbol = "gauge"
+    let refreshesAutomatically = true
 
     /// Display names for the modality keys the API returns. `capitalized` would
     /// render TTS as "Tts", which reads like a typo.
@@ -144,7 +148,6 @@ final class OverviewWindow: NSObject {
         "music": "Music",
     ]
 
-    private var window: NSWindow?
     private var statusDot = NSView()
     private var statusLabel = NSTextField(labelWithString: "…")
     private var subtitleLabel = NSTextField(labelWithString: "")
@@ -153,38 +156,18 @@ final class OverviewWindow: NSObject {
     private var hubLabel = NSTextField(labelWithString: "—")
     private var guidanceLabel: NSTextField!
     private var activityStack = NSStackView()
-    private var timer: Timer?
 
-    func show() {
-        if let existing = window {
-            existing.makeKeyAndOrderFront(nil)
-            NSApp.activate(ignoringOtherApps: true)
-            refresh()
-            return
-        }
+    /// The section's content, built once and hosted by the main window.
+    /// Lazy so it can be built by a method on self.
+    lazy var view: NSView = buildContent()
 
-        let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 660, height: 640),
-            styleMask: [.titled, .closable, .resizable, .miniaturizable],
-            backing: .buffered,
-            defer: false
-        )
-        window.title = "gateway-kh — Overview"
-        window.isReleasedWhenClosed = false
-        window.setFrameAutosaveName("GatewayOverviewWindow")
-        window.center()
-        window.contentView = buildContent()
-
-        self.window = window
-        window.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
-
+    /// Called when this section becomes visible.
+    ///
+    /// Refreshing on activation rather than on a private timer keeps hidden
+    /// sections from polling: with everything in one window, exactly one section
+    /// is on screen at a time.
+    func activated() {
         refresh()
-        timer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
-            guard let self, self.window?.isVisible == true else { return }
-            self.refresh()
-        }
-        RunLoop.main.add(timer!, forMode: .common)
     }
 
     // MARK: Layout
@@ -305,8 +288,6 @@ final class OverviewWindow: NSObject {
     @objc func refreshNow() { refresh() }
 
     func refresh() {
-        guard let window, window.isVisible else { return }
-
         switch GatewayController.shared.state {
         case .running:
             statusDot.layer?.backgroundColor = NSColor.systemGreen.cgColor
@@ -323,7 +304,7 @@ final class OverviewWindow: NSObject {
         }
 
         GatewayAPI.get("/admin/api/status") { [weak self] result in
-            guard let self, let window = self.window, window.isVisible else { return }
+            guard let self else { return }
             guard case .success(let payload) = result else {
                 self.subtitleLabel.stringValue = "Waiting for the gateway…"
                 return
@@ -411,7 +392,7 @@ final class OverviewWindow: NSObject {
 
     private func loadActivity() {
         GatewayAPI.get("/admin/api/jobs?limit=5") { [weak self] result in
-            guard let self, let window = self.window, window.isVisible else { return }
+            guard let self else { return }
             self.activityStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
             guard case .success(let payload) = result,
                   let rows = payload["jobs"] as? [[String: Any]], !rows.isEmpty else {
@@ -466,7 +447,7 @@ final class OverviewWindow: NSObject {
 
     // MARK: Actions
 
-    @objc private func openConsole() { ConsoleWindow.shared.show() }
+    @objc private func openConsole() { MainWindow.shared.show(section: "providers") }
 
     @objc private func openLog() {
         NSWorkspace.shared.selectFile(GatewayController.shared.logPath, inFileViewerRootedAtPath: "")
