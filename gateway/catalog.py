@@ -235,6 +235,7 @@ class Catalog:
     def __init__(self) -> None:
         self._rows: dict[str, list[dict[str, Any]]] = {m: [] for m in MODALITIES}
         self._voices: list[dict[str, Any]] = []
+        self._voice_refs: dict[str, dict[str, Any]] = {}
         self._built_at = 0.0
         self._signature: tuple = ()
         self.rebuild(force=True)
@@ -269,7 +270,7 @@ class Catalog:
                 rows[modality].append(self._story_row(modality, definition, model))
 
         self._rows = rows
-        self._voices = self._load_voices()
+        self._voices, self._voice_refs = self._load_voices()
         self._signature = signature
         self._built_at = time.time()
 
@@ -310,15 +311,39 @@ class Catalog:
         row.update(zero_pricing(modality))
         return row
 
-    def _load_voices(self) -> list[dict[str, Any]]:
+    def _load_voices(self) -> tuple[list[dict[str, Any]], dict[str, dict[str, Any]]]:
+        """Returns (Story-facing rows, private reference map).
+
+        Reference audio and transcripts are local assets that Studio Hub needs
+        for cloning. They are kept OUT of the Story row deliberately: Story
+        Studio has no use for them, and leaking a local filesystem path through
+        a catalogue response would be careless.
+        """
         if not VOICES_PATH.exists():
-            return []
+            return [], {}
         try:
             raw = json.loads(VOICES_PATH.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, OSError):
-            return []
+            return [], []
         entries = raw.get("voices") if isinstance(raw, dict) else raw
-        return [self._story_voice(v) for v in (entries or []) if isinstance(v, dict)]
+        entries = [v for v in (entries or []) if isinstance(v, dict)]
+
+        references: dict[str, dict[str, Any]] = {}
+        for voice in entries:
+            path = voice.get("reference_path")
+            if path:
+                references[str(voice["id"])] = {
+                    "path": str(path),
+                    "transcript": voice.get("reference_transcript") or "",
+                    "segments": voice.get("reference_segments") or [],
+                    "name": voice.get("display_name") or voice["id"],
+                }
+        return [self._story_voice(v) for v in entries], references
+
+    def voice_reference(self, voice_id: str) -> dict[str, Any] | None:
+        """Reference clip for a voice, for providers that need cloning input."""
+        self.rebuild()
+        return self._voice_refs.get(voice_id)
 
     def _story_voice(self, voice: dict[str, Any]) -> dict[str, Any]:
         return {
