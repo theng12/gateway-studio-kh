@@ -94,20 +94,63 @@ OpenAI-compatible chat call that answers in one response. Both shapes exist; not
 Generation runs on a worker thread, never inside the HTTP handler — a local FLUX image can take
 minutes, and blocking a Story Studio poll for that long would trip its timeouts.
 
-## Quick start
+## Quick start — the menu bar app
+
+This is the normal way to run it. No terminal.
+
+```bash
+./menubar/build.sh          # compiles and installs to ~/Applications/gateway-kh.app
+open ~/Applications/gateway-kh.app
+```
+
+A bolt icon appears in the menu bar. It is a real native app (Swift + AppKit, `LSUIElement`), so
+there is no Dock icon and no window until you ask for one.
+
+**The menu:**
+
+| Item | What it does |
+|---|---|
+| status line | live: provider and model counts, read from the gateway's own `/health` |
+| **Open Provider Console…** | opens the browser page where you paste provider API keys |
+| Start / Stop / Restart Gateway | supervises the service directly |
+| Studio Hub status | whether your local runner is up, and a shortcut to start it |
+| **Settings…** | gateway directory, port, API key, launch at login |
+| Open data folder / Open log | where credentials and logs live |
+| Quit | quits the menu bar app; **leaves the gateway running** |
+
+**Settings** is where the gateway's own API key lives, with a **Copy** button — that is the value
+Story Studio needs. Paste it into **Story Studio → Settings → This Mac → GenStudio API key**, and set
+**Base URL** to `http://127.0.0.1:8010`.
+
+**Launch at login** uses a LaunchAgent (`~/Library/LaunchAgents/kh.gateway.menubar.plist`) rather
+than `SMAppService`, because `SMAppService` requires a signed, registered bundle and this app is
+ad-hoc signed. The agent is `KeepAlive` only on an unsuccessful exit, so quitting the app
+deliberately stays quit.
+
+The app **supervises** the gateway: if the process dies it restarts with exponential backoff, and
+the menu says so. It deliberately does *not* stop the gateway when the app quits — it is a service,
+and closing a menu bar helper should not silently take the API away from Story Studio.
+
+### Headless helpers
+
+```bash
+GatewayKH --status                  # print the app's current view as JSON
+GatewayKH --install-login-item      # equivalent to the Settings checkbox
+GatewayKH --uninstall-login-item
+```
+
+`--status` reads `~/Library/Application Support/gateway-kh/menubar-state.json`, which the app keeps
+updated. That file is also how the build is verified without a GUI.
+
+### Running it without the app
 
 ```bash
 uv venv --python 3.11
 uv pip install --python .venv/bin/python -r requirements.txt
-
-# Story Studio's default endpoint is http://127.0.0.1:8000
 GATEWAY_API_KEY=your-key .venv/bin/python -m uvicorn gateway.api:app --host 127.0.0.1 --port 8000
 ```
 
-Open **http://127.0.0.1:8000/admin** for the provider console.
-
-Then in Story Studio: **Settings → This Mac → Base URL** = `http://127.0.0.1:8000`, and
-**GenStudio API key** = the same `GATEWAY_API_KEY`.
+Then open **http://127.0.0.1:8000/admin** for the provider console.
 
 ### The flow
 
@@ -244,7 +287,19 @@ data/voices.json              voice catalogue
 data/providers.local.json     user-defined providers (gitignored)
 tests/mock_upstream.py        local mock provider
 tests/test_e2e.py             the end-to-end suite
+menubar/main.swift            the native menu bar app
+menubar/build.sh              compiles and installs the .app
+menubar/make_icon.py          generates the app icon (stdlib only)
+scripts/import_voices.py      imports voices from the old Voice Studio
+scripts/annotate_voice_segments.py   generates aligned reference timestamps
 ```
+
+### Why port 8010
+
+Story Studio's default endpoint is `http://127.0.0.1:8000`, and the existing GenStudio KH API
+already listens there. The gateway defaults to **8010** so the two can coexist — GenStudio keeps
+serving the commercial side untouched. Point Story Studio at 8010 when you want the gateway, or
+stop GenStudio and change the port in Settings to take 8000.
 
 ## Deliberately absent
 

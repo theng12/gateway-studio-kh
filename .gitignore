@@ -14,3 +14,6 @@ data/providers.local.json
 data/gateway.sqlite3
 data/gateway.sqlite3-*
 data/artifacts/
+
+# Menu bar app build output
+menubar/build/
