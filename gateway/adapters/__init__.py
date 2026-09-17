@@ -8,11 +8,12 @@ Implemented and wired:
     google             Google AI (via its OpenAI-compatible endpoint)
     fal                fal.ai
     kie                Kie.ai
+    fish               Fish Audio (TTS, model selected by HTTP header)
     studio_hub         Studio Hub (local)
 
 Not yet wired (they surface a clear error rather than failing silently):
 
-    bfl, minimax, elevenlabs, fish
+    bfl, minimax, elevenlabs
 
 Those providers are still listable, credential-editable and discoverable in the
 admin UI -- only generation is missing -- so turning one on is a matter of
@@ -24,6 +25,7 @@ from __future__ import annotations
 from .anthropic import AnthropicBackend
 from .base import Backend, BackendError, BackendRequest, BackendResult
 from .fal import FalBackend
+from .fish import FishBackend
 from .kie import KieBackend
 from .openai_compat import OpenAICompatibleBackend
 from .studio_hub import StudioHubBackend
@@ -48,7 +50,6 @@ PENDING_KINDS: dict[str, str] = {
     KIND_BFL: "Black Forest Labs generation adapter is not written yet.",
     KIND_MINIMAX: "MiniMax generation adapter is not written yet.",
     KIND_ELEVENLABS: "ElevenLabs generation adapter is not written yet.",
-    KIND_FISH: "Fish Audio generation adapter is not written yet.",
 }
 
 
@@ -94,6 +95,7 @@ _ANTHROPIC = AnthropicBackend()
 _GOOGLE = GoogleBackend()
 _FAL = FalBackend()
 _KIE = KieBackend()
+_FISH = FishBackend()
 _STUDIO_HUB = StudioHubBackend()
 
 _BY_KIND: dict[str, Backend] = {
@@ -102,6 +104,7 @@ _BY_KIND: dict[str, Backend] = {
     KIND_GOOGLE: _GOOGLE,
     KIND_FAL: _FAL,
     KIND_KIE: _KIE,
+    KIND_FISH: _FISH,
     KIND_STUDIO_HUB: _STUDIO_HUB,
 }
 

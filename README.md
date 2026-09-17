@@ -186,8 +186,8 @@ Counts are always visible in the header: models *discovered* versus models *live
 }]}
 ```
 
-Kinds: `openai_compatible`, `anthropic`, `google`, `fal`, `kie`, `studio_hub` (wired);
-`bfl`, `minimax`, `elevenlabs`, `fish` (definitions exist, adapter pending — they are listable and
+Kinds: `openai_compatible`, `anthropic`, `google`, `fal`, `kie`, `fish`, `studio_hub` (wired);
+`bfl`, `minimax`, `elevenlabs` (definitions exist, adapter pending — they are listable and
 credential-editable, and say so in the UI). Discovery strategies: `openai_models`,
 `anthropic_models`, `google_models`, `fal_catalog`, `elevenlabs_models`, `studio_hub`, `static`.
 

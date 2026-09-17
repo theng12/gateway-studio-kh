@@ -32,6 +32,9 @@ import httpx
 
 ROOT = Path(__file__).resolve().parent.parent
 PY = str(ROOT / ".venv" / "bin" / "python")
+# Running `python tests/test_e2e.py` puts tests/ on sys.path, not the repo root,
+# so importing the package under test needs this.
+sys.path.insert(0, str(ROOT))
 
 
 def free_port() -> int:
@@ -415,6 +418,33 @@ def main() -> int:
                   isinstance(overview.get("paid_concurrency_limit"), int))
             check("overview publishes credit_balance",
                   isinstance(overview.get("credit_balance"), int))
+
+            print("\n\033[1m13. Streamed WAV header repair\033[0m")
+            # Fish streams WAV responses with sentinel chunk sizes. A 327KB file
+            # declared a 4GB RIFF size and a 4GB data chunk; Python's `wave`
+            # read it as 13 hours. ffmpeg copes, but the container is malformed
+            # and any strict parser may reject it.
+            import struct as _struct
+
+            from gateway.adapters.fish import _repair_streaming_wav
+
+            payload = b"\x00\x00" * 100
+            wav = (
+                b"RIFF" + _struct.pack("<I", 0xFFFFFF24) + b"WAVE"
+                + b"fmt " + _struct.pack("<I", 16)
+                + b"\x01\x00\x01\x00\x44\xac\x00\x00\x88\x58\x01\x00\x02\x00\x10\x00"
+                + b"data" + _struct.pack("<I", 0xFFFFFF00) + payload
+            )
+            fixed = _repair_streaming_wav(wav)
+            check("RIFF size is corrected",
+                  _struct.unpack("<I", fixed[4:8])[0] == len(fixed) - 8)
+            check("data chunk size is corrected",
+                  _struct.unpack("<I", fixed[40:44])[0] == len(payload))
+            check("audio payload is left untouched", fixed[44:] == payload)
+            check("a well-formed WAV is returned unchanged",
+                  _repair_streaming_wav(fixed) == fixed)
+            check("non-WAV bytes pass through untouched",
+                  _repair_streaming_wav(b"not audio at all") == b"not audio at all")
 
     finally:
         for proc in processes:

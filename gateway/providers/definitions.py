@@ -384,14 +384,17 @@ PROVIDER_DEFINITIONS: tuple[ProviderDefinition, ...] = (
         docs_url="https://docs.fish.audio",
         credential_fields=(_api_key("FISH_AUDIO_API_KEY"),),
         static_models=(
-            # Fish genuinely publishes only a handful of speech models; the
-            # documented `model` header values are s1, s2-pro and s2.1-pro. A
-            # short list here is the provider's real surface, not a thin seed.
+            # Fish's documented `model` header values. The free tier runs the
+            # SAME S2.1 Pro model as paid -- `s2.1-pro-free` is a real,
+            # first-class model string, not a trial shim, and it is simply not
+            # listed in the API reference table. Do not remove it for being
+            # absent from the docs.
+            {"id": "s2.1-pro-free", "display_name": "Fish S2.1 Pro (free)", "modality": "tts"},
             {"id": "s2.1-pro", "display_name": "Fish S2.1 Pro", "modality": "tts"},
             {"id": "s2-pro", "display_name": "Fish S2 Pro", "modality": "tts"},
             {"id": "s1", "display_name": "Fish S1", "modality": "tts"},
         ),
-        notes="Fish publishes few public speech models; the free/paid split is a credential concern, not a separate model.",
+        notes="Free tier (s2.1-pro-free) runs the same S2.1 Pro model as paid, under a Fair Use Policy.",
     ),
 
     # --------------------------------------------------------------------- local
