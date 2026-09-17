@@ -99,9 +99,14 @@ minutes, and blocking a Story Studio poll for that long would trip its timeouts.
 This is the normal way to run it. No terminal.
 
 ```bash
-./menubar/build.sh          # compiles and installs to ~/Applications/gateway-kh.app
-open ~/Applications/gateway-kh.app
+./menubar/build.sh          # compiles and installs to /Applications/gateway-kh.app
+open /Applications/gateway-kh.app
 ```
+
+It installs to **`/Applications`**, so it shows up in Launchpad, Spotlight and the Finder sidebar like
+any other app. (An earlier version installed to `~/Applications`, which macOS hides by default — the
+app was running but effectively unfindable. `build.sh` now prefers `/Applications` and removes any
+stale copy from the other location.)
 
 A bolt icon appears in the menu bar. It is a real native app (Swift + AppKit, `LSUIElement`), so
 there is no Dock icon and no window until you ask for one.

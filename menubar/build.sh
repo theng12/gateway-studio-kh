@@ -1,11 +1,11 @@
 #!/bin/sh
 # Build gateway-kh.app — a native macOS menu bar application.
 #
-# Produces a real .app bundle in ~/Applications, so the gateway can be run,
+# Produces a real .app bundle in /Applications, so the gateway can be run,
 # stopped and configured without ever opening a terminal.
 #
 # Usage:
-#   ./menubar/build.sh              build and install to ~/Applications
+#   ./menubar/build.sh              build and install to /Applications
 #   ./menubar/build.sh --no-install build only, into ./menubar/build
 
 set -eu
@@ -72,18 +72,33 @@ echo "==> ad-hoc signing"
 codesign --force --deep --sign - "$APP" 2>/dev/null || echo "    (codesign unavailable; continuing)"
 
 if [ "$INSTALL" = "1" ]; then
-  DEST="$HOME/Applications/gateway-kh.app"
+  # Prefer the system /Applications folder. `~/Applications` is hidden by
+  # default in Finder, absent from the sidebar, and easy to miss — an app in
+  # there is installed and running but effectively unfindable, which defeats
+  # the point of shipping an app at all.
+  if [ -w /Applications ]; then
+    DEST="/Applications/gateway-kh.app"
+  else
+    DEST="$HOME/Applications/gateway-kh.app"
+    mkdir -p "$HOME/Applications"
+  fi
+
   echo "==> installing to $DEST"
-  mkdir -p "$HOME/Applications"
   rm -rf "$DEST"
   cp -R "$APP" "$DEST"
   # Drop any quarantine flag so first launch does not warn.
   xattr -dr com.apple.quarantine "$DEST" 2>/dev/null || true
+
+  # If it was previously installed in the other location, remove that copy so
+  # there is never more than one, and the login item points at the survivor.
+  for OTHER in "/Applications/gateway-kh.app" "$HOME/Applications/gateway-kh.app"; do
+    [ "$OTHER" != "$DEST" ] && rm -rf "$OTHER"
+  done
+
   echo
-  echo "Installed. Open it with:"
-  echo "  open \"$DEST\""
-  echo
-  echo "It will appear as a bolt icon in the menu bar."
+  echo "Installed: $DEST"
+  echo "It is in Launchpad and Spotlight, and shows as a bolt icon in the menu bar."
+  echo "Open it with:  open \"$DEST\""
 else
   echo
   echo "Built: $APP"
