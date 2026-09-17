@@ -213,6 +213,129 @@ def remove_model(provider_id: str, model_id: str) -> Any:
 
 
 # ---------------------------------------------------------------------------
+# Global model browser
+#
+# Discovery and availability are deliberately separate: a provider publishing
+# 300 models should not put 300 rows into Story Studio's picker. These routes
+# exist so the owner can search across every provider at once and switch models
+# on, rather than opening eighteen panels to do it.
+# ---------------------------------------------------------------------------
+def _flat_models() -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for definition in registry.definitions():
+        enabled_provider = registry.credentials.is_enabled(definition.id)
+        for model in registry.models.models_for(definition.id, include_disabled=True):
+            rows.append(
+                {
+                    "provider_id": definition.id,
+                    "provider_name": definition.display_name,
+                    "provider_enabled": enabled_provider,
+                    "model_id": model["model_id"],
+                    "display_name": model["display_name"],
+                    "modality": model["modality"],
+                    "source": model["source"],
+                    "enabled": model["enabled"],
+                }
+            )
+    return rows
+
+
+def _filter_models(
+    rows: list[dict[str, Any]],
+    *,
+    q: str | None,
+    modality: str | None,
+    provider_id: str | None,
+    only_enabled: bool,
+) -> list[dict[str, Any]]:
+    if provider_id:
+        rows = [r for r in rows if r["provider_id"] == provider_id]
+    if modality:
+        rows = [r for r in rows if r["modality"] == modality]
+    if q:
+        needle = q.strip().lower()
+        rows = [
+            r
+            for r in rows
+            if needle in r["display_name"].lower() or needle in r["model_id"].lower()
+        ]
+    if only_enabled:
+        rows = [r for r in rows if r["enabled"]]
+    return rows
+
+
+@router.get("/api/models", dependencies=[Depends(require_admin)])
+def search_models(
+    q: str | None = None,
+    modality: str | None = None,
+    provider_id: str | None = None,
+    only_enabled: bool = False,
+    limit: int = 400,
+) -> dict[str, Any]:
+    everything = _flat_models()
+    matched = _filter_models(
+        everything, q=q, modality=modality, provider_id=provider_id, only_enabled=only_enabled
+    )
+    return {
+        "models": matched[:limit],
+        "matched": len(matched),
+        "returned": min(len(matched), limit),
+        "total": len(everything),
+        "enabled_total": sum(1 for r in everything if r["enabled"]),
+        "modalities": sorted({r["modality"] for r in everything}),
+        "providers": sorted(
+            {(r["provider_id"], r["provider_name"]) for r in everything}  # type: ignore[arg-type]
+        ),
+    }
+
+
+def _apply(
+    rows: list[dict[str, Any]], enabled: bool
+) -> int:
+    by_provider: dict[str, list[str]] = {}
+    for row in rows:
+        by_provider.setdefault(row["provider_id"], []).append(row["model_id"])
+    changed = 0
+    for provider_id, model_ids in by_provider.items():
+        changed += registry.models.set_many(provider_id, model_ids, enabled)
+    return changed
+
+
+@router.post("/api/models/enabled", dependencies=[Depends(require_admin)])
+def set_models_enabled(payload: dict[str, Any]) -> Any:
+    """Toggle an explicit list of models — what a checkbox click sends."""
+    items = payload.get("items")
+    if not isinstance(items, list):
+        return _error(422, "expected {'items': [{'provider_id','model_id'}], 'enabled': bool}")
+    rows = [
+        {"provider_id": str(i["provider_id"]), "model_id": str(i["model_id"])}
+        for i in items
+        if isinstance(i, dict) and i.get("provider_id") and i.get("model_id")
+    ]
+    changed = _apply(rows, bool(payload.get("enabled")))
+    return {"changed": changed, "enabled": bool(payload.get("enabled"))}
+
+
+@router.post("/api/models/bulk", dependencies=[Depends(require_admin)])
+def bulk_models(payload: dict[str, Any]) -> Any:
+    """Enable or disable everything matching a filter.
+
+    This is the "search for a family, click once" path: the same filters the
+    browser uses, applied server-side so it covers every match rather than only
+    the rows the page happened to load.
+    """
+    matched = _filter_models(
+        _flat_models(),
+        q=payload.get("q"),
+        modality=payload.get("modality"),
+        provider_id=payload.get("provider_id"),
+        only_enabled=False,
+    )
+    enabled = bool(payload.get("enabled"))
+    return {"changed": _apply(matched, enabled), "matched": len(matched), "enabled": enabled}
+
+
+# ---------------------------------------------------------------------------
 # What Story Studio will actually see
 # ---------------------------------------------------------------------------
 @router.get("/api/catalog", dependencies=[Depends(require_admin)])

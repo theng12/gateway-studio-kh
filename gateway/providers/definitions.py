@@ -79,11 +79,18 @@ class ProviderDefinition:
     credential_fields: tuple[CredentialField, ...] = ()
     static_models: tuple[dict, ...] = ()
     default_enabled: bool = True
-    #: When a provider publishes hundreds of models (OpenRouter currently lists
-    #: several hundred), auto-enabling every discovered model makes Story
-    #: Studio's picker unusable. Those providers require an explicit per-model
-    #: opt-in; everything discovered is still listed in the admin UI.
-    auto_enable_discovered: bool = True
+    #: Whether newly discovered models become available to Story Studio
+    #: immediately.
+    #:
+    #: **False by default, deliberately.** Discovery and availability are
+    #: different things: a provider publishing 300 models should not put 300
+    #: rows into Story Studio's picker. Models are discovered here, then
+    #: explicitly enabled in the admin console — the same model GenStudio used.
+    #:
+    #: The local Studio Hub provider opts back in (see its definition): those
+    #: are the owner's own runners, there are about a dozen, and the local lane
+    #: is the point of the thing.
+    auto_enable_discovered: bool = False
     notes: str = ""
 
     @property
@@ -119,7 +126,6 @@ PROVIDER_DEFINITIONS: tuple[ProviderDefinition, ...] = (
         description="Aggregator. One key reaches Claude, GPT, Gemini, DeepSeek and many more.",
         docs_url="https://openrouter.ai/docs",
         credential_fields=(_api_key("OPENROUTER_API_KEY"),),
-        auto_enable_discovered=False,
     ),
     ProviderDefinition(
         id="deepseek-main",
@@ -410,6 +416,10 @@ PROVIDER_DEFINITIONS: tuple[ProviderDefinition, ...] = (
                 secret=False, required=False, placeholder="auto-discovered from hub-ready.json",
             ),
         ),
+        # The one provider that opts back in to auto-enable: these are the
+        # owner's own local runners, there are about a dozen, and requiring a
+        # click for each would be friction for no benefit.
+        auto_enable_discovered=True,
         notes="Local execution. Story Studio is contractually forbidden from calling this directly; the gateway is the sanctioned path.",
     ),
 )
@@ -481,7 +491,10 @@ def _load_custom_providers() -> tuple[ProviderDefinition, ...]:
                 credential_fields=fields,
                 static_models=tuple(entry.get("static_models") or ()),
                 default_enabled=bool(entry.get("default_enabled", True)),
-                auto_enable_discovered=bool(entry.get("auto_enable_discovered", True)),
+                # Must match ProviderDefinition's own default. Defaulting to
+                # True here silently undid the opt-in policy for every
+                # user-defined provider.
+                auto_enable_discovered=bool(entry.get("auto_enable_discovered", False)),
                 notes=str(entry.get("notes") or "User-defined."),
             )
         )

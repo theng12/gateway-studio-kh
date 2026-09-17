@@ -115,7 +115,8 @@ def main() -> int:
             "modalities": ["chat", "image", "tts", "transcription"],
             "discovery": "openai_models",
             "description": "Test provider.",
-            "auto_enable_discovered": True,
+            # No auto_enable_discovered on purpose: this exercises the shipped
+            # default, which is opt-in.
         }]
     }))
 
@@ -190,11 +191,37 @@ def main() -> int:
             check("modality inference: tts", found.get("mock-tts-1", {}).get("modality") == "tts")
             check("modality inference: transcription",
                   found.get("mock-whisper-1", {}).get("modality") == "transcription")
-            check("discovered models auto-enabled", all(m["enabled"] for m in found.values()))
+            check("discovered models are NOT auto-enabled (opt-in)",
+                  all(not m["enabled"] for m in found.values()),
+                  str({k: v["enabled"] for k, v in found.items()}))
+            hidden = req(client, "GET", "/v1/chat/models").json()
+            check("nothing reaches Story Studio until it is enabled",
+                  len(hidden["models"]) == 0, f"got {len(hidden['models'])}")
+
+            enabled = httpx.post(
+                f"{BASE}/admin/api/models/enabled",
+                headers=AUTH,
+                json={
+                    "items": [
+                        {"provider_id": "mock-remote", "model_id": model_id}
+                        for model_id in found
+                    ],
+                    "enabled": True,
+                },
+            )
+            check("model browser API enables models",
+                  enabled.status_code == 200 and enabled.json().get("changed") == len(found),
+                  enabled.text[:160])
+
+            listed = httpx.get(
+                f"{BASE}/admin/api/models", headers=AUTH, params={"q": "mock", "limit": 50}
+            ).json()
+            check("model browser search finds them across providers",
+                  listed["matched"] == len(found), f"matched {listed['matched']}")
 
             print("\n\033[1m3. Story Studio catalogue contract\033[0m")
             cat = req(client, "GET", "/v1/chat/models").json()
-            check("chat catalogue non-empty", len(cat["models"]) > 0)
+            check("chat catalogue non-empty once enabled", len(cat["models"]) > 0)
             check("catalogue envelope has freshness",
                   {"stale", "ageMs", "loadedAt"} <= set(cat["freshness"]))
             check("freshness not stale", cat["freshness"]["stale"] is False)

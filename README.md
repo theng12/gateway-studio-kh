@@ -154,12 +154,25 @@ Then open **http://127.0.0.1:8000/admin** for the provider console.
 
 ### The flow
 
-1. Open `/admin`.
-2. Paste a provider's API key → **Save & discover models**. The key is stored `0600`, models are
-   discovered live from the provider, and the provider is enabled automatically.
-3. Untick anything you do not want offered (OpenRouter alone lists several hundred models, so it
-   ships with per-model opt-in rather than auto-enable).
-4. Story Studio's pickers now show exactly what you enabled.
+**Discovery and availability are separate things.** A provider publishing 300 models must not put
+300 rows into Story Studio's picker. So nothing reaches Story Studio until you say so.
+
+1. Open the console — **Providers** tab. Paste a provider's API key → **Save & discover models**.
+   The key is stored `0600` and the provider's models are discovered live. The provider switches on;
+   its models do not.
+2. Switch to the **Models** tab. This is a single searchable list across *every* provider:
+   - type to search by model name or id (`claude`, `flux`, `whisper`…)
+   - filter by modality and provider
+   - tick the models you want — each tick is one click and takes effect immediately
+   - **Enable all matching** applies the current filter server-side, so "everything matching
+     `seedream`" is one click even across thousands of rows
+3. Story Studio's pickers now show exactly the ticked set, and nothing else.
+
+The one exception is **Studio Hub (this Mac)**: the local runners auto-enable, because there are
+about a dozen and requiring a click for each would be friction for no benefit. Everything else is
+opt-in.
+
+Counts are always visible in the header: models *discovered* versus models *live*.
 
 ## Adding things
 
