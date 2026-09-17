@@ -35,7 +35,7 @@ swiftc \
   -framework Cocoa \
   -framework WebKit \
   -o "$APP/Contents/MacOS/$APP_NAME" \
-  "$HERE/main.swift"
+  "$HERE"/*.swift
 
 echo "==> writing Info.plist"
 cat > "$APP/Contents/Info.plist" <<'PLIST'

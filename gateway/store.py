@@ -210,3 +210,50 @@ class JobStore:
             "SELECT * FROM jobs ORDER BY created_at DESC LIMIT ?", (limit,)
         ).fetchall()
         return [dict(r) for r in rows]
+
+    def list_jobs(
+        self,
+        *,
+        limit: int = 50,
+        state: str | None = None,
+        modality: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Recent jobs, newest first, optionally filtered."""
+        clauses: list[str] = []
+        params: list[Any] = []
+        if state:
+            clauses.append("state = ?")
+            params.append(state)
+        if modality:
+            clauses.append("modality = ?")
+            params.append(modality)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        rows = self._conn.execute(
+            f"SELECT * FROM jobs {where} ORDER BY created_at DESC LIMIT ?",  # noqa: S608
+            (*params, limit),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def stats(self) -> dict[str, Any]:
+        """Counts for the dashboard: totals by state, plus the newest activity."""
+        by_state = {
+            row["state"]: row["n"]
+            for row in self._conn.execute(
+                "SELECT state, COUNT(*) AS n FROM jobs GROUP BY state"
+            ).fetchall()
+        }
+        by_modality = {
+            row["modality"]: row["n"]
+            for row in self._conn.execute(
+                "SELECT modality, COUNT(*) AS n FROM jobs GROUP BY modality"
+            ).fetchall()
+        }
+        newest = self._conn.execute(
+            "SELECT MAX(created_at) AS t FROM jobs"
+        ).fetchone()
+        return {
+            "by_state": by_state,
+            "by_modality": by_modality,
+            "total": sum(by_state.values()),
+            "last_job_at": newest["t"] if newest else None,
+        }

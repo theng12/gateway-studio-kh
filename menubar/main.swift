@@ -831,6 +831,17 @@ enum MainMenuBuilder {
         let viewMenu = NSMenu(title: "View")
         viewItem.submenu = viewMenu
         viewMenu.addItem(
+            withTitle: "Overview",
+            action: #selector(AppDelegate.openOverview),
+            keyEquivalent: "1"
+        ).target = target
+        viewMenu.addItem(
+            withTitle: "Jobs",
+            action: #selector(AppDelegate.openJobs),
+            keyEquivalent: "2"
+        ).target = target
+        viewMenu.addItem(.separator())
+        viewMenu.addItem(
             withTitle: "Open Provider Console",
             action: #selector(AppDelegate.openConsole),
             keyEquivalent: "p"
@@ -930,6 +941,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // menu bar. See MainMenuBuilder.
         NSApp.mainMenu = MainMenuBuilder.make(target: self)
 
+        if let requested = launchWindow?.lowercased() {
+            switch requested {
+            case "overview": OverviewWindow.shared.show()
+            case "jobs": JobsWindow.shared.show()
+            case "console": ConsoleWindow.shared.show()
+            case "settings": SettingsWindow.shared.show()
+            default: break
+            }
+        }
+
         menu = NSMenu()
         menu.delegate = self
         statusItem.menu = menu
@@ -963,8 +984,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         menu.addItem(.separator())
 
-        // Offered whether or not the gateway is up: opening the console starts
-        // it if needed, which is what an owner expects from a menu bar app.
+        // Offered whether or not the gateway is up: opening a window starts it
+        // if needed, which is what an owner expects from a menu bar app.
+        menu.addItem(item("Overview", #selector(openOverview), key: "o"))
+        menu.addItem(item("Jobs", #selector(openJobs), key: "j"))
+        menu.addItem(.separator())
         menu.addItem(item("Open Provider Console", #selector(openConsole), key: "p"))
         menu.addItem(item("Reload Console", #selector(reloadConsole)))
         menu.addItem(item("Open Console in Browser", #selector(openConsoleInBrowser)))
@@ -1041,6 +1065,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     // Not `private`: MainMenuBuilder references these by selector from another
     // type in this file.
+    @objc func openOverview() { OverviewWindow.shared.show() }
+
+    @objc func openJobs() { JobsWindow.shared.show() }
+
     @objc func openConsole() { ConsoleWindow.shared.show() }
 
     @objc func reloadConsole() { ConsoleWindow.shared.reload() }
@@ -1143,6 +1171,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 // file exists. They run before AppKit is initialised and exit immediately.
 let arguments = CommandLine.arguments
 
+/// `--open overview|jobs|console|settings` opens that window at launch.
+///
+/// Used to verify a window builds and lays out without a human clicking a menu.
+/// A crash inside a window controller would otherwise only surface when someone
+/// happened to open it.
+let launchWindow: String? = arguments.firstIndex(of: "--open").flatMap { index in
+    index + 1 < arguments.count ? arguments[index + 1] : nil
+}
+
 if arguments.contains("--install-login-item") {
     LaunchAgent.install()
     print("login item installed: \(LaunchAgent.plistURL.path)")
@@ -1169,7 +1206,10 @@ if arguments.contains("--dump-menu") {
     // absent from this listing cannot work, because AppKit resolves editing
     // shortcuts by matching menu key equivalents.
     _ = NSApplication.shared  // NSApp must exist before make() touches windowsMenu
-    let menu = MainMenuBuilder.make(target: NSObject())
+    // Hold the target: menu items reference it weakly, so a temporary would be
+    // deallocated before the description is built.
+    let dumpTarget = NSObject()
+    let menu = MainMenuBuilder.make(target: dumpTarget)
     print(MainMenuBuilder.describe(menu).joined(separator: "\n"))
     exit(0)
 }

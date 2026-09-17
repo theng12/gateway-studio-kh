@@ -12,6 +12,7 @@ on the LAN if someone changes `GATEWAY_HOST`. `is_loopback()` is the switch.
 
 from __future__ import annotations
 
+import time
 from pathlib import Path
 from typing import Any
 
@@ -23,7 +24,7 @@ from .catalog import catalog
 from .config import is_loopback
 from .hub import hub_status
 from .providers import registry
-from .runtime import store, worker
+from .runtime import STARTED_AT, store, worker
 
 router = APIRouter(prefix="/admin")
 
@@ -83,6 +84,8 @@ def status() -> dict[str, Any]:
             "enabled": sum(1 for p in providers if p["enabled"]),
         },
         "jobs_processed": worker.processed,
+        "jobs": store.stats(),
+        "uptime_seconds": int(time.time() - STARTED_AT),
         "catalog": {
             modality: len(catalog.rows(modality))
             for modality in ("chat", "image", "video", "tts", "transcription", "music")
@@ -352,5 +355,52 @@ def catalog_preview(modality: str | None = None) -> dict[str, Any]:
 
 
 @router.get("/api/jobs", dependencies=[Depends(require_admin)])
-def recent_jobs(limit: int = 25) -> dict[str, Any]:
-    return {"jobs": store.recent(limit)}
+def list_jobs(
+    limit: int = 50,
+    state: str | None = None,
+    modality: str | None = None,
+) -> dict[str, Any]:
+    """Recent jobs, shaped for the app's Jobs window.
+
+    Display names are resolved here rather than in the client, and the failure
+    reason travels with the row: a job that failed is only useful if you can see
+    why without opening a log file.
+    """
+    labels: dict[tuple[str, str], str] = {}
+    for definition in registry.definitions():
+        for model in registry.models.models_for(definition.id, include_disabled=True):
+            labels[(definition.id, model["model_id"])] = model["display_name"]
+
+    TERMINAL = {"succeeded", "failed", "cancelled"}
+    rows: list[dict[str, Any]] = []
+    for job in store.list_jobs(limit=limit, state=state, modality=modality):
+        provider_id = str(job.get("provider_id") or "")
+        model_id = str(job.get("model_id") or "")
+        definition = registry.definition(provider_id)
+        created = job.get("created_at")
+        updated = job.get("updated_at")
+        duration = (
+            round(updated - created, 2)
+            if created and updated and job["state"] in TERMINAL
+            else None
+        )
+        rows.append(
+            {
+                "id": job["id"],
+                "short_id": job["id"][:8],
+                "modality": job["modality"],
+                "provider_id": provider_id,
+                "provider_name": definition.display_name if definition else provider_id,
+                "model_id": model_id,
+                "model_name": labels.get((provider_id, model_id), model_id),
+                "state": job["state"],
+                "created_at": created,
+                "updated_at": updated,
+                "duration_s": duration,
+                "has_artifact": bool(job.get("asset_path")),
+                "error_code": job.get("error_code"),
+                "error_detail": job.get("error_detail"),
+            }
+        )
+
+    return {"jobs": rows, "stats": store.stats()}
