@@ -37,6 +37,59 @@ swiftc \
   -o "$APP/Contents/MacOS/$APP_NAME" \
   "$HERE"/*.swift
 
+# ---------------------------------------------------------------------------
+# Bundle a relocatable Python and the gateway source.
+#
+# The venv in a checkout is a symlink to Homebrew's Python and its stdlib lives
+# outside it, so it cannot be copied into a bundle. python-build-standalone
+# ships a self-contained interpreter that runs from wherever it is unpacked --
+# which is what makes the finished .app movable to another Mac.
+# ---------------------------------------------------------------------------
+PY_VERSION="3.11.16"
+PY_TAG="20260901"
+PY_ASSET="cpython-${PY_VERSION}+${PY_TAG}-aarch64-apple-darwin-install_only.tar.gz"
+PY_URL="https://github.com/astral-sh/python-build-standalone/releases/download/${PY_TAG}/${PY_ASSET}"
+
+VENDOR="$HERE/vendor"
+RUNTIME_CACHE="$VENDOR/runtime"
+mkdir -p "$VENDOR"
+
+if [ ! -f "$VENDOR/$PY_ASSET" ]; then
+  echo "==> fetching relocatable Python $PY_VERSION (once, ~26 MB)"
+  curl -fL --retry 2 -o "$VENDOR/$PY_ASSET.part" "$PY_URL"
+  mv "$VENDOR/$PY_ASSET.part" "$VENDOR/$PY_ASSET"
+fi
+
+# Rebuild the cached runtime only when the dependency list actually changes, so
+# ordinary builds re-use it instead of re-running pip every time.
+REQS_HASH="$(shasum -a 256 "$ROOT/requirements.txt" | cut -c1-16)"
+STAMP="$RUNTIME_CACHE/.requirements-$REQS_HASH"
+
+if [ ! -x "$RUNTIME_CACHE/python/bin/python3" ] || [ ! -f "$STAMP" ]; then
+  echo "==> preparing bundled Python runtime (once per dependency change)"
+  rm -rf "$RUNTIME_CACHE"
+  mkdir -p "$RUNTIME_CACHE"
+  tar -xzf "$VENDOR/$PY_ASSET" -C "$RUNTIME_CACHE"
+  "$RUNTIME_CACHE/python/bin/python3" -m pip install \
+    --quiet --no-warn-script-location --disable-pip-version-check \
+    -r "$ROOT/requirements.txt"
+  # Drop pip's caches and bytecode; they are large and rebuild identically.
+  find "$RUNTIME_CACHE/python" -name "__pycache__" -type d -prune -exec rm -rf {} + 2>/dev/null || true
+  touch "$STAMP"
+fi
+
+echo "==> bundling Python runtime"
+rm -rf "$APP/Contents/Resources/python"
+cp -R "$RUNTIME_CACHE/python" "$APP/Contents/Resources/python"
+
+echo "==> bundling gateway source"
+rm -rf "$APP/Contents/Resources/gateway"
+mkdir -p "$APP/Contents/Resources/gateway/data"
+cp -R "$ROOT/gateway" "$APP/Contents/Resources/gateway/gateway"
+cp "$ROOT/requirements.txt" "$APP/Contents/Resources/gateway/"
+# Shipped read-only defaults. User data lives in Application Support.
+[ -f "$ROOT/data/voices.json" ] && cp "$ROOT/data/voices.json" "$APP/Contents/Resources/gateway/data/"
+
 echo "==> writing Info.plist"
 cat > "$APP/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>

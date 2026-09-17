@@ -1,39 +1,173 @@
 """Configuration, paths and secret-file hygiene.
 
-There is no config framework here on purpose. Three sources, in precedence order:
+Three sources, in precedence order:
 
-    environment  >  gateway-kh/.env  >  defaults
+    environment  >  .env  >  defaults
 
-`.env` is the intended home for provider keys during development. Both `.env`
-and the credential store are written and enforced `0600`, and both are
-gitignored -- this process holds credentials for every provider the owner has,
-so a world-readable secret file would be the single worst failure mode in the
-codebase.
+**Where things live.** The app now ships its own Python and its own copy of the
+gateway source inside the bundle, so nothing may be written next to the code —
+a bundle is read-only in normal use, and replaced wholesale on update. That
+splits the paths in two:
+
+    BUNDLED  — shipped read-only defaults: the voice catalogue, the source itself
+    DATA     — runtime state owned by the user: credentials, database, artifacts
+
+Runtime state lives in `~/Library/Application Support/gateway-kh/`, which is
+where a macOS app is expected to keep it, and is what makes the `.app` movable:
+copy the bundle anywhere and the data stays put.
+
+`.env` and the credential store are written and enforced `0600`. This process
+holds credentials for every provider the owner has, so a world-readable secret
+file would be the worst failure mode in the codebase.
 """
 
 from __future__ import annotations
 
 import os
+import shutil
 import stat
 from pathlib import Path
 
+#: The gateway package's parent: `Contents/Resources/gateway` in the bundle, or
+#: the repository root in a checkout. Bundled, read-only defaults hang off this.
 ROOT = Path(__file__).resolve().parent.parent
-DATA_DIR = Path(os.environ.get("GATEWAY_DATA", ROOT / "data"))
-ARTIFACT_DIR = Path(os.environ.get("GATEWAY_ARTIFACTS", DATA_DIR / "artifacts"))
-CATALOG_SEED = Path(os.environ.get("GATEWAY_CATALOG_SEED", DATA_DIR / "catalog.json"))
-CREDENTIALS_PATH = Path(os.environ.get("GATEWAY_CREDENTIALS", DATA_DIR / "credentials.json"))
-MODEL_CACHE_PATH = Path(os.environ.get("GATEWAY_MODEL_CACHE", DATA_DIR / "models_cache.json"))
-DB_PATH = Path(os.environ.get("GATEWAY_DB", DATA_DIR / "gateway.sqlite3"))
-ENV_PATH = Path(os.environ.get("GATEWAY_ENV_FILE", ROOT / ".env"))
+BUNDLED_DATA_DIR = ROOT / "data"
 
-ARTIFACT_DIR.mkdir(parents=True, exist_ok=True)
+#: Where macOS apps keep user data. Everything writable lives below this.
+APP_SUPPORT = Path(
+    os.environ.get("GATEWAY_APP_SUPPORT")
+    or (Path.home() / "Library" / "Application Support" / "gateway-kh")
+)
+
+#: Data as it was laid out before the app was self-contained. Migrated on first
+#: run so an existing install keeps its credentials and history.
+LEGACY_DATA_DIR = ROOT / "data"
+
+DATA_DIR = Path(os.environ.get("GATEWAY_DATA") or (APP_SUPPORT / "data"))
+ARTIFACT_DIR = Path(os.environ.get("GATEWAY_ARTIFACTS") or (DATA_DIR / "artifacts"))
+CREDENTIALS_PATH = Path(os.environ.get("GATEWAY_CREDENTIALS") or (DATA_DIR / "credentials.json"))
+MODEL_CACHE_PATH = Path(os.environ.get("GATEWAY_MODEL_CACHE") or (DATA_DIR / "models_cache.json"))
+DB_PATH = Path(os.environ.get("GATEWAY_DB") or (DATA_DIR / "gateway.sqlite3"))
+ENV_PATH = Path(os.environ.get("GATEWAY_ENV_FILE") or (APP_SUPPORT / ".env"))
+
+#: Provider definitions a user adds.
+CUSTOM_PROVIDERS_PATH = DATA_DIR / "providers.local.json"
+
 DATA_DIR.mkdir(parents=True, exist_ok=True)
+ARTIFACT_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def secret_file_mode(path: Path) -> None:
+    """Force owner-only read/write. Safe to call on any existing file."""
+    try:
+        path.chmod(stat.S_IRUSR | stat.S_IWUSR)
+    except OSError:
+        pass
+
+
+#: Files a pre-bundle install kept in `<repo>/data`.
+_MIGRATED_FILES = (
+    "credentials.json",
+    "models_cache.json",
+    "gateway.sqlite3",
+    "providers.local.json",
+    "voices.json",
+)
+
+
+def migrate_legacy_data() -> dict[str, object]:
+    """Move a pre-bundle install's data into Application Support.
+
+    Idempotent: only runs when the destination has none of the files we would
+    migrate. Files are **copied, not moved**, so a failed migration cannot lose
+    credentials — the old directory is left intact as a fallback.
+
+    `GATEWAY_NO_MIGRATE=1` disables it, which tests use to guarantee a clean
+    slate rather than inheriting whatever the developer has configured.
+    """
+    result: dict[str, object] = {"migrated": [], "skipped": False}
+    if os.environ.get("GATEWAY_NO_MIGRATE", "").strip() in {"1", "true", "yes"}:
+        result["skipped"] = True
+        return result
+    if not LEGACY_DATA_DIR.exists():
+        return result
+    if LEGACY_DATA_DIR.resolve() == DATA_DIR.resolve():
+        result["skipped"] = True
+        return result
+
+    # Test for the files themselves rather than "is the directory empty":
+    # DATA_DIR and its artifacts subdirectory are created above, so an
+    # emptiness check would always see a non-empty directory and never migrate.
+    if any((DATA_DIR / name).exists() for name in _MIGRATED_FILES):
+        result["skipped"] = True
+        return result
+
+    migrated: list[str] = []
+    for name in _MIGRATED_FILES:
+        source = LEGACY_DATA_DIR / name
+        if source.exists():
+            target = DATA_DIR / name
+            shutil.copy2(source, target)
+            secret_file_mode(target)
+            migrated.append(name)
+
+    legacy_artifacts = LEGACY_DATA_DIR / "artifacts"
+    if legacy_artifacts.is_dir():
+        for item in legacy_artifacts.iterdir():
+            if item.is_file():
+                shutil.copy2(item, ARTIFACT_DIR / item.name)
+        migrated.append("artifacts/")
+
+    result["migrated"] = migrated
+    return result
+
+
+# Run before any path below is resolved from what is on disk: the voice
+# catalogue falls back to the bundled copy only if the data directory has none,
+# so migrating afterwards would pin the wrong file for the whole process.
+MIGRATION = migrate_legacy_data()
+
+
+def migrate_legacy_env() -> bool:
+    """Bring a pre-bundle `.env` across.
+
+    Handled separately from the data files, and unconditionally: the data
+    migration is skipped once its destination has content, so folding `.env`
+    into it would mean anyone who migrated data first silently lost their API
+    key — leaving the gateway accepting *any* bearer token.
+    """
+    legacy = ROOT / ".env"
+    if os.environ.get("GATEWAY_NO_MIGRATE", "").strip() in {"1", "true", "yes"}:
+        return False
+    if not legacy.exists() or ENV_PATH.exists():
+        return False
+    try:
+        ENV_PATH.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(legacy, ENV_PATH)
+        secret_file_mode(ENV_PATH)
+        return True
+    except OSError:
+        return False
+
+
+ENV_MIGRATED = migrate_legacy_env()
+
+#: The voice catalogue. A user-edited copy in DATA_DIR wins; otherwise the
+#: shipped default is used, so a fresh install has voices without any setup.
+VOICES_PATH = Path(
+    os.environ.get("GATEWAY_VOICES")
+    or ((DATA_DIR / "voices.json") if (DATA_DIR / "voices.json").exists()
+        else (BUNDLED_DATA_DIR / "voices.json"))
+)
+
+#: Where an import script should WRITE voices — never into the read-only bundle.
+WRITABLE_VOICES_PATH = Path(os.environ.get("GATEWAY_VOICES_OUT") or (DATA_DIR / "voices.json"))
 
 
 def load_env_file(path: Path = ENV_PATH) -> dict[str, str]:
     """Minimal `.env` reader: KEY=VALUE, `#` comments, optional quotes.
 
-    Deliberately does not support interpolation or multi-line values -- those
+    Deliberately does not support interpolation or multi-line values — those
     are where dotenv implementations quietly diverge, and nothing here needs
     them.
     """
@@ -64,14 +198,6 @@ def get(key: str, default: str = "") -> str:
     if key in os.environ:
         return os.environ[key]
     return _ENV_FILE.get(key, default)
-
-
-def secret_file_mode(path: Path) -> None:
-    """Force owner-only read/write. Safe to call on any existing file."""
-    try:
-        path.chmod(stat.S_IRUSR | stat.S_IWUSR)
-    except OSError:
-        pass
 
 
 def write_secret(path: Path, text: str) -> None:
@@ -110,9 +236,9 @@ def bind_host() -> str:
 
 def bind_port() -> int:
     try:
-        return int(get("GATEWAY_PORT", "8000"))
+        return int(get("GATEWAY_PORT", "8010"))
     except ValueError:
-        return 8000
+        return 8010
 
 
 def is_loopback() -> bool:

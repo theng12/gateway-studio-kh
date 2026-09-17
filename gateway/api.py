@@ -26,6 +26,7 @@ work and reports on it, so a long local job never blocks a Story Studio poll.
 from __future__ import annotations
 
 import json
+import os
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -226,7 +227,10 @@ def health() -> dict[str, Any]:
     return {
         "status": "ok",
         "service": "gateway-kh",
-        "version": __version__,
+        # The app adopts a gateway it did not start (quitting the app leaves the
+        # service running, deliberately). Reporting the pid is what lets it
+        # still stop that process on request rather than only pretending to.
+        "pid": os.getpid(),
         "providers": {
             "total": len(providers),
             "configured": sum(1 for p in providers if p["configured"]),

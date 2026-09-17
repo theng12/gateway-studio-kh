@@ -17,3 +17,6 @@ data/artifacts/
 
 # Menu bar app build output
 menubar/build/
+
+# Bundled runtime cache (build artifacts, not source)
+menubar/vendor/

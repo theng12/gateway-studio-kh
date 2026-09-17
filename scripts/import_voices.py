@@ -19,11 +19,18 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
+
+from gateway.config import WRITABLE_VOICES_PATH  # noqa: E402
+
 DEFAULT_SOURCE = Path.home() / "pinokio/api/voicestudio-mac.git/app/voices"
-OUT = ROOT / "data" / "voices.json"
+# Voices belong with the user's data, not in the bundle: the bundle is
+# read-only in normal use and is replaced wholesale on update.
+OUT = WRITABLE_VOICES_PATH
 
 # The cloning-capable local model. Qwen3 Base takes a reference clip; the
 # CustomVoice/VoiceDesign variants take a preset speaker instead.

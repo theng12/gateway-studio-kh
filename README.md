@@ -116,12 +116,52 @@ there is no Dock icon and no window until you ask for one.
 | Item | What it does |
 |---|---|
 | status line | live: provider and model counts, read from the gateway's own `/health` |
-| **Open Provider Console…** | opens the browser page where you paste provider API keys |
+| **Overview** (⌘1) | dashboard — status, counts, per-modality breakdown, recent activity |
+| **Jobs** (⌘2) | what has actually run, with failure reasons and artifact URLs |
+| **Open Provider Console** (⌘P) | add provider keys, discover and enable models |
 | Start / Stop / Restart Gateway | supervises the service directly |
 | Studio Hub status | whether your local runner is up, and a shortcut to start it |
-| **Settings…** | gateway directory, port, API key, launch at login |
+| **Settings…** (⌘,) | port, API key, launch at login |
 | Open data folder / Open log | where credentials and logs live |
 | Quit | quits the menu bar app; **leaves the gateway running** |
+
+## The app is self-contained
+
+`build.sh` bundles a **relocatable CPython** (from python-build-standalone) and a copy of the gateway
+source into the `.app`:
+
+```
+gateway-kh.app/Contents/Resources/
+  python/     relocatable CPython 3.11 + fastapi, uvicorn, httpx, python-multipart
+  gateway/    the gateway source, plus the shipped default voice catalogue
+```
+
+Nothing outside the bundle is needed to run it — **the `.app` can be copied to another Apple Silicon
+Mac and will work**. That is verified, not assumed: a copy was run from a fresh location with an
+empty data directory and served the full Story Studio contract.
+
+**Where your data lives** — never inside the bundle, which is read-only in normal use and replaced
+wholesale on update:
+
+```
+~/Library/Application Support/gateway-kh/
+  .env                 the API key Story Studio presents
+  data/credentials.json  provider keys (0600)
+  data/gateway.sqlite3   job history
+  data/voices.json       voice catalogue
+  data/artifacts/        generated images, audio, video
+  menubar.json           app settings
+```
+
+An install from before this change is migrated automatically on first run — files are **copied, not
+moved**, so the old directory remains as a fallback.
+
+**Requirements:** Apple Silicon, macOS 13 or newer. The bundle is arm64-only and ad-hoc signed, so
+Gatekeeper warns on first launch of a copied copy (right-click → Open).
+
+**First run** opens the Overview window, and the app generates an API key if none exists — the
+gateway treats an empty key as "accept any bearer token", which should never be the state you are
+left in without being told.
 
 **Settings** is where the gateway's own API key lives, with a **Copy** button — that is the value
 Story Studio needs. Paste it into **Story Studio → Settings → This Mac → GenStudio API key**, and set

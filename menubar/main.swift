@@ -21,6 +21,48 @@
 import Cocoa
 import WebKit
 
+// MARK: - App paths
+
+/// Every writable location the app uses, in one place.
+///
+/// These all live under `~/Library/Application Support/gateway-kh/` rather than
+/// next to the code. That is what a macOS app is expected to do, and it is what
+/// makes the bundle movable: the `.app` can be copied anywhere while the data —
+/// credentials, database, voices — stays put.
+enum AppPaths {
+    static let appSupport: URL = {
+        let base = FileManager.default
+            .urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("gateway-kh", isDirectory: true)
+        try? FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
+        return base
+    }()
+
+    /// The API key Story Studio presents, and the gateway's own settings.
+    static var env: URL { appSupport.appendingPathComponent(".env") }
+
+    /// Runtime state: credentials, model cache, database, artifacts.
+    static var data: URL { appSupport.appendingPathComponent("data", isDirectory: true) }
+
+    static var stateFile: URL { appSupport.appendingPathComponent("menubar-state.json") }
+    static var configFile: URL { appSupport.appendingPathComponent("menubar.json") }
+    static var logFile: URL {
+        let logs = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Logs", isDirectory: true)
+        try? FileManager.default.createDirectory(at: logs, withIntermediateDirectories: true)
+        return logs.appendingPathComponent("gateway-kh.log")
+    }
+
+    /// What the bundle ships: a relocatable Python and a copy of the gateway.
+    static var bundledRoot: URL? { Bundle.main.resourceURL }
+    static var bundledPython: URL? {
+        bundledRoot?.appendingPathComponent("python/bin/python3")
+    }
+    static var bundledSource: URL? {
+        bundledRoot?.appendingPathComponent("gateway", isDirectory: true)
+    }
+}
+
 // MARK: - Configuration
 
 struct AppConfig: Codable {
@@ -28,6 +70,9 @@ struct AppConfig: Codable {
     var port: Int
     var launchAtLogin: Bool
     var autoStartGateway: Bool
+    /// Optional so an existing config file written before this field existed
+    /// still decodes; `nil` is treated as "has not launched before".
+    var hasLaunchedBefore: Bool?
 
     static func makeDefault() -> AppConfig {
         let home = FileManager.default.homeDirectoryForCurrentUser.path
@@ -46,12 +91,7 @@ final class ConfigStore {
     private(set) var config: AppConfig
 
     private init() {
-        let support = FileManager.default
-            .urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("gateway-kh", isDirectory: true)
-        try? FileManager.default.createDirectory(at: support, withIntermediateDirectories: true)
-        fileURL = support.appendingPathComponent("menubar.json")
-
+        fileURL = AppPaths.configFile
         if let data = try? Data(contentsOf: fileURL),
            let decoded = try? JSONDecoder().decode(AppConfig.self, from: data) {
             config = decoded
@@ -79,15 +119,16 @@ final class ConfigStore {
 
 // MARK: - .env handling
 
+/// Reads and writes the gateway's `.env`.
+///
+/// This lives in Application Support, not beside the code: the bundle is
+/// read-only in normal use and is replaced wholesale on update, so a key stored
+/// there would be lost. The gateway reads the same file via `GATEWAY_ENV_FILE`.
 enum EnvFile {
-    static func url(for directory: String) -> URL {
-        URL(fileURLWithPath: directory, isDirectory: true).appendingPathComponent(".env")
-    }
+    static var url: URL { AppPaths.env }
 
-    static func read(_ directory: String) -> [String: String] {
-        guard let text = try? String(contentsOf: url(for: directory), encoding: .utf8) else {
-            return [:]
-        }
+    static func read() -> [String: String] {
+        guard let text = try? String(contentsOf: url, encoding: .utf8) else { return [:] }
         var values: [String: String] = [:]
         for rawLine in text.split(separator: "\n", omittingEmptySubsequences: false) {
             let line = rawLine.trimmingCharacters(in: .whitespaces)
@@ -105,27 +146,22 @@ enum EnvFile {
         return values
     }
 
-    static func apiKey(_ directory: String) -> String {
-        read(directory)["GATEWAY_API_KEY"] ?? ""
-    }
+    static func apiKey() -> String { read()["GATEWAY_API_KEY"] ?? "" }
 
-    static func writeApiKey(_ directory: String, _ key: String) {
-        var values = read(directory)
-        values["GATEWAY_API_KEY"] = key
-        let port = String(ConfigStore.shared.config.port)
-        values["GATEWAY_PORT"] = port
-        values["GATEWAY_HOST"] = "127.0.0.1"
-
+    static func writeApiKey(_ key: String) {
         var lines = ["# Written by the gateway-kh menu bar app.", ""]
-        for name in ["GATEWAY_API_KEY", "GATEWAY_HOST", "GATEWAY_PORT"] {
-            if let value = values[name] { lines.append("\(name)=\(value)") }
-        }
+        lines.append("GATEWAY_API_KEY=\(key)")
+        lines.append("GATEWAY_HOST=127.0.0.1")
+        lines.append("GATEWAY_PORT=\(ConfigStore.shared.config.port)")
+        // Point the gateway at the same data directory the app uses, so both
+        // halves agree without either having to guess.
+        lines.append("GATEWAY_DATA=\(AppPaths.data.path)")
+        lines.append("GATEWAY_ENV_FILE=\(AppPaths.env.path)")
+
         let text = lines.joined(separator: "\n") + "\n"
-        let target = url(for: directory)
-        try? text.write(to: target, atomically: true, encoding: .utf8)
-        // Owner-only: this file holds the key Story Studio presents and, in a
-        // .env-sourced setup, provider credentials too.
-        try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: target.path)
+        try? text.write(to: url, atomically: true, encoding: .utf8)
+        // Owner-only: this file holds the key Story Studio presents.
+        try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
     }
 
     static func generateKey() -> String {
@@ -155,6 +191,8 @@ final class GatewayController {
     private var stopping = false
     private var restartAttempts = 0
     private var isStarting = false
+    /// Pid of a gateway this app adopted rather than spawned.
+    private var adoptedPid: pid_t?
     /// Set by the app once the status item exists, so the state file can prove
     /// the UI actually initialised.
     var statusItemReady = false
@@ -164,17 +202,48 @@ final class GatewayController {
     var consoleURL: URL? { URL(string: "http://127.0.0.1:\(port)/admin") }
     var storyURL: URL? { URL(string: "http://127.0.0.1:\(port)") }
 
-    var pythonPath: String {
-        URL(fileURLWithPath: gatewayDir, isDirectory: true)
-            .appendingPathComponent(".venv/bin/python").path
+    /// Where the gateway runs from.
+    ///
+    /// A shipped bundle carries its own Python and a copy of the source, so it
+    /// depends on nothing outside itself — that is what makes it movable. A
+    /// developer checkout is the fallback, which keeps the usual edit-and-run
+    /// loop working without rebuilding the bundle each time.
+    enum Runtime {
+        case bundled(python: URL, source: URL)
+        case checkout(root: URL)
+        case missing(String)
     }
 
-    var logPath: String {
-        let logs = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Library/Logs", isDirectory: true)
-        try? FileManager.default.createDirectory(at: logs, withIntermediateDirectories: true)
-        return logs.appendingPathComponent("gateway-kh.log").path
+    var runtime: Runtime {
+        if let python = AppPaths.bundledPython,
+           let source = AppPaths.bundledSource,
+           FileManager.default.fileExists(atPath: python.path),
+           FileManager.default.fileExists(atPath: source.path) {
+            return .bundled(python: python, source: source)
+        }
+        let root = URL(fileURLWithPath: gatewayDir, isDirectory: true)
+        if FileManager.default.fileExists(
+            atPath: root.appendingPathComponent(".venv/bin/python").path
+        ) {
+            return .checkout(root: root)
+        }
+        return .missing("The app has no bundled runtime and there is no .venv in \(gatewayDir).")
     }
+
+    var isReady: Bool {
+        if case .missing = runtime { return false }
+        return true
+    }
+
+    var runtimeDescription: String {
+        switch runtime {
+        case .bundled: return "Bundled runtime"
+        case .checkout: return "Developer checkout (\(gatewayDir))"
+        case .missing(let reason): return reason
+        }
+    }
+
+    var logPath: String { AppPaths.logFile.path }
 
     func observe(_ handler: @escaping () -> Void) {
         onStateChange = handler
@@ -191,12 +260,7 @@ final class GatewayController {
     /// This exists so the app's own view of the world is inspectable without a
     /// GUI: useful for debugging a background service, and it is how a headless
     /// check can confirm the status item was created and the gateway is up.
-    var stateFileURL: URL {
-        FileManager.default
-            .urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("gateway-kh", isDirectory: true)
-            .appendingPathComponent("menubar-state.json")
-    }
+    var stateFileURL: URL { AppPaths.stateFile }
 
     func writeState() {
         let stateName: String
@@ -216,6 +280,7 @@ final class GatewayController {
             "updatedAt": ISO8601DateFormatter().string(from: Date()),
         ]
         if let child = process { payload["gatewayPid"] = child.processIdentifier }
+        if let adopted = adoptedPid { payload["adoptedPid"] = Int(adopted) }
         if case .running(let providers, let models) = state {
             payload["providers"] = providers
             payload["models"] = models
@@ -238,8 +303,17 @@ final class GatewayController {
     func start() {
         guard process == nil, !isStarting else { return }
 
-        guard FileManager.default.fileExists(atPath: pythonPath) else {
-            publish(.failed("No .venv in \(gatewayDir)"))
+        let executable: URL
+        let workingDirectory: URL
+        switch runtime {
+        case .bundled(let python, let source):
+            executable = python
+            workingDirectory = source
+        case .checkout(let root):
+            executable = root.appendingPathComponent(".venv/bin/python")
+            workingDirectory = root
+        case .missing(let reason):
+            publish(.failed(reason))
             return
         }
 
@@ -255,35 +329,70 @@ final class GatewayController {
                 self.publish(.starting)
                 self.startHealthPolling()
             } else {
-                self.spawn()
+                self.spawn(executable: executable, workingDirectory: workingDirectory)
             }
         }
     }
 
-    private func probeExisting(_ completion: @escaping (Bool) -> Void) {
+    /// Probe first, then stop whatever is serving the port — spawned or adopted.
+    ///
+    /// `stop()` alone cannot do this from a cold start, because the adopted pid
+    /// is only learned by probing.
+    func stopAnything(_ completion: @escaping (Bool) -> Void) {
+        probeExisting { [weak self] alive in
+            guard let self, alive else {
+                completion(false)
+                return
+            }
+            self.stop()
+            completion(true)
+        }
+    }
+
+    func probeExisting(_ completion: @escaping (Bool) -> Void) {
         guard let url = URL(string: "http://127.0.0.1:\(port)/health") else {
             completion(false)
             return
         }
         var request = URLRequest(url: url)
         request.timeoutInterval = 2.0
-        URLSession.shared.dataTask(with: request) { _, response, _ in
-            let alive = (response as? HTTPURLResponse)?.statusCode == 200
-            DispatchQueue.main.async { completion(alive) }
+        URLSession.shared.dataTask(with: request) { [weak self] data, response, _ in
+            let code = (response as? HTTPURLResponse)?.statusCode ?? 0
+            var found: pid_t?
+            if code == 200, let data,
+               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+               let raw = json["pid"] as? Int, raw > 0 {
+                found = pid_t(raw)
+            }
+            DispatchQueue.main.async {
+                // Remember whose service this is. The app may adopt a gateway
+                // it did not spawn (quitting leaves the service running by
+                // design), and without the pid "Stop Gateway" could only
+                // pretend to stop it.
+                self?.adoptedPid = code == 200 ? found : nil
+                completion(code == 200)
+            }
         }.resume()
     }
 
-    private func spawn() {
+    private func spawn(executable: URL, workingDirectory: URL) {
         let task = Process()
-        task.executableURL = URL(fileURLWithPath: pythonPath)
+        task.executableURL = executable
         task.arguments = [
             "-m", "uvicorn", "gateway.api:app",
             "--host", "127.0.0.1", "--port", String(port),
             "--log-level", "warning",
         ]
-        task.currentDirectoryURL = URL(fileURLWithPath: gatewayDir, isDirectory: true)
+        task.currentDirectoryURL = workingDirectory
+
         var environment = ProcessInfo.processInfo.environment
         environment["PYTHONUNBUFFERED"] = "1"
+        // The app and the gateway must agree on where state lives, so the paths
+        // are passed explicitly rather than left for the gateway to infer.
+        environment["GATEWAY_DATA"] = AppPaths.data.path
+        environment["GATEWAY_ENV_FILE"] = AppPaths.env.path
+        // Run the source in place; no install step required.
+        environment["PYTHONPATH"] = workingDirectory.path
         task.environment = environment
 
         if !FileManager.default.fileExists(atPath: logPath) {
@@ -322,6 +431,8 @@ final class GatewayController {
         do {
             try task.run()
             process = task
+            // We own this one now, so there is nothing adopted to stop.
+            adoptedPid = nil
             stopping = false
             isStarting = false
             publish(.starting)
@@ -337,15 +448,18 @@ final class GatewayController {
         restartAttempts = 0
         healthTimer?.invalidate()
         healthTimer = nil
-        guard let task = process else {
-            publish(.stopped)
-            return
-        }
         publish(.stopped)
-        task.terminate()
-        process = nil
-        logHandle?.closeFile()
-        logHandle = nil
+
+        if let task = process {
+            task.terminate()
+            process = nil
+            logHandle?.closeFile()
+            logHandle = nil
+        } else if let adopted = adoptedPid {
+            // Adopted, not spawned. Stopping it is still what was asked for.
+            kill(adopted, SIGTERM)
+            adoptedPid = nil
+        }
     }
 
     func restart() {
@@ -473,7 +587,8 @@ enum LaunchAgent {
 final class SettingsWindow: NSObject {
     static let shared = SettingsWindow()
     private var window: NSWindow?
-    private var dirField: NSTextField!
+    private var runtimeLabel: NSTextField!
+    private var dataLabel: NSTextField!
     private var portField: NSTextField!
     private var keyField: NSTextField!
     private var loginCheck: NSButton!
@@ -514,16 +629,20 @@ final class SettingsWindow: NSObject {
 
         stack.addArrangedSubview(label("Gateway", bold: true))
 
-        stack.addArrangedSubview(label("Project directory"))
-        let dirRow = NSStackView()
-        dirRow.orientation = .horizontal
-        dirRow.spacing = 8
-        dirField = NSTextField(string: ConfigStore.shared.config.gatewayDir)
-        dirField.widthAnchor.constraint(equalToConstant: 380).isActive = true
-        let chooseButton = NSButton(title: "Choose…", target: self, action: #selector(chooseDirectory))
-        dirRow.addArrangedSubview(dirField)
-        dirRow.addArrangedSubview(chooseButton)
-        stack.addArrangedSubview(dirRow)
+        stack.addArrangedSubview(label("Runtime"))
+        runtimeLabel = NSTextField(wrappingLabelWithString: GatewayController.shared.runtimeDescription)
+        runtimeLabel.font = .systemFont(ofSize: 12)
+        runtimeLabel.textColor = .secondaryLabelColor
+        runtimeLabel.widthAnchor.constraint(equalToConstant: 500).isActive = true
+        stack.addArrangedSubview(runtimeLabel)
+
+        stack.addArrangedSubview(label("Data folder — credentials, voices, history"))
+        dataLabel = NSTextField(labelWithString: AppPaths.data.path)
+        dataLabel.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
+        dataLabel.textColor = .secondaryLabelColor
+        dataLabel.lineBreakMode = .byTruncatingMiddle
+        dataLabel.widthAnchor.constraint(equalToConstant: 500).isActive = true
+        stack.addArrangedSubview(dataLabel)
 
         stack.addArrangedSubview(label("Port"))
         portField = NSTextField(string: String(ConfigStore.shared.config.port))
@@ -534,7 +653,7 @@ final class SettingsWindow: NSObject {
         let keyRow = NSStackView()
         keyRow.orientation = .horizontal
         keyRow.spacing = 8
-        keyField = NSTextField(string: EnvFile.apiKey(ConfigStore.shared.config.gatewayDir))
+        keyField = NSTextField(string: EnvFile.apiKey())
         keyField.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
         keyField.widthAnchor.constraint(equalToConstant: 320).isActive = true
         let copyButton = NSButton(title: "Copy", target: self, action: #selector(copyKey))
@@ -595,18 +714,8 @@ final class SettingsWindow: NSObject {
     private func refresh() {
         loginCheck?.state = LaunchAgent.isInstalled ? .on : .off
         autoStartCheck?.state = ConfigStore.shared.config.autoStartGateway ? .on : .off
-        keyField?.stringValue = EnvFile.apiKey(ConfigStore.shared.config.gatewayDir)
+        keyField?.stringValue = EnvFile.apiKey()
         statusLabel?.stringValue = "Config: \(ConfigStore.shared.configPath)"
-    }
-
-    @objc private func chooseDirectory() {
-        let panel = NSOpenPanel()
-        panel.canChooseDirectories = true
-        panel.canChooseFiles = false
-        panel.directoryURL = URL(fileURLWithPath: ConfigStore.shared.config.gatewayDir)
-        if panel.runModal() == .OK, let url = panel.url {
-            dirField.stringValue = url.path
-        }
     }
 
     @objc private func copyKey() {
@@ -617,7 +726,7 @@ final class SettingsWindow: NSObject {
 
     @objc private func regenerateKey() {
         let key = EnvFile.generateKey()
-        EnvFile.writeApiKey(ConfigStore.shared.config.gatewayDir, key)
+        EnvFile.writeApiKey(key)
         keyField.stringValue = key
         statusLabel.stringValue = "New key written. Restart the gateway to apply it."
     }
@@ -638,16 +747,12 @@ final class SettingsWindow: NSObject {
     }
 
     @objc private func save() {
-        let directory = dirField.stringValue.trimmingCharacters(in: .whitespaces)
         let port = Int(portField.stringValue.trimmingCharacters(in: .whitespaces)) ?? 8010
         let key = keyField.stringValue.trimmingCharacters(in: .whitespaces)
 
-        ConfigStore.shared.update {
-            $0.gatewayDir = directory
-            $0.port = port
-        }
+        ConfigStore.shared.update { $0.port = port }
         if !key.isEmpty {
-            EnvFile.writeApiKey(directory, key)
+            EnvFile.writeApiKey(key)
         }
         statusLabel.stringValue = "Saved. Restarting the gateway…"
         GatewayController.shared.restart()
@@ -656,9 +761,7 @@ final class SettingsWindow: NSObject {
     @objc private func openConsole() { ConsoleWindow.shared.show() }
 
     @objc private func revealData() {
-        let path = URL(fileURLWithPath: ConfigStore.shared.config.gatewayDir)
-            .appendingPathComponent("data").path
-        NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: path)
+        NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: AppPaths.data.path)
     }
 }
 
@@ -936,6 +1039,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         GatewayController.shared.statusItemReady = statusItem.button?.image != nil
         GatewayController.shared.writeState()
 
+        // First run: guarantee a key exists. The gateway treats an empty key as
+        // "accept any bearer token", which is fine on loopback but should never
+        // be the state an owner is left in without being told.
+        if EnvFile.apiKey().isEmpty {
+            EnvFile.writeApiKey(EnvFile.generateKey())
+        }
+
+        // Open the Overview on the very first launch. A menu bar app with no
+        // window gives a new owner nothing to look at; one window explaining
+        // what this is and what to do next is the whole onboarding.
+        if ConfigStore.shared.config.hasLaunchedBefore != true {
+            ConfigStore.shared.update { $0.hasLaunchedBefore = true }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+                OverviewWindow.shared.show()
+            }
+        }
+
         // Editing shortcuts (⌘A/⌘C/⌘V/⌘X/⌘Z) are dispatched through the main
         // menu, so it has to exist even though an accessory app never shows a
         // menu bar. See MainMenuBuilder.
@@ -1094,10 +1214,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         ])
     }
 
-    @objc private func openData() {
-        let path = URL(fileURLWithPath: GatewayController.shared.gatewayDir)
-            .appendingPathComponent("data").path
-        NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: path)
+    @objc func openData() {
+        NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: AppPaths.data.path)
     }
 
     @objc private func openLog() {
@@ -1211,6 +1329,29 @@ if arguments.contains("--dump-menu") {
     let dumpTarget = NSObject()
     let menu = MainMenuBuilder.make(target: dumpTarget)
     print(MainMenuBuilder.describe(menu).joined(separator: "\n"))
+    exit(0)
+}
+
+if arguments.contains("--stop-gateway") {
+    // Verifies that the app can stop a gateway it *adopted*, not just one it
+    // spawned — the case that used to leave the service running while the menu
+    // claimed it had stopped.
+    _ = NSApplication.shared
+    var finished = false
+    var stopped = false
+    GatewayController.shared.stopAnything { result in
+        stopped = result
+        finished = true
+    }
+    // Pump the run loop rather than blocking on a semaphore: the completion is
+    // delivered on the main queue, so blocking main would deadlock until the
+    // timeout and report a false negative.
+    let deadline = Date().addingTimeInterval(10)
+    while !finished, Date() < deadline {
+        RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.1))
+    }
+    Thread.sleep(forTimeInterval: 1.5)
+    print(stopped ? "gateway stopped" : "no gateway was running")
     exit(0)
 }
 

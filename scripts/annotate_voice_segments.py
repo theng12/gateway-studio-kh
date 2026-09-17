@@ -34,9 +34,13 @@ import httpx
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
+from gateway.config import VOICES_PATH, WRITABLE_VOICES_PATH  # noqa: E402
 from gateway.hub import hub_base_url, hub_headers  # noqa: E402
 
-VOICES = ROOT / "data" / "voices.json"
+# Read the effective catalogue (which may be the shipped default) but always
+# WRITE to the user's data directory — never into the read-only bundle.
+VOICES = VOICES_PATH
+OUT = WRITABLE_VOICES_PATH
 DEFAULT_MODEL = "mlx-community/whisper-base-mlx"
 POLL_S = 2.0
 DEADLINE_S = 600.0
@@ -149,8 +153,8 @@ def main() -> int:
             voice["reference_segments"] = segments
             print(f"  {name:10} {len(segments)} segments, {segments[-1]['end']:.1f}s")
 
-    VOICES.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
-    print(f"\nwrote {VOICES}")
+    OUT.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    print(f"\nwrote {OUT}")
     return 1 if failures else 0
 
 

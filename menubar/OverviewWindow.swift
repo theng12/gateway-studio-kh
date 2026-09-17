@@ -120,6 +120,7 @@ final class OverviewWindow: NSObject {
     private var tiles: [String: StatTile] = [:]
     private var modalityStack = NSStackView()
     private var hubLabel = NSTextField(labelWithString: "—")
+    private var guidanceLabel: NSTextField!
     private var activityStack = NSStackView()
     private var timer: Timer?
 
@@ -186,6 +187,15 @@ final class OverviewWindow: NSObject {
         header.alignment = .centerY
         header.spacing = 10
         root.addArrangedSubview(header)
+
+        // ---- onboarding hint, shown only while there is something to do
+        guidanceLabel = NSTextField(wrappingLabelWithString: "")
+        guidanceLabel.font = .systemFont(ofSize: 12)
+        guidanceLabel.textColor = .labelColor
+        guidanceLabel.isHidden = true
+        guidanceLabel.translatesAutoresizingMaskIntoConstraints = false
+        guidanceLabel.widthAnchor.constraint(equalToConstant: 580).isActive = true
+        root.addArrangedSubview(guidanceLabel)
 
         // ---- stat tiles
         let tileRow = NSStackView()
@@ -296,6 +306,24 @@ final class OverviewWindow: NSObject {
 
             self.subtitleLabel.stringValue =
                 "127.0.0.1:\(GatewayController.shared.port) · up \(GatewayAPI.uptime(uptime))"
+
+            // Onboarding: say what to do next, rather than showing zeros and
+            // leaving a new owner to work it out.
+            let configured = providers["configured"] as? Int ?? 0
+            let liveModels = models["enabled_models"] as? Int ?? 0
+            if configured == 0 {
+                self.guidanceLabel.stringValue =
+                    "Getting started — no provider keys yet. Open the Provider Console and paste "
+                    + "a key; that provider's models then become available to enable and to Story Studio."
+                self.guidanceLabel.isHidden = false
+            } else if liveModels == 0 {
+                self.guidanceLabel.stringValue =
+                    "\(configured) provider\(configured == 1 ? "" : "s") configured, but no models "
+                    + "enabled. Open the Provider Console → Models tab and tick what Story Studio should offer."
+                self.guidanceLabel.isHidden = false
+            } else {
+                self.guidanceLabel.isHidden = true
+            }
 
             self.tiles["providers"]?.set(
                 value: "\(providers["enabled"] as? Int ?? 0)/\(providers["total"] as? Int ?? 0)",
@@ -410,8 +438,6 @@ final class OverviewWindow: NSObject {
     }
 
     @objc private func openData() {
-        let path = URL(fileURLWithPath: GatewayController.shared.gatewayDir)
-            .appendingPathComponent("data").path
-        NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: path)
+        NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: AppPaths.data.path)
     }
 }

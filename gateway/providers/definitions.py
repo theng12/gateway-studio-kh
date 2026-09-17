@@ -23,7 +23,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 
-from ..config import DATA_DIR
+from ..config import CUSTOM_PROVIDERS_PATH
 
 # ---------------------------------------------------------------------------
 # Adapter kinds
@@ -467,10 +467,6 @@ PROVIDERS_BY_ID: dict[str, ProviderDefinition] = {p.id: p for p in PROVIDER_DEFI
 # trade-off: provider definitions are structural (they select an adapter), not
 # runtime state, and keeping them static means the catalogue cannot change shape
 # underneath an in-flight job.
-# ---------------------------------------------------------------------------
-CUSTOM_PROVIDERS_PATH = DATA_DIR / "providers.local.json"
-
-
 def _load_custom_providers() -> tuple[ProviderDefinition, ...]:
     if not CUSTOM_PROVIDERS_PATH.exists():
         return ()

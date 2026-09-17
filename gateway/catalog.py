@@ -31,7 +31,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from .config import DATA_DIR
+from .config import VOICES_PATH
 from .constants import PRICE_VERSION, zero_pricing
 from .providers import registry
 from .providers.definitions import ProviderDefinition
@@ -39,8 +39,6 @@ from .providers.definitions import ProviderDefinition
 ID_SEPARATOR = "::"
 REBUILD_TTL_S = 20.0
 STALE_AFTER_MS = 30 * 60 * 1000
-
-VOICES_PATH = DATA_DIR / "voices.json"
 
 MODALITIES = ("chat", "image", "video", "tts", "transcription", "music")
 

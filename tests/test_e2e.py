@@ -161,8 +161,12 @@ def main() -> int:
     env = {
         **os.environ,
         "GATEWAY_DATA": str(tmp),
+        "GATEWAY_APP_SUPPORT": str(tmp),
         "GATEWAY_API_KEY": GW_KEY,
         "GATEWAY_PORT": str(GW_PORT),
+        # A clean slate: without this the gateway would migrate the developer's
+        # real credentials and configured providers into the test run.
+        "GATEWAY_NO_MIGRATE": "1",
         "PYTHONPATH": str(ROOT),
         "PYTHONUNBUFFERED": "1",
     }

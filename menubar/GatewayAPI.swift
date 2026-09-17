@@ -62,7 +62,7 @@ enum GatewayAPI {
         var req = URLRequest(url: target)
         req.httpMethod = method
         req.timeoutInterval = 15
-        let key = EnvFile.apiKey(GatewayController.shared.gatewayDir)
+        let key = EnvFile.apiKey()
         if !key.isEmpty {
             req.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
         }
