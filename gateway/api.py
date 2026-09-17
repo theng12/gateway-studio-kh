@@ -687,8 +687,18 @@ def confirm_transcription(
     content, name, content_type, _ = upload
     # Resolve the model from the quote's model when the confirm omits it.
     model_id = model or _quote_model(quote_id)
+
+    # Job params are persisted as JSON, so raw audio cannot travel inside them.
+    # Stage the upload on disk and pass a path; the adapter reads it back. This
+    # also survives a gateway restart mid-queue, which an in-memory handoff
+    # would not.
+    upload_dir = ARTIFACT_DIR / "uploads"
+    upload_dir.mkdir(parents=True, exist_ok=True)
+    staged = upload_dir / f"{quote_id}{Path(name).suffix or '.bin'}"
+    staged.write_bytes(content)
+
     payload = {
-        "_upload_bytes": content,
+        "_upload_path": str(staged),
         "_upload_name": name,
         "_upload_type": content_type,
     }

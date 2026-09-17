@@ -112,7 +112,7 @@ def main() -> int:
             "category": "multi",
             "kind": "openai_compatible",
             "base_url": f"http://127.0.0.1:{MOCK_PORT}/v1",
-            "modalities": ["chat", "image", "tts"],
+            "modalities": ["chat", "image", "tts", "transcription"],
             "discovery": "openai_models",
             "description": "Test provider.",
             "auto_enable_discovered": True,
@@ -184,10 +184,12 @@ def main() -> int:
 
             models = httpx.get(f"{BASE}/admin/api/providers/mock-remote/models", headers=AUTH).json()
             found = {m["model_id"]: m for m in models["models"]}
-            check("discovery found all 5 mock models", len(found) == 5, f"got {sorted(found)}")
+            check("discovery found all 6 mock models", len(found) == 6, f"got {sorted(found)}")
             check("modality inference: chat", found.get("mock-chat-1", {}).get("modality") == "chat")
             check("modality inference: image", found.get("mock-image-1", {}).get("modality") == "image")
             check("modality inference: tts", found.get("mock-tts-1", {}).get("modality") == "tts")
+            check("modality inference: transcription",
+                  found.get("mock-whisper-1", {}).get("modality") == "transcription")
             check("discovered models auto-enabled", all(m["enabled"] for m in found.values()))
 
             print("\n\033[1m3. Story Studio catalogue contract\033[0m")
@@ -292,7 +294,39 @@ def main() -> int:
                 check("tts artifact is a real WAV",
                       audio.content[:4] == b"RIFF" and audio.content[8:12] == b"WAVE")
 
-            print("\n\033[1m8. Provider failure -> settled failure, never 402\033[0m")
+            print("\n\033[1m8. Transcription end to end (upload -> quote -> confirm -> SRT)\033[0m")
+            stt_cat = req(client, "GET", "/v1/transcription/models").json()
+            stt_rows = stt_cat.get("models", [])
+            check("transcription catalogue non-empty", len(stt_rows) > 0)
+            if stt_rows:
+                stt_id = stt_rows[0]["id"]
+                fake_audio = b"\xff\xfb\x90\x00" + b"\x00" * 512
+                q = req(client, "POST", "/v1/audio/transcriptions/quotes",
+                        files={"file": ("clip.mp3", fake_audio, "audio/mpeg")},
+                        data={"model": stt_id})
+                check("transcription quote accepts a multipart upload",
+                      q.status_code == 200, q.text[:150])
+                quote_id = q.json().get("id", "")
+                check("quote returns an id", bool(quote_id))
+                r = req(client, "POST", f"/v1/audio/transcriptions/quotes/{quote_id}/confirm",
+                        headers={"Idempotency-Key": f"e2e-stt-{int(time.time())}"},
+                        data={"model": stt_id})
+                check("transcription confirm returns 202", r.status_code == 202, r.text[:200])
+                if r.status_code == 202:
+                    done = poll(client, f"/v1/transcriptions/{r.json()['id']}")
+                    check("transcription succeeded", done["state"] == "succeeded",
+                          (done.get("failure_reason") or "")[:200])
+                    srt = req(client, "GET", f"/v1/transcriptions/{r.json()['id']}/srt")
+                    check("SRT artifact returned",
+                          srt.status_code == 200 and b"-->" in srt.content)
+
+                stale = req(client, "POST", "/v1/audio/transcriptions/quotes/does-not-exist/confirm",
+                            headers={"Idempotency-Key": f"e2e-stt-stale-{int(time.time())}"},
+                            data={"model": stt_id})
+                check("an expired/unknown quote is a typed 410",
+                      stale.status_code == 410, f"got {stale.status_code}")
+
+            print("\n\033[1m9. Provider failure -> settled failure, never 402\033[0m")
             fail_id = next((m["id"] for m in cat["models"] if "mock-fail" in m["id"]), None)
             if fail_id:
                 r = req(client, "POST", "/v1/chat/responses",
@@ -307,7 +341,7 @@ def main() -> int:
             else:
                 check("mock-fail discovered", False, "not in catalogue")
 
-            print("\n\033[1m9. Enable/disable is honoured on both paths\033[0m")
+            print("\n\033[1m10. Enable/disable is honoured on both paths\033[0m")
             r = httpx.post(f"{BASE}/admin/api/providers/mock-remote/enabled",
                            headers=AUTH, json={"enabled": False})
             check("provider disabled via admin", r.json()["provider"]["enabled"] is False)
@@ -332,7 +366,7 @@ def main() -> int:
                   not any(single in m for m in remaining), str(remaining))
             check("other models of the same provider survive", len(remaining) >= 1)
 
-            print("\n\033[1m10. Manual model add (provider shipped an unlisted model)\033[0m")
+            print("\n\033[1m11. Manual model add (provider shipped an unlisted model)\033[0m")
             r = httpx.post(f"{BASE}/admin/api/providers/mock-remote/models", headers=AUTH,
                            json={"model_id": "mock-brand-new", "display_name": "Brand New",
                                  "modality": "chat"})
@@ -344,7 +378,7 @@ def main() -> int:
             check("manual model reaches the Story catalogue",
                   any("mock-brand-new" in m["id"] for m in fresh["models"]))
 
-            print("\n\033[1m11. Invariants\033[0m")
+            print("\n\033[1m12. Invariants\033[0m")
             check("no response in the whole run was 402", 402 not in statuses,
                   f"statuses seen {sorted(statuses)}")
             check("auth is enforced on the Story surface",

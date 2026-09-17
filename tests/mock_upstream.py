@@ -34,6 +34,7 @@ MODELS = [
     {"id": "mock-chat-2", "name": "Mock Chat Two", "context_length": 128000},
     {"id": "mock-image-1", "name": "Mock Image One"},
     {"id": "mock-tts-1", "name": "Mock TTS One"},
+    {"id": "mock-whisper-1", "name": "Mock Whisper One"},
     {"id": "mock-fail", "name": "Mock Failing Model"},
 ]
 
@@ -131,6 +132,16 @@ class Handler(BaseHTTPRequestHandler):
 
         if path.endswith("/audio/speech"):
             self._bytes(200, _wav(), "audio/wav")
+            return
+
+        if path.endswith("/audio/transcriptions"):
+            # The body is multipart and already drained by _body(); the test
+            # double only needs to prove the gateway round-trips an upload.
+            self._bytes(
+                200,
+                b"1\n00:00:00,000 --> 00:00:02,000\nmock transcript\n\n",
+                "application/x-subrip",
+            )
             return
 
         self._json(404, {"error": {"message": f"unhandled path {path}"}})

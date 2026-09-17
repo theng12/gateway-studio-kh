@@ -26,7 +26,13 @@ from .config import DATA_DIR, get
 # Candidate locations for the Hub's readiness file. The Hub is a native macOS
 # app, so its data directory follows the Application Support convention; the
 # repo checks cover running it from a checkout.
+#
+# The real directory is `StudioHub Standalone` -- note the space before
+# "Standalone" but none inside "StudioHub". Guessing at plausible spellings
+# (`Studio Hub Standalone`, `StudioHubStandalone`) does not match, and a miss
+# here presents as a permanent "Studio Hub not running" rather than an error.
 _READY_CANDIDATES: tuple[str, ...] = (
+    "~/Library/Application Support/StudioHub Standalone/hub-ready.json",
     "~/Library/Application Support/StudioHub/hub-ready.json",
     "~/Library/Application Support/Studio Hub/hub-ready.json",
     "~/Library/Application Support/studiohub/hub-ready.json",
@@ -38,6 +44,7 @@ _READY_CANDIDATES: tuple[str, ...] = (
 )
 
 _TOKEN_CANDIDATES: tuple[str, ...] = (
+    "~/Library/Application Support/StudioHub Standalone/.hub_token",
     "~/Library/Application Support/StudioHub/.hub_token",
     "~/Library/Application Support/Studio Hub/.hub_token",
     "~/Library/Application Support/studiohub/.hub_token",
@@ -101,17 +108,28 @@ def hub_base_url() -> str:
 
 
 def hub_token() -> str:
-    """Read the Hub token from its 0600 file, or the environment."""
+    """Resolve the Hub token.
+
+    Order matters. The Hub publishes its token *inside* `hub-ready.json` on this
+    build, so that is authoritative -- and because the port is ephemeral, the
+    token in that file is necessarily paired with the live URL. A `.hub_token`
+    file is still honoured as a fallback for builds that use one.
+    """
     override = get("STUDIOHUB_HUB_TOKEN", "").strip()
     if override:
         return override
 
-    # The gateway's own data dir is checked first so an operator can point this
-    # at a Hub running somewhere non-standard.
+    ready = read_ready()
+    published = ready.get("token")
+    if isinstance(published, str) and published.strip():
+        return published.strip()
+
     for candidate in (DATA_DIR / ".hub_token", *(_expand(p) for p in _TOKEN_CANDIDATES)):
         try:
             if candidate.exists():
-                return candidate.read_text(encoding="utf-8").strip()
+                value = candidate.read_text(encoding="utf-8").strip()
+                if value:
+                    return value
         except OSError:
             continue
     return ""

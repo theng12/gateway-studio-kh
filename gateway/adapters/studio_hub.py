@@ -18,6 +18,7 @@ Studio's retry logic behaves identically regardless of where work ran.
 from __future__ import annotations
 
 import time
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -58,12 +59,24 @@ def _headers(request: BackendRequest) -> dict[str, str]:
 
 
 def _poll_batch(
-    client: httpx.Client, base: str, headers: dict[str, str], batch_id: str, item_index: int
+    client: httpx.Client,
+    base: str,
+    headers: dict[str, str],
+    batch_id: str,
+    item_index: int,
+    jobs_path: str = "/api/hub/jobs",
 ) -> dict[str, Any]:
+    """Poll a Hub batch to a terminal state.
+
+    `jobs_path` differs by modality: image and voice share `/api/hub/jobs`,
+    while transcription batches live under `/api/hub/transcription/jobs` and
+    are *not* visible from the other route -- polling the wrong one returns 404
+    rather than a useful error.
+    """
     deadline = time.monotonic() + JOB_DEADLINE_S
     last: dict[str, Any] = {}
     while time.monotonic() < deadline:
-        response = client.get(f"{base}/api/hub/jobs/{batch_id}", headers=headers)
+        response = client.get(f"{base}{jobs_path}/{batch_id}", headers=headers)
         if response.status_code >= 400:
             raise BackendError(
                 f"hub status HTTP {response.status_code}: {response.text[:200]}",
@@ -186,18 +199,22 @@ def _generate_transcription(request: BackendRequest) -> BackendResult:
     base = _resolve_base(request)
     headers = _headers(request)
 
-    audio = request.params.get("_upload_bytes")
-    if not audio:
+    audio_path = request.params.get("_upload_path")
+    if not audio_path or not Path(audio_path).exists():
         raise BackendError("transcription needs an uploaded audio file", code="PROVIDER_FAILED")
+    audio = Path(audio_path).read_bytes()
 
+    # Field names are `files` / `item_ids`, NOT `files[]` / `item_ids[]`. The
+    # Hub declares `files: list[UploadFile]` and `item_ids: list[str]` as
+    # repeated form fields, so a bracketed name is rejected with a bare 422.
     files = {
-        "files[]": (
+        "files": (
             request.params.get("_upload_name") or "audio.mp3",
             audio,
             request.params.get("_upload_type") or "application/octet-stream",
         )
     }
-    data: dict[str, str] = {"model": request.model_id, "item_ids[]": "0"}
+    data: dict[str, str] = {"model": request.model_id, "item_ids": "0"}
     if request.params.get("language"):
         data["language"] = str(request.params["language"])
 
@@ -226,7 +243,9 @@ def _generate_transcription(request: BackendRequest) -> BackendResult:
         if not batch_id:
             raise BackendError("hub returned no batch_id", code="PROVIDER_FAILED")
 
-        outcome = _poll_batch(client, base, headers, batch_id, 0)
+        outcome = _poll_batch(
+            client, base, headers, batch_id, 0, jobs_path="/api/hub/transcription/jobs"
+        )
 
         artifact = client.get(
             _artifact_url(base, batch_id, 0, "transcription") + "?format=srt",

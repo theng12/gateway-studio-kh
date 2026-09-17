@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import base64
 import json
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -254,11 +255,12 @@ def _tts(request: BackendRequest) -> BackendResult:
 
 
 def _transcription(request: BackendRequest) -> BackendResult:
-    audio = request.params.get("_upload_bytes")
-    if not audio:
+    upload_path = request.params.get("_upload_path")
+    if not upload_path or not Path(upload_path).exists():
         raise BackendError(
             "transcription needs an uploaded audio file", code="PROVIDER_FAILED"
         )
+    audio = Path(upload_path).read_bytes()
     files = {
         "file": (
             request.params.get("_upload_name") or "audio.mp3",
