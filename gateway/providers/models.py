@@ -23,7 +23,7 @@ from typing import Any
 
 from ..config import MODEL_CACHE_PATH, write_secret
 from .credentials import CredentialStore
-from .definitions import PROVIDERS_BY_ID, ProviderDefinition
+from .definitions import DISCOVERY_STATIC, PROVIDERS_BY_ID, ProviderDefinition
 from .discovery import DiscoveryResult, DiscoveredModel, discover
 
 
@@ -66,15 +66,22 @@ class ModelInventory:
         entry["fetched_at"] = result.fetched_at
         entry["error"] = result.error
         if result.error is None:
-            entry["models"] = [
-                {
-                    "model_id": m.model_id,
-                    "display_name": m.display_name,
-                    "modality": m.modality,
-                    "raw": m.raw,
-                }
-                for m in result.models
-            ]
+            # A static provider's models are curated in code, so caching them
+            # only creates staleness: a model removed from the definition would
+            # survive in the cache and keep appearing — and, because the merge
+            # unions curated with cached, it would also stay enabled.
+            if definition.discovery == DISCOVERY_STATIC:
+                entry["models"] = []
+            else:
+                entry["models"] = [
+                    {
+                        "model_id": m.model_id,
+                        "display_name": m.display_name,
+                        "modality": m.modality,
+                        "raw": m.raw,
+                    }
+                    for m in result.models
+                ]
         self._save()
         return result
 

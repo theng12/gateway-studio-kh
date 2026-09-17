@@ -275,11 +275,40 @@ PROVIDER_DEFINITIONS: tuple[ProviderDefinition, ...] = (
         docs_url="https://docs.kie.ai",
         credential_fields=(_api_key("KIE_AI_API_KEY"),),
         static_models=(
-            {"id": "flux-1.1-pro", "display_name": "FLUX 1.1 Pro", "modality": "image"},
-            {"id": "flux-kontext-pro", "display_name": "FLUX Kontext Pro", "modality": "image"},
-            {"id": "gpt4o-image", "display_name": "GPT-4o Image", "modality": "image"},
-            {"id": "ideogram-v3", "display_name": "Ideogram V3", "modality": "image"},
+            # Kie publishes no catalogue endpoint, so this list is curated from
+            # Kie's own documented model ids (GenStudio's verified
+            # `docs/providers/kie-ai.md` tables). These are the exact strings
+            # Kie's API expects in `model` -- deriving them from documentation
+            # URLs produces ids the API rejects.
+            #
+            # Image
+            {"id": "gpt-image-2-text-to-image", "display_name": "GPT Image 2", "modality": "image"},
+            {"id": "gpt-image-2-image-to-image", "display_name": "GPT Image 2 (edit)", "modality": "image"},
+            {"id": "nano-banana-2", "display_name": "Nano Banana 2", "modality": "image"},
+            {"id": "nano-banana-2-lite", "display_name": "Nano Banana 2 Lite", "modality": "image"},
+            {"id": "gemini-3-pro-image", "display_name": "Gemini 3 Pro Image", "modality": "image"},
+            {"id": "seedream/5-pro-text-to-image", "display_name": "Seedream 5 Pro", "modality": "image"},
+            {"id": "seedream/5-lite-text-to-image", "display_name": "Seedream 5 Lite", "modality": "image"},
+            {"id": "qwen2/text-to-image", "display_name": "Qwen2 Image", "modality": "image"},
+            {"id": "z-image", "display_name": "Z-Image", "modality": "image"},
+            {"id": "wan/2-7-image", "display_name": "WAN 2.7 Image", "modality": "image"},
+            {"id": "flux-2/pro-text-to-image", "display_name": "FLUX 2 Pro", "modality": "image"},
+            {"id": "flux-2/pro-image-to-image", "display_name": "FLUX 2 Pro (edit)", "modality": "image"},
+            {"id": "flux-2/flex-text-to-image", "display_name": "FLUX 2 Flex", "modality": "image"},
+            {"id": "flux-2/flex-image-to-image", "display_name": "FLUX 2 Flex (edit)", "modality": "image"},
+            # Video
+            {"id": "happyhorse-1-1/text-to-video", "display_name": "HappyHorse 1.1", "modality": "video"},
+            {"id": "happyhorse-1-1/image-to-video", "display_name": "HappyHorse 1.1 (image)", "modality": "video"},
+            {"id": "kling/v3-turbo-text-to-video", "display_name": "Kling 3.0 Turbo", "modality": "video"},
+            {"id": "kling/v3-turbo-image-to-video", "display_name": "Kling 3.0 Turbo (image)", "modality": "video"},
+            {"id": "pixverse-v6/text-to-video", "display_name": "PixVerse V6", "modality": "video"},
+            {"id": "bytedance/seedance-2-mini", "display_name": "Seedance 2.0 Mini", "modality": "video"},
+            {"id": "grok-imagine-video-1-5-preview", "display_name": "Grok Imagine Video 1.5", "modality": "video"},
+            {"id": "gemini-omni-video", "display_name": "Gemini Omni Video", "modality": "video"},
+            # Music
+            {"id": "V6", "display_name": "Suno V6", "modality": "music"},
         ),
+        notes="Kie publishes no model catalogue endpoint. This list is curated from Kie's documented model ids; add new ones here or via Add model manually.",
     ),
     ProviderDefinition(
         id="bfl-direct",
@@ -349,9 +378,14 @@ PROVIDER_DEFINITIONS: tuple[ProviderDefinition, ...] = (
         docs_url="https://docs.fish.audio",
         credential_fields=(_api_key("FISH_AUDIO_API_KEY"),),
         static_models=(
+            # Fish genuinely publishes only a handful of speech models; the
+            # documented `model` header values are s1, s2-pro and s2.1-pro. A
+            # short list here is the provider's real surface, not a thin seed.
             {"id": "s2.1-pro", "display_name": "Fish S2.1 Pro", "modality": "tts"},
-            {"id": "s2.1-pro-free", "display_name": "Fish S2.1 Pro (free)", "modality": "tts"},
+            {"id": "s2-pro", "display_name": "Fish S2 Pro", "modality": "tts"},
+            {"id": "s1", "display_name": "Fish S1", "modality": "tts"},
         ),
+        notes="Fish publishes few public speech models; the free/paid split is a credential concern, not a separate model.",
     ),
 
     # --------------------------------------------------------------------- local

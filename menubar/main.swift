@@ -19,6 +19,7 @@
 //    is what the service actually reports, not what the app hopes is true.
 
 import Cocoa
+import WebKit
 
 // MARK: - Configuration
 
@@ -633,14 +634,96 @@ final class SettingsWindow: NSObject {
         GatewayController.shared.restart()
     }
 
-    @objc private func openConsole() {
-        if let url = GatewayController.shared.consoleURL { NSWorkspace.shared.open(url) }
-    }
+    @objc private func openConsole() { ConsoleWindow.shared.show() }
 
     @objc private func revealData() {
         let path = URL(fileURLWithPath: ConfigStore.shared.config.gatewayDir)
             .appendingPathComponent("data").path
         NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: path)
+    }
+}
+
+// MARK: - Provider console window
+
+/// The provider console is a local web UI served by the gateway, so it is shown
+/// in a real app window via `WKWebView` rather than being handed to a browser.
+///
+/// The console stays a plain web page underneath -- that is why it works from
+/// any browser on the LAN and why it needs no separate build -- but the owner
+/// should not have to leave the app to use it. An explicit "open in browser"
+/// item is kept for debugging and for reaching it from another machine.
+final class ConsoleWindow: NSObject, WKNavigationDelegate {
+    static let shared = ConsoleWindow()
+    private var window: NSWindow?
+    private var webView: WKWebView?
+
+    func show() {
+        guard let url = GatewayController.shared.consoleURL else { return }
+
+        if let existing = window, let web = webView {
+            existing.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+            web.load(URLRequest(url: url))
+            return
+        }
+
+        let web = WKWebView(frame: .zero, configuration: WKWebViewConfiguration())
+        web.navigationDelegate = self
+
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 1180, height: 820),
+            styleMask: [.titled, .closable, .resizable, .miniaturizable],
+            backing: .buffered,
+            defer: false
+        )
+        window.title = "gateway-kh — Provider Console"
+        window.contentView = web
+        window.isReleasedWhenClosed = false
+        // Remembers size and position between launches.
+        window.setFrameAutosaveName("GatewayConsoleWindow")
+        window.center()
+
+        self.window = window
+        self.webView = web
+
+        load(url, into: web)
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    /// If the gateway is not listening yet, say so plainly instead of showing a
+    /// raw connection error, and load for real once it should be up.
+    private func load(_ url: URL, into web: WKWebView, attempt: Int = 0) {
+        if GatewayController.shared.isRunning || attempt > 0 {
+            web.load(URLRequest(url: url))
+            return
+        }
+        web.loadHTMLString(Self.startingPage, baseURL: nil)
+        GatewayController.shared.start()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 5.0) { [weak self, weak web] in
+            guard let self, let web else { return }
+            self.load(url, into: web, attempt: attempt + 1)
+        }
+    }
+
+    private static let startingPage = """
+    <!doctype html><meta charset="utf-8">
+    <style>
+      body { background:#0e1117; color:#e6eaf2;
+             font:14px -apple-system, BlinkMacSystemFont, sans-serif;
+             display:flex; align-items:center; justify-content:center;
+             height:100vh; margin:0 }
+      div { text-align:center } h2 { font-weight:600 } p { color:#8b95a8 }
+    </style>
+    <div>
+      <h2>Starting the gateway…</h2>
+      <p>This window will load the provider console automatically.</p>
+    </div>
+    """
+
+    func reload() {
+        guard let web = webView, let url = GatewayController.shared.consoleURL else { return }
+        web.load(URLRequest(url: url))
     }
 }
 
@@ -702,8 +785,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         menu.addItem(.separator())
 
+        // Offered whether or not the gateway is up: opening the console starts
+        // it if needed, which is what an owner expects from a menu bar app.
+        menu.addItem(item("Open Provider Console", #selector(openConsole), key: "p"))
+        menu.addItem(item("Reload Console", #selector(reloadConsole)))
+        menu.addItem(item("Open Console in Browser", #selector(openConsoleInBrowser)))
+
+        menu.addItem(.separator())
+
         if GatewayController.shared.isRunning {
-            menu.addItem(item("Open Provider Console…", #selector(openConsole)))
             menu.addItem(item("Restart Gateway", #selector(restartGateway)))
             menu.addItem(item("Stop Gateway", #selector(stopGateway)))
         } else {
@@ -771,7 +861,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc private func stopGateway() { GatewayController.shared.stop() }
     @objc private func restartGateway() { GatewayController.shared.restart() }
 
-    @objc private func openConsole() {
+    @objc private func openConsole() { ConsoleWindow.shared.show() }
+
+    @objc private func reloadConsole() { ConsoleWindow.shared.reload() }
+
+    @objc private func openConsoleInBrowser() {
         if let url = GatewayController.shared.consoleURL { NSWorkspace.shared.open(url) }
     }
 

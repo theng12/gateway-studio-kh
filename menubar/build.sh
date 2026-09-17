@@ -33,6 +33,7 @@ swiftc \
   -swift-version 5 \
   -O \
   -framework Cocoa \
+  -framework WebKit \
   -o "$APP/Contents/MacOS/$APP_NAME" \
   "$HERE/main.swift"
 
