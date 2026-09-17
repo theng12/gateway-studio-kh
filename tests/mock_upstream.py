@@ -86,7 +86,40 @@ class Handler(BaseHTTPRequestHandler):
             return {}
 
     def do_GET(self) -> None:  # noqa: N802
-        if self.path.rstrip("/").endswith("/models"):
+        path = self.path.split("?")[0].rstrip("/")
+        port = self.server.server_address[1]
+
+        # Black Forest Labs polling: Ready with a delivery URL.
+        if path.startswith("/bfl-poll/"):
+            self._json(200, {
+                "id": path.rsplit("/", 1)[-1],
+                "status": "Ready",
+                "result": {"sample": f"http://127.0.0.1:{port}/bfl-sample.png"},
+            })
+            return
+
+        if path == "/bfl-sample.png":
+            self._bytes(200, ONE_PIXEL_PNG, "image/png")
+            return
+
+        # MiniMax video result.
+        if path.startswith("/v2/query/video_generation/"):
+            task_id = path.rsplit("/", 1)[-1]
+            self._json(200, {
+                "task": {
+                    "id": task_id,
+                    "status": "succeeded",
+                    "content": {"url": f"http://127.0.0.1:{port}/minimax-video.mp4"},
+                }
+            })
+            return
+
+        if path in {"/minimax-video.mp4", "/minimax-music.mp3"}:
+            media = "video/mp4" if path.endswith(".mp4") else "audio/mpeg"
+            self._bytes(200, b"\x00\x00\x00\x18ftypmp42" + b"\x00" * 64, media)
+            return
+
+        if path.endswith("/models"):
             # Reject a missing key so the gateway's auth path is exercised.
             if not self.headers.get("Authorization"):
                 self._json(401, {"error": {"message": "missing key"}})
@@ -99,9 +132,46 @@ class Handler(BaseHTTPRequestHandler):
         path = self.path.split("?")[0].rstrip("/")
         body = self._body()
         model = str(body.get("model") or "")
+        port = self.server.server_address[1]
 
         if model == "mock-fail":
             self._json(429, {"error": {"message": "mock quota exhausted"}})
+            return
+
+        # ---- Black Forest Labs: POST /v1/{model}, raw input, no `model` field
+        if path.startswith("/v1/") and not model and "prompt" in body:
+            self._json(200, {
+                "id": "bfl-mock-1",
+                "polling_url": f"http://127.0.0.1:{port}/bfl-poll/bfl-mock-1",
+            })
+            return
+
+        # ---- MiniMax
+        if path.endswith("/v1/image_generation"):
+            self._json(200, {
+                "data": {"image_base64": [base64.b64encode(ONE_PIXEL_PNG).decode()]},
+                "base_resp": {"status_code": 0, "status_msg": "success"},
+            })
+            return
+
+        if path.endswith("/v1/music_generation"):
+            self._json(200, {
+                "data": {"status": 2, "audio": f"http://127.0.0.1:{port}/minimax-music.mp3"},
+                "base_resp": {"status_code": 0},
+            })
+            return
+
+        if path.endswith("/v1/t2a_v2"):
+            # MiniMax returns audio as HEX, not base64. The mock must too, or a
+            # decoder bug would pass here and only surface in production.
+            self._json(200, {
+                "data": {"audio": _wav().hex()},
+                "base_resp": {"status_code": 0},
+            })
+            return
+
+        if path.endswith("/v2/video_generation"):
+            self._json(200, {"task_id": "mm-video-1", "base_resp": {"status_code": 0}})
             return
 
         if path.endswith("/chat/completions"):

@@ -191,10 +191,15 @@ Counts are always visible in the header: models *discovered* versus models *live
 }]}
 ```
 
-Kinds: `openai_compatible`, `anthropic`, `google`, `fal`, `kie`, `fish`, `studio_hub` (wired);
-`bfl`, `minimax`, `elevenlabs` (definitions exist, adapter pending — they are listable and
-credential-editable, and say so in the UI). Discovery strategies: `openai_models`,
-`anthropic_models`, `google_models`, `fal_catalog`, `elevenlabs_models`, `studio_hub`, `static`.
+Kinds: `openai_compatible`, `anthropic`, `google`, `fal`, `kie`, `fish`, `bfl`, `minimax`,
+`elevenlabs`, `studio_hub` — **every kind has a working adapter**. Discovery strategies:
+`openai_models`, `anthropic_models`, `google_models`, `fal_catalog`, `elevenlabs_models`,
+`studio_hub`, `static`.
+
+`IMPLEMENTED_KINDS` in `providers/definitions.py` is the single source of truth for which kinds can
+generate, and `adapters/__init__.py` asserts at import that its adapter table agrees with it. A
+provider whose kind has no adapter stays discoverable and configurable, but **its models are
+withheld from Story Studio** — offering a model that fails on use is worse than not offering it.
 
 **A new voice** — `tts_model_id` is matched as a suffix of the namespaced catalogue id, so voices
 survive a provider being re-enabled.

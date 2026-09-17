@@ -57,6 +57,9 @@ IMPLEMENTED_KINDS: frozenset[str] = frozenset(
         KIND_KIE,
         KIND_FISH,
         KIND_STUDIO_HUB,
+        KIND_BFL,
+        KIND_MINIMAX,
+        KIND_ELEVENLABS,
     }
 )
 
@@ -377,6 +380,8 @@ PROVIDER_DEFINITIONS: tuple[ProviderDefinition, ...] = (
             {"id": "image-01", "display_name": "MiniMax Image-01", "modality": "image"},
             {"id": "video-01", "display_name": "MiniMax Video-01", "modality": "video"},
             {"id": "music-01", "display_name": "MiniMax Music-01", "modality": "music"},
+            {"id": "speech-2.8-turbo", "display_name": "MiniMax Speech 2.8 Turbo", "modality": "tts"},
+            {"id": "speech-2.8-hd", "display_name": "MiniMax Speech 2.8 HD", "modality": "tts"},
         ),
     ),
 

@@ -109,18 +109,53 @@ def main() -> int:
     # user-defined-provider path, which is how the owner adds a vendor the
     # built-in list does not know.
     (tmp / "providers.local.json").write_text(json.dumps({
-        "providers": [{
-            "id": "mock-remote",
-            "display_name": "Mock Remote",
-            "category": "multi",
-            "kind": "openai_compatible",
-            "base_url": f"http://127.0.0.1:{MOCK_PORT}/v1",
-            "modalities": ["chat", "image", "tts", "transcription"],
-            "discovery": "openai_models",
-            "description": "Test provider.",
-            # No auto_enable_discovered on purpose: this exercises the shipped
-            # default, which is opt-in.
-        }]
+        "providers": [
+            {
+                "id": "mock-remote",
+                "display_name": "Mock Remote",
+                "category": "multi",
+                "kind": "openai_compatible",
+                "base_url": f"http://127.0.0.1:{MOCK_PORT}/v1",
+                "modalities": ["chat", "image", "tts", "transcription"],
+                "discovery": "openai_models",
+                "description": "Test provider.",
+                # No auto_enable_discovered on purpose: this exercises the
+                # shipped default, which is opt-in.
+            },
+            {
+                # Exercises the BFL adapter: async submit -> poll -> download,
+                # with BFL's own state names.
+                "id": "mock-bfl",
+                "display_name": "Mock BFL",
+                "category": "image",
+                "kind": "bfl",
+                "base_url": f"http://127.0.0.1:{MOCK_PORT}",
+                "modalities": ["image"],
+                "discovery": "static",
+                "description": "Test provider.",
+                "static_models": [
+                    {"id": "flux-pro-1.1", "display_name": "FLUX 1.1 Pro", "modality": "image"}
+                ],
+            },
+            {
+                # Exercises the MiniMax adapter across all four of its APIs,
+                # including the hex-encoded speech response.
+                "id": "mock-minimax",
+                "display_name": "Mock MiniMax",
+                "category": "multi",
+                "kind": "minimax",
+                "base_url": f"http://127.0.0.1:{MOCK_PORT}",
+                "modalities": ["image", "video", "music", "tts"],
+                "discovery": "static",
+                "description": "Test provider.",
+                "static_models": [
+                    {"id": "image-01", "display_name": "MM Image", "modality": "image"},
+                    {"id": "video-01", "display_name": "MM Video", "modality": "video"},
+                    {"id": "music-01", "display_name": "MM Music", "modality": "music"},
+                    {"id": "speech-2.8-turbo", "display_name": "MM Speech", "modality": "tts"},
+                ],
+            },
+        ]
     }))
 
     env = {
@@ -166,8 +201,11 @@ def main() -> int:
             print("\n\033[1m1. Bootstrap and provider registry\033[0m")
             health = httpx.get(f"{BASE}/health").json()
             check("health ok", health["status"] == "ok")
-            check("18 built-in providers + 1 custom", health["providers"]["total"] == 19,
+            check("18 built-in providers + 3 custom", health["providers"]["total"] == 21,
                   f"got {health['providers']['total']}")
+            check("every provider has a working adapter",
+                  all(p["generation_supported"] for p in
+                      httpx.get(f"{BASE}/admin/api/providers", headers=AUTH).json()["providers"]))
 
             providers = httpx.get(f"{BASE}/admin/api/providers", headers=AUTH).json()["providers"]
             ids = {p["id"] for p in providers}
@@ -408,7 +446,105 @@ def main() -> int:
             check("manual model reaches the Story catalogue",
                   any("mock-brand-new" in m["id"] for m in fresh["models"]))
 
-            print("\n\033[1m12. Invariants\033[0m")
+            print("\n\033[1m12. BFL and MiniMax adapters\033[0m")
+            # These providers have no keys on this machine, so their real API
+            # shapes are exercised against the mock: BFL's async submit/poll/
+            # download with its own state names, and MiniMax's four dissimilar
+            # endpoints including the hex-encoded speech response.
+            wanted = {
+                "mock-bfl": ["flux-pro-1.1"],
+                "mock-minimax": ["image-01", "video-01", "music-01", "speech-2.8-turbo"],
+            }
+            # A model is only reachable when its provider is configured AND
+            # enabled AND the model is enabled — all three. Setting the key
+            # first is not incidental: without it the providers are skipped
+            # entirely and every submission below 404s.
+            for provider_id in wanted:
+                keyed = httpx.post(
+                    f"{BASE}/admin/api/providers/{provider_id}/credentials",
+                    headers=AUTH,
+                    json={"values": {"api_key": "mock-key"}},
+                )
+                check(f"{provider_id}: credential accepted", keyed.status_code == 200,
+                      keyed.text[:120])
+            enable_items = [
+                {"provider_id": pid, "model_id": mid}
+                for pid, ids in wanted.items()
+                for mid in ids
+            ]
+            enabled = httpx.post(
+                f"{BASE}/admin/api/models/enabled",
+                headers=AUTH,
+                json={"items": enable_items, "enabled": True},
+            )
+            check("BFL + MiniMax models enabled", enabled.status_code == 200, enabled.text[:120])
+
+            def run_generation(label, submit_path, poll_path, body, artifact_path, signature=None):
+                key = f"e2e-{label}-{int(time.time())}"
+                submitted = req(
+                    client, "POST", submit_path, json=body, headers={"Idempotency-Key": key}
+                )
+                if submitted.status_code != 202:
+                    check(f"{label}: submit accepted", False,
+                          f"{submitted.status_code} {submitted.text[:160]}")
+                    return
+                check(f"{label}: submit accepted", True)
+                job_id = submitted.json()["id"]
+                done = poll(client, poll_path.format(id=job_id))
+                check(f"{label}: succeeded", done["state"] == "succeeded",
+                      (done.get("failure_reason") or "")[:200])
+                if done["state"] != "succeeded":
+                    return
+                artifact = req(client, "GET", artifact_path.format(id=job_id))
+                ok = artifact.status_code == 200 and (
+                    signature(artifact.content) if signature else True
+                )
+                check(f"{label}: artifact valid ({len(artifact.content)} bytes)", ok)
+
+            is_png = lambda b: b[1:4] == b"PNG"
+            is_mp4 = lambda b: b[4:8] == b"ftyp"
+            is_wav = lambda b: b[:4] == b"RIFF" and b[8:12] == b"WAVE"
+
+            run_generation(
+                "bfl-image",
+                "/v1/images/generations", "/v1/images/{id}",
+                {"model_id": "mock-bfl::flux-pro-1.1", "prompt": "a lighthouse"},
+                "/v1/images/{id}/file", is_png,
+            )
+            run_generation(
+                "minimax-image",
+                "/v1/images/generations", "/v1/images/{id}",
+                {"model_id": "mock-minimax::image-01", "prompt": "a lighthouse"},
+                "/v1/images/{id}/file", is_png,
+            )
+            run_generation(
+                "minimax-video",
+                "/v1/videos/generations", "/v1/videos/{id}",
+                {"model_id": "mock-minimax::video-01", "prompt": "a lighthouse"},
+                "/v1/videos/{id}/file", is_mp4,
+            )
+            run_generation(
+                "minimax-music",
+                "/v1/music/generations", "/v1/music/jobs/{id}",
+                {"model_id": "mock-minimax::music-01", "prompt": "calm ambient"},
+                "/v1/music/jobs/{id}/outputs/0", None,
+            )
+            run_generation(
+                "minimax-speech",
+                "/v1/audio/jobs", "/v1/jobs/{id}",
+                {"model_id": "mock-minimax::speech-2.8-turbo", "text": "hello"},
+                "/v1/jobs/{id}/audio", is_wav,
+            )
+
+            music_cat = req(client, "GET", "/v1/music/models").json()
+            check("music catalogue is reachable", "models" in music_cat)
+            music_job = req(client, "POST", "/v1/music/generations",
+                            json={"model_id": "mock-minimax::music-01", "prompt": "x"},
+                            headers={"Idempotency-Key": f"e2e-music-shape-{int(time.time())}"})
+            check("music submit returns 202", music_job.status_code == 202,
+                  f"got {music_job.status_code}")
+
+            print("\n\033[1m13. Invariants\033[0m")
             check("no response in the whole run was 402", 402 not in statuses,
                   f"statuses seen {sorted(statuses)}")
             check("auth is enforced on the Story surface",
@@ -419,7 +555,7 @@ def main() -> int:
             check("overview publishes credit_balance",
                   isinstance(overview.get("credit_balance"), int))
 
-            print("\n\033[1m13. Streamed WAV header repair\033[0m")
+            print("\n\033[1m14. Streamed WAV header repair\033[0m")
             # Fish streams WAV responses with sentinel chunk sizes. A 327KB file
             # declared a 4GB RIFF size and a 4GB data chunk; Python's `wave`
             # read it as 13 hours. ffmpeg copes, but the container is malformed

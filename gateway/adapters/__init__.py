@@ -24,9 +24,12 @@ from __future__ import annotations
 
 from .anthropic import AnthropicBackend
 from .base import Backend, BackendError, BackendRequest, BackendResult
+from .bfl import BflBackend
+from .elevenlabs import ElevenLabsBackend
 from .fal import FalBackend
 from .fish import FishBackend
 from .kie import KieBackend
+from .minimax import MiniMaxBackend
 from .openai_compat import OpenAICompatibleBackend
 from .studio_hub import StudioHubBackend
 
@@ -45,13 +48,13 @@ from ..providers.definitions import (
     ProviderDefinition,
 )
 
-# Kinds with no generation adapter yet. Kept explicit so the admin UI can say
-# so up front instead of the owner discovering it at generation time.
-PENDING_KINDS: dict[str, str] = {
-    KIND_BFL: "Black Forest Labs generation adapter is not written yet.",
-    KIND_MINIMAX: "MiniMax generation adapter is not written yet.",
-    KIND_ELEVENLABS: "ElevenLabs generation adapter is not written yet.",
-}
+# Kinds with no generation adapter.
+#
+# Empty: every kind a provider can declare now has one. The map is kept because
+# `support_status` reads it and because adding a provider without an adapter is
+# a normal intermediate state — it stays discoverable and configurable, and its
+# models are withheld from Story Studio rather than offered and then broken.
+PENDING_KINDS: dict[str, str] = {}
 
 
 class UnsupportedBackend:
@@ -97,6 +100,9 @@ _GOOGLE = GoogleBackend()
 _FAL = FalBackend()
 _KIE = KieBackend()
 _FISH = FishBackend()
+_BFL = BflBackend()
+_MINIMAX = MiniMaxBackend()
+_ELEVENLABS = ElevenLabsBackend()
 _STUDIO_HUB = StudioHubBackend()
 
 _BY_KIND: dict[str, Backend] = {
@@ -106,6 +112,9 @@ _BY_KIND: dict[str, Backend] = {
     KIND_FAL: _FAL,
     KIND_KIE: _KIE,
     KIND_FISH: _FISH,
+    KIND_BFL: _BFL,
+    KIND_MINIMAX: _MINIMAX,
+    KIND_ELEVENLABS: _ELEVENLABS,
     KIND_STUDIO_HUB: _STUDIO_HUB,
 }
 

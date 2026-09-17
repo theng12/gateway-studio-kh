@@ -164,6 +164,12 @@ def _job_envelope(job: dict[str, Any]) -> dict[str, Any]:
             url = f"/v1/videos/{job['id']}/file"
             body["video_url"] = url
             body["output_url"] = url
+        elif modality == "music":
+            # Story Studio reads music results as an array of tracks, each with
+            # its own asset id, so a single-artifact shape would not be read.
+            url = f"/v1/music/jobs/{job['id']}/outputs/0"
+            body["outputs"] = [{"asset_id": "0", "url": url}]
+            body["output_url"] = url
         if payload.get("usage"):
             body["usage"] = payload["usage"]
 
@@ -609,6 +615,43 @@ def get_tts_audio(job_id: str) -> Response:
 def cancel_tts_job(job_id: str) -> dict[str, Any]:
     _load_job(job_id, "tts")
     return _job_envelope(store.cancel(job_id))
+
+
+# ---------------------------------------------------------------------------
+# Music
+# ---------------------------------------------------------------------------
+@app.post("/v1/music/generations", dependencies=[Depends(require_auth)])
+def create_music(
+    payload: dict[str, Any],
+    response: Response,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+) -> dict[str, Any]:
+    key = _require_idempotency_key(idempotency_key)
+    model_id = str(payload.get("model_id") or payload.get("model") or "")
+    job, created = _submit("music", model_id, payload, key)
+    if created:
+        response.status_code = 202
+        response.headers["Location"] = f"/v1/music/jobs/{job['id']}"
+        response.headers["Retry-After"] = "2"
+    return _job_envelope(job)
+
+
+@app.get("/v1/music/by-idempotency-key/{key}", dependencies=[Depends(require_auth)])
+def music_by_idempotency_key(key: str) -> dict[str, Any]:
+    job = store.find_by_idempotency_key(key)
+    if job is None or job["modality"] != "music":
+        raise GatewayError(404, "No such job.", "JOB_NOT_FOUND")
+    return _job_envelope(job)
+
+
+@app.get("/v1/music/jobs/{job_id}", dependencies=[Depends(require_auth)])
+def get_music_job(job_id: str) -> dict[str, Any]:
+    return _job_envelope(_load_job(job_id, "music"))
+
+
+@app.get("/v1/music/jobs/{job_id}/outputs/{asset_id}", dependencies=[Depends(require_auth)])
+def get_music_output(job_id: str, asset_id: str) -> Response:
+    return _artifact_response(_load_job(job_id, "music"), "audio/mpeg")
 
 
 # ---------------------------------------------------------------------------
