@@ -135,11 +135,31 @@ Kinds: `openai_compatible`, `anthropic`, `google`, `fal`, `kie`, `studio_hub` (w
 credential-editable, and say so in the UI). Discovery strategies: `openai_models`,
 `anthropic_models`, `google_models`, `fal_catalog`, `elevenlabs_models`, `studio_hub`, `static`.
 
+**A new voice** — `tts_model_id` is matched as a suffix of the namespaced catalogue id, so voices
+survive a provider being re-enabled.
+
+Local narration needs one extra step, because Studio Hub's Qwen3 **Base** models are *cloning*
+models. A generation with no reference clip fails outright, and a reference with a flat transcript
+fails with `REFERENCE_TRANSCRIPT_ALIGNMENT_REQUIRED` — it needs **timestamped** segments.
+
+```bash
+# 1. import voices (reference audio + transcript) from the old Voice Studio
+.venv/bin/python scripts/import_voices.py
+
+# 2. generate the required timestamped segments, using this Mac's own Whisper
+.venv/bin/python scripts/annotate_voice_segments.py
+```
+
+Step 2 is not busy-work: the old Voice Studio stored only a flat transcript, so the timestamps are
+produced by transcribing each reference clip locally. Both scripts are idempotent. The gateway then
+stages each reference with the Hub once (cached 6 h, inside the Hub's 24 h asset TTL) and passes
+`voice_reference_asset_id` on every generation.
+
+Reference paths and transcripts are deliberately **never** sent to Story Studio — they stay inside
+the gateway's voice records.
+
 **A new provider model** — usually nothing. Discovery picks it up on the next refresh. For a model
 the provider ships but does not list, use **Add model manually** in that provider's panel.
-
-**A new voice** — append to `data/voices.json`. `tts_model_id` is matched as a suffix of the
-namespaced catalogue id, so voices survive a provider being re-enabled.
 
 ## Verification
 
@@ -147,16 +167,31 @@ namespaced catalogue id, so voices survive a provider being re-enabled.
 .venv/bin/python tests/test_e2e.py
 ```
 
-60 checks against a **real HTTP upstream** (a local mock provider), exercising the admin API,
+68 checks against a **real HTTP upstream** (a local mock provider), exercising the admin API,
 credential storage, live discovery, modality inference, the Story catalogue contract, chat/image/TTS
-generation, the worker, artifacts, idempotency, provider/model enable-disable on both the catalogue
-and the dispatch path, manual model addition, and the 402 invariant. Nothing inside the gateway is
-stubbed.
+generation, transcription upload, the worker, artifacts, idempotency, provider/model enable-disable
+on both the catalogue and the dispatch path, manual model addition, and the 402 invariant. Nothing
+inside the gateway is stubbed.
 
-Two bugs it caught that are worth keeping in mind, because both were invisible until the test ran:
-modality inference had no generic `image`/`video` rule (so `foo-image-v2` silently fell into the
-chat bucket), and the mock's `HTTPServer` stalled in `socket.getfqdn()` *after* bind but *before*
-listen — which presents as a connect timeout, not a refusal.
+Bugs this caught that were invisible until it ran: modality inference had no generic `image`/`video`
+rule (so `foo-image-v2` silently fell into the chat bucket), and the mock's `HTTPServer` stalled in
+`socket.getfqdn()` *after* bind but *before* listen — which presents as a connect timeout, not a
+refusal.
+
+### Verified against the real Studio Hub
+
+Not just the mock. On this Mac, with Studio Hub 0.5.0 and 28 GB of local models:
+
+| Lane | Result |
+|---|---|
+| Image (FLUX.2 Klein 4B) | real 971 KB PNG in **103 s** |
+| Transcription (Whisper Base) | accurate transcript of a real clip in **22 s** |
+| Narration (Qwen3 Base + cloned voice) | 7.3 s of real audio in **65 s**, non-silent (RMS 3906) |
+
+Four bugs only the real Hub exposed: `hub-ready.json` lives under `StudioHub Standalone` (my
+candidate list had plausible-but-wrong spellings), the Hub publishes its **token inside**
+`hub-ready.json`, transcription uploads cannot be carried in JSON job params, and transcription
+batches use `/api/hub/transcription/jobs` rather than `/api/hub/jobs`.
 
 ## Contract traps (each cost real debugging time to identify)
 
