@@ -50,20 +50,36 @@ final class StatTile: NSView {
 }
 
 /// A labelled proportional bar, for the per-modality breakdown.
+///
+/// Every dimension here is explicit, and that is the whole point. The first
+/// version positioned its children relative to `centerY` but never constrained
+/// its own height, so inside a stack view the row collapsed to nothing and the
+/// labels piled on top of each other — a window that "built fine" and was
+/// unreadable. The track width is explicit for the same reason: the fill is
+/// computed from it, rather than from a magic number that could overflow.
 final class ModalityBar: NSView {
+    private static let nameWidth: CGFloat = 108
+    private static let trackWidth: CGFloat = 132
+    private static let countWidth: CGFloat = 44
+    static let rowHeight: CGFloat = 18
+    /// The row's natural width, so callers do not have to guess one.
+    static let rowWidth = nameWidth + 8 + trackWidth + 8 + countWidth
+
     private let name = NSTextField(labelWithString: "")
     private let count = NSTextField(labelWithString: "")
+    private let track = NSView()
     private let bar = NSView()
     private var barWidth: NSLayoutConstraint!
 
     init() {
         super.init(frame: .zero)
         name.font = .systemFont(ofSize: 12)
+        name.lineBreakMode = .byTruncatingTail
+        name.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         count.font = .monospacedDigitSystemFont(ofSize: 12, weight: .medium)
         count.textColor = .secondaryLabelColor
         count.alignment = .right
 
-        let track = NSView()
         track.wantsLayer = true
         track.layer?.backgroundColor = NSColor.quaternaryLabelColor.cgColor
         track.layer?.cornerRadius = 3
@@ -80,17 +96,20 @@ final class ModalityBar: NSView {
         barWidth = bar.widthAnchor.constraint(equalToConstant: 0)
 
         NSLayoutConstraint.activate([
+            // Without this the row has no height and the stack view crushes it.
+            heightAnchor.constraint(equalToConstant: Self.rowHeight),
+
             name.leadingAnchor.constraint(equalTo: leadingAnchor),
-            name.widthAnchor.constraint(equalToConstant: 96),
+            name.widthAnchor.constraint(equalToConstant: Self.nameWidth),
             name.centerYAnchor.constraint(equalTo: centerYAnchor),
 
             track.leadingAnchor.constraint(equalTo: name.trailingAnchor, constant: 8),
+            track.widthAnchor.constraint(equalToConstant: Self.trackWidth),
+            track.heightAnchor.constraint(equalToConstant: 7),
             track.centerYAnchor.constraint(equalTo: centerYAnchor),
-            track.heightAnchor.constraint(equalToConstant: 6),
 
             count.leadingAnchor.constraint(equalTo: track.trailingAnchor, constant: 8),
-            count.trailingAnchor.constraint(equalTo: trailingAnchor),
-            count.widthAnchor.constraint(equalToConstant: 44),
+            count.widthAnchor.constraint(equalToConstant: Self.countWidth),
             count.centerYAnchor.constraint(equalTo: centerYAnchor),
 
             bar.leadingAnchor.constraint(equalTo: track.leadingAnchor),
@@ -103,15 +122,27 @@ final class ModalityBar: NSView {
     required init?(coder: NSCoder) { fatalError("not used") }
 
     func set(label: String, value: Int, maxValue: Int) {
-        name.stringValue = label.capitalized
+        name.stringValue = label
         count.stringValue = "\(value)"
         let fraction = maxValue > 0 ? CGFloat(value) / CGFloat(maxValue) : 0
-        barWidth.constant = max(2, 150 * fraction)
+        // Proportional to the real track, so a full bar exactly fills it.
+        barWidth.constant = max(3, Self.trackWidth * fraction)
     }
 }
 
 final class OverviewWindow: NSObject {
     static let shared = OverviewWindow()
+
+    /// Display names for the modality keys the API returns. `capitalized` would
+    /// render TTS as "Tts", which reads like a typo.
+    private static let modalityLabels: [String: String] = [
+        "chat": "Chat",
+        "image": "Image",
+        "video": "Video",
+        "tts": "TTS",
+        "transcription": "Transcription",
+        "music": "Music",
+    ]
 
     private var window: NSWindow?
     private var statusDot = NSView()
@@ -354,9 +385,13 @@ final class OverviewWindow: NSObject {
                 for modality in ["chat", "image", "video", "tts", "transcription", "music"] {
                     guard let value = counts[modality], value > 0 else { continue }
                     let bar = ModalityBar()
-                    bar.set(label: modality, value: value, maxValue: maximum)
+                    bar.set(
+                        label: Self.modalityLabels[modality] ?? modality,
+                        value: value,
+                        maxValue: maximum
+                    )
                     bar.translatesAutoresizingMaskIntoConstraints = false
-                    bar.widthAnchor.constraint(equalToConstant: 300).isActive = true
+                    bar.widthAnchor.constraint(equalToConstant: ModalityBar.rowWidth).isActive = true
                     self.modalityStack.addArrangedSubview(bar)
                 }
             }

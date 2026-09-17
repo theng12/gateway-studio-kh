@@ -249,6 +249,44 @@ def main() -> int:
           count_of(WINDOW_OVERVIEW, "buttons") >= 4,
           str(count_of(WINDOW_OVERVIEW, "buttons")))
 
+    # The first version of this window built fine and was unreadable: the bar
+    # rows had no height, so the stack view crushed them together and the labels
+    # piled on top of each other. "The window opened" would never have caught
+    # that — measuring the rows does.
+    geometry = osa(wrap(f'''
+        tell window "{WINDOW_OVERVIEW}"
+            set wanted to {{"Chat", "Image", "Video", "TTS", "Transcription", "Music"}}
+            set acc to ""
+            repeat with t in static texts
+                try
+                    set v to (value of t) as string
+                    if wanted contains v then
+                        set p to position of t
+                        set s to size of t
+                        set acc to acc & (item 2 of p) & ":" & (item 2 of s) & "\\n"
+                    end if
+                end try
+            end repeat
+            return acc
+        end tell'''))
+    rows: list[tuple[int, int]] = []
+    for line in geometry.splitlines():
+        if ":" in line:
+            top, height = line.split(":")
+            rows.append((int(top), int(height)))
+    check("every modality row is rendered", len(rows) >= 4, f"{len(rows)} rows")
+    if len(rows) >= 2:
+        overlapping = [
+            (rows[i], rows[i + 1])
+            for i in range(len(rows) - 1)
+            if rows[i + 1][0] - rows[i][0] < rows[i][1]
+        ]
+        check("modality rows do not overlap", not overlapping,
+              f"rows={rows}")
+        check("modality rows are evenly spaced",
+              len({rows[i + 1][0] - rows[i][0] for i in range(len(rows) - 1)}) == 1,
+              f"gaps={[rows[i + 1][0] - rows[i][0] for i in range(len(rows) - 1)]}")
+
     # ------------------------------------------------------------------
     print("\n\033[1m3. Jobs window lists real work\033[0m")
     rows = wait_for_rows(WINDOW_JOBS, 1)
