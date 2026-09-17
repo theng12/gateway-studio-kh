@@ -124,12 +124,29 @@ _REFERENCE_TTL_S = 6 * 3600.0
 
 
 def _reference_for(request: BackendRequest) -> dict[str, Any] | None:
+    """The clone reference for a voice, looked up in the voice registry.
+
+    Story Studio sends back the compound id it was given, so the registry is the
+    single place that knows how to turn that into a local clip.
+    """
     voice_id = str(request.params.get("voice_id") or "")
     if not voice_id:
         return None
-    from ..catalog import catalog  # local import: avoids a cycle
+    from ..voices import resolve  # local import: avoids a cycle
 
-    return catalog.voice_reference(voice_id)
+    voice = resolve(voice_id)
+    if voice is None:
+        return None
+    raw = voice.raw or {}
+    path = str(raw.get("reference_path") or "")
+    if not path:
+        return None
+    return {
+        "path": path,
+        "transcript": str(raw.get("reference_transcript") or ""),
+        "segments": raw.get("reference_segments") or [],
+        "name": voice.display_name,
+    }
 
 
 def _stage_voice_reference(

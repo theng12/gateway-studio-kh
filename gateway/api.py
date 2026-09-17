@@ -42,6 +42,7 @@ from .config import ARTIFACT_DIR, gateway_api_key, is_loopback
 from .constants import ADMISSION, CREDIT_BALANCE, ZERO_PURCHASE, ZERO_SETTLEMENT
 from .providers import registry
 from .runtime import store, worker
+from .voices import story_row, voice_registry, voices_for_model
 
 API_KEY = gateway_api_key()
 
@@ -329,27 +330,28 @@ def voices(
     collection: str | None = None,
     search: str | None = None,
 ) -> dict[str, Any]:
-    """Voices for a TTS model.
+    """Voices usable with a TTS model.
 
-    `model_id` arrives namespaced (`provider::model`), while voice records carry
-    the provider's raw id -- so matching is by suffix. That keeps voices working
-    when a model moves between providers or namespaces.
+    Only *enabled* voices are returned — discovery and availability are separate
+    here exactly as they are for models, because a provider's public library can
+    hold tens of thousands of voices.
+
+    Which voices match a model depends on the provider, and the two rules are
+    genuinely different: a local cloning voice belongs to one specific model,
+    while a provider's voices work with every TTS model that provider offers.
+    `voices_for_model` encodes both.
     """
-    rows = catalog.voices()
-    if model_id:
-        needle = model_id.split("::")[-1].lower()
-        rows = [
-            v
-            for v in rows
-            if needle.endswith(str(v.get("tts_model_id", "")).lower())
-            or str(v.get("tts_model_id", "")).lower().endswith(needle)
-        ]
+    rows = (
+        voices_for_model(model_id)
+        if model_id
+        else [story_row(v) for v in voice_registry().enabled_voices()]
+    )
     if search:
         term = search.lower()
         rows = [
-            v
-            for v in rows
-            if term in v["display_name"].lower() or term in (v["description"] or "").lower()
+            r
+            for r in rows
+            if term in r["display_name"].lower() or term in (r["description"] or "").lower()
         ]
     return {"voices": rows, "models": rows}
 

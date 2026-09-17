@@ -104,15 +104,15 @@ def generate(request: BackendRequest) -> BackendResult:
     audio_format = str(params.get("format") or DEFAULT_FORMAT).lower()
     body: dict[str, Any] = {"text": text, "format": audio_format}
 
-    # A voice may arrive as Fish's own reference id, or as a configured voice
-    # whose record carries one.
+    # A voice may arrive as Fish's own reference id, or as a catalogue voice id
+    # that the registry resolves to one.
     reference_id = str(
         params.get("reference_id")
         or params.get("fish_reference_id")
         or ""
     ).strip()
     if not reference_id:
-        reference_id = _configured_reference(str(params.get("voice_id") or ""))
+        reference_id = _resolve_reference(str(params.get("voice_id") or ""))
     if reference_id:
         body["reference_id"] = reference_id
 
@@ -185,16 +185,21 @@ def generate(request: BackendRequest) -> BackendResult:
     )
 
 
-def _configured_reference(voice_id: str) -> str:
-    """A configured voice may carry the provider's own reference id."""
+def _resolve_reference(voice_id: str) -> str:
+    """Turn a catalogue voice id into the Fish model id to speak with.
+
+    Fish addresses both your clones and the public library by the same `_id`, so
+    the resolved voice's `provider_voice_id` is exactly what `reference_id`
+    wants.
+    """
     if not voice_id:
         return ""
-    from ..catalog import catalog  # local import: avoids a cycle
+    from ..voices import resolve  # local import: avoids a cycle
 
-    reference = catalog.voice_reference(voice_id)
-    if not reference:
+    voice = resolve(voice_id)
+    if voice is None:
         return ""
-    return str(reference.get("fish_reference_id") or "").strip()
+    return voice.provider_voice_id
 
 
 class FishBackend:

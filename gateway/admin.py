@@ -16,7 +16,8 @@ import time
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Depends, Header, Request
+import httpx
+from fastapi import APIRouter, Depends, Header, Request, Response
 from fastapi.responses import HTMLResponse, JSONResponse
 
 from .adapters import support_status
@@ -25,6 +26,7 @@ from .config import is_loopback
 from .hub import hub_status
 from .providers import registry
 from .runtime import STARTED_AT, store, worker
+from .voices import search_library, voice_registry
 
 router = APIRouter(prefix="/admin")
 
@@ -336,6 +338,168 @@ def bulk_models(payload: dict[str, Any]) -> Any:
     )
     enabled = bool(payload.get("enabled"))
     return {"changed": _apply(matched, enabled), "matched": len(matched), "enabled": enabled}
+
+
+# ---------------------------------------------------------------------------
+# Voices
+#
+# Every provider models voices differently, so the registry does the unifying
+# and these routes just expose it. Library search is live and uncached on
+# purpose: ElevenLabs' public library holds tens of thousands of voices and the
+# owner wants a handful, so browsing is a query rather than a download.
+# ---------------------------------------------------------------------------
+@router.get("/api/voices", dependencies=[Depends(require_admin)])
+def list_voices(
+    provider_id: str | None = None,
+    q: str | None = None,
+    source: str | None = None,
+    only_enabled: bool = False,
+) -> dict[str, Any]:
+    voices = voice_registry()
+    rows = [
+        voice.as_dict() | {"enabled": voices.is_enabled(voice)}
+        for voice in voices.voices(provider_id=provider_id)
+    ]
+    if source:
+        rows = [r for r in rows if r["source"] == source]
+    if only_enabled:
+        rows = [r for r in rows if r["enabled"]]
+    if q:
+        needle = q.strip().lower()
+        rows = [
+            r
+            for r in rows
+            if needle in r["display_name"].lower()
+            or needle in (r["description"] or "").lower()
+            or needle in (r["language"] or "").lower()
+        ]
+
+    discovered = voice_registry().voices(provider_id=provider_id)
+    return {
+        "voices": rows,
+        "matched": len(rows),
+        "total": len(discovered),
+        "enabled": sum(1 for v in discovered if voice_registry().is_enabled(v)),
+        "summary": voice_registry().summary(),
+        "providers": [
+            {"id": d.id, "name": d.display_name, "kind": d.kind}
+            for d in registry.definitions()
+            if d.kind in {"elevenlabs", "fish", "studio_hub"}
+        ],
+    }
+
+
+@router.get("/api/voices/library", dependencies=[Depends(require_admin)])
+def voice_library(provider_id: str, q: str = "", page: int = 0) -> Any:
+    """Live search of a provider's public voice library."""
+    definition = registry.definition(provider_id)
+    if definition is None:
+        return _error(404, f"unknown provider '{provider_id}'")
+    if not registry.credentials.is_configured(provider_id):
+        return _error(409, f"no API key configured for '{provider_id}'")
+
+    values = registry.credentials.resolved(provider_id)
+    voices = search_library(definition, values, q, page)
+    known = {v.provider_voice_id for v in voice_registry().voices(provider_id=provider_id)}
+    return {
+        "provider_id": provider_id,
+        "voices": [
+            v.as_dict() | {"already_owned": v.provider_voice_id in known, "enabled": False}
+            for v in voices
+        ],
+        "count": len(voices),
+        "page": page,
+    }
+
+
+@router.post("/api/voices/refresh", dependencies=[Depends(require_admin)])
+def refresh_voices(provider_id: str | None = None) -> dict[str, Any]:
+    voices = voice_registry()
+    if provider_id:
+        if registry.definition(provider_id) is None:
+            return _error(404, f"unknown provider '{provider_id}'")
+        return {"outcomes": {provider_id: voices.refresh(provider_id)}}
+    return {"outcomes": voices.refresh_all()}
+
+
+@router.post("/api/voices/enabled", dependencies=[Depends(require_admin)])
+def set_voices_enabled(payload: dict[str, Any]) -> Any:
+    items = payload.get("items")
+    if not isinstance(items, list):
+        return _error(422, "expected {'items': [voice_id, ...], 'enabled': bool}")
+    enabled = bool(payload.get("enabled"))
+    changed = sum(
+        1
+        for item in items
+        if isinstance(item, str) and voice_registry().set_enabled(item, enabled)
+    )
+    return {"changed": changed, "enabled": enabled}
+
+
+@router.post("/api/voices/import", dependencies=[Depends(require_admin)])
+def import_voice(payload: dict[str, Any]) -> Any:
+    """Copy a library voice into the owner's account so it can be used."""
+    provider_id = str(payload.get("provider_id") or "")
+    provider_voice_id = str(payload.get("provider_voice_id") or "")
+    if not provider_id or not provider_voice_id:
+        return _error(422, "expected {'provider_id', 'provider_voice_id'}")
+
+    definition = registry.definition(provider_id)
+    if definition is None:
+        return _error(404, f"unknown provider '{provider_id}'")
+
+    values = registry.credentials.resolved(provider_id)
+    base = (values.get("base_url") or definition.base_url).rstrip("/")
+    name = str(payload.get("display_name") or provider_voice_id)
+
+    if definition.kind == "elevenlabs":
+        owner_id = str(payload.get("owner_id") or "")
+        if not owner_id:
+            return _error(422, "ElevenLabs needs the library voice's owner_id")
+        try:
+            response = httpx.post(
+                f"{base}/v1/voices/add/{owner_id}/{provider_voice_id}",
+                headers={"xi-api-key": values.get("api_key", ""),
+                         "Content-Type": "application/json"},
+                json={"new_name": name},
+                timeout=httpx.Timeout(30.0, connect=8.0),
+            )
+        except httpx.HTTPError as exc:
+            return _error(502, f"could not reach ElevenLabs: {exc}")
+        if response.status_code >= 400:
+            return _error(502, f"ElevenLabs rejected the import: {response.text[:200]}")
+        payload_body = response.json() if response.content else {}
+        added_id = str((payload_body or {}).get("voice_id") or provider_voice_id)
+        voice = voice_registry().add_custom(
+            provider_id, added_id, name, description="Imported from the voice library.",
+            raw={"owner_id": owner_id},
+        )
+        return {"voice": voice.as_dict() | {"enabled": True}}
+
+    # Fish voices are used directly by id — nothing to copy into an account.
+    voice = voice_registry().add_custom(
+        provider_id, provider_voice_id, name, description="Added from the voice library."
+    )
+    return {"voice": voice.as_dict() | {"enabled": True}}
+
+
+@router.get("/api/voices/{voice_id:path}/preview", dependencies=[Depends(require_admin)])
+def voice_preview(voice_id: str) -> Any:
+    try:
+        content, media_type = voice_registry().preview(voice_id)
+    except KeyError as exc:
+        return _error(404, f"no preview available: {exc}")
+    if not content:
+        return _error(404, "the provider returned no preview audio")
+    return Response(content=content, media_type=media_type)
+
+
+@router.delete("/api/voices/{voice_id:path}", dependencies=[Depends(require_admin)])
+def forget_voice(voice_id: str) -> Any:
+    removed = voice_registry().remove_custom(voice_id)
+    if not removed:
+        return _error(404, "that voice is discovered from the provider, not added here")
+    return {"removed": voice_id}
 
 
 # ---------------------------------------------------------------------------

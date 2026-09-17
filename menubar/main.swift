@@ -943,6 +943,11 @@ enum MainMenuBuilder {
             action: #selector(AppDelegate.openJobs),
             keyEquivalent: "2"
         ).target = target
+        viewMenu.addItem(
+            withTitle: "Voices",
+            action: #selector(AppDelegate.openVoices),
+            keyEquivalent: "3"
+        ).target = target
         viewMenu.addItem(.separator())
         viewMenu.addItem(
             withTitle: "Open Provider Console",
@@ -1065,6 +1070,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             switch requested {
             case "overview": OverviewWindow.shared.show()
             case "jobs": JobsWindow.shared.show()
+            case "voices": VoicesWindow.shared.show()
             case "console": ConsoleWindow.shared.show()
             case "settings": SettingsWindow.shared.show()
             default: break
@@ -1108,6 +1114,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // if needed, which is what an owner expects from a menu bar app.
         menu.addItem(item("Overview", #selector(openOverview), key: "o"))
         menu.addItem(item("Jobs", #selector(openJobs), key: "j"))
+        menu.addItem(item("Voices", #selector(openVoices), key: "v"))
         menu.addItem(.separator())
         menu.addItem(item("Open Provider Console", #selector(openConsole), key: "p"))
         menu.addItem(item("Reload Console", #selector(reloadConsole)))
@@ -1188,6 +1195,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc func openOverview() { OverviewWindow.shared.show() }
 
     @objc func openJobs() { JobsWindow.shared.show() }
+
+    @objc func openVoices() { VoicesWindow.shared.show() }
 
     @objc func openConsole() { ConsoleWindow.shared.show() }
 

@@ -241,12 +241,36 @@ generate, and `adapters/__init__.py` asserts at import that its adapter table ag
 provider whose kind has no adapter stays discoverable and configurable, but **its models are
 withheld from Story Studio** — offering a model that fails on use is worse than not offering it.
 
-**A new voice** — `tts_model_id` is matched as a suffix of the namespaced catalogue id, so voices
-survive a provider being re-enabled.
+## Voices
 
-Local narration needs one extra step, because Studio Hub's Qwen3 **Base** models are *cloning*
-models. A generation with no reference clip fails outright, and a reference with a flat transcript
-fails with `REFERENCE_TRANSCRIPT_ALIGNMENT_REQUIRED` — it needs **timestamped** segments.
+Providers do not agree about what a voice *is*, and the app shows the difference rather than hiding
+it. The **Voices** window (⌘3) has three sources:
+
+| Source | What it is | Default |
+|---|---|---|
+| **local** | this Mac's own cloning clips (Studio Hub) | **on** — yours, and only a handful |
+| **account** | voices the provider already has for you (your ElevenLabs workspace, your Fish clones) | off — opt in |
+| **library** | the provider's public catalogue | off — search, then *add* |
+
+Only **enabled** voices reach Story Studio. That is not a nicety: ElevenLabs' public library alone
+holds tens of thousands of voices, and Fish's `/model` list returns a thousand unfiltered.
+
+The window lets you filter by provider, search, **preview** a voice before choosing it, tick the
+ones Story Studio should offer, and — for library voices — add one to your own account. Library
+search is live and uncached, because browsing is a query rather than a download.
+
+Voices are addressed as `provider::voice`, so a voice id is unambiguous and resolves to exactly one
+provider and one upstream id.
+
+**Matching rules differ by source, because they have to:** a local cloning voice belongs to *one*
+model (Qwen3 Base needs its own clip), while a provider's voices work with every TTS model that
+provider offers.
+
+### Local narration needs one extra step
+
+Studio Hub's Qwen3 **Base** models are *cloning* models. A generation with no reference clip fails
+outright, and a reference with a flat transcript fails with
+`REFERENCE_TRANSCRIPT_ALIGNMENT_REQUIRED` — it needs **timestamped** segments.
 
 ```bash
 # 1. import voices (reference audio + transcript) from the old Voice Studio
@@ -255,6 +279,7 @@ fails with `REFERENCE_TRANSCRIPT_ALIGNMENT_REQUIRED` — it needs **timestamped*
 # 2. generate the required timestamped segments, using this Mac's own Whisper
 .venv/bin/python scripts/annotate_voice_segments.py
 ```
+
 
 Step 2 is not busy-work: the old Voice Studio stored only a flat transcript, so the timestamps are
 produced by transcribing each reference clip locally. Both scripts are idempotent. The gateway then

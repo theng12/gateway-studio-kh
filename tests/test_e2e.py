@@ -586,6 +586,59 @@ def main() -> int:
             check("non-WAV bytes pass through untouched",
                   _repair_streaming_wav(b"not audio at all") == b"not audio at all")
 
+            print("\n\033[1m15. Voice registry\033[0m")
+            # Local voices need no provider API, so they are testable here.
+            # Provider voices (ElevenLabs, Fish) need live keys and are verified
+            # separately; what this covers is the part that is ours: discovery,
+            # enable/disable, and what reaches Story Studio.
+            catalogue = httpx.get(f"{BASE}/admin/api/voices", headers=AUTH).json()
+            local = [v for v in catalogue["voices"] if v["source"] == "local"]
+            check("local voices are discovered", len(local) > 0, f"got {len(local)}")
+            check("local voices are enabled by default",
+                  all(v["enabled"] for v in local),
+                  str([v["enabled"] for v in local][:4]))
+            check("voice ids are namespaced by provider",
+                  all("::" in v["id"] for v in local))
+
+            victim = local[0]
+            off = httpx.post(f"{BASE}/admin/api/voices/enabled", headers=AUTH,
+                             json={"items": [victim["id"]], "enabled": False})
+            check("a voice can be switched off", off.status_code == 200
+                  and off.json()["changed"] == 1, off.text[:120])
+
+            after = httpx.get(f"{BASE}/admin/api/voices?only_enabled=true",
+                              headers=AUTH).json()["voices"]
+            check("a disabled voice leaves the enabled set",
+                  victim["id"] not in {v["id"] for v in after})
+
+            story = req(client, "GET", "/v1/voices").json()["voices"]
+            check("Story Studio does not see the disabled voice",
+                  victim["id"] not in {v["id"] for v in story})
+            check("Story Studio sees the remaining local voices",
+                  len(story) == len(local) - 1, f"got {len(story)} of {len(local)}")
+            check("every Story voice publishes catalog_status=published",
+                  all(v["catalog_status"] == "published" for v in story))
+            check("every Story voice publishes zero price fields",
+                  all(v["credits_per_1000_characters"] == 0 for v in story))
+
+            httpx.post(f"{BASE}/admin/api/voices/enabled", headers=AUTH,
+                       json={"items": [victim["id"]], "enabled": True})
+            restored = req(client, "GET", "/v1/voices").json()["voices"]
+            check("re-enabling restores it", victim["id"] in {v["id"] for v in restored})
+
+            # A local voice belongs to one model; the match is on the voice's
+            # own tts_model_id, not on the provider alone.
+            model_id = str(victim.get("tts_model_id") or "")
+            check("a local voice reports the model it belongs to", bool(model_id), model_id)
+            if model_id:
+                scoped = req(client, "GET", f"/v1/voices?model_id=studio-hub-local::{model_id}").json()
+                check("a local voice is returned for its own model",
+                      len(scoped["voices"]) > 0, f"got {len(scoped['voices'])}")
+                other = req(client, "GET",
+                            "/v1/voices?model_id=studio-hub-local::some-other-model").json()
+                check("and not for an unrelated model", len(other["voices"]) == 0,
+                      f"got {len(other['voices'])}")
+
     finally:
         for proc in processes:
             try:

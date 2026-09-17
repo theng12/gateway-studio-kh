@@ -86,21 +86,31 @@ def _default_voice(request: BackendRequest, base: str) -> str:
 
 
 def _resolve_voice(request: BackendRequest, base: str) -> str:
-    params = request.params
-    for key in ("voice_id", "reference_id", "elevenlabs_voice_id"):
-        candidate = str(params.get(key) or "").strip()
+    """Which ElevenLabs voice to speak with.
+
+    Order matters. A catalogue voice id is authoritative when the registry knows
+    it — that is the normal path, and it is what makes a library voice or an
+    imported voice work. A raw voice id is accepted as a passthrough for anyone
+    calling the gateway directly. Failing both, the account's first voice is
+    used, so an unnamed request still produces audio instead of a 422.
+    """
+    voice_id = str(request.params.get("voice_id") or "").strip()
+
+    if voice_id:
+        from ..voices import resolve  # local import: avoids a cycle
+
+        voice = resolve(voice_id)
+        if voice is not None and voice.provider_voice_id:
+            return voice.provider_voice_id
+        # Not a catalogue id, but a plausible raw voice id.
+        if _looks_like_elevenlabs_voice(voice_id):
+            return voice_id
+
+    for key in ("reference_id", "elevenlabs_voice_id"):
+        candidate = str(request.params.get(key) or "").strip()
         if candidate and _looks_like_elevenlabs_voice(candidate):
             return candidate
-    # A configured voice record may carry the provider's own id.
-    voice_id = str(params.get("voice_id") or "")
-    if voice_id:
-        from ..catalog import catalog  # local import: avoids a cycle
 
-        reference = catalog.voice_reference(voice_id)
-        if reference:
-            configured = str(reference.get("elevenlabs_voice_id") or "").strip()
-            if configured:
-                return configured
     return _default_voice(request, base)
 
 
