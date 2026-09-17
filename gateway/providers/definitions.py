@@ -39,6 +39,27 @@ KIND_ELEVENLABS = "elevenlabs"
 KIND_FISH = "fish"
 KIND_STUDIO_HUB = "studio_hub"
 
+#: Kinds that actually have a generation adapter.
+#:
+#: This is the single source of truth, and it is deliberately declared here
+#: rather than discovered from `gateway.adapters` — `providers` must not depend
+#: on `adapters`, and more importantly the catalogue needs to know *before*
+#: offering a model whether it can be generated. A provider whose kind is
+#: missing from this set is discoverable and configurable, but its models are
+#: withheld from Story Studio: showing a model that fails on use is worse than
+#: not showing it.
+IMPLEMENTED_KINDS: frozenset[str] = frozenset(
+    {
+        KIND_OPENAI_COMPATIBLE,
+        KIND_ANTHROPIC,
+        KIND_GOOGLE,
+        KIND_FAL,
+        KIND_KIE,
+        KIND_FISH,
+        KIND_STUDIO_HUB,
+    }
+)
+
 # ---------------------------------------------------------------------------
 # Discovery strategies
 # ---------------------------------------------------------------------------

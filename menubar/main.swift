@@ -154,6 +154,7 @@ final class GatewayController {
     private var onStateChange: (() -> Void)?
     private var stopping = false
     private var restartAttempts = 0
+    private var isStarting = false
     /// Set by the app once the status item exists, so the state file can prove
     /// the UI actually initialised.
     var statusItemReady = false
@@ -235,7 +236,7 @@ final class GatewayController {
     // MARK: Lifecycle
 
     func start() {
-        guard process == nil else { return }
+        guard process == nil, !isStarting else { return }
 
         guard FileManager.default.fileExists(atPath: pythonPath) else {
             publish(.failed("No .venv in \(gatewayDir)"))
@@ -246,9 +247,11 @@ final class GatewayController {
         // it for the bind. This is the normal state after quitting the app while
         // leaving the gateway running -- which is deliberate -- and without this
         // check the new app would report a failure it had caused itself.
+        isStarting = true
         probeExisting { [weak self] alive in
             guard let self else { return }
             if alive {
+                self.isStarting = false
                 self.publish(.starting)
                 self.startHealthPolling()
             } else {
@@ -320,9 +323,11 @@ final class GatewayController {
             try task.run()
             process = task
             stopping = false
+            isStarting = false
             publish(.starting)
             startHealthPolling()
         } catch {
+            isStarting = false
             publish(.failed(error.localizedDescription))
         }
     }
@@ -371,8 +376,22 @@ final class GatewayController {
                 // Only downgrade a running service; never overwrite a failure
                 // message with a vaguer one.
                 if self.process == nil, case .failed = self.state { return }
-                if self.process != nil { self.publish(.starting) }
-                else { self.publish(.stopped) }
+                if self.process != nil { self.publish(.starting); return }
+
+                // We own no process and nothing is answering. That happens when
+                // the app *adopted* an externally-started gateway and that one
+                // later died: there is no child to restart, so sitting idle
+                // leaves the gateway down for good with the menu reporting
+                // "stopped" as if that were normal. Take ownership instead.
+                if ConfigStore.shared.config.autoStartGateway,
+                   !self.stopping,
+                   self.restartAttempts < 8 {
+                    self.restartAttempts += 1
+                    self.publish(.failed("Gateway is not responding — starting it"))
+                    self.start()
+                } else {
+                    self.publish(.stopped)
+                }
                 return
             }
             let providers = (payload["providers"] as? [String: Any])?["enabled"] as? Int ?? 0
@@ -727,6 +746,160 @@ final class ConsoleWindow: NSObject, WKNavigationDelegate {
     }
 }
 
+// MARK: - Main menu
+
+/// A menu-bar-only app still needs a main menu.
+///
+/// Standard editing shortcuts are **not** handled by the text system directly:
+/// AppKit dispatches `⌘A`, `⌘C`, `⌘V`, `⌘X` and `⌘Z` through the application's
+/// main menu, matching them against menu items whose action is the matching
+/// selector (`selectAll:`, `copy:`, …). An `LSUIElement` app with no main menu
+/// therefore has a console where typing works but select-all, copy and paste do
+/// nothing at all — which is exactly what happened here.
+///
+/// The menu bar itself is never shown for an accessory app, but a menu
+/// installed as `NSApp.mainMenu` still supplies the key equivalents, which is
+/// all that is wanted.
+enum MainMenuBuilder {
+    static func make(target: AnyObject) -> NSMenu {
+        let main = NSMenu()
+
+        // ---- Application -------------------------------------------------
+        let appItem = NSMenuItem()
+        main.addItem(appItem)
+        let appMenu = NSMenu(title: "gateway-kh")
+        appItem.submenu = appMenu
+        appMenu.addItem(
+            withTitle: "About gateway-kh",
+            action: #selector(AppDelegate.showAbout),
+            keyEquivalent: ""
+        ).target = target
+        appMenu.addItem(.separator())
+        appMenu.addItem(
+            withTitle: "Settings…",
+            action: #selector(AppDelegate.openSettings),
+            keyEquivalent: ","
+        ).target = target
+        appMenu.addItem(.separator())
+        appMenu.addItem(
+            withTitle: "Hide gateway-kh",
+            action: #selector(NSApplication.hide(_:)),
+            keyEquivalent: "h"
+        )
+        appMenu.addItem(.separator())
+        appMenu.addItem(
+            withTitle: "Quit gateway-kh",
+            action: #selector(NSApplication.terminate(_:)),
+            keyEquivalent: "q"
+        )
+
+        // ---- Edit --------------------------------------------------------
+        // The whole point of this menu. Targets are left nil so each action
+        // travels the responder chain to whatever is focused — the web view's
+        // text fields, the search box, or a Cocoa text field in Settings.
+        let editItem = NSMenuItem()
+        main.addItem(editItem)
+        let editMenu = NSMenu(title: "Edit")
+        editItem.submenu = editMenu
+        editMenu.addItem(
+            withTitle: "Undo", action: Selector(("undo:")), keyEquivalent: "z"
+        )
+        let redo = editMenu.addItem(
+            withTitle: "Redo", action: Selector(("redo:")), keyEquivalent: "z"
+        )
+        redo.keyEquivalentModifierMask = [.command, .shift]
+        editMenu.addItem(.separator())
+        editMenu.addItem(
+            withTitle: "Cut", action: #selector(NSText.cut(_:)), keyEquivalent: "x"
+        )
+        editMenu.addItem(
+            withTitle: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c"
+        )
+        editMenu.addItem(
+            withTitle: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v"
+        )
+        editMenu.addItem(
+            withTitle: "Delete", action: #selector(NSText.delete(_:)), keyEquivalent: ""
+        )
+        editMenu.addItem(
+            withTitle: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a"
+        )
+
+        // ---- View --------------------------------------------------------
+        let viewItem = NSMenuItem()
+        main.addItem(viewItem)
+        let viewMenu = NSMenu(title: "View")
+        viewItem.submenu = viewMenu
+        viewMenu.addItem(
+            withTitle: "Open Provider Console",
+            action: #selector(AppDelegate.openConsole),
+            keyEquivalent: "p"
+        ).target = target
+        viewMenu.addItem(
+            withTitle: "Reload Console",
+            action: #selector(AppDelegate.reloadConsole),
+            keyEquivalent: "r"
+        ).target = target
+        viewMenu.addItem(
+            withTitle: "Open Console in Browser",
+            action: #selector(AppDelegate.openConsoleInBrowser),
+            keyEquivalent: "b"
+        ).target = target
+
+        // ---- Window ------------------------------------------------------
+        let windowItem = NSMenuItem()
+        main.addItem(windowItem)
+        let windowMenu = NSMenu(title: "Window")
+        windowItem.submenu = windowMenu
+        windowMenu.addItem(
+            withTitle: "Minimize",
+            action: #selector(NSWindow.performMiniaturize(_:)),
+            keyEquivalent: "m"
+        )
+        windowMenu.addItem(
+            withTitle: "Close",
+            action: #selector(NSWindow.performClose(_:)),
+            keyEquivalent: "w"
+        )
+        NSApp.windowsMenu = windowMenu
+
+        return main
+    }
+
+    /// Flattened "Menu › Item — ⌘X" listing, for `--dump-menu`.
+    static func describe(_ menu: NSMenu, depth: Int = 0) -> [String] {
+        var lines: [String] = []
+        for item in menu.items {
+            if item.isSeparatorItem {
+                lines.append(String(repeating: "  ", count: depth) + "---")
+                continue
+            }
+            var suffix = ""
+            if !item.keyEquivalent.isEmpty {
+                var modifiers = ""
+                let mask = item.keyEquivalentModifierMask
+                if mask.contains(.control) { modifiers += "⌃" }
+                if mask.contains(.option) { modifiers += "⌥" }
+                if mask.contains(.shift) { modifiers += "⇧" }
+                if mask.contains(.command) { modifiers += "⌘" }
+                let key = item.keyEquivalent == "\u{8}" ? "⌫" : item.keyEquivalent.uppercased()
+                suffix = "  \(modifiers)\(key)"
+            }
+            let action = item.action.map { NSStringFromSelector($0) } ?? "(none)"
+            // For a top-level item the displayed title comes from its submenu,
+            // so report that rather than the empty placeholder title.
+            let title = item.submenu?.title ?? item.title
+            lines.append(
+                String(repeating: "  ", count: depth) + title + suffix + "   [\(action)]"
+            )
+            if let submenu = item.submenu {
+                lines.append(contentsOf: describe(submenu, depth: depth + 1))
+            }
+        }
+        return lines
+    }
+}
+
 // MARK: - App delegate
 
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
@@ -751,6 +924,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // merely started.
         GatewayController.shared.statusItemReady = statusItem.button?.image != nil
         GatewayController.shared.writeState()
+
+        // Editing shortcuts (⌘A/⌘C/⌘V/⌘X/⌘Z) are dispatched through the main
+        // menu, so it has to exist even though an accessory app never shows a
+        // menu bar. See MainMenuBuilder.
+        NSApp.mainMenu = MainMenuBuilder.make(target: self)
 
         menu = NSMenu()
         menu.delegate = self
@@ -861,15 +1039,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc private func stopGateway() { GatewayController.shared.stop() }
     @objc private func restartGateway() { GatewayController.shared.restart() }
 
-    @objc private func openConsole() { ConsoleWindow.shared.show() }
+    // Not `private`: MainMenuBuilder references these by selector from another
+    // type in this file.
+    @objc func openConsole() { ConsoleWindow.shared.show() }
 
-    @objc private func reloadConsole() { ConsoleWindow.shared.reload() }
+    @objc func reloadConsole() { ConsoleWindow.shared.reload() }
 
-    @objc private func openConsoleInBrowser() {
+    @objc func openConsoleInBrowser() {
         if let url = GatewayController.shared.consoleURL { NSWorkspace.shared.open(url) }
     }
 
-    @objc private func openSettings() { SettingsWindow.shared.show() }
+    @objc func openSettings() { SettingsWindow.shared.show() }
+
+    @objc func showAbout() {
+        NSApp.activate(ignoringOtherApps: true)
+        NSApp.orderFrontStandardAboutPanel(options: [
+            .applicationName: "gateway-kh",
+            .applicationVersion: "0.1.0",
+            .credits: NSAttributedString(
+                string: "A personal model gateway.\n\nConsole: http://127.0.0.1:\(GatewayController.shared.port)/admin",
+                attributes: [
+                    .font: NSFont.systemFont(ofSize: 11),
+                    .foregroundColor: NSColor.secondaryLabelColor,
+                ]
+            ),
+        ])
+    }
 
     @objc private func openData() {
         let path = URL(fileURLWithPath: GatewayController.shared.gatewayDir)
@@ -965,6 +1160,17 @@ if arguments.contains("--status") {
     } else {
         print("no state file at \(path.path) — the app has not run yet")
     }
+    exit(0)
+}
+
+if arguments.contains("--dump-menu") {
+    // Proves the Edit menu — and therefore ⌘A / ⌘C / ⌘V / ⌘X / ⌘Z — is really
+    // installed, without needing a GUI to press keys in. A shortcut that is
+    // absent from this listing cannot work, because AppKit resolves editing
+    // shortcuts by matching menu key equivalents.
+    _ = NSApplication.shared  // NSApp must exist before make() touches windowsMenu
+    let menu = MainMenuBuilder.make(target: NSObject())
+    print(MainMenuBuilder.describe(menu).joined(separator: "\n"))
     exit(0)
 }
 

@@ -31,6 +31,7 @@ from .openai_compat import OpenAICompatibleBackend
 from .studio_hub import StudioHubBackend
 
 from ..providers.definitions import (
+    IMPLEMENTED_KINDS,
     KIND_ANTHROPIC,
     KIND_BFL,
     KIND_ELEVENLABS,
@@ -107,6 +108,17 @@ _BY_KIND: dict[str, Backend] = {
     KIND_FISH: _FISH,
     KIND_STUDIO_HUB: _STUDIO_HUB,
 }
+
+
+# The catalogue decides what Story Studio may see from IMPLEMENTED_KINDS; this
+# module decides what can actually run from `_BY_KIND`. If those drift, the
+# gateway either hides a working provider or — far worse — offers a model that
+# fails on use. Fail loudly at import instead.
+assert set(_BY_KIND) == set(IMPLEMENTED_KINDS), (
+    "adapter/catalogue mismatch — "
+    f"adapter-only: {sorted(set(_BY_KIND) - set(IMPLEMENTED_KINDS))}, "
+    f"catalogue-only: {sorted(set(IMPLEMENTED_KINDS) - set(_BY_KIND))}"
+)
 
 
 def adapter_for(definition: ProviderDefinition) -> Backend:

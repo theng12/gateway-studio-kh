@@ -23,7 +23,12 @@ from typing import Any
 
 from ..config import MODEL_CACHE_PATH, write_secret
 from .credentials import CredentialStore
-from .definitions import DISCOVERY_STATIC, PROVIDERS_BY_ID, ProviderDefinition
+from .definitions import (
+    DISCOVERY_STATIC,
+    IMPLEMENTED_KINDS,
+    PROVIDERS_BY_ID,
+    ProviderDefinition,
+)
 from .discovery import DiscoveryResult, DiscoveredModel, discover
 
 
@@ -161,10 +166,16 @@ class ModelInventory:
         """Every enabled model of a modality across every enabled provider.
 
         This is the exact set the Story Studio catalogue is built from.
+
+        Providers whose kind has no adapter are skipped entirely. They remain
+        discoverable and configurable — the point is that a model which would
+        fail the moment Story Studio used it must never appear in the picker.
         """
         output: list[tuple[ProviderDefinition, dict[str, Any]]] = []
         for provider_id, definition in PROVIDERS_BY_ID.items():
             if modality not in definition.modalities:
+                continue
+            if definition.kind not in IMPLEMENTED_KINDS:
                 continue
             if not self.credentials.is_enabled(provider_id):
                 continue
