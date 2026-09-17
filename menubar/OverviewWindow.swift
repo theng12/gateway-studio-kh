@@ -173,14 +173,14 @@ final class OverviewSection: NSObject, AppSection {
     // MARK: Layout
 
     private func buildContent() -> NSView {
-        let root = NSStackView()
-        root.orientation = .vertical
-        root.alignment = .leading
-        root.spacing = 14
-        root.edgeInsets = NSEdgeInsets(top: 18, left: 20, bottom: 18, right: 20)
-        root.translatesAutoresizingMaskIntoConstraints = false
+        let root = PageKit.page()
 
-        // ---- status header
+        root.addArrangedSubview(PageKit.heading(
+            "Overview",
+            "One endpoint in front of every local runner and cloud provider."
+        ))
+
+        // ---- live status line
         statusDot.wantsLayer = true
         statusDot.layer?.cornerRadius = 5
         statusDot.translatesAutoresizingMaskIntoConstraints = false
@@ -227,7 +227,7 @@ final class OverviewSection: NSObject, AppSection {
             tileRow.addArrangedSubview(tile)
         }
         root.addArrangedSubview(tileRow)
-        tileRow.widthAnchor.constraint(equalTo: root.widthAnchor, constant: -40).isActive = true
+        tileRow.widthAnchor.constraint(equalTo: root.widthAnchor, constant: -56).isActive = true
 
         // ---- models by modality
         root.addArrangedSubview(sectionTitle("Offered to Story Studio"))
@@ -269,11 +269,11 @@ final class OverviewSection: NSObject, AppSection {
         return container
     }
 
+    /// Sentence case at `title3` weight, matching Studio Hub's `sectionTitle`.
+    /// It used to be 10.5pt uppercase tertiary, which read as a field label
+    /// rather than a heading and did not match the sibling app.
     private func sectionTitle(_ text: String) -> NSTextField {
-        let label = NSTextField(labelWithString: text.uppercased())
-        label.font = .systemFont(ofSize: 10.5, weight: .semibold)
-        label.textColor = .tertiaryLabelColor
-        return label
+        PageKit.sectionTitle(text)
     }
 
     private func button(_ title: String, _ action: Selector) -> NSButton {

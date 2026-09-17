@@ -100,9 +100,42 @@ final class MainWindow: NSObject, NSTableViewDataSource, NSTableViewDelegate {
     private var sections: [AppSection] = []
     private var currentIndex = -1
     private var timer: Timer?
+    private var statusDot = NSView()
+    private let sidebarStatus = NSTextField(labelWithString: "…")
+    private var statusTimer: Timer?
 
     /// Section names accepted by `--open` and the menu.
-    private static let order = ["overview", "jobs", "voices", "providers"]
+    private static let order = ["overview", "jobs", "voices", "providers", "settings"]
+
+    /// A sidebar row is either a group header or a section.
+    ///
+    /// Studio Hub KH groups its sidebar into `Section("Create")` /
+    /// `Section("Library & app")`; this mirrors that so the two apps are
+    /// navigated the same way. The grouping is navigation, not decoration:
+    /// Overview answers "is it well?", the middle group is "what ran / what can
+    /// it say", and the last group is configuration.
+    private enum SidebarRow {
+        case header(String)
+        case section(Int)
+    }
+
+    private static let layout: [SidebarRow] = [
+        .section(0),
+        .header("Create"),
+        .section(1),
+        .section(2),
+        .header("Library & app"),
+        .section(3),
+        .section(4),
+    ]
+
+    private var rowForSection: [Int: Int] {
+        var map: [Int: Int] = [:]
+        for (row, entry) in Self.layout.enumerated() {
+            if case .section(let index) = entry { map[index] = row }
+        }
+        return map
+    }
 
     func sectionIndex(named name: String) -> Int? {
         let needle = name.lowercased()
@@ -142,6 +175,7 @@ final class MainWindow: NSObject, NSTableViewDataSource, NSTableViewDelegate {
             JobsSection.shared,
             VoicesSection.shared,
             ProvidersSection.shared,
+            SettingsSection.shared,
         ]
 
         let window = NSWindow(
@@ -176,13 +210,49 @@ final class MainWindow: NSObject, NSTableViewDataSource, NSTableViewDelegate {
         sidebarScroll.drawsBackground = false
         sidebarScroll.translatesAutoresizingMaskIntoConstraints = false
 
+        // Studio Hub KH pins a connection line to the bottom of its sidebar
+        // (`safeAreaInset(edge: .bottom)`), so the state of the thing you are
+        // driving is always on screen no matter which page you are on. Same
+        // line here, same place. It replaced a Settings gear, because Settings
+        // is now a row in the list rather than a lone button.
+        statusDot.wantsLayer = true
+        statusDot.layer?.cornerRadius = 4
+        statusDot.translatesAutoresizingMaskIntoConstraints = false
+        statusDot.widthAnchor.constraint(equalToConstant: 8).isActive = true
+        statusDot.heightAnchor.constraint(equalToConstant: 8).isActive = true
+
+        sidebarStatus.font = .systemFont(ofSize: 11)
+        sidebarStatus.textColor = .secondaryLabelColor
+        sidebarStatus.lineBreakMode = .byWordWrapping
+        sidebarStatus.preferredMaxLayoutWidth = 200
+
+        let statusRow = NSStackView(views: [statusDot, sidebarStatus])
+        statusRow.orientation = .horizontal
+        statusRow.alignment = .top
+        statusRow.spacing = 8
+        statusRow.translatesAutoresizingMaskIntoConstraints = false
+
+        let statusDivider = NSBox()
+        statusDivider.boxType = .separator
+        statusDivider.translatesAutoresizingMaskIntoConstraints = false
+
         let sidebarHost = NSView()
         sidebarHost.addSubview(sidebarScroll)
+        sidebarHost.addSubview(statusDivider)
+        sidebarHost.addSubview(statusRow)
         NSLayoutConstraint.activate([
             sidebarScroll.topAnchor.constraint(equalTo: sidebarHost.topAnchor),
             sidebarScroll.leadingAnchor.constraint(equalTo: sidebarHost.leadingAnchor),
             sidebarScroll.trailingAnchor.constraint(equalTo: sidebarHost.trailingAnchor),
-            sidebarScroll.bottomAnchor.constraint(equalTo: sidebarHost.bottomAnchor),
+            sidebarScroll.bottomAnchor.constraint(equalTo: statusDivider.topAnchor),
+
+            statusDivider.leadingAnchor.constraint(equalTo: sidebarHost.leadingAnchor),
+            statusDivider.trailingAnchor.constraint(equalTo: sidebarHost.trailingAnchor),
+            statusDivider.bottomAnchor.constraint(equalTo: statusRow.topAnchor, constant: -10),
+
+            statusRow.leadingAnchor.constraint(equalTo: sidebarHost.leadingAnchor, constant: 14),
+            statusRow.trailingAnchor.constraint(equalTo: sidebarHost.trailingAnchor, constant: -14),
+            statusRow.bottomAnchor.constraint(equalTo: sidebarHost.bottomAnchor, constant: -12),
         ])
 
         // ---- detail
@@ -223,6 +293,8 @@ final class MainWindow: NSObject, NSTableViewDataSource, NSTableViewDelegate {
         }
         RunLoop.main.add(tick, forMode: .common)
         timer = tick
+
+        startStatusUpdates()
     }
 
     // MARK: Selection
@@ -243,7 +315,9 @@ final class MainWindow: NSObject, NSTableViewDataSource, NSTableViewDelegate {
                 child.bottomAnchor.constraint(equalTo: container.bottomAnchor),
             ])
             currentIndex = index
-            sidebar.selectRowIndexes(IndexSet(integer: index), byExtendingSelection: false)
+            if let row = rowForSection[index] {
+                sidebar.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+            }
             window.title = "gateway-kh — \(section.title)"
         }
 
@@ -252,42 +326,94 @@ final class MainWindow: NSObject, NSTableViewDataSource, NSTableViewDelegate {
 
     // MARK: Sidebar
 
-    func numberOfRows(in tableView: NSTableView) -> Int { sections.count }
+    func numberOfRows(in tableView: NSTableView) -> Int { Self.layout.count }
+
+    /// Group headers are not selectable rows; AppKit draws them as small caps.
+    func tableView(_ tableView: NSTableView, isGroupRow row: Int) -> Bool {
+        if case .header = Self.layout[row] { return true }
+        return false
+    }
 
     func tableView(
         _ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int
     ) -> NSView? {
-        guard row < sections.count else { return nil }
-        let section = sections[row]
+        switch Self.layout[row] {
+        case .header(let title):
+            let label = NSTextField(labelWithString: title.uppercased())
+            label.font = .systemFont(ofSize: 11, weight: .semibold)
+            label.textColor = .secondaryLabelColor
+            let cell = NSTableCellView()
+            label.translatesAutoresizingMaskIntoConstraints = false
+            cell.addSubview(label)
+            cell.textField = label
+            NSLayoutConstraint.activate([
+                label.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 4),
+                label.bottomAnchor.constraint(equalTo: cell.bottomAnchor, constant: -2),
+            ])
+            return cell
 
-        let cell = NSTableCellView()
-        let image = NSImageView()
-        image.image = NSImage(systemSymbolName: section.symbol, accessibilityDescription: nil)
-        image.contentTintColor = .controlAccentColor
-        let label = NSTextField(labelWithString: section.title)
-        label.font = .systemFont(ofSize: 13)
+        case .section(let index):
+            let section = sections[index]
+            let cell = NSTableCellView()
+            let image = NSImageView()
+            image.image = NSImage(systemSymbolName: section.symbol, accessibilityDescription: nil)
+            image.contentTintColor = .controlAccentColor
+            let label = NSTextField(labelWithString: section.title)
+            label.font = .systemFont(ofSize: 13)
 
-        image.translatesAutoresizingMaskIntoConstraints = false
-        label.translatesAutoresizingMaskIntoConstraints = false
-        cell.addSubview(image)
-        cell.addSubview(label)
-        cell.imageView = image
-        cell.textField = label
+            image.translatesAutoresizingMaskIntoConstraints = false
+            label.translatesAutoresizingMaskIntoConstraints = false
+            cell.addSubview(image)
+            cell.addSubview(label)
+            cell.imageView = image
+            cell.textField = label
 
-        NSLayoutConstraint.activate([
-            image.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 2),
-            image.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
-            image.widthAnchor.constraint(equalToConstant: 18),
-            label.leadingAnchor.constraint(equalTo: image.trailingAnchor, constant: 7),
-            label.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -4),
-            label.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
-        ])
-        return cell
+            NSLayoutConstraint.activate([
+                image.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 2),
+                image.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
+                image.widthAnchor.constraint(equalToConstant: 18),
+                label.leadingAnchor.constraint(equalTo: image.trailingAnchor, constant: 7),
+                label.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -4),
+                label.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
+            ])
+            return cell
+        }
     }
 
     func tableViewSelectionDidChange(_ notification: Notification) {
         let row = sidebar.selectedRow
-        guard row >= 0 else { return }
-        select(row)
+        guard row >= 0, row < Self.layout.count else { return }
+        // A header cannot be selected into; put the highlight back where it was.
+        guard case .section(let index) = Self.layout[row] else {
+            if let current = rowForSection[currentIndex] {
+                sidebar.selectRowIndexes(IndexSet(integer: current), byExtendingSelection: false)
+            }
+            return
+        }
+        select(index)
+    }
+
+    // MARK: Sidebar status line
+
+    /// Keeps the bottom line current without depending on which section is
+    /// showing, so it stays true while Providers has the web console up.
+    private func startStatusUpdates() {
+        updateStatusLine()
+        let tick = Timer(timeInterval: 3, repeats: true) { [weak self] _ in
+            self?.updateStatusLine()
+        }
+        RunLoop.main.add(tick, forMode: .common)
+        statusTimer = tick
+    }
+
+    private func updateStatusLine() {
+        let running: Bool
+        switch GatewayController.shared.state {
+        case .running: running = true
+        default: running = false
+        }
+        statusDot.layer?.backgroundColor =
+            (running ? NSColor.systemGreen : NSColor.tertiaryLabelColor).cgColor
+        sidebarStatus.stringValue = GatewayController.shared.sidebarSummary
     }
 }

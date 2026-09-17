@@ -245,6 +245,22 @@ final class GatewayController {
 
     var logPath: String { AppPaths.logFile.path }
 
+    /// The one line pinned to the bottom of the sidebar, mirroring Studio Hub's
+    /// connection line. It answers "is it up, and what is on offer" without
+    /// making the owner change pages to find out.
+    var sidebarSummary: String {
+        switch state {
+        case .running(let providers, let models):
+            return "Running on 127.0.0.1:\(port)\n\(providers) providers · \(models) models live"
+        case .starting:
+            return "Starting on 127.0.0.1:\(port)…"
+        case .stopped:
+            return "Stopped\n127.0.0.1:\(port)"
+        case .failed(let reason):
+            return "Failed: \(reason)"
+        }
+    }
+
     func observe(_ handler: @escaping () -> Void) {
         onStateChange = handler
     }
@@ -586,187 +602,6 @@ enum LaunchAgent {
 
 // MARK: - Settings window
 
-final class SettingsWindow: NSObject {
-    static let shared = SettingsWindow()
-    private var window: NSWindow?
-    private var runtimeLabel: NSTextField!
-    private var dataLabel: NSTextField!
-    private var portField: NSTextField!
-    private var keyField: NSTextField!
-    private var loginCheck: NSButton!
-    private var autoStartCheck: NSButton!
-    private var statusLabel: NSTextField!
-
-    func show() {
-        if let existing = window {
-            existing.makeKeyAndOrderFront(nil)
-            NSApp.activate(ignoringOtherApps: true)
-            refresh()
-            return
-        }
-
-        let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 560, height: 380),
-            styleMask: [.titled, .closable],
-            backing: .buffered,
-            defer: false
-        )
-        window.title = "gateway-kh Settings"
-        window.center()
-        window.isReleasedWhenClosed = false
-
-        let stack = NSStackView()
-        stack.orientation = .vertical
-        stack.alignment = .leading
-        stack.spacing = 12
-        stack.edgeInsets = NSEdgeInsets(top: 20, left: 20, bottom: 20, right: 20)
-        stack.translatesAutoresizingMaskIntoConstraints = false
-
-        func label(_ text: String, bold: Bool = false) -> NSTextField {
-            let field = NSTextField(labelWithString: text)
-            field.font = bold ? .boldSystemFont(ofSize: 13) : .systemFont(ofSize: 12)
-            field.textColor = bold ? .labelColor : .secondaryLabelColor
-            return field
-        }
-
-        stack.addArrangedSubview(label("Gateway", bold: true))
-
-        stack.addArrangedSubview(label("Runtime"))
-        runtimeLabel = NSTextField(wrappingLabelWithString: GatewayController.shared.runtimeDescription)
-        runtimeLabel.font = .systemFont(ofSize: 12)
-        runtimeLabel.textColor = .secondaryLabelColor
-        runtimeLabel.widthAnchor.constraint(equalToConstant: 500).isActive = true
-        stack.addArrangedSubview(runtimeLabel)
-
-        stack.addArrangedSubview(label("Data folder — credentials, voices, history"))
-        dataLabel = NSTextField(labelWithString: AppPaths.data.path)
-        dataLabel.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
-        dataLabel.textColor = .secondaryLabelColor
-        dataLabel.lineBreakMode = .byTruncatingMiddle
-        dataLabel.widthAnchor.constraint(equalToConstant: 500).isActive = true
-        stack.addArrangedSubview(dataLabel)
-
-        stack.addArrangedSubview(label("Port"))
-        portField = NSTextField(string: String(ConfigStore.shared.config.port))
-        portField.widthAnchor.constraint(equalToConstant: 100).isActive = true
-        stack.addArrangedSubview(portField)
-
-        stack.addArrangedSubview(label("API key (paste this into Story Studio)"))
-        let keyRow = NSStackView()
-        keyRow.orientation = .horizontal
-        keyRow.spacing = 8
-        keyField = NSTextField(string: EnvFile.apiKey())
-        keyField.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
-        keyField.widthAnchor.constraint(equalToConstant: 320).isActive = true
-        let copyButton = NSButton(title: "Copy", target: self, action: #selector(copyKey))
-        let regenButton = NSButton(title: "Regenerate", target: self, action: #selector(regenerateKey))
-        keyRow.addArrangedSubview(keyField)
-        keyRow.addArrangedSubview(copyButton)
-        keyRow.addArrangedSubview(regenButton)
-        stack.addArrangedSubview(keyRow)
-
-        let divider = NSBox()
-        divider.boxType = .separator
-        divider.widthAnchor.constraint(equalToConstant: 500).isActive = true
-        stack.addArrangedSubview(divider)
-
-        loginCheck = NSButton(
-            checkboxWithTitle: "Launch at login",
-            target: self, action: #selector(toggleLogin)
-        )
-        stack.addArrangedSubview(loginCheck)
-
-        autoStartCheck = NSButton(
-            checkboxWithTitle: "Start the gateway automatically when this app opens",
-            target: self, action: #selector(toggleAutoStart)
-        )
-        stack.addArrangedSubview(autoStartCheck)
-
-        let buttonRow = NSStackView()
-        buttonRow.orientation = .horizontal
-        buttonRow.spacing = 8
-        buttonRow.addArrangedSubview(
-            NSButton(title: "Save", target: self, action: #selector(save))
-        )
-        buttonRow.addArrangedSubview(
-            NSButton(title: "Open provider console", target: self, action: #selector(openConsole))
-        )
-        buttonRow.addArrangedSubview(
-            NSButton(title: "Reveal data folder", target: self, action: #selector(revealData))
-        )
-        stack.addArrangedSubview(buttonRow)
-
-        statusLabel = label("")
-        stack.addArrangedSubview(statusLabel)
-
-        let content = NSView()
-        content.addSubview(stack)
-        NSLayoutConstraint.activate([
-            stack.topAnchor.constraint(equalTo: content.topAnchor),
-            stack.leadingAnchor.constraint(equalTo: content.leadingAnchor),
-            stack.trailingAnchor.constraint(equalTo: content.trailingAnchor),
-        ])
-        window.contentView = content
-        self.window = window
-        window.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
-        refresh()
-    }
-
-    private func refresh() {
-        loginCheck?.state = LaunchAgent.isInstalled ? .on : .off
-        autoStartCheck?.state = ConfigStore.shared.config.autoStartGateway ? .on : .off
-        keyField?.stringValue = EnvFile.apiKey()
-        statusLabel?.stringValue = "Config: \(ConfigStore.shared.configPath)"
-    }
-
-    @objc private func copyKey() {
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(keyField.stringValue, forType: .string)
-        statusLabel.stringValue = "API key copied to the clipboard."
-    }
-
-    @objc private func regenerateKey() {
-        let key = EnvFile.generateKey()
-        EnvFile.writeApiKey(key)
-        keyField.stringValue = key
-        statusLabel.stringValue = "New key written. Restart the gateway to apply it."
-    }
-
-    @objc private func toggleLogin() {
-        if loginCheck.state == .on {
-            LaunchAgent.install()
-            ConfigStore.shared.update { $0.launchAtLogin = true }
-        } else {
-            LaunchAgent.uninstall()
-            ConfigStore.shared.update { $0.launchAtLogin = false }
-        }
-        refresh()
-    }
-
-    @objc private func toggleAutoStart() {
-        ConfigStore.shared.update { $0.autoStartGateway = autoStartCheck.state == .on }
-    }
-
-    @objc private func save() {
-        let port = Int(portField.stringValue.trimmingCharacters(in: .whitespaces)) ?? 8010
-        let key = keyField.stringValue.trimmingCharacters(in: .whitespaces)
-
-        ConfigStore.shared.update { $0.port = port }
-        if !key.isEmpty {
-            EnvFile.writeApiKey(key)
-        }
-        statusLabel.stringValue = "Saved. Restarting the gateway…"
-        GatewayController.shared.restart()
-    }
-
-    @objc private func openConsole() { MainWindow.shared.show(section: "providers") }
-
-    @objc private func revealData() {
-        NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: AppPaths.data.path)
-    }
-}
-
 // MARK: - Main menu
 
 /// A menu-bar-only app still needs a main menu.
@@ -986,7 +821,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         if let requested = launchWindow?.lowercased() {
             switch requested {
-            case "settings": SettingsWindow.shared.show()
+            case "settings": MainWindow.shared.show(section: "settings")
             case "console": MainWindow.shared.show(section: "providers")
             default: MainWindow.shared.show(section: requested)
             }
@@ -1121,7 +956,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if let url = GatewayController.shared.consoleURL { NSWorkspace.shared.open(url) }
     }
 
-    @objc func openSettings() { SettingsWindow.shared.show() }
+    @objc func openSettings() { MainWindow.shared.show(section: "settings") }
 
     @objc func showAbout() {
         NSApp.activate(ignoringOtherApps: true)

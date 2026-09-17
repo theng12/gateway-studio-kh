@@ -40,12 +40,12 @@ final class JobsSection: NSObject, AppSection, NSTableViewDataSource, NSTableVie
     // MARK: Layout
 
     private func buildContent() -> NSView {
-        let root = NSStackView()
-        root.orientation = .vertical
-        root.alignment = .leading
-        root.spacing = 10
-        root.edgeInsets = NSEdgeInsets(top: 14, left: 16, bottom: 14, right: 16)
-        root.translatesAutoresizingMaskIntoConstraints = false
+        let root = PageKit.page()
+
+        root.addArrangedSubview(PageKit.heading(
+            "Jobs",
+            "Everything the gateway has run, with the reason when something failed."
+        ))
 
         summaryLabel = NSTextField(labelWithString: "Loading…")
         summaryLabel.font = .systemFont(ofSize: 12)
@@ -66,7 +66,7 @@ final class JobsSection: NSObject, AppSection, NSTableViewDataSource, NSTableVie
         bar.spacing = 8
         bar.alignment = .centerY
         root.addArrangedSubview(bar)
-        bar.widthAnchor.constraint(equalTo: root.widthAnchor, constant: -32).isActive = true
+        bar.widthAnchor.constraint(equalTo: root.widthAnchor, constant: -56).isActive = true
 
         // ---- table
         table = NSTableView()
@@ -91,7 +91,7 @@ final class JobsSection: NSObject, AppSection, NSTableViewDataSource, NSTableVie
 
         root.addArrangedSubview(scroll)
         NSLayoutConstraint.activate([
-            scroll.widthAnchor.constraint(equalTo: root.widthAnchor, constant: -32),
+            scroll.widthAnchor.constraint(equalTo: root.widthAnchor, constant: -56),
             scroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 260),
         ])
 
@@ -102,7 +102,7 @@ final class JobsSection: NSObject, AppSection, NSTableViewDataSource, NSTableVie
         detailLabel.isSelectable = true
         detailLabel.translatesAutoresizingMaskIntoConstraints = false
         root.addArrangedSubview(detailLabel)
-        detailLabel.widthAnchor.constraint(equalTo: root.widthAnchor, constant: -32).isActive = true
+        detailLabel.widthAnchor.constraint(equalTo: root.widthAnchor, constant: -56).isActive = true
 
         let container = NSView()
         container.addSubview(root)

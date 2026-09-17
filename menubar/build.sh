@@ -21,7 +21,17 @@ INSTALL=1
 [ "${1:-}" = "--no-install" ] && INSTALL=0
 
 echo "==> cleaning"
-rm -rf "$BUILD"
+# A plain `rm -rf` intermittently fails with "Directory not empty": something
+# outside this script (Spotlight indexing the freshly written bundle, or a
+# Finder window on it) recreates entries inside the tree while it is being
+# removed. That aborted an entire build under `set -e`. Retry, and treat a
+# stubborn leftover as non-fatal because mkdir and the later copy will fill it.
+for _ in 1 2 3 4 5; do
+    rm -rf "$BUILD" 2>/dev/null || true
+    [ -d "$BUILD" ] || break
+    sleep 0.5
+done
+rm -rf "$BUILD" 2>/dev/null || true
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 
 echo "==> compiling menu bar app (Swift)"

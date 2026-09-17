@@ -45,12 +45,12 @@ final class VoicesSection: NSObject, AppSection, NSTableViewDataSource, NSTableV
     // MARK: Layout
 
     private func buildContent() -> NSView {
-        let root = NSStackView()
-        root.orientation = .vertical
-        root.alignment = .leading
-        root.spacing = 10
-        root.edgeInsets = NSEdgeInsets(top: 14, left: 16, bottom: 14, right: 16)
-        root.translatesAutoresizingMaskIntoConstraints = false
+        let root = PageKit.page()
+
+        root.addArrangedSubview(PageKit.heading(
+            "Voices",
+            "Only the voices you enable here are offered to Story Studio."
+        ))
 
         providerPopup = NSPopUpButton()
         providerPopup.target = self
@@ -78,7 +78,7 @@ final class VoicesSection: NSObject, AppSection, NSTableViewDataSource, NSTableV
         bar.spacing = 8
         bar.alignment = .centerY
         root.addArrangedSubview(bar)
-        bar.widthAnchor.constraint(equalTo: root.widthAnchor, constant: -32).isActive = true
+        bar.widthAnchor.constraint(equalTo: root.widthAnchor, constant: -56).isActive = true
 
         summaryLabel = NSTextField(labelWithString: "Loading…")
         summaryLabel.font = .systemFont(ofSize: 11.5)
@@ -113,7 +113,7 @@ final class VoicesSection: NSObject, AppSection, NSTableViewDataSource, NSTableV
         scroll.translatesAutoresizingMaskIntoConstraints = false
         root.addArrangedSubview(scroll)
         NSLayoutConstraint.activate([
-            scroll.widthAnchor.constraint(equalTo: root.widthAnchor, constant: -32),
+            scroll.widthAnchor.constraint(equalTo: root.widthAnchor, constant: -56),
             scroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 320),
         ])
 
@@ -134,7 +134,7 @@ final class VoicesSection: NSObject, AppSection, NSTableViewDataSource, NSTableV
         detailLabel.textColor = .secondaryLabelColor
         detailLabel.translatesAutoresizingMaskIntoConstraints = false
         root.addArrangedSubview(detailLabel)
-        detailLabel.widthAnchor.constraint(equalTo: root.widthAnchor, constant: -32).isActive = true
+        detailLabel.widthAnchor.constraint(equalTo: root.widthAnchor, constant: -56).isActive = true
 
         let container = NSView()
         container.addSubview(root)

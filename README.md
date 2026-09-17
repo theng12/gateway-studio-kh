@@ -111,34 +111,46 @@ stale copy from the other location.)
 A bolt icon appears in the menu bar. It is a real native app (Swift + AppKit, `LSUIElement`), so
 there is no Dock icon.
 
-**Everything lives in one window.** An earlier version opened a separate window per view, which
-meant that checking a job and then checking the model that produced it left two windows fighting
-for the same screen. It is now a single window with a sidebar:
+**Everything lives in one window**, arranged the way the sibling **Studio Hub KH** app arranges its
+window — same grouped sidebar, same large-title pages, same status line pinned at the bottom. The
+two apps are used side by side, so they are meant to be navigated the same way:
 
-| Section | Shortcut | What it shows |
-|---|---|---|
-| **Overview** | ⌘1 | dashboard — status, counts, per-modality breakdown, recent activity |
-| **Jobs** | ⌘2 | what has actually run, with failure reasons and artifact URLs |
-| **Voices** | ⌘3 | voice sources, search, preview, enable |
-| **Providers** | ⌘4 | the provider console — keys, discovery, model search and enable |
+| Sidebar | What it shows |
+|---|---|
+| **Overview** (⌘1) | dashboard — status, counts, per-modality breakdown, recent activity |
+| **Create** | |
+| &nbsp;&nbsp;**Jobs** (⌘2) | what has actually run, with failure reasons and artifact URLs |
+| &nbsp;&nbsp;**Voices** (⌘3) | voice sources, search, preview, enable |
+| **Library & app** | |
+| &nbsp;&nbsp;**Providers** (⌘4) | the provider console — keys, discovery, model search and enable |
+| &nbsp;&nbsp;**Settings** (⌘,) | port, API key, launch at login |
 
-The window title tracks the section (`gateway-kh — Jobs`), so it is still obvious what you are
-looking at in a window list or a screenshot. Sections that display live data refresh every 5
-seconds while they are visible; Voices does not, because a refresh would discard a half-typed
-search.
+Below the list, a live line stays put on every page: a green dot, the endpoint, and how many
+providers and models are on offer. It replaced a lone Settings gear, and it is the same
+`safeAreaInset(edge: .bottom)` convention Studio Hub uses.
+
+**Settings is a page here**, not its own window. It was a separate window first, on the reasoning
+that macOS puts Settings in the app menu — but that reasoning assumes an app menu, and an accessory
+app never shows one. The owner went looking for Settings and could not find it. Studio Hub lists it
+in the sidebar under "Library & app", so this does too.
+
+Every page opens with a large title and a one-line description of what it is for
+(`PageKit.heading`), section titles are `title3` semibold, and page bodies share one padding —
+all mirroring Studio Hub's `heading` / `sectionTitle` / `empty` helpers.
 
 **The menu:**
 
 | Item | What it does |
 |---|---|
 | status line | live: provider and model counts, read from the gateway's own `/health` |
-| Overview / Jobs / Voices / Providers | select a section in the main window |
-| Open Provider Console (⌘P) | jump straight to the Providers section |
+| Overview / Jobs / Voices | select a page in the main window |
+| Open Provider Console (⌘P) | jump straight to the Providers page |
 | Start / Stop / Restart Gateway | supervises the service directly |
 | Studio Hub status | whether your local runner is up, and a shortcut to start it |
-| **Settings…** (⌘,) | port, API key, launch at login — a separate window, per macOS convention |
+| **Settings…** (⌘,) | the Settings page |
 | Open data folder / Open log | where credentials and logs live |
 | Quit | quits the menu bar app; **leaves the gateway running** |
+
 
 
 ## The app is self-contained
@@ -182,7 +194,7 @@ skips the window and leaves only the menu bar icon.
 
 **Settings** is where the gateway's own API key lives, with a **Copy** button — that is the value
 Story Studio needs. Paste it into **Story Studio → Settings → This Mac → GenStudio API key**, and set
-**Base URL** to `http://127.0.0.1:8010`.
+**Base URL** to `http://127.0.0.1:8010`. It is the last item in the sidebar, under "Library & app".
 
 **Launch at login** uses a LaunchAgent (`~/Library/LaunchAgents/kh.gateway.menubar.plist`) rather
 than `SMAppService`, because `SMAppService` requires a signed, registered bundle and this app is
@@ -261,7 +273,7 @@ withheld from Story Studio** — offering a model that fails on use is worse tha
 ## Voices
 
 Providers do not agree about what a voice *is*, and the app shows the difference rather than hiding
-it. The **Voices** section (⌘3) has three sources:
+it. The **Voices** page (⌘3) has three sources:
 
 | Source | What it is | Default |
 |---|---|---|
@@ -332,20 +344,21 @@ refusal.
 .venv/bin/python tests/test_ui.py
 ```
 
-47 checks that drive the macOS **accessibility layer**: they open the window through the real menus,
-read what it renders, type into fields, tick checkboxes and press buttons — then verify the
-*gateway* changed, not merely that the widget repainted.
+57 checks that drive the macOS **accessibility layer**: they open the window through the real menus,
+click sidebar rows, read what it renders, type into fields, tick checkboxes and press buttons — then
+verify the *gateway* changed, not merely that the widget repainted.
 
 ```
-View → Voices selects it                       PASS
-still exactly one window on "Voices"           PASS
-modality rows do not overlap                   PASS
-typing filters the table (66 → 3)              PASS
-ticking a voice reaches the gateway (12 → 11)  PASS
+the sidebar is grouped like Studio Hub's        PASS
+clicking a sidebar row selects the same section PASS
+opens with a page heading like Studio Hub's     PASS
+modality rows do not overlap                    PASS
+typing filters the table (66 → 3)               PASS
+ticking a voice reaches the gateway (12 → 11)   PASS
 ```
 
 This is the layer that catches what the e2e suite cannot: a window that builds perfectly while a
-button does nothing. It found four such issues — three in the test rather than the app, but each
+button does nothing. It found five such issues — four in the test rather than the app, but each
 looked exactly like a broken feature until diagnosed:
 
 - an **accessory app is never frontmost**, so System Events sent keystrokes to whatever was — the
@@ -361,6 +374,14 @@ looked exactly like a broken feature until diagnosed:
 Because the first three are timing-dependent rather than deterministic, `type_into` now **reads the
 field back and retries** instead of sleeping and hoping. A test that fails half the time is worse
 than no test.
+
+The fourth and fifth are the same story one level down: focusing **any** text field in this app makes
+macOS create a nameless `AXDialog` alongside the window (the field editor / input method owns it, not
+this app), and it is ordered *first* often enough that addressing `window 1` was a coin flip. When the
+dialog won, every helper died with `Can't get splitter group 1 of window 1 ... Invalid index (-1719)`.
+The suite now addresses `first window whose subrole is "AXStandardWindow"` and counts only standard
+windows, so z-order stops mattering — and `osa()` retries that one transient error rather than
+failing the run.
 
 The layout checks are regression tests with numbers attached, not vibes: the modality bars were once
 unreadable because the rows had no height constraint and collapsed into each other. The suite now
@@ -437,11 +458,13 @@ data/providers.local.json     user-defined providers (gitignored)
 tests/mock_upstream.py        local mock provider
 tests/test_e2e.py             the end-to-end suite
 tests/test_ui.py              drives the real app through the accessibility layer
-menubar/main.swift            app shell: gateway supervision, status menu, settings, launch agent
-menubar/MainWindow.swift      the one window: sidebar + section container
-menubar/OverviewWindow.swift  Overview section, including the modality bars
-menubar/JobsWindow.swift      Jobs section
-menubar/VoicesWindow.swift    Voices section
+menubar/main.swift            app shell: gateway supervision, status menu, launch agent
+menubar/MainWindow.swift      the one window: grouped sidebar, status line, section container
+menubar/PageKit.swift         shared page furniture (heading / sectionTitle / empty), from Studio Hub
+menubar/OverviewWindow.swift  Overview page, including the modality bars
+menubar/JobsWindow.swift      Jobs page
+menubar/VoicesWindow.swift    Voices page
+menubar/SettingsSection.swift Settings page: port, API key, startup
 menubar/GatewayAPI.swift      authenticated admin client + formatting helpers
 menubar/build.sh              compiles and installs the .app
 menubar/make_icon.py          generates the app icon (stdlib only)

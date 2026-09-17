@@ -28,12 +28,30 @@ import urllib.request
 
 APP_PROCESS = "GatewayKH"
 
-#: Sidebar sections in order, with the window title each should produce.
+#: Sidebar rows in order, with the window title each section should produce.
+#: Studio Hub KH groups its sidebar, and this app was asked to match it, so the
+#: list contains group headers ("CREATE", "LIBRARY & APP") as well as sections.
+#: Headers are not selectable; they are listed here so the ordering and the
+#: grouping are pinned by a test rather than by whoever last edited the layout.
+SIDEBAR = [
+    "Overview",
+    "CREATE",
+    "Jobs",
+    "Voices",
+    "LIBRARY & APP",
+    "Providers",
+    "Settings",
+]
+
+#: Sections reachable from the View menu, in row order:
+#: (sidebar row, menu title, window title). Settings is deliberately absent —
+#: it is opened with ⌘, or by clicking its sidebar row, and is checked in
+#: section 6 rather than duplicated in the View menu.
 SECTIONS = [
-    ("Overview", "gateway-kh — Overview"),
-    ("Jobs", "gateway-kh — Jobs"),
-    ("Voices", "gateway-kh — Voices"),
-    ("Providers", "gateway-kh — Providers"),
+    (1, "Overview", "gateway-kh — Overview"),
+    (3, "Jobs", "gateway-kh — Jobs"),
+    (4, "Voices", "gateway-kh — Voices"),
+    (6, "Providers", "gateway-kh — Providers"),
 ]
 
 failures: list[str] = []
@@ -50,15 +68,32 @@ def check(label: str, ok: bool, detail: str = "") -> None:
         failures.append(label)
 
 
-def osa(script: str, timeout: float = 90.0) -> str:
-    """Run AppleScript, raising with its message on failure."""
-    result = subprocess.run(
-        ["osascript", "-e", script], capture_output=True, text=True, timeout=timeout
-    )
-    if result.returncode != 0:
+def osa(script: str, timeout: float = 90.0, attempts: int = 3) -> str:
+    """Run AppleScript, raising with its message on failure.
+
+    Retries the *transient* accessibility failures and nothing else.
+
+    This app is an accessory (`LSUIElement`) process, so it is never really
+    frontmost, and System Events intermittently fails to resolve a node in its
+    view tree — "Can't get splitter group 1 of window 1 ... Invalid index
+    (-1719)". The tree is not actually changing: `window.contentView` is
+    assigned exactly once, in `MainWindow.build()`. It is a snapshot race, and
+    it killed the suite roughly one run in three.
+
+    Only `-1719` is retried. A genuinely missing element (a menu item that does
+    not exist, `-1728`) still fails immediately, because that is a real bug and
+    retrying it would only make the failure slower to see.
+    """
+    for attempt in range(attempts):
+        result = subprocess.run(
+            ["osascript", "-e", script], capture_output=True, text=True, timeout=timeout
+        )
+        if result.returncode == 0:
+            return result.stdout.strip()
         message = result.stderr.strip().splitlines()[-1] if result.stderr else "osascript failed"
-        raise RuntimeError(message)
-    return result.stdout.strip()
+        if "-1719" not in message or attempt == attempts - 1:
+            raise RuntimeError(message)
+        time.sleep(1.0)
 
 
 def wrap(body: str) -> str:
@@ -78,16 +113,31 @@ def api_get(path: str) -> dict:
     return json.load(urllib.request.urlopen(request, timeout=30))
 
 
+#: The app's real window.
+#:
+#: A nameless `AXDialog` shows up alongside it the moment any text field takes
+#: focus — macOS creates that window for the field editor / input method, and it
+#: is not part of this app. It is ordered *first* often enough that addressing
+#: `window 1` was a coin flip: whenever the dialog won, every lookup in these
+#: helpers failed with "Can't get splitter group 1 of window 1 ... Invalid index
+#: (-1719)" and the whole suite died. Address the standard window by subrole and
+#: the z-order stops mattering.
+MAIN_WINDOW = '(first window whose subrole is "AXStandardWindow")'
+
+
 def window_count() -> int:
+    """Count the app's real windows, ignoring system dialogs."""
     try:
-        return int(osa(wrap("return count of windows")) or 0)
+        return int(osa(wrap(
+            'return (count of (every window whose subrole is "AXStandardWindow"))'
+        )) or 0)
     except (RuntimeError, ValueError):
         return -1
 
 
 def window_title() -> str:
     try:
-        return osa(wrap("return name of window 1"))
+        return osa(wrap(f"return name of {MAIN_WINDOW}"))
     except RuntimeError:
         return ""
 
@@ -102,18 +152,45 @@ def open_section(name: str) -> str:
 def sidebar_rows() -> int:
     try:
         return int(osa(wrap(
-            "tell window 1 to return (count of rows of table 1 of scroll area 1 "
+            f"tell {MAIN_WINDOW} to return (count of rows of table 1 of scroll area 1 "
             "of splitter group 1)"
         )) or 0)
     except (RuntimeError, ValueError):
         return -1
 
 
+def sidebar_labels() -> list[str]:
+    """Every sidebar row's text, in order, including group headers."""
+    try:
+        raw = osa(wrap(f'''
+            tell {MAIN_WINDOW} to tell table 1 of scroll area 1 of splitter group 1
+                set acc to ""
+                repeat with r from 1 to (count of rows)
+                    try
+                        set acc to acc & (value of static text 1 of UI element 1 of row r) & "\\n"
+                    on error
+                        set acc to acc & "\\n"
+                    end try
+                end repeat
+                return acc
+            end tell'''))
+    except RuntimeError:
+        return []
+    return [line for line in raw.splitlines() if line.strip()]
+
+
+def sidebar_select(row: int) -> None:
+    osa(wrap(
+        f"tell {MAIN_WINDOW} to tell table 1 of scroll area 1 of splitter group 1 "
+        f"to select row {row}"
+    ))
+
+
 def detail_rows() -> int:
     """Rows in the detail table, for sections that have one."""
     try:
         return int(osa(wrap(
-            "tell window 1 to return (count of rows of table 1 of scroll area 2 "
+            f"tell {MAIN_WINDOW} to return (count of rows of table 1 of scroll area 2 "
             "of splitter group 1)"
         )) or 0)
     except (RuntimeError, ValueError):
@@ -121,8 +198,8 @@ def detail_rows() -> int:
 
 
 def detail_texts() -> str:
-    return osa(wrap('''
-        tell window 1 to tell splitter group 1
+    return osa(wrap(f'''
+        tell {MAIN_WINDOW} to tell splitter group 1
             set acc to ""
             repeat with t in static texts
                 try
@@ -136,7 +213,7 @@ def detail_texts() -> str:
 
 def detail_count(expr: str) -> int:
     try:
-        return int(osa(wrap(f"tell window 1 to tell splitter group 1 to return (count of {expr})")) or 0)
+        return int(osa(wrap(f"tell {MAIN_WINDOW} to tell splitter group 1 to return (count of {expr})")) or 0)
     except (RuntimeError, ValueError):
         return -1
 
@@ -145,7 +222,7 @@ def field_value(field: str) -> str:
     """Read a text field's current value; missing values read as empty."""
     try:
         value = osa(wrap(
-            f"tell window 1 to tell splitter group 1 to return value of {field}"))
+            f"tell {MAIN_WINDOW} to tell splitter group 1 to return value of {field}"))
     except RuntimeError:
         return ""
     return "" if value in ("missing value", "false") else value
@@ -157,7 +234,7 @@ def focus_field(field: str) -> None:
       tell process "{APP_PROCESS}"
         set frontmost to true
         delay 0.6
-        tell window 1
+        tell {MAIN_WINDOW}
           perform action "AXRaise"
           tell splitter group 1 to set focused of {field} to true
         end tell
@@ -220,9 +297,9 @@ def read_modality_rows(settle: int = 4) -> list[tuple[int, int]]:
     Waits for two consecutive identical reads so a mid-rebuild layout is never
     mistaken for a broken one.
     """
-    script = wrap('''
-        tell window 1 to tell splitter group 1
-            set wanted to {"Chat", "Image", "Video", "TTS", "Transcription", "Music"}
+    script = wrap(f'''
+        tell {MAIN_WINDOW} to tell splitter group 1
+            set wanted to {{"Chat", "Image", "Video", "TTS", "Transcription", "Music"}}
             set acc to ""
             repeat with t in static texts
                 try
@@ -268,21 +345,47 @@ def main() -> int:
     check("exactly one window is open", count == 1, f"{count} windows")
 
     # ------------------------------------------------------------------
-    print("\n\033[1m1. One window with a sidebar\033[0m")
+    print("\n\033[1m1. One window, with a grouped sidebar\033[0m")
     rows = sidebar_rows()
-    check("the sidebar lists every section", rows == len(SECTIONS), f"{rows} rows")
+    check("the sidebar lists every row", rows == len(SIDEBAR), f"{rows} rows")
+
+    labels = sidebar_labels()
+    check("the sidebar is grouped like Studio Hub's", labels == SIDEBAR, f"{labels}")
     check("the sidebar is part of the window, not a separate one", window_count() == 1)
 
-    for name, expected in SECTIONS:
+    # The status line Studio Hub pins below its sidebar. It is outside the table,
+    # so it stays put whichever page is showing.
+    summary = osa(wrap(
+        f"tell {MAIN_WINDOW} to tell splitter group 1 to return (value of every static text)"
+    ))
+    check("a live status line is pinned in the sidebar",
+          "Running on 127.0.0.1" in summary and "providers" in summary, summary[:120])
+
+    for row, name, expected in SECTIONS:
         title = open_section(name)
         check(f"View → {name} selects it", title == expected, title)
         check(f"still exactly one window on “{name}”", window_count() == 1,
               f"{window_count()} windows")
 
+    # Selecting by sidebar row must agree with the View menu, or the two ways of
+    # navigating have drifted apart.
+    sidebar_select(3)
+    time.sleep(2.0)
+    check("clicking a sidebar row selects the same section",
+          window_title() == "gateway-kh — Jobs", window_title())
+
+    # The row that the owner could not find before it existed.
+    sidebar_select(7)
+    time.sleep(2.0)
+    check("Settings is reachable by clicking its sidebar row",
+          window_title() == "gateway-kh — Settings", window_title())
+
     # ------------------------------------------------------------------
     print("\n\033[1m2. Overview renders live data\033[0m")
     open_section("Overview")
     body = detail_texts()
+    check("opens with a page heading like Studio Hub's",
+          "One endpoint in front of every local runner" in body, body[:200])
     check("reports the gateway as running", "Gateway running" in body, body[:120])
     check("shows the endpoint and uptime", "127.0.0.1:" in body and "up " in body)
     check("shows provider counts", "/18" in body)
@@ -331,10 +434,12 @@ def main() -> int:
         rows = detail_rows()
     check("jobs table populated", rows > 0, f"{rows} rows")
     jobs_body = detail_texts()
+    check("shows a page heading", "Everything the gateway has run" in jobs_body,
+          jobs_body[:200])
     check("shows a summary line", "succeeded" in jobs_body.lower(), jobs_body[:160])
 
     if rows > 0:
-        osa(wrap("tell window 1 to tell splitter group 1 to select row 1 "
+        osa(wrap(f"tell {MAIN_WINDOW} to tell splitter group 1 to select row 1 "
                  "of table 1 of scroll area 2"))
         time.sleep(1.5)
         after = detail_texts()
@@ -375,12 +480,12 @@ def main() -> int:
     if rows > 0:
         try:
             before = api_get("/admin/api/voices")["summary"]["enabled"]
-            osa(wrap(f"tell window 1 to click {checkbox}"))
+            osa(wrap(f"tell {MAIN_WINDOW} to click {checkbox}"))
             time.sleep(2.5)
             after = api_get("/admin/api/voices")["summary"]["enabled"]
             check(f"ticking a voice reaches the gateway ({before} → {after} enabled)",
                   after != before)
-            osa(wrap(f"tell window 1 to click {checkbox}"))
+            osa(wrap(f"tell {MAIN_WINDOW} to click {checkbox}"))
             time.sleep(2.0)
             check("unticking it restores the count",
                   api_get("/admin/api/voices")["summary"]["enabled"] == before)
@@ -395,39 +500,27 @@ def main() -> int:
           osa(f'tell application "System Events" to return (exists process "{APP_PROCESS}")') == "true")
 
     # ------------------------------------------------------------------
-    print("\n\033[1m6. Settings is its own window (macOS convention)\033[0m")
+    print("\n\033[1m6. Settings is a page in this window, like Studio Hub's\033[0m")
+    # It used to be a separate window, by macOS convention. That convention
+    # assumes an app menu, and an accessory app never shows one, so the owner
+    # could not find Settings at all. It is now a sidebar row.
     osa(wrap('click menu item "Settings…" of menu 1 of menu bar item "gateway-kh" of menu bar 1'))
     time.sleep(2.5)
-    check("Settings opens as a separate window", window_count() == 2, f"{window_count()} windows")
-    settings = osa(wrap('''
-        tell window "gateway-kh Settings"
-            set acc to ""
-            repeat with t in static texts
-                try
-                    set v to value of t
-                    if v is not missing value then set acc to acc & (v as string) & "\\n"
-                end try
-            end repeat
-            return acc
-        end tell'''))
+    check("Settings stays in the one window", window_count() == 1, f"{window_count()} windows")
+    check("Settings is titled in the window", window_title() == "gateway-kh — Settings",
+          window_title())
+
+    settings = detail_texts()
     check("Settings shows the runtime", "runtime" in settings.lower(), settings[:160])
     check("Settings shows the data folder", "gateway-kh" in settings)
+    check("Settings states what it is for", "API key" in settings, settings[:200])
+    # A page, not a window: its controls live in the detail pane, and there is
+    # no second window to close.
     check("Settings has an API key field",
-          int(osa(wrap('tell window "gateway-kh Settings" to return (count of text fields)'))) >= 2)
-    # The close button is not button 1 — button 1 is the first content button
-    # ("Copy"). Find it by subrole, the way a user finds the red traffic light.
-    osa(wrap('''
-        tell window "gateway-kh Settings"
-            repeat with b in buttons
-                if (subrole of b) is "AXCloseButton" then
-                    click b
-                    exit repeat
-                end if
-            end repeat
-        end tell'''))
-    time.sleep(1.5)
-    check("Settings closes and leaves one window", window_count() == 1,
-          f"{window_count()} windows")
+          int(osa(wrap(
+              f"tell {MAIN_WINDOW} to return (count of text fields of splitter group 1)"
+          ))) >= 2)
+    check("no stray window was opened", window_count() == 1, f"{window_count()} windows")
 
     # ------------------------------------------------------------------
     print("\n\033[1m7. Status menu\033[0m")
@@ -442,7 +535,7 @@ def main() -> int:
         end repeat
         key code 53
         return acc'''))
-    for expected in ["Overview", "Jobs", "Voices", "Quit"]:
+    for expected in ["Overview", "Jobs", "Voices", "Open Provider Console", "Settings", "Quit"]:
         check(f"status menu offers “{expected}”", expected in items, items[:200])
 
     # ------------------------------------------------------------------

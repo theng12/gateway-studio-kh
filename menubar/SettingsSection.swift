@@ -1,0 +1,191 @@
+import AppKit
+
+/// Settings, as a page in the main window.
+///
+/// This was its own window, on the reasoning that macOS puts Settings in the
+/// app menu. That reasoning fails for *this* app: it is an accessory
+/// (`LSUIElement`) process, so its app menu is never on screen, and the only
+/// routes in were `⌘,` and the bolt menu — the owner went looking and could not
+/// find Settings at all. Studio Hub KH, the sibling app this one is modelled
+/// on, lists Settings in the sidebar under "Library & app", and that is where
+/// people actually look.
+///
+/// The controls are the same ones the window had; only the home changed.
+final class SettingsSection: NSObject, AppSection {
+    static let shared = SettingsSection()
+
+    let title = "Settings"
+    let symbol = "gearshape"
+    /// Nothing here is live: re-reading it would fight a half-typed port.
+    let refreshesAutomatically = false
+
+    private var runtimeLabel: NSTextField!
+    private var dataLabel: NSTextField!
+    private var portField: NSTextField!
+    private var keyField: NSTextField!
+    private var loginCheck: NSButton!
+    private var autoStartCheck: NSButton!
+    private var statusLabel: NSTextField!
+
+    lazy var view: NSView = buildContent()
+
+    func activated() {
+        refresh()
+    }
+
+    // MARK: Layout
+
+    private func buildContent() -> NSView {
+        let root = PageKit.page()
+
+        root.addArrangedSubview(PageKit.heading(
+            "Settings",
+            "The gateway's port and API key, and whether it starts with this Mac."
+        ))
+
+        root.addArrangedSubview(PageKit.sectionTitle("Gateway"))
+
+        runtimeLabel = PageKit.label(
+            GatewayController.shared.runtimeDescription, size: 12,
+            colour: .secondaryLabelColor, wrapping: true
+        )
+        let runtimeBlock = labelled("Runtime", runtimeLabel)
+        root.addArrangedSubview(runtimeBlock)
+
+        dataLabel = PageKit.label(
+            AppPaths.data.path, size: 11, colour: .secondaryLabelColor
+        )
+        dataLabel.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
+        dataLabel.lineBreakMode = .byTruncatingMiddle
+        let dataBlock = labelled("Data folder — credentials, voices, history", dataLabel)
+        root.addArrangedSubview(dataBlock)
+
+        portField = NSTextField(string: String(ConfigStore.shared.config.port))
+        portField.widthAnchor.constraint(equalToConstant: 100).isActive = true
+        root.addArrangedSubview(labelled("Port", portField))
+
+        // ---- API key
+        root.addArrangedSubview(PageKit.sectionTitle("API key"))
+        root.addArrangedSubview(PageKit.label(
+            "Story Studio presents this key. Paste it there once, and it never "
+            + "needs to appear in a terminal.",
+            size: 12, colour: .secondaryLabelColor, wrapping: true
+        ))
+
+        keyField = NSTextField(string: EnvFile.apiKey())
+        keyField.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
+        keyField.widthAnchor.constraint(equalToConstant: 320).isActive = true
+        root.addArrangedSubview(PageKit.row([
+            keyField,
+            NSButton(title: "Copy", target: self, action: #selector(copyKey)),
+            NSButton(title: "Regenerate", target: self, action: #selector(regenerateKey)),
+        ], spacing: 8))
+
+        root.addArrangedSubview(divider())
+
+        // ---- startup
+        root.addArrangedSubview(PageKit.sectionTitle("Startup"))
+        loginCheck = NSButton(
+            checkboxWithTitle: "Launch at login",
+            target: self, action: #selector(toggleLogin)
+        )
+        root.addArrangedSubview(loginCheck)
+
+        autoStartCheck = NSButton(
+            checkboxWithTitle: "Start the gateway automatically when this app opens",
+            target: self, action: #selector(toggleAutoStart)
+        )
+        root.addArrangedSubview(autoStartCheck)
+
+        root.addArrangedSubview(divider())
+
+        root.addArrangedSubview(PageKit.row([
+            NSButton(title: "Save", target: self, action: #selector(save)),
+            NSButton(title: "Open provider console", target: self, action: #selector(openConsole)),
+            NSButton(title: "Reveal data folder", target: self, action: #selector(revealData)),
+        ], spacing: 8))
+
+        statusLabel = PageKit.label("", size: 12, colour: .secondaryLabelColor, wrapping: true)
+        root.addArrangedSubview(statusLabel)
+
+        return root
+    }
+
+    /// A small caption above its control, matching the "label then field" rhythm
+    /// the Settings window already used.
+    private func labelled(_ caption: String, _ control: NSView) -> NSView {
+        let stack = NSStackView(views: [
+            PageKit.label(caption, size: 12, colour: .secondaryLabelColor),
+            control,
+        ])
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 4
+        return stack
+    }
+
+    private func divider() -> NSBox {
+        let box = NSBox()
+        box.boxType = .separator
+        box.translatesAutoresizingMaskIntoConstraints = false
+        box.widthAnchor.constraint(equalToConstant: 500).isActive = true
+        return box
+    }
+
+    private func refresh() {
+        loginCheck?.state = LaunchAgent.isInstalled ? .on : .off
+        autoStartCheck?.state = ConfigStore.shared.config.autoStartGateway ? .on : .off
+        keyField?.stringValue = EnvFile.apiKey()
+        runtimeLabel?.stringValue = GatewayController.shared.runtimeDescription
+        dataLabel?.stringValue = AppPaths.data.path
+        statusLabel?.stringValue = "Config: \(ConfigStore.shared.configPath)"
+    }
+
+    // MARK: Actions
+
+    @objc private func copyKey() {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(keyField.stringValue, forType: .string)
+        statusLabel.stringValue = "API key copied to the clipboard."
+    }
+
+    @objc private func regenerateKey() {
+        let key = EnvFile.generateKey()
+        EnvFile.writeApiKey(key)
+        keyField.stringValue = key
+        statusLabel.stringValue = "New key written. Restart the gateway to apply it."
+    }
+
+    @objc private func toggleLogin() {
+        if loginCheck.state == .on {
+            LaunchAgent.install()
+            ConfigStore.shared.update { $0.launchAtLogin = true }
+        } else {
+            LaunchAgent.uninstall()
+            ConfigStore.shared.update { $0.launchAtLogin = false }
+        }
+        refresh()
+    }
+
+    @objc private func toggleAutoStart() {
+        ConfigStore.shared.update { $0.autoStartGateway = autoStartCheck.state == .on }
+    }
+
+    @objc private func save() {
+        let port = Int(portField.stringValue.trimmingCharacters(in: .whitespaces)) ?? 8010
+        let key = keyField.stringValue.trimmingCharacters(in: .whitespaces)
+
+        ConfigStore.shared.update { $0.port = port }
+        if !key.isEmpty {
+            EnvFile.writeApiKey(key)
+        }
+        statusLabel.stringValue = "Saved. Restarting the gateway…"
+        GatewayController.shared.restart()
+    }
+
+    @objc private func openConsole() { MainWindow.shared.show(section: "providers") }
+
+    @objc private func revealData() {
+        NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: AppPaths.data.path)
+    }
+}
