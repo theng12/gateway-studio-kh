@@ -1,0 +1,259 @@
+"""Studio Hub adapter — the local Apple Silicon lane.
+
+Routes image, voice and transcription work to the Hub on this Mac.
+
+Two things about the Hub shape this code:
+
+  * It is genuinely asynchronous (batch id + item index + poll + artifact), so
+    this adapter polls internally until the item is terminal. That is why the
+    gateway executes jobs on a worker thread rather than inside the HTTP request
+    -- a five-minute image job must not hold a Story Studio poll open.
+  * Transcription uses a *different* route (`/api/hub/transcription/jobs`,
+    multipart) from image/voice (`/api/hub/jobs`, JSON).
+
+Errors are normalised onto the same vocabulary as the remote adapters so Story
+Studio's retry logic behaves identically regardless of where work ran.
+"""
+
+from __future__ import annotations
+
+import time
+from typing import Any
+
+import httpx
+
+from .base import BackendError, BackendRequest, BackendResult
+
+POLL_INTERVAL_S = 1.0
+# Aligned with the Hub's own claim TTL floor (request timeout 300s + margin).
+JOB_DEADLINE_S = 900.0
+
+# Hub item states -> our terminal interpretation.
+_TERMINAL_OK = {"done", "succeeded", "complete", "completed"}
+_TERMINAL_BAD = {"error", "failed", "cancelled", "cancelled_items", "uncertain"}
+
+_HUB_MODALITY = {
+    "image": "image",
+    "tts": "voice",
+}
+
+
+def _resolve_base(request: BackendRequest) -> str:
+    from ..hub import hub_base_url
+
+    base = (request.values.get("base_url") or request.base_url or hub_base_url()).strip()
+    if not base:
+        raise BackendError(
+            "Studio Hub is not running (no hub-ready.json found)",
+            code="SITE_CAPACITY_UNAVAILABLE",
+            retryable=True,
+        )
+    return base.rstrip("/")
+
+
+def _headers(request: BackendRequest) -> dict[str, str]:
+    from ..hub import hub_headers
+
+    return hub_headers(request.values.get("hub_token", ""))
+
+
+def _poll_batch(
+    client: httpx.Client, base: str, headers: dict[str, str], batch_id: str, item_index: int
+) -> dict[str, Any]:
+    deadline = time.monotonic() + JOB_DEADLINE_S
+    last: dict[str, Any] = {}
+    while time.monotonic() < deadline:
+        response = client.get(f"{base}/api/hub/jobs/{batch_id}", headers=headers)
+        if response.status_code >= 400:
+            raise BackendError(
+                f"hub status HTTP {response.status_code}: {response.text[:200]}",
+                code="PROVIDER_FAILED",
+                status=response.status_code,
+                retryable=response.status_code >= 500,
+            )
+        summary = response.json() or {}
+        last = summary
+
+        items = summary.get("items") or []
+        item = items[item_index] if item_index < len(items) else None
+        state = str((item or {}).get("state") or summary.get("state") or "").lower()
+
+        if state in _TERMINAL_OK:
+            return {"summary": summary, "item": item or {}}
+        if state in _TERMINAL_BAD:
+            error = (item or {}).get("error") or summary.get("error") or {}
+            message = error.get("message") if isinstance(error, dict) else str(error)
+            raise BackendError(
+                f"hub item {state}: {message or 'no detail'}",
+                code="IMAGE_FAILED" if item is None else "PROVIDER_FAILED",
+            )
+        time.sleep(POLL_INTERVAL_S)
+
+    raise BackendError(
+        f"hub job did not finish within {int(JOB_DEADLINE_S)}s",
+        code="PROVIDER_SUBMISSION_UNCERTAIN",
+        retryable=True,
+    )
+
+
+def _artifact_url(base: str, batch_id: str, item_index: int, kind: str) -> str:
+    if kind == "transcription":
+        return f"{base}/api/hub/transcription/jobs/{batch_id}/items/{item_index}/artifact"
+    return f"{base}/api/hub/jobs/{batch_id}/items/{item_index}/artifact"
+
+
+def _generate_image_or_voice(request: BackendRequest) -> BackendResult:
+    base = _resolve_base(request)
+    headers = _headers(request)
+    modality = _HUB_MODALITY[request.modality]
+
+    item: dict[str, Any] = {"params": request.params.get("params") or {}}
+    if request.modality == "image":
+        item["prompt"] = str(request.params.get("prompt") or "")
+        for key in ("seed", "width", "height", "aspect_ratio", "resolution"):
+            if request.params.get(key) is not None:
+                item["params"][key] = request.params[key]
+    else:
+        item["text"] = str(request.params.get("text") or "")
+        for key in ("speed", "voice_id", "language", "controls", "temperature", "seed"):
+            if request.params.get(key) is not None:
+                item["params"][key] = request.params[key]
+
+    body = {
+        "modality": modality,
+        "model": request.model_id,
+        "items": [item],
+        "clientRequestId": str(request.params.get("_job_id") or ""),
+        "label": "gateway-kh",
+    }
+
+    with httpx.Client(timeout=httpx.Timeout(60.0, connect=10.0)) as client:
+        try:
+            response = client.post(f"{base}/api/hub/jobs", headers=headers, json=body)
+        except httpx.HTTPError as exc:
+            raise BackendError(
+                f"hub submit failed: {exc}", code="SITE_CAPACITY_UNAVAILABLE", retryable=True
+            ) from exc
+
+        if response.status_code >= 400:
+            raise BackendError(
+                f"hub submit HTTP {response.status_code}: {response.text[:200]}",
+                code="PROVIDER_FAILED",
+                status=response.status_code,
+                retryable=response.status_code >= 500,
+            )
+
+        submitted = response.json() or {}
+        batch_id = str(submitted.get("batch_id") or "")
+        if not batch_id:
+            raise BackendError("hub returned no batch_id", code="PROVIDER_FAILED")
+
+        outcome = _poll_batch(client, base, headers, batch_id, 0)
+
+        artifact = client.get(
+            _artifact_url(base, batch_id, 0, request.modality),
+            headers=headers,
+            timeout=httpx.Timeout(600.0, connect=10.0),
+        )
+        if artifact.status_code >= 400:
+            raise BackendError(
+                f"hub artifact HTTP {artifact.status_code}",
+                code="PROVIDER_FAILED",
+                status=artifact.status_code,
+                retryable=artifact.status_code >= 500,
+            )
+
+    media_type = artifact.headers.get("content-type", "").split(";")[0].strip()
+    if not media_type:
+        media_type = "image/png" if request.modality == "image" else "audio/wav"
+
+    terminal = (outcome.get("item") or {}).get("terminal_result") or {}
+    return BackendResult(
+        content=artifact.content,
+        media_type=media_type,
+        payload={
+            "hub_batch_id": batch_id,
+            "hub_machine": terminal.get("machine_id"),
+            "hub_worker": terminal.get("worker_id"),
+            "resolved_seed": terminal.get("resolved_seed"),
+            "sha256": terminal.get("sha256"),
+            "bytes": terminal.get("bytes"),
+        },
+    )
+
+
+def _generate_transcription(request: BackendRequest) -> BackendResult:
+    base = _resolve_base(request)
+    headers = _headers(request)
+
+    audio = request.params.get("_upload_bytes")
+    if not audio:
+        raise BackendError("transcription needs an uploaded audio file", code="PROVIDER_FAILED")
+
+    files = {
+        "files[]": (
+            request.params.get("_upload_name") or "audio.mp3",
+            audio,
+            request.params.get("_upload_type") or "application/octet-stream",
+        )
+    }
+    data: dict[str, str] = {"model": request.model_id, "item_ids[]": "0"}
+    if request.params.get("language"):
+        data["language"] = str(request.params["language"])
+
+    with httpx.Client(timeout=httpx.Timeout(120.0, connect=10.0)) as client:
+        try:
+            response = client.post(
+                f"{base}/api/hub/transcription/jobs", headers=headers, files=files, data=data
+            )
+        except httpx.HTTPError as exc:
+            raise BackendError(
+                f"hub transcription submit failed: {exc}",
+                code="SITE_CAPACITY_UNAVAILABLE",
+                retryable=True,
+            ) from exc
+
+        if response.status_code >= 400:
+            raise BackendError(
+                f"hub transcription HTTP {response.status_code}: {response.text[:200]}",
+                code="PROVIDER_FAILED",
+                status=response.status_code,
+                retryable=response.status_code >= 500,
+            )
+
+        submitted = response.json() or {}
+        batch_id = str(submitted.get("batch_id") or "")
+        if not batch_id:
+            raise BackendError("hub returned no batch_id", code="PROVIDER_FAILED")
+
+        outcome = _poll_batch(client, base, headers, batch_id, 0)
+
+        artifact = client.get(
+            _artifact_url(base, batch_id, 0, "transcription") + "?format=srt",
+            headers=headers,
+            timeout=httpx.Timeout(300.0, connect=10.0),
+        )
+        if artifact.status_code >= 400:
+            raise BackendError(
+                f"hub transcript artifact HTTP {artifact.status_code}",
+                code="PROVIDER_FAILED",
+                status=artifact.status_code,
+            )
+
+    return BackendResult(
+        content=artifact.content,
+        media_type="application/x-subrip",
+        payload={"hub_batch_id": batch_id},
+    )
+
+
+class StudioHubBackend:
+    def generate(self, request: BackendRequest) -> BackendResult:
+        if request.modality in {"image", "tts"}:
+            return _generate_image_or_voice(request)
+        if request.modality == "transcription":
+            return _generate_transcription(request)
+        raise BackendError(
+            f"Studio Hub does not serve '{request.modality}'",
+            code="MODEL_MODALITY_MISMATCH",
+        )

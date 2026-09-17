@@ -1,0 +1,363 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>gateway-kh — providers</title>
+<style>
+  :root {
+    --bg: #0e1117; --panel: #161b24; --panel2: #1c2230; --line: #262d3b;
+    --text: #e6eaf2; --dim: #8b95a8; --accent: #4d9cff; --ok: #34d17f;
+    --warn: #f0b429; --bad: #f2555a; --radius: 10px;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 14px/1.5 ui-sans-serif, -apple-system, "SF Pro Text", system-ui, sans-serif;
+  }
+  header {
+    position: sticky; top: 0; z-index: 10; background: rgba(14,17,23,.92);
+    backdrop-filter: blur(12px); border-bottom: 1px solid var(--line); padding: 14px 22px;
+  }
+  .row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+  h1 { font-size: 15px; margin: 0; font-weight: 650; letter-spacing: .2px; }
+  h1 span { color: var(--dim); font-weight: 400; }
+  .spacer { flex: 1; }
+  .stat { color: var(--dim); font-size: 12.5px; }
+  .stat b { color: var(--text); font-weight: 600; }
+  main { max-width: 1180px; margin: 0 auto; padding: 20px 22px 80px; }
+  .toolbar { margin-bottom: 16px; }
+  button {
+    background: var(--panel2); color: var(--text); border: 1px solid var(--line);
+    padding: 7px 13px; border-radius: 8px; cursor: pointer; font-size: 13px; font-weight: 500;
+  }
+  button:hover { border-color: #39445a; background: #232b3a; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #05121f; font-weight: 600; }
+  button.primary:hover { filter: brightness(1.08); }
+  button.sm { padding: 4px 9px; font-size: 12px; }
+  input[type=text], input[type=password], select {
+    background: #0b0e14; color: var(--text); border: 1px solid var(--line);
+    border-radius: 8px; padding: 7px 10px; font-size: 13px; width: 100%;
+    font-family: ui-monospace, "SF Mono", monospace;
+  }
+  input:focus, select:focus { outline: none; border-color: var(--accent); }
+
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); margin-bottom: 12px; overflow: hidden; }
+  .card.off { opacity: .62; }
+  .card-head { display: flex; align-items: center; gap: 10px; padding: 13px 15px; }
+  .name { font-weight: 620; }
+  .cat { color: var(--dim); font-size: 12px; }
+  .badge {
+    font-size: 11px; padding: 2px 8px; border-radius: 99px; border: 1px solid var(--line);
+    color: var(--dim); white-space: nowrap;
+  }
+  .badge.ok { color: var(--ok); border-color: #1d5c3d; background: #0e2a1d; }
+  .badge.warn { color: var(--warn); border-color: #5c4a1d; background: #2a2210; }
+  .badge.bad { color: var(--bad); border-color: #5c1d21; background: #2a1013; }
+  .badge.off { opacity: .7; }
+  .desc { color: var(--dim); font-size: 12.5px; padding: 0 15px 10px; }
+  .body { border-top: 1px solid var(--line); padding: 14px 15px; background: var(--panel2); }
+  .fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; }
+  label { display: block; font-size: 12px; color: var(--dim); margin-bottom: 5px; }
+  .hint { font-size: 11.5px; color: var(--dim); margin-top: 5px; }
+  .actions { display: flex; gap: 8px; margin-top: 13px; flex-wrap: wrap; align-items: center; }
+  .msg { font-size: 12.5px; }
+  .msg.ok { color: var(--ok); } .msg.bad { color: var(--bad); }
+
+  .models { margin-top: 14px; border-top: 1px solid var(--line); padding-top: 12px; }
+  .model-row { display: flex; align-items: center; gap: 10px; padding: 5px 0; border-bottom: 1px solid #1e2431; }
+  .model-row:last-child { border-bottom: 0; }
+  .model-id { font-family: ui-monospace, monospace; font-size: 12px; color: var(--dim); }
+  .pill { font-size: 10.5px; padding: 1px 7px; border-radius: 99px; background: #232b3a; color: var(--dim); }
+  .pill.user { background: #24304a; color: #9dbcf5; }
+  .model-list { max-height: 340px; overflow: auto; margin-top: 8px; }
+  .empty { color: var(--dim); font-size: 13px; padding: 8px 0; }
+  .spin { display: inline-block; animation: sp 1s linear infinite; }
+  @keyframes sp { to { transform: rotate(360deg); } }
+  code { font-family: ui-monospace, monospace; background: #0b0e14; padding: 1px 5px; border-radius: 4px; }
+</style>
+</head>
+<body>
+<header>
+  <div class="row">
+    <h1>gateway-kh <span>· provider control</span></h1>
+    <div class="spacer"></div>
+    <div class="stat" id="stats">loading…</div>
+    <button class="sm" onclick="refreshAll(this)">Refresh all models</button>
+  </div>
+</header>
+
+<main>
+  <div class="row toolbar">
+    <div class="stat" id="hubline"></div>
+    <div class="spacer"></div>
+    <input type="text" id="filter" placeholder="Filter providers…" style="max-width:260px" oninput="render()">
+  </div>
+  <div id="providers"></div>
+</main>
+
+<script>
+const state = { providers: [], open: {}, models: {}, jobs: 0 };
+
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const ago = (t) => { if (!t) return 'never'; const s = Date.now()/1000 - t;
+  return s < 60 ? `${Math.floor(s)}s ago` : s < 3600 ? `${Math.floor(s/60)}m ago` : `${Math.floor(s/3600)}h ago`; };
+
+async function api(path, opts) {
+  const res = await fetch('/admin/api' + path, opts);
+  const text = await res.text();
+  let body = {}; try { body = text ? JSON.parse(text) : {}; } catch { body = { detail: text }; }
+  if (!res.ok) throw new Error(body.detail || `HTTP ${res.status}`);
+  return body;
+}
+
+async function loadStatus() {
+  try {
+    const s = await api('/status');
+    const m = s.models.by_modality || {};
+    const parts = Object.entries(m).map(([k,v]) => `${v} ${k}`).join(' · ') || 'no models enabled';
+    document.getElementById('stats').innerHTML =
+      `<b>${s.providers.enabled}</b>/${s.providers.total} providers on · <b>${s.models.enabled_models}</b> models · ${esc(parts)}`;
+    const h = s.hub;
+    document.getElementById('hubline').innerHTML = h.running
+      ? `<span class="badge ok">Studio Hub running</span> <code>${esc(h.base_url)}</code>${h.token_present ? '' : ' <span class="badge warn">no hub token</span>'}`
+      : `<span class="badge warn">Studio Hub not running</span> <span class="stat">start the Studio Hub app to serve local models</span>`;
+    state.jobs = s.jobs_processed;
+  } catch (e) {
+    document.getElementById('stats').textContent = 'status error: ' + e.message;
+  }
+}
+
+async function loadProviders() {
+  const { providers } = await api('/providers');
+  // Preserve open panels and already-loaded model lists across a reload.
+  state.providers = providers;
+  render();
+}
+
+function render() {
+  const filter = document.getElementById('filter').value.trim().toLowerCase();
+  const list = state.providers.filter(p =>
+    !filter || p.display_name.toLowerCase().includes(filter) || p.id.includes(filter) || p.category.includes(filter));
+  const root = document.getElementById('providers');
+  if (!list.length) { root.innerHTML = '<div class="empty">No providers match.</div>'; return; }
+  root.innerHTML = list.map(card).join('');
+}
+
+function card(p) {
+  const open = state.open[p.id];
+  const badges = [];
+  badges.push(`<span class="badge">${esc(p.category)}</span>`);
+  if (!p.generation_supported) badges.push(`<span class="badge warn" title="${esc(p.unsupported_reason)}">list-only</span>`);
+  if (p.configured) badges.push('<span class="badge ok">key set</span>');
+  else badges.push('<span class="badge bad">no key</span>');
+  if (p.last_error) badges.push(`<span class="badge bad" title="${esc(p.last_error)}">discovery error</span>`);
+  badges.push(`<span class="badge">${p.enabled_model_count}/${p.model_count} models</span>`);
+
+  const fields = p.configured_fields.map(f => `
+    <div>
+      <label for="f-${esc(p.id)}-${esc(f.key)}">${esc(f.label)}${f.required ? '' : ' <span style="opacity:.6">(optional)</span>'}</label>
+      <input id="f-${esc(p.id)}-${esc(f.key)}" type="${f.secret ? 'password' : 'text'}"
+             data-provider="${esc(p.id)}" data-field="${esc(f.key)}"
+             placeholder="${esc(f.source === 'env' ? 'from .env (' + f.env_var + ')' : (f.masked || f.placeholder || ''))}"
+             value="${f.secret ? '' : esc(f.masked)}">
+      <div class="hint">${f.present ? `configured <span style="color:var(--ok)">(${esc(f.source)})</span>` : `env var <code>${esc(f.env_var)}</code>`}${f.help_text ? ' · ' + esc(f.help_text) : ''}</div>
+    </div>`).join('');
+
+  const models = state.models[p.id];
+  let modelsHtml = '';
+  if (open) {
+    if (!models) modelsHtml = '<div class="empty"><span class="spin">◐</span> loading models…</div>';
+    else modelsHtml = modelList(p, models);
+  }
+
+  return `
+  <div class="card ${p.enabled ? '' : 'off'}">
+    <div class="card-head">
+      <div>
+        <div class="name">${esc(p.display_name)}</div>
+        <div class="cat">${esc(p.id)} · ${esc(p.kind)}${p.base_url ? ' · ' + esc(p.base_url) : ''}</div>
+      </div>
+      <div class="spacer"></div>
+      ${badges.join(' ')}
+      <button class="sm" onclick="toggleOpen('${esc(p.id)}')">${open ? 'Hide' : 'Configure'}</button>
+      <button class="sm" onclick="toggleEnabled('${esc(p.id)}', ${!p.enabled})">${p.enabled ? 'Disable' : 'Enable'}</button>
+    </div>
+    ${p.description ? `<div class="desc">${esc(p.description)}</div>` : ''}
+    ${open ? `
+    <div class="body">
+      <div class="fields">${fields || '<div class="hint">This provider needs no credentials.</div>'}</div>
+      <div class="actions">
+        <button class="primary sm" onclick="saveCreds('${esc(p.id)}', this)">Save &amp; discover models</button>
+        <button class="sm" onclick="refreshProvider('${esc(p.id)}', this)">Re-discover</button>
+        <button class="sm" onclick="clearCreds('${esc(p.id)}', this)">Clear key</button>
+        <span class="msg" id="msg-${esc(p.id)}"></span>
+      </div>
+      <div class="models">
+        <div class="row">
+          <b style="font-size:12.5px">Models</b>
+          <span class="stat">${models ? `${models.models.filter(m=>m.enabled).length} of ${models.models.length} enabled` : ''}</span>
+          <span class="stat">last refresh: ${ago(models && models.last_refresh)}</span>
+          <div class="spacer"></div>
+          <input type="text" placeholder="search models…" style="max-width:190px"
+                 oninput="filterModels('${esc(p.id)}', this.value)">
+          <button class="sm" onclick="bulkModels('${esc(p.id)}', true)">Enable all</button>
+          <button class="sm" onclick="bulkModels('${esc(p.id)}', false)">Disable all</button>
+        </div>
+        ${modelsHtml}
+        <div class="actions">
+          <input type="text" id="add-${esc(p.id)}-id" placeholder="model id" style="max-width:220px">
+          <select id="add-${esc(p.id)}-mod" style="max-width:130px">${p.modalities.map(m=>`<option>${esc(m)}</option>`).join('')}</select>
+          <button class="sm" onclick="addModel('${esc(p.id)}', this)">Add model manually</button>
+        </div>
+        <div class="hint">Use this when a provider ships a model their API does not list yet.</div>
+      </div>
+    </div>` : ''}
+  </div>`;
+}
+
+function modelList(p, models) {
+  if (!models.models.length) {
+    return models.last_error
+      ? `<div class="empty">Discovery failed: ${esc(models.last_error)}</div>`
+      : '<div class="empty">No models yet. Save a key and re-discover, or add one manually below.</div>';
+  }
+  return `<div class="model-list" id="ml-${esc(p.id)}">` + models.models.map(m => `
+    <div class="model-row" data-name="${esc((m.display_name + ' ' + m.model_id).toLowerCase())}">
+      <input type="checkbox" ${m.enabled ? 'checked' : ''} onchange="setModel('${esc(p.id)}','${esc(m.model_id)}', this.checked)">
+      <div style="flex:1;min-width:0">
+        <div style="font-size:13px">${esc(m.display_name)}</div>
+        <div class="model-id">${esc(m.model_id)}${m.raw && m.raw.files_state ? ' · ' + esc(m.raw.files_state) : ''}</div>
+      </div>
+      <span class="pill">${esc(m.modality)}</span>
+      <span class="pill ${m.source === 'user' ? 'user' : ''}">${esc(m.source)}</span>
+      ${m.source === 'user' ? `<button class="sm" onclick="removeModel('${esc(p.id)}','${esc(m.model_id)}')">remove</button>` : ''}
+    </div>`).join('') + '</div>';
+}
+
+function filterModels(id, term) {
+  const box = document.getElementById('ml-' + id);
+  if (!box) return;
+  const t = term.trim().toLowerCase();
+  box.querySelectorAll('.model-row').forEach(r => {
+    r.style.display = !t || r.dataset.name.includes(t) ? '' : 'none';
+  });
+}
+
+function toast(id, text, ok = true) {
+  const el = document.getElementById('msg-' + id);
+  if (el) { el.textContent = text; el.className = 'msg ' + (ok ? 'ok' : 'bad'); }
+}
+
+async function toggleOpen(id) {
+  state.open[id] = !state.open[id];
+  if (state.open[id] && !state.models[id]) {
+    render();
+    try { state.models[id] = await api(`/providers/${encodeURIComponent(id)}/models`); }
+    catch (e) { state.models[id] = { models: [], last_error: e.message }; }
+  }
+  render();
+  await loadStatus();
+}
+
+async function toggleEnabled(id, enabled) {
+  try {
+    await api(`/providers/${encodeURIComponent(id)}/enabled`, {
+      method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ enabled })
+    });
+    await loadProviders(); await loadStatus();
+  } catch (e) { alert(e.message); }
+}
+
+async function saveCreds(id, btn) {
+  const values = {};
+  document.querySelectorAll(`input[data-provider="${id}"]`).forEach(i => { values[i.dataset.field] = i.value; });
+  btn.disabled = true; toast(id, 'saving & discovering…');
+  try {
+    await api(`/providers/${encodeURIComponent(id)}/credentials`, {
+      method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ values })
+    });
+    state.models[id] = await api(`/providers/${encodeURIComponent(id)}/models`);
+    const n = state.models[id].models.length;
+    toast(id, state.models[id].last_error ? 'saved, but discovery failed: ' + state.models[id].last_error : `saved · ${n} models found`, !state.models[id].last_error);
+    await loadProviders(); await loadStatus();
+  } catch (e) { toast(id, e.message, false); }
+  finally { btn.disabled = false; }
+}
+
+async function refreshProvider(id, btn) {
+  btn.disabled = true; toast(id, 'discovering…');
+  try {
+    const r = await api(`/providers/${encodeURIComponent(id)}/refresh`, { method: 'POST' });
+    state.models[id] = await api(`/providers/${encodeURIComponent(id)}/models`);
+    toast(id, r.error ? 'failed: ' + r.error : `${r.discovered} models`, !r.error);
+    await loadProviders(); await loadStatus();
+  } catch (e) { toast(id, e.message, false); }
+  finally { btn.disabled = false; }
+}
+
+async function clearCreds(id, btn) {
+  if (!confirm('Clear the stored key for this provider?')) return;
+  btn.disabled = true;
+  try { await api(`/providers/${encodeURIComponent(id)}/credentials`, { method: 'DELETE' }); await loadProviders(); await loadStatus(); }
+  catch (e) { alert(e.message); } finally { btn.disabled = false; }
+}
+
+async function setModel(id, modelId, enabled) {
+  await api(`/providers/${encodeURIComponent(id)}/models/enabled`, {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({ model_ids: [modelId], enabled })
+  });
+  await loadStatus();
+}
+
+async function bulkModels(id, enabled) {
+  const box = document.getElementById('ml-' + id);
+  if (!box) return;
+  const visible = [...box.querySelectorAll('.model-row')].filter(r => r.style.display !== 'none');
+  const ids = visible.map(r => r.querySelector('.model-id').textContent.split(' · ')[0].trim());
+  await api(`/providers/${encodeURIComponent(id)}/models/enabled`, {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({ model_ids: ids, enabled })
+  });
+  state.models[id] = await api(`/providers/${encodeURIComponent(id)}/models`);
+  render(); await loadStatus();
+}
+
+async function addModel(id) {
+  const modelId = document.getElementById('add-' + id + '-id').value.trim();
+  const modality = document.getElementById('add-' + id + '-mod').value;
+  if (!modelId) return;
+  try {
+    const r = await api(`/providers/${encodeURIComponent(id)}/models`, {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ model_id: modelId, modality })
+    });
+    state.models[id] = { ...(state.models[id] || {}), models: r.models };
+    render(); await loadStatus();
+  } catch (e) { toast(id, e.message, false); }
+}
+
+async function removeModel(id, modelId) {
+  try {
+    const r = await api(`/providers/${encodeURIComponent(id)}/models/${encodeURIComponent(modelId)}`, { method: 'DELETE' });
+    state.models[id] = { ...(state.models[id] || {}), models: r.models };
+    render(); await loadStatus();
+  } catch (e) { alert(e.message); }
+}
+
+async function refreshAll(btn) {
+  btn.disabled = true; btn.textContent = 'Refreshing…';
+  try { await api('/refresh-all', { method: 'POST' }); await loadProviders(); await loadStatus(); }
+  catch (e) { alert(e.message); }
+  finally { btn.disabled = false; btn.textContent = 'Refresh all models'; }
+}
+
+(async function init() {
+  await loadStatus();
+  await loadProviders();
+  setInterval(loadStatus, 15000);
+})();
+</script>
+</body>
+</html>

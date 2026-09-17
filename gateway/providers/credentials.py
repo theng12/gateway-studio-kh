@@ -1,0 +1,200 @@
+"""Provider credential storage.
+
+Credentials live in `data/credentials.json`, mode 0600, gitignored. Each field
+of each provider resolves through a three-step chain:
+
+    value stored via the admin UI  >  value from gateway-kh/.env  >  absent
+
+The `.env` fallback matters: it lets the owner drop keys into a file and have
+them work without ever opening the UI, and it means a key never has to be typed
+into a browser if that is uncomfortable.
+
+Secrets are never returned to the browser in full. `mask()` exists for the admin
+API so the UI can show *which* credentials are configured without exposing them.
+"""
+
+from __future__ import annotations
+
+import json
+import time
+from pathlib import Path
+from typing import Any
+
+from ..config import CREDENTIALS_PATH, ENV_PATH, load_env_file, write_secret
+from .definitions import PROVIDERS_BY_ID, ProviderDefinition
+
+
+def mask(value: str) -> str:
+    """Render a secret for display: enough to identify, not enough to use."""
+    if not value:
+        return ""
+    if len(value) <= 8:
+        return "•" * len(value)
+    return f"{value[:4]}{'•' * 6}{value[-4:]}"
+
+
+class CredentialStore:
+    def __init__(self, path: Path | None = None) -> None:
+        self.path = Path(path or CREDENTIALS_PATH)
+        self._env = load_env_file(ENV_PATH)
+        self._data: dict[str, Any] = {"providers": {}}
+        self._load()
+
+    # -- persistence ------------------------------------------------------
+    def _load(self) -> None:
+        if not self.path.exists():
+            return
+        try:
+            parsed = json.loads(self.path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            # A corrupt credential file must not take the gateway down; the
+            # admin UI will simply show nothing configured.
+            return
+        if isinstance(parsed, dict) and isinstance(parsed.get("providers"), dict):
+            self._data = parsed
+
+    def _save(self) -> None:
+        write_secret(self.path, json.dumps(self._data, indent=2) + "\n")
+
+    def reload_env(self) -> None:
+        """Re-read `.env` without restarting the process."""
+        self._env = load_env_file(ENV_PATH)
+
+    # -- reads ------------------------------------------------------------
+    def stored(self, provider_id: str) -> dict[str, str]:
+        entry = self._data["providers"].get(provider_id) or {}
+        values = entry.get("values")
+        return dict(values) if isinstance(values, dict) else {}
+
+    def value_for(self, provider_id: str, field_key: str) -> str:
+        """Resolve one field: stored value first, then `.env`."""
+        stored = self.stored(provider_id).get(field_key)
+        if stored:
+            return str(stored)
+        definition = PROVIDERS_BY_ID.get(provider_id)
+        if definition is None:
+            return ""
+        for credential_field in definition.credential_fields:
+            if credential_field.key == field_key:
+                return str(self._env.get(credential_field.env_var, "") or "")
+        return ""
+
+    def resolved(self, provider_id: str) -> dict[str, str]:
+        """Every field for a provider, resolved through the chain."""
+        definition = PROVIDERS_BY_ID.get(provider_id)
+        if definition is None:
+            return {}
+        return {
+            f.key: self.value_for(provider_id, f.key) for f in definition.credential_fields
+        }
+
+    def is_configured(self, provider_id: str) -> bool:
+        """True when every REQUIRED field is resolvable.
+
+        Optional fields (a base-url override, a group id) do not gate a provider.
+        """
+        definition = PROVIDERS_BY_ID.get(provider_id)
+        if definition is None:
+            return False
+        if not definition.credential_fields:
+            return True
+        for credential_field in definition.credential_fields:
+            if credential_field.required and not self.value_for(provider_id, credential_field.key):
+                return False
+        return True
+
+    def is_enabled(self, provider_id: str) -> bool:
+        entry = self._data["providers"].get(provider_id) or {}
+        if "enabled" in entry:
+            return bool(entry["enabled"])
+        definition = PROVIDERS_BY_ID.get(provider_id)
+        # A provider with no credential cannot be meaningfully enabled even if
+        # its default says so.
+        return bool(definition and definition.default_enabled and self.is_configured(provider_id))
+
+    def source_for(self, provider_id: str, field_key: str) -> str:
+        """Where a value came from: 'stored' | 'env' | 'none'. For the UI."""
+        if self.stored(provider_id).get(field_key):
+            return "stored"
+        definition = PROVIDERS_BY_ID.get(provider_id)
+        if definition:
+            for credential_field in definition.credential_fields:
+                if credential_field.key == field_key and self._env.get(credential_field.env_var):
+                    return "env"
+        return "none"
+
+    # -- writes -----------------------------------------------------------
+    def set_values(self, provider_id: str, values: dict[str, str]) -> None:
+        """Store credential values. An empty string clears a field."""
+        definition = PROVIDERS_BY_ID.get(provider_id)
+        if definition is None:
+            raise KeyError(provider_id)
+        allowed = {f.key for f in definition.credential_fields}
+
+        entry = self._data["providers"].setdefault(provider_id, {})
+        current = dict(entry.get("values") or {})
+        for key, value in values.items():
+            if key not in allowed:
+                continue
+            if value == "":
+                current.pop(key, None)
+            else:
+                current[key] = value
+        entry["values"] = current
+        entry["updated_at"] = time.time()
+        # Configuring a provider for the first time should turn it on, unless
+        # the owner explicitly turned it off before.
+        if "enabled" not in entry and self.is_configured(provider_id):
+            entry["enabled"] = definition.default_enabled
+        self._save()
+
+    def set_enabled(self, provider_id: str, enabled: bool) -> None:
+        if provider_id not in PROVIDERS_BY_ID:
+            raise KeyError(provider_id)
+        entry = self._data["providers"].setdefault(provider_id, {})
+        entry["enabled"] = bool(enabled)
+        entry["updated_at"] = time.time()
+        self._save()
+
+    def clear(self, provider_id: str) -> None:
+        entry = self._data["providers"].get(provider_id)
+        if entry is None:
+            return
+        entry["values"] = {}
+        entry["enabled"] = False
+        entry["updated_at"] = time.time()
+        self._save()
+
+    # -- projection -------------------------------------------------------
+    def describe(self, definition: ProviderDefinition) -> dict[str, Any]:
+        """Provider state safe to hand to the admin UI (secrets masked)."""
+        resolved = self.resolved(definition.id)
+        return {
+            "id": definition.id,
+            "display_name": definition.display_name,
+            "category": definition.category,
+            "kind": definition.kind,
+            "description": definition.description,
+            "docs_url": definition.docs_url,
+            "notes": definition.notes,
+            "modalities": list(definition.modalities),
+            "base_url": definition.base_url,
+            "discovery": definition.discovery,
+            "enabled": self.is_enabled(definition.id),
+            "configured": self.is_configured(definition.id),
+            "configured_fields": [
+                {
+                    "key": f.key,
+                    "label": f.label,
+                    "env_var": f.env_var,
+                    "secret": f.secret,
+                    "required": f.required,
+                    "placeholder": f.placeholder,
+                    "help_text": f.help_text,
+                    "source": self.source_for(definition.id, f.key),
+                    "present": bool(resolved.get(f.key)),
+                    "masked": mask(resolved.get(f.key, "")) if f.secret else resolved.get(f.key, ""),
+                }
+                for f in definition.credential_fields
+            ],
+        }

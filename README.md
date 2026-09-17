@@ -1,0 +1,220 @@
+# gateway-kh
+
+A personal **model gateway**: one API in front of many backends, so Story Studio KH points at a
+single URL and its model pickers fill up — with no stocking step, no credits, no customers and no
+per-model setup.
+
+It fronts two classes of backend behind one facade:
+
+- **Local runners** — Studio Hub's studios on Apple Silicon (FLUX image, Qwen3/VoxCPM2/OmniVoice
+  voice, Whisper transcription), reached over its `/api/hub/*` surface.
+- **Remote providers** — 17 cloud providers, the same set the old GenStudio KH had configured:
+  OpenRouter, DeepSeek, Anthropic, OpenAI, Google (paid + free tier), Groq, NVIDIA NIM, xAI,
+  Token Harbor, Experiential Labs, fal.ai, Kie.ai, Black Forest Labs, MiniMax, ElevenLabs,
+  Fish Audio.
+
+## Why this exists (and why it is the sanctioned design)
+
+Story Studio KH's own architecture contract requires that it talks to **exactly one endpoint**:
+
+> `AGENTS.md` — *"Model/provider inventory and dispatch belong to GenStudio. Story Studio reads the
+> live GenStudio catalog and **must not restore direct Studio Hub or sibling-Studio routing**."*
+
+> `docs/architecture/security-reliability.md` — *"**Story Studio sends generation requests only to
+> GenStudio. It does not call sibling Studio apps, Studio Hub, or upstream model providers
+> directly.**"*
+
+That is enforced by a boundary test suite (`audio-genstudio-only`, `genstudio-client-boundary`,
+`private-routing-identity`, `legacy-network-boundary`, `scene-genstudio-boundary`). So a gateway is
+not a workaround — it is the only architecturally legal way to route local Apple Silicon generation
+into Story Studio. Story Studio sees this service as "GenStudio" and needs **zero code changes**.
+
+## The one design decision that matters
+
+**There is no billing here. But the catalogue still publishes prices — all of them zero.**
+
+Story Studio's catalogue parsers build explicit object literals and **drop any row whose price
+fields are missing**. The generators then refuse with *"this model is not in your GenStudio KH
+catalogue."* A gateway that simply omits pricing therefore does not get "unpriced but working"
+models — it gets an empty picker, and these stop working outright:
+
+| Feature | Why it dies |
+|---|---|
+| TTS narration | row dropped without `credits_per_1000_characters` |
+| Video generation | variant dropped without `credits_per_video` + `price_version` |
+| Music generation | row dropped without `credits_per_request` |
+| Image-to-image | `chargeable` must be published truthy |
+| Durable LLM lineup | fallback advances only on a *proven zero settlement* |
+| Paid replacement paths | need finite `credits` + non-empty `price_version` |
+
+The fix is not to build pricing — it is to publish the **shape** of a priced catalogue with every
+amount pinned to zero. All of it lives in `gateway/constants.py`, the single source of truth.
+
+The settlement triple is load-bearing, not decoration. Every settled job returns:
+
+```json
+{ "reserved_credits": 0, "settled_credits": 0, "released_credits": 0 }
+```
+
+Story Studio advances its LLM lineup to the next candidate only when it can prove a failed attempt
+cost nothing, and the proof requires all three fields present and balanced. The free-retry proof
+actively *wants* a balanced zero.
+
+## Architecture
+
+```
+                    ┌──────────────────────────────────────────┐
+   Story Studio ───▶│  gateway/api.py   (the GenStudio contract)│
+   (one endpoint)   └────────────────┬─────────────────────────┘
+                                     │ accept + report only
+                              ┌──────▼──────┐
+                              │ JobStore    │  SQLite, idempotent
+                              └──────┬──────┘
+                                     │ due jobs
+                              ┌──────▼──────┐
+                              │ Worker      │  one thread, off the request path
+                              └──────┬──────┘
+                                     │ adapter.generate()
+        ┌────────────────────────────┼────────────────────────────┐
+        ▼                            ▼                            ▼
+ openai_compat                  anthropic                    fal / kie
+ (9 providers)                  (Messages API)               (async queue)
+        │                                                          │
+        └────────────────────────┬─────────────────────────────────┘
+                                 ▼
+                          studio_hub (local)
+                    POST /api/hub/jobs → poll → artifact
+```
+
+Adapters implement one method returning a `BackendResult`. That is deliberately narrower than the
+`GenerationProvider` port in `gateway/ports.py`: that port models a *remote asynchronous task*
+(create/poll/download), which fits fal, Kie and Studio Hub but is an awkward fit for an
+OpenAI-compatible chat call that answers in one response. Both shapes exist; nothing is forced.
+
+Generation runs on a worker thread, never inside the HTTP handler — a local FLUX image can take
+minutes, and blocking a Story Studio poll for that long would trip its timeouts.
+
+## Quick start
+
+```bash
+uv venv --python 3.11
+uv pip install --python .venv/bin/python -r requirements.txt
+
+# Story Studio's default endpoint is http://127.0.0.1:8000
+GATEWAY_API_KEY=your-key .venv/bin/python -m uvicorn gateway.api:app --host 127.0.0.1 --port 8000
+```
+
+Open **http://127.0.0.1:8000/admin** for the provider console.
+
+Then in Story Studio: **Settings → This Mac → Base URL** = `http://127.0.0.1:8000`, and
+**GenStudio API key** = the same `GATEWAY_API_KEY`.
+
+### The flow
+
+1. Open `/admin`.
+2. Paste a provider's API key → **Save & discover models**. The key is stored `0600`, models are
+   discovered live from the provider, and the provider is enabled automatically.
+3. Untick anything you do not want offered (OpenRouter alone lists several hundred models, so it
+   ships with per-model opt-in rather than auto-enable).
+4. Story Studio's pickers now show exactly what you enabled.
+
+## Adding things
+
+**A new provider** — append an entry to `data/providers.local.json` and restart:
+
+```json
+{ "providers": [{
+  "id": "my-provider", "display_name": "My Provider", "category": "language",
+  "kind": "openai_compatible", "base_url": "https://api.example.com/v1",
+  "modalities": ["chat"], "discovery": "openai_models"
+}]}
+```
+
+Kinds: `openai_compatible`, `anthropic`, `google`, `fal`, `kie`, `studio_hub` (wired);
+`bfl`, `minimax`, `elevenlabs`, `fish` (definitions exist, adapter pending — they are listable and
+credential-editable, and say so in the UI). Discovery strategies: `openai_models`,
+`anthropic_models`, `google_models`, `fal_catalog`, `elevenlabs_models`, `studio_hub`, `static`.
+
+**A new provider model** — usually nothing. Discovery picks it up on the next refresh. For a model
+the provider ships but does not list, use **Add model manually** in that provider's panel.
+
+**A new voice** — append to `data/voices.json`. `tts_model_id` is matched as a suffix of the
+namespaced catalogue id, so voices survive a provider being re-enabled.
+
+## Verification
+
+```bash
+.venv/bin/python tests/test_e2e.py
+```
+
+60 checks against a **real HTTP upstream** (a local mock provider), exercising the admin API,
+credential storage, live discovery, modality inference, the Story catalogue contract, chat/image/TTS
+generation, the worker, artifacts, idempotency, provider/model enable-disable on both the catalogue
+and the dispatch path, manual model addition, and the 402 invariant. Nothing inside the gateway is
+stubbed.
+
+Two bugs it caught that are worth keeping in mind, because both were invisible until the test ran:
+modality inference had no generic `image`/`video` rule (so `foo-image-v2` silently fell into the
+chat bucket), and the mock's `HTTPServer` stalled in `socket.getfqdn()` *after* bind but *before*
+listen — which presents as a connect timeout, not a refusal.
+
+## Contract traps (each cost real debugging time to identify)
+
+- **Never return 402.** Story Studio holds a credit lock keyed on the API key. If it ever sees 402
+  and no balance is published, that hold **never clears** — the key is dead permanently. A provider
+  running out of funds must surface as a settled `failed` job. `constants.py` says so explicitly.
+- **`freshness` is a hard gate.** `stale: true` disables every model for new work, and a copy older
+  than 30 minutes is refused outright. It is computed from the last catalogue rebuild, not from
+  process start — otherwise the gateway would stop working 31 minutes after boot.
+- **Artifact URLs must stay on the API origin.** Relative paths only.
+- **`cost_tier` is all-or-nothing.** One row missing it hides the entire tier-tab strip.
+- **Publish availability explicitly.** The transcription parser reads `available === true` (absent
+  means unavailable) while reading `qualification_only !== false` (absent means hidden).
+- **`chargeable` must be explicit.** The TTS quote parser does `payload?.chargeable === true`.
+- **`paid_concurrency_limit` must be a valid integer** or the admission loader throws before
+  falling back to its safe default.
+- **`catalog_status` must be exactly `'published'`** on voices; anything else hides them.
+- **`finish_reason` must be a clean stop.** `length` is refused as truncated, so it is passed
+  through honestly rather than laundered.
+
+## Security posture
+
+- API keys live in `data/credentials.json` (mode `0600`, gitignored) or `.env` (gitignored).
+  Secrets are never returned to the browser in full — the admin API returns a masked form.
+- The server binds `127.0.0.1` by default. Admin routes are open from loopback and require the
+  bearer token otherwise, so changing `GATEWAY_HOST` does not silently expose a control plane.
+- `.env` and the credential file are created `0600` up front rather than chmod-ed afterwards, so
+  there is no world-readable window.
+
+## Layout
+
+```
+gateway/constants.py          the zero-valued commercial constants (read this first)
+gateway/ports.py              the 3-method provider abstraction, lifted from GenStudio KH
+gateway/config.py             paths, .env loading, secret-file hygiene
+gateway/providers/
+  definitions.py              the 18 providers, declarative
+  credentials.py              0600 credential store, .env fallback, masking
+  discovery.py                per-kind live model discovery
+  models.py                   inventory: discovered + curated + user-added, with toggles
+  registry.py                 composition
+gateway/adapters/             openai_compat, anthropic, google, fal, kie, studio_hub
+gateway/catalog.py            registry models -> Story Studio rows + freshness
+gateway/worker.py             background execution
+gateway/store.py              SQLite jobs, idempotency
+gateway/api.py                the Story Studio contract
+gateway/admin.py + admin_ui.html   provider console
+gateway/hub.py                Studio Hub discovery + auth
+data/voices.json              voice catalogue
+data/providers.local.json     user-defined providers (gitignored)
+tests/mock_upstream.py        local mock provider
+tests/test_e2e.py             the end-to-end suite
+```
+
+## Deliberately absent
+
+Credits, customers, pricing, tiers, entitlement checks, publishing, model qualification/testing,
+multi-tenancy, and API-key scopes. Scopes are ignored: this is a single-owner gateway, and Story
+Studio only uses them to produce user-facing hints.
+
+GenStudio KH is **not** modified by any of this and keeps running as-is.

@@ -1,0 +1,16 @@
+# Environment
+.venv/
+__pycache__/
+*.pyc
+
+# Secrets — never commit these. The gateway holds credentials for every
+# provider the owner has configured.
+.env
+data/credentials.json
+data/models_cache.json
+data/providers.local.json
+
+# Runtime state
+data/gateway.sqlite3
+data/gateway.sqlite3-*
+data/artifacts/

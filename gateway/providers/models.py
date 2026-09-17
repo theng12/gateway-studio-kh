@@ -1,0 +1,230 @@
+"""Model inventory — discovered, curated and user-added models, with toggles.
+
+A model reaches Story Studio only when all three hold:
+
+    1. its provider is enabled,
+    2. its provider has a usable credential,
+    3. the model itself is enabled.
+
+Rule 3 is what keeps a 300-model aggregator from flooding the picker. Newly
+discovered models follow the provider's `auto_enable_discovered` policy, and any
+explicit operator decision is remembered and wins from then on.
+
+Cached discovery results live in `data/models_cache.json` so the catalogue
+survives a restart even when a provider is briefly unreachable.
+"""
+
+from __future__ import annotations
+
+import json
+import time
+from pathlib import Path
+from typing import Any
+
+from ..config import MODEL_CACHE_PATH, write_secret
+from .credentials import CredentialStore
+from .definitions import PROVIDERS_BY_ID, ProviderDefinition
+from .discovery import DiscoveryResult, DiscoveredModel, discover
+
+
+class ModelInventory:
+    def __init__(self, credentials: CredentialStore, path: Path | None = None) -> None:
+        self.path = Path(path or MODEL_CACHE_PATH)
+        self.credentials = credentials
+        self._data: dict[str, Any] = {"providers": {}, "enabled": {}, "user": {}}
+        self._load()
+
+    # -- persistence ------------------------------------------------------
+    def _load(self) -> None:
+        if not self.path.exists():
+            return
+        try:
+            parsed = json.loads(self.path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            return
+        if isinstance(parsed, dict):
+            for key in ("providers", "enabled", "user"):
+                if isinstance(parsed.get(key), dict):
+                    self._data[key] = parsed[key]
+
+    def _save(self) -> None:
+        # Not a secret file, but it does reveal which models are configured, so
+        # it stays owner-only like everything else in data/.
+        write_secret(self.path, json.dumps(self._data, indent=2) + "\n")
+
+    # -- discovery --------------------------------------------------------
+    def refresh(self, provider_id: str, *, force: bool = True) -> DiscoveryResult:
+        """Run live discovery for one provider and cache the result."""
+        definition = PROVIDERS_BY_ID.get(provider_id)
+        if definition is None:
+            raise KeyError(provider_id)
+
+        values = self.credentials.resolved(provider_id)
+        result = discover(definition, values)
+
+        entry = self._data["providers"].setdefault(provider_id, {})
+        entry["fetched_at"] = result.fetched_at
+        entry["error"] = result.error
+        if result.error is None:
+            entry["models"] = [
+                {
+                    "model_id": m.model_id,
+                    "display_name": m.display_name,
+                    "modality": m.modality,
+                    "raw": m.raw,
+                }
+                for m in result.models
+            ]
+        self._save()
+        return result
+
+    def refresh_all(self, *, only_enabled: bool = False) -> dict[str, dict[str, Any]]:
+        outcomes: dict[str, dict[str, Any]] = {}
+        for provider_id, definition in PROVIDERS_BY_ID.items():
+            if only_enabled and not self.credentials.is_enabled(provider_id):
+                continue
+            result = self.refresh(provider_id)
+            outcomes[provider_id] = {
+                "count": len(result.models),
+                "error": result.error,
+            }
+        return outcomes
+
+    # -- reads ------------------------------------------------------------
+    def cached(self, provider_id: str) -> dict[str, Any]:
+        return dict(self._data["providers"].get(provider_id) or {})
+
+    def _is_enabled(self, provider_id: str, model_id: str, definition: ProviderDefinition, source: str) -> bool:
+        explicit = (self._data["enabled"].get(provider_id) or {}).get(model_id)
+        if explicit is not None:
+            return bool(explicit)
+        if source == "user":
+            return True
+        return definition.auto_enable_discovered
+
+    def models_for(self, provider_id: str, *, include_disabled: bool = True) -> list[dict[str, Any]]:
+        """Merged model list for one provider: discovered + curated + user-added."""
+        definition = PROVIDERS_BY_ID.get(provider_id)
+        if definition is None:
+            return []
+
+        merged: dict[str, dict[str, Any]] = {}
+
+        for curated in definition.static_models:
+            model_id = str(curated["id"])
+            merged[model_id] = {
+                "model_id": model_id,
+                "display_name": curated.get("display_name", model_id),
+                "modality": curated.get("modality", definition.modalities[0]),
+                "source": "curated",
+                "raw": {},
+            }
+
+        cached = self.cached(provider_id)
+        for item in cached.get("models") or []:
+            if not isinstance(item, dict) or not item.get("model_id"):
+                continue
+            merged[item["model_id"]] = {
+                "model_id": item["model_id"],
+                "display_name": item.get("display_name") or item["model_id"],
+                "modality": item.get("modality") or definition.modalities[0],
+                "source": "discovered",
+                "raw": item.get("raw") or {},
+            }
+
+        for item in self._data["user"].get(provider_id) or []:
+            if not isinstance(item, dict) or not item.get("model_id"):
+                continue
+            merged[item["model_id"]] = {
+                "model_id": item["model_id"],
+                "display_name": item.get("display_name") or item["model_id"],
+                "modality": item.get("modality") or definition.modalities[0],
+                "source": "user",
+                "raw": {},
+            }
+
+        output: list[dict[str, Any]] = []
+        for model_id, item in sorted(merged.items(), key=lambda kv: kv[1]["display_name"].lower()):
+            item["enabled"] = self._is_enabled(provider_id, model_id, definition, item["source"])
+            if include_disabled or item["enabled"]:
+                output.append(item)
+        return output
+
+    def enabled_models(self, modality: str) -> list[tuple[ProviderDefinition, dict[str, Any]]]:
+        """Every enabled model of a modality across every enabled provider.
+
+        This is the exact set the Story Studio catalogue is built from.
+        """
+        output: list[tuple[ProviderDefinition, dict[str, Any]]] = []
+        for provider_id, definition in PROVIDERS_BY_ID.items():
+            if modality not in definition.modalities:
+                continue
+            if not self.credentials.is_enabled(provider_id):
+                continue
+            if not self.credentials.is_configured(provider_id):
+                continue
+            for model in self.models_for(provider_id, include_disabled=False):
+                if model["modality"] == modality:
+                    output.append((definition, model))
+        return output
+
+    # -- writes -----------------------------------------------------------
+    def set_model_enabled(self, provider_id: str, model_id: str, enabled: bool) -> None:
+        if provider_id not in PROVIDERS_BY_ID:
+            raise KeyError(provider_id)
+        bucket = self._data["enabled"].setdefault(provider_id, {})
+        bucket[model_id] = bool(enabled)
+        self._save()
+
+    def set_many(self, provider_id: str, model_ids: list[str], enabled: bool) -> int:
+        bucket = self._data["enabled"].setdefault(provider_id, {})
+        for model_id in model_ids:
+            bucket[model_id] = bool(enabled)
+        self._save()
+        return len(model_ids)
+
+    def add_user_model(
+        self, provider_id: str, model_id: str, display_name: str, modality: str
+    ) -> None:
+        """Add a model a provider released but discovery cannot see."""
+        if provider_id not in PROVIDERS_BY_ID:
+            raise KeyError(provider_id)
+        if modality not in PROVIDERS_BY_ID[provider_id].modalities:
+            raise ValueError(
+                f"'{modality}' is not a modality of provider '{provider_id}'"
+            )
+        bucket = self._data["user"].setdefault(provider_id, [])
+        bucket = [m for m in bucket if m.get("model_id") != model_id]
+        bucket.append(
+            {
+                "model_id": model_id,
+                "display_name": display_name or model_id,
+                "modality": modality,
+                "added_at": time.time(),
+            }
+        )
+        self._data["user"][provider_id] = bucket
+        self.set_model_enabled(provider_id, model_id, True)
+
+    def remove_user_model(self, provider_id: str, model_id: str) -> None:
+        bucket = self._data["user"].get(provider_id) or []
+        self._data["user"][provider_id] = [
+            m for m in bucket if m.get("model_id") != model_id
+        ]
+        (self._data["enabled"].get(provider_id) or {}).pop(model_id, None)
+        self._save()
+
+    # -- projection -------------------------------------------------------
+    def summary(self) -> dict[str, Any]:
+        """Counts for the admin UI header."""
+        total = enabled = 0
+        per_modality: dict[str, int] = {}
+        for provider_id, definition in PROVIDERS_BY_ID.items():
+            if not self.credentials.is_enabled(provider_id):
+                continue
+            for model in self.models_for(provider_id, include_disabled=True):
+                total += 1
+                if model["enabled"]:
+                    enabled += 1
+                    per_modality[model["modality"]] = per_modality.get(model["modality"], 0) + 1
+        return {"total_models": total, "enabled_models": enabled, "by_modality": per_modality}

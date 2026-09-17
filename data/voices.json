@@ -1,0 +1,47 @@
+{
+  "_comment": "Voices offered to Story Studio. `tts_model_id` is the provider's raw model id; the gateway matches it as a suffix of the namespaced catalogue id, so voices keep working when a provider is re-enabled or a model moves namespace. `catalog_status` is forced to 'published' by the gateway -- Story Studio treats any other value as a generation gate.",
+  "voices": [
+    {
+      "id": "voice-christian",
+      "display_name": "Christian",
+      "language": "en",
+      "description": "Narrator, warm.",
+      "provider": "Studio Hub (this Mac)",
+      "engine_name": "Qwen3 TTS",
+      "engine_id": "qwen3-tts",
+      "model_family": "qwen3-tts",
+      "tts_model_id": "Qwen3-TTS-12Hz-0.6B-Base-4bit",
+      "voice_tier": "standard",
+      "output_format": "wav",
+      "preview_available": false
+    },
+    {
+      "id": "voice-vincent",
+      "display_name": "Vincent",
+      "language": "en",
+      "description": "Narrator, dry.",
+      "provider": "Studio Hub (this Mac)",
+      "engine_name": "Qwen3 TTS",
+      "engine_id": "qwen3-tts",
+      "model_family": "qwen3-tts",
+      "tts_model_id": "Qwen3-TTS-12Hz-0.6B-Base-4bit",
+      "voice_tier": "standard",
+      "output_format": "wav",
+      "preview_available": false
+    },
+    {
+      "id": "voice-leo",
+      "display_name": "Leo",
+      "language": "en",
+      "description": "Narrator, bright.",
+      "provider": "Studio Hub (this Mac)",
+      "engine_name": "Qwen3 TTS",
+      "engine_id": "qwen3-tts",
+      "model_family": "qwen3-tts",
+      "tts_model_id": "Qwen3-TTS-12Hz-0.6B-Base-4bit",
+      "voice_tier": "standard",
+      "output_format": "wav",
+      "preview_available": false
+    }
+  ]
+}
