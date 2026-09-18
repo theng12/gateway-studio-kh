@@ -29,8 +29,10 @@ from __future__ import annotations
 import json
 import os
 import stat
+import threading
 import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import httpx
@@ -265,26 +267,51 @@ def locations() -> list[dict]:
             "reachable": False,
             "error": local_error or "Studio Hub is not running on this Mac.",
             "role": None, "version": None, "machines": [], "machine_summary": None,
-            "nodes": [], "node_summary": None, "running_jobs": [], "latency_ms": None,
+            "nodes": [], "node_summary": None, "running_jobs": [],
+            "activity": {"pulse": {}, "machines": [], "observed_at": None},
+            "by_machine": {}, "matrix": [], "jobs_total": None, "latency_ms": None,
         }
     rows.append(local)
 
-    for row in _read():
-        probed = _probe(str(row["url"]), str(row.get("token") or ""))
-        probed.update({
+    configured = _read()
+    if not configured:
+        return rows
+
+    # Controllers are probed **concurrently**. Sequentially, the owner's "at
+    # least 3-4 controllers" is already several seconds of waiting, and the
+    # hundreds this has to survive would be minutes — every one of them spent
+    # waiting on the slowest site rather than on the work. The pool is bounded so
+    # a large fleet cannot open an unbounded number of sockets.
+    with ThreadPoolExecutor(max_workers=min(_MAX_PROBES, len(configured))) as pool:
+        probed = list(pool.map(
+            lambda row: _probe(str(row["url"]), str(row.get("token") or "")), configured
+        ))
+
+    for row, result in zip(configured, probed):
+        result.update({
             "id": row.get("id"),
             "label": row.get("label") or row["url"],
             "url": row["url"],
             "local": False,
         })
-        rows.append(probed)
+        rows.append(result)
     return rows
 
 
-def snapshot() -> dict:
-    """Everything the Fleet page shows, in one read."""
-    rows = locations()
+#: How many controllers are contacted at once. Bounded so a fleet of hundreds
+#: cannot open hundreds of sockets, while still finishing far faster than
+#: one-at-a-time.
+_MAX_PROBES = 24
 
+#: How long a snapshot is reused. The page polls, and several clients (the
+#: window, the console, a test) read the same data; re-probing every controller
+#: on each read would multiply the load on every site by the number of readers.
+_CACHE_TTL = 5.0
+_cache: dict = {"at": 0.0, "value": None}
+_cache_lock = threading.Lock()
+
+
+def _summarise(rows: list[dict]) -> dict:
     # Machine counts come from the Hub's own pulse, which is the only place that
     # distinguishes "ready" from "long idle" from "offline". `fleet/overview`
     # only knows reachable/unreachable, so it is the fallback, not the source.
@@ -312,17 +339,155 @@ def snapshot() -> dict:
             failed += int(machine.get("failed") or 0)
 
     return {
+        "locations": len(rows),
+        "locations_up": sum(1 for row in rows if row["reachable"]),
+        "machines": machines_total,
+        "machines_online": online,
+        "machines_offline": offline,
+        "pulse": pulse,
+        "jobs_completed": completed,
+        "jobs_failed": failed,
+        "running_jobs": sum(len(row["running_jobs"]) for row in rows),
+    }
+
+
+def machines_flat(rows: list[dict]) -> list[dict]:
+    """Every machine in the fleet as one row, with its location attached.
+
+    A table is what scales: hundreds of machines as a flat list can be
+    virtualised by the view, while hundreds of nested cards cannot. The join is
+    done here, once, so the view never has to walk the tree.
+    """
+    out: list[dict] = []
+    for row in rows:
+        activity = {entry.get("machine"): entry
+                    for entry in row["activity"]["machines"] if entry.get("machine")}
+        seen: set[str] = set()
+        for machine in row["machines"]:
+            mid = str(machine.get("machine") or "")
+            seen.add(mid)
+            entry = activity.get(mid) or {}
+            out.append({
+                "location_id": row["id"],
+                "location": row["label"],
+                "location_local": row["local"],
+                "location_reachable": row["reachable"],
+                "machine": mid,
+                "label": machine.get("label") or mid,
+                "state": entry.get("state"),
+                "reachable": machine.get("reachable"),
+                "completed": entry.get("completed"),
+                "failed": entry.get("failed"),
+                "average_seconds": machine.get("average_seconds"),
+                "median_runtime_s": entry.get("median_runtime_s"),
+                "chip": machine.get("chip"),
+                "memory_gb": machine.get("memory_gb"),
+                "disk_free_gb": machine.get("disk_free_gb"),
+                "health": machine.get("health"),
+                "modalities": machine.get("modalities") or {},
+                "limitation": entry.get("limitation"),
+            })
+        # A machine the activity report knows about but the overview omitted is
+        # still a machine.
+        for mid, entry in activity.items():
+            if mid in seen:
+                continue
+            out.append({
+                "location_id": row["id"],
+                "location": row["label"],
+                "location_local": row["local"],
+                "location_reachable": row["reachable"],
+                "machine": mid,
+                "label": mid,
+                "state": entry.get("state"),
+                "reachable": None,
+                "completed": entry.get("completed"),
+                "failed": entry.get("failed"),
+                "average_seconds": None,
+                "median_runtime_s": entry.get("median_runtime_s"),
+                "chip": None, "memory_gb": None, "disk_free_gb": None, "health": None,
+                "modalities": {},
+                "limitation": entry.get("limitation"),
+            })
+    return out
+
+
+def running_flat(rows: list[dict]) -> list[dict]:
+    """Work in flight, as one row per batch, with its location attached."""
+    out: list[dict] = []
+    for row in rows:
+        for job in row["running_jobs"]:
+            out.append({
+                "location": row["label"],
+                "location_local": row["local"],
+                "modality": job.get("modality"),
+                "model": job.get("model"),
+                "label": job.get("label"),
+                "total": job.get("total"),
+                "running": job.get("running"),
+                "queued": job.get("queued"),
+                "retrying": job.get("retrying"),
+                "done": job.get("done"),
+                "error": job.get("error"),
+                "stalled": job.get("stalled"),
+                "started_at": job.get("started_at"),
+            })
+    return out
+
+
+def snapshot(force: bool = False) -> dict:
+    """Everything the Fleet page shows, in one read.
+
+    Served from a short-lived cache so that polling, the console and a test all
+    reading at once does not multiply the load on every controller.
+    """
+    now = time.time()
+    with _cache_lock:
+        cached = _cache["value"]
+        if not force and cached and (now - _cache["at"]) < _CACHE_TTL:
+            return cached
+
+    rows = locations()
+    value = {
         "locations": rows,
-        "summary": {
-            "locations": len(rows),
-            "locations_up": sum(1 for row in rows if row["reachable"]),
-            "machines": machines_total,
-            "machines_online": online,
-            "machines_offline": offline,
-            "pulse": pulse,
-            "jobs_completed": completed,
-            "jobs_failed": failed,
-            "running_jobs": sum(len(row["running_jobs"]) for row in rows),
-        },
+        "machines": machines_flat(rows),
+        "running": running_flat(rows),
+        "summary": _summarise(rows),
         "generated_at": time.time(),
     }
+    with _cache_lock:
+        _cache["at"] = time.time()
+        _cache["value"] = value
+    return value
+
+
+_refresher: threading.Thread | None = None
+
+
+def start_refresher(interval: float = 15.0) -> None:
+    """Keep the snapshot warm in the background.
+
+    This is what makes the page survive a large fleet. A controller that is
+    switched off takes the full timeout to answer, so reading on demand would
+    let one unreachable site slow down the reader — and with hundreds of them,
+    no timeout short enough to be tolerable is long enough for a VPN. Refreshing
+    on a timer means the request path only ever reads a value that is already
+    there, and a slow site costs the *poller* time, not the person looking at it.
+
+    Started from the app's lifespan, so a short-lived process (a test, a CLI
+    call) never pays for it.
+    """
+    global _refresher
+    if _refresher is not None and _refresher.is_alive():
+        return
+
+    def loop() -> None:
+        while True:
+            try:
+                snapshot(force=True)
+            except Exception:  # noqa: BLE001 - the poller must outlive any one site
+                pass
+            time.sleep(interval)
+
+    _refresher = threading.Thread(target=loop, name="fleet-refresh", daemon=True)
+    _refresher.start()

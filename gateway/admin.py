@@ -100,9 +100,18 @@ def status() -> dict[str, Any]:
 # Providers
 # ---------------------------------------------------------------------------
 @router.get("/api/providers", dependencies=[Depends(require_admin)])
-def list_providers() -> dict[str, Any]:
+def list_providers(scope: str | None = None) -> dict[str, Any]:
+    """Cloud APIs and local runners are different things and are listed separately.
+
+    `scope=cloud` is the provider console (a key and a model list per vendor);
+    `scope=local` is the fleet (a machine, its studios and its running work).
+    Both are still providers to the dispatch path — this is about how they are
+    managed, not about who can generate.
+    """
     items = []
     for described in registry.describe_all():
+        if scope and described.get("scope") != scope:
+            continue
         definition = registry.definition(described["id"])
         supported, reason = support_status(definition) if definition else (False, "unknown")
         described["generation_supported"] = supported
@@ -110,7 +119,13 @@ def list_providers() -> dict[str, Any]:
         items.append(described)
     # Configured and enabled first: the list is long and the useful rows matter.
     items.sort(key=lambda p: (not p["enabled"], not p["configured"], p["display_name"].lower()))
-    return {"providers": items}
+    return {
+        "providers": items,
+        "scopes": {
+            "cloud": sum(1 for p in registry.describe_all() if p.get("scope") == "cloud"),
+            "local": sum(1 for p in registry.describe_all() if p.get("scope") == "local"),
+        },
+    }
 
 
 @router.post("/api/providers/{provider_id}/credentials", dependencies=[Depends(require_admin)])

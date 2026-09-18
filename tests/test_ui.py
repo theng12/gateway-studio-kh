@@ -214,6 +214,40 @@ def detail_texts() -> str:
         end tell'''))
 
 
+def table_texts(scroll_area: int) -> list[str]:
+    """Every cell's text in one of a page's tables, row by row.
+
+    Table cells are not part of the page's static texts, so a page whose content
+    is a table has to be read through the table.
+    """
+    try:
+        raw = osa(wrap(f'''
+            tell {MAIN_WINDOW} to tell splitter group 1 to tell table 1 of scroll area {scroll_area}
+                set acc to ""
+                repeat with r from 1 to (count of rows)
+                    repeat with c in (UI elements of row r)
+                        try
+                            set acc to acc & (value of static text 1 of c) & "\n"
+                        end try
+                    end repeat
+                end repeat
+                return acc
+            end tell'''))
+    except RuntimeError:
+        return []
+    return [line.strip() for line in raw.splitlines() if line.strip()]
+
+
+def table_columns(scroll_area: int) -> int:
+    try:
+        return int(osa(wrap(
+            f"tell {MAIN_WINDOW} to tell splitter group 1 to tell table 1 of "
+            f"scroll area {scroll_area} to return (count of columns)"
+        )) or 0)
+    except (RuntimeError, ValueError):
+        return -1
+
+
 def wait_for_detail(needle: str, timeout: float = 30.0) -> str:
     """Wait until the detail pane contains `needle`, then return its text.
 
@@ -589,15 +623,31 @@ def main() -> int:
     # The local Hub is always a location, so this page has true content on a
     # single-Mac install with nothing configured.
     open_section("Fleet")
-    fleet = wait_for_detail("Every location")
+    fleet = wait_for_detail("Locations")
     check("names the page and what it is for", "Every location" in fleet, fleet[:200])
     check("summarises locations", "location" in fleet and "reachable" in fleet, fleet[:220])
     check("says how many machines are online",
           "machine online" in fleet or "machines online" in fleet, fleet[:240])
-    check("lists this Mac as the local location", "This Mac" in fleet, fleet[:300])
-    check("reports the controller role", "controller" in fleet, fleet[:300])
     check("has a form for adding a location",
           "Add a location" in fleet and "Hub service token" in fleet, fleet[-300:])
+
+    # Three tables, so hundreds of machines virtualise instead of stacking.
+    locations_cells = table_texts(2)
+    machines_cells = table_texts(3)
+    check("locations are a table", table_columns(2) >= 4, f"{table_columns(2)} columns")
+    check("machines are a table", table_columns(3) >= 5, f"{table_columns(3)} columns")
+    check("running work is a table", table_columns(4) >= 3, f"{table_columns(4)} columns")
+    check("lists this Mac as the local location", "This Mac" in locations_cells,
+          f"{locations_cells}")
+    # The role is the Hub's to decide, so this only requires that one is
+    # reported from the set the Hub defines.
+    check("reports the location's role",
+          any(r in locations_cells for r in ("standalone", "controller", "worker")),
+          f"{locations_cells}")
+    check("lists the local machine with its work",
+          any("This Mac" in cell for cell in machines_cells), f"{machines_cells}")
+    check("a machine reports jobs done and failed",
+          any("done" in cell for cell in machines_cells), f"{machines_cells}")
 
     fleet_api = api_get("/admin/api/fleet")
     fleet_summary = fleet_api["summary"]
@@ -606,8 +656,8 @@ def main() -> int:
           f"{online} machine{'s' if online != 1 else ''} online" in fleet, f"{fleet_summary}")
     # Which machines did the work is the point of the page, so it must survive
     # the round trip from the Hub's activity report.
-    check("counts completed and failed jobs",
-          "completed" in fleet and "done" in fleet, fleet[:400])
+    check("counts completed and failed jobs in the summary",
+          "completed" in fleet, fleet[:300])
     check("the API publishes a per-machine job breakdown",
           bool(fleet_summary.get("pulse")) and "jobs_completed" in fleet_summary,
           f"{fleet_summary}")

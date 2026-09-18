@@ -147,6 +147,7 @@
 
   <!-- PROVIDERS -->
   <section id="view-providers" style="display:none">
+    <div id="local-note" class="hint" style="margin:10px 0 0"></div>
     <div class="row" style="margin-bottom:14px">
       <div class="stat" id="hubline"></div>
       <div class="spacer"></div>
@@ -330,8 +331,18 @@ document.getElementById('m-only-enabled').addEventListener('change', loadModels)
 /* -------------------------------- providers -------------------------------- */
 
 async function loadProviders() {
-  const { providers } = await api('/providers');
+  // Cloud APIs only. Local runners are machines with studios and running work,
+  // not keys with model lists, and they are managed on the app's Fleet page.
+  // `scope` is decided by the gateway from the provider's kind, so a second Hub
+  // is classified correctly the moment it is added.
+  const { providers, scopes } = await api('/providers?scope=cloud');
   state.providers = providers;
+  const note = document.getElementById('local-note');
+  if (note) {
+    note.textContent = scopes && scopes.local
+      ? `${scopes.local} local runner${scopes.local === 1 ? '' : 's'} (Studio Hub) ${scopes.local === 1 ? 'is' : 'are'} managed on the app's Fleet page, not here.`
+      : '';
+  }
   renderProviders();
 }
 

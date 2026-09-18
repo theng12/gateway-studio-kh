@@ -41,6 +41,7 @@ from .catalog import MODALITIES, catalog
 from .config import ARTIFACT_DIR, gateway_api_key, is_loopback
 from .constants import ADMISSION, CREDIT_BALANCE, ZERO_PURCHASE, ZERO_SETTLEMENT
 from .providers import registry
+from . import fleet
 from .runtime import store, worker
 from .voices import story_row, voice_registry, voices_for_model
 
@@ -56,6 +57,8 @@ _UPLOAD_TTL_S = 3600.0
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     worker.start()
+    # Keeps the fleet snapshot warm so no request waits on an unreachable site.
+    fleet.start_refresher()
     try:
         yield
     finally:

@@ -11,7 +11,7 @@ import AppKit
 ///
 /// The local Mac is always the first location, so a single-Mac install shows
 /// something true without any configuration.
-final class FleetSection: NSObject, AppSection {
+final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableViewDelegate {
     static let shared = FleetSection()
 
     let title = "Fleet"
@@ -22,7 +22,16 @@ final class FleetSection: NSObject, AppSection {
 
     private var summaryLabel = NSTextField(labelWithString: "Loading…")
     private var pulseLabel = NSTextField(labelWithString: "")
-    private var locationsStack = NSStackView()
+    private var table: NSTableView!
+    /// Flattened machine rows. A table virtualises, so this can hold hundreds or
+    /// thousands without building that many views.
+    private var locations: [[String: Any]] = []
+    private var locationTable: NSTableView!
+    private var machines: [[String: Any]] = []
+    private var runningRows: [[String: Any]] = []
+    private var runningTable: NSTableView!
+    private var runningHeading = NSTextField(labelWithString: "")
+    private var statusLabel = NSTextField(labelWithString: "")
     private var labelField = NSTextField(string: "")
     private var urlField = NSTextField(string: "")
     private var tokenField = NSSecureTextField(string: "")
@@ -58,10 +67,106 @@ final class FleetSection: NSObject, AppSection {
         pulseLabel.textColor = .tertiaryLabelColor
         root.addArrangedSubview(pulseLabel)
 
-        locationsStack.orientation = .vertical
-        locationsStack.alignment = .leading
-        locationsStack.spacing = 14
-        root.addArrangedSubview(locationsStack)
+        // Three tables, not a stack of cards. The fleet has to hold hundreds of
+        // locations and machines, and a stack would build a view for every one
+        // of them; a table only builds the rows you can see.
+        locationTable = NSTableView()
+        locationTable.dataSource = self
+        locationTable.delegate = self
+        locationTable.rowHeight = 22
+        locationTable.usesAlternatingRowBackgroundColors = true
+        for (identifier, title, width) in [
+            ("llocation", "Location", 180),
+            ("lrole", "Role", 110),
+            ("lhub", "Hub", 90),
+            ("lmachines", "Machines", 90),
+            ("lstatus", "Status", 380),
+        ] {
+            let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier(identifier))
+            column.title = title
+            column.width = CGFloat(width)
+            column.minWidth = 60
+            locationTable.addTableColumn(column)
+        }
+        let locationScroll = NSScrollView()
+        locationScroll.documentView = locationTable
+        locationScroll.hasVerticalScroller = true
+        locationScroll.borderType = .bezelBorder
+        locationScroll.translatesAutoresizingMaskIntoConstraints = false
+        root.addArrangedSubview(PageKit.sectionTitle("Locations"))
+        root.addArrangedSubview(locationScroll)
+        NSLayoutConstraint.activate([
+            locationScroll.widthAnchor.constraint(equalTo: root.widthAnchor, constant: -56),
+            locationScroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 90),
+        ])
+
+        table = NSTableView()
+        table.dataSource = self
+        table.delegate = self
+        table.rowHeight = 22
+        table.usesAlternatingRowBackgroundColors = true
+        for (identifier, title, width) in [
+            ("state", "State", 96),
+            ("machine", "Machine", 150),
+            ("location", "Location", 140),
+            ("jobs", "Jobs", 150),
+            ("avg", "Median", 80),
+            ("hardware", "Hardware", 210),
+            ("modalities", "Modalities", 240),
+        ] {
+            let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier(identifier))
+            column.title = title
+            column.width = CGFloat(width)
+            column.minWidth = 60
+            table.addTableColumn(column)
+        }
+        let scroll = NSScrollView()
+        scroll.documentView = table
+        scroll.hasVerticalScroller = true
+        scroll.borderType = .bezelBorder
+        scroll.translatesAutoresizingMaskIntoConstraints = false
+        root.addArrangedSubview(scroll)
+        NSLayoutConstraint.activate([
+            scroll.widthAnchor.constraint(equalTo: root.widthAnchor, constant: -56),
+            scroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 220),
+        ])
+
+        statusLabel.font = .systemFont(ofSize: 11.5)
+        statusLabel.textColor = .secondaryLabelColor
+        root.addArrangedSubview(statusLabel)
+
+        // Work in flight, also as a table, and for the same reason: on a busy
+        // fleet this is the longest list on the page.
+        runningHeading = PageKit.sectionTitle("Running now")
+        root.addArrangedSubview(runningHeading)
+
+        runningTable = NSTableView()
+        runningTable.dataSource = self
+        runningTable.delegate = self
+        runningTable.rowHeight = 22
+        runningTable.usesAlternatingRowBackgroundColors = true
+        for (identifier, title, width) in [
+            ("rlocation", "Location", 150),
+            ("rmodality", "Modality", 110),
+            ("rmodel", "Model", 300),
+            ("rprogress", "Progress", 200),
+        ] {
+            let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier(identifier))
+            column.title = title
+            column.width = CGFloat(width)
+            column.minWidth = 60
+            runningTable.addTableColumn(column)
+        }
+        let runningScroll = NSScrollView()
+        runningScroll.documentView = runningTable
+        runningScroll.hasVerticalScroller = true
+        runningScroll.borderType = .bezelBorder
+        runningScroll.translatesAutoresizingMaskIntoConstraints = false
+        root.addArrangedSubview(runningScroll)
+        NSLayoutConstraint.activate([
+            runningScroll.widthAnchor.constraint(equalTo: root.widthAnchor, constant: -56),
+            runningScroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 110),
+        ])
 
         root.addArrangedSubview(PageKit.sectionTitle("Add a location"))
         root.addArrangedSubview(PageKit.help(
@@ -108,7 +213,8 @@ final class FleetSection: NSObject, AppSection {
             switch result {
             case .failure(let error):
                 self.summaryLabel.stringValue = "Could not read the fleet — \(error)"
-                self.locationsStack.setViews([], in: .top)
+                self.machines = []
+                self.table.reloadData()
             case .success(let payload):
                 self.render(payload)
             }
@@ -117,10 +223,10 @@ final class FleetSection: NSObject, AppSection {
 
     private func render(_ payload: [String: Any]) {
         let summary = payload["summary"] as? [String: Any] ?? [:]
-        let locations = payload["locations"] as? [[String: Any]] ?? []
+        let locationRows = payload["locations"] as? [[String: Any]] ?? []
 
         let up = summary["locations_up"] as? Int ?? 0
-        let total = summary["locations"] as? Int ?? locations.count
+        let total = summary["locations"] as? Int ?? locationRows.count
         let online = summary["machines_online"] as? Int ?? 0
         let offline = summary["machines_offline"] as? Int ?? 0
         let completed = summary["jobs_completed"] as? Int ?? 0
@@ -146,172 +252,144 @@ final class FleetSection: NSObject, AppSection {
                 .map { "\($0.value) \($0.key.replacingOccurrences(of: "_", with: " "))" }
                 .joined(separator: " · ")
 
-        locationsStack.setViews(locations.map { card(for: $0) }, in: .top)
+        // The table is fed from the flat machine list the gateway joins for us,
+        // so a machine is one row no matter how many locations it came from.
+        locations = locationRows
+        machines = payload["machines"] as? [[String: Any]] ?? []
+        runningRows = payload["running"] as? [[String: Any]] ?? []
+        locationTable.reloadData()
+        table.reloadData()
+        runningTable.reloadData()
+        runningHeading.stringValue = runningRows.isEmpty ? "Running now — nothing" : "Running now"
+        statusLabel.stringValue = machines.isEmpty
+            ? "No machines are reporting."
+            : "\(machines.count) machine\(machines.count == 1 ? "" : "s") across "
+              + "\(locationRows.count) location\(locationRows.count == 1 ? "" : "s")."
     }
 
-    /// One location, drawn as a card so a down site is obvious at a glance.
-    private func card(for location: [String: Any]) -> NSView {
-        let card = NSView()
-        card.wantsLayer = true
-        card.layer?.backgroundColor = NSColor.controlBackgroundColor.cgColor
-        card.layer?.cornerRadius = 10
-        card.layer?.borderWidth = 1
-        card.layer?.borderColor = NSColor.separatorColor.cgColor
+    // MARK: Tables
 
-        let reachable = location["reachable"] as? Bool ?? false
-        let isLocal = location["local"] as? Bool ?? false
+    func numberOfRows(in tableView: NSTableView) -> Int {
+        if tableView === runningTable { return runningRows.count }
+        if tableView === locationTable { return locations.count }
+        return machines.count
+    }
 
-        let dot = NSView()
-        dot.wantsLayer = true
-        dot.layer?.cornerRadius = 4
-        dot.layer?.backgroundColor =
-            (reachable ? NSColor.systemGreen : NSColor.systemOrange).cgColor
-        dot.translatesAutoresizingMaskIntoConstraints = false
-        dot.widthAnchor.constraint(equalToConstant: 8).isActive = true
-        dot.heightAnchor.constraint(equalToConstant: 8).isActive = true
+    func tableView(
+        _ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int
+    ) -> NSView? {
+        guard let column = tableColumn else { return nil }
+        let isRunning = tableView === runningTable
+        let source = isRunning ? runningRows : (tableView === locationTable ? locations : machines)
+        guard row < source.count else { return nil }
+        let item = source[row]
 
-        let name = PageKit.label(
-            (location["label"] as? String) ?? "Location", size: 13, weight: .semibold
-        )
-        // "This Mac" is the local Hub; saying controller/standalone for it is
-        // still useful, because that is what decides whether it can own nodes.
-        var facts: [String] = []
-        if let role = location["role"] as? String, !role.isEmpty { facts.append(role) }
-        if let version = location["version"] as? String, !version.isEmpty {
-            facts.append("Hub \(version)")
-        }
-        if let url = location["url"] as? String, !url.isEmpty, !isLocal { facts.append(url) }
-        let detail = PageKit.label(
-            reachable ? facts.joined(separator: " · ") : "Not reachable",
-            size: 11.5, colour: .secondaryLabelColor, wrapping: true
-        )
-
-        let header = PageKit.row([dot, name, PageKit.label(
-            isLocal ? "this Mac" : "", size: 11, colour: .tertiaryLabelColor
-        )], spacing: 8)
-
-        let stack = NSStackView(views: [header, detail])
-        stack.orientation = .vertical
-        stack.alignment = .leading
-        stack.spacing = 4
-
-        if !reachable, let error = location["error"] as? String {
-            stack.addArrangedSubview(PageKit.help(error))
-        }
-
-        // The machine's *state* and its *job counts* live in the Hub's activity
-        // report, not in `fleet/overview`. Join them by id so one row answers
-        // "is it up, and how much work has it done".
-        let activity = location["activity"] as? [String: Any] ?? [:]
-        var byMachine: [String: [String: Any]] = [:]
-        for entry in activity["machines"] as? [[String: Any]] ?? [] {
-            if let id = entry["machine"] as? String { byMachine[id] = entry }
-        }
-        for machine in location["machines"] as? [[String: Any]] ?? [] {
-            let id = machine["machine"] as? String ?? ""
-            stack.addArrangedSubview(machineRow(machine, activity: byMachine[id]))
-        }
-        // A machine the activity report knows about but the overview did not
-        // list is still a machine.
-        let listed = Set((location["machines"] as? [[String: Any]] ?? [])
-            .compactMap { $0["machine"] as? String })
-        for (id, entry) in byMachine.sorted(by: { $0.key < $1.key }) where !listed.contains(id) {
-            stack.addArrangedSubview(machineRow(["machine": id, "label": id], activity: entry))
-        }
-
-        let running = location["running_jobs"] as? [[String: Any]] ?? []
-        if !running.isEmpty {
-            stack.addArrangedSubview(PageKit.label(
-                "Running now", size: 11.5, weight: .semibold
-            ))
-            for job in running { stack.addArrangedSubview(jobRow(job)) }
-        }
-
-        if !isLocal, let id = location["id"] as? String {
-            let actions = PageKit.row([
-                NSButton(title: "Test", target: self, action: #selector(testController(_:))),
-                NSButton(title: "Remove", target: self, action: #selector(removeController(_:))),
-            ], spacing: 8)
-            // The buttons carry the id, so one action serves every card.
-            for case let button as NSButton in actions.arrangedSubviews {
-                button.identifier = NSUserInterfaceItemIdentifier(id)
-                button.bezelStyle = .rounded
-                button.controlSize = .small
-            }
-            stack.addArrangedSubview(actions)
-        }
-
-        stack.translatesAutoresizingMaskIntoConstraints = false
-        card.addSubview(stack)
+        let cell = NSTableCellView()
+        let label = NSTextField(labelWithString: "")
+        label.font = .systemFont(ofSize: 11.5)
+        label.lineBreakMode = .byTruncatingTail
+        label.translatesAutoresizingMaskIntoConstraints = false
+        cell.addSubview(label)
+        cell.textField = label
         NSLayoutConstraint.activate([
-            stack.topAnchor.constraint(equalTo: card.topAnchor, constant: 12),
-            stack.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 12),
-            stack.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -12),
-            stack.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -12),
-            card.widthAnchor.constraint(lessThanOrEqualToConstant: 900),
+            label.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 4),
+            label.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -4),
+            label.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
         ])
-        return card
-    }
 
-    /// One machine: is it up, what is it, and how much work has it done.
-    ///
-    /// Absent values stay absent — a machine that has not reported memory must
-    /// not be shown as 0 GB, and a Hub that could not measure its own activity
-    /// says so (`limitation`) instead of implying a confident number.
-    private func machineRow(_ machine: [String: Any], activity: [String: Any]?) -> NSView {
-        var parts: [String] = []
-        if let chip = machine["chip"] as? String, !chip.isEmpty { parts.append(chip) }
-        if let memory = machine["memory_gb"] as? Double { parts.append(format(memory) + " GB") }
-        if let free = machine["disk_free_gb"] as? Double { parts.append(format(free) + " GB free") }
-
-        // Work done, from the Hub's activity report.
-        if let activity {
-            var work: [String] = []
-            if let completed = activity["completed"] as? Int { work.append("\(completed) done") }
-            if let failed = activity["failed"] as? Int, failed > 0 {
-                work.append("\(failed) failed")
+        if tableView === locationTable {
+            let reachable = item["reachable"] as? Bool ?? false
+            switch column.identifier.rawValue {
+            case "llocation":
+                label.stringValue = (item["local"] as? Bool == true ? "" : "")
+                    + (item["label"] as? String ?? "—")
+            case "lrole":
+                label.stringValue = (item["role"] as? String) ?? "—"
+            case "lhub":
+                label.stringValue = (item["version"] as? String) ?? "—"
+            case "lmachines":
+                let count = (item["machines"] as? [[String: Any]])?.count ?? 0
+                label.stringValue = reachable ? "\(count)" : "—"
+            case "lstatus":
+                // A location that is down has to say why; it is the difference
+                // between fixing a token and fixing a network.
+                label.stringValue = reachable
+                    ? ((item["url"] as? String) ?? "")
+                    : ((item["error"] as? String) ?? "Not reachable")
+                label.textColor = reachable ? .secondaryLabelColor : .systemOrange
+            default:
+                break
             }
-            if let median = activity["median_runtime_s"] as? Double {
-                work.append(format(median) + "s median")
-            } else if let average = machine["average_seconds"] as? Double {
-                // Fall back to the overview's average, which is a different
-                // statistic and is labelled as such.
-                work.append(format(average) + "s avg")
+            return cell
+        }
+
+        if isRunning {
+            switch column.identifier.rawValue {
+            case "rlocation": label.stringValue = item["location"] as? String ?? "—"
+            case "rmodality": label.stringValue = item["modality"] as? String ?? "—"
+            case "rmodel": label.stringValue = item["model"] as? String ?? "—"
+            case "rprogress":
+                let running = item["running"] as? Int ?? 0
+                let queued = item["queued"] as? Int ?? 0
+                let total = item["total"] as? Int ?? 0
+                var text = "\(running) running, \(queued) queued of \(total)"
+                if item["stalled"] as? Bool == true { text += " · stalled" }
+                label.stringValue = text
+            default: break
             }
-            if !work.isEmpty { parts.append(work.joined(separator: " · ")) }
-        } else if let jobs = machine["jobs"] as? Int {
-            parts.append("\(jobs) jobs")
+            return cell
         }
 
-        if let modalities = machine["modalities"] as? [String: Int], !modalities.isEmpty {
-            parts.append(modalities.sorted { $0.key < $1.key }
-                .map { "\($0.value) \($0.key)" }.joined(separator: ", "))
+        switch column.identifier.rawValue {
+        case "state":
+            // The Hub's own wording, and its own limitation notice when it could
+            // not measure something.
+            var state = (item["state"] as? String)?.replacingOccurrences(of: "_", with: " ")
+                ?? ((item["reachable"] as? Bool == true) ? "up" : "offline")
+            if let limitation = item["limitation"] as? String, !limitation.isEmpty {
+                state += " ·"
+            }
+            label.stringValue = state
+            label.textColor = item["reachable"] as? Bool == false ? .systemOrange : .labelColor
+        case "machine":
+            label.stringValue = item["label"] as? String ?? "—"
+        case "location":
+            label.stringValue = item["location"] as? String ?? "—"
+        case "jobs":
+            let completed = item["completed"] as? Int
+            let failed = item["failed"] as? Int
+            if completed == nil && failed == nil {
+                label.stringValue = "—"
+            } else {
+                label.stringValue = "\(completed ?? 0) done"
+                    + ((failed ?? 0) > 0 ? ", \(failed!) failed" : "")
+            }
+        case "avg":
+            // Median when the Hub measured one; otherwise the overview's average,
+            // labelled as an average so the two are never confused.
+            if let median = item["median_runtime_s"] as? Double {
+                label.stringValue = format(median) + "s med"
+            } else if let average = item["average_seconds"] as? Double {
+                label.stringValue = format(average) + "s avg"
+            } else {
+                label.stringValue = "—"
+            }
+        case "hardware":
+            var parts: [String] = []
+            if let chip = item["chip"] as? String, !chip.isEmpty { parts.append(chip) }
+            if let memory = item["memory_gb"] as? Double { parts.append(format(memory) + " GB") }
+            if let free = item["disk_free_gb"] as? Double { parts.append(format(free) + " GB free") }
+            label.stringValue = parts.isEmpty ? "—" : parts.joined(separator: " · ")
+        case "modalities":
+            let modalities = item["modalities"] as? [String: Int] ?? [:]
+            label.stringValue = modalities.isEmpty
+                ? "—"
+                : modalities.sorted { $0.key < $1.key }
+                    .map { "\($0.value) \($0.key)" }.joined(separator: ", ")
+        default:
+            break
         }
-
-        var line = "• " + ((machine["label"] as? String) ?? "machine")
-        if let state = activity?["state"] as? String {
-            line = "• " + state.replacingOccurrences(of: "_", with: " ")
-                + " — " + ((machine["label"] as? String) ?? "machine")
-        }
-        if !(machine["reachable"] as? Bool ?? true) { line = "• offline — " + line.dropFirst(2) }
-        if !parts.isEmpty { line += " — " + parts.joined(separator: " · ") }
-        if let limitation = activity?["limitation"] as? String, !limitation.isEmpty {
-            line += " · \(limitation)"
-        }
-
-        let row = PageKit.label(line, size: 11.5, colour: .secondaryLabelColor, wrapping: true)
-        return row
-    }
-
-    private func jobRow(_ job: [String: Any]) -> NSView {
-        let running = job["running"] as? Int ?? 0
-        let queued = job["queued"] as? Int ?? 0
-        let total = job["total"] as? Int ?? 0
-        var text = "• \(job["modality"] as? String ?? "job") · \(job["model"] as? String ?? "")"
-        text += " — \(running) running, \(queued) queued of \(total)"
-        if let label = job["label"] as? String, !label.isEmpty { text += " · \(label)" }
-        if job["stalled"] as? Bool == true { text += " · stalled" }
-        return PageKit.label(text, size: 11.5, colour: .secondaryLabelColor, wrapping: true)
+        return cell
     }
 
     private func format(_ value: Double) -> String {

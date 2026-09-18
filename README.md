@@ -126,6 +126,13 @@ two apps are used side by side, so they are meant to be navigated the same way:
 | &nbsp;&nbsp;**Fleet** (⌘6) | every location this gateway can send work to |
 | &nbsp;&nbsp;**Settings** (⌘,) | port, API key, startup |
 
+**Cloud APIs and local runners are separate things.** A cloud provider is a key and a model
+list; a local runner is a *machine* with studios, work and a state. The **Providers** page is now
+cloud-only — 17 vendors — and the local Hub lives on **Fleet**, where machines and running work
+belong. The split is decided by the provider's `kind`, not by its name, so a second Hub is
+classified correctly the moment it is added, and `/admin/api/providers?scope=cloud|local` makes
+the distinction explicit for anything else that reads the API.
+
 **Models and Providers are separate pages.** Both are views of one console page, which used to be
 shown whole under a single sidebar entry — so "where do I enable a model" and "where do I paste a
 provider key" were the same destination with its own inner tabs. Each page now opens the console
@@ -349,6 +356,14 @@ discovers the Hub, so a single-Mac install shows something true with nothing con
 The **Fleet** page (⌘6) answers three questions: *how many machines are online*, *which machine did
 the work*, and *what is running right now*.
 
+It is built to hold **hundreds** of locations and machines:
+
+- three **tables** (locations, machines, running work), so only the visible rows are built;
+- controllers probed **concurrently** in a bounded pool, not one after another;
+- a short-lived cache on the read, plus a **background refresher** on a timer, so no request ever
+  waits on an unreachable site — an off controller costs the poller time, not the person looking
+  at the page. Measured: 200 controllers probed in 0.55s, and a cached read in 0.0ms.
+
 The counts come from the Hub's own `fleet_activity` report — `working`, `just_finished`, `ready`,
 `long_idle`, `offline`, `needs_attention` — rather than being re-derived here, because only the Hub
 knows the difference between idle and gone. Per machine it shows the state, jobs **completed** and
@@ -397,7 +412,7 @@ refusal.
 .venv/bin/python tests/test_ui.py
 ```
 
-79 checks that drive the macOS **accessibility layer**: they open the window through the real menus,
+84 checks that drive the macOS **accessibility layer**: they open the window through the real menus,
 click sidebar rows, read what it renders, type into fields, tick checkboxes and press buttons — then
 verify the *gateway* changed, not merely that the widget repainted.
 

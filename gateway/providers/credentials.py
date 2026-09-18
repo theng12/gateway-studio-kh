@@ -174,6 +174,14 @@ class CredentialStore:
             "display_name": definition.display_name,
             "category": definition.category,
             "kind": definition.kind,
+            # Where the compute actually is. `studio_hub` is the one kind that
+            # talks to a machine on the LAN rather than to an API over the
+            # internet, and the two are managed differently: a cloud provider is
+            # a key and a model list, while a local one is a *location* with
+            # machines and its own running work. The console groups them by this
+            # rather than by name, so a second Hub is classified correctly the
+            # moment it is added.
+            "scope": "local" if definition.kind == "studio_hub" else "cloud",
             "description": definition.description,
             "docs_url": definition.docs_url,
             "notes": definition.notes,
