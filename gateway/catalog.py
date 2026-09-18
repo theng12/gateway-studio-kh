@@ -204,6 +204,13 @@ def _language_codes(languages: Any) -> list[str]:
 #:
 #: A provider that states its own limit always wins: ElevenLabs publishes
 #: `maximum_text_length_per_request` per model (5,000 / 10,000 / 30,000 / 40,000).
+#:
+#: ponytail: one flat default for every lane that states nothing. Ceiling — a
+#: hard-capping engine is over-promised (Bark silences past 150 characters,
+#: Orpheus past 170) and the request fails at the far end rather than being
+#: refused here. Acceptable today only because those families are not exposed;
+#: it becomes wrong the moment one is enabled locally. Upgrade path — read the
+#: Hub's own per-model `TextGuidance` when it is served.
 _TTS_CHARACTERS_DEFAULT = 25000
 
 
@@ -222,6 +229,12 @@ def _tts_characters(model: dict[str, Any], definition: ProviderDefinition) -> in
 #: it is curated knowledge, carried as an explicit exception rather than a rule.
 #: `eleven_v3` is the model the previous GenStudio published as speed-less (1-1)
 #: while publishing 0.5-2 for every other lane.
+#:
+#: ponytail: a hand-curated exception list. Ceiling — any *other* model that
+#: rejects a speed parameter is still advertised as supporting one, and the
+#: control fails on use. Upgrade path — the Hub already declares per-engine
+#: `TextGuidance` (soft_max_chars / chunking) that it does not serve over its
+#: API; read per-model speed capability from whichever provider states it.
 _TTS_NO_SPEED = {"eleven_v3"}
 
 

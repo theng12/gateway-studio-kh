@@ -27,6 +27,11 @@ from typing import Any
 
 #: How many calls are remembered. Small on purpose: enough to answer "did it
 #: call, and did it authenticate", not enough to reconstruct a session.
+#:
+#: ponytail: a fixed ring, not a windowed or persistent log. Ceiling — 12 calls
+#: is a few seconds of polling, so a connection that succeeded an hour ago and
+#: has since gone quiet reads as "never called". Upgrade path — record the *last*
+#: call per path as well as the recent ring, if that ambiguity ever bites.
 _LIMIT = 12
 
 _lock = threading.Lock()

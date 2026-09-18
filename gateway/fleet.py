@@ -386,6 +386,12 @@ def locations() -> list[dict]:
 #: How many controllers are contacted at once. Bounded so a fleet of hundreds
 #: cannot open hundreds of sockets, while still finishing far faster than
 #: one-at-a-time.
+#:
+#: ponytail: a fixed pool size, not an adaptive one. Ceiling — with far more
+#: than ~24 slow controllers a full refresh can exceed the 15s interval, so the
+#: poller falls behind rather than degrading gracefully. Upgrade path — size the
+#: pool from the measured round-trip, or refresh only the sites whose data has
+#: aged out.
 _MAX_PROBES = 24
 
 #: How long a snapshot is reused. The page polls, and several clients (the
