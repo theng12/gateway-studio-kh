@@ -22,6 +22,7 @@ from fastapi.responses import HTMLResponse, JSONResponse
 
 from .adapters import support_status
 from .catalog import catalog
+from . import fleet
 from .config import is_loopback
 from .hub import hub_status
 from .providers import registry
@@ -568,3 +569,63 @@ def list_jobs(
         )
 
     return {"jobs": rows, "stats": store.stats()}
+
+
+# --------------------------------------------------------------------------
+# Fleet — the location controllers this gateway aggregates for Story Studio
+
+
+@router.get("/api/fleet", dependencies=[Depends(require_admin)])
+def fleet_snapshot() -> dict[str, Any]:
+    """Every location, its machines and its in-flight work.
+
+    Read-only and safe to poll: it fans out to each controller with a per-request
+    timeout and reports an unreachable one as unreachable rather than failing the
+    whole read. One dead location must not hide the others.
+    """
+    return fleet.snapshot()
+
+
+@router.get("/api/fleet/controllers", dependencies=[Depends(require_admin)])
+def fleet_controllers() -> dict[str, Any]:
+    return {"controllers": fleet.controllers()}
+
+
+@router.post("/api/fleet/controllers", dependencies=[Depends(require_admin)])
+def fleet_add_controller(payload: dict[str, Any]) -> Any:
+    try:
+        row = fleet.add_controller(
+            str(payload.get("label") or ""),
+            str(payload.get("url") or ""),
+            str(payload.get("token") or ""),
+        )
+    except ValueError as exc:
+        return _error(400, str(exc))
+    return {"controller": row, "controllers": fleet.controllers()}
+
+
+@router.delete("/api/fleet/controllers/{controller_id}", dependencies=[Depends(require_admin)])
+def fleet_remove_controller(controller_id: str) -> Any:
+    if not fleet.remove_controller(controller_id):
+        return _error(404, "No such controller.")
+    return {"controllers": fleet.controllers()}
+
+
+@router.post("/api/fleet/controllers/{controller_id}/test", dependencies=[Depends(require_admin)])
+def fleet_test_controller(controller_id: str) -> Any:
+    """Connection test: identity, role and release, straight from the controller."""
+    row = next((c for c in fleet._read() if c.get("id") == controller_id), None)  # noqa: SLF001
+    if row is None:
+        return _error(404, "No such controller.")
+    probed = fleet._probe(str(row["url"]), str(row.get("token") or ""))  # noqa: SLF001
+    return {
+        "id": controller_id,
+        "url": row["url"],
+        "reachable": probed["reachable"],
+        "error": probed["error"],
+        "role": probed["role"],
+        "version": probed["version"],
+        "machines": len(probed["machines"]),
+        "nodes": len(probed["nodes"]),
+        "latency_ms": probed["latency_ms"],
+    }

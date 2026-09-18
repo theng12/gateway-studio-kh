@@ -123,6 +123,7 @@ two apps are used side by side, so they are meant to be navigated the same way:
 | &nbsp;&nbsp;**Voices** (⌘3) | voice sources, search, preview, enable |
 | &nbsp;&nbsp;**Models** (⌘4) | search every provider's models and tick the ones Story Studio may use |
 | &nbsp;&nbsp;**Providers** (⌘5) | provider keys and discovery |
+| &nbsp;&nbsp;**Fleet** (⌘6) | every location this gateway can send work to |
 | &nbsp;&nbsp;**Settings** (⌘,) | port, API key, startup |
 
 **Models and Providers are separate pages.** Both are views of one console page, which used to be
@@ -332,6 +333,37 @@ the gateway's voice records.
 **A new provider model** — usually nothing. Discovery picks it up on the next refresh. For a model
 the provider ships but does not list, use **Add model manually** in that provider's panel.
 
+## Fleet — more than one location
+
+Story Studio talks to exactly one endpoint, and this is it. So the list of *locations* lives here:
+a location is another Mac (or site) running Studio Hub in **controller** mode, reached by its
+address and its Hub service token. Its nodes belong to it and are reported by it — this gateway
+never contacts a node directly, which is the topology Studio Hub's own plan specifies:
+
+> "GenStudio connects once to each location's controller using its address/IP and Hub token. Each
+> controller manages its joined nodes; nodes do not contact GenStudio directly."
+
+**The local Mac is always the first location**, discovered the same way the rest of the gateway
+discovers the Hub, so a single-Mac install shows something true with nothing configured.
+
+The **Fleet** page (⌘6) shows, per location: whether it answers (with the reason when it does not),
+its role and Hub version, each machine's chip, health, memory, free disk, job count, average
+generation time and modality mix — and any work running right now.
+
+Two rules it follows, from Studio Hub's own operational contract:
+
+- **Unknown is not zero.** A metric the Hub did not report is shown as absent, never as `0`.
+- **One dead location must not hide the others.** Reads fan out with a per-request timeout; an
+  unreachable controller is reported as unreachable while the rest of the page still renders.
+
+Add a location with its address and Hub service token. Tokens are stored `0600` in
+`data/fleet.json`, are never returned by an API, and are masked in the UI. Adding the same address
+again updates it rather than duplicating it.
+
+The contract this depends on — and what it would like next from Studio Hub — is written up for the
+other session in `~/Developer/_handoffs/2026-09-18-gateway-kh-fleet-contract-to-studiohub.md`.
+
+
 ## Verification
 
 ```bash
@@ -355,7 +387,7 @@ refusal.
 .venv/bin/python tests/test_ui.py
 ```
 
-64 checks that drive the macOS **accessibility layer**: they open the window through the real menus,
+74 checks that drive the macOS **accessibility layer**: they open the window through the real menus,
 click sidebar rows, read what it renders, type into fields, tick checkboxes and press buttons — then
 verify the *gateway* changed, not merely that the widget repainted.
 
@@ -463,6 +495,7 @@ gateway/worker.py             background execution
 gateway/store.py              SQLite jobs, idempotency
 gateway/api.py                the Story Studio contract
 gateway/admin.py + admin_ui.html   provider console
+gateway/fleet.py              location controllers: registry + live aggregation
 gateway/hub.py                Studio Hub discovery + auth
 data/voices.json              voice catalogue
 data/providers.local.json     user-defined providers (gitignored)
@@ -476,6 +509,7 @@ menubar/OverviewWindow.swift  Overview page, including the modality bars
 menubar/JobsWindow.swift      Jobs page
 menubar/VoicesWindow.swift    Voices page
 menubar/SettingsSection.swift Settings page: two-column form for port, API key, startup
+menubar/FleetSection.swift    Fleet page: locations, machines, running work
 menubar/GatewayAPI.swift      authenticated admin client + formatting helpers
 menubar/build.sh              compiles and installs the .app
 menubar/make_icon.py          generates the app icon (stdlib only)

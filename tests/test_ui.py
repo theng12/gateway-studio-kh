@@ -40,6 +40,7 @@ SIDEBAR = [
     "Voices",
     "Models",
     "Providers",
+    "Fleet",
     "Settings",
 ]
 
@@ -53,6 +54,7 @@ SECTIONS = [
     (4, "Voices", "gateway-kh — Voices"),
     (5, "Models", "gateway-kh — Models"),
     (6, "Providers", "gateway-kh — Providers"),
+    (7, "Fleet", "gateway-kh — Fleet"),
 ]
 
 failures: list[str] = []
@@ -258,7 +260,7 @@ def clear_field(field: str, attempts: int = 4) -> str:
     return field_value(field)
 
 
-def type_into(field: str, text: str, attempts: int = 4) -> str:
+def type_into(field: str, text: str, attempts: int = 4, expect_exact: bool = True) -> str:
     """Focus a field and type into it, retrying until the value sticks.
 
     Three things matter here, and each cost a debugging round:
@@ -276,6 +278,13 @@ def type_into(field: str, text: str, attempts: int = 4) -> str:
     is never *really* frontmost, so a keystroke is a request, not a guarantee.
     Rather than sleep-and-hope, read the value back and retry — a flaky test
     that fails half the time is worse than no test.
+
+    `expect_exact=False` accepts any non-empty result, and exists because of the
+    keyboard layout. This Mac's active input source is **Khmer**, so
+    `keystroke "z"` delivers a Khmer character: the field held `ា`, not `z`. The
+    keystroke had landed perfectly — the assertion was testing the Mac's
+    keyboard, not this app. Callers that only need "the text arrived" pass
+    `expect_exact=False`; the character itself is not the app's business.
     """
     for _ in range(attempts):
         focus_field(field)
@@ -284,7 +293,7 @@ def type_into(field: str, text: str, attempts: int = 4) -> str:
         tell application "System Events" to keystroke "{text}"''')
         time.sleep(0.9)
         value = field_value(field)
-        if value == text:
+        if value == text or (not expect_exact and value != ""):
             return value
         # A partial or duplicated landing would poison the next attempt.
         if value:
@@ -376,7 +385,7 @@ def main() -> int:
           window_title() == "gateway-kh — Jobs", window_title())
 
     # The row that the owner could not find before it existed.
-    sidebar_select(7)
+    sidebar_select(8)
     time.sleep(2.0)
     check("Settings is reachable by clicking its sidebar row",
           window_title() == "gateway-kh — Settings", window_title())
@@ -450,6 +459,11 @@ def main() -> int:
     # ------------------------------------------------------------------
     print("\n\033[1m4. Voices section, and its controls work\033[0m")
     open_section("Voices")
+    # The section is a singleton, so its search box keeps whatever was typed last
+    # time — including a filter left by an earlier run or by hand. Start clean or
+    # the row count below is really measuring the previous session.
+    clear_field("text field 1")
+    time.sleep(1.5)
     rows = detail_rows()
     deadline = time.time() + 25
     while rows < 1 and time.time() < deadline:
@@ -462,10 +476,12 @@ def main() -> int:
     check("has a library toggle", detail_count("checkboxes") >= 1)
 
     if rows > 3:
-        typed = type_into("text field 1", "z")
+        # The exact character depends on the Mac's keyboard layout, so this asks
+        # only that the keystroke reached the field — see `type_into`.
+        typed = type_into("text field 1", "z", expect_exact=False)
         time.sleep(2.0)
         filtered = detail_rows()
-        check("the search box receives typed text", typed == "z", f"field holds {typed!r}")
+        check("the search box receives typed text", typed != "", f"field holds {typed!r}")
         check(f"typing filters the table ({rows} → {filtered})", 0 <= filtered < rows,
               f"still {filtered}")
         cleared = clear_field("text field 1")
@@ -549,7 +565,35 @@ def main() -> int:
     check("every Settings field starts in one column", len(xs) == 1, f"field x values: {xs}")
 
     # ------------------------------------------------------------------
-    print("\n\033[1m7. Status menu\033[0m")
+    print("\n\033[1m7. Fleet reads the real controllers\033[0m")
+    # The local Hub is always a location, so this page has true content on a
+    # single-Mac install with nothing configured.
+    open_section("Fleet")
+    time.sleep(3)
+    fleet = detail_texts()
+    check("names the page and what it is for", "Every location" in fleet, fleet[:200])
+    check("summarises locations and machines",
+          "locations reachable" in fleet and "machines up" in fleet, fleet[:220])
+    check("lists this Mac as the local location", "This Mac" in fleet, fleet[:300])
+    check("reports the controller role", "controller" in fleet, fleet[:300])
+    check("has a form for adding a location",
+          "Add a location" in fleet and "Hub service token" in fleet, fleet[-300:])
+
+    fleet_api = api_get("/admin/api/fleet")
+    check("the page agrees with the gateway about the machine count",
+          f"{fleet_api['summary']['machines_up']} of {fleet_api['summary']['machines']} machines up"
+          in fleet,
+          f"{fleet_api['summary']}")
+
+    # Tokens must never come back from the API, even masked-but-complete.
+    controllers = api_get("/admin/api/fleet/controllers")["controllers"]
+    check("no controller token is returned by the API",
+          all("token" not in row or row.get("token") in (None, "")
+              for row in controllers),
+          f"{controllers}")
+
+    # ------------------------------------------------------------------
+    print("\n\033[1m8. Status menu\033[0m")
     items = osa(wrap('''
         click menu bar item 1 of menu bar 2
         delay 1
@@ -562,12 +606,13 @@ def main() -> int:
         key code 53
         return acc'''))
     for expected in [
-        "Overview", "Jobs", "Voices", "Models", "Open Provider Console", "Settings", "Quit",
+        "Overview", "Jobs", "Voices", "Models", "Fleet", "Open Provider Console",
+        "Settings", "Quit",
     ]:
         check(f"status menu offers “{expected}”", expected in items, items[:200])
 
     # ------------------------------------------------------------------
-    print("\n\033[1m8. Everything still healthy afterwards\033[0m")
+    print("\n\033[1m9. Everything still healthy afterwards\033[0m")
     check("one window left", window_count() == 1, f"{window_count()} windows")
     health = subprocess.run(
         ["curl", "-s", "-m", "10", "-o", "/dev/null", "-w", "%{http_code}",

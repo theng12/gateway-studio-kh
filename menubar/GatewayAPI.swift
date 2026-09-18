@@ -44,6 +44,13 @@ enum GatewayAPI {
         request("POST", path, body: body, completion: completion ?? { _ in })
     }
 
+    static func delete(
+        _ path: String,
+        completion: ((Result<[String: Any], Error>) -> Void)? = nil
+    ) {
+        request("DELETE", path, completion: completion ?? { _ in })
+    }
+
     private static func request(
         _ method: String,
         _ path: String,

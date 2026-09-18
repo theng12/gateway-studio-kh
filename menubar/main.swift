@@ -712,6 +712,11 @@ enum MainMenuBuilder {
             keyEquivalent: "5"
         ).target = target
         viewMenu.addItem(
+            withTitle: "Fleet",
+            action: #selector(AppDelegate.openFleet),
+            keyEquivalent: "6"
+        ).target = target
+        viewMenu.addItem(
             withTitle: "Reload Console",
             action: #selector(AppDelegate.reloadConsole),
             keyEquivalent: "r"
@@ -870,6 +875,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(item("Jobs", #selector(openJobs), key: "j"))
         menu.addItem(item("Voices", #selector(openVoices), key: "v"))
         menu.addItem(item("Models", #selector(openModels), key: "m"))
+        menu.addItem(item("Fleet", #selector(openFleet), key: "f"))
         menu.addItem(.separator())
         menu.addItem(item("Open Provider Console", #selector(openConsole), key: "p"))
         menu.addItem(item("Reload Console", #selector(reloadConsole)))
@@ -954,6 +960,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc func openVoices() { MainWindow.shared.show(section: "voices") }
 
     @objc func openModels() { MainWindow.shared.show(section: "models") }
+
+    @objc func openFleet() { MainWindow.shared.show(section: "fleet") }
 
     @objc func openConsole() { MainWindow.shared.show(section: "providers") }
 

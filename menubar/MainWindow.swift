@@ -83,9 +83,10 @@ final class ConsoleSection: NSObject, AppSection, WKNavigationDelegate {
             loaded = true
             load(target, into: webView)
         } else {
-            // Already loaded: move the page to this section's view. Assigning the
-            // hash is enough — the page listens for `hashchange`.
-            webView.evaluateJavaScript("location.hash = '#\(viewName)';")
+            // Already loaded: move the page to this section's view. Call setView
+            // outright rather than assigning location.hash, so this does not
+            // depend on the page happening to listen for `hashchange`.
+            webView.evaluateJavaScript("setView('\(viewName)');")
         }
     }
 
@@ -112,7 +113,8 @@ final class ConsoleSection: NSObject, AppSection, WKNavigationDelegate {
     /// otherwise leave Models and Providers showing the same thing, which is the
     /// bug this split exists to fix.
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-        webView.evaluateJavaScript("setView('\(viewName)');")
+        webView.evaluateJavaScript("setView('\(viewName)');") { result, error in
+        }
     }
 
     private static let startingPage = """
@@ -148,7 +150,7 @@ final class MainWindow: NSObject, NSTableViewDataSource, NSTableViewDelegate {
 
     /// Section names accepted by `--open` and the menu.
     private static let order = [
-        "overview", "jobs", "voices", "models", "providers", "settings",
+        "overview", "jobs", "voices", "models", "providers", "fleet", "settings",
     ]
 
     /// A sidebar row is either a group header or a section.
@@ -171,6 +173,7 @@ final class MainWindow: NSObject, NSTableViewDataSource, NSTableViewDelegate {
         .section(3),
         .section(4),
         .section(5),
+        .section(6),
     ]
 
     private var rowForSection: [Int: Int] {
@@ -220,6 +223,7 @@ final class MainWindow: NSObject, NSTableViewDataSource, NSTableViewDelegate {
             VoicesSection.shared,
             ConsoleSection.models,
             ConsoleSection.providers,
+            FleetSection.shared,
             SettingsSection.shared,
         ]
 
