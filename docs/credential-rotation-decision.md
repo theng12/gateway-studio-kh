@@ -19,13 +19,46 @@ risks. The choice that actually matters is one you make, not one a session can m
 That single decision determines whether revoking one site is a five-minute job or a fifty-machine
 outage. Everything else follows from it.
 
-My recommendation: **use each controller's fleet credential, distinct per machine, and ask the Hub
-session for a rotation endpoint before the fleet gets large.** No new architecture needed on either
-side.
+My recommendation: **use each controller's fleet credential, distinct per machine, and rotate over
+the remote channel you already have — SSH over Tailscale — rather than wait for a new Hub endpoint.**
+Neither B nor C is required to avoid a site visit, because every machine is already reachable.
+Build C when someone else's compute joins the fleet, because that is the one case SSH cannot cover.
 
 ---
 
 ## What I measured
+
+### The fleet as it actually is
+
+Measured from this Mac over Tailscale, not assumed:
+
+- **58 macOS peers**, of which **25 were online** when I looked. The rest are off, not gone.
+- The names encode the layout: `terranash-0307` is **location 03, machine 07**. Reading them:
+  locations `00`–`04` hold **10–11 machines each**, and `06` holds one. So this is roughly
+  **6 sites of ~10 machines**, not 10 sites of 5.
+- **Online/offline is lumpy per site.** Location `00` was fully online; location `02` had **zero**
+  machines online. A "rotate the fleet" action is therefore never one uniform operation — it has to
+  tolerate whole sites being unreachable, which is an argument for overlap windows and expiry over
+  any design that assumes every machine answers.
+
+### The finding that changes the options
+
+**The Hub's API binds to loopback.** `hub-ready.json` publishes `http://127.0.0.1:63628`, and
+`app-preferences.json` carries `"listenHost": "127.0.0.1"` — a *setting*, so it can be widened, but
+by default no remote Hub is reachable from here, and `tailscale serve` is unconfigured.
+
+**But SSH and Screen Sharing are open on the machines over Tailscale.** Verified against two online
+peers: ports **22** and **5900** both answer, and sshd offers
+`publickey,password,keyboard-interactive`.
+
+So the remote administration path exists today, and it does **not** go through the Hub API. That
+path — not B and not C — is what makes a site visit unnecessary. Two consequences worth stating
+plainly:
+
+- Rotating a credential remotely is already possible: reach the machine, rotate, done.
+- An SSH key is **more** powerful than any Hub token, not less — it is the whole machine. If this is
+  automated, it wants a dedicated key and a Tailscale ACL, never a personal key, and Screen Sharing
+  stays break-glass.
 
 ### The credentials that exist on a Hub
 
@@ -87,7 +120,7 @@ cannot verify this from here — the Hub session is the authority, and their not
 
 ## Options
 
-### A. Least privilege, no new machinery — recommended now
+### A. Least privilege, no new machinery
 
 - The gateway uses **each controller's fleet credential**, and each machine's value is distinct.
 - **Blast radius of a leak:** read fleet state, submit jobs, stage voice references. It **cannot**
@@ -99,24 +132,47 @@ cannot verify this from here — the Hub session is the authority, and their not
 - **Why this one:** it is reversible, it shrinks the blast radius today, and it makes the *question*
   of a rotation endpoint smaller rather than urgent.
 
-### B. A rotation endpoint on the Hub — recommended before the count is large
+### A+. Per-machine credential, rotated over the channel you already have — recommended
+
+- Each controller keeps its **own distinct** fleet credential (already true: each Hub mints one).
+- Rotation is a **command run over SSH**, not a new Hub route. Zero Hub work, works today, no visit.
+- **Cost:** a dedicated SSH key scoped by Tailscale ACL, plus the *replace credential* flow in the
+  gateway.
+- **Why this one:** it removes the site visit without asking the Hub team for anything, and it is the
+  only option that is available *now*. Its ceiling is that it does not scale to machines you do not
+  administer — see C.
+
+### B. A rotation endpoint on the Hub
 
 - `POST /api/hub/token/rotate` mints a new local credential, invalidates the old, returns the new
   value exactly once.
-- **Revocation becomes:** rotate on the machine, paste the new value into the gateway.
-- **Cost:** a small, reviewable Hub change (the Hub session already offered a comparable one for
-  `fleet-sync`), plus an *edit credential* flow in the gateway — today you can only add or remove a
-  location, not replace its token.
-- **Why it matters at 50:** without it, rotating means hand-editing a file on a machine that may be
-  in another room or another city, and there is no way to confirm the old value stopped working.
+- **Pros:** small and reviewable Hub change; per-machine blast radius; keeps the credential under the
+  Hub's own control; and it is the only path that lets you *confirm* the old value stopped working
+  from the API side.
+- **Cons:** the authentication is self-referential. If the endpoint accepts the credential being
+  rotated, then whoever holds a stolen copy can rotate it and lock you out, while a credential you
+  have merely *lost* cannot be rotated at all — in both cases the trigger has to come from somewhere
+  else. It also adds **no expiry**, so rotation stays an event you must remember to cause.
+- **Availability:** unusable remotely until the Hub API is reachable — it is loopback-bound today.
+- **Net:** it lowers the cost of a rotation you have already decided to do. It does not remove the
+  need to decide, which is the actual burden at six sites.
 
-### C. Per-client credentials issued by each controller — only if the fleet stops being single-owner
+### C. Per-client credentials issued by each controller — for when the fleet is not all yours
 
-- Each controller issues a credential bound to the gateway, independently rotatable, with an expiry.
-- **Best security model; most work**; overlaps heavily with the allowlist the fleet credential
-  already provides.
-- **Worth it if** the machines are not all yours, or a controller must be shared with someone else.
-  Not worth it for one owner and fifty of their own machines.
+- Each controller **issues** a credential bound to a client (the gateway), scoped, independently
+  revocable, with an expiry. Read the direction carefully: the **Studio Hub controller grants it and
+  the gateway is the client that receives it** — so C is Hub-side work, not gateway-side work.
+- **Pros:** revocation uses the *owner's* credential, so cutting off the gateway never locks you out
+  of your own machine; **expiry** means a leaked credential dies by itself and no one has to
+  remember a rotation date; per-tenant scoping is exactly what renting someone else's compute needs
+  — they hand you a credential instead of their operator token; blast radius is one site.
+- **Cons:** a real feature on the Hub (issuance, storage, scope, listing, revocation, expiry), not an
+  endpoint; each controller needs a reachable admin surface, which loopback blocks today; an expiry
+  bug takes a site down on a timer; and it needs an **overlap window** — with a whole site able to be
+  offline, a rotation will land while some machines are unreachable.
+- **Net:** C's value is not "better tokens". It is **taking the human out of the loop** and making
+  someone else's compute safe to use. Neither matters while the fleet is one owner's and reachable
+  by SSH; both matter the moment a stranger's machine joins.
 
 ### D. Do nothing
 
@@ -149,7 +205,7 @@ its credential.
 
 ## The decision, in one line
 
-**Choose per-machine credentials, then ask for a rotate endpoint before the fleet is large.**
-Everything else is detail. If you want one value across all machines instead, that is a legitimate
-choice — but it should be a choice, made knowing that revoking one site then means visiting all of
-them.
+**Per-machine credentials, rotated over SSH today; ask the Hub for per-client credentials only when
+someone else's compute joins the fleet.** Everything else is detail. Choosing one shared value across
+all machines instead is legitimate — but it should be a choice, made knowing that revoking one site
+then means visiting all of them.
