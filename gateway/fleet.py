@@ -87,9 +87,10 @@ def _set_token(controller_id: str, token: str) -> None:
 
 
 def _clear_token(controller_id: str) -> None:
+    """Forget the credential entirely — the location it belonged to is gone."""
     try:
         from .providers import registry
-        registry.credentials.clear(provider_id_for(controller_id))
+        registry.credentials.forget(provider_id_for(controller_id))
     except Exception:  # noqa: BLE001
         pass
 

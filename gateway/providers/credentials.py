@@ -173,6 +173,17 @@ class CredentialStore:
         entry["updated_at"] = time.time()
         self._save()
 
+    def forget(self, provider_id: str) -> None:
+        """Remove a provider's entry outright.
+
+        `clear` keeps an empty entry on purpose — "this was configured, now
+        cleared" is worth knowing. But a *deleted* location has no meaning left,
+        and leaving its entry makes the store accumulate references to provider
+        ids that no longer exist.
+        """
+        if self._data["providers"].pop(provider_id, None) is not None:
+            self._save()
+
     def clear(self, provider_id: str) -> None:
         entry = self._data["providers"].get(provider_id)
         if entry is None:

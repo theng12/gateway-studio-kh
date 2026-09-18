@@ -170,10 +170,12 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
 
         root.addArrangedSubview(PageKit.sectionTitle("Add a location"))
         root.addArrangedSubview(PageKit.help(
-            "Another Mac running Studio Hub. Standalone or controller, both work: "
+            "Another Mac running Studio Hub. Standalone or controller, both work. "
             + "A new machine can be added while it is still standalone and keep working "
             + "after it is promoted to a controller; nothing here depends on the role. "
-            + "Use its address and its Hub service token. A controller reports its own "
+            + "Use its address and its **fleet credential** — that is sufficient for "
+            + "everything this gateway does, and it cannot change the controller's "
+            + "settings or identity the way its Hub service token can. A controller reports its own "
             + "nodes — this gateway never contacts them directly."
         ))
 
@@ -181,7 +183,7 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
         labelField.widthAnchor.constraint(equalToConstant: 220).isActive = true
         urlField.placeholderString = "http://10.0.0.5:47873"
         urlField.widthAnchor.constraint(equalToConstant: 260).isActive = true
-        tokenField.placeholderString = "Hub service token"
+        tokenField.placeholderString = "fleet credential"
         tokenField.widthAnchor.constraint(equalToConstant: 260).isActive = true
         let addButton = NSButton(title: "Add location", target: self, action: #selector(addLocation))
         addButton.bezelStyle = .rounded
