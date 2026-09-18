@@ -26,7 +26,9 @@ to tell them apart.
 
 from __future__ import annotations
 
+import hashlib
 import json
+import math
 import os
 import stat
 import threading
@@ -59,6 +61,55 @@ def provider_id_for(controller_id: str) -> str:
 
 def controller_id_from(provider_id: str) -> str | None:
     return provider_id[len(PROVIDER_PREFIX):] if provider_id.startswith(PROVIDER_PREFIX) else None
+
+
+#: The single namespace every location's models are published under.
+#:
+#: A location is a provider *internally* — that is what gives it discovery, a
+#: credential and an enable toggle — but locations are not separate products.
+#: Story Studio sees one ``studio-hub::<model>`` row and the gateway chooses which
+#: location runs it.
+#:
+#: Publishing one row per location instead showed the same model as many times as
+#: there were sites, all with the same `display_name`, and turned "which model?"
+#: into "which building?". It also broke a saved preset whenever that site went
+#: offline. Namespace by **maker**, never by site — the same reason
+#: `gateway/catalog.py` namespaces at all, applied consistently.
+FLEET_PROVIDER_ID = "studio-hub"
+
+#: What Story Studio is told the maker of a location's models is. The old
+#: GenStudio never exposed a site or a machine to the customer, and a migration in
+#: it is literally named `0338_kokoro_names_the_maker_not_the_machines`.
+FLEET_DISPLAY_NAME = "Studio Hub"
+
+#: Separator used by every namespaced id in the gateway (`provider::thing`).
+ID_SEPARATOR = "::"
+
+
+def is_location_provider(provider_id: str) -> bool:
+    """True for the local Hub and for every configured controller."""
+    return controller_id_from(provider_id) is not None
+
+
+def publish_id(provider_id: str) -> str:
+    """The id Story Studio sees for a provider's models.
+
+    Locations collapse into one namespace; everything else keeps its own provider
+    id, because two cloud vendors genuinely offering the same model *are*
+    different products.
+    """
+    return FLEET_PROVIDER_ID if is_location_provider(provider_id) else provider_id
+
+
+def location_for_voice(voice_id: str) -> str | None:
+    """Which location owns a voice, from the namespace its id already carries.
+
+    A voice id is `studio-hub-<controller>::<raw>`, so the location that holds the
+    library is already written into it. Voice work has to go to that location and
+    no other: the reference clip exists on one Hub, not on the fleet.
+    """
+    provider_id, _, _ = (voice_id or "").partition(ID_SEPARATOR)
+    return controller_id_from(provider_id)
 
 #: Per-request budget. A controller on the far end of a VPN is slower than
 #: loopback, and a location that takes longer than this is reported unreachable
@@ -324,6 +375,10 @@ def _probe(base: str, token: str, *, timeout: float = _TIMEOUT) -> dict:
         "site_id": None,
         "controller_id": None,
         "ready": None,
+        # The site's own admission numbers, which are what routing needs. Kept
+        # because it is already fetched: dropping data this module has paid for is
+        # how the routing layer ended up with nothing to route on.
+        "capacity": {},
         "latency_ms": None,
     }
     try:
@@ -394,6 +449,7 @@ def _probe(base: str, token: str, *, timeout: float = _TIMEOUT) -> dict:
         "by_machine": stats.get("by_machine") or {},
         "matrix": stats.get("matrix") or [],
         "jobs_total": stats.get("total"),
+        "capacity": capabilities.get("capacity") or {},
         "latency_ms": int((time.time() - started) * 1000),
     })
     return location
@@ -639,6 +695,137 @@ def snapshot(force: bool = False) -> dict:
         _cache["at"] = time.time()
         _cache["value"] = value
     return value
+
+
+# --------------------------------------------------------------------------
+# Routing: which location runs a job
+#
+# The global scheduler belongs here and the site-local one belongs to Studio Hub.
+# The Hub says so itself: `/api/hub/capabilities` publishes
+# `authority: {global: "genstudio", site_local_scheduler: "sqlite",
+# global_job_claiming: false}`. So the gateway chooses a *site* and never a
+# machine -- which machine has the memory for the model is machine-specific and
+# is the controller's decision, not this module's.
+
+
+def _as_int(value: object) -> int:
+    try:
+        return int(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return 0
+
+
+def usable_location_ids() -> set[str]:
+    """Locations answering right now, by id.
+
+    Read once per catalogue rebuild rather than per row: this is the difference
+    between one fleet read and one per model.
+    """
+    try:
+        return {str(row.get("id")) for row in snapshot()["locations"] if row.get("reachable")}
+    except Exception:  # noqa: BLE001 - a routing hint must never break the catalogue
+        return set()
+
+
+def _weighted_tiebreak(routing_key: str, location_id: str, compatible_slots: int) -> float:
+    """A weighted lottery draw: lower wins, and a bigger site wins more often.
+
+    Ported from the old GenStudio's `MultiSiteAssignment._weighted_tiebreak`,
+    including its reasoning. Capacity belongs in the *weight*, never as a rank
+    term: sorting by raw size made a small site unreachable, while ignoring size
+    gave every site an equal share and overloaded the small ones. Multiplying
+    gives every healthy site a non-zero share and lets a ten-slot site take about
+    ten times the work of a one-slot site.
+    """
+    digest = hashlib.sha256(f"{routing_key}:{location_id}".encode()).digest()
+    unit = (int.from_bytes(digest, "big") + 1) / (2**256 + 1)
+    return -math.log(unit) / max(compatible_slots, 1)
+
+
+def routing_candidates(
+    model_id: str, modality: str, *, only_location: str | None = None
+) -> list[dict]:
+    """Every location that can run this model right now, with its pressure.
+
+    A candidate must have the model *enabled* (so a toggle is honoured on the
+    generation path, not just in the catalogue), be answering, and -- when the
+    request names a voice -- be the location that owns that voice.
+    """
+    from .providers import registry
+
+    rows = {str(row.get("id")): row for row in snapshot()["locations"]}
+    candidates: list[dict] = []
+    for definition in registry.definitions():
+        location_id = controller_id_from(definition.id)
+        if location_id is None:
+            continue
+        if only_location is not None and location_id != only_location:
+            continue
+        if not registry.credentials.is_enabled(definition.id):
+            continue
+        models = registry.models.models_for(definition.id, include_disabled=False)
+        if not any(m["model_id"] == model_id and m["modality"] == modality for m in models):
+            continue
+        row = rows.get(location_id) or {}
+        if not row.get("reachable"):
+            continue
+
+        capacity = row.get("capacity") or {}
+        slots = _as_int(capacity.get("eligible_physical_machine_slots_total"))
+        if slots <= 0:
+            # A Hub that does not report capacity still reports machines. Fall back
+            # to the reachable machine count so a site is never weighted zero.
+            slots = _as_int((row.get("machine_summary") or {}).get("reachable"))
+        queue = _as_int(capacity.get("queue_depth"))
+        if not capacity:
+            queue = len(row.get("running_jobs") or [])
+
+        candidates.append({
+            "provider_id": definition.id,
+            "definition": definition,
+            "location_id": location_id,
+            "label": row.get("label") or location_id,
+            "slots": max(slots, 1),
+            "queue": max(queue, 0),
+        })
+    return candidates
+
+
+def route(
+    model_id: str,
+    modality: str,
+    *,
+    routing_key: str = "",
+    only_location: str | None = None,
+) -> tuple[ProviderDefinition | None, str]:
+    """Choose the location that should run this model. Never raises.
+
+    Returns the location's provider definition and a human note naming the choice,
+    or `(None, reason)` when nothing can take it.
+    """
+    candidates = routing_candidates(model_id, modality, only_location=only_location)
+    if not candidates:
+        if only_location is not None:
+            return None, f"the location that owns this voice ({only_location}) cannot run {model_id}"
+        return None, f"no location can run {model_id} right now"
+
+    def rank(candidate: dict) -> tuple:
+        # Pressure first -- queue per eligible machine -- then the weighted
+        # lottery, then the id so the result is deterministic.
+        return (
+            candidate["queue"] / candidate["slots"],
+            _weighted_tiebreak(
+                routing_key or model_id, candidate["location_id"], candidate["slots"]
+            ),
+            candidate["location_id"],
+        )
+
+    chosen = min(candidates, key=rank)
+    note = (
+        f"{chosen['label']}: {chosen['queue']} queued / {chosen['slots']} eligible"
+        f" of {len(candidates)} location{'s' if len(candidates) != 1 else ''}"
+    )
+    return chosen["definition"], note
 
 
 _refresher: threading.Thread | None = None

@@ -87,7 +87,7 @@ and `adapters/__init__.py` asserts at import that its table agrees.
   a provider's published value always wins, or a stale file would quietly beat
   live data.
 
-## Locations are providers
+## Locations are providers — but not separate products
 
 A Studio Hub location added on the Fleet page is also a **provider**: its models
 are discovered and work is dispatched through the same `studio_hub` adapter,
@@ -95,6 +95,36 @@ which takes a per-provider address and token. **Standalone and controller both
 work** — nothing gates on the role; it is read only to display it. Story Studio
 must never learn a second address: the gateway is the only thing that knows the
 locations.
+
+**But a location is not a product, so its models publish under one namespace.**
+`fleet.publish_id` collapses every location into `studio-hub`, and
+`catalog.rebuild` merges the rows, so N locations offering the same model are
+**one** catalogue entry with N possible sites — not N entries sharing one
+`display_name`. The alternative showed the same model once per site, turned "which
+model?" into "which building?", and broke a saved preset whenever its site went
+offline. The old GenStudio reached the same conclusion, and one of its migrations
+is named `0338_kokoro_names_the_maker_not_the_machines`. Namespace by **maker**;
+a cloud vendor keeps its own id, because two vendors genuinely offering the same
+model *are* different products.
+
+Routing follows the split Studio Hub declares for itself in
+`/api/hub/capabilities` — `authority: {global: "genstudio", site_local_scheduler:
+"sqlite", global_job_claiming: false}`:
+
+- **The gateway chooses the site, never the machine.** `fleet.route` ranks
+  candidates by pressure (`queue / eligible_physical_machine_slots`) then a
+  weighted lottery whose weight is the eligible slot count. Which machine has the
+  memory for a model is machine-specific and belongs to the controller.
+- **Capacity belongs in the weight, never as a rank term.** Ported from the old
+  `MultiSiteAssignment`, whose comment records both failures: sorting by raw size
+  made a small site unreachable, ignoring size overloaded the small sites.
+- **A voice pins the route.** A voice id already names its owner
+  (`studio-hub-<controller>::<raw>`), and a reference clip exists on one Hub, not
+  on the fleet, so voice work must stay at that location.
+- **The id Story Studio sent is the id it is told back.** The job stores the
+  concrete location it was routed to, but `catalog_encode` applies `publish_id`
+  before answering, or a saved preset stops matching its own jobs. This is
+  asserted end to end in `test_fleet_standalone.py`.
 
 Secrets live in one place, the credential store (`0600`); `fleet.json` holds only
 the roster. Lookups of "the providers" must go through
@@ -121,19 +151,30 @@ the endpoints worked. `tests/test_ui.py` now reads the buttons themselves
 
 ```bash
 .venv/bin/python tests/test_e2e.py              # 129 checks, isolated mock upstream
+.venv/bin/python tests/test_fleet_standalone.py # 30 checks, real Hub(s) as locations
 .venv/bin/python tests/test_ui.py               # 86 checks, drives the real app
-.venv/bin/python tests/test_fleet_standalone.py # 23 checks, a real Hub as a location
 ```
 
 `test_e2e.py` is fully isolated (`GATEWAY_DATA`/`GATEWAY_APP_SUPPORT` to a temp
 dir, `GATEWAY_NO_MIGRATE=1`, random port, own key) — it cannot disturb the live
-config. `test_ui.py` needs **Accessibility permission** and skips its
-Hub-dependent checks with a stated reason when Studio Hub is stopped, because a
-stopped Hub is an environment state, not a gateway defect.
+config. `test_fleet_standalone.py` starts its own gateway and Hub on a random
+port, so it is equally safe.
 
-Always rebuild and reinstall before claiming the app works:
-`./menubar/build.sh`, then check `/Applications/gateway-kh.app` is newer than the
-sources. **"It builds" is not "it works."**
+**Do not run `test_ui.py` routinely.** It drives the *real, installed* app through
+Accessibility — taking over its windows and, to load new code, restarting it —
+which interrupts whatever the owner is doing on his own machine. He has asked for
+this explicitly. Run it only when the change is genuinely UI-specific and he is
+not working, and never as a reflex after every edit. It also needs
+**Accessibility permission**, and it skips its Hub-dependent checks with a stated
+reason when Studio Hub is stopped, because a stopped Hub is an environment state,
+not a gateway defect.
+
+Verifying a change without touching his session: the isolated suites above, plus a
+direct `curl` against the configured port. Rebuilding is safe; **restarting the
+app is not** — check whether a restart is actually needed before doing it.
+
+Always rebuild before claiming the app works: `./menubar/build.sh`, which installs
+to `/Applications/gateway-kh.app`. **"It builds" is not "it works."**
 
 ## Working rules
 

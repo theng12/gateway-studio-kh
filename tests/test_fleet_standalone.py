@@ -174,13 +174,58 @@ def main() -> int:
 
         client.post(f"{base}/admin/api/providers/{provider_id}/models/enabled",
                     json={"model_ids": stt_models, "enabled": True})
+
+        # A *second* location offering the same models, so the merge path is
+        # genuinely exercised. It is the same Hub reached by another address: an
+        # isolated gateway has no local Hub of its own, so without this only one
+        # location would ever contribute and every check below would pass
+        # vacuously while proving nothing about merging.
+        alias_url = hub_url.replace("127.0.0.1", "localhost")
+        second = client.post(f"{base}/admin/api/fleet/controllers", json={
+            "label": "Site B", "url": alias_url, "token": hub_token,
+        })
+        check("a second location can be added", second.status_code == 200, second.text[:200])
+        second_provider = f"studio-hub-{second.json()['controller']['id']}"
+        check("the second location is a distinct provider, not the same one",
+              second_provider != provider_id)
+        client.post(f"{base}/admin/api/providers/{second_provider}/refresh")
+        client.post(f"{base}/admin/api/providers/{second_provider}/models/enabled",
+                    json={"model_ids": stt_models, "enabled": True})
         catalogue = client.get(f"{base}/v1/models").json()["models"]
-        story_ids = [m["id"] for m in catalogue if provider_id in m["id"]]
-        check("they reach the Story Studio catalogue", bool(story_ids),
-              f"{[m['id'] for m in catalogue if provider_id in m['id']][:3]}")
+
+        print("\n\033[1m3. Locations publish one row per model, under the maker\033[0m")
+        # A location is a provider internally but not a separate product. Two
+        # locations offering Whisper must be ONE row; before this the picker held
+        # the same display_name twice and a saved preset broke when its site went
+        # offline. Namespace by maker, never by site.
+        check("no published id names either location",
+              not any(provider_id in m["id"] or second_provider in m["id"] for m in catalogue),
+              f"{[m['id'] for m in catalogue if provider_id in m['id'] or second_provider in m['id']][:3]}")
+        dupes = [m["id"] for m in catalogue if "mlx-community/whisper-base-mlx" in m["id"]]
+        check("a model offered by two locations is published once",
+              len(dupes) == 1, f"{dupes}")
+        check("the row is attributed to the maker, not the site",
+              all(m.get("provider_name") == "Studio Hub"
+                  for m in catalogue if m["id"] in dupes),
+              f"{[(m['id'], m.get('provider_name')) for m in catalogue if m['id'] in dupes]}")
+        # The id genuinely changed (`studio-hub-local::X` -> `studio-hub::X`), and
+        # Story Studio matches a stored selection against every legacy id, so
+        # carrying the superseded ones is what stops a saved preset reading as
+        # `vanished` across this change. BOTH locations' old ids must survive.
+        merged_row = next((m for m in catalogue if m["id"] in dupes), {})
+        aliases = [str(a) for a in (merged_row.get("legacy_ids") or [])]
+        check("a superseded site-scoped id survives as an alias, from every location",
+              any(a.startswith(f"{provider_id}::") for a in aliases)
+              and any(a.startswith(f"{second_provider}::") for a in aliases),
+              f"{aliases}")
+
+        story_ids = [m["id"] for m in catalogue
+                     if m["id"].startswith("studio-hub::") and m["id"] in dupes]
+        check("they reach the Story Studio catalogue", bool(story_ids), f"{story_ids}")
 
         succeeded = None
         hub_errors: list[str] = []
+        echoed: list[tuple[str, str]] = []
         for story_id in story_ids:
             with open(clip, "rb") as handle:
                 quote = client.post(
@@ -199,6 +244,11 @@ def main() -> int:
             check("the location accepts the job", confirm.status_code == 202, confirm.text[:200])
             if confirm.status_code != 202:
                 continue
+            # The job is routed to a concrete location, but the id Story Studio is
+            # told back has to be the id it sent or its saved preset stops
+            # matching its own jobs. This is the assertion that catches a routed
+            # provider id leaking into the response.
+            echoed.append((story_id, str(confirm.json().get("model_id") or "")))
             job_id = confirm.json().get("id")
             state, done = "unknown", {}
             deadline = time.time() + 240
@@ -215,6 +265,8 @@ def main() -> int:
 
         check("a transcription ran on the location end to end", succeeded is not None,
               " | ".join(hub_errors)[:300])
+        check("the id Story Studio sent is the id it is told back",
+              bool(echoed) and all(sent == back for sent, back in echoed), f"{echoed}")
         if succeeded:
             story_id, job_id = succeeded
             print(f"       ran {story_id}")
@@ -228,13 +280,23 @@ def main() -> int:
                   f" {' | '.join(hub_errors)[:200]}")
             check("the artifact comes back through the gateway", False, "no job succeeded")
 
-        print("\n\033[1m4. Nothing was gated on the role\033[0m")
-        # The local Hub and the added location are both local-scope providers;
-        # neither is a cloud API.
-        check("both providers are filed as local, not cloud",
-              client.get(f"{base}/admin/api/providers?scope=local")
-              .json()["scopes"]["local"] == 2,
-              str(client.get(f"{base}/admin/api/providers?scope=local").json()["scopes"]))
+        print("\n\033[1m5. Nothing was gated on the role\033[0m")
+        # Both locations are local-scope providers because they are machines, not
+        # cloud APIs. Asserting the property rather than a count: the count moves
+        # whenever a location is added, and a hardcoded one fails for the wrong
+        # reason.
+        local_ids = {
+            p["id"] for p in
+            client.get(f"{base}/admin/api/providers?scope=local").json()["providers"]
+        }
+        cloud_ids = {
+            p["id"] for p in
+            client.get(f"{base}/admin/api/providers?scope=cloud").json()["providers"]
+        }
+        check("both locations are filed as local, and neither as cloud",
+              {provider_id, second_provider} <= local_ids
+              and not ({provider_id, second_provider} & cloud_ids),
+              f"local has {len(local_ids)}, cloud has {len(cloud_ids)}")
         check("no 402 anywhere", True)
     finally:
         server.terminate()

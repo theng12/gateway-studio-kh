@@ -209,12 +209,39 @@ def _job_envelope(job: dict[str, Any]) -> dict[str, Any]:
 
 
 def catalog_encode(job: dict[str, Any]) -> str:
-    """Rebuild the namespaced id Story Studio sent, so its bookkeeping matches."""
+    """Rebuild the namespaced id Story Studio sent, so its bookkeeping matches.
+
+    Which location actually ran the job is deliberately not part of this. The job
+    stores the concrete location it was routed to, but the id Story Studio is told
+    back has to be the id it sent, or a saved preset stops matching its own jobs.
+    `publish_id` collapses a location back to the maker's namespace, which is the
+    namespace the catalogue published.
+    """
+    from . import fleet
     from .catalog import encode_model_id
 
     provider_id = job.get("provider_id") or ""
     model_id = job.get("model_id") or ""
-    return encode_model_id(provider_id, model_id) if provider_id else model_id
+    if not provider_id:
+        return model_id
+    return encode_model_id(fleet.publish_id(str(provider_id)), model_id)
+
+
+def _pinned_location(params: dict[str, Any]) -> str | None:
+    """The location a request already names, if it names one.
+
+    A voice id carries its owner (`studio-hub-<controller>::<raw>`), so voice work
+    must go to that location and no other — the reference clip exists on one Hub,
+    not on the fleet. A voice from a cloud provider names no location and so pins
+    nothing.
+    """
+    from . import fleet
+
+    for key in ("voice_id", "voice_reference_source_id", "voice_library_id"):
+        location_id = fleet.location_for_voice(str(params.get(key) or ""))
+        if location_id:
+            return location_id
+    return None
 
 
 def _submit(
@@ -228,7 +255,9 @@ def _submit(
     Resolution is against *enabled* models, so a disabled toggle is honoured on
     the generation path and the catalogue and dispatch can never disagree.
     """
-    definition, model = catalog.resolve(modality, compound_id)
+    definition, model = catalog.resolve(
+        modality, compound_id, only_location=_pinned_location(params)
+    )
     if definition is None or model is None:
         raise GatewayError(
             404,

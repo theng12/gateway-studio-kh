@@ -183,16 +183,6 @@ def _video_row(model_id: str, definition: ProviderDefinition, model: dict[str, A
     }
 
 
-def _hub_running() -> bool:
-    """Whether the local Studio Hub answers. Cheap: reads its readiness file."""
-    from .hub import hub_status
-
-    try:
-        return bool(hub_status().get("running"))
-    except Exception:  # noqa: BLE001 - a status probe must never break the catalogue
-        return False
-
-
 def _language_codes(languages: Any) -> list[str]:
     """Normalise a provider's language list into plain codes.
 
@@ -470,9 +460,37 @@ class Catalog:
             return
 
         rows: dict[str, list[dict[str, Any]]] = {m: [] for m in MODALITIES}
+        # One fleet read for the whole rebuild, not one per row: the catalogue has
+        # to know which locations are answering so a merged row is locked or
+        # offered truthfully.
+        from . import fleet
+
+        usable = fleet.usable_location_ids()
         for modality in MODALITIES:
+            # One row per model, however many locations offer it. A location is a
+            # provider internally — that is what gives it discovery, a credential
+            # and its own enable toggle — but locations are not separate products.
+            # The same model at six sites is one entry in the picker; publishing
+            # six showed one display_name six times and broke a saved preset
+            # whenever its site went offline.
+            merged: dict[str, dict[str, Any]] = {}
             for definition, model in registry.models.enabled_models(modality):
-                rows[modality].append(self._story_row(modality, definition, model))
+                row = self._story_row(modality, definition, model, usable=usable)
+                existing = merged.get(row["id"])
+                if existing is None:
+                    merged[row["id"]] = row
+                    continue
+                # Locking means "no location offering this can take it", so one
+                # answering location is enough to offer it.
+                if not row["locked"]:
+                    existing["locked"] = False
+                    existing["lock_reason"] = None
+                # Every location's previous site-scoped id stays an alias, so a
+                # preset naming any of them still finds this one row.
+                existing["legacy_ids"] = list(
+                    dict.fromkeys([*existing["legacy_ids"], *row["legacy_ids"]])
+                )
+            rows[modality] = list(merged.values())
 
         self._rows = rows
         self._voices, self._voice_refs = self._load_voices()
@@ -480,9 +498,18 @@ class Catalog:
         self._built_at = time.time()
 
     def _story_row(
-        self, modality: str, definition: ProviderDefinition, model: dict[str, Any]
+        self,
+        modality: str,
+        definition: ProviderDefinition,
+        model: dict[str, Any],
+        *,
+        usable: set[str] | None = None,
     ) -> dict[str, Any]:
-        compound = encode_model_id(definition.id, model["model_id"])
+        from . import fleet
+
+        is_location = fleet.is_location_provider(definition.id)
+        # Published under the maker's namespace, never the site's.
+        compound = encode_model_id(fleet.publish_id(definition.id), model["model_id"])
         # A local model whose Hub is not running is offered as LOCKED, not as
         # ready. This endpoint's own principle is that "offering a model that
         # fails on use is worse than not offering it" — and with Studio Hub down,
@@ -490,19 +517,39 @@ class Catalog:
         # Studio's picker showed twelve models that could only fail. Locking keeps
         # the row (so a saved preset does not read as `vanished`) while giving the
         # picker a reason to refuse it.
+        #
+        # For a location this asks the fleet and not this process: this Mac being
+        # up says nothing about a site across town. `rebuild` merges the rows, so
+        # the published row unlocks when any location offering it is answering.
         locked, lock_reason = False, None
-        if definition.kind == "studio_hub" and not _hub_running():
-            locked = True
-            lock_reason = "Studio Hub is not running on this Mac."
+        if is_location:
+            location_id = fleet.controller_id_from(definition.id) or ""
+            answering = usable if usable is not None else fleet.usable_location_ids()
+            if location_id not in answering:
+                locked = True
+                lock_reason = "No Studio Hub location offering this model is answering."
+        description = definition.description
+        if is_location and definition.id != fleet.provider_id_for(fleet.LOCAL_ID):
+            # A controller's description names its address, which is precisely the
+            # fact Story Studio must never be handed.
+            description = f"{fleet.FLEET_DISPLAY_NAME} location."
         row: dict[str, Any] = {
             "id": compound,
             "display_name": model["display_name"],
-            "description": definition.description,
+            "description": description,
             # Identity aliases: without these a saved preset reads as `vanished`
             # and the picker prints a "no longer offered" sentence.
             "customer_handle": compound,
             "public_model_id": compound,
-            "legacy_ids": [],
+            # The id this model was published under *before* every location
+            # collapsed into one namespace, so a preset saved back then still
+            # resolves. Story Studio matches a stored selection against the id,
+            # `customer_handle`, `public_model_id` **and every legacy id**, which
+            # is precisely what keeps an older preset from reading as `vanished`.
+            # `rebuild` unions these across locations.
+            "legacy_ids": (
+                [encode_model_id(definition.id, model["model_id"])] if is_location else []
+            ),
             # Publish availability EXPLICITLY. The transcription parser reads
             # `available === true` (absent means unavailable) while reading
             # `qualification_only !== false` (absent means hidden). Both
@@ -513,14 +560,20 @@ class Catalog:
             "lock_reason": lock_reason,
         }
 
+        # A location's rows are attributed to the maker, never the site. The old
+        # GenStudio's own migration for this is named
+        # `0338_kokoro_names_the_maker_not_the_machines`.
+        maker = fleet.FLEET_DISPLAY_NAME if is_location else definition.display_name
         provider_field = _PROVIDER_FIELD.get(modality)
         if provider_field:
-            row[provider_field] = definition.display_name
+            row[provider_field] = maker
         alias = _PROVIDER_ALIAS.get(modality)
         if alias:
-            row[alias] = definition.display_name
+            row[alias] = maker
         if modality == "tts":
-            row["provider_id"] = definition.id
+            # The *published* namespace, so a TTS row never carries a site id
+            # Story Studio could echo back as a model it cannot resolve.
+            row["provider_id"] = fleet.publish_id(definition.id)
 
         builder = _ROW_BUILDERS.get(modality)
         if builder is not None:
@@ -623,14 +676,40 @@ class Catalog:
     def envelope(self, modality: str) -> dict[str, Any]:
         return {"models": self.rows(modality), "freshness": self.freshness()}
 
-    def resolve(self, modality: str, compound: str) -> tuple[ProviderDefinition | None, dict | None]:
+    def resolve(
+        self,
+        modality: str,
+        compound: str,
+        *,
+        only_location: str | None = None,
+    ) -> tuple[ProviderDefinition | None, dict | None]:
         """Resolve a namespaced model id against currently enabled models.
 
         Never trust the caller's id: resolution is scoped to enabled providers
         and enabled models so a disabled toggle is honoured on the generation
         path, not just in the catalogue.
+
+        A `studio-hub::` id names the maker, not a site, so resolving it is also
+        where the location is chosen. `only_location` pins that choice — it is how
+        a voice job is kept at the location that actually holds the voice, since a
+        reference clip lives on one Hub and not on the fleet.
         """
+        from . import fleet
+
         provider_id, model_id = decode_model_id(compound)
+        if provider_id == fleet.FLEET_PROVIDER_ID:
+            chosen, _note = fleet.route(
+                model_id, modality, routing_key=compound, only_location=only_location
+            )
+            if chosen is None:
+                return None, None
+            # Return the *chosen location's* definition: it carries the address the
+            # job is sent to, while the job keeps the published id so the id Story
+            # Studio is told back is the id it sent.
+            for definition, model in registry.models.enabled_models(modality):
+                if definition.id == chosen.id and model["model_id"] == model_id:
+                    return definition, model
+            return None, None
         for definition, model in registry.models.enabled_models(modality):
             if definition.id == provider_id and model["model_id"] == model_id:
                 return definition, model
