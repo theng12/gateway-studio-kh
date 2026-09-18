@@ -32,12 +32,16 @@ _fleet_cache: dict = {"key": None, "by_id": {}}
 
 
 def _fleet_definitions_by_id() -> dict[str, ProviderDefinition]:
-    from ..fleet import PROVIDER_PREFIX, roster
+    from ..fleet import PROVIDER_PREFIX, revision, roster
 
+    # Keyed on the writer's own revision counter *and* the file's mtime: the
+    # counter catches our writes deterministically (an mtime can repeat within
+    # one second on a coarse filesystem, which would silently drop a change),
+    # and the mtime still catches an edit made outside this process.
     try:
-        key = os.path.getmtime(FLEET_PATH)
+        key = (revision(), os.path.getmtime(FLEET_PATH))
     except OSError:
-        key = None
+        key = (revision(), None)
     if _fleet_cache["key"] == key:
         return _fleet_cache["by_id"]
 

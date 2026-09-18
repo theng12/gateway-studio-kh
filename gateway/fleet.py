@@ -94,6 +94,20 @@ def _clear_token(controller_id: str) -> None:
         pass
 
 
+#: Bumped on every write. The provider registry derives its location-provider
+#: definitions from this roster and caches them; keying that cache on the file's
+#: modification time is the classic fragile choice, because a filesystem with
+#: one-second resolution can hand back the *same* timestamp for two writes in
+#: the same second and the second change would be ignored. A counter owned by
+#: the only writer cannot do that. The mtime is still part of the key, so an
+#: edit made by something else is picked up too.
+_revision = 0
+
+
+def revision() -> int:
+    return _revision
+
+
 def _read() -> list[dict]:
     if not FLEET_PATH.exists():
         return []
@@ -106,6 +120,8 @@ def _read() -> list[dict]:
 
 
 def _write(rows: list[dict]) -> None:
+    global _revision
+    _revision += 1
     FLEET_PATH.parent.mkdir(parents=True, exist_ok=True)
     # The roster carries no secrets, but it is written 0600 anyway: which sites
     # this gateway talks to is nobody else's business on a shared Mac.

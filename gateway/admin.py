@@ -20,8 +20,8 @@ import httpx
 from fastapi import APIRouter, Depends, Header, Request, Response
 from fastapi.responses import HTMLResponse, JSONResponse
 
+from .activity import story_activity
 from .adapters import support_status
-from .api import story_activity
 from .catalog import catalog
 from . import fleet
 from .config import is_loopback
