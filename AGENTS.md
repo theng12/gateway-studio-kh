@@ -131,6 +131,22 @@ the roster. Lookups of "the providers" must go through
 `registry.definitions()`, not the static `PROVIDERS_BY_ID` map — four separate
 bugs came from iterating the static map and silently omitting derived providers.
 
+**Adding a location must also discover its models, and say what it found.**
+Nothing refreshes models on a timer (`fleet.start_refresher` refreshes
+*reachability*, not models), so a location added without a refresh shows none —
+and "no models" reads as "it has nothing" rather than "nobody asked it yet".
+Discovered models arrive **disabled**, as everything remote must, so the Fleet page
+says how many were found and that none are available until enabled.
+
+**A credential must be checked where it is entered, because both of a controller's
+credentials work everywhere.** `/api/hub/settings` answers 200 to the operator
+token, 403 to a fleet credential, and **401 to a wrong or absent one** (measured
+against Hub 0.5.1 — a rejected token must never be reported as the fleet
+credential). The gateway classifies it when a location is added, when its
+credential is replaced, and on every connection test, and reports an operator token
+in orange with what it can do. `PUT /api/fleet/controllers/{id}/credential`
+replaces a token without touching the name, address or models.
+
 **A location's name is a label, never an identity, and renaming must stay safe at
 any time.** `fleet.rename_controller` changes only the label — the controller id,
 its address, its token and its enabled state are untouched — so renaming can never
@@ -151,7 +167,7 @@ the endpoints worked. `tests/test_ui.py` now reads the buttons themselves
 
 ```bash
 .venv/bin/python tests/test_e2e.py              # 129 checks, isolated mock upstream
-.venv/bin/python tests/test_fleet_standalone.py # 30 checks, real Hub(s) as locations
+.venv/bin/python tests/test_fleet_standalone.py # 40 checks, real Hub(s) as locations
 .venv/bin/python tests/test_ui.py               # 86 checks, drives the real app
 ```
 
@@ -160,18 +176,18 @@ dir, `GATEWAY_NO_MIGRATE=1`, random port, own key) — it cannot disturb the liv
 config. `test_fleet_standalone.py` starts its own gateway and Hub on a random
 port, so it is equally safe.
 
-**Do not run `test_ui.py` routinely.** It drives the *real, installed* app through
-Accessibility — taking over its windows and, to load new code, restarting it —
-which interrupts whatever the owner is doing on his own machine. He has asked for
-this explicitly. Run it only when the change is genuinely UI-specific and he is
-not working, and never as a reflex after every edit. It also needs
-**Accessibility permission**, and it skips its Hub-dependent checks with a stated
-reason when Studio Hub is stopped, because a stopped Hub is an environment state,
-not a gateway defect.
+**`test_ui.py` drives the real, installed app**, so run it deliberately rather than
+reflexively. It takes over the app's windows through Accessibility, and loading new
+code needs the app restarted, which interrupts whatever the owner is doing — he
+asked for a pause on that once, and then lifted it. So: run it when the change is
+UI-specific or when a claim about the app needs proving, and prefer the two isolated
+suites plus a direct `curl` for everything else. Rebuilding is always safe;
+**restarting the app is the part that intrudes**. It also needs **Accessibility
+permission**, and it skips its Hub-dependent checks with a stated reason when Studio
+Hub is stopped, because a stopped Hub is an environment state, not a gateway defect.
 
 Verifying a change without touching his session: the isolated suites above, plus a
-direct `curl` against the configured port. Rebuilding is safe; **restarting the
-app is not** — check whether a restart is actually needed before doing it.
+direct `curl` against the configured port.
 
 Always rebuild before claiming the app works: `./menubar/build.sh`, which installs
 to `/Applications/gateway-kh.app`. **"It builds" is not "it works."**

@@ -620,7 +620,54 @@ def fleet_add_controller(payload: dict[str, Any]) -> Any:
         )
     except ValueError as exc:
         return _error(400, str(exc))
-    return {"controller": row, "controllers": fleet.controllers()}
+    # Discover the new location's models as part of adding it. Nothing refreshes
+    # models on a timer, so without this an added controller simply shows none, and
+    # "no models" reads as "the location has nothing" rather than "nobody has asked
+    # it yet". Discovery is not availability: these arrive disabled, as everything
+    # from a remote provider must.
+    discovered: int | None = None
+    discovery_error: str | None = None
+    provider_id = fleet.provider_id_for(str(row.get("id") or ""))
+    try:
+        result = registry.refresh(provider_id)
+        discovered, discovery_error = len(result.models), result.error
+    except Exception as exc:  # noqa: BLE001 - the location is added either way
+        discovery_error = f"{type(exc).__name__}: {exc}"
+    # Check the credential as part of adding, not later: both of a controller's
+    # credentials reach every route this gateway calls, so an over-privileged one
+    # behaves perfectly and is never noticed. Reported now, while the token is
+    # still in the person's hand.
+    return {
+        "controller": row,
+        "credential": fleet.credential_scope_for(str(row.get("id") or "")),
+        "discovered": discovered,
+        "discovery_error": discovery_error,
+        "controllers": fleet.controllers(),
+    }
+
+
+@router.put("/api/fleet/controllers/{controller_id}/credential", dependencies=[Depends(require_admin)])
+def fleet_set_credential(controller_id: str, payload: dict[str, Any]) -> Any:
+    """Replace a location's credential without touching anything else."""
+    try:
+        row = fleet.set_token(controller_id, str(payload.get("token") or ""))
+    except ValueError as exc:
+        return _error(400, str(exc))
+    if row is None:
+        return _error(404, "No such controller.")
+    # A different credential can legitimately see different models — a fleet token
+    # scoped to fewer routes, or one minted after the controller gained a model.
+    discovered: int | None = None
+    try:
+        discovered = len(registry.refresh(fleet.provider_id_for(controller_id)).models)
+    except Exception:  # noqa: BLE001 - replacing the credential is the job here
+        pass
+    return {
+        "controller": row,
+        "credential": fleet.credential_scope_for(controller_id),
+        "discovered": discovered,
+        "controllers": fleet.controllers(),
+    }
 
 
 @router.delete("/api/fleet/controllers/{controller_id}", dependencies=[Depends(require_admin)])
@@ -668,4 +715,11 @@ def fleet_test_controller(controller_id: str) -> Any:
         "machines": len(probed["machines"]),
         "nodes": len(probed["nodes"]),
         "latency_ms": probed["latency_ms"],
+        # Only when it answered: an unreachable controller has no scope to report,
+        # and a second doomed request would just add the same timeout to the wait.
+        "credential": (
+            fleet.credential_scope(str(row["url"]), fleet._token_for(controller_id))  # noqa: SLF001
+            if probed["reachable"]
+            else {"scope": "unknown", "detail": "Not reachable, so the credential was not checked."}
+        ),
     }

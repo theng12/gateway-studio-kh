@@ -119,12 +119,62 @@ def main() -> int:
                               client.get(f"{base}/admin/api/providers").json()["providers"]])
 
         print("\n\033[1m2. Its models are discovered through that provider\033[0m")
-        client.post(f"{base}/admin/api/providers/{provider_id}/refresh")
+        # Adding discovered them: nothing refreshes models on a timer, so an added
+        # location that showed none would read as "it has nothing" rather than
+        # "nobody asked it yet".
+        check("adding a location discovers its models",
+              isinstance(added.json().get("discovered"), int)
+              and added.json().get("discovered") > 0,
+              f"discovered={added.json().get('discovered')} err={added.json().get('discovery_error')}")
         described = client.get(f"{base}/admin/api/providers/{provider_id}/models").json()
         models = described.get("models") or []
         check("models discovered from the location", len(models) > 0, f"{len(models)}")
         stt_models = [m["model_id"] for m in models if m.get("modality") == "transcription"]
         check("transcription models are among them", bool(stt_models), f"{len(models)} models")
+
+        print("\n\033[1m2c. The credential is checked, and can be replaced\033[0m")
+        # Both of a controller's credentials reach every route this gateway calls,
+        # so pasting the over-privileged one is silent. This Hub's own token IS the
+        # operator token, so the check has something true to report.
+        baseline_ids = [m["model_id"] for m in models]
+        added_scope = added.json().get("credential") or {}
+        check("adding a location reports what its credential is",
+              added_scope.get("scope") in {"operator", "fleet"},
+              f"{added_scope}")
+        check("the Hub's own token is reported as the operator token",
+              added_scope.get("scope") == "operator",
+              f"scope={added_scope.get('scope')} detail={str(added_scope.get('detail'))[:90]}")
+
+        still_same = client.get(f"{base}/admin/api/providers/{provider_id}/models").json()
+        replaced = client.put(
+            f"{base}/admin/api/fleet/controllers/{controller_id}/credential",
+            json={"token": hub_token},
+        )
+        check("a credential can be replaced", replaced.status_code == 200, replaced.text[:200])
+        check("replacing it reports the new credential's scope",
+              (replaced.json().get("credential") or {}).get("scope") == "operator",
+              str(replaced.json().get("credential"))[:120])
+        check("replacing it leaves the discovered models alone",
+              [m["model_id"] for m in still_same.get("models") or []] == baseline_ids)
+        # A refresh must still work on the replaced credential, or "replaced"
+        # would only mean the store changed.
+        check("the replaced credential is the one in use",
+              client.post(f"{base}/admin/api/providers/{provider_id}/refresh").status_code == 200)
+
+        bad = client.put(f"{base}/admin/api/fleet/controllers/{controller_id}/credential",
+                         json={"token": "definitely-not-a-valid-token"})
+        bad_scope = (bad.json().get("credential") or {}).get("scope")
+        check("a rejected credential is not mistaken for a usable one",
+              bad.status_code == 200 and bad_scope == "rejected", f"scope={bad_scope}")
+        # Put the working credential back before anything else runs.
+        client.put(f"{base}/admin/api/fleet/controllers/{controller_id}/credential",
+                   json={"token": hub_token})
+        check("an empty credential is refused",
+              client.put(f"{base}/admin/api/fleet/controllers/{controller_id}/credential",
+                         json={"token": "   "}).status_code == 400)
+        check("this Mac's credential is not replaceable from here",
+              client.put(f"{base}/admin/api/fleet/controllers/local/credential",
+                         json={"token": "x"}).status_code == 400)
 
         print("\n\033[1m2b. Renaming a location changes nothing but its name\033[0m")
         # The owner's requirement: name any controller, at any time. A name is a

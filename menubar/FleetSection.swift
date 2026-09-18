@@ -179,7 +179,10 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
             + "settings or identity the way its Hub service token can. A controller reports its own "
             + "nodes — this gateway never contacts them directly. Every location below can be "
             + "renamed at any time: a name is a label, and no address, credential or model "
-            + "depends on it."
+            + "depends on it. On the other Mac, Studio Hub must be told to answer on a network "
+            + "this one can reach: in its Settings, stop the services, tick its Tailscale "
+            + "network under \u{201C}Listening on\u{201D}, and start them again. It answers only "
+            + "that Mac itself by default, and nothing here can change that from a distance."
         ))
 
         labelField.placeholderString = "Name (e.g. Blue Room)"
@@ -437,10 +440,11 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
         return cell
     }
 
-    /// Test / Rename / Remove, per location.
+    /// Test / Token / Rename / Remove, per location.
     ///
-    /// This Mac gets Rename only: there is no address to test and nothing to
-    /// remove, but its name is its own like any other location's.
+    /// This Mac gets Rename only: it has no address to test and nothing to remove,
+    /// and its credential comes from its own Hub rather than from here. Its name is
+    /// its own, like any other location's.
     private func locationActions(for item: [String: Any]) -> NSView {
         let isLocal = item["local"] as? Bool == true
         let id = item["id"] as? String ?? ""
@@ -459,6 +463,7 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
         }
         views.append(button("Rename", #selector(renameController(_:))))
         if !isLocal {
+            views.append(button("Token", #selector(setCredential(_:))))
             views.append(button("Remove", #selector(removeController(_:))))
         }
 
@@ -500,11 +505,16 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
             switch result {
             case .failure(let error):
                 self.addStatus.stringValue = "Could not add the location — \(error)"
-            case .success:
+            case .success(let payload):
                 self.labelField.stringValue = ""
                 self.urlField.stringValue = ""
                 self.tokenField.stringValue = ""
-                self.addStatus.stringValue = "Added. Checking it now…"
+                self.describe(
+                    payload["credential"] as? [String: Any],
+                    verb: "Added",
+                    discovered: payload["discovered"] as? Int,
+                    discoveryError: payload["discovery_error"] as? String
+                )
                 self.reload()
             }
         }
@@ -551,6 +561,97 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
         }
     }
 
+    /// Render the gateway's read on a pasted credential, and what adding found.
+    ///
+    /// Both of a controller's credentials reach every route this gateway calls, so
+    /// an over-privileged one works perfectly and is never noticed. That makes
+    /// saying which one was pasted, at the moment it was pasted, the whole value of
+    /// the check.
+    private func describe(
+        _ credential: [String: Any]?,
+        verb: String,
+        discovered: Int? = nil,
+        discoveryError: String? = nil
+    ) {
+        // Discovered models arrive DISABLED, and nothing on this page says so.
+        // Saying it here is the difference between "the location has no models"
+        // and "you have not enabled any yet".
+        var tail = ""
+        if let discovered {
+            tail = discovered == 0
+                ? " It reported no models."
+                : " Discovered \(discovered) model\(discovered == 1 ? "" : "s") — enable the ones "
+                  + "you want in Models; nothing is available until you do."
+        } else if let discoveryError {
+            tail = " Its models could not be read yet — \(discoveryError)"
+        }
+
+        guard let credential else {
+            addStatus.textColor = .systemOrange
+            addStatus.stringValue = "\(verb).\(tail)"
+            return
+        }
+        let scope = credential["scope"] as? String ?? "unknown"
+        let detail = credential["detail"] as? String ?? ""
+        switch scope {
+        case "fleet":
+            addStatus.textColor = .secondaryLabelColor
+            addStatus.stringValue = "\(verb). \(detail)\(tail)"
+        case "operator", "rejected":
+            addStatus.textColor = .systemOrange
+            addStatus.stringValue = "⚠︎ \(verb), but \(detail)\(tail)"
+        default:
+            addStatus.textColor = .secondaryLabelColor
+            let lead = detail.isEmpty ? "\(verb)." : "\(verb). \(detail)"
+            addStatus.stringValue = "\(lead)\(tail)"
+        }
+    }
+
+    /// Replace one location's credential, without re-typing its address.
+    @objc private func setCredential(_ sender: NSButton) {
+        guard let id = sender.identifier?.rawValue else { return }
+        let label = locations.first { ($0["id"] as? String) == id }?["label"] as? String ?? id
+
+        let field = NSSecureTextField(string: "")
+        field.placeholderString = "fleet credential"
+        field.frame = NSRect(x: 0, y: 0, width: 300, height: 24)
+
+        let alert = NSAlert()
+        alert.messageText = "Credential for \(label)"
+        alert.informativeText =
+            "Use the controller's fleet credential — it is enough for everything this gateway "
+            + "does, and unlike its Hub service token it cannot change that controller's settings "
+            + "or shut it down. Replacing this does not disturb the location's name, address or models."
+        alert.accessoryView = field
+        alert.addButton(withTitle: "Replace")
+        alert.addButton(withTitle: "Cancel")
+        alert.window.initialFirstResponder = field
+
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        let token = field.stringValue.trimmingCharacters(in: .whitespaces)
+        guard !token.isEmpty else {
+            addStatus.textColor = .secondaryLabelColor
+            addStatus.stringValue = "A credential is required."
+            return
+        }
+        addStatus.textColor = .secondaryLabelColor
+        addStatus.stringValue = "Replacing…"
+        GatewayAPI.put("/admin/api/fleet/controllers/\(id)/credential", body: ["token": token]) { [weak self] result in
+            guard let self else { return }
+            switch result {
+            case .failure(let error):
+                self.addStatus.stringValue = "Could not replace it — \(error)"
+            case .success(let payload):
+                self.describe(
+                    payload["credential"] as? [String: Any],
+                    verb: "Replaced",
+                    discovered: payload["discovered"] as? Int
+                )
+                self.reload()
+            }
+        }
+    }
+
     @objc private func testController(_ sender: NSButton) {
         guard let id = sender.identifier?.rawValue else { return }
         addStatus.stringValue = "Testing…"
@@ -566,9 +667,16 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
                     let version = payload["version"] as? String ?? "unknown version"
                     let machines = payload["machines"] as? Int ?? 0
                     let nodes = payload["nodes"] as? Int ?? 0
-                    self.addStatus.stringValue =
-                        "Answered as \(role) on Hub \(version) — \(machines) machines, \(nodes) nodes."
+                    self.describe(
+                        payload["credential"] as? [String: Any],
+                        verb: "Answered as \(role) on Hub \(version) — \(machines) machines, \(nodes) nodes"
+                    )
                 } else {
+                    // The reason is the gateway's, and it distinguishes a refused
+                    // connection (Studio Hub answering this Mac only) from a bad
+                    // token from a silent network — three problems with three
+                    // different fixes, one of which otherwise costs a site visit.
+                    self.addStatus.textColor = .systemOrange
                     self.addStatus.stringValue =
                         "No answer — \(payload["error"] as? String ?? "unknown reason")"
                 }

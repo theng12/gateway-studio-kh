@@ -146,6 +146,93 @@ def _clear_token(controller_id: str) -> None:
         pass
 
 
+#: The one route that tells a controller's two credentials apart.
+#:
+#: `/api/hub/settings` is operator-only: 200 for the Hub's own service token, 403
+#: for a fleet credential. Every route this gateway actually calls answers 200 to
+#: both, which is exactly why pasting the wrong one is silent.
+_SCOPE_PROBE_PATH = "/api/hub/settings"
+
+
+def credential_scope(base: str, token: str, *, timeout: float = _TIMEOUT) -> dict:
+    """Classify a controller credential: `operator`, `fleet`, or `unknown`.
+
+    Pasted credentials fail silently by design of the API: both kinds reach
+    everything the gateway does, so an over-privileged one works perfectly until
+    the day it matters. The operator token can change a controller's settings and
+    identity, reach its storage, and shut it down — nothing the gateway ever needs.
+    Saying which one was pasted turns that from a hope into a check.
+    """
+    if not base or not token:
+        return {"scope": "unknown", "detail": "No address or credential to check."}
+    try:
+        with httpx.Client(timeout=timeout) as client:
+            response = client.get(
+                base.rstrip("/") + _SCOPE_PROBE_PATH, headers={"X-Hub-Token": token}
+            )
+    except httpx.HTTPError as exc:
+        return {"scope": "unknown", "detail": f"Could not check it: {type(exc).__name__}."}
+    if response.status_code == 200:
+        return {
+            "scope": "operator",
+            "detail": (
+                "This is the controller's Hub service token. It is sufficient but not least "
+                "privilege: it can change that controller's settings and identity, reach its "
+                "storage, and shut it down. Use the fleet credential instead."
+            ),
+        }
+    if response.status_code == 403:
+        # Authorised, but not for operator routes. That is what a fleet credential
+        # looks like, and it is the answer we want.
+        return {
+            "scope": "fleet",
+            "detail": "A fleet credential — sufficient for everything this gateway does.",
+        }
+    if response.status_code == 401:
+        # Measured against Hub 0.5.1: a wrong token and no token both answer 401,
+        # where a valid fleet credential answers 403. Both are refusals, so they
+        # must not be reported as the credential we are hoping for.
+        return {
+            "scope": "rejected",
+            "detail": "The controller rejected this credential — it is not a valid token for it.",
+        }
+    return {"scope": "unknown", "detail": f"Unexpected HTTP {response.status_code}."}
+
+
+def credential_scope_for(controller_id: str) -> dict:
+    """Scope of a location's stored credential, local Mac included."""
+    if controller_id == LOCAL_ID:
+        try:
+            return credential_scope(hub_base_url() or "", hub_token() or "")
+        except Exception:  # noqa: BLE001 - a missing Hub is a state, not a crash
+            return {"scope": "unknown", "detail": "Studio Hub is not running on this Mac."}
+    row = next((r for r in _read() if r.get("id") == controller_id), None)
+    if row is None:
+        return {"scope": "unknown", "detail": "No such location."}
+    return credential_scope(str(row.get("url") or ""), _token_for(controller_id))
+
+
+def set_token(controller_id: str, token: str) -> dict | None:
+    """Replace a location's credential; `None` when there is no such location.
+
+    Separate from `add_controller`, which is keyed on the address. A credential
+    changes for reasons that have nothing to do with where the machine is, and
+    requiring the address again would mean re-typing something that did not change
+    in order to fix something that did.
+    """
+    clean = (token or "").strip()
+    if not clean:
+        raise ValueError("A credential is required.")
+    if controller_id == LOCAL_ID:
+        raise ValueError("This Mac's credential comes from its own Hub, not from here.")
+    row = next((r for r in _read() if r.get("id") == controller_id), None)
+    if row is None:
+        return None
+    _set_token(controller_id, clean)
+    invalidate()
+    return _masked(row)
+
+
 #: Bumped on every write. The provider registry derives its location-provider
 #: definitions from this roster and caches them; keying that cache on the file's
 #: modification time is the classic fragile choice, because a filesystem with
@@ -417,6 +504,27 @@ def _probe(base: str, token: str, *, timeout: float = _TIMEOUT) -> dict:
             "Rejected the Hub token (HTTP %d)." % exc.response.status_code
             if exc.response.status_code in (401, 403)
             else "HTTP %d from the controller." % exc.response.status_code
+        )
+        return location
+    except httpx.ConnectError:
+        # Nothing accepted the connection. On a fleet this is the loopback-bind
+        # signature far more often than a dead machine: Studio Hub defaults to
+        # `listenHost: 127.0.0.1`, so a controller that is running perfectly well
+        # refuses every connection from here. Naming that is the difference
+        # between a one-minute settings change and a drive to a site to discover
+        # the machine was never broken. This exact mistake is in
+        # `docs/fleet-deployment-notes.md`.
+        location["error"] = (
+            "Nothing is listening on that address. If Studio Hub is running there, it is "
+            "answering that Mac only — open Studio Hub, stop its services, tick its Tailscale "
+            "network under \"Listening on\", and start them again. Confirm the port is 47873."
+        )
+        return location
+    except httpx.TimeoutException:
+        # Routed, but silent: a different problem from a refusal, with a different fix.
+        location["error"] = (
+            f"No answer within {int(_TIMEOUT)}s. The address is reachable but nothing replied — "
+            "check the machine is awake and that Tailscale is up at both ends."
         )
         return location
     except httpx.HTTPError as exc:

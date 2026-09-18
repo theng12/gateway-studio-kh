@@ -12,6 +12,35 @@ internals, which are still being written.
 
 ---
 
+## 0. Before anything else: the controller must be told to answer on the tailnet
+
+**[measured, Studio Hub 0.5.1]** This is the one setting that silently blocks every remote location,
+and it is not obvious from either side. Studio Hub binds **loopback only** by default:
+
+```
+app-preferences.json   {"listenHost":"127.0.0.1", ...}
+lsof                   TCP 127.0.0.1:53039 (LISTEN)
+```
+
+Its own code says the same: *"Every build before fleet support was loopback-only, and that stays the
+default."* A controller left that way is running perfectly and is **unreachable from here**, and no
+token, address or firewall change fixes it.
+
+**On each controller, in Studio Hub:** stop the services → tick the network it should answer on
+(the **Tailscale** address, not "Any address on any network") under **"Listening on"** → start them
+again. The toggles are read-only while it runs, and the change needs the restart — the UI says so
+itself.
+
+**The port is now fixed at `47873`**, so a controller's address is stable:
+`http://<tailscale-ip>:47873`. That is a recent fix and it matters for exactly this step — the same
+code comments that *"a controller's address in a node's **Join** box, and a node's address in the
+controller's registry, both died at the next restart, and nothing repaired them"* when the port was
+the operating system's choice.
+
+The gateway now says which of these it is when a location does not answer: a **refused** connection
+gets the loopback instruction above, a **timeout** says the address is routed but silent, and a
+401/403 says the token was rejected. Three problems, three fixes, and only one of them is a drive.
+
 ## 1. Hand the gateway the fleet token, not the operator token
 
 **[measured]** Both tokens reach 100% of the routes this gateway calls (`fleet/overview`, `nodes`,
@@ -22,6 +51,11 @@ no business: `/api/hub/settings`, `/controller`, `/storage`, `/maintenance`, `/t
 So the fleet token is sufficient and cannot change a controller's settings or shut it down. Paste
 that one. And paste a **distinct value per controller** — the same value in six rows is one
 credential in practice, whatever the files say.
+
+**[built]** Because both work everywhere, a wrong-but-valid token is silent. The gateway now checks
+`/api/hub/settings` as part of adding or replacing a credential and says which kind was pasted, and
+a location's credential can be replaced without re-typing its address (**Token** in the row actions).
+
 
 ## 2. The likeliest cause of a surprise visit is the Mac, not the app
 

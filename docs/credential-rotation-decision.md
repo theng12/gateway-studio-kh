@@ -185,16 +185,20 @@ cannot verify this from here — the Hub session is the authority, and their not
 
 ## What I would do on my side, regardless of your choice
 
-Three things, all small, and all independent of the decision above:
+Three things, all small, and all independent of the decision above — **all three are now built**:
 
-1. **Ask for the fleet credential in the Fleet page.** Today it says "Hub service token", which
+1. **Ask for the fleet credential in the Fleet page.** It used to say "Hub service token", which
    invites the operator token — over-privileged for no gain. Wording changed.
 2. **Detect and warn about the scope of a pasted credential.** `/api/hub/settings` answers 200 to an
-   operator token and 403 to a fleet one, so the gateway can say which it was given *before* you
-   rely on it. This is the check that turns the table above into something you never have to
-   remember. Not built yet — say the word.
-3. **Let a credential be replaced, not just added or removed.** Needed for option B, and useful
-   without it (a token can change for reasons other than rotation).
+   operator token and 403 to a fleet one, so the gateway says which it was given *at the moment it is
+   pasted* — when adding a location, when replacing its credential, and on every connection test.
+   An operator token is reported in orange with what it can do. This is the check that turns the
+   table above into something you never have to remember, and it matters because **both credentials
+   work everywhere**: a wrong-but-valid one is otherwise invisible until the day it matters.
+3. **Replace a credential, not just add or remove a location.** `PUT
+   /api/fleet/controllers/{id}/credential`, and a **Token** button in each row. Separate from adding
+   because a credential changes for reasons that have nothing to do with where the machine is;
+   requiring the address again would mean re-typing what did not change to fix what did.
 
 Also fixed while checking: seven orphaned credential entries had accumulated from my test
 controllers. `clear()` keeps an empty entry on purpose ("this was configured, now cleared"), which
