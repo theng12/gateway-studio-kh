@@ -119,8 +119,21 @@ def _artifact_url(base: str, batch_id: str, item_index: int, kind: str) -> str:
 # Staged voice references, keyed by voice id. The Hub gives an asset a TTL
 # (default 24h), so re-staging on every generation would waste work and disk;
 # refreshing well inside that window is enough.
-_REFERENCE_CACHE: dict[str, tuple[str, float]] = {}
+#: Staged voice references, keyed by **(voice, controller)**.
+#:
+#: The asset id is minted by the controller that received the upload, so it is
+#: only meaningful there. Keyed by voice alone — which it was — a reference staged
+#: on one location was handed to the next location that asked for the same voice,
+#: and that location had never seen the asset. Invisible with a single location,
+#: which is why it survived; with several it fails the moment a second controller
+#: reuses a cached voice.
+_REFERENCE_CACHE: dict[tuple[str, str], tuple[str, float]] = {}
 _REFERENCE_TTL_S = 6 * 3600.0
+
+
+def _reference_cache_key(voice_id: str, base: str) -> tuple[str, str]:
+    """Cache identity for a staged reference: the voice *and* the location."""
+    return (voice_id, base.rstrip("/"))
 
 
 def _reference_for(request: BackendRequest) -> dict[str, Any] | None:
@@ -158,7 +171,8 @@ def _stage_voice_reference(
     "Voice cloning needs a reference voice or private reference upload". So the
     clip is staged first and passed as `voice_reference_asset_id`.
     """
-    cached = _REFERENCE_CACHE.get(voice_id)
+    key = _reference_cache_key(voice_id, base)
+    cached = _REFERENCE_CACHE.get(key)
     if cached and (time.time() - cached[1]) < _REFERENCE_TTL_S:
         return cached[0]
 
@@ -204,7 +218,7 @@ def _stage_voice_reference(
             "hub returned no voice reference asset_id", code="VOICE_PROVIDER_RESULT_INVALID"
         )
 
-    _REFERENCE_CACHE[voice_id] = (asset_id, time.time())
+    _REFERENCE_CACHE[key] = (asset_id, time.time())
     return asset_id
 
 

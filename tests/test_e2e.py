@@ -291,6 +291,20 @@ def main() -> int:
                   row["customer_handle"] == row["id"] and row["legacy_ids"] == [])
             check("row publishes context window from provider", row["context_window_tokens"] == 32000)
 
+            # A staged voice reference belongs to the controller that minted it.
+            # Keyed by voice alone, a reference staged on one location would be
+            # handed to another that had never seen the asset — invisible with one
+            # location, broken with several.
+            from gateway.adapters.studio_hub import _reference_cache_key
+            check("a staged reference is cached per location, not per voice",
+                  _reference_cache_key("v1", "http://a:1")
+                  != _reference_cache_key("v1", "http://b:1"),
+                  "same key for two controllers")
+            check("the same location reuses its own staged reference",
+                  _reference_cache_key("v1", "http://a:1")
+                  == _reference_cache_key("v1", "http://a:1/"),
+                  "trailing slash changed the key")
+
             # The curated-limits file fills a provider's silence and never
             # overrides live data. Tested directly against the module, because a
             # check that depends on which mock models happen to be enabled is a
