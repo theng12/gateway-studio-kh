@@ -42,16 +42,32 @@ STALE_AFTER_MS = 30 * 60 * 1000
 
 MODALITIES = ("chat", "image", "video", "tts", "transcription", "music")
 
-# Story Studio's parser expects a different provider field name per modality.
-# Getting these wrong is silent: the row survives but the provider label reads
-# blank and voice rows lose their engine attribution.
+# Which field carries the serving provider, per modality.
+#
+# Story Studio's own handoff states the contract plainly: "GenStudio publishes
+# `provider_name` for all five model kinds". So **every** kind now publishes
+# `provider_name` — video previously published nothing at all, and transcription
+# published only `provider`, which meant that when Story Studio added the
+# declaration for its transcription and video model types the field would have
+# been missing rather than merely unused.
+#
+# `provider` is kept as well where it was already published (transcription
+# models, and voice rows, which are built elsewhere) because a field that
+# something may read is not worth removing to tidy up: extra keys are ignored,
+# a missing one reads as blank.
 _PROVIDER_FIELD = {
     "chat": "provider_name",
     "image": "provider_name",
     "tts": "provider_name",
-    "video": None,
-    "transcription": "provider",
+    "video": "provider_name",
+    "transcription": "provider_name",
     "music": "provider_name",
+}
+
+#: Extra aliases published alongside `provider_name`, for readers that already
+#: expected this spelling.
+_PROVIDER_ALIAS = {
+    "transcription": "provider",
 }
 
 _IMAGE_RATIOS = ["16:9", "9:16", "1:1", "4:3", "3:4"]
@@ -298,6 +314,9 @@ class Catalog:
         provider_field = _PROVIDER_FIELD.get(modality)
         if provider_field:
             row[provider_field] = definition.display_name
+        alias = _PROVIDER_ALIAS.get(modality)
+        if alias:
+            row[alias] = definition.display_name
         if modality == "tts":
             row["provider_id"] = definition.id
 

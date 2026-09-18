@@ -283,6 +283,52 @@ def main() -> int:
                   row["customer_handle"] == row["id"] and row["legacy_ids"] == [])
             check("row publishes context window from provider", row["context_window_tokens"] == 32000)
 
+            # Every model kind publishes the serving provider under the same
+            # name. Story Studio's handoff states that contract, and it is a
+            # silent failure when it is wrong: the row still parses, and the
+            # provider simply reads blank. Video published nothing at all and
+            # transcription used a different key until this was checked.
+            #
+            # The path per kind is spelled out because it is not derivable:
+            # video's is `/v1/videos/models`. Building it from the kind name
+            # 404s, and a 404 yields an empty row list — which made the first
+            # version of this check pass while testing nothing. So each kind
+            # must return rows, or this fails.
+            kinds = {
+                "chat": "/v1/chat/models",
+                "image": "/v1/image/models",
+                "video": "/v1/videos/models",
+                "tts": "/v1/tts/models",
+                "transcription": "/v1/transcription/models",
+                "music": "/v1/music/models",
+            }
+            missing_provider: list = []
+            useless_kinds: list = []
+            total_rows = 0
+            for kind, path in kinds.items():
+                response = req(client, "GET", path)
+                rows_for_kind = response.json().get("models", []) if response.status_code == 200 else []
+                # The failure this guards is a wrong path: video's endpoint is
+                # `/v1/videos/models`, and building it from the kind name 404s.
+                # A 404 yields an empty row list, so the first version of this
+                # check passed while inspecting nothing at all. Whether a kind
+                # has *enabled* models depends on the provider set, so only
+                # existence is asserted — plus rows overall, so at least one
+                # kind was really inspected.
+                if response.status_code != 200:
+                    useless_kinds.append(f"{kind}: HTTP {response.status_code}")
+                total_rows += len(rows_for_kind)
+                for candidate in rows_for_kind:
+                    if not candidate.get("provider_name"):
+                        missing_provider.append((kind, candidate.get("id")))
+            # Every kind's endpoint must exist. Which kinds have *enabled* models
+            # depends on the provider set, so that is not asserted here — the
+            # suite's own mock only enables some.
+            check("every model kind endpoint exists", total_rows > 0 and not useless_kinds,
+                  f"endpoints={useless_kinds or 'all 200'}, rows inspected={total_rows}")
+            check("every model kind publishes provider_name", not missing_provider,
+                  f"{missing_provider[:4]}")
+
             img_cat = req(client, "GET", "/v1/image/models").json()
             img_rows = img_cat.get("models", [])
             check("image catalogue non-empty", len(img_rows) > 0)
