@@ -736,7 +736,9 @@ def main() -> int:
         # The role is the Hub's to decide, so this only requires that one is
         # reported from the set the Hub defines.
         check("reports the location's role",
-              any(r in locations_cells for r in ("standalone", "controller", "worker")),
+              # The Hub's vocabulary is standalone | controller | agent. There is
+              # no `worker` role — a joined node's row carries `agent`.
+              any(r in locations_cells for r in ("standalone", "controller", "agent")),
               f"{locations_cells}")
         check("lists the local machine with its work",
               any("This Mac" in cell for cell in machines_cells), f"{machines_cells}")

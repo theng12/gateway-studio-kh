@@ -102,9 +102,16 @@ def main() -> int:
         snap = client.get(f"{base}/admin/api/fleet").json()
         site = next(l for l in snap["locations"] if l["id"] == controller_id)
         check("the location is reachable", site["reachable"], str(site.get("error"))[:160])
+        # The Hub's vocabulary is standalone | controller | agent — there is no
+        # `worker`. Identity comes from `capabilities.controller`, because
+        # `fleet/nodes.role` used to return a constant and reading it showed the
+        # wrong role for a standalone Mac.
         check("its role is accepted as reported, whatever it is",
-              site["role"] in {"standalone", "controller", "worker"},
+              site["role"] in {"standalone", "controller", "agent"},
               f"role={site['role']}")
+        check("the location publishes stable identity, not just a label",
+              bool(site.get("site_id")) and bool(site.get("controller_id")),
+              f"site_id={site.get('site_id')} controller_id={site.get('controller_id')}")
         print(f"       reported role: {site['role']}")
         check("it reports machines", len(site["machines"]) >= 1)
         check("the location also became a provider",

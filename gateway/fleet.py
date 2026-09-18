@@ -269,6 +269,9 @@ def _probe(base: str, token: str, *, timeout: float = _TIMEOUT) -> dict:
         "by_machine": {},
         "matrix": [],
         "jobs_total": None,
+        "site_id": None,
+        "controller_id": None,
+        "ready": None,
         "latency_ms": None,
     }
     try:
@@ -281,6 +284,19 @@ def _probe(base: str, token: str, *, timeout: float = _TIMEOUT) -> dict:
                 # Jobs are the least important part of "is this location alive";
                 # a controller that reports machines but not jobs is still up.
                 jobs = {"batches": []}
+            try:
+                # The authoritative identity: `capabilities.controller` carries
+                # role, Hub version and readiness in one object, plus the stable
+                # `site_id`.
+                #
+                # This replaced a derivation assembled from two other endpoints —
+                # `fleet/nodes.role` and a machine's `version` — and the Hub
+                # session found that `fleet/nodes.role` was returning a constant
+                # "controller" for a standalone Mac. Reading a field that was
+                # silently wrong is exactly how a Fleet page shows the wrong role.
+                capabilities = _fetch(client, base, token, "/api/hub/capabilities")
+            except httpx.HTTPError:
+                capabilities = {}
             try:
                 # The Hub's own fleet analytics. This is where per-machine state
                 # (working / ready / idle / offline) and per-machine job counts
@@ -302,10 +318,17 @@ def _probe(base: str, token: str, *, timeout: float = _TIMEOUT) -> dict:
 
     node_rows = nodes.get("nodes") or []
     activity = stats.get("fleet_activity") or {}
+    controller = capabilities.get("controller")
+    controller = controller if isinstance(controller, dict) else {}
     location.update({
         "reachable": True,
-        "role": nodes.get("role"),
-        "version": _version_from(overview),
+        # Prefer the Hub's own identity; fall back to the older sources only when
+        # it is unavailable, so a Hub that does not serve capabilities still works.
+        "role": controller.get("role") or nodes.get("role"),
+        "version": controller.get("studiohub_version") or _version_from(overview),
+        "site_id": capabilities.get("site_id") or controller.get("site_id"),
+        "controller_id": controller.get("controller_id"),
+        "ready": controller.get("ready"),
         "machines": overview.get("machines") or [],
         "machine_summary": overview.get("summary") or {},
         "nodes": node_rows,
@@ -354,6 +377,7 @@ def locations() -> list[dict]:
             "nodes": [], "node_summary": None, "running_jobs": [],
             "activity": {"pulse": {}, "machines": [], "observed_at": None},
             "by_machine": {}, "matrix": [], "jobs_total": None, "latency_ms": None,
+            "site_id": None, "controller_id": None, "ready": None,
         }
     rows.append(local)
 
