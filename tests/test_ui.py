@@ -416,9 +416,26 @@ def main() -> int:
     if running != "true":
         return 1
 
-    # The app should have opened exactly one window on launch.
+    # Exactly one window, which is what a normal launch produces. A launch with
+    # `--background` — what the LaunchAgent passes at login — deliberately opens
+    # none, so open it through the app's own menu rather than failing. The app
+    # that logged in at boot is a perfectly valid thing to test against, and
+    # "0 windows" is otherwise a confusing way to say "the window was never
+    # opened".
+    if window_count() == 0:
+        try:
+            osa(wrap(
+                'click menu item "Overview" of menu 1 of menu bar item "View" of menu bar 1'
+            ))
+            time.sleep(2.5)
+        except RuntimeError:
+            pass
     count = window_count()
     check("exactly one window is open", count == 1, f"{count} windows")
+    if count != 1:
+        print("  The app must be running with its window; launch it normally, or let")
+        print("  this open one via View -> Overview.")
+        return 1
 
     # ------------------------------------------------------------------
     print("\n\033[1m1. One window, with a grouped sidebar\033[0m")
