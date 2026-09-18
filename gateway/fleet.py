@@ -109,29 +109,54 @@ def revision() -> int:
     return _revision
 
 
-def _read() -> list[dict]:
+def _read_payload() -> dict:
     if not FLEET_PATH.exists():
-        return []
+        return {}
     try:
         payload = json.loads(FLEET_PATH.read_text(encoding="utf-8"))
     except (OSError, ValueError):
-        return []
-    rows = payload.get("controllers") if isinstance(payload, dict) else None
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+#: The reserved id for this Mac. It is listed in the Fleet page beside every
+#: controller and can be renamed like one, but it is not a roster entry: there is
+#: no address to configure and nothing to remove.
+LOCAL_ID = "local"
+
+#: What this Mac is called until the owner renames it.
+LOCAL_LABEL_DEFAULT = "This Mac"
+
+
+def local_label() -> str:
+    return str(_read_payload().get("local_label") or "").strip() or LOCAL_LABEL_DEFAULT
+
+
+def _read() -> list[dict]:
+    rows = _read_payload().get("controllers")
     return [row for row in (rows or []) if isinstance(row, dict) and row.get("url")]
 
 
-def _write(rows: list[dict]) -> None:
+def _write(rows: list[dict], *, local_name: str | None = None) -> None:
     global _revision
     _revision += 1
     FLEET_PATH.parent.mkdir(parents=True, exist_ok=True)
+    payload: dict = {
+        "controllers": [{k: v for k, v in row.items() if k != "token"} for row in rows],
+    }
+    # This Mac's name lives in the same file, because "what do I call my
+    # locations" is one concern whether the location is this Mac or a controller
+    # across town. Passing `local_name` sets it; omitting it preserves whatever is
+    # already there, so adding or removing a controller cannot reset the local
+    # name as a side effect.
+    name = (local_name if local_name is not None else local_label()).strip()
+    if name and name != LOCAL_LABEL_DEFAULT:
+        payload["local_label"] = name
     # The roster carries no secrets, but it is written 0600 anyway: which sites
     # this gateway talks to is nobody else's business on a shared Mac.
     fd = os.open(str(FLEET_PATH), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "w", encoding="utf-8") as handle:
-        json.dump(
-            {"controllers": [{k: v for k, v in row.items() if k != "token"} for row in rows]},
-            handle, indent=2,
-        )
+        json.dump(payload, handle, indent=2)
     try:
         FLEET_PATH.chmod(stat.S_IRUSR | stat.S_IWUSR)
     except OSError:
@@ -207,6 +232,32 @@ def remove_controller(controller_id: str) -> bool:
     _clear_token(controller_id)
     invalidate()
     return True
+
+
+def rename_controller(controller_id: str, label: str) -> dict | None:
+    """Give a location a new name; `None` when there is no such location.
+
+    A name is a **display name, never an identity**. Renaming touches neither the
+    controller id, its address, its token, nor whether it is enabled, so it is
+    safe at any moment -- including after that location's models have been
+    discovered and enabled. Nothing published, stored or scheduled is keyed on
+    the label.
+    """
+    clean = (label or "").strip()
+    if not clean:
+        raise ValueError("A name is required.")
+    if controller_id == LOCAL_ID:
+        _write(_read(), local_name=clean)
+        invalidate()
+        return {"id": LOCAL_ID, "label": clean, "url": "", "local": True}
+    rows = _read()
+    row = next((r for r in rows if r.get("id") == controller_id), None)
+    if row is None:
+        return None
+    row["label"] = clean
+    _write(rows)
+    invalidate()
+    return _masked(row)
 
 
 # --------------------------------------------------------------------------
@@ -368,10 +419,10 @@ def locations() -> list[dict]:
 
     if local_base:
         local = _probe(local_base, local_token)
-        local.update({"id": "local", "label": "This Mac", "url": local_base, "local": True})
+        local.update({"id": LOCAL_ID, "label": local_label(), "url": local_base, "local": True})
     else:
         local = {
-            "id": "local", "label": "This Mac", "url": "", "local": True,
+            "id": LOCAL_ID, "label": local_label(), "url": "", "local": True,
             "reachable": False,
             "error": local_error or "Studio Hub is not running on this Mac.",
             "role": None, "version": None, "machines": [], "machine_summary": None,

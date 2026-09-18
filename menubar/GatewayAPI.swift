@@ -44,6 +44,14 @@ enum GatewayAPI {
         request("POST", path, body: body, completion: completion ?? { _ in })
     }
 
+    static func patch(
+        _ path: String,
+        body: [String: Any]? = nil,
+        completion: ((Result<[String: Any], Error>) -> Void)? = nil
+    ) {
+        request("PATCH", path, body: body, completion: completion ?? { _ in })
+    }
+
     static func delete(
         _ path: String,
         completion: ((Result<[String: Any], Error>) -> Void)? = nil

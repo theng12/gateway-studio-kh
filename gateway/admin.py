@@ -630,13 +630,34 @@ def fleet_remove_controller(controller_id: str) -> Any:
     return {"controllers": fleet.controllers()}
 
 
+@router.patch("/api/fleet/controllers/{controller_id}", dependencies=[Depends(require_admin)])
+def fleet_rename_controller(controller_id: str, payload: dict[str, Any]) -> Any:
+    """Rename a location -- any location, at any time.
+
+    Only the label changes. The controller id, its address, its token and whether
+    it is enabled are all untouched, so renaming can never require re-entering a
+    credential. `local` is accepted here too: this Mac sits in the same list and
+    is renamed the same way.
+    """
+    try:
+        row = fleet.rename_controller(controller_id, str(payload.get("label") or ""))
+    except ValueError as exc:
+        return _error(400, str(exc))
+    if row is None:
+        return _error(404, "No such controller.")
+    return {"controller": row, "controllers": fleet.controllers()}
+
+
 @router.post("/api/fleet/controllers/{controller_id}/test", dependencies=[Depends(require_admin)])
 def fleet_test_controller(controller_id: str) -> Any:
     """Connection test: identity, role and release, straight from the controller."""
     row = next((c for c in fleet._read() if c.get("id") == controller_id), None)  # noqa: SLF001
     if row is None:
         return _error(404, "No such controller.")
-    probed = fleet._probe(str(row["url"]), str(row.get("token") or ""))  # noqa: SLF001
+    # The credential comes from the store, not the roster: the roster deliberately
+    # holds no secrets, so reading a token off the row probed with an empty one and
+    # reported every correctly configured controller as unreachable.
+    probed = fleet._probe(str(row["url"]), fleet._token_for(controller_id))  # noqa: SLF001
     return {
         "id": controller_id,
         "url": row["url"],

@@ -126,6 +126,40 @@ def main() -> int:
         stt_models = [m["model_id"] for m in models if m.get("modality") == "transcription"]
         check("transcription models are among them", bool(stt_models), f"{len(models)} models")
 
+        print("\n\033[1m2b. Renaming a location changes nothing but its name\033[0m")
+        # The owner's requirement: name any controller, at any time. A name is a
+        # display label, so this asserts the *identity* is untouched -- the same
+        # provider id, the same discovered models, the same working credential.
+        before_ids = [m["model_id"] for m in models]
+        renamed = client.patch(f"{base}/admin/api/fleet/controllers/{controller_id}",
+                               json={"label": "Angkor Hub"})
+        check("a location can be renamed", renamed.status_code == 200, renamed.text[:200])
+        check("the roster carries the new name",
+              any(c["id"] == controller_id and c["label"] == "Angkor Hub"
+                  for c in renamed.json()["controllers"]),
+              str(renamed.json().get("controllers"))[:200])
+        check("its provider id is not derived from its name",
+              provider_id in [p["id"] for p in
+                              client.get(f"{base}/admin/api/providers").json()["providers"]])
+        after = client.get(f"{base}/admin/api/providers/{provider_id}/models").json()
+        check("its discovered models are unchanged by the rename",
+              [m["model_id"] for m in after.get("models") or []] == before_ids,
+              f"{(after.get('models') or [])[:2]}")
+        check("it is still reachable, so the rename did not disturb its credential",
+              next(l for l in client.get(f"{base}/admin/api/fleet").json()["locations"]
+                   if l["id"] == controller_id)["reachable"])
+        check("an empty name is refused",
+              client.patch(f"{base}/admin/api/fleet/controllers/{controller_id}",
+                           json={"label": "   "}).status_code == 400)
+        check("an unknown location answers 404 rather than crashing",
+              client.patch(f"{base}/admin/api/fleet/controllers/does-not-exist",
+                           json={"label": "x"}).status_code == 404)
+        check("this Mac can be renamed too",
+              client.patch(f"{base}/admin/api/fleet/controllers/local",
+                           json={"label": "HQ Mac mini"}).status_code == 200
+              and next(l for l in client.get(f"{base}/admin/api/fleet").json()["locations"]
+                       if l["id"] == "local")["label"] == "HQ Mac mini")
+
         print("\n\033[1m3. Real work runs on that location\033[0m")
         # Try the Hub's transcription models in turn. A model the Hub itself
         # cannot run (a missing Subtitle Studio snapshot config, say) is the

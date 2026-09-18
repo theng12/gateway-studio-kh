@@ -101,12 +101,28 @@ the roster. Lookups of "the providers" must go through
 `registry.definitions()`, not the static `PROVIDERS_BY_ID` map — four separate
 bugs came from iterating the static map and silently omitting derived providers.
 
+**A location's name is a label, never an identity, and renaming must stay safe at
+any time.** `fleet.rename_controller` changes only the label — the controller id,
+its address, its token and its enabled state are untouched — so renaming can never
+cost a re-entry of a credential, and it is safe after that location's models are
+discovered and enabled. That holds only because the provider id is derived from
+the **controller id** (`studio-hub-<controller-id>`) and the model id from the
+provider, so never derive an id, key or path from a label. `fleet.json` also
+carries `local_label`: this Mac is a location in the same list and is renamed the
+same way, so a write that adds or removes a controller must preserve it.
+
+Row actions in a table are worth testing through the UI, not just the API: the
+Fleet page had `testController` and `removeController` **wired to nothing** — no
+button ever called them — so Test and Remove were unreachable from the app while
+the endpoints worked. `tests/test_ui.py` now reads the buttons themselves
+(`table_button_titles`), because `table_texts` sees static text only.
+
 ## Verification
 
 ```bash
-.venv/bin/python tests/test_e2e.py              # 127 checks, isolated mock upstream
-.venv/bin/python tests/test_ui.py               # 84 checks, drives the real app
-.venv/bin/python tests/test_fleet_standalone.py # a real Hub used as a location
+.venv/bin/python tests/test_e2e.py              # 129 checks, isolated mock upstream
+.venv/bin/python tests/test_ui.py               # 86 checks, drives the real app
+.venv/bin/python tests/test_fleet_standalone.py # 23 checks, a real Hub as a location
 ```
 
 `test_e2e.py` is fully isolated (`GATEWAY_DATA`/`GATEWAY_APP_SUPPORT` to a temp

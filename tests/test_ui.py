@@ -299,6 +299,35 @@ def table_columns(scroll_area: int, nested: bool = False) -> int:
         return -1
 
 
+def table_button_titles(scroll_area: int, nested: bool = False) -> list[str]:
+    """Button titles inside a page's table rows.
+
+    `table_texts` reads static text only, so the Fleet page's Actions column is
+    invisible to it. This reads the buttons themselves, which is the only way to
+    prove the row actions exist rather than merely being wired up in code.
+    """
+    target = (
+        f"scroll area {scroll_area} of scroll area 2" if nested else f"scroll area {scroll_area}"
+    )
+    try:
+        raw = osa(wrap(f'''
+            set sep to (ASCII character 10)
+            tell {MAIN_WINDOW} to tell splitter group 1 to tell table 1 of {target}
+                set acc to ""
+                repeat with r from 1 to (count of rows)
+                    repeat with c in (UI elements of row r)
+                        try
+                            set acc to acc & (title of button 1 of c) & sep
+                        end try
+                    end repeat
+                end repeat
+                return acc
+            end tell'''))
+    except RuntimeError:
+        return []
+    return [line.strip() for line in raw.splitlines() if line.strip()]
+
+
 def wait_for_detail(needle: str, timeout: float = 30.0) -> str:
     """Wait until the detail pane contains `needle`, then return its text.
 
@@ -709,14 +738,32 @@ def main() -> int:
     # Fleet scrolls, so its three tables are nested inside the page scroll view.
     locations_cells = table_texts(1, nested=True)
     machines_cells = table_texts(2, nested=True)
-    check("locations are a table", table_columns(1, nested=True) >= 4,
+    check("locations are a table", table_columns(1, nested=True) >= 6,
           f"{table_columns(1, nested=True)} columns")
     check("machines are a table", table_columns(2, nested=True) >= 5,
           f"{table_columns(2, nested=True)} columns")
     check("running work is a table", table_columns(3, nested=True) >= 3,
           f"{table_columns(3, nested=True)} columns")
-    check("lists this Mac as the local location", "This Mac" in locations_cells,
-          f"{locations_cells}")
+
+    # The location name is the owner's to set, so this reads what the gateway
+    # currently calls it instead of asserting a literal. Renaming is a feature
+    # now, and a test that pins "This Mac" would fail the moment it is used.
+    fleet_locations = api_get("/admin/api/fleet")["locations"]
+    local_label = next(
+        (l.get("label") for l in fleet_locations if l.get("local")), "This Mac"
+    )
+    check("lists this Mac as the local location", local_label in locations_cells,
+          f"looking for {local_label!r} in {locations_cells}")
+
+    # Every location must be renameable, and this Mac must not offer Remove.
+    configured = api_get("/admin/api/fleet/controllers").get("controllers", [])
+    action_titles = table_button_titles(1, nested=True)
+    check("offers Rename on every location",
+          action_titles.count("Rename") == 1 + len(configured), f"{action_titles}")
+    check("offers Test and Remove only for real controllers",
+          action_titles.count("Remove") == len(configured)
+          and action_titles.count("Test") == len(configured),
+          f"{action_titles} with {len(configured)} configured")
 
     # The rest of this section reads what the local Hub reports, so it needs the
     # Hub running. Standalone or controller both work — that is the point — but

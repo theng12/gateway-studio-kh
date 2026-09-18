@@ -76,11 +76,12 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
         locationTable.rowHeight = 22
         locationTable.usesAlternatingRowBackgroundColors = true
         for (identifier, title, width) in [
-            ("llocation", "Location", 180),
-            ("lrole", "Role", 110),
-            ("lhub", "Hub", 90),
-            ("lmachines", "Machines", 90),
-            ("lstatus", "Status", 380),
+            ("llocation", "Location", 160),
+            ("lrole", "Role", 100),
+            ("lhub", "Hub", 80),
+            ("lmachines", "Machines", 80),
+            ("lstatus", "Status", 300),
+            ("lactions", "Actions", 170),
         ] {
             let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier(identifier))
             column.title = title
@@ -176,7 +177,9 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
             + "Use its address and its **fleet credential** — that is sufficient for "
             + "everything this gateway does, and it cannot change the controller's "
             + "settings or identity the way its Hub service token can. A controller reports its own "
-            + "nodes — this gateway never contacts them directly."
+            + "nodes — this gateway never contacts them directly. Every location below can be "
+            + "renamed at any time: a name is a label, and no address, credential or model "
+            + "depends on it."
         ))
 
         labelField.placeholderString = "Name (e.g. Blue Room)"
@@ -335,6 +338,11 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
         ])
 
         if tableView === locationTable {
+            // The actions column carries buttons, not text, so it is built before
+            // the label cell below rather than inside its switch.
+            if column.identifier.rawValue == "lactions" {
+                return locationActions(for: item)
+            }
             let reachable = item["reachable"] as? Bool ?? false
             switch column.identifier.rawValue {
             case "llocation":
@@ -429,6 +437,44 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
         return cell
     }
 
+    /// Test / Rename / Remove, per location.
+    ///
+    /// This Mac gets Rename only: there is no address to test and nothing to
+    /// remove, but its name is its own like any other location's.
+    private func locationActions(for item: [String: Any]) -> NSView {
+        let isLocal = item["local"] as? Bool == true
+        let id = item["id"] as? String ?? ""
+
+        func button(_ title: String, _ action: Selector) -> NSButton {
+            let button = NSButton(title: title, target: self, action: action)
+            button.identifier = NSUserInterfaceItemIdentifier(id)
+            button.bezelStyle = .rounded
+            button.controlSize = .small
+            return button
+        }
+
+        var views: [NSView] = []
+        if !isLocal {
+            views.append(button("Test", #selector(testController(_:))))
+        }
+        views.append(button("Rename", #selector(renameController(_:))))
+        if !isLocal {
+            views.append(button("Remove", #selector(removeController(_:))))
+        }
+
+        let cell = NSTableCellView()
+        let stack = NSStackView(views: views)
+        stack.orientation = .horizontal
+        stack.spacing = 4
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        cell.addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 4),
+            stack.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
+        ])
+        return cell
+    }
+
     private func format(_ value: Double) -> String {
         value >= 100 ? String(format: "%.0f", value) : String(format: "%.1f", value)
     }
@@ -459,6 +505,47 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
                 self.urlField.stringValue = ""
                 self.tokenField.stringValue = ""
                 self.addStatus.stringValue = "Added. Checking it now…"
+                self.reload()
+            }
+        }
+    }
+
+    /// Rename any location, at any time.
+    ///
+    /// A name here is a display label, never an identity: the address, the
+    /// credential and every model already discovered from that location stay
+    /// exactly as they are, so this can never cost a re-entry of the token.
+    @objc private func renameController(_ sender: NSButton) {
+        guard let id = sender.identifier?.rawValue else { return }
+        let current = locations.first { ($0["id"] as? String) == id }?["label"] as? String ?? ""
+
+        let field = NSTextField(string: current)
+        field.frame = NSRect(x: 0, y: 0, width: 260, height: 24)
+
+        let alert = NSAlert()
+        alert.messageText = "Rename this location"
+        alert.informativeText =
+            "Only the name changes. Its address, its credential and its models are untouched."
+        alert.accessoryView = field
+        alert.addButton(withTitle: "Rename")
+        alert.addButton(withTitle: "Cancel")
+        alert.window.initialFirstResponder = field
+
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        let name = field.stringValue.trimmingCharacters(in: .whitespaces)
+        guard !name.isEmpty else {
+            addStatus.stringValue = "A name is required."
+            return
+        }
+
+        addStatus.stringValue = "Renaming…"
+        GatewayAPI.patch("/admin/api/fleet/controllers/\(id)", body: ["label": name]) { [weak self] result in
+            guard let self else { return }
+            switch result {
+            case .failure(let error):
+                self.addStatus.stringValue = "Could not rename it — \(error)"
+            case .success:
+                self.addStatus.stringValue = "Renamed to “\(name)”."
                 self.reload()
             }
         }
