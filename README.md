@@ -346,9 +346,19 @@ never contacts a node directly, which is the topology Studio Hub's own plan spec
 **The local Mac is always the first location**, discovered the same way the rest of the gateway
 discovers the Hub, so a single-Mac install shows something true with nothing configured.
 
-The **Fleet** page (⌘6) shows, per location: whether it answers (with the reason when it does not),
-its role and Hub version, each machine's chip, health, memory, free disk, job count, average
-generation time and modality mix — and any work running right now.
+The **Fleet** page (⌘6) answers three questions: *how many machines are online*, *which machine did
+the work*, and *what is running right now*.
+
+The counts come from the Hub's own `fleet_activity` report — `working`, `just_finished`, `ready`,
+`long_idle`, `offline`, `needs_attention` — rather than being re-derived here, because only the Hub
+knows the difference between idle and gone. Per machine it shows the state, jobs **completed** and
+**failed**, median runtime, chip, health, memory, free disk and modality mix. The header reads
+`1 of 2 locations reachable · 3 machines online, 1 offline · 12 jobs completed, 1 failed`.
+
+That data is read from `/api/hub/stats`, not `/api/hub/fleet/overview`: the overview only knows
+reachable/unreachable, so it cannot say which machine ran what. Where the Hub reports that it could
+not measure something, the page repeats its own words — the local machine currently says
+*"Direct activity partially unavailable"* — instead of implying a confident number.
 
 Two rules it follows, from Studio Hub's own operational contract:
 
@@ -387,7 +397,7 @@ refusal.
 .venv/bin/python tests/test_ui.py
 ```
 
-74 checks that drive the macOS **accessibility layer**: they open the window through the real menus,
+79 checks that drive the macOS **accessibility layer**: they open the window through the real menus,
 click sidebar rows, read what it renders, type into fields, tick checkboxes and press buttons — then
 verify the *gateway* changed, not merely that the widget repainted.
 

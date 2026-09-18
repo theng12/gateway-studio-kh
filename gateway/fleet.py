@@ -179,6 +179,10 @@ def _probe(base: str, token: str, *, timeout: float = _TIMEOUT) -> dict:
         "nodes": [],
         "node_summary": None,
         "running_jobs": [],
+        "activity": {"pulse": {}, "machines": [], "observed_at": None},
+        "by_machine": {},
+        "matrix": [],
+        "jobs_total": None,
         "latency_ms": None,
     }
     try:
@@ -191,6 +195,14 @@ def _probe(base: str, token: str, *, timeout: float = _TIMEOUT) -> dict:
                 # Jobs are the least important part of "is this location alive";
                 # a controller that reports machines but not jobs is still up.
                 jobs = {"batches": []}
+            try:
+                # The Hub's own fleet analytics. This is where per-machine state
+                # (working / ready / idle / offline) and per-machine job counts
+                # come from; `fleet/overview` alone cannot answer "how many
+                # machines are online, and which one did the work".
+                stats = _fetch(client, base, token, "/api/hub/stats")
+            except httpx.HTTPError:
+                stats = {}
     except httpx.HTTPStatusError as exc:
         location["error"] = (
             "Rejected the Hub token (HTTP %d)." % exc.response.status_code
@@ -203,6 +215,7 @@ def _probe(base: str, token: str, *, timeout: float = _TIMEOUT) -> dict:
         return location
 
     node_rows = nodes.get("nodes") or []
+    activity = stats.get("fleet_activity") or {}
     location.update({
         "reachable": True,
         "role": nodes.get("role"),
@@ -212,6 +225,14 @@ def _probe(base: str, token: str, *, timeout: float = _TIMEOUT) -> dict:
         "nodes": node_rows,
         "node_summary": nodes.get("summary") or {},
         "running_jobs": _running_jobs(jobs.get("batches") or []),
+        "activity": {
+            "pulse": activity.get("pulse") or {},
+            "machines": activity.get("machines") or [],
+            "observed_at": activity.get("observed_at"),
+        },
+        "by_machine": stats.get("by_machine") or {},
+        "matrix": stats.get("matrix") or [],
+        "jobs_total": stats.get("total"),
         "latency_ms": int((time.time() - started) * 1000),
     })
     return location
@@ -263,17 +284,44 @@ def locations() -> list[dict]:
 def snapshot() -> dict:
     """Everything the Fleet page shows, in one read."""
     rows = locations()
-    machines_total = sum(len(row["machines"]) for row in rows)
+
+    # Machine counts come from the Hub's own pulse, which is the only place that
+    # distinguishes "ready" from "long idle" from "offline". `fleet/overview`
+    # only knows reachable/unreachable, so it is the fallback, not the source.
+    pulse: dict[str, int] = {}
+    for row in rows:
+        for state, count in (row["activity"]["pulse"] or {}).items():
+            pulse[state] = pulse.get(state, 0) + int(count or 0)
+
+    machines = sum(len(row["machines"]) for row in rows)
     machines_up = sum(
         1 for row in rows for machine in row["machines"] if machine.get("reachable")
     )
+    if pulse:
+        # Every state except `offline` means the Hub can reach the machine.
+        online = sum(count for state, count in pulse.items() if state != "offline")
+        offline = int(pulse.get("offline") or 0)
+        machines_total = online + offline
+    else:
+        online, offline, machines_total = machines_up, machines - machines_up, machines
+
+    completed = failed = 0
+    for row in rows:
+        for machine in row["activity"]["machines"]:
+            completed += int(machine.get("completed") or 0)
+            failed += int(machine.get("failed") or 0)
+
     return {
         "locations": rows,
         "summary": {
             "locations": len(rows),
             "locations_up": sum(1 for row in rows if row["reachable"]),
             "machines": machines_total,
-            "machines_up": machines_up,
+            "machines_online": online,
+            "machines_offline": offline,
+            "pulse": pulse,
+            "jobs_completed": completed,
+            "jobs_failed": failed,
             "running_jobs": sum(len(row["running_jobs"]) for row in rows),
         },
         "generated_at": time.time(),

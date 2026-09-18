@@ -21,6 +21,7 @@ final class FleetSection: NSObject, AppSection {
     let refreshesAutomatically = false
 
     private var summaryLabel = NSTextField(labelWithString: "Loading…")
+    private var pulseLabel = NSTextField(labelWithString: "")
     private var locationsStack = NSStackView()
     private var labelField = NSTextField(string: "")
     private var urlField = NSTextField(string: "")
@@ -52,6 +53,10 @@ final class FleetSection: NSObject, AppSection {
         let bar = PageKit.row([summaryLabel, NSView(), refresh], spacing: 8)
         root.addArrangedSubview(bar)
         bar.widthAnchor.constraint(equalTo: root.widthAnchor, constant: -56).isActive = true
+
+        pulseLabel.font = .systemFont(ofSize: 11.5)
+        pulseLabel.textColor = .tertiaryLabelColor
+        root.addArrangedSubview(pulseLabel)
 
         locationsStack.orientation = .vertical
         locationsStack.alignment = .leading
@@ -116,12 +121,30 @@ final class FleetSection: NSObject, AppSection {
 
         let up = summary["locations_up"] as? Int ?? 0
         let total = summary["locations"] as? Int ?? locations.count
-        let machines = summary["machines"] as? Int ?? 0
-        let machinesUp = summary["machines_up"] as? Int ?? 0
+        let online = summary["machines_online"] as? Int ?? 0
+        let offline = summary["machines_offline"] as? Int ?? 0
+        let completed = summary["jobs_completed"] as? Int ?? 0
+        let failed = summary["jobs_failed"] as? Int ?? 0
         let running = summary["running_jobs"] as? Int ?? 0
-        summaryLabel.stringValue =
-            "\(up) of \(total) locations reachable · \(machinesUp) of \(machines) machines up"
-            + (running > 0 ? " · \(running) job\(running == 1 ? "" : "s") running" : "")
+
+        var line = "\(up) of \(total) location\(total == 1 ? "" : "s") reachable"
+        line += " · \(online) machine\(online == 1 ? "" : "s") online"
+        if offline > 0 { line += ", \(offline) offline" }
+        line += " · \(completed) job\(completed == 1 ? "" : "s") completed"
+        if failed > 0 { line += ", \(failed) failed" }
+        if running > 0 { line += " · \(running) running now" }
+        summaryLabel.stringValue = line
+
+        // The pulse is the Hub's own view of what every machine is doing, so it
+        // is shown verbatim rather than re-derived here.
+        let pulse = summary["pulse"] as? [String: Int] ?? [:]
+        let active = pulse.filter { $0.value > 0 && $0.key != "offline" }
+        pulseLabel.stringValue = active.isEmpty
+            ? (offline > 0 ? "\(offline) machine\(offline == 1 ? "" : "s") not reporting"
+                           : "No machines are reporting.")
+            : active.sorted { $0.key < $1.key }
+                .map { "\($0.value) \($0.key.replacingOccurrences(of: "_", with: " "))" }
+                .joined(separator: " · ")
 
         locationsStack.setViews(locations.map { card(for: $0) }, in: .top)
     }
@@ -176,8 +199,24 @@ final class FleetSection: NSObject, AppSection {
             stack.addArrangedSubview(PageKit.help(error))
         }
 
+        // The machine's *state* and its *job counts* live in the Hub's activity
+        // report, not in `fleet/overview`. Join them by id so one row answers
+        // "is it up, and how much work has it done".
+        let activity = location["activity"] as? [String: Any] ?? [:]
+        var byMachine: [String: [String: Any]] = [:]
+        for entry in activity["machines"] as? [[String: Any]] ?? [] {
+            if let id = entry["machine"] as? String { byMachine[id] = entry }
+        }
         for machine in location["machines"] as? [[String: Any]] ?? [] {
-            stack.addArrangedSubview(machineRow(machine))
+            let id = machine["machine"] as? String ?? ""
+            stack.addArrangedSubview(machineRow(machine, activity: byMachine[id]))
+        }
+        // A machine the activity report knows about but the overview did not
+        // list is still a machine.
+        let listed = Set((location["machines"] as? [[String: Any]] ?? [])
+            .compactMap { $0["machine"] as? String })
+        for (id, entry) in byMachine.sorted(by: { $0.key < $1.key }) where !listed.contains(id) {
+            stack.addArrangedSubview(machineRow(["machine": id, "label": id], activity: entry))
         }
 
         let running = location["running_jobs"] as? [[String: Any]] ?? []
@@ -214,29 +253,54 @@ final class FleetSection: NSObject, AppSection {
         return card
     }
 
-    /// One machine. Absent values stay absent — a machine that has not reported
-    /// memory must not be shown as 0 GB.
-    private func machineRow(_ machine: [String: Any]) -> NSView {
+    /// One machine: is it up, what is it, and how much work has it done.
+    ///
+    /// Absent values stay absent — a machine that has not reported memory must
+    /// not be shown as 0 GB, and a Hub that could not measure its own activity
+    /// says so (`limitation`) instead of implying a confident number.
+    private func machineRow(_ machine: [String: Any], activity: [String: Any]?) -> NSView {
         var parts: [String] = []
         if let chip = machine["chip"] as? String, !chip.isEmpty { parts.append(chip) }
-        if let health = machine["health"] as? String, !health.isEmpty { parts.append(health) }
         if let memory = machine["memory_gb"] as? Double { parts.append(format(memory) + " GB") }
         if let free = machine["disk_free_gb"] as? Double { parts.append(format(free) + " GB free") }
-        if let jobs = machine["jobs"] as? Int { parts.append("\(jobs) jobs") }
-        if let average = machine["average_seconds"] as? Double {
-            parts.append(format(average) + "s avg")
+
+        // Work done, from the Hub's activity report.
+        if let activity {
+            var work: [String] = []
+            if let completed = activity["completed"] as? Int { work.append("\(completed) done") }
+            if let failed = activity["failed"] as? Int, failed > 0 {
+                work.append("\(failed) failed")
+            }
+            if let median = activity["median_runtime_s"] as? Double {
+                work.append(format(median) + "s median")
+            } else if let average = machine["average_seconds"] as? Double {
+                // Fall back to the overview's average, which is a different
+                // statistic and is labelled as such.
+                work.append(format(average) + "s avg")
+            }
+            if !work.isEmpty { parts.append(work.joined(separator: " · ")) }
+        } else if let jobs = machine["jobs"] as? Int {
+            parts.append("\(jobs) jobs")
         }
+
         if let modalities = machine["modalities"] as? [String: Int], !modalities.isEmpty {
             parts.append(modalities.sorted { $0.key < $1.key }
                 .map { "\($0.value) \($0.key)" }.joined(separator: ", "))
         }
-        let reachable = machine["reachable"] as? Bool ?? false
-        let prefix = reachable ? "• " : "• offline — "
-        return PageKit.label(
-            prefix + ((machine["label"] as? String) ?? "machine")
-            + (parts.isEmpty ? "" : " — " + parts.joined(separator: " · ")),
-            size: 11.5, colour: .secondaryLabelColor, wrapping: true
-        )
+
+        var line = "• " + ((machine["label"] as? String) ?? "machine")
+        if let state = activity?["state"] as? String {
+            line = "• " + state.replacingOccurrences(of: "_", with: " ")
+                + " — " + ((machine["label"] as? String) ?? "machine")
+        }
+        if !(machine["reachable"] as? Bool ?? true) { line = "• offline — " + line.dropFirst(2) }
+        if !parts.isEmpty { line += " — " + parts.joined(separator: " · ") }
+        if let limitation = activity?["limitation"] as? String, !limitation.isEmpty {
+            line += " · \(limitation)"
+        }
+
+        let row = PageKit.label(line, size: 11.5, colour: .secondaryLabelColor, wrapping: true)
+        return row
     }
 
     private func jobRow(_ job: [String: Any]) -> NSView {

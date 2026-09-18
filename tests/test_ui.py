@@ -214,6 +214,26 @@ def detail_texts() -> str:
         end tell'''))
 
 
+def wait_for_detail(needle: str, timeout: float = 30.0) -> str:
+    """Wait until the detail pane contains `needle`, then return its text.
+
+    Fleet fans out to every controller (overview, nodes, jobs and stats) before
+    it can render, so a fixed sleep races the read. Waiting for the content is
+    both faster when it is quick and correct when it is not.
+    """
+    deadline = time.time() + timeout
+    body = ""
+    while time.time() < deadline:
+        try:
+            body = detail_texts()
+        except RuntimeError:
+            body = ""
+        if needle in body:
+            return body
+        time.sleep(0.8)
+    return body
+
+
 def detail_count(expr: str) -> int:
     try:
         return int(osa(wrap(f"tell {MAIN_WINDOW} to tell splitter group 1 to return (count of {expr})")) or 0)
@@ -569,21 +589,34 @@ def main() -> int:
     # The local Hub is always a location, so this page has true content on a
     # single-Mac install with nothing configured.
     open_section("Fleet")
-    time.sleep(3)
-    fleet = detail_texts()
+    fleet = wait_for_detail("Every location")
     check("names the page and what it is for", "Every location" in fleet, fleet[:200])
-    check("summarises locations and machines",
-          "locations reachable" in fleet and "machines up" in fleet, fleet[:220])
+    check("summarises locations", "location" in fleet and "reachable" in fleet, fleet[:220])
+    check("says how many machines are online",
+          "machine online" in fleet or "machines online" in fleet, fleet[:240])
     check("lists this Mac as the local location", "This Mac" in fleet, fleet[:300])
     check("reports the controller role", "controller" in fleet, fleet[:300])
     check("has a form for adding a location",
           "Add a location" in fleet and "Hub service token" in fleet, fleet[-300:])
 
     fleet_api = api_get("/admin/api/fleet")
-    check("the page agrees with the gateway about the machine count",
-          f"{fleet_api['summary']['machines_up']} of {fleet_api['summary']['machines']} machines up"
-          in fleet,
-          f"{fleet_api['summary']}")
+    fleet_summary = fleet_api["summary"]
+    online = fleet_summary["machines_online"]
+    check("the page agrees with the gateway about machines online",
+          f"{online} machine{'s' if online != 1 else ''} online" in fleet, f"{fleet_summary}")
+    # Which machines did the work is the point of the page, so it must survive
+    # the round trip from the Hub's activity report.
+    check("counts completed and failed jobs",
+          "completed" in fleet and "done" in fleet, fleet[:400])
+    check("the API publishes a per-machine job breakdown",
+          bool(fleet_summary.get("pulse")) and "jobs_completed" in fleet_summary,
+          f"{fleet_summary}")
+    per_machine = fleet_api["locations"][0].get("activity", {}).get("machines", [])
+    check("each machine reports what it ran and its state",
+          bool(per_machine) and "state" in per_machine[0] and "completed" in per_machine[0],
+          f"{per_machine[:1]}")
+    check("machines offline is reported as a number",
+          isinstance(fleet_summary.get("machines_offline"), int), f"{fleet_summary}")
 
     # Tokens must never come back from the API, even masked-but-complete.
     controllers = api_get("/admin/api/fleet/controllers")["controllers"]
