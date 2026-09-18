@@ -128,6 +128,13 @@ def _image_row(model_id: str, definition: ProviderDefinition, model: dict[str, A
         "min_reference_images": 1 if definition.kind == "studio_hub" else 0,
         "max_reference_images": 4 if definition.kind == "studio_hub" else 0,
         "reference_image_max_dimension": 2048,
+        # ponytail: flat prompt cap and ratio list for every image model. Ceiling
+        # — the previous GenStudio published 4,000 on some models and 4,800 on
+        # others, and its ratio lists varied; a flat 4,000 is deliberately the
+        # *conservative* end (it warns early rather than letting a request fail
+        # at the provider, which is the violation Story Studio's own notes record
+        # as "a 4,000-character cap overruling a published 4,800"). Upgrade path
+        # — per-model values once a provider publishes them.
         "reference_strength_mode": "none",
         "supported_reference_strengths": [],
         "max_prompt_characters": 4000,
@@ -140,6 +147,16 @@ def _image_row(model_id: str, definition: ProviderDefinition, model: dict[str, A
 def _video_row(model_id: str, definition: ProviderDefinition, model: dict[str, Any]) -> dict[str, Any]:
     # Story Studio accepts a video variant ONLY when all six fields are present
     # and valid, so a partially-described variant is worse than none.
+    #
+    # ponytail: one flat variant list for every video model. Ceiling — no
+    # provider here publishes durations or resolutions (fal and Kie give only a
+    # `category` and an `endpoint_id`), and the previous GenStudio's contract had
+    # them per model: Grok 4-15s at 480/720p, MiniMax 5-15s at 480p, HappyHorse
+    # 4-15s at 720/1080p. Offering 10s@720p to a model that tops out at 5s@480p
+    # fails at the provider, and it is only harmless today because the single
+    # enabled video model (Gemini Omni, 4-10s@720p) happens to accept both.
+    # Upgrade path — a curated per-model variant table, or read it from the
+    # provider once one publishes it.
     return {
         "modes": ["image-to-video"],
         "aspect_ratios": ["16:9", "9:16", "1:1"],
