@@ -114,6 +114,16 @@ sources. **"It builds" is not "it works."**
 - Prefer the **graphify** graph (`graphify-out/`, gitignored, rebuildable) over
   grepping for architecture, caller and impact questions. Keep it current with
   `graphify extract . --update` after structural work.
+- **A page must never be able to resize the window.** A section pinned straight
+  to the host propagates its content's *required* height outwards, and AppKit
+  satisfies it by growing the NSWindow — the Fleet page did exactly that, to
+  1162pt on a 1080pt screen, putting its bottom edge and resize corner off-screen
+  where they could not be reached. A page whose content has a required height
+  (tables with minimums, forms, dashboards) wraps its body in an `NSScrollView`
+  with a `FlippedView` document, as `FleetSection` and `OverviewSection` do. Pages
+  that fill the pane (Jobs, Voices, Providers) need no scroller, because a table
+  with a flexible height has nothing to propagate. Verify with: force the window
+  to 700pt, visit every section, and confirm the height does not change.
 - Mark deliberate simplifications with a `ponytail:` comment naming **the ceiling
   and the upgrade path** — a curated exception list, a flat default, a fixed pool
   size. Unmarked, the next reader cannot tell a considered trade-off from an

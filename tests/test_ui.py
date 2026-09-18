@@ -213,10 +213,22 @@ def detail_rows() -> int:
 
 
 def detail_texts() -> str:
+    """Every visible label in the detail pane.
+
+    A page that scrolls (Overview, Fleet, Settings) keeps its labels inside the
+    page's own scroll view; a page that fills the pane (Jobs, Voices, Providers)
+    keeps them directly on the split view. Read whichever has them, rather than
+    assuming a layout the pages do not share.
+    """
     return osa(wrap(f'''
         tell {MAIN_WINDOW} to tell splitter group 1
+            set sources to {{}}
+            try
+                if (count of static texts of scroll area 2) > 0 then set end of sources to scroll area 2
+            end try
+            if (count of sources) is 0 then set end of sources to it
             set acc to ""
-            repeat with t in static texts
+            repeat with t in static texts of (item 1 of sources)
                 try
                     set v to value of t
                     if v is not missing value then set acc to acc & (v as string) & "\\n"
@@ -226,15 +238,21 @@ def detail_texts() -> str:
         end tell'''))
 
 
-def table_texts(scroll_area: int) -> list[str]:
+def table_texts(scroll_area: int, nested: bool = False) -> list[str]:
     """Every cell's text in one of a page's tables, row by row.
+
+    `nested=True` for a page that scrolls, where the tables sit inside the page's
+    own scroll view rather than directly on the split view.
 
     Table cells are not part of the page's static texts, so a page whose content
     is a table has to be read through the table.
     """
+    target = (
+        f"scroll area {scroll_area} of scroll area 2" if nested else f"scroll area {scroll_area}"
+    )
     try:
         raw = osa(wrap(f'''
-            tell {MAIN_WINDOW} to tell splitter group 1 to tell table 1 of scroll area {scroll_area}
+            tell {MAIN_WINDOW} to tell splitter group 1 to tell table 1 of {target}
                 set acc to ""
                 repeat with r from 1 to (count of rows)
                     repeat with c in (UI elements of row r)
@@ -250,11 +268,14 @@ def table_texts(scroll_area: int) -> list[str]:
     return [line.strip() for line in raw.splitlines() if line.strip()]
 
 
-def table_columns(scroll_area: int) -> int:
+def table_columns(scroll_area: int, nested: bool = False) -> int:
+    target = (
+        f"scroll area {scroll_area} of scroll area 2" if nested else f"scroll area {scroll_area}"
+    )
     try:
         return int(osa(wrap(
             f"tell {MAIN_WINDOW} to tell splitter group 1 to tell table 1 of "
-            f"scroll area {scroll_area} to return (count of columns)"
+            f"{target} to return (count of columns)"
         )) or 0)
     except (RuntimeError, ValueError):
         return -1
@@ -375,6 +396,11 @@ def read_modality_rows(settle: int = 4) -> list[tuple[int, int]]:
     """
     script = wrap(f'''
         tell {MAIN_WINDOW} to tell splitter group 1
+            set src to it
+            try
+                if (count of static texts of scroll area 2) > 0 then set src to scroll area 2
+            end try
+            tell src
             set wanted to {{"Chat", "Image", "Video", "TTS", "Transcription", "Music"}}
             set acc to ""
             repeat with t in static texts
@@ -388,6 +414,7 @@ def read_modality_rows(settle: int = 4) -> list[tuple[int, int]]:
                 end try
             end repeat
             return acc
+            end tell
         end tell''')
     previous: list[tuple[int, int]] = []
     for _ in range(settle):
@@ -661,11 +688,15 @@ def main() -> int:
           "Add a location" in fleet and "Hub service token" in fleet, fleet[-300:])
 
     # Three tables, so hundreds of machines virtualise instead of stacking.
-    locations_cells = table_texts(2)
-    machines_cells = table_texts(3)
-    check("locations are a table", table_columns(2) >= 4, f"{table_columns(2)} columns")
-    check("machines are a table", table_columns(3) >= 5, f"{table_columns(3)} columns")
-    check("running work is a table", table_columns(4) >= 3, f"{table_columns(4)} columns")
+    # Fleet scrolls, so its three tables are nested inside the page scroll view.
+    locations_cells = table_texts(1, nested=True)
+    machines_cells = table_texts(2, nested=True)
+    check("locations are a table", table_columns(1, nested=True) >= 4,
+          f"{table_columns(1, nested=True)} columns")
+    check("machines are a table", table_columns(2, nested=True) >= 5,
+          f"{table_columns(2, nested=True)} columns")
+    check("running work is a table", table_columns(3, nested=True) >= 3,
+          f"{table_columns(3, nested=True)} columns")
     check("lists this Mac as the local location", "This Mac" in locations_cells,
           f"{locations_cells}")
 

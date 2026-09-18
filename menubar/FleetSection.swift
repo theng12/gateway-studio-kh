@@ -195,14 +195,47 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
         addStatus.textColor = .secondaryLabelColor
         root.addArrangedSubview(PageKit.formRow("", addStatus))
 
-        // Natural height at the top: a list of locations has no reason to stretch.
-        let container = NSView()
-        container.addSubview(root)
+        // A scrolling page, and it has to be.
+        //
+        // This page is taller than a window can be: three tables with minimum
+        // heights, four section headings and an add-location form. Pinned
+        // directly to the host, those required heights propagated outwards and
+        // **grew the window** — measured at 1162pt tall on a 1080pt screen, so
+        // the bottom edge and the resize corner were off-screen and the window
+        // could not be restored. A page's height must never be able to resize the
+        // window; a scroll view gives the content somewhere to go instead, and
+        // keeps every part of it reachable.
+        //
+        // The document view must be flipped, or AppKit scrolls to the bottom of
+        // a page whose origin is at the bottom-left.
+        let document = FlippedView()
+        document.translatesAutoresizingMaskIntoConstraints = false
+        document.addSubview(root)
+
+        let pageScroll = NSScrollView()
+        pageScroll.hasVerticalScroller = true
+        pageScroll.drawsBackground = false
+        pageScroll.translatesAutoresizingMaskIntoConstraints = false
+        pageScroll.documentView = document
+
         NSLayoutConstraint.activate([
-            root.topAnchor.constraint(equalTo: container.topAnchor),
-            root.leadingAnchor.constraint(equalTo: container.leadingAnchor),
-            root.trailingAnchor.constraint(equalTo: container.trailingAnchor),
-            root.bottomAnchor.constraint(lessThanOrEqualTo: container.bottomAnchor),
+            root.topAnchor.constraint(equalTo: document.topAnchor),
+            root.leadingAnchor.constraint(equalTo: document.leadingAnchor),
+            root.trailingAnchor.constraint(equalTo: document.trailingAnchor),
+            root.bottomAnchor.constraint(equalTo: document.bottomAnchor),
+
+            document.leadingAnchor.constraint(equalTo: pageScroll.contentView.leadingAnchor),
+            document.trailingAnchor.constraint(equalTo: pageScroll.contentView.trailingAnchor),
+            document.topAnchor.constraint(equalTo: pageScroll.contentView.topAnchor),
+        ])
+
+        let container = NSView()
+        container.addSubview(pageScroll)
+        NSLayoutConstraint.activate([
+            pageScroll.topAnchor.constraint(equalTo: container.topAnchor),
+            pageScroll.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            pageScroll.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            pageScroll.bottomAnchor.constraint(equalTo: container.bottomAnchor),
         ])
         return container
     }

@@ -270,13 +270,40 @@ final class OverviewSection: NSObject, AppSection {
         actions.addArrangedSubview(button("Open Data Folder", #selector(openData)))
         root.addArrangedSubview(actions)
 
-        let container = NSView()
-        container.addSubview(root)
+        // Scrolls, for the same reason the Fleet page does: this content has a
+        // required height (stat tiles, modality rows, activity) which, pinned
+        // straight to the host, propagates outwards and grows the window.
+        // Measured at 756pt inside a 700pt window — small here, but the same
+        // defect, and it is the page's job to fit the window rather than the
+        // window's to fit the page.
+        let document = FlippedView()
+        document.translatesAutoresizingMaskIntoConstraints = false
+        document.addSubview(root)
+
+        let pageScroll = NSScrollView()
+        pageScroll.hasVerticalScroller = true
+        pageScroll.drawsBackground = false
+        pageScroll.translatesAutoresizingMaskIntoConstraints = false
+        pageScroll.documentView = document
+
         NSLayoutConstraint.activate([
-            root.topAnchor.constraint(equalTo: container.topAnchor),
-            root.leadingAnchor.constraint(equalTo: container.leadingAnchor),
-            root.trailingAnchor.constraint(equalTo: container.trailingAnchor),
-            root.bottomAnchor.constraint(lessThanOrEqualTo: container.bottomAnchor),
+            root.topAnchor.constraint(equalTo: document.topAnchor),
+            root.leadingAnchor.constraint(equalTo: document.leadingAnchor),
+            root.trailingAnchor.constraint(equalTo: document.trailingAnchor),
+            root.bottomAnchor.constraint(equalTo: document.bottomAnchor),
+
+            document.leadingAnchor.constraint(equalTo: pageScroll.contentView.leadingAnchor),
+            document.trailingAnchor.constraint(equalTo: pageScroll.contentView.trailingAnchor),
+            document.topAnchor.constraint(equalTo: pageScroll.contentView.topAnchor),
+        ])
+
+        let container = NSView()
+        container.addSubview(pageScroll)
+        NSLayoutConstraint.activate([
+            pageScroll.topAnchor.constraint(equalTo: container.topAnchor),
+            pageScroll.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            pageScroll.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            pageScroll.bottomAnchor.constraint(equalTo: container.bottomAnchor),
         ])
         return container
     }

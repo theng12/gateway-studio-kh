@@ -8,6 +8,15 @@ import AppKit
 /// one-line explanation of what the page is for, `title3`-weight section
 /// titles, and empty states that say what to *do* rather than only what is
 /// missing.
+/// A document view for a scrolling page.
+///
+/// `NSScrollView` scrolls a non-flipped document to its **bottom** left, so a
+/// tall page opens showing its last line. Flipping the coordinate system makes
+/// it start at the top, which is where a reader expects to begin.
+final class FlippedView: NSView {
+    override var isFlipped: Bool { true }
+}
+
 enum PageKit {
     /// Studio Hub pads every page body by 28. The pages here previously used
     /// 18/20 and 14/16, which made switching sections look like switching apps.
