@@ -188,18 +188,60 @@ def _language_codes(languages: Any) -> list[str]:
     return codes
 
 
+#: Per-request text limits for lanes that do not publish one, in characters.
+#:
+#: The previous GenStudio published these per model, and Story Studio's own
+#: cached catalogue preserves them: Fish at 25,000 and the local Qwen3 lane at
+#: 5,000. A single number for every model is not a smaller version of the truth,
+#: it is a different claim — the old flat 40,000 over-promised every local model
+#: and Fish by eight times, so a request of that length simply failed.
+_FALLBACK_TTS_CHARACTERS = {
+    "studio_hub": 5000,
+    "fish": 25000,
+}
+
+#: When nothing states a limit. Chosen as the floor of every published limit
+#: above, so a promise made here is one every lane can keep.
+_TTS_CHARACTERS_DEFAULT = 5000
+
+
+def _tts_characters(model: dict[str, Any], definition: ProviderDefinition) -> int:
+    raw = model.get("raw") or {}
+    for key in ("maximum_text_length_per_request", "max_characters_request_subscribed_user"):
+        value = raw.get(key)
+        if isinstance(value, (int, float)) and value > 0:
+            return int(value)
+    return _FALLBACK_TTS_CHARACTERS.get(definition.kind, _TTS_CHARACTERS_DEFAULT)
+
+
+#: Models that offer no speed control.
+#:
+#: ElevenLabs' model list states no speed field, so this cannot be discovered —
+#: it is curated knowledge, carried as an explicit exception rather than a rule.
+#: `eleven_v3` is the model the previous GenStudio published as speed-less (1-1)
+#: while publishing 0.5-2 for every other lane.
+_TTS_NO_SPEED = {"eleven_v3"}
+
+
 def _tts_row(model_id: str, definition: ProviderDefinition, model: dict[str, Any]) -> dict[str, Any]:
     raw = model.get("raw") or {}
+    supports_speed = model_id not in _TTS_NO_SPEED
+    minimum_speed = 0.5 if supports_speed else 1.0
+    maximum_speed = 2.0 if supports_speed else 1.0
     # Empty when the provider states none. It used to fall back to `["en"]`,
     # which claims a specific language — false for engines like Qwen3 and
     # VoxCPM2 that are not English-only. Story Studio renders this list only
     # when it is non-empty, so an empty list shows nothing rather than a lie.
     languages = _language_codes(raw.get("languages"))
     return {
-        "maximum_input_characters": 40000,
-        "supports_speed": True,
-        "minimum_speed": 0.5,
-        "maximum_speed": 2.0,
+        "maximum_input_characters": _tts_characters(model, definition),
+        # Speed is per model, not per provider: eleven_v3 publishes no speed
+        # control at all, and fal's turbo lane allows 0.7-1.2 where the direct
+        # one allows 0.5-2. `controls` reflects that rather than claiming a
+        # range every model would reject.
+        "supports_speed": supports_speed,
+        "minimum_speed": minimum_speed,
+        "maximum_speed": maximum_speed,
         "supports_voice_cloning": definition.kind in {"studio_hub", "fish", "elevenlabs"},
         "preview_policy": "none",
         "generation_enabled": True,

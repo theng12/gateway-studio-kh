@@ -419,6 +419,18 @@ def main() -> int:
             check("tts languages are plain codes, never stringified objects",
                   not bad_langs, f"{bad_langs[:2]}")
 
+            # The per-request character limit is per model. It was one invented
+            # number (40,000) for every TTS model, which over-promised the local
+            # lane and Fish by eight times — a request that long simply fails.
+            tts_limits = {r.get("maximum_input_characters") for r in tts_rows_now}
+            check("tts character limit is per model, not one invented constant",
+                  len([v for v in tts_limits if v]) != 1 or len(tts_rows_now) == 1,
+                  f"distinct limits: {sorted(v for v in tts_limits if v)}")
+            check("every tts row publishes a positive character limit",
+                  all(isinstance(r.get("maximum_input_characters"), int)
+                      and r["maximum_input_characters"] > 0 for r in tts_rows_now),
+                  f"{[(r.get('id'), r.get('maximum_input_characters')) for r in tts_rows_now[:3]]}")
+
             # A model cannot both be English-only and able to detect language,
             # and these are multilingual MLX Whisper models. Unknown publishes
             # the "many, unenumerated" sentinel instead of a false "en".

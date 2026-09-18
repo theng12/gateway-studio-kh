@@ -329,7 +329,19 @@ def _elevenlabs_models(definition: ProviderDefinition, values: dict[str, str]) -
             model_id=str(e.get("model_id", "")).strip(),
             display_name=_clean(str(e.get("name") or ""), str(e.get("model_id", ""))),
             modality="tts",
-            raw={"model_id": e.get("model_id"), "languages": e.get("languages")},
+            raw={
+                "model_id": e.get("model_id"),
+                "languages": e.get("languages"),
+                # ElevenLabs states the real per-request text limit and whether
+                # the model supports speed control at all — eleven_v3 does not.
+                # Both were being discarded while the catalogue published one
+                # invented number and `supports_speed: true` for every model.
+                "maximum_text_length_per_request": e.get("maximum_text_length_per_request"),
+                "max_characters_request_subscribed_user": e.get(
+                    "max_characters_request_subscribed_user"
+                ),
+                "can_use_style": e.get("can_use_style"),
+            },
         )
         for e in entries
         if isinstance(e, dict) and e.get("model_id")
