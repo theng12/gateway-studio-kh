@@ -69,13 +69,22 @@ withheld** — offering a model that fails on use is worse than not offering it.
 `IMPLEMENTED_KINDS` in `providers/definitions.py` is the single source of truth,
 and `adapters/__init__.py` asserts at import that its table agrees.
 
-## Ports — do not disturb the neighbour
+## Ports
 
 - **8010** is this gateway.
-- **8000** is the owner's older, still-running **GenStudio KH** API. It is
-  untouched and must stay that way. Both coexist.
-- Story Studio's default `genstudio_url` is 8000, so a **settings reset points
-  back at the old service** — the one realistic way this integration regresses.
+- **8000** was the owner's older **GenStudio KH** API. As of 2026-09-18 it is
+  **stopped and disabled**: `launchctl bootout` plus `launchctl disable
+  gui/$(id -u)/com.genstudiokh.local-api`, so it will not return at login either.
+  Its LaunchAgent had `KeepAlive: true`, which is why a plain `kill` brought it
+  straight back — stopping it for good needs the disable, not a signal.
+  To restore: `launchctl enable gui/$(id -u)/com.genstudiokh.local-api` then
+  `launchctl bootstrap gui/$(id -u)
+  ~/Library/LaunchAgents/com.genstudiokh.local-api.plist`.
+- **8000 is therefore free**, and it is Story Studio's *default* `genstudio_url` —
+  so moving this gateway to 8000 would make a settings reset harmless instead of
+  pointing at a service that no longer exists. Not done: the port is referenced by
+  the tests, the LaunchAgent and the app config, so it is a deliberate change
+  rather than a convenience.
 
 ## Locations are providers
 

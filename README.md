@@ -597,10 +597,14 @@ scripts/annotate_voice_segments.py   generates aligned reference timestamps
 
 ### Why port 8010
 
-Story Studio's default endpoint is `http://127.0.0.1:8000`, and the existing GenStudio KH API
-already listens there. The gateway defaults to **8010** so the two can coexist — GenStudio keeps
-serving the commercial side untouched. Point Story Studio at 8010 when you want the gateway, or
-stop GenStudio and change the port in Settings to take 8000.
+Story Studio's default endpoint is `http://127.0.0.1:8000`, which the older GenStudio KH API used
+to hold, so the gateway defaults to **8010** to avoid a collision.
+
+As of 2026-09-18 that GenStudio API is **stopped and disabled** (its LaunchAgent had
+`KeepAlive: true`, so a plain `kill` restarted it — it needed `launchctl disable`). **Port 8000 is
+now free.** Moving the gateway there would make Story Studio's out-of-the-box default work with no
+configuration at all; it is not done because the port appears in the test suite, the login item and
+the app config, so it is a deliberate change rather than a convenience.
 
 ## Deliberately absent
 
