@@ -701,11 +701,15 @@ enum MainMenuBuilder {
             action: #selector(AppDelegate.openVoices),
             keyEquivalent: "3"
         ).target = target
-        viewMenu.addItem(.separator())
+        viewMenu.addItem(
+            withTitle: "Models",
+            action: #selector(AppDelegate.openModels),
+            keyEquivalent: "4"
+        ).target = target
         viewMenu.addItem(
             withTitle: "Providers",
             action: #selector(AppDelegate.openConsole),
-            keyEquivalent: "4"
+            keyEquivalent: "5"
         ).target = target
         viewMenu.addItem(
             withTitle: "Reload Console",
@@ -865,6 +869,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(item("Overview", #selector(openOverview), key: "o"))
         menu.addItem(item("Jobs", #selector(openJobs), key: "j"))
         menu.addItem(item("Voices", #selector(openVoices), key: "v"))
+        menu.addItem(item("Models", #selector(openModels), key: "m"))
         menu.addItem(.separator())
         menu.addItem(item("Open Provider Console", #selector(openConsole), key: "p"))
         menu.addItem(item("Reload Console", #selector(reloadConsole)))
@@ -947,6 +952,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc func openJobs() { MainWindow.shared.show(section: "jobs") }
 
     @objc func openVoices() { MainWindow.shared.show(section: "voices") }
+
+    @objc func openModels() { MainWindow.shared.show(section: "models") }
 
     @objc func openConsole() { MainWindow.shared.show(section: "providers") }
 

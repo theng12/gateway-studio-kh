@@ -216,10 +216,15 @@ final class OverviewSection: NSObject, AppSection {
         tileRow.orientation = .horizontal
         tileRow.distribution = .fillEqually
         tileRow.spacing = 10
+        // One palette, three meanings: accent for "on offer", green for "good",
+        // orange for "needs attention". "Jobs succeeded" used to be teal next to
+        // a green "Models live", which were two different colours for the same
+        // idea and read as an accident. The dot colours in the status line use
+        // the same meanings (green / yellow starting / red failed).
         for (key, title, colour) in [
             ("providers", "Providers on", NSColor.controlAccentColor),
             ("models", "Models live", NSColor.systemGreen),
-            ("succeeded", "Jobs succeeded", NSColor.systemTeal),
+            ("succeeded", "Jobs succeeded", NSColor.systemGreen),
             ("failed", "Jobs failed", NSColor.systemOrange),
         ] {
             let tile = StatTile(title: title, accent: colour)
@@ -227,7 +232,14 @@ final class OverviewSection: NSObject, AppSection {
             tileRow.addArrangedSubview(tile)
         }
         root.addArrangedSubview(tileRow)
-        tileRow.widthAnchor.constraint(equalTo: root.widthAnchor, constant: -56).isActive = true
+        // The tiles are cards, so they stretch with the window — but on a wide
+        // window (this Mac runs the app at 1920pt) four cards would each be over
+        // 400pt of mostly empty card, which reads as broken alignment rather than
+        // as a dashboard. Cap the row and let the page grow instead.
+        let tileWidth = tileRow.widthAnchor.constraint(equalTo: root.widthAnchor, constant: -56)
+        tileWidth.priority = .defaultHigh
+        tileWidth.isActive = true
+        tileRow.widthAnchor.constraint(lessThanOrEqualToConstant: 900).isActive = true
 
         // ---- models by modality
         root.addArrangedSubview(sectionTitle("Offered to Story Studio"))

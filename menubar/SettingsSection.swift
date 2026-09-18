@@ -43,43 +43,45 @@ final class SettingsSection: NSObject, AppSection {
             "The gateway's port and API key, and whether it starts with this Mac."
         ))
 
+        // ---- gateway
         root.addArrangedSubview(PageKit.sectionTitle("Gateway"))
 
         runtimeLabel = PageKit.label(
             GatewayController.shared.runtimeDescription, size: 12,
             colour: .secondaryLabelColor, wrapping: true
         )
-        let runtimeBlock = labelled("Runtime", runtimeLabel)
-        root.addArrangedSubview(runtimeBlock)
+        root.addArrangedSubview(PageKit.formRow("Runtime", runtimeLabel))
 
-        dataLabel = PageKit.label(
-            AppPaths.data.path, size: 11, colour: .secondaryLabelColor
-        )
+        dataLabel = PageKit.label(AppPaths.data.path, size: 11, colour: .secondaryLabelColor)
         dataLabel.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
         dataLabel.lineBreakMode = .byTruncatingMiddle
-        let dataBlock = labelled("Data folder — credentials, voices, history", dataLabel)
-        root.addArrangedSubview(dataBlock)
+        dataLabel.widthAnchor.constraint(equalToConstant: 420).isActive = true
+        root.addArrangedSubview(PageKit.formRow("Data folder", dataLabel))
 
         portField = NSTextField(string: String(ConfigStore.shared.config.port))
         portField.widthAnchor.constraint(equalToConstant: 100).isActive = true
-        root.addArrangedSubview(labelled("Port", portField))
+        root.addArrangedSubview(PageKit.formRow("Port", [
+            portField,
+            PageKit.help("Changing this restarts the gateway. Story Studio must match."),
+        ]))
+
+        root.addArrangedSubview(divider())
 
         // ---- API key
         root.addArrangedSubview(PageKit.sectionTitle("API key"))
-        root.addArrangedSubview(PageKit.label(
-            "Story Studio presents this key. Paste it there once, and it never "
-            + "needs to appear in a terminal.",
-            size: 12, colour: .secondaryLabelColor, wrapping: true
+        root.addArrangedSubview(PageKit.help(
+            "Story Studio presents this key. Paste it there once, and it never needs "
+            + "to appear in a terminal."
         ))
 
         keyField = NSTextField(string: EnvFile.apiKey())
         keyField.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
         keyField.widthAnchor.constraint(equalToConstant: 320).isActive = true
-        root.addArrangedSubview(PageKit.row([
-            keyField,
+        let keyButtons = PageKit.row([
             NSButton(title: "Copy", target: self, action: #selector(copyKey)),
             NSButton(title: "Regenerate", target: self, action: #selector(regenerateKey)),
-        ], spacing: 8))
+        ], spacing: 8)
+        root.addArrangedSubview(PageKit.formRow("Key", [keyField, keyButtons] as [NSView]))
 
         root.addArrangedSubview(divider())
 
@@ -89,46 +91,50 @@ final class SettingsSection: NSObject, AppSection {
             checkboxWithTitle: "Launch at login",
             target: self, action: #selector(toggleLogin)
         )
-        root.addArrangedSubview(loginCheck)
-
         autoStartCheck = NSButton(
             checkboxWithTitle: "Start the gateway automatically when this app opens",
             target: self, action: #selector(toggleAutoStart)
         )
-        root.addArrangedSubview(autoStartCheck)
+        root.addArrangedSubview(PageKit.formRow("Login", [loginCheck, autoStartCheck]))
 
         root.addArrangedSubview(divider())
 
-        root.addArrangedSubview(PageKit.row([
+        let actions = PageKit.row([
             NSButton(title: "Save", target: self, action: #selector(save)),
             NSButton(title: "Open provider console", target: self, action: #selector(openConsole)),
             NSButton(title: "Reveal data folder", target: self, action: #selector(revealData)),
-        ], spacing: 8))
+        ], spacing: 8)
+        statusLabel = PageKit.label("", size: 11.5, colour: .secondaryLabelColor, wrapping: true)
+        root.addArrangedSubview(PageKit.formRow("", [actions, statusLabel] as [NSView]))
 
-        statusLabel = PageKit.label("", size: 12, colour: .secondaryLabelColor, wrapping: true)
-        root.addArrangedSubview(statusLabel)
-
-        return root
+        // A form has a natural height, so its bottom is `lessThanOrEqualTo` the
+        // host rather than pinned to it. Pinning it made the stack view hand the
+        // leftover height to the heading, which opened a ~360pt void between the
+        // title and "Gateway". The table pages do the opposite on purpose: their
+        // tables are meant to absorb that space.
+        let container = NSView()
+        container.addSubview(root)
+        NSLayoutConstraint.activate([
+            root.topAnchor.constraint(equalTo: container.topAnchor),
+            root.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            root.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            root.bottomAnchor.constraint(lessThanOrEqualTo: container.bottomAnchor),
+        ])
+        return container
     }
 
     /// A small caption above its control, matching the "label then field" rhythm
     /// the Settings window already used.
-    private func labelled(_ caption: String, _ control: NSView) -> NSView {
-        let stack = NSStackView(views: [
-            PageKit.label(caption, size: 12, colour: .secondaryLabelColor),
-            control,
-        ])
-        stack.orientation = .vertical
-        stack.alignment = .leading
-        stack.spacing = 4
-        return stack
-    }
-
     private func divider() -> NSBox {
         let box = NSBox()
         box.boxType = .separator
         box.translatesAutoresizingMaskIntoConstraints = false
         box.widthAnchor.constraint(equalToConstant: 500).isActive = true
+        // A separator has no intrinsic height, so in a stack view it is the first
+        // thing asked to absorb spare vertical space and renders as a huge blank
+        // band. Pin it to its real thickness and let it hug.
+        box.heightAnchor.constraint(equalToConstant: 1).isActive = true
+        box.setContentHuggingPriority(.required, for: .vertical)
         return box
     }
 

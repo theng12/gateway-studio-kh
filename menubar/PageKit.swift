@@ -31,6 +31,10 @@ enum PageKit {
             : NSTextField(labelWithString: text)
         field.font = .systemFont(ofSize: size, weight: weight)
         field.textColor = colour
+        // A label is never why a page needs more width, and never the thing that
+        // should grow when there is spare height.
+        field.setContentHuggingPriority(.required, for: .vertical)
+        field.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         if wrapping {
             field.preferredMaxLayoutWidth = textWidth
             field.isSelectable = true
@@ -86,8 +90,54 @@ enum PageKit {
         root.edgeInsets = NSEdgeInsets(
             top: pagePadding, left: pagePadding, bottom: pagePadding, right: pagePadding
         )
+        // The detail column is exactly as wide as the window gives it. Without
+        // this the page argues for its content's ideal width and wins, pushing
+        // the whole split view past the window's right edge.
+        root.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         root.translatesAutoresizingMaskIntoConstraints = false
         return root
+    }
+
+    /// The width of the label column in a form, so every control starts at the
+    /// same x no matter how long its label is.
+    static let formLabelWidth: CGFloat = 150
+
+    /// A form row: label in a fixed left column, control in a second column.
+    ///
+    /// Studio Hub lays its Settings out as a `Form` of `Section`s with
+    /// `LabeledContent` rows — label and value on one line. This page originally
+    /// stacked a small caption *above* each control, which left every label and
+    /// every control at a different x and read as unaligned. Two fixed columns
+    /// are what make a form look deliberate.
+    static func formRow(_ caption: String, _ control: NSView) -> NSView {
+        formRow(caption, [control])
+    }
+
+    static func formRow(_ caption: String, _ controls: [NSView]) -> NSView {
+        let label = self.label(caption, size: 12, colour: .secondaryLabelColor)
+        label.alignment = .right
+        label.widthAnchor.constraint(equalToConstant: formLabelWidth).isActive = true
+        // Labels stay on the first line when a control is taller than one row
+        // (a wrapping path, or a field with buttons under it).
+        label.setContentHuggingPriority(.required, for: .vertical)
+
+        let column = NSStackView(views: controls)
+        column.orientation = .vertical
+        column.alignment = .leading
+        column.spacing = 6
+
+        let row = NSStackView(views: [label, column])
+        row.orientation = .horizontal
+        row.alignment = .top
+        row.spacing = 12
+        row.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        return row
+    }
+
+    /// Secondary explanatory text, Studio Hub's `.callout` +
+    /// `.foregroundStyle(.secondary)`.
+    static func help(_ text: String) -> NSTextField {
+        label(text, size: 11.5, colour: .secondaryLabelColor, wrapping: true)
     }
 
     /// A full-width row inside a `page()`.

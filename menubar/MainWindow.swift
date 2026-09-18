@@ -22,21 +22,47 @@ protocol AppSection: AnyObject {
     func activated()
 }
 
-// MARK: - Provider console section
+// MARK: - Provider console sections
 
 /// The provider console, a local web page served by the gateway, shown in a real
 /// window rather than handed to a browser.
-final class ProvidersSection: NSObject, AppSection, WKNavigationDelegate {
-    static let shared = ProvidersSection()
+///
+/// The console has two views of its own — Models and Providers — and both are now
+/// their own sidebar pages, so each instance opens the console on the matching
+/// view via its URL hash. That is the whole difference between the two sections;
+/// the page, its data and its controls are shared.
+final class ConsoleSection: NSObject, AppSection, WKNavigationDelegate {
+    static let models = ConsoleSection(
+        title: "Models", symbol: "square.stack.3d.up", viewName: "models"
+    )
+    static let providers = ConsoleSection(
+        title: "Providers", symbol: "square.grid.2x2", viewName: "providers"
+    )
 
-    let title = "Providers"
-    let symbol = "square.grid.2x2"
+    let title: String
+    let symbol: String
+    private let viewName: String
     let refreshesAutomatically = false
+
+    private init(title: String, symbol: String, viewName: String) {
+        self.title = title
+        self.symbol = symbol
+        self.viewName = viewName
+    }
 
     /// Lazy so the web view can be built by a closure on self.
     private lazy var webView: WKWebView = {
         let web = WKWebView(frame: .zero, configuration: WKWebViewConfiguration())
         web.navigationDelegate = self
+        // A WKWebView reports its content's size as an intrinsic size and resists
+        // compression, so the console page — which is wide — made the detail
+        // column demand ~1720pt. The column is shared with every other page, so
+        // that width stuck: Overview's fourth stat tile and Voices' Refresh button
+        // were laid out past the window's right edge and were simply not visible.
+        // The web view must take the width it is given, never ask for more.
+        web.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        web.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        web.setContentCompressionResistancePriority(.defaultLow, for: .vertical)
         return web
     }()
     private var loaded = false
@@ -49,12 +75,17 @@ final class ProvidersSection: NSObject, AppSection, WKNavigationDelegate {
 
     func reload() {
         guard let url = GatewayController.shared.consoleURL else { return }
+        let target = URL(string: url.absoluteString + "#" + viewName) ?? url
         // Load once, then reload on later visits only if the gateway is up —
         // re-loading on every activation would discard half-finished edits in
         // the console's own forms.
         if !loaded {
             loaded = true
-            load(url, into: webView)
+            load(target, into: webView)
+        } else {
+            // Already loaded: move the page to this section's view. Assigning the
+            // hash is enough — the page listens for `hashchange`.
+            webView.evaluateJavaScript("location.hash = '#\(viewName)';")
         }
     }
 
@@ -71,6 +102,17 @@ final class ProvidersSection: NSObject, AppSection, WKNavigationDelegate {
             guard let self, let web else { return }
             self.load(url, into: web, attempt: attempt + 1)
         }
+    }
+
+    /// Pin the console to this section's view.
+    ///
+    /// The URL hash asks for the right view on load, but this states it outright
+    /// once the page is ready: the hash is read by the page's own init, and a
+    /// reload that skips it — or a page that has since navigated itself — would
+    /// otherwise leave Models and Providers showing the same thing, which is the
+    /// bug this split exists to fix.
+    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        webView.evaluateJavaScript("setView('\(viewName)');")
     }
 
     private static let startingPage = """
@@ -105,15 +147,17 @@ final class MainWindow: NSObject, NSTableViewDataSource, NSTableViewDelegate {
     private var statusTimer: Timer?
 
     /// Section names accepted by `--open` and the menu.
-    private static let order = ["overview", "jobs", "voices", "providers", "settings"]
+    private static let order = [
+        "overview", "jobs", "voices", "models", "providers", "settings",
+    ]
 
     /// A sidebar row is either a group header or a section.
     ///
     /// Studio Hub KH groups its sidebar into `Section("Create")` /
     /// `Section("Library & app")`; this mirrors that so the two apps are
-    /// navigated the same way. The grouping is navigation, not decoration:
-    /// Overview answers "is it well?", the middle group is "what ran / what can
-    /// it say", and the last group is configuration.
+    /// navigated the same way. Everything this app shows is management, so there
+    /// is one working group — an empty "Create" heading would have been a lie
+    /// dressed as navigation.
     private enum SidebarRow {
         case header(String)
         case section(Int)
@@ -121,12 +165,12 @@ final class MainWindow: NSObject, NSTableViewDataSource, NSTableViewDelegate {
 
     private static let layout: [SidebarRow] = [
         .section(0),
-        .header("Create"),
+        .header("Library & app"),
         .section(1),
         .section(2),
-        .header("Library & app"),
         .section(3),
         .section(4),
+        .section(5),
     ]
 
     private var rowForSection: [Int: Int] {
@@ -174,7 +218,8 @@ final class MainWindow: NSObject, NSTableViewDataSource, NSTableViewDelegate {
             OverviewSection.shared,
             JobsSection.shared,
             VoicesSection.shared,
-            ProvidersSection.shared,
+            ConsoleSection.models,
+            ConsoleSection.providers,
             SettingsSection.shared,
         ]
 
@@ -269,14 +314,27 @@ final class MainWindow: NSObject, NSTableViewDataSource, NSTableViewDelegate {
 
         let content = NSView()
         content.addSubview(split)
+        // The detail column's width is *closed* by these constraints.
+        //
+        // Before, the sidebar was only bounded (>= 170, <= 260) and the container
+        // only had a floor (>= 660), with nothing tying the two to the split
+        // view's actual width. The container was therefore free to grow to
+        // satisfy whatever its content asked for, and one page did: the container
+        // ended up ~1750pt wide inside a 960pt window, so the fourth stat tile
+        // (x=1487) and the Voices Refresh button (x=1830) were laid out past the
+        // right edge and simply invisible. Pinning the sidebar and giving the
+        // container "everything else" makes the content width predictable, which
+        // is what every `root.widthAnchor - 56` inside the pages assumes.
+        let sidebarWidth: CGFloat = 200
         NSLayoutConstraint.activate([
             split.topAnchor.constraint(equalTo: content.topAnchor),
             split.leadingAnchor.constraint(equalTo: content.leadingAnchor),
             split.trailingAnchor.constraint(equalTo: content.trailingAnchor),
             split.bottomAnchor.constraint(equalTo: content.bottomAnchor),
-            sidebarHost.widthAnchor.constraint(greaterThanOrEqualToConstant: 170),
-            sidebarHost.widthAnchor.constraint(lessThanOrEqualToConstant: 260),
-            container.widthAnchor.constraint(greaterThanOrEqualToConstant: 660),
+            sidebarHost.widthAnchor.constraint(equalToConstant: sidebarWidth),
+            container.widthAnchor.constraint(
+                equalTo: split.widthAnchor, constant: -sidebarWidth - 1
+            ),
         ])
         window.contentView = content
 

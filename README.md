@@ -118,12 +118,18 @@ two apps are used side by side, so they are meant to be navigated the same way:
 | Sidebar | What it shows |
 |---|---|
 | **Overview** (⌘1) | dashboard — status, counts, per-modality breakdown, recent activity |
-| **Create** | |
+| **Library & app** | |
 | &nbsp;&nbsp;**Jobs** (⌘2) | what has actually run, with failure reasons and artifact URLs |
 | &nbsp;&nbsp;**Voices** (⌘3) | voice sources, search, preview, enable |
-| **Library & app** | |
-| &nbsp;&nbsp;**Providers** (⌘4) | the provider console — keys, discovery, model search and enable |
-| &nbsp;&nbsp;**Settings** (⌘,) | port, API key, launch at login |
+| &nbsp;&nbsp;**Models** (⌘4) | search every provider's models and tick the ones Story Studio may use |
+| &nbsp;&nbsp;**Providers** (⌘5) | provider keys and discovery |
+| &nbsp;&nbsp;**Settings** (⌘,) | port, API key, startup |
+
+**Models and Providers are separate pages.** Both are views of one console page, which used to be
+shown whole under a single sidebar entry — so "where do I enable a model" and "where do I paste a
+provider key" were the same destination with its own inner tabs. Each page now opens the console
+directly on its own view, so the sidebar entry is the thing you want.
+
 
 Below the list, a live line stays put on every page: a green dot, the endpoint, and how many
 providers and models are on offer. It replaced a lone Settings gear, and it is the same
@@ -137,6 +143,11 @@ in the sidebar under "Library & app", so this does too.
 Every page opens with a large title and a one-line description of what it is for
 (`PageKit.heading`), section titles are `title3` semibold, and page bodies share one padding —
 all mirroring Studio Hub's `heading` / `sectionTitle` / `empty` helpers.
+
+**Settings is a two-column form** (`PageKit.formRow`), the way Studio Hub's `Form` of `LabeledContent`
+rows is: the label sits in a fixed 150pt column, right-aligned, and every control starts at the same
+x. It first stacked a caption *above* each control, which put every label and every field at a
+different x and read as unaligned. A test now asserts that all fields share one column.
 
 **The menu:**
 
@@ -344,7 +355,7 @@ refusal.
 .venv/bin/python tests/test_ui.py
 ```
 
-57 checks that drive the macOS **accessibility layer**: they open the window through the real menus,
+64 checks that drive the macOS **accessibility layer**: they open the window through the real menus,
 click sidebar rows, read what it renders, type into fields, tick checkboxes and press buttons — then
 verify the *gateway* changed, not merely that the widget repainted.
 
@@ -459,12 +470,12 @@ tests/mock_upstream.py        local mock provider
 tests/test_e2e.py             the end-to-end suite
 tests/test_ui.py              drives the real app through the accessibility layer
 menubar/main.swift            app shell: gateway supervision, status menu, launch agent
-menubar/MainWindow.swift      the one window: grouped sidebar, status line, section container
+menubar/MainWindow.swift      the one window: grouped sidebar, status line, console sections
 menubar/PageKit.swift         shared page furniture (heading / sectionTitle / empty), from Studio Hub
 menubar/OverviewWindow.swift  Overview page, including the modality bars
 menubar/JobsWindow.swift      Jobs page
 menubar/VoicesWindow.swift    Voices page
-menubar/SettingsSection.swift Settings page: port, API key, startup
+menubar/SettingsSection.swift Settings page: two-column form for port, API key, startup
 menubar/GatewayAPI.swift      authenticated admin client + formatting helpers
 menubar/build.sh              compiles and installs the .app
 menubar/make_icon.py          generates the app icon (stdlib only)

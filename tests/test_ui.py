@@ -35,10 +35,10 @@ APP_PROCESS = "GatewayKH"
 #: grouping are pinned by a test rather than by whoever last edited the layout.
 SIDEBAR = [
     "Overview",
-    "CREATE",
+    "LIBRARY & APP",
     "Jobs",
     "Voices",
-    "LIBRARY & APP",
+    "Models",
     "Providers",
     "Settings",
 ]
@@ -51,6 +51,7 @@ SECTIONS = [
     (1, "Overview", "gateway-kh — Overview"),
     (3, "Jobs", "gateway-kh — Jobs"),
     (4, "Voices", "gateway-kh — Voices"),
+    (5, "Models", "gateway-kh — Models"),
     (6, "Providers", "gateway-kh — Providers"),
 ]
 
@@ -493,9 +494,17 @@ def main() -> int:
             check("ticking a voice reaches the gateway", False, str(exc)[:140])
 
     # ------------------------------------------------------------------
-    print("\n\033[1m5. Providers section\033[0m")
+    print("\n\033[1m5. Models and Providers are separate pages\033[0m")
+    # The console used to hold both views behind its own tabs, so the sidebar
+    # listed one entry for two different jobs. Each now has its own page and the
+    # console opens on the matching view.
+    title = open_section("Models")
+    check("Models selects into the same window", title == "gateway-kh — Models", title)
+    models_page = window_title()
     title = open_section("Providers")
     check("Providers selects into the same window", title == "gateway-kh — Providers", title)
+    check("Models and Providers are different pages", models_page != window_title(),
+          f"{models_page} vs {window_title()}")
     check("the app survived loading the web console",
           osa(f'tell application "System Events" to return (exists process "{APP_PROCESS}")') == "true")
 
@@ -522,6 +531,23 @@ def main() -> int:
           ))) >= 2)
     check("no stray window was opened", window_count() == 1, f"{window_count()} windows")
 
+    # The form is two columns: every field starts at the same x. It used to stack
+    # a caption above each control, which left labels and fields at a different x
+    # on every row — the "settings alignment" the owner reported.
+    field_x = osa(wrap(f'''
+        tell {MAIN_WINDOW} to tell splitter group 1
+            set acc to ""
+            repeat with i from 1 to (count of text fields)
+                set p to position of text field i
+                set acc to acc & ((item 1 of p) as string) & "\\n"
+            end repeat
+            return acc
+        end tell'''))
+    values = [line for line in field_x.splitlines() if line.strip()]
+    xs = sorted(set(values))
+    check("Settings has fields to align", len(values) >= 2, f"{len(values)} fields")
+    check("every Settings field starts in one column", len(xs) == 1, f"field x values: {xs}")
+
     # ------------------------------------------------------------------
     print("\n\033[1m7. Status menu\033[0m")
     items = osa(wrap('''
@@ -535,7 +561,9 @@ def main() -> int:
         end repeat
         key code 53
         return acc'''))
-    for expected in ["Overview", "Jobs", "Voices", "Open Provider Console", "Settings", "Quit"]:
+    for expected in [
+        "Overview", "Jobs", "Voices", "Models", "Open Provider Console", "Settings", "Quit",
+    ]:
         check(f"status menu offers “{expected}”", expected in items, items[:200])
 
     # ------------------------------------------------------------------

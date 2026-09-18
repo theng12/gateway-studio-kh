@@ -531,9 +531,18 @@ async function refreshAll(btn) {
 
 document.getElementById('filter').addEventListener('input', renderProviders);
 
+// The app now shows Models and Providers as two sidebar pages, so each one
+// opens this console already on its own view. Without the hash both pages would
+// land on Models and the Providers page would look wrong.
+function viewFromHash() {
+  return location.hash === '#providers' ? 'providers' : 'models';
+}
+
+window.addEventListener('hashchange', () => setView(viewFromHash()));
+
 (async function init() {
   await loadStatus();
-  await loadModels();
+  await setView(viewFromHash());
   setInterval(loadStatus, 15000);
 })();
 </script>
