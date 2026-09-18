@@ -671,16 +671,22 @@ def running_flat(rows: list[dict]) -> list[dict]:
     return out
 
 
-def snapshot(force: bool = False) -> dict:
+def snapshot(force: bool = False, *, allow_stale: bool = False) -> dict:
     """Everything the Fleet page shows, in one read.
 
     Served from a short-lived cache so that polling, the console and a test all
     reading at once does not multiply the load on every controller.
+
+    `allow_stale` is for a caller that must not block: the catalogue needs to know
+    which locations are answering, but a controller on the far side of a VPN takes
+    the full per-request timeout to fail, and Story Studio polls the catalogue. A
+    reachability answer up to one refresher interval old is worth far more there
+    than a catalogue read that stalls for seconds.
     """
     now = time.time()
     with _cache_lock:
         cached = _cache["value"]
-        if not force and cached and (now - _cache["at"]) < _CACHE_TTL:
+        if not force and cached and (allow_stale or (now - _cache["at"]) < _CACHE_TTL):
             return cached
 
     rows = locations()
@@ -722,7 +728,11 @@ def usable_location_ids() -> set[str]:
     between one fleet read and one per model.
     """
     try:
-        return {str(row.get("id")) for row in snapshot()["locations"] if row.get("reachable")}
+        return {
+            str(row.get("id"))
+            for row in snapshot(allow_stale=True)["locations"]
+            if row.get("reachable")
+        }
     except Exception:  # noqa: BLE001 - a routing hint must never break the catalogue
         return set()
 
@@ -753,7 +763,13 @@ def routing_candidates(
     """
     from .providers import registry
 
-    rows = {str(row.get("id")): row for row in snapshot()["locations"]}
+    # Stale rather than blocking, for the same reason the catalogue reads it that
+    # way: a controller that is switched off costs the full timeout to fail, and
+    # that cost lands on the request that submits the work. A route picked from a
+    # view up to one refresher interval old can be wrong about a site that died
+    # seconds ago, and the job then settles as `failed` -- which is the outcome
+    # this endpoint already prefers to making the caller wait.
+    rows = {str(row.get("id")): row for row in snapshot(allow_stale=True)["locations"]}
     candidates: list[dict] = []
     for definition in registry.definitions():
         location_id = controller_id_from(definition.id)
