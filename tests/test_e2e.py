@@ -282,6 +282,19 @@ def main() -> int:
             check("row publishes identity aliases",
                   row["customer_handle"] == row["id"] and row["legacy_ids"] == [])
             check("row publishes context window from provider", row["context_window_tokens"] == 32000)
+            # A published 0 is a claim that the model accepts nothing, which is a
+            # different statement from "the provider did not say". Story Studio's
+            # own rule forbids the two from sharing a value, so an unpublished
+            # window must arrive as null.
+            zero_ctx = [r["id"] for r in cat["models"] if r.get("context_window_tokens") == 0]
+            check("no chat row publishes a zero context window", not zero_ctx, f"{zero_ctx[:3]}")
+            # The output allowance was hardcoded to one number for every model on
+            # every provider, so a model allowing 131,072 was described as 8,192.
+            # A single shared value across a real catalogue is that bug returning.
+            allowances = {r.get("max_output_tokens") for r in cat["models"]}
+            check("output allowance is per model, not one shared constant",
+                  len(allowances - {None}) != 1 or len(cat["models"]) == 1,
+                  f"distinct values: {sorted(v for v in allowances if v)[:5]}")
 
             # Every model kind publishes the serving provider under the same
             # name. Story Studio's handoff states that contract, and it is a

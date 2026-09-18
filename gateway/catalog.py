@@ -207,13 +207,29 @@ def _transcription_row(model_id: str, definition: ProviderDefinition, model: dic
 def _chat_row(model_id: str, definition: ProviderDefinition, model: dict[str, Any]) -> dict[str, Any]:
     raw = model.get("raw") or {}
     context = raw.get("context_length") or raw.get("context_window")
-    # 0 means "not published" to Story Studio and renders as such; never guess a
-    # number a provider did not state.
-    context_tokens = int(context) if isinstance(context, (int, float)) and context > 0 else 0
+    top = raw.get("top_provider") or {}
+    completion = top.get("max_completion_tokens") or raw.get("max_completion_tokens")
+
+    # Unknown is published as `null`, never as a number.
+    #
+    # Both of these used to be numbers regardless. The context window fell back
+    # to `0` — which does not read as "not published", it reads as *this model
+    # accepts nothing*, the same value as a real limit of none. And the output
+    # allowance was hardcoded to 8192 for every model on every provider, so a
+    # model that really allows 131,072 was described as allowing 8,192.
+    #
+    # Story Studio's own rule is explicit: never let "the answer is none" and "I
+    # could not work out the answer" produce the same value, and never invent a
+    # number the customer will mistake for the model's own. Its sibling fields in
+    # this same row already publish `null` when unknown, so this is the
+    # consistent choice as well as the correct one.
+    def _positive(value: Any) -> int | None:
+        return int(value) if isinstance(value, (int, float)) and value > 0 else None
+
     return {
         "queue_class": "direct",
-        "context_window_tokens": context_tokens,
-        "max_output_tokens": 8192,
+        "context_window_tokens": _positive(context),
+        "max_output_tokens": _positive(completion),
         "controls": ["temperature", "max_output_tokens"],
         "input_modalities": ["text"],
         "supports_vision": False,

@@ -168,7 +168,16 @@ def _openai_models(definition: ProviderDefinition, values: dict[str, str]) -> Di
                 model_id=model_id,
                 display_name=_clean(str(entry.get("name") or ""), model_id),
                 modality=modality,
-                raw={k: v for k, v in entry.items() if k in {"id", "name", "owned_by", "context_length", "pricing"}},
+                # `top_provider` carries the real `max_completion_tokens`, which
+                # the catalogue publishes as the model's output allowance. It was
+                # being discarded, and the catalogue then invented a number for
+                # every model instead.
+                raw={
+                    k: v
+                    for k, v in entry.items()
+                    if k in {"id", "name", "owned_by", "context_length", "pricing",
+                             "top_provider"}
+                },
             )
         )
     return DiscoveryResult(models=models)
