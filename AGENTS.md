@@ -178,6 +178,14 @@ to `/Applications/gateway-kh.app`. **"It builds" is not "it works."**
 
 ## Working rules
 
+- **Never hand another session a description of behaviour that is not deployed yet.** A handoff
+  written from a build while the running service is still on the previous one reads as a false claim
+  to whoever measures it, and they will measure it. This happened: a note promised `legacy_ids` on
+  every Studio Hub row while the live gateway still published `[]`, because the code was in the
+  bundle and the process had not been restarted. The Story Studio session checked, found the note
+  wrong, and was right. Either restart and measure the **running** service first, or say plainly
+  that the change is built but not yet live. Both sessions lost time in one day to notes asserting
+  behaviour nobody had verified.
 - Prefer the **graphify** graph (`graphify-out/`, gitignored, rebuildable) over
   grepping for architecture, caller and impact questions. Keep it current with
   `graphify extract . --update` after structural work.
