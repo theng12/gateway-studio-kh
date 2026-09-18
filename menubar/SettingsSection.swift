@@ -163,12 +163,11 @@ final class SettingsSection: NSObject, AppSection {
     }
 
     @objc private func toggleLogin() {
+        // The plist is the only record of this: no config mirror to drift.
         if loginCheck.state == .on {
             LaunchAgent.install()
-            ConfigStore.shared.update { $0.launchAtLogin = true }
         } else {
             LaunchAgent.uninstall()
-            ConfigStore.shared.update { $0.launchAtLogin = false }
         }
         refresh()
     }

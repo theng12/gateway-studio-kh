@@ -68,8 +68,14 @@ enum AppPaths {
 struct AppConfig: Codable {
     var gatewayDir: String
     var port: Int
-    var launchAtLogin: Bool
     var autoStartGateway: Bool
+    // NOTE: there is deliberately no `launchAtLogin` here. It existed, was
+    // written by the Settings checkbox, and was **never read** — the checkbox
+    // reads `LaunchAgent.isInstalled`, i.e. the plist itself, which is the real
+    // source of truth. So the field could only ever drift, and did: the config
+    // said `false` while the agent was installed and loaded, which reads as
+    // "launch at login is off" to anyone who checks the JSON instead of the
+    // plist. One fact, one place.
     /// Optional so an existing config file written before this field existed
     /// still decodes; `nil` is treated as "has not launched before".
     var hasLaunchedBefore: Bool?
@@ -79,7 +85,6 @@ struct AppConfig: Codable {
         return AppConfig(
             gatewayDir: "\(home)/Developer/gateway-kh",
             port: 8010,
-            launchAtLogin: false,
             autoStartGateway: true
         )
     }
