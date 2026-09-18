@@ -693,7 +693,12 @@ def story_row(voice: Voice) -> dict[str, Any]:
         # The id Story Studio sends back as `voice_id`.
         "id": voice.id,
         "display_name": voice.display_name,
-        "language": voice.language or "en",
+        # Unknown language publishes the sentinel for "many, unenumerated"
+        # rather than "en". These are ElevenLabs, Fish and local cloning voices —
+        # none of them English-only — and the GenStudio this replaces published
+        # `multilingual` for the same voices, so `"en"` was both a false claim
+        # and a regression against the known-good contract.
+        "language": voice.language or "multilingual",
         "description": voice.description or "",
         "provider": definition.display_name if definition else voice.provider_id,
         "engine_name": engine,

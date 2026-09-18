@@ -505,6 +505,27 @@ GET /v1/models           -> 401  authenticated: false    # key missing or wrong
 (nothing)                                                # never called
 ```
 
+### Publishing what is known, and nothing else
+
+Story Studio's own rule — *never let "the answer is none" and "I could not work out the answer"
+produce the same value, and never invent a number the customer will mistake for the model's own* —
+turned out to be the most useful test to run against this catalogue. Applying it found, across
+several passes:
+
+| Was published | Why it was wrong | Now |
+|---|---|---|
+| `context_window_tokens: 0` (37 rows) | reads as "accepts nothing", not "unknown" | `null` |
+| `max_output_tokens: 8192` for every model | a model allowing 131,072 was described as 8,192; providers publish the real figure and discovery was discarding it | per model, `null` if unstated |
+| no `provider_name` on video rows | provider reads blank | published |
+| transcription `provider` only | same field, wrong key | `provider_name` (plus `provider`) |
+| transcription `language: "en"` + `auto_detect: true` | self-contradictory; Whisper is multilingual | `"multilingual"` sentinel |
+| TTS `["{'language_id': 'en', …}"]` | stringified Python dicts in a `string[]` field | 32 real codes |
+| TTS/Voices `["en"]` when unknown | claims English-only | `[]` / `"multilingual"` |
+
+**And one value that must stay invented:** `maximum_input_characters` (40,000). No provider states
+it, but Story Studio calls `.toLocaleString()` on it unconditionally, so `null` would crash the
+page rather than degrade it.
+
 ## Contract traps (each cost real debugging time to identify)
 
 - **Never return 402.** Story Studio holds a credit lock keyed on the API key. If it ever sees 402

@@ -165,11 +165,36 @@ def _video_row(model_id: str, definition: ProviderDefinition, model: dict[str, A
     }
 
 
+def _language_codes(languages: Any) -> list[str]:
+    """Normalise a provider's language list into plain codes.
+
+    ElevenLabs publishes 32 languages as objects — `{"language_id": "af",
+    "name": "Afrikaans"}` — and this used to be flattened with `str(x)`, which
+    published the Python repr of a dict as the language name. Story Studio types
+    the field as `string[]` and joins it into a customer-visible line, so the
+    narration page read "Languages {'language_id': 'en', 'name': 'English'}, …".
+
+    A provider that states a language as a bare string (Fish) already works.
+    """
+    codes: list[str] = []
+    for entry in languages or []:
+        if isinstance(entry, dict):
+            value = entry.get("language_id") or entry.get("code") or entry.get("name")
+        else:
+            value = entry
+        text = str(value or "").strip()
+        if text and text not in codes:
+            codes.append(text)
+    return codes
+
+
 def _tts_row(model_id: str, definition: ProviderDefinition, model: dict[str, Any]) -> dict[str, Any]:
     raw = model.get("raw") or {}
-    languages = raw.get("languages")
-    if not isinstance(languages, list) or not languages:
-        languages = ["en"]
+    # Empty when the provider states none. It used to fall back to `["en"]`,
+    # which claims a specific language — false for engines like Qwen3 and
+    # VoxCPM2 that are not English-only. Story Studio renders this list only
+    # when it is non-empty, so an empty list shows nothing rather than a lie.
+    languages = _language_codes(raw.get("languages"))
     return {
         "maximum_input_characters": 40000,
         "supports_speed": True,
@@ -179,7 +204,7 @@ def _tts_row(model_id: str, definition: ProviderDefinition, model: dict[str, Any
         "preview_policy": "none",
         "generation_enabled": True,
         "queue_class": "direct",
-        "supported_languages": [str(x) for x in languages][:40],
+        "supported_languages": languages[:40],
         "provider_submit_concurrency": 1,
         "controls": [
             {
@@ -196,9 +221,28 @@ def _tts_row(model_id: str, definition: ProviderDefinition, model: dict[str, Any
 
 
 def _transcription_row(model_id: str, definition: ProviderDefinition, model: dict[str, Any]) -> dict[str, Any]:
+    """Transcription capability.
+
+    This row used to publish `language: "en"` with `supported_languages: ["en"]`
+    **and** `supports_language_auto_detect: true` — a contradiction on its face
+    (a model that only knows English cannot detect the language) and false for
+    these models, which are MLX Whisper: multilingual, and auto-detecting by
+    construction.
+
+    Nothing in this stack publishes a language list — not the Hub's model
+    packages, not its capabilities route (its per-worker `models` array is empty
+    in standalone packaging), not the model manifest. So rather than enumerate a
+    list we cannot support, this publishes Story Studio's own sentinel for "many,
+    unenumerated": `language: "multilingual"` with an empty `supported_languages`.
+
+    Empty rather than absent on purpose: Story Studio's rule is that a model
+    publishing neither a concrete language nor auto-detect "has no valid
+    submission state", so dropping the row to nothing would be worse than the
+    bug being fixed.
+    """
     return {
-        "language": "en",
-        "supported_languages": ["en"],
+        "language": "multilingual",
+        "supported_languages": [],
         "supports_language_auto_detect": True,
         "available_workers": 1,
     }

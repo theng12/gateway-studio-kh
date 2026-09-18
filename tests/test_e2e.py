@@ -405,6 +405,39 @@ def main() -> int:
                 check("by-idempotency-key route resolves it",
                       lookup.status_code == 200 and lookup.json()["id"] == first.json()["id"])
 
+            # Languages are typed `string[]` and rendered into a customer-visible
+            # line, so a stringified dict both breaks the type and shows up as
+            # garbage. ElevenLabs publishes objects; 32 of them were flattened
+            # with `str()` into "{\'language_id\': \'en\', ...}".
+            tts_rows_now = req(client, "GET", "/v1/tts/models").json().get("models", [])
+            bad_langs = [
+                entry
+                for r in tts_rows_now
+                for entry in (r.get("supported_languages") or [])
+                if not isinstance(entry, str) or "{" in entry or "'" in entry
+            ]
+            check("tts languages are plain codes, never stringified objects",
+                  not bad_langs, f"{bad_langs[:2]}")
+
+            # A model cannot both be English-only and able to detect language,
+            # and these are multilingual MLX Whisper models. Unknown publishes
+            # the "many, unenumerated" sentinel instead of a false "en".
+            stt_rows_now = req(client, "GET", "/v1/transcription/models").json().get("models", [])
+            contradictory = [
+                r["id"] for r in stt_rows_now
+                if r.get("supports_language_auto_detect") is True
+                and r.get("supported_languages") == ["en"]
+            ]
+            check("no transcription model claims English-only and auto-detect together",
+                  not contradictory, f"{contradictory[:2]}")
+            check("transcription language is published in a form Story Studio accepts",
+                  all(
+                      isinstance(r.get("language"), str)
+                      or isinstance(r.get("supported_languages"), list)
+                      for r in stt_rows_now
+                  ),
+                  f"{[{k: r.get(k) for k in ('language', 'supported_languages')} for r in stt_rows_now[:2]]}")
+
             print("\n\033[1m7. TTS end to end (real WAV)\033[0m")
             tts_cat = req(client, "GET", "/v1/tts/models").json()
             tts_rows = tts_cat.get("models", [])
