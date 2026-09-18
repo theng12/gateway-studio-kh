@@ -104,7 +104,7 @@ bugs came from iterating the static map and silently omitting derived providers.
 ## Verification
 
 ```bash
-.venv/bin/python tests/test_e2e.py              # 122 checks, isolated mock upstream
+.venv/bin/python tests/test_e2e.py              # 127 checks, isolated mock upstream
 .venv/bin/python tests/test_ui.py               # 84 checks, drives the real app
 .venv/bin/python tests/test_fleet_standalone.py # a real Hub used as a location
 ```
