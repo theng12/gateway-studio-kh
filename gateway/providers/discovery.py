@@ -176,7 +176,7 @@ def _openai_models(definition: ProviderDefinition, values: dict[str, str]) -> Di
                     k: v
                     for k, v in entry.items()
                     if k in {"id", "name", "owned_by", "context_length", "pricing",
-                             "top_provider"}
+                             "top_provider", "architecture", "supported_parameters"}
                 },
             )
         )
@@ -251,7 +251,17 @@ def _google_models(definition: ProviderDefinition, values: dict[str, str]) -> Di
                 model_id=model_id,
                 display_name=_clean(str(entry.get("displayName") or ""), model_id),
                 modality=modality,
-                raw={"name": raw_name, "methods": methods},
+                raw={
+                    "name": raw_name,
+                    "methods": methods,
+                    # Google states both limits on every model. They were being
+                    # discarded, so every Google row published a null context
+                    # window and a null output allowance while the real figures
+                    # were in the response.
+                    "inputTokenLimit": entry.get("inputTokenLimit"),
+                    "outputTokenLimit": entry.get("outputTokenLimit"),
+                    "description": entry.get("description"),
+                },
             )
         )
     return DiscoveryResult(models=models)

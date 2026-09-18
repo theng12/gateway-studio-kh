@@ -299,36 +299,70 @@ def _transcription_row(model_id: str, definition: ProviderDefinition, model: dic
 
 def _chat_row(model_id: str, definition: ProviderDefinition, model: dict[str, Any]) -> dict[str, Any]:
     raw = model.get("raw") or {}
-    context = raw.get("context_length") or raw.get("context_window")
+    # Providers spell the same two figures differently: OpenRouter uses
+    # `context_length` / `top_provider.max_completion_tokens`, Google uses
+    # `inputTokenLimit` / `outputTokenLimit`. Read every spelling before
+    # concluding a provider said nothing.
+    context = (
+        raw.get("context_length")
+        or raw.get("context_window")
+        or raw.get("inputTokenLimit")
+        or raw.get("input_token_limit")
+    )
     top = raw.get("top_provider") or {}
-    completion = top.get("max_completion_tokens") or raw.get("max_completion_tokens")
+    completion = (
+        top.get("max_completion_tokens")
+        or raw.get("max_completion_tokens")
+        or raw.get("outputTokenLimit")
+        or raw.get("output_token_limit")
+    )
 
-    # Unknown is published as `null`, never as a number.
+    # Unknown is published as `null`, never as a number or a `false`.
     #
-    # Both of these used to be numbers regardless. The context window fell back
-    # to `0` — which does not read as "not published", it reads as *this model
-    # accepts nothing*, the same value as a real limit of none. And the output
-    # allowance was hardcoded to 8192 for every model on every provider, so a
-    # model that really allows 131,072 was described as allowing 8,192.
+    # The context window used to fall back to `0` — which does not read as "not
+    # published", it reads as *this model accepts nothing*. The output allowance
+    # was hardcoded to 8192 for every model. And `supports_vision: false` with
+    # `input_modalities: ["text"]` was published for every model too, while 273
+    # of OpenRouter's 445 models accept image input — so the catalogue said no
+    # model had vision, and Story Studio hid the control that would have used it.
     #
-    # Story Studio's own rule is explicit: never let "the answer is none" and "I
-    # could not work out the answer" produce the same value, and never invent a
-    # number the customer will mistake for the model's own. Its sibling fields in
-    # this same row already publish `null` when unknown, so this is the
-    # consistent choice as well as the correct one.
+    # Story Studio's rule: never let "the answer is none" and "I could not work
+    # out the answer" share a value. Its check is `supports_vision === true`, and
+    # its own message for a missing value reads "does not publish image-input
+    # support" — so `null` is what it already expects for "unstated".
     def _positive(value: Any) -> int | None:
         return int(value) if isinstance(value, (int, float)) and value > 0 else None
 
+    architecture = raw.get("architecture")
+    inputs = architecture.get("input_modalities") if isinstance(architecture, dict) else None
+    inputs = [str(x) for x in inputs] if isinstance(inputs, list) and inputs else None
+
+    parameters = raw.get("supported_parameters")
+    parameters = [str(x) for x in parameters] if isinstance(parameters, list) else None
+
+    def _supports(*names: str) -> bool | None:
+        """Whether the provider states this capability. `None` when it is silent."""
+        if parameters is None:
+            return None
+        return any(name in parameters for name in names)
+
+    # Only control names already published here are gated — adding new ones would
+    # offer Story Studio knobs it has no rendering for.
+    controls = ["temperature", "max_output_tokens"]
+    if parameters is not None:
+        controls = [c for c in controls if c == "max_output_tokens" or c in parameters]
+
+    structured = _supports("structured_outputs", "response_format")
     return {
         "queue_class": "direct",
         "context_window_tokens": _positive(context),
         "max_output_tokens": _positive(completion),
-        "controls": ["temperature", "max_output_tokens"],
-        "input_modalities": ["text"],
-        "supports_vision": False,
-        "supports_structured_output": True,
-        "structured_output_mode": "json_object",
-        "supports_web_search": False,
+        "controls": controls,
+        "input_modalities": inputs,
+        "supports_vision": ("image" in inputs) if inputs else None,
+        "supports_structured_output": structured,
+        "structured_output_mode": "json_object" if structured else None,
+        "supports_web_search": _supports("web_search", "web_search_options"),
         "returns_citations": False,
     }
 

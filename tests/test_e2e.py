@@ -286,6 +286,25 @@ def main() -> int:
             # different statement from "the provider did not say". Story Studio's
             # own rule forbids the two from sharing a value, so an unpublished
             # window must arrive as null.
+            # `supports_vision` was hardcoded false and `input_modalities` hardcoded
+            # to ["text"] for every chat model, while 273 of OpenRouter's 445
+            # models accept image input — so the catalogue claimed no model had
+            # vision and Story Studio hid the control that uses it. The two fields
+            # must now agree with each other and with the provider's own answer.
+            disagreed = [
+                r["id"] for r in cat["models"]
+                if isinstance(r.get("input_modalities"), list)
+                and r.get("supports_vision") != ("image" in r["input_modalities"])
+            ]
+            check("vision support agrees with the published input modalities",
+                  not disagreed, f"{disagreed[:3]}")
+            unstated = [
+                r["id"] for r in cat["models"]
+                if r.get("input_modalities") is None and r.get("supports_vision") is not None
+            ]
+            check("vision is null when the provider states no modalities",
+                  not unstated, f"{unstated[:3]}")
+
             zero_ctx = [r["id"] for r in cat["models"] if r.get("context_window_tokens") == 0]
             check("no chat row publishes a zero context window", not zero_ctx, f"{zero_ctx[:3]}")
             # The output allowance was hardcoded to one number for every model on
