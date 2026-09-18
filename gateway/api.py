@@ -25,6 +25,8 @@ work and reports on it, so a long local job never blocks a Story Studio poll.
 
 from __future__ import annotations
 
+from collections import deque
+
 import json
 import os
 import time
@@ -66,6 +68,48 @@ async def lifespan(_: FastAPI):
 
 
 app = FastAPI(title="gateway-kh", version=__version__, lifespan=lifespan)
+
+
+# ---------------------------------------------------------------------------
+# "Is Story Studio actually talking to me?"
+#
+# The question came up for real: Story Studio was pointed at this gateway, but
+# its cached catalogue did not match what this gateway serves, and there was no
+# way to tell from outside whether it had ever succeeded — the gateway logs at
+# warning level and its own app has the credentials encrypted.
+#
+# So the gateway now remembers the last few Story-surface calls. It is a
+# diagnostic, not analytics: a bounded ring of the most recent requests, with no
+# bodies and no credentials, surfaced on the admin status route.
+# ---------------------------------------------------------------------------
+_RECENT_LIMIT = 12
+_recent_story: deque[dict[str, Any]] = deque(maxlen=_RECENT_LIMIT)
+
+
+@app.middleware("http")
+async def _record_story_requests(request: Request, call_next):  # type: ignore[no-untyped-def]
+    response = await call_next(request)
+    path = request.url.path
+    if path.startswith("/v1/") or path == "/health":
+        _recent_story.append({
+            "at": time.time(),
+            "method": request.method,
+            "path": path,
+            "status": response.status_code,
+            # Whether a bearer token was presented, never which one.
+            "authenticated": bool(request.headers.get("authorization")),
+        })
+    return response
+
+
+def story_activity() -> dict[str, Any]:
+    """Recent Story-surface calls, newest last."""
+    rows = list(_recent_story)
+    return {
+        "count": len(rows),
+        "last_call_at": rows[-1]["at"] if rows else None,
+        "recent": rows,
+    }
 
 
 # ---------------------------------------------------------------------------

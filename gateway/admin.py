@@ -21,6 +21,7 @@ from fastapi import APIRouter, Depends, Header, Request, Response
 from fastapi.responses import HTMLResponse, JSONResponse
 
 from .adapters import support_status
+from .api import story_activity
 from .catalog import catalog
 from . import fleet
 from .config import is_loopback
@@ -80,6 +81,9 @@ def status() -> dict[str, Any]:
     providers = registry.describe_all()
     return {
         "hub": hub_status(),
+        # Proof of life for the integration question: did Story Studio call this
+        # gateway, when, and did it authenticate?
+        "story_studio": story_activity(),
         "models": registry.models.summary(),
         "providers": {
             "total": len(providers),

@@ -489,6 +489,22 @@ candidate list had plausible-but-wrong spellings), the Hub publishes its **token
 `hub-ready.json`, transcription uploads cannot be carried in JSON job params, and transcription
 batches use `/api/hub/transcription/jobs` rather than `/api/hub/jobs`.
 
+## Knowing whether Story Studio is actually talking to you
+
+Story Studio's credential is encrypted inside its own app data, and this gateway logs at warning
+level, so "is it connected?" used to be unanswerable from outside — a real question, asked for real,
+when Story Studio's cached catalogue did not match what this gateway serves.
+
+`GET /admin/api/status` now reports `story_studio`: the last calls on the Story surface, with their
+status and **whether a bearer token was presented** (never which one). Set the endpoint and key in
+Story Studio, then read it:
+
+```
+GET /v1/account/overview -> 200  authenticated: true     # connected
+GET /v1/models           -> 401  authenticated: false    # key missing or wrong
+(nothing)                                                # never called
+```
+
 ## Contract traps (each cost real debugging time to identify)
 
 - **Never return 402.** Story Studio holds a credit lock keyed on the API key. If it ever sees 402
