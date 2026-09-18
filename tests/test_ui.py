@@ -58,6 +58,7 @@ SECTIONS = [
 ]
 
 failures: list[str] = []
+skipped: list[str] = []
 checks = 0
 
 
@@ -69,6 +70,17 @@ def check(label: str, ok: bool, detail: str = "") -> None:
     print(f"  {tag} {label}{suffix}")
     if not ok:
         failures.append(label)
+
+
+def skip(label: str, reason: str) -> None:
+    """Record a check that cannot run, and say why.
+
+    Used where the environment, not the app, is missing — the local Studio Hub
+    being stopped (another session may be reinstalling it) is not a gateway
+    regression, and reporting it as one trains you to ignore failures.
+    """
+    skipped.append(label)
+    print(f"  \033[33mSKIP\033[0m {label} — {reason}")
 
 
 def osa(script: str, timeout: float = 90.0, attempts: int = 3) -> str:
@@ -639,16 +651,31 @@ def main() -> int:
     check("running work is a table", table_columns(4) >= 3, f"{table_columns(4)} columns")
     check("lists this Mac as the local location", "This Mac" in locations_cells,
           f"{locations_cells}")
-    # The role is the Hub's to decide, so this only requires that one is
-    # reported from the set the Hub defines.
-    check("reports the location's role",
-          any(r in locations_cells for r in ("standalone", "controller", "worker")),
-          f"{locations_cells}")
-    check("lists the local machine with its work",
-          any("This Mac" in cell for cell in machines_cells), f"{machines_cells}")
-    check("a machine reports jobs done and failed",
-          any("done" in cell for cell in machines_cells), f"{machines_cells}")
 
+    # The rest of this section reads what the local Hub reports, so it needs the
+    # Hub running. Standalone or controller both work — that is the point — but
+    # "stopped" is an environment state, not a gateway defect.
+    local = next((l for l in api_get("/admin/api/fleet")["locations"] if l.get("local")), {})
+    if not local.get("reachable"):
+        reason = (local.get("error") or "Studio Hub is not running on this Mac")[:90]
+        for label in (
+            "reports the location's role",
+            "lists the local machine with its work",
+            "a machine reports jobs done and failed",
+            "the API publishes a per-machine job breakdown",
+            "each machine reports what it ran and its state",
+        ):
+            skip(label, reason)
+    else:
+        # The role is the Hub's to decide, so this only requires that one is
+        # reported from the set the Hub defines.
+        check("reports the location's role",
+              any(r in locations_cells for r in ("standalone", "controller", "worker")),
+              f"{locations_cells}")
+        check("lists the local machine with its work",
+              any("This Mac" in cell for cell in machines_cells), f"{machines_cells}")
+        check("a machine reports jobs done and failed",
+              any("done" in cell for cell in machines_cells), f"{machines_cells}")
     fleet_api = api_get("/admin/api/fleet")
     fleet_summary = fleet_api["summary"]
     online = fleet_summary["machines_online"]
@@ -658,13 +685,14 @@ def main() -> int:
     # the round trip from the Hub's activity report.
     check("counts completed and failed jobs in the summary",
           "completed" in fleet, fleet[:300])
-    check("the API publishes a per-machine job breakdown",
-          bool(fleet_summary.get("pulse")) and "jobs_completed" in fleet_summary,
-          f"{fleet_summary}")
-    per_machine = fleet_api["locations"][0].get("activity", {}).get("machines", [])
-    check("each machine reports what it ran and its state",
-          bool(per_machine) and "state" in per_machine[0] and "completed" in per_machine[0],
-          f"{per_machine[:1]}")
+    if local.get("reachable"):
+        check("the API publishes a per-machine job breakdown",
+              bool(fleet_summary.get("pulse")) and "jobs_completed" in fleet_summary,
+              f"{fleet_summary}")
+        per_machine = fleet_api["locations"][0].get("activity", {}).get("machines", [])
+        check("each machine reports what it ran and its state",
+              bool(per_machine) and "state" in per_machine[0] and "completed" in per_machine[0],
+              f"{per_machine[:1]}")
     check("machines offline is reported as a number",
           isinstance(fleet_summary.get("machines_offline"), int), f"{fleet_summary}")
 
@@ -705,6 +733,10 @@ def main() -> int:
     check("gateway still answering", health == "200", f"HTTP {health}")
 
     print("\n" + "=" * 70)
+    if skipped:
+        print(f"\033[33m{len(skipped)} skipped\033[0m (environment, not the app):")
+        for name in skipped:
+            print(f"  - {name}")
     if failures:
         print(f"\033[31m{len(failures)} of {checks} UI checks FAILED\033[0m")
         for item in failures:

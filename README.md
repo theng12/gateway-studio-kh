@@ -381,9 +381,23 @@ Two rules it follows, from Studio Hub's own operational contract:
 - **One dead location must not hide the others.** Reads fan out with a per-request timeout; an
   unreachable controller is reported as unreachable while the rest of the page still renders.
 
-Add a location with its address and Hub service token. Tokens are stored `0600` in
-`data/fleet.json`, are never returned by an API, and are masked in the UI. Adding the same address
-again updates it rather than duplicating it.
+**Standalone and controller both work, and that is deliberate.** A new machine can be added while
+it is still standalone and keep working after it is promoted to a controller — nothing in the
+gateway reads the role except to display it. This is checked end to end by
+`tests/test_fleet_standalone.py`, which adds a *standalone* Hub as a location, discovers its models
+through the fleet provider path, and transcribes a real clip on it.
+
+**A location is also a provider.** Adding one does not just add a dashboard row: it becomes a
+`studio_hub` provider, so its models are discovered, can be enabled, and reach Story Studio's
+catalogue like any other — and work is dispatched to it through the same adapter as the local Hub,
+which already takes a per-provider address and token. Its models are **opt-in**, like every provider
+except the local Hub, so adding a site never silently publishes its whole model list.
+
+Add a location with its address and Hub service token. The token is stored in the **credential
+store** (`data/credentials.json`, `0600`) under the provider id the location maps to — one secret
+store, not two that can drift. `data/fleet.json` holds only the roster: id, name, address. Tokens
+are never returned by an API and are masked in the UI, and adding the same address again updates it
+rather than duplicating it.
 
 The contract this depends on — and what it would like next from Studio Hub — is written up for the
 other session in `~/Developer/_handoffs/2026-09-18-gateway-kh-fleet-contract-to-studiohub.md`.
@@ -392,7 +406,8 @@ other session in `~/Developer/_handoffs/2026-09-18-gateway-kh-fleet-contract-to-
 ## Verification
 
 ```bash
-.venv/bin/python tests/test_e2e.py
+.venv/bin/python tests/test_e2e.py            # 110 checks, mock upstream
+.venv/bin/python tests/test_fleet_standalone.py  # a real Hub used as a location
 ```
 
 110 checks against a **real HTTP upstream** (a local mock provider), exercising the admin API,
@@ -535,6 +550,7 @@ menubar/JobsWindow.swift      Jobs page
 menubar/VoicesWindow.swift    Voices page
 menubar/SettingsSection.swift Settings page: two-column form for port, API key, startup
 menubar/FleetSection.swift    Fleet page: locations, machines, running work
+tests/test_fleet_standalone.py   proves a standalone Hub works as a location
 menubar/GatewayAPI.swift      authenticated admin client + formatting helpers
 menubar/build.sh              compiles and installs the .app
 menubar/make_icon.py          generates the app icon (stdlib only)

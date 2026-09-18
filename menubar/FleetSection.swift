@@ -170,9 +170,11 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
 
         root.addArrangedSubview(PageKit.sectionTitle("Add a location"))
         root.addArrangedSubview(PageKit.help(
-            "A location is a controller: another Mac (or site) running Studio Hub in "
-            + "controller mode. Use its address and its Hub service token. Its nodes "
-            + "are reported by it — this gateway never contacts them directly."
+            "Another Mac running Studio Hub. Standalone or controller, both work: "
+            + "A new machine can be added while it is still standalone and keep working "
+            + "after it is promoted to a controller; nothing here depends on the role. "
+            + "Use its address and its Hub service token. A controller reports its own "
+            + "nodes — this gateway never contacts them directly."
         ))
 
         labelField.placeholderString = "Name (e.g. Blue Room)"

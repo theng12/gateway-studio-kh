@@ -40,14 +40,58 @@ import httpx
 from .config import DATA_DIR
 from .hub import hub_base_url, hub_token
 
-#: Where the owner's location controllers are remembered. Tokens live here, so
-#: the file is created 0600 like the provider credential store.
+#: The location roster: id, label, address. **No secrets.** The Hub service
+#: token for a location lives in the provider credential store under the
+#: provider id this module derives, so there is exactly one secret store in the
+#: gateway rather than two that can drift.
 FLEET_PATH = Path(os.environ.get("GATEWAY_FLEET") or (DATA_DIR / "fleet.json"))
+
+#: A configured location is also a *provider*, so its models are discovered and
+#: its work is dispatched through exactly the same path as the local Hub — the
+#: adapter already takes a per-provider base_url and token, so nothing else is
+#: needed to send generation to another site.
+PROVIDER_PREFIX = "studio-hub-"
+
+
+def provider_id_for(controller_id: str) -> str:
+    return f"{PROVIDER_PREFIX}{controller_id}"
+
+
+def controller_id_from(provider_id: str) -> str | None:
+    return provider_id[len(PROVIDER_PREFIX):] if provider_id.startswith(PROVIDER_PREFIX) else None
 
 #: Per-request budget. A controller on the far end of a VPN is slower than
 #: loopback, and a location that takes longer than this is reported unreachable
 #: with the timeout as its reason rather than silently omitted.
 _TIMEOUT = 6.0
+
+
+def _token_for(controller_id: str) -> str:
+    """The controller's Hub service token, from the one credential store.
+
+    Imported lazily: `providers.registry` reads this module to build its
+    definitions, so a module-level import here would be a cycle.
+    """
+    try:
+        from .providers import registry
+        return str(
+            registry.credentials.resolved(provider_id_for(controller_id)).get("hub_token") or ""
+        )
+    except Exception:  # noqa: BLE001 - a missing store means "no token", not a crash
+        return ""
+
+
+def _set_token(controller_id: str, token: str) -> None:
+    from .providers import registry
+    registry.credentials.set_values(provider_id_for(controller_id), {"hub_token": token})
+
+
+def _clear_token(controller_id: str) -> None:
+    try:
+        from .providers import registry
+        registry.credentials.clear(provider_id_for(controller_id))
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def _read() -> list[dict]:
@@ -63,15 +107,23 @@ def _read() -> list[dict]:
 
 def _write(rows: list[dict]) -> None:
     FLEET_PATH.parent.mkdir(parents=True, exist_ok=True)
-    # Create 0600 up front rather than chmod-ing afterwards: there must be no
-    # window in which a token is world-readable.
+    # The roster carries no secrets, but it is written 0600 anyway: which sites
+    # this gateway talks to is nobody else's business on a shared Mac.
     fd = os.open(str(FLEET_PATH), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "w", encoding="utf-8") as handle:
-        json.dump({"controllers": rows}, handle, indent=2)
+        json.dump(
+            {"controllers": [{k: v for k, v in row.items() if k != "token"} for row in rows]},
+            handle, indent=2,
+        )
     try:
         FLEET_PATH.chmod(stat.S_IRUSR | stat.S_IWUSR)
     except OSError:
         pass
+
+
+def roster() -> list[dict]:
+    """Configured locations, as definitions need them: no secrets involved."""
+    return _read()
 
 
 def controllers() -> list[dict]:
@@ -80,7 +132,7 @@ def controllers() -> list[dict]:
 
 
 def _masked(row: dict) -> dict:
-    token = str(row.get("token") or "")
+    token = _token_for(str(row.get("id") or ""))
     return {
         "id": row.get("id"),
         "label": row.get("label") or row.get("url"),
@@ -102,17 +154,30 @@ def add_controller(label: str, url: str, token: str) -> dict:
     existing = next((row for row in rows if row.get("url") == url), None)
     if existing:
         existing["label"] = (label or existing.get("label") or url).strip()
-        existing["token"] = (token or "").strip() or existing.get("token") or ""
+        controller_id = str(existing.get("id"))
+        # A pre-existing roster may still carry the token; move it out rather
+        # than leaving a second copy behind.
+        legacy = str(existing.pop("token", "") or "")
     else:
-        rows.append({
-            "id": uuid.uuid4().hex[:12],
+        controller_id = uuid.uuid4().hex[:12]
+        existing = {
+            "id": controller_id,
             "label": (label or url).strip(),
             "url": url,
-            "token": (token or "").strip(),
             "added_at": time.time(),
-        })
+        }
+        rows.append(existing)
+        legacy = ""
+    secret = (token or "").strip() or legacy or _token_for(controller_id)
+    # The roster is written **first**: the provider definition that carries this
+    # location's `hub_token` credential field is derived from the roster, and the
+    # credential store refuses a field for a provider it has never heard of. So
+    # the location has to exist before its secret can.
     _write(rows)
-    return _masked(existing or rows[-1])
+    if secret:
+        _set_token(controller_id, secret)
+    invalidate()
+    return _masked(existing)
 
 
 def remove_controller(controller_id: str) -> bool:
@@ -121,6 +186,9 @@ def remove_controller(controller_id: str) -> bool:
     if len(keep) == len(rows):
         return False
     _write(keep)
+    # The location is gone, so its token must not linger in the store.
+    _clear_token(controller_id)
+    invalidate()
     return True
 
 
@@ -284,7 +352,8 @@ def locations() -> list[dict]:
     # a large fleet cannot open an unbounded number of sockets.
     with ThreadPoolExecutor(max_workers=min(_MAX_PROBES, len(configured))) as pool:
         probed = list(pool.map(
-            lambda row: _probe(str(row["url"]), str(row.get("token") or "")), configured
+            lambda row: _probe(str(row["url"]), _token_for(str(row.get("id") or ""))),
+            configured,
         ))
 
     for row, result in zip(configured, probed):
@@ -309,6 +378,19 @@ _MAX_PROBES = 24
 _CACHE_TTL = 5.0
 _cache: dict = {"at": 0.0, "value": None}
 _cache_lock = threading.Lock()
+
+
+def invalidate() -> None:
+    """Drop the cached snapshot.
+
+    Called whenever the roster changes. Without it, adding a location leaves the
+    next read serving the previous snapshot for up to the refresh interval, so
+    the page you just changed would not show your change — the most confusing
+    possible moment to be stale.
+    """
+    with _cache_lock:
+        _cache["at"] = 0.0
+        _cache["value"] = None
 
 
 def _summarise(rows: list[dict]) -> dict:

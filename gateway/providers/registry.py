@@ -7,25 +7,111 @@ catalogue builder need is reachable from here.
 
 from __future__ import annotations
 
+import os
 from typing import Any
 
+from ..config import DATA_DIR
 from .credentials import CredentialStore
-from .definitions import PROVIDERS_BY_ID, ProviderDefinition
+from .definitions import (
+    DISCOVERY_STUDIO_HUB,
+    KIND_STUDIO_HUB,
+    PROVIDERS_BY_ID,
+    CredentialField,
+    ProviderDefinition,
+)
 from .discovery import DiscoveryResult
 from .models import ModelInventory
+
+FLEET_PATH = DATA_DIR / "fleet.json"
+
+
+#: Locations are derived from the roster rather than loaded at import, so adding
+#: one on the Fleet page takes effect without restarting the gateway. The cache
+#: is keyed on the roster file's mtime, so the common path is one stat.
+_fleet_cache: dict = {"key": None, "by_id": {}}
+
+
+def _fleet_definitions_by_id() -> dict[str, ProviderDefinition]:
+    from ..fleet import PROVIDER_PREFIX, roster
+
+    try:
+        key = os.path.getmtime(FLEET_PATH)
+    except OSError:
+        key = None
+    if _fleet_cache["key"] == key:
+        return _fleet_cache["by_id"]
+
+    by_id: dict[str, ProviderDefinition] = {}
+    for row in roster():
+        controller_id = str(row.get("id") or "")
+        url = str(row.get("url") or "")
+        if not controller_id or not url:
+            continue
+        provider_id = f"{PROVIDER_PREFIX}{controller_id}"
+        by_id[provider_id] = ProviderDefinition(
+            id=provider_id,
+            display_name=str(row.get("label") or url),
+            category="multi",
+            kind=KIND_STUDIO_HUB,
+            base_url=url,
+            # The Hub's own routes: readiness first, because standalone
+            # `/api/hub/capabilities` advertises zero models (see the local
+            # provider's definition).
+            modalities=("image", "tts", "transcription"),
+            discovery=DISCOVERY_STUDIO_HUB,
+            description=f"Studio Hub controller at {url}.",
+            credential_fields=(
+                CredentialField(
+                    key="hub_token",
+                    label="Hub service token",
+                    env_var=f"FLEET_{controller_id.upper()}_HUB_TOKEN",
+                    secret=True,
+                    placeholder="the controller's Hub service token",
+                    help_text="From the controller's Connections page.",
+                ),
+            ),
+            # Opt-in, like every provider except the local Hub: adding a site
+            # must not silently publish its whole model list to Story Studio.
+            auto_enable_discovered=False,
+            notes="Added on the Fleet page.",
+        )
+    _fleet_cache["key"] = key
+    _fleet_cache["by_id"] = by_id
+    return by_id
+
+
+def _fleet_definitions() -> list[ProviderDefinition]:
+    return list(_fleet_definitions_by_id().values())
 
 
 class ProviderRegistry:
     def __init__(self) -> None:
-        self.credentials = CredentialStore()
-        self.models = ModelInventory(self.credentials)
+        # The store resolves ids through the registry, so a location added on
+        # the Fleet page can hold a token like any other provider. The closure is
+        # lazy: it runs per call, long after __init__ has finished.
+        self.credentials = CredentialStore(
+            definition_lookup=lambda provider_id: _fleet_definitions_by_id().get(provider_id)
+        )
+        self.models = ModelInventory(
+            self.credentials,
+            definition_lookup=lambda provider_id: _fleet_definitions_by_id().get(provider_id),
+            definitions_lookup=self.definitions,
+        )
 
     # -- reads ------------------------------------------------------------
     def definitions(self) -> list[ProviderDefinition]:
-        return list(PROVIDERS_BY_ID.values())
+        """Built-ins, user-defined providers, and every configured location.
+
+        A location the owner added on the Fleet page is a **provider** here, not
+        just a dashboard row: its models are discovered and its work is
+        dispatched through the same `studio_hub` adapter as the local Hub, which
+        already takes a per-provider base URL and token. Without this the fleet
+        page could show a site that could never actually be used.
+        """
+        return list(PROVIDERS_BY_ID.values()) + _fleet_definitions()
 
     def definition(self, provider_id: str) -> ProviderDefinition | None:
-        return PROVIDERS_BY_ID.get(provider_id)
+        return PROVIDERS_BY_ID.get(provider_id) or _fleet_definitions_by_id().get(provider_id)
 
     def describe_all(self) -> list[dict[str, Any]]:
         output: list[dict[str, Any]] = []

@@ -18,7 +18,7 @@ from __future__ import annotations
 import json
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from ..config import CREDENTIALS_PATH, ENV_PATH, load_env_file, write_secret
 from .definitions import PROVIDERS_BY_ID, ProviderDefinition
@@ -34,11 +34,28 @@ def mask(value: str) -> str:
 
 
 class CredentialStore:
-    def __init__(self, path: Path | None = None) -> None:
+    def __init__(
+        self,
+        path: Path | None = None,
+        definition_lookup: "Callable[[str], Any] | None" = None,
+    ) -> None:
         self.path = Path(path or CREDENTIALS_PATH)
         self._env = load_env_file(ENV_PATH)
         self._data: dict[str, Any] = {"providers": {}}
+        # How a provider id is resolved to its definition. Set by the registry,
+        # because definitions are not only the built-ins: a location the owner
+        # added on the Fleet page is a provider too, and its Hub token has to be
+        # storable. Left as `None`, this store only knows the static providers —
+        # which is what a test wants when it builds one directly.
+        self._definition_lookup = definition_lookup
         self._load()
+
+    def _definition(self, provider_id: str) -> Any:
+        if self._definition_lookup is not None:
+            found = self._definition_lookup(provider_id)
+            if found is not None:
+                return found
+        return PROVIDERS_BY_ID.get(provider_id)
 
     # -- persistence ------------------------------------------------------
     def _load(self) -> None:
@@ -71,7 +88,7 @@ class CredentialStore:
         stored = self.stored(provider_id).get(field_key)
         if stored:
             return str(stored)
-        definition = PROVIDERS_BY_ID.get(provider_id)
+        definition = self._definition(provider_id)
         if definition is None:
             return ""
         for credential_field in definition.credential_fields:
@@ -81,7 +98,7 @@ class CredentialStore:
 
     def resolved(self, provider_id: str) -> dict[str, str]:
         """Every field for a provider, resolved through the chain."""
-        definition = PROVIDERS_BY_ID.get(provider_id)
+        definition = self._definition(provider_id)
         if definition is None:
             return {}
         return {
@@ -93,7 +110,7 @@ class CredentialStore:
 
         Optional fields (a base-url override, a group id) do not gate a provider.
         """
-        definition = PROVIDERS_BY_ID.get(provider_id)
+        definition = self._definition(provider_id)
         if definition is None:
             return False
         if not definition.credential_fields:
@@ -107,7 +124,7 @@ class CredentialStore:
         entry = self._data["providers"].get(provider_id) or {}
         if "enabled" in entry:
             return bool(entry["enabled"])
-        definition = PROVIDERS_BY_ID.get(provider_id)
+        definition = self._definition(provider_id)
         # A provider with no credential cannot be meaningfully enabled even if
         # its default says so.
         return bool(definition and definition.default_enabled and self.is_configured(provider_id))
@@ -116,7 +133,7 @@ class CredentialStore:
         """Where a value came from: 'stored' | 'env' | 'none'. For the UI."""
         if self.stored(provider_id).get(field_key):
             return "stored"
-        definition = PROVIDERS_BY_ID.get(provider_id)
+        definition = self._definition(provider_id)
         if definition:
             for credential_field in definition.credential_fields:
                 if credential_field.key == field_key and self._env.get(credential_field.env_var):
@@ -126,7 +143,7 @@ class CredentialStore:
     # -- writes -----------------------------------------------------------
     def set_values(self, provider_id: str, values: dict[str, str]) -> None:
         """Store credential values. An empty string clears a field."""
-        definition = PROVIDERS_BY_ID.get(provider_id)
+        definition = self._definition(provider_id)
         if definition is None:
             raise KeyError(provider_id)
         allowed = {f.key for f in definition.credential_fields}

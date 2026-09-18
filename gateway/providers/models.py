@@ -19,7 +19,7 @@ from __future__ import annotations
 import json
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from ..config import MODEL_CACHE_PATH, write_secret
 from .credentials import CredentialStore
@@ -33,9 +33,23 @@ from .discovery import DiscoveryResult, DiscoveredModel, discover
 
 
 class ModelInventory:
-    def __init__(self, credentials: CredentialStore, path: Path | None = None) -> None:
+    def __init__(
+        self,
+        credentials: CredentialStore,
+        path: Path | None = None,
+        definition_lookup: "Callable[[str], Any] | None" = None,
+        definitions_lookup: "Callable[[], list[Any]] | None" = None,
+    ) -> None:
         self.path = Path(path or MODEL_CACHE_PATH)
         self.credentials = credentials
+        # Resolves ids the static map does not know about — chiefly locations
+        # added on the Fleet page, which are providers like any other.
+        self._lookup = definition_lookup
+        # The *list* of providers, for the operations that walk every one of
+        # them (discovery of all, the summary, and building the catalogue).
+        # Iterating the static map instead silently omitted every location the
+        # owner added on the Fleet page.
+        self._all = definitions_lookup
         self._data: dict[str, Any] = {"providers": {}, "enabled": {}, "user": {}}
         self._load()
 
@@ -58,9 +72,22 @@ class ModelInventory:
         write_secret(self.path, json.dumps(self._data, indent=2) + "\n")
 
     # -- discovery --------------------------------------------------------
+    def _every_definition(self) -> list[tuple[str, Any]]:
+        if self._all is not None:
+            return [(d.id, d) for d in self._all()]
+        return list(PROVIDERS_BY_ID.items())
+
+    def _definition(self, provider_id: str) -> Any:
+        """Resolve an id, including locations added on the Fleet page."""
+        if self._lookup is not None:
+            found = self._lookup(provider_id)
+            if found is not None:
+                return found
+        return PROVIDERS_BY_ID.get(provider_id)
+
     def refresh(self, provider_id: str, *, force: bool = True) -> DiscoveryResult:
         """Run live discovery for one provider and cache the result."""
-        definition = PROVIDERS_BY_ID.get(provider_id)
+        definition = self._definition(provider_id)
         if definition is None:
             raise KeyError(provider_id)
 
@@ -92,7 +119,7 @@ class ModelInventory:
 
     def refresh_all(self, *, only_enabled: bool = False) -> dict[str, dict[str, Any]]:
         outcomes: dict[str, dict[str, Any]] = {}
-        for provider_id, definition in PROVIDERS_BY_ID.items():
+        for provider_id, definition in self._every_definition():
             if only_enabled and not self.credentials.is_enabled(provider_id):
                 continue
             result = self.refresh(provider_id)
@@ -116,7 +143,7 @@ class ModelInventory:
 
     def models_for(self, provider_id: str, *, include_disabled: bool = True) -> list[dict[str, Any]]:
         """Merged model list for one provider: discovered + curated + user-added."""
-        definition = PROVIDERS_BY_ID.get(provider_id)
+        definition = self._definition(provider_id)
         if definition is None:
             return []
 
@@ -172,7 +199,7 @@ class ModelInventory:
         fail the moment Story Studio used it must never appear in the picker.
         """
         output: list[tuple[ProviderDefinition, dict[str, Any]]] = []
-        for provider_id, definition in PROVIDERS_BY_ID.items():
+        for provider_id, definition in self._every_definition():
             if modality not in definition.modalities:
                 continue
             if definition.kind not in IMPLEMENTED_KINDS:
@@ -237,7 +264,7 @@ class ModelInventory:
         """Counts for the admin UI header."""
         total = enabled = 0
         per_modality: dict[str, int] = {}
-        for provider_id, definition in PROVIDERS_BY_ID.items():
+        for provider_id, definition in self._every_definition():
             if not self.credentials.is_enabled(provider_id):
                 continue
             for model in self.models_for(provider_id, include_disabled=True):
