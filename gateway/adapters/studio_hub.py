@@ -17,6 +17,7 @@ Studio's retry logic behaves identically regardless of where work ran.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import time
 from pathlib import Path
@@ -116,24 +117,99 @@ def _artifact_url(base: str, batch_id: str, item_index: int, kind: str) -> str:
     return f"{base}/api/hub/jobs/{batch_id}/items/{item_index}/artifact"
 
 
-# Staged voice references, keyed by voice id. The Hub gives an asset a TTL
-# (default 24h), so re-staging on every generation would waste work and disk;
-# refreshing well inside that window is enough.
-#: Staged voice references, keyed by **(voice, controller)**.
+# Voice placement, keyed by **(voice, controller)**.
 #:
-#: The asset id is minted by the controller that received the upload, so it is
-#: only meaningful there. Keyed by voice alone — which it was — a reference staged
-#: on one location was handed to the next location that asked for the same voice,
-#: and that location had never seen the asset. Invisible with a single location,
-#: which is why it survived; with several it fails the moment a second controller
-#: reuses a cached voice.
-_REFERENCE_CACHE: dict[tuple[str, str], tuple[str, float]] = {}
+#: The value is `(kind, id, at)`: either the controller's own library voice or an
+#: asset staged for one attempt. Keyed by voice alone — which it was — a reference
+#: staged on one location was handed to the next location that asked for the same
+#: voice, and that location had never seen the asset. Invisible with a single
+#: location, which is why it survived; with several it fails the moment a second
+#: controller reuses a cached voice.
+_REFERENCE_CACHE: dict[tuple[str, str], tuple[str, str, float]] = {}
 _REFERENCE_TTL_S = 6 * 3600.0
 
 
 def _reference_cache_key(voice_id: str, base: str) -> tuple[str, str]:
-    """Cache identity for a staged reference: the voice *and* the location."""
+    """Cache identity for a voice placement: the voice *and* the location."""
     return (voice_id, base.rstrip("/"))
+
+
+def _clip_digest(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _library_voice_for(
+    client: httpx.Client, base: str, headers: dict[str, str], digest: str
+) -> str:
+    """The controller's own voice id for a clip it already holds, or "".
+
+    The library carries `audio_sha256`, which the Studio Hub session verified is
+    the sha256 of the stored reference file byte-for-byte. Matching on it is exact,
+    and it is also the only safe match: the gateway names this recording
+    `voice-0616aec33b41` where the controller names it `0616aec33b41`, so matching
+    on ids would be a translation this side would have to guess. The hash is a
+    fact.
+
+    Never raises. A controller that does not serve this route, or whose credential
+    may not read it, falls back to staging the clip — which is what happened
+    before this existed, so the failure mode is exactly the old behaviour.
+    """
+    try:
+        response = client.get(f"{base}/studio/voice/api/voices", headers=headers)
+    except httpx.HTTPError:
+        return ""
+    if response.status_code >= 400:
+        return ""
+    try:
+        voices = (response.json() or {}).get("voices") or []
+    except ValueError:
+        return ""
+    for voice in voices:
+        if str(voice.get("audio_sha256") or "") == digest:
+            return str(voice.get("id") or "")
+    return ""
+
+
+def _voice_placement(
+    client: httpx.Client,
+    base: str,
+    headers: dict[str, str],
+    voice_id: str,
+    reference: dict[str, Any],
+) -> tuple[str, str]:
+    """Where the controller should take this voice from: `("library"|"asset", id)`.
+
+    A library voice is one the controller already holds; an asset is a clip staged
+    for this one attempt. They are **mutually exclusive** in the Hub's job payload
+    — its broker refuses both with "Use either voice_library_id or
+    voice_reference_asset_id, not both" — so exactly one is returned.
+
+    The library wins whenever the controller already has the recording. Skipping
+    the upload there is not only a saving: the controller's own entry is the
+    durable form of the voice, while a staged asset is a copy made to serve one
+    job. On this Mac all ten reference clips already match, so every one of those
+    uploads was avoidable.
+    """
+    key = _reference_cache_key(voice_id, base)
+    cached = _REFERENCE_CACHE.get(key)
+    if cached and (time.time() - cached[2]) < _REFERENCE_TTL_S:
+        return cached[0], cached[1]
+
+    path = Path(str(reference.get("path") or ""))
+    if not path.exists():
+        raise BackendError(
+            f"voice reference audio is missing for '{voice_id}'",
+            code="VOICE_PROVIDER_RESULT_INVALID",
+        )
+
+    node_voice_id = _library_voice_for(client, base, headers, _clip_digest(path))
+    if node_voice_id:
+        _REFERENCE_CACHE[key] = ("library", node_voice_id, time.time())
+        return "library", node_voice_id
+
+    asset_id = _stage_voice_reference(client, base, headers, voice_id, path, reference)
+    _REFERENCE_CACHE[key] = ("asset", asset_id, time.time())
+    return "asset", asset_id
 
 
 def _reference_for(request: BackendRequest) -> dict[str, Any] | None:
@@ -163,26 +239,22 @@ def _reference_for(request: BackendRequest) -> dict[str, Any] | None:
 
 
 def _stage_voice_reference(
-    client: httpx.Client, base: str, headers: dict[str, str], voice_id: str, reference: dict[str, Any]
+    client: httpx.Client,
+    base: str,
+    headers: dict[str, str],
+    voice_id: str,
+    path: Path,
+    reference: dict[str, Any],
 ) -> str:
     """Upload a voice's reference clip and return the Hub's asset id.
 
     Qwen3 *Base* models are cloning models: without a reference they fail with
     "Voice cloning needs a reference voice or private reference upload". So the
     clip is staged first and passed as `voice_reference_asset_id`.
+
+    This is the **fallback** now: `_voice_placement` reaches it only when the
+    controller does not already hold the recording.
     """
-    key = _reference_cache_key(voice_id, base)
-    cached = _REFERENCE_CACHE.get(key)
-    if cached and (time.time() - cached[1]) < _REFERENCE_TTL_S:
-        return cached[0]
-
-    path = Path(str(reference.get("path") or ""))
-    if not path.exists():
-        raise BackendError(
-            f"voice reference audio is missing for '{voice_id}'",
-            code="VOICE_PROVIDER_RESULT_INVALID",
-        )
-
     files = {"audio": (path.name, path.read_bytes(), "application/octet-stream")}
     # `transcript_segments` is not optional for Qwen3 Base: the worker refuses a
     # reference without aligned timestamps
@@ -218,7 +290,8 @@ def _stage_voice_reference(
             "hub returned no voice reference asset_id", code="VOICE_PROVIDER_RESULT_INVALID"
         )
 
-    _REFERENCE_CACHE[key] = (asset_id, time.time())
+    # Caching happens in `_voice_placement`, which is the only caller: it caches
+    # the *placement* (library or asset), not the asset id alone.
     return asset_id
 
 
@@ -252,9 +325,11 @@ def _generate_image_or_voice(request: BackendRequest) -> BackendResult:
             voice_id = str(request.params.get("voice_id") or "")
             reference = _reference_for(request)
             if reference is not None:
-                body["voice_reference_asset_id"] = _stage_voice_reference(
-                    client, base, headers, voice_id, reference
-                )
+                kind, value = _voice_placement(client, base, headers, voice_id, reference)
+                # Exactly one of these, never both: the Hub's broker refuses the
+                # pair with "Use either voice_library_id or
+                # voice_reference_asset_id, not both."
+                body["voice_library_id" if kind == "library" else "voice_reference_asset_id"] = value
         try:
             response = client.post(f"{base}/api/hub/jobs", headers=headers, json=body)
         except httpx.HTTPError as exc:
