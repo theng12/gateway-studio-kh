@@ -426,6 +426,15 @@ def main() -> int:
             check("tts character limit is per model, not one invented constant",
                   len([v for v in tts_limits if v]) != 1 or len(tts_rows_now) == 1,
                   f"distinct limits: {sorted(v for v in tts_limits if v)}")
+            # The local lane auto-splits, so it can carry a long script; 25,000
+            # is the agreed figure and the Hub chunks at sentence boundaries
+            # rather than hard-capping.
+            local_limits = {
+                r.get("maximum_input_characters")
+                for r in tts_rows_now if "studio-hub" in str(r.get("id"))
+            }
+            check("the local lane publishes the agreed 25,000 ceiling",
+                  local_limits <= {25000}, f"{local_limits}")
             check("every tts row publishes a positive character limit",
                   all(isinstance(r.get("maximum_input_characters"), int)
                       and r["maximum_input_characters"] > 0 for r in tts_rows_now),

@@ -188,21 +188,23 @@ def _language_codes(languages: Any) -> list[str]:
     return codes
 
 
-#: Per-request text limits for lanes that do not publish one, in characters.
+#: Per-request text limit for a lane that does not publish one, in characters.
 #:
-#: The previous GenStudio published these per model, and Story Studio's own
-#: cached catalogue preserves them: Fish at 25,000 and the local Qwen3 lane at
-#: 5,000. A single number for every model is not a smaller version of the truth,
-#: it is a different claim — the old flat 40,000 over-promised every local model
-#: and Fish by eight times, so a request of that length simply failed.
-_FALLBACK_TTS_CHARACTERS = {
-    "studio_hub": 5000,
-    "fish": 25000,
-}
-
-#: When nothing states a limit. Chosen as the floor of every published limit
-#: above, so a promise made here is one every lane can keep.
-_TTS_CHARACTERS_DEFAULT = 5000
+#: **25,000**, and the local lane is why that is safe rather than optimistic.
+#: A local model does not hard-cap: the Hub's voice catalog declares our families
+#: (`qwen3-tts`, `voxcpm-mlx`, `omnivoice`) as `soft_max_chars: None` with
+#: `chunking: "auto-split"` — it splits long text at sentence boundaries, reuses
+#: the reference for every section, then verifies and joins the audio. Story
+#: Studio never has to chunk anything itself, and neither does this gateway.
+#:
+#: The families that *do* hard-cap are the ones we do not expose: Bark at 150
+#: characters, Orpheus at 170, Spark at 750. If one is ever enabled locally, this
+#: needs to become per model — the Hub already publishes the distinction, it just
+#: does not serve it over its API yet.
+#:
+#: A provider that states its own limit always wins: ElevenLabs publishes
+#: `maximum_text_length_per_request` per model (5,000 / 10,000 / 30,000 / 40,000).
+_TTS_CHARACTERS_DEFAULT = 25000
 
 
 def _tts_characters(model: dict[str, Any], definition: ProviderDefinition) -> int:
@@ -211,7 +213,7 @@ def _tts_characters(model: dict[str, Any], definition: ProviderDefinition) -> in
         value = raw.get(key)
         if isinstance(value, (int, float)) and value > 0:
             return int(value)
-    return _FALLBACK_TTS_CHARACTERS.get(definition.kind, _TTS_CHARACTERS_DEFAULT)
+    return _TTS_CHARACTERS_DEFAULT
 
 
 #: Models that offer no speed control.
@@ -239,6 +241,11 @@ def _tts_row(model_id: str, definition: ProviderDefinition, model: dict[str, Any
         # control at all, and fal's turbo lane allows 0.7-1.2 where the direct
         # one allows 0.5-2. `controls` reflects that rather than claiming a
         # range every model would reject.
+        #
+        # The local lane is different in kind, not in truth: these engines take no
+        # speed parameter, and the Hub slows the finished audio instead. The
+        # adapter passes `speed` through either way, so the control is real — the
+        # work just happens after generation rather than during it.
         "supports_speed": supports_speed,
         "minimum_speed": minimum_speed,
         "maximum_speed": maximum_speed,
