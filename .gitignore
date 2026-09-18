@@ -20,3 +20,6 @@ menubar/build/
 
 # Bundled runtime cache (build artifacts, not source)
 menubar/vendor/
+
+# graphify knowledge graph (generated, not source)
+graphify-out/
