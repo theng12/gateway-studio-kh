@@ -31,6 +31,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from . import limits
 from .config import VOICES_PATH
 from .constants import PRICE_VERSION, zero_pricing
 from .providers import registry
@@ -393,10 +394,17 @@ def _chat_row(model_id: str, definition: ProviderDefinition, model: dict[str, An
         controls = [c for c in controls if c == "max_output_tokens" or c in parameters]
 
     structured = _supports("structured_outputs", "response_format")
+    # Where the provider published nothing, the owner's curated file may know.
+    # Gap-filling only: a live provider value always wins, because a file goes
+    # stale and a provider does not.
     return {
         "queue_class": "direct",
-        "context_window_tokens": _positive(context),
-        "max_output_tokens": _positive(completion),
+        "context_window_tokens": limits.gap(
+            "context_window_tokens", _positive(context), definition.id, model_id
+        ),
+        "max_output_tokens": limits.gap(
+            "max_output_tokens", _positive(completion), definition.id, model_id
+        ),
         "controls": controls,
         "input_modalities": inputs,
         "supports_vision": ("image" in inputs) if inputs else None,

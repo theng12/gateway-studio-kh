@@ -236,9 +236,9 @@ def bind_host() -> str:
 
 def bind_port() -> int:
     try:
-        return int(get("GATEWAY_PORT", "8010"))
+        return int(get("GATEWAY_PORT", "8000"))
     except ValueError:
-        return 8010
+        return 8000
 
 
 def is_loopback() -> bool:

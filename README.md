@@ -213,7 +213,7 @@ skips the window and leaves only the menu bar icon.
 
 **Settings** is where the gateway's own API key lives, with a **Copy** button — that is the value
 Story Studio needs. Paste it into **Story Studio → Settings → This Mac → GenStudio API key**, and set
-**Base URL** to `http://127.0.0.1:8010`. It is the last item in the sidebar, under "Library & app".
+**Base URL** to `http://127.0.0.1:8000`. It is the last item in the sidebar, under "Library & app".
 
 **Launch at login** uses a LaunchAgent (`~/Library/LaunchAgents/kh.gateway.menubar.plist`) rather
 than `SMAppService`, because `SMAppService` requires a signed, registered bundle and this app is
@@ -526,6 +526,27 @@ several passes:
 it, but Story Studio calls `.toLocaleString()` on it unconditionally, so `null` would crash the
 page rather than degrade it.
 
+### Curated limits, where a provider publishes none
+
+Six lanes state no limits at all — Anthropic's `/v1/models` returns only
+`id/display_name/created_at/type`, DeepSeek's returns `id/object/owned_by`, and OpenAI's and
+NVIDIA's return non-JSON. Publishing `null` is honest but it is not the same as knowing, and the
+owner does know these models. That knowledge lives in a small file outside the code:
+
+```
+~/Library/Application Support/gateway-kh/data/model-limits.local.json
+```
+
+```json
+{ "models": { "anthropic-direct::claude-opus-5": {
+    "context_window_tokens": 1000000, "max_output_tokens": 128000 } } }
+```
+
+**It fills gaps; it never overrides.** A value a provider publishes always wins, because live data
+is current and a file goes stale — verified by a test that asserts both directions. An absent file,
+absent entry or unreadable file all mean "no opinion", which is the same `null` as before, so
+nothing here can make the catalogue less honest. Set `GATEWAY_MODEL_LIMITS` to point elsewhere.
+
 ## Contract traps (each cost real debugging time to identify)
 
 - **Never return 402.** Story Studio holds a credit lock keyed on the API key. If it ever sees 402
@@ -595,16 +616,18 @@ scripts/import_voices.py      imports voices from the old Voice Studio
 scripts/annotate_voice_segments.py   generates aligned reference timestamps
 ```
 
-### Why port 8010
+### Why port 8000
 
-Story Studio's default endpoint is `http://127.0.0.1:8000`, which the older GenStudio KH API used
-to hold, so the gateway defaults to **8010** to avoid a collision.
+The gateway listens on **8000**, which is Story Studio's *default* `genstudio_url` — so it needs no
+configuration to find this service, and a settings reset is harmless rather than pointing somewhere
+that does not answer.
 
-As of 2026-09-18 that GenStudio API is **stopped and disabled** (its LaunchAgent had
-`KeepAlive: true`, so a plain `kill` restarted it — it needed `launchctl disable`). **Port 8000 is
-now free.** Moving the gateway there would make Story Studio's out-of-the-box default work with no
-configuration at all; it is not done because the port appears in the test suite, the login item and
-the app config, so it is a deliberate change rather than a convenience.
+It was 8010 while the older GenStudio KH API held 8000. That API is now **stopped and disabled**
+(2026-09-18): its LaunchAgent carried `KeepAlive: true`, so a plain `kill` restarted it within
+seconds and only `launchctl disable` made it stay down. With the port free, this gateway took it.
+
+The port is still configurable in Settings, and `tests/test_ui.py` reads the app's configured port
+rather than assuming one.
 
 ## Deliberately absent
 

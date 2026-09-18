@@ -84,7 +84,7 @@ struct AppConfig: Codable {
         let home = FileManager.default.homeDirectoryForCurrentUser.path
         return AppConfig(
             gatewayDir: "\(home)/Developer/gateway-kh",
-            port: 8010,
+            port: 8000,
             autoStartGateway: true
         )
     }

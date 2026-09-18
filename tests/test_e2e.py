@@ -105,6 +105,14 @@ def main() -> int:
     tmp = Path(tempfile.mkdtemp(prefix="gateway-e2e-"))
     processes: list[subprocess.Popen] = []
 
+    # The owner's curated limits, for lanes that publish none. Placed before the
+    # gateway starts, because the file is read at catalogue build.
+    (tmp / "model-limits.local.json").write_text(json.dumps({
+        "models": {"mock-remote::limits-probe": {
+            "context_window_tokens": 1000000, "max_output_tokens": 128000,
+        }},
+    }))
+
     # A custom provider definition pointing at the mock. This also exercises the
     # user-defined-provider path, which is how the owner adds a vendor the
     # built-in list does not know.
@@ -282,6 +290,29 @@ def main() -> int:
             check("row publishes identity aliases",
                   row["customer_handle"] == row["id"] and row["legacy_ids"] == [])
             check("row publishes context window from provider", row["context_window_tokens"] == 32000)
+
+            # The curated-limits file fills a provider's silence and never
+            # overrides live data. Tested directly against the module, because a
+            # check that depends on which mock models happen to be enabled is a
+            # check that can silently not run — which is how the first version of
+            # this passed while asserting nothing.
+            import importlib
+            os.environ["GATEWAY_MODEL_LIMITS"] = str(tmp / "model-limits.local.json")
+            from gateway import limits as limits_module
+            importlib.reload(limits_module)
+            check("the curated file is read",
+                  limits_module.for_model("mock-remote", "limits-probe")
+                  .get("context_window_tokens") == 1000000)
+            check("a gap is filled from the curated file",
+                  limits_module.gap("max_output_tokens", None, "mock-remote", "limits-probe")
+                  == 128000)
+            check("a published value beats the curated file",
+                  limits_module.gap("max_output_tokens", 8192, "mock-remote", "limits-probe")
+                  == 8192)
+            check("an unstated model stays unknown",
+                  limits_module.gap("max_output_tokens", None, "nobody", "nothing") is None)
+            check("a provider's own value is not overridden by the curated file",
+                  row["context_window_tokens"] == 32000, f"{row['context_window_tokens']}")
             # A published 0 is a claim that the model accepts nothing, which is a
             # different statement from "the provider did not say". Story Studio's
             # own rule forbids the two from sharing a value, so an unpublished

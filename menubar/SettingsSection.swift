@@ -177,7 +177,7 @@ final class SettingsSection: NSObject, AppSection {
     }
 
     @objc private func save() {
-        let port = Int(portField.stringValue.trimmingCharacters(in: .whitespaces)) ?? 8010
+        let port = Int(portField.stringValue.trimmingCharacters(in: .whitespaces)) ?? 8000
         let key = keyField.stringValue.trimmingCharacters(in: .whitespaces)
 
         ConfigStore.shared.update { $0.port = port }

@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import json
 import os
+import pathlib
 import subprocess
 import sys
 import time
@@ -115,6 +116,23 @@ def wrap(body: str) -> str:
     return f'tell application "System Events" to tell process "{APP_PROCESS}"\n{body}\nend tell'
 
 
+def gateway_port() -> int:
+    """The port the app is actually configured with, not a hardcoded one.
+
+    The port is the owner's to change (it moved from 8010 to 8000 when the old
+    GenStudio API was retired), and a test that pins it fails for the wrong
+    reason after a legitimate change.
+    """
+    try:
+        config = json.loads(
+            (pathlib.Path.home() / "Library/Application Support/gateway-kh/menubar.json")
+            .read_text(encoding="utf-8")
+        )
+        return int(config.get("port") or 8000)
+    except (OSError, ValueError, TypeError):
+        return 8000
+
+
 def api_get(path: str) -> dict:
     key = ""
     env = os.path.expanduser("~/Library/Application Support/gateway-kh/.env")
@@ -123,7 +141,7 @@ def api_get(path: str) -> dict:
             if line.startswith("GATEWAY_API_KEY="):
                 key = line.split("=", 1)[1].strip()
     request = urllib.request.Request(
-        f"http://127.0.0.1:8010{path}", headers={"Authorization": f"Bearer {key}"}
+        f"http://127.0.0.1:{gateway_port()}{path}", headers={"Authorization": f"Bearer {key}"}
     )
     return json.load(urllib.request.urlopen(request, timeout=30))
 
@@ -514,7 +532,7 @@ def main() -> int:
     check("shows the local runner state", "Studio Hub" in body)
 
     status = subprocess.run(
-        ["curl", "-s", "-m", "10", "http://127.0.0.1:8010/health"],
+        ["curl", "-s", "-m", "10", f"http://127.0.0.1:{gateway_port()}/health"],
         capture_output=True, text=True,
     ).stdout
     if '"enabled_models"' in status:
@@ -775,7 +793,7 @@ def main() -> int:
     check("one window left", window_count() == 1, f"{window_count()} windows")
     health = subprocess.run(
         ["curl", "-s", "-m", "10", "-o", "/dev/null", "-w", "%{http_code}",
-         "http://127.0.0.1:8010/health"],
+         f"http://127.0.0.1:{gateway_port()}/health"],
         capture_output=True, text=True,
     ).stdout.strip()
     check("gateway still answering", health == "200", f"HTTP {health}")

@@ -1,7 +1,7 @@
 # gateway-kh
 
 One API in front of every local Studio Hub location and 18 cloud providers, so
-**Story Studio KH points at a single URL** (`http://127.0.0.1:8010`) and its model
+**Story Studio KH points at a single URL** (`http://127.0.0.1:8000`) and its model
 pickers fill. Story Studio's own architecture contract requires it to call
 exactly one endpoint and treat it as GenStudio — this is that endpoint. Story
 Studio needs **zero code changes**, only `genstudio_url` and an API key.
@@ -71,8 +71,10 @@ and `adapters/__init__.py` asserts at import that its table agrees.
 
 ## Ports
 
-- **8010** is this gateway.
-- **8000** was the owner's older **GenStudio KH** API. As of 2026-09-18 it is
+- **8000** is this gateway, chosen because it is Story Studio's *default*
+  `genstudio_url` — so no configuration is needed and a settings reset is
+  harmless. The tests read the configured port rather than assuming one.
+- **The older GenStudio KH API used 8000 too.** As of 2026-09-18 it is
   **stopped and disabled**: `launchctl bootout` plus `launchctl disable
   gui/$(id -u)/com.genstudiokh.local-api`, so it will not return at login either.
   Its LaunchAgent had `KeepAlive: true`, which is why a plain `kill` brought it
@@ -80,11 +82,10 @@ and `adapters/__init__.py` asserts at import that its table agrees.
   To restore: `launchctl enable gui/$(id -u)/com.genstudiokh.local-api` then
   `launchctl bootstrap gui/$(id -u)
   ~/Library/LaunchAgents/com.genstudiokh.local-api.plist`.
-- **8000 is therefore free**, and it is Story Studio's *default* `genstudio_url` —
-  so moving this gateway to 8000 would make a settings reset harmless instead of
-  pointing at a service that no longer exists. Not done: the port is referenced by
-  the tests, the LaunchAgent and the app config, so it is a deliberate change
-  rather than a convenience.
+- **Curated limits**: `data/model-limits.local.json` supplies values for lanes
+  that publish none (24 chat rows across six providers). It **fills gaps only** —
+  a provider's published value always wins, or a stale file would quietly beat
+  live data.
 
 ## Locations are providers
 
