@@ -182,6 +182,16 @@ def _video_row(model_id: str, definition: ProviderDefinition, model: dict[str, A
     }
 
 
+def _hub_running() -> bool:
+    """Whether the local Studio Hub answers. Cheap: reads its readiness file."""
+    from .hub import hub_status
+
+    try:
+        return bool(hub_status().get("running"))
+    except Exception:  # noqa: BLE001 - a status probe must never break the catalogue
+        return False
+
+
 def _language_codes(languages: Any) -> list[str]:
     """Normalise a provider's language list into plain codes.
 
@@ -465,6 +475,17 @@ class Catalog:
         self, modality: str, definition: ProviderDefinition, model: dict[str, Any]
     ) -> dict[str, Any]:
         compound = encode_model_id(definition.id, model["model_id"])
+        # A local model whose Hub is not running is offered as LOCKED, not as
+        # ready. This endpoint's own principle is that "offering a model that
+        # fails on use is worse than not offering it" — and with Studio Hub down,
+        # all twelve local rows were still published `locked: false`, so Story
+        # Studio's picker showed twelve models that could only fail. Locking keeps
+        # the row (so a saved preset does not read as `vanished`) while giving the
+        # picker a reason to refuse it.
+        locked, lock_reason = False, None
+        if definition.kind == "studio_hub" and not _hub_running():
+            locked = True
+            lock_reason = "Studio Hub is not running on this Mac."
         row: dict[str, Any] = {
             "id": compound,
             "display_name": model["display_name"],
@@ -480,8 +501,8 @@ class Catalog:
             # defaults are unsafe to rely on.
             "available": True,
             "qualification_only": False,
-            "locked": False,
-            "lock_reason": None,
+            "locked": locked,
+            "lock_reason": lock_reason,
         }
 
         provider_field = _PROVIDER_FIELD.get(modality)
