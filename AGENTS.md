@@ -191,6 +191,17 @@ success.
   resolved once at process start, so on a fresh install it points at the shipped
   default and keeps pointing there — an added voice would not appear until a
   restart, which reads as the import having failed.
+- **Permission to clone and distribute a voice is the owner's, per voice, and never
+  assumed.** He has private voices: *"that needs to be sth i intentionally tick. as
+  some voices are private."* Import therefore grants nothing — no
+  `permission_acknowledged`, no `license` — because a default of "allowed" would
+  copy a private voice to every machine by accident, and adding a clip must never
+  be mistaken for granting permission. Granting sits behind a confirmation naming
+  what is granted and to how many voices; withdrawing is one act with no dialog,
+  since the safe direction should not be the slow one. Withdrawing drops the
+  `license` too, or a later push would look authorised. The state is written into
+  the voice's own folder metadata and shown per voice in the Voices window, so it
+  travels with the voice rather than living only in a catalogue.
 - **Across locations, a voice is staged per job.** The gateway uploads the clip to
   whichever location runs the work, so every location can use every gateway voice
   with nothing pre-copied; the `audio_sha256` match skips that upload where the
@@ -200,7 +211,7 @@ success.
 ## Verification
 
 ```bash
-.venv/bin/python tests/test_e2e.py              # 152 checks, isolated mock upstream
+.venv/bin/python tests/test_e2e.py              # 161 checks, isolated mock upstream
 .venv/bin/python tests/test_fleet_standalone.py # 40 checks, real Hub(s) as locations
 .venv/bin/python tests/test_ui.py               # 87 checks, drives the real app
 ```
