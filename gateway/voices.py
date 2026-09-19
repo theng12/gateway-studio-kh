@@ -39,6 +39,7 @@ from .config import (
 from .providers import registry
 from .providers.definitions import (
     KIND_ELEVENLABS,
+    KIND_FAL,
     KIND_FISH,
     KIND_STUDIO_HUB,
     ProviderDefinition,
@@ -157,6 +158,49 @@ def _elevenlabs_account(definition: ProviderDefinition, values: dict[str, str]) 
         if voices:
             break
     return voices
+
+
+def _fal_tts_voices(definition: ProviderDefinition, values: dict[str, str]) -> list[Voice]:
+    """The voices fal's ElevenLabs TTS endpoints accept.
+
+    **Curated, because fal publishes none.** Its model page and OpenAPI schema for
+    `fal-ai/elevenlabs/tts/*` carry no voice-list endpoint and no `enum` on the
+    `voice` field — only twenty `examples` (Aria, Roger, Sarah … Bill) and a
+    default of `Rachel`. Without them a TTS job has no voice to name and Story
+    Studio's picker is empty, so the lane would look connected and produce nothing.
+
+    The names are passed through verbatim as `provider_voice_id`, which is what
+    the endpoint expects; fal validates the string server-side against the
+    ElevenLabs voice set, so a name outside this list is a provider error rather
+    than a gateway one.
+
+    ponytail: a hand-copied list of fal's own examples. Ceiling — a voice fal
+    accepts but does not `example` cannot be picked here. Upgrade path — read the
+    list from fal if it ever publishes one, or let the owner add names by hand.
+    """
+    return [
+        Voice(
+            id=make_id(definition.id, name),
+            provider_id=definition.id,
+            provider_voice_id=name,
+            display_name=name,
+            source=SOURCE_ACCOUNT,
+            language="",
+            description="ElevenLabs voice, served through fal",
+            owned=True,
+            raw={"engine_name": "ElevenLabs (via fal)", "catalog_status": "published"},
+        )
+        for name in FAL_TTS_VOICE_NAMES
+    ]
+
+
+#: The twenty voices fal lists as `examples` for `fal-ai/elevenlabs/tts/*`, plus
+#: none invented. `Rachel` is fal's own default, so it is first.
+FAL_TTS_VOICE_NAMES: tuple[str, ...] = (
+    "Rachel", "Aria", "Roger", "Sarah", "Laura", "Charlie", "George", "Callum",
+    "River", "Liam", "Charlotte", "Alice", "Matilda", "Will", "Jessica", "Eric",
+    "Chris", "Brian", "Daniel", "Lily", "Bill",
+)
 
 
 def _fish_models(
@@ -317,6 +361,7 @@ def _studio_hub_voices(definition: ProviderDefinition, _values: dict[str, str]) 
 
 _DISCOVERY = {
     KIND_ELEVENLABS: _elevenlabs_account,
+    KIND_FAL: _fal_tts_voices,
     KIND_STUDIO_HUB: _studio_hub_voices,
 }
 

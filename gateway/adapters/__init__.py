@@ -154,7 +154,7 @@ _MODALITIES_BY_KIND: dict[str, frozenset[str]] = {
     # tried and reverted. `image` and `tts` have real handlers and are left to
     # answer for themselves.
     KIND_GOOGLE: frozenset({"chat", "image", "tts"}),
-    KIND_FAL: frozenset({"image", "video"}),
+    KIND_FAL: frozenset({"image", "video", "tts"}),
     KIND_KIE: frozenset({"image", "video", "music"}),
     KIND_FISH: frozenset({"tts"}),
     KIND_BFL: frozenset({"image"}),

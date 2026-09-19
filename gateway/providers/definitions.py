@@ -332,9 +332,13 @@ PROVIDER_DEFINITIONS: tuple[ProviderDefinition, ...] = (
         kind=KIND_FAL,
         base_url=FAL_QUEUE,
         catalog_base_url=FAL_CATALOG,
-        modalities=("image", "video"),
+        # `tts` is served through fal's ElevenLabs routes. Its *catalogue* also
+        # carries llm/music/speech-to-text endpoints, but this adapter does not
+        # implement those, and a modality the adapter cannot serve is withheld
+        # rather than offered — so they are not declared here.
+        modalities=("image", "video", "tts"),
         discovery=DISCOVERY_FAL_CATALOG,
-        description="Image and video aggregator with a live catalogue API.",
+        description="Image, video and ElevenLabs speech aggregator with a live catalogue API.",
         docs_url="https://fal.ai/models",
         credential_fields=(
             CredentialField(

@@ -1160,6 +1160,60 @@ def main() -> int:
                   all(_stt_ok(i.split("::", 1)[-1]) for i in published_stt),
                   f"{sorted(published_stt)}")
 
+            print("\n\033[1m10e. Provider input shapes must match the provider's own schema\033[0m")
+            # fal publishes a per-endpoint JSON schema, and these are read off it.
+            # Both mistakes here were silent: fal's queue accepts *any* body and
+            # validates at the worker, so a wrong field type reports the job as
+            # COMPLETED and only fails when the result is fetched.
+            from gateway.adapters.base import BackendRequest as _BR
+            from gateway.adapters.fal import _input_for as _fal_input
+
+            def fal_req(model_id, modality, **params):
+                return _BR(provider_id="fal-ai", model_id=model_id, modality=modality,
+                           params=params, values={"api_key": "x"},
+                           base_url="https://queue.fal.run", display_name="fal")
+
+            seedance = _fal_input(fal_req("bytedance/seedance-2.5/text-to-video", "video",
+                                          prompt="x", duration_seconds=8))
+            h3max = _fal_input(fal_req("minimax/h3-max/text-to-video", "video",
+                                       prompt="x", duration_seconds=8))
+            omni = _fal_input(fal_req("google/gemini-omni-flash/v1.1/text-to-video", "video",
+                                      prompt="x", duration_seconds=8))
+            check("a string-enum duration is sent as the string the schema declares",
+                  seedance.get("duration") == "8" and isinstance(seedance["duration"], str),
+                  f"{seedance.get('duration')!r}")
+            check("and an integer duration is sent as an integer",
+                  h3max.get("duration") == 8 and isinstance(h3max["duration"], int)
+                  and omni.get("duration") == 8 and isinstance(omni["duration"], int),
+                  f"h3max={h3max.get('duration')!r} omni={omni.get('duration')!r}")
+            check("a required field with a default is still sent, because it is required",
+                  h3max.get("prompt_expansion_mode") == "balanced", f"{h3max}")
+            check("and a model that does not declare it is not sent it",
+                  "prompt_expansion_mode" not in seedance, f"{seedance}")
+
+            tts = _fal_input(fal_req("fal-ai/elevenlabs/tts/turbo-v2.5", "tts",
+                                     text="hello", voice_id="fal-ai::Rachel", speed=1.0))
+            check("fal TTS sends the text and the voice *name*, not our catalogue id",
+                  tts.get("text") == "hello" and tts.get("voice") == "Rachel", f"{tts}")
+            check("and it does not invent fields the endpoint does not declare",
+                  "output_format" not in tts and "sync_mode" not in tts, f"{sorted(tts)}")
+            check("an unnamed voice falls back to fal's own default",
+                  _fal_input(fal_req("fal-ai/elevenlabs/tts/turbo-v2.5", "tts",
+                                     text="hi")).get("voice") == "Rachel")
+
+            # The endpoint list has to be what the adapter can serve, one level
+            # finer than the modality gate: fal's audio family includes a voice
+            # *changer*, a realtime voice and speech-to-speech, none of which take
+            # the `text` this lane sends.
+            from gateway.providers.discovery import _FAL_TEXT_AUDIO_CATEGORIES as _FAL_CATS
+            check("only text-input audio categories are discovered as TTS",
+                  _FAL_CATS == {"text-to-speech", "text-to-audio"}, f"{_FAL_CATS}")
+            from gateway.providers.definitions import PROVIDERS_BY_ID as _P
+            from gateway.adapters import serves as _serves2
+            check("fal declares and serves tts now",
+                  "tts" in _P["fal-ai"].modalities and _serves2(_P["fal-ai"], "tts"),
+                  f"{_P['fal-ai'].modalities}")
+
             print("\n\033[1m11. Manual model add (provider shipped an unlisted model)\033[0m")
             r = httpx.post(f"{BASE}/admin/api/providers/mock-remote/models", headers=AUTH,
                            json={"model_id": "mock-brand-new", "display_name": "Brand New",

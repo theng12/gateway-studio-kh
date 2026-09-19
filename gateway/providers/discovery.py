@@ -285,6 +285,12 @@ def _google_models(definition: ProviderDefinition, values: dict[str, str]) -> Di
     return DiscoveryResult(models=models)
 
 
+#: fal categories whose endpoints accept **text** and produce audio. The TTS lane
+#: sends `text`, so anything else in fal's audio family — a voice changer, a
+#: realtime voice session, speech-to-speech, speech-to-text — cannot serve it.
+_FAL_TEXT_AUDIO_CATEGORIES: frozenset[str] = frozenset({"text-to-speech", "text-to-audio"})
+
+
 def _fal_catalog(definition: ProviderDefinition, values: dict[str, str]) -> DiscoveryResult:
     key = values.get("api_key", "")
     base = (definition.catalog_base_url or definition.base_url).rstrip("/")
@@ -320,7 +326,17 @@ def _fal_catalog(definition: ProviderDefinition, values: dict[str, str]) -> Disc
         metadata = entry.get("metadata") if isinstance(entry.get("metadata"), dict) else {}
         hint = str(metadata.get("category") or entry.get("category") or "")
         modality = infer_modality(model_id, definition, hint)
-        if modality not in {"image", "video"}:
+        # Only what the adapter actually serves. fal's catalogue carries 20-odd
+        # categories; this keeps the ones behind a working code path and drops the
+        # rest, rather than discovering models that could never run.
+        if modality not in {"image", "video", "tts"}:
+            continue
+        if modality == "tts" and hint not in _FAL_TEXT_AUDIO_CATEGORIES:
+            # The adapter sends `text`, so only endpoints that *take* text work.
+            # Category is fal's own declaration, and it is the only reliable signal
+            # here: id-based inference pulled in a voice *changer*
+            # (`audio-to-audio`), a realtime voice, and speech-to-speech models —
+            # all of which would publish and then reject a text-to-speech request.
             continue
         models.append(
             DiscoveredModel(

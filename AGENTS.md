@@ -95,6 +95,28 @@ impossible for a different reason (the route does not exist) and are refused by
 the modality gate. Curated rather than discovered, because no provider publishes
 which formats it accepts.
 
+**fal publishes a per-endpoint JSON schema, and reading it is not optional.**
+`https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=<id>` states the exact
+fields and **types** for any fal endpoint. Two silent mistakes came from not
+reading it: `duration` is a *string* enum on `bytedance/seedance-*` but an
+*integer* on `minimax/h3-max` and `google/gemini-omni-flash`, and
+`minimax/h3-max` declares `prompt_expansion_mode` required despite giving it a
+default. The failure mode is what makes this expensive: **fal's queue accepts any
+body and validates at the worker**, so a wrong body reports the job `COMPLETED`
+and only fails when the result is fetched — a `422 {"detail":[{"type":"missing"…}]}`
+in place of the artifact. Verified live: submitting `{}` to four fal endpoints
+queued and "completed" all four and cost nothing, because the worker rejected
+each one for a missing `prompt`/`text`.
+
+**fal's TTS lane is its ElevenLabs routes, and it has no voice list.** The model
+schema carries no voice endpoint and no `enum` on `voice` — only twenty
+`examples` and a default of `Rachel` — so `voices._fal_tts_voices` curates exactly
+those names as the lane's voices, or a TTS job would have nothing to name and
+Story Studio's picker would be empty. Discovery keeps only fal categories
+`text-to-speech` and `text-to-audio`: its audio family also holds a voice
+*changer*, a realtime voice and speech-to-speech endpoints, none of which accept
+the `text` this adapter sends, and id-based inference was pulling them in.
+
 **An upload past 25 MB is refused 413, not queued and then failed.** Every cloud
 transcription API on the gateway caps a single upload there, and a caller that
 crosses it should be told the number rather than handed a provider error after
@@ -314,7 +336,7 @@ success.
 ## Verification
 
 ```bash
-.venv/bin/python tests/test_e2e.py              # 292 checks, isolated mock upstream
+.venv/bin/python tests/test_e2e.py              # 301 checks, isolated mock upstream
 .venv/bin/python tests/test_fleet_standalone.py # 45 checks, real Hub(s) as locations
 .venv/bin/python tests/test_ui.py               # 94-97 checks, drives the real app
 ```
