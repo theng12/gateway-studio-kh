@@ -69,6 +69,15 @@ withheld** — offering a model that fails on use is worse than not offering it.
 `IMPLEMENTED_KINDS` in `providers/definitions.py` is the single source of truth,
 and `adapters/__init__.py` asserts at import that its table agrees.
 
+**A kind having an adapter does not mean every modality of it works.** That assert
+compares *kinds*, and a modality can be missing inside one. The Google backend
+delegates to the OpenAI-compatible shim, which is what serves
+`/audio/transcriptions` — so a Google transcription row would publish and then fail
+on use, which is exactly what this whole section exists to prevent. Transcription is
+implemented for `openai_compat` and `studio_hub`: **enable OpenAI's transcription
+models, not Google's.** Verified end to end — `whisper-1` through the gateway
+returns a real SRT.
+
 ## Ports
 
 - **8000** is this gateway, chosen because it is Story Studio's *default*
