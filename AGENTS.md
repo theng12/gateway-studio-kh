@@ -286,9 +286,9 @@ success.
 ## Verification
 
 ```bash
-.venv/bin/python tests/test_e2e.py              # 260 checks, isolated mock upstream
+.venv/bin/python tests/test_e2e.py              # 289 checks, isolated mock upstream
 .venv/bin/python tests/test_fleet_standalone.py # 41 checks, real Hub(s) as locations
-.venv/bin/python tests/test_ui.py               # 97 checks, drives the real app
+.venv/bin/python tests/test_ui.py               # 94-97 checks, drives the real app
 ```
 
 `test_e2e.py` is fully isolated (`GATEWAY_DATA`/`GATEWAY_APP_SUPPORT` to a temp

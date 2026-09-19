@@ -992,6 +992,151 @@ def main() -> int:
                 check("and its adapter serves both",
                       _serves(groq, "chat") and _serves(groq, "transcription"))
 
+            print("\n\033[1m10d. Cancelling, and the account surface Story Studio reads\033[0m")
+            # Cancellation was reachable from the app and had no test at all. The
+            # invariant worth pinning is that a cancel must never rewrite a job
+            # that has already finished — `store.cancel` only touches a
+            # non-terminal state, and a regression there would silently turn a
+            # succeeded generation into `cancelled` and lose the artifact.
+            for route in ("/v1/chat/responses/no-such-job/cancel",
+                          "/v1/images/no-such-job/cancel",
+                          "/v1/jobs/no-such-job/cancel"):
+                missing = req(client, "POST", route)
+                check(f"cancelling an unknown job is a typed 404, not a 500 ({route.split('/')[2]})",
+                      missing.status_code == 404 and "JOB_NOT_FOUND" in missing.text,
+                      f"HTTP {missing.status_code} {missing.text[:100]}")
+
+            finished = req(client, "POST", "/v1/images/generations",
+                           json={"model_id": img_id, "prompt": "cancel me"},
+                           headers={"Idempotency-Key": f"e2e-cancel-{int(time.time())}"})
+            if finished.status_code in (200, 202):
+                job_id = finished.json()["id"]
+                done = poll(client, f"/v1/images/{job_id}")
+                check("the job finished before we cancel it", done["state"] == "succeeded",
+                      done.get("state", ""))
+                again = req(client, "POST", f"/v1/images/{job_id}/cancel")
+                check("cancelling a finished job leaves it finished",
+                      again.status_code == 200 and again.json()["state"] == "succeeded",
+                      f"{again.status_code} {again.json().get('state')}")
+                check("and its artifact is still served",
+                      req(client, "GET", f"/v1/images/{job_id}/file").status_code == 200)
+                twice = req(client, "POST", f"/v1/images/{job_id}/cancel")
+                check("cancelling twice is idempotent, not an error",
+                      twice.status_code == 200 and twice.json()["state"] == "succeeded",
+                      f"{twice.status_code} {twice.json().get('state')}")
+
+            # Story Studio reads these on its account and store pages, so their
+            # shape is a contract even though the gateway charges nothing.
+            overview = req(client, "GET", "/v1/account/overview").json()
+            check("the account overview publishes the types the loader expects",
+                  isinstance(overview.get("paid_concurrency_limit"), int)
+                  and isinstance(overview.get("credit_balance"), int)
+                  and isinstance(overview.get("max_queued_jobs"), int),
+                  f"{ {k: overview.get(k) for k in ('paid_concurrency_limit', 'credit_balance', 'max_queued_jobs')} }")
+            activity = req(client, "GET", "/v1/account/credit-activity").json()
+            check("credit activity publishes a paginated shape",
+                  {"items", "page", "page_size", "total"} <= set(activity)
+                  and activity["total"] == 0,
+                  f"{sorted(activity)}")
+            check("and its page_size is bounded like the jobs one",
+                  400 <= req(client, "GET",
+                             "/v1/account/credit-activity?page_size=99999999999999999999999")
+                  .status_code < 500,
+                  "an unbounded page_size is how the jobs route used to 500")
+            account = req(client, "GET", "/v1/content/account").json()
+            check("the content account publishes balance and empty collections",
+                  isinstance(account.get("credit_balance"), int)
+                  and account.get("entitlements") == [] and account.get("purchases") == [],
+                  f"{account}")
+            quote = req(client, "POST", "/v1/content/quotes",
+                        json={"product_id": "mock-product"}).json()
+            check("a content quote is zero-priced and explicit about ownership",
+                  quote.get("credits") == 0 and quote.get("price_version") == "flat"
+                  and quote.get("sufficient_credits") is True,
+                  f"{quote}")
+            purchase = req(client, "POST", "/v1/content/purchases",
+                           json={"product_id": "mock-product"}).json()
+            # The names are the contract's, not guessed: Story Studio refuses a
+            # purchase payload missing any of `ZERO_PURCHASE`, and the credit
+            # fields must be strict integers.
+            required = ("credits_charged", "discount_credits", "balance_before",
+                        "balance_after", "sufficient_credits", "discount", "receipt")
+            check("a content purchase settles with every field the parser needs",
+                  all(k in purchase for k in required)
+                  and purchase["credits_charged"] == 0
+                  and purchase["discount_credits"] == 0
+                  and purchase["balance_before"] == 0
+                  and purchase["balance_after"] == 0
+                  and isinstance(purchase["credits_charged"], int)
+                  and purchase["sufficient_credits"] is True
+                  and purchase["state"] == "completed"
+                  and purchase["product_id"] == "mock-product",
+                  f"{purchase}")
+            check("and receipts come back as an empty paginated list",
+                  req(client, "GET", "/v1/content/receipts").json().get("total") == 0)
+
+            # The admission permit is what bounds image concurrency on the Story
+            # Studio side. Nothing here rations — every lane is pre-owned — but the
+            # permit still has to be a shape the caller can hold and reason about.
+            permit = req(client, "POST", "/v1/images/admission/permits",
+                         json={"model_id": img_id, "operation": "text-to-image"}).json()
+            check("an admission permit names the model and the operation",
+                  permit.get("model_id") == img_id
+                  and permit.get("operation") == "text-to-image"
+                  and len(str(permit.get("id") or "")) >= 8,
+                  f"{permit}")
+            check("and it is unlimited rather than pretending to expire",
+                  permit.get("expires_at") is None, f"{permit.get('expires_at')}")
+            check("a permit for a malformed body is a 4xx, not a 500",
+                  400 <= req(client, "POST", "/v1/images/admission/permits",
+                             content=b"not json",
+                             headers={"Content-Type": "application/json"}).status_code < 500)
+
+            # The admin routes the menu bar app calls. `/admin/api/jobs` bound its
+            # `limit` straight into SQL `LIMIT ?`, so an absurd value answered
+            # **500** on the live gateway and `limit=-1` meant "every job ever
+            # recorded" — the same defect as `/v1/account/jobs`, in the route the
+            # Jobs window uses.
+            huge_limit = req(client, "GET", "/admin/api/jobs?limit=99999999999999999999999")
+            check("an absurd job limit is a 4xx, not a 500",
+                  400 <= huge_limit.status_code < 500, f"got {huge_limit.status_code}")
+            check("and a negative one cannot mean 'every job ever recorded'",
+                  400 <= req(client, "GET", "/admin/api/jobs?limit=-1").status_code < 500)
+            jobs_page = req(client, "GET", "/admin/api/jobs?limit=5")
+            check("the Jobs window's own request still works",
+                  jobs_page.status_code == 200 and isinstance(jobs_page.json().get("jobs"), list),
+                  f"{jobs_page.status_code}")
+            check("and the model browser's limit is bounded too",
+                  400 <= req(client, "GET",
+                             "/admin/api/models?limit=99999999999999999999999").status_code < 500)
+
+            # The rest of the app-facing routes, each of which the Voices or Jobs
+            # window calls on a click.
+            a_voice = (req(client, "GET", "/v1/voices").json().get("voices") or [{}])[0].get("id", "")
+            check("there is a voice to exercise the window's actions against",
+                  bool(a_voice), f"{a_voice!r}")
+            check("the voice library reports a missing key rather than failing",
+                  req(client, "GET", "/admin/api/voices/library?provider_id=elevenlabs-direct")
+                  .status_code in (200, 409),
+                  "a 409 says 'no key configured', which the window shows")
+            check("and an unknown provider there is a 404, not a 500",
+                  req(client, "GET", "/admin/api/voices/library?provider_id=nobody")
+                  .status_code == 404)
+            refreshed = req(client, "POST", "/admin/api/voices/refresh")
+            check("the Voices window's Refresh returns per-provider outcomes",
+                  refreshed.status_code == 200 and isinstance(refreshed.json().get("outcomes"), dict),
+                  refreshed.text[:140])
+            check("refreshing an unknown provider is refused, not silently ignored",
+                  req(client, "POST", "/admin/api/voices/refresh?provider_id=nobody")
+                  .status_code == 404)
+            saved = req(client, "POST", f"/v1/voices/{a_voice}/save")
+            check("a voice can be marked saved", saved.status_code == 200
+                  and saved.json().get("is_saved") is True, saved.text[:120])
+            check("and unsaved again",
+                  req(client, "DELETE", f"/v1/voices/{a_voice}/save").status_code == 200)
+            check("the app's catalog view answers",
+                  req(client, "GET", "/admin/api/catalog").status_code == 200)
+
             print("\n\033[1m11. Manual model add (provider shipped an unlisted model)\033[0m")
             r = httpx.post(f"{BASE}/admin/api/providers/mock-remote/models", headers=AUTH,
                            json={"model_id": "mock-brand-new", "display_name": "Brand New",

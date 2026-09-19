@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any
 
 import httpx
-from fastapi import APIRouter, Depends, Header, Request, Response
+from fastapi import APIRouter, Depends, Header, Query, Request, Response
 from fastapi.responses import HTMLResponse, JSONResponse
 
 from .activity import story_activity
@@ -308,7 +308,7 @@ def search_models(
     modality: str | None = None,
     provider_id: str | None = None,
     only_enabled: bool = False,
-    limit: int = 400,
+    limit: int = Query(400, ge=1, le=2000),
 ) -> dict[str, Any]:
     everything = _flat_models()
     matched = _filter_models(
@@ -726,7 +726,7 @@ def catalog_preview(modality: str | None = None) -> dict[str, Any]:
 
 @router.get("/api/jobs", dependencies=[Depends(require_admin)])
 def list_jobs(
-    limit: int = 50,
+    limit: int = Query(50, ge=1, le=500),
     state: str | None = None,
     modality: str | None = None,
 ) -> dict[str, Any]:
@@ -735,6 +735,14 @@ def list_jobs(
     Display names are resolved here rather than in the client, and the failure
     reason travels with the row: a job that failed is only useful if you can see
     why without opening a log file.
+
+    **`limit` is bounded, and it has to be**: it is bound straight into SQL as
+    `LIMIT ?`, so `?limit=99999999999999999999999` raised
+    `OverflowError: Python int too large to convert to SQLite INTEGER` and
+    answered **500** — measured on the live gateway, and the same defect as the
+    one already fixed on `/v1/account/jobs`. `limit=-1` was quieter and worse:
+    that is SQLite's "no limit", so the Jobs window could be handed every job
+    ever recorded. The app asks for 200, so 500 is headroom rather than a wall.
     """
     labels: dict[tuple[str, str], str] = {}
     for definition in registry.definitions():

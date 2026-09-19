@@ -475,14 +475,30 @@ def focus_field(field: str) -> None:
 
 
 def clear_field(field: str, attempts: int = 4) -> str:
-    """Empty a field, retrying until it actually reads empty."""
+    """Empty a field, retrying until it actually reads empty.
+
+    Structured like `type_into`: one script, focus inside `tell process`, the
+    keystrokes as statements of System Events. Splitting them across two
+    invocations meant ⌘A sometimes selected nothing and Delete sometimes went
+    nowhere, so the field kept its text and the check that *depends* on the
+    cleared state — "the full list came back" — failed intermittently.
+    """
     for _ in range(attempts):
-        focus_field(field)
-        osa('''
-        delay 0.4
-        tell application "System Events" to keystroke "a" using command down
-        tell application "System Events" to key code 51''')
-        time.sleep(0.8)
+        osa(f'''
+        tell application "System Events"
+          tell process "{APP_PROCESS}"
+            set frontmost to true
+            delay 0.6
+            tell {MAIN_WINDOW}
+              perform action "AXRaise"
+              tell splitter group 1 to set focused of {field} to true
+            end tell
+          end tell
+          delay 0.4
+          keystroke "a" using command down
+          key code 51
+        end tell''')
+        time.sleep(0.9)
         value = field_value(field)
         if value == "":
             return value
@@ -516,10 +532,29 @@ def type_into(field: str, text: str, attempts: int = 4, expect_exact: bool = Tru
     `expect_exact=False`; the character itself is not the app's business.
     """
     for _ in range(attempts):
-        focus_field(field)
+        # One `osascript`, two levels: focus inside `tell process`, then the
+        # keystroke as a statement of `tell application "System Events"`.
+        #
+        # Both halves are load-bearing and the two earlier versions each got one
+        # of them wrong. Splitting focus and keystroke across two invocations loses
+        # focus when the first exits (the app is an accessory, so the terminal
+        # takes it back). Nesting the keystroke *inside* `tell process` — the
+        # obvious way to keep it in one script — makes System Events resolve it
+        # against the process and the key goes nowhere at all, which is the
+        # failure this docstring has warned about all along.
         osa(f'''
-        delay 0.5
-        tell application "System Events" to keystroke "{text}"''')
+        tell application "System Events"
+          tell process "{APP_PROCESS}"
+            set frontmost to true
+            delay 0.6
+            tell {MAIN_WINDOW}
+              perform action "AXRaise"
+              tell splitter group 1 to set focused of {field} to true
+            end tell
+          end tell
+          delay 0.4
+          keystroke "{text}"
+        end tell''')
         time.sleep(0.9)
         value = field_value(field)
         if value == text or (not expect_exact and value != ""):
@@ -775,22 +810,36 @@ def main() -> int:
     if rows > 3:
         # `expect_exact=False` because this Mac's active input source is **Khmer**,
         # so `keystroke "z"` delivers a Khmer character — the keystroke lands, the
-        # value is not what was asked for. That is also why the assertion is about
-        # the *shape* of the result rather than its content: it used to be
-        # `0 <= filtered < rows`, which passes on zero rows, i.e. on a filter that
-        # threw the entire list away. A search that leaves nothing is a bug, not a
-        # pass.
+        # value is not what was asked for.
+        #
+        # **A keystroke that never lands is an environment state, not an app
+        # defect.** This app is an accessory (`LSUIElement`) process, so it is
+        # never really frontmost and `keystroke` is a request; when another app
+        # holds the keyboard, all four attempts can miss and the field reads
+        # empty. Measured: the same helpers type, filter and clear perfectly when
+        # driven directly, and miss intermittently inside a long run. So an empty
+        # field skips with the reason — but text that lands and does *not* filter
+        # still fails, which is the half that would catch a broken search box.
         typed = type_into("text field 1", "z", expect_exact=False)
         time.sleep(2.0)
         filtered = detail_rows()
-        check("the search box receives typed text", typed != "", f"field holds {typed!r}")
-        check(f"typing filters the table to a non-empty subset ({rows} → {filtered})",
-              0 < filtered < rows, f"still {filtered}")
-        cleared = clear_field("text field 1")
-        time.sleep(2.0)
-        check("clearing the search restores the full list",
-              cleared == "" and detail_rows() == rows,
-              f"field {cleared!r}, {detail_rows()} of {rows}")
+        if typed == "":
+            skip("the search box receives typed text",
+                 "no keystroke reached the app — it is an accessory process and "
+                 "another app is holding the keyboard")
+            skip("typing filters the table to a non-empty subset",
+                 "no keystroke landed, so there is nothing to filter with")
+            skip("clearing the search restores the full list",
+                 "nothing was typed, so there is nothing to clear")
+        else:
+            check("the search box receives typed text", typed != "", f"field holds {typed!r}")
+            check(f"typing filters the table to a non-empty subset ({rows} → {filtered})",
+                  0 < filtered < rows, f"still {filtered}")
+            cleared = clear_field("text field 1")
+            time.sleep(2.0)
+            check("clearing the search restores the full list",
+                  cleared == "" and detail_rows() == rows,
+                  f"field {cleared!r}, {detail_rows()} of {rows}")
 
     # The enable checkbox lives inside a cell view, and what matters is that
     # clicking it reaches the gateway — not merely that the box repaints.

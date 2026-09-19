@@ -418,7 +418,13 @@ def account_jobs(
 
 
 @app.get("/v1/account/credit-activity", dependencies=[Depends(require_auth)])
-def credit_activity(page: int = 1, page_size: int = 20) -> dict[str, Any]:
+def credit_activity(
+    page: int = Query(1, ge=1), page_size: int = Query(20, ge=1, le=200)
+) -> dict[str, Any]:
+    # Bounded for the same reason as `/v1/account/jobs`: it does not reach SQL
+    # *today*, so an absurd value cannot crash it — but leaving one paginated
+    # route bounded and its sibling unbounded is how the next one gets written
+    # without the guard and then wired to the store.
     return {"items": [], "page": page, "page_size": page_size, "total": 0}
 
 

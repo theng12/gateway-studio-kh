@@ -170,12 +170,18 @@ def main() -> int:
         # Adding discovered them: nothing refreshes models on a timer, so an added
         # location that showed none would read as "it has nothing" rather than
         # "nobody asked it yet".
+        #
+        # Both names are bound before the branch, not inside it: `models` and
+        # `stt_models` are used again by later sections, and defining them only in
+        # the `else` left them unbound whenever the Hub had nothing installed —
+        # an `UnboundLocalError` that replaced the honest skip with a crash.
+        models: list[dict] = []
+        stt_models: list[str] = []
         if no_models:
             skip("adding a location discovers its models",
                  "this Hub reports 0 model packages installed, so there is nothing to discover")
             skip("models discovered from the location", "the Hub offers no model packages")
             skip("transcription models are among them", "the Hub offers no model packages")
-            models: list[dict] = []
         else:
             check("adding a location discovers its models",
                   isinstance(added.json().get("discovered"), int)
