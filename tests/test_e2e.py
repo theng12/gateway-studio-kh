@@ -824,6 +824,8 @@ def main() -> int:
             import struct
             import wave
 
+            from gateway import voice_import
+
             def write_wav(path, seconds=0.2):
                 with wave.open(str(path), "wb") as handle:
                     handle.setnchannels(1)
@@ -874,6 +876,12 @@ def main() -> int:
             stored = next(v for v in catalog["voices"] if v["id"] == "voice-morgan")
             check("the clip's own hash is stored for location matching",
                   len(str(stored.get("audio_sha256") or "")) == 64)
+            # "Processed properly" means one self-contained folder — clip,
+            # transcript, derived metadata — not a clip here and its meaning in a
+            # catalogue somewhere else.
+            files = {f.name for f in (library / "voice-morgan").iterdir()}
+            check("a voice is a self-contained folder, not just a clip",
+                  {"reference.wav", "metadata.json", "transcript.txt"} <= files, f"{sorted(files)}")
 
             again = req(client, "POST", "/admin/api/voices/add",
                         json={"folder": str(picked), "annotate": False}).json()
@@ -883,13 +891,21 @@ def main() -> int:
                   f"{len(catalog['voices'])} -> {len(after['voices'])}")
             check("and reports what it saw again", len(again["imported"]) == 2)
 
+            # The folder that was picked is one the owner will empty later — a
+            # Downloads folder, a temporary copy. The voice must not depend on it.
+            kept = Path(stored["reference_path"])
+            shutil.rmtree(picked)
+            check("deleting the folder it came from leaves the voice intact",
+                  kept.exists() and "voice-library" in str(kept), str(kept))
+            check("and the catalogue still lists it",
+                  any(v["id"] == "voice-morgan" for v in after["voices"]),
+                  f"{len(after['voices'])} entries")
+
             # Segments come from Studio Hub's transcription, so with no Hub there is
             # nothing to transcribe with. Saying that is the whole point: silently
             # doing nothing would look identical to success. Checked directly rather
             # than over HTTP, because this suite runs a mock Hub — the one case that
             # cannot be produced through the API here is "there is no Hub at all".
-            from gateway import voice_import
-
             real_base_url = voice_import.hub_base_url
             voice_import.hub_base_url = lambda: ""
             guard = voice_import.start_annotation()

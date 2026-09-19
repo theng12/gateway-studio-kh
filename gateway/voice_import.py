@@ -98,6 +98,78 @@ def voices() -> list[dict]:
     return [v for v in _read_catalog().get("voices") or [] if isinstance(v, dict)]
 
 
+def voice_dir(voice_id: str) -> Path:
+    """One folder per voice: the clip *and* everything derived from it."""
+    return LIBRARY_DIR / voice_id
+
+
+def write_voice_files(entry: dict) -> None:
+    """Write a voice's derived files beside its clip.
+
+    A voice folder is meant to be self-contained — clip, transcript, timestamped
+    segments, metadata — rather than a clip here and its meaning in a catalogue
+    somewhere else. Two reasons, and the second is the point:
+
+      * the catalogue can be rebuilt from the folders, so a lost `voices.json` is
+        recoverable rather than a re-import of clips nobody kept;
+      * a voice folder is exactly the unit that would be copied to a node, so
+        making one portable now is what makes that possible later.
+
+    Never raises: a catalogue entry that cannot write its files is still usable,
+    and losing a whole import over an unwritable folder would be worse.
+    """
+    voice_id = str(entry.get("id") or "")
+    if not voice_id:
+        return
+    directory = voice_dir(voice_id)
+    try:
+        directory.mkdir(parents=True, exist_ok=True)
+        transcript = str(entry.get("reference_transcript") or "")
+        if transcript:
+            (directory / "transcript.txt").write_text(transcript + "\n", encoding="utf-8")
+        segments = entry.get("reference_segments")
+        if segments:
+            (directory / "segments.json").write_text(
+                json.dumps(segments, indent=2) + "\n", encoding="utf-8"
+            )
+        (directory / "metadata.json").write_text(
+            json.dumps({
+                "id": voice_id,
+                "display_name": entry.get("display_name"),
+                "full_name": entry.get("full_name"),
+                "language": entry.get("language"),
+                "gender": entry.get("gender"),
+                "audio_sha256": entry.get("audio_sha256"),
+                # Whether this voice can clone at all: no segments, no reference.
+                "has_transcript": bool(transcript),
+                "segment_count": len(segments or []),
+            }, indent=2) + "\n",
+            encoding="utf-8",
+        )
+    except OSError:
+        return
+
+
+def materialise() -> int:
+    """Write the derived files for every voice that is missing them.
+
+    Idempotent, and used as a backfill for voices imported before the folders were
+    self-contained. Returns how many folders were completed.
+    """
+    completed = 0
+    for entry in voices():
+        directory = voice_dir(str(entry.get("id") or ""))
+        wanted = [directory / "metadata.json"]
+        if entry.get("reference_transcript"):
+            wanted.append(directory / "transcript.txt")
+        if entry.get("reference_segments"):
+            wanted.append(directory / "segments.json")
+        if not all(path.exists() for path in wanted):
+            write_voice_files(entry)
+            completed += 1
+    return completed
+
+
 # ---------------------------------------------------------------------------
 # Finding what the owner picked
 
@@ -255,6 +327,9 @@ def import_folder(folder: Path) -> dict:
             entry.setdefault("reference_segments", None)
 
         by_id[voice_id] = entry
+        # The folder, not just the catalogue row: clip plus transcript plus
+        # metadata, so the voice is one self-contained thing on disk.
+        write_voice_files(entry)
         imported.append({
             "id": voice_id,
             "display_name": entry["display_name"],
@@ -387,6 +462,10 @@ def _run_annotation(pending: list[dict], model: str) -> None:
                 for entry in payload.get("voices") or []:
                     if entry.get("id") == voice.get("id"):
                         entry["reference_segments"] = voice.get("reference_segments")
+                        # Written here too: the segments are the thing that makes
+                        # the voice clonable, so they belong beside the clip and not
+                        # only in a catalogue that can be lost.
+                        write_voice_files(entry)
                 _write_catalog(payload)
                 with _state_lock:
                     _state["done"] += 1
