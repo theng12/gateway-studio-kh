@@ -1137,6 +1137,29 @@ def main() -> int:
             check("the app's catalog view answers",
                   req(client, "GET", "/admin/api/catalog").status_code == 200)
 
+            # A per-model capability, not a per-kind one. The gateway asks every
+            # cloud transcription lane for `response_format: "srt"`; OpenAI's
+            # `gpt-4o-transcribe`/`gpt-transcribe` families accept `json`/`text`
+            # only and answer 400, and the `-diarize`/`-live`/`realtime` ones are
+            # not timestamped-transcription endpoints at all. Tickable, they were
+            # models that fail the moment anything uses them — the same trap as
+            # OpenRouter's `:batch` variants.
+            from gateway.providers.definitions import transcription_can_serve as _stt_ok
+            check("a model that can return SRT is publishable",
+                  _stt_ok("whisper-1") and _stt_ok("mlx-community/whisper-base-mlx"),
+                  "whisper-1 and local Whisper are the lanes that work")
+            check("and one that cannot is withheld rather than offered then refused",
+                  not _stt_ok("gpt-4o-transcribe")
+                  and not _stt_ok("gpt-4o-mini-transcribe")
+                  and not _stt_ok("gpt-4o-transcribe-diarize"),
+                  "these accept json/text only")
+            # The rule has to reach the catalogue, not just the helper.
+            published_stt = {m["id"] for m in
+                             req(client, "GET", "/v1/transcription/models").json()["models"]}
+            check("no published transcription row is one the gateway cannot read back",
+                  all(_stt_ok(i.split("::", 1)[-1]) for i in published_stt),
+                  f"{sorted(published_stt)}")
+
             print("\n\033[1m11. Manual model add (provider shipped an unlisted model)\033[0m")
             r = httpx.post(f"{BASE}/admin/api/providers/mock-remote/models", headers=AUTH,
                            json={"model_id": "mock-brand-new", "display_name": "Brand New",

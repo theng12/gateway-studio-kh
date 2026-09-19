@@ -27,6 +27,7 @@ from .definitions import (
     DISCOVERY_STATIC,
     PROVIDERS_BY_ID,
     ProviderDefinition,
+    transcription_can_serve,
 )
 from .discovery import DiscoveryResult, DiscoveredModel, discover
 
@@ -216,8 +217,18 @@ class ModelInventory:
             if not self.credentials.is_configured(provider_id):
                 continue
             for model in self.models_for(provider_id, include_disabled=False):
-                if model["modality"] == modality:
-                    output.append((definition, model))
+                if model["modality"] != modality:
+                    continue
+                # A per-model capability, not a per-kind one. The gateway asks
+                # every cloud transcription lane for `response_format: "srt"`, and
+                # most of OpenAI's newer transcription models answer that with a
+                # 400 — so they were tickable and then failed on use. Same rule as
+                # the modality gate above, one level finer.
+                if modality == "transcription" and not transcription_can_serve(
+                    str(model["model_id"])
+                ):
+                    continue
+                output.append((definition, model))
         return output
 
     # -- writes -----------------------------------------------------------

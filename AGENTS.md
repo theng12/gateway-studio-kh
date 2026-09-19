@@ -81,6 +81,20 @@ transcription, through the same shim, at roughly a tenth of OpenAI's price per
 audio-minute); it needs `GROQ_API_KEY` before its models appear, because nothing
 is published from an unconfigured provider.
 
+**The gateway asks every cloud transcription lane for `response_format: "srt"`,
+so a model that cannot answer in SRT must not be offered.** On OpenAI's side only
+`whisper-1` can — the `gpt-4o-transcribe` and `gpt-transcribe` families accept
+`json`/`text` only and answer 400, and `gpt-4o-transcribe-diarize`,
+`gpt-live-transcribe` and `gpt-realtime-whisper` are diarising or streaming
+endpoints rather than timestamped transcription. Ticking one of those published a
+model that failed the moment anything used it, which is the `:batch` trap again.
+They are listed in `TRANSCRIPTION_SRT_UNSUPPORTED` (`providers/definitions.py`)
+and withheld from Story Studio; they stay visible in the inventory, so ticking one
+still works as a control, it just never publishes. Google's transcription rows are
+impossible for a different reason (the route does not exist) and are refused by
+the modality gate. Curated rather than discovered, because no provider publishes
+which formats it accepts.
+
 **An upload past 25 MB is refused 413, not queued and then failed.** Every cloud
 transcription API on the gateway caps a single upload there, and a caller that
 crosses it should be told the number rather than handed a provider error after
@@ -286,7 +300,7 @@ success.
 ## Verification
 
 ```bash
-.venv/bin/python tests/test_e2e.py              # 289 checks, isolated mock upstream
+.venv/bin/python tests/test_e2e.py              # 292 checks, isolated mock upstream
 .venv/bin/python tests/test_fleet_standalone.py # 41 checks, real Hub(s) as locations
 .venv/bin/python tests/test_ui.py               # 94-97 checks, drives the real app
 ```

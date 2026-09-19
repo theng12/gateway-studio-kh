@@ -64,6 +64,51 @@ IMPLEMENTED_KINDS: frozenset[str] = frozenset(
     }
 )
 
+#: Transcription models that cannot honour the request this gateway makes.
+#:
+#: The gateway asks every cloud transcription lane for
+#: `response_format: "srt"`, because that is what Story Studio consumes. On
+#: OpenAI's side only `whisper-1` supports SRT: the `gpt-4o-transcribe` and
+#: `gpt-transcribe` families accept `json`/`text` only and answer **400** to
+#: anything else, and `gpt-4o-transcribe-diarize`, `gpt-live-transcribe` and
+#: `gpt-realtime-whisper` are diarising or streaming endpoints rather than
+#: transcription-with-timestamps. Google's OpenAI-compatible transcription route
+#: does not exist at all, so every Google transcription row is impossible — that
+#: one is refused by the modality gate in `gateway.adapters`, not here.
+#:
+#: Left tickable, each of these is a model the owner can switch on that then fails
+#: the moment anything uses it — the state this codebase calls the worst one, and
+#: the same trap as OpenRouter's `:batch` variants. They stay discoverable and
+#: visible in the inventory; they are simply never published.
+#:
+#: ponytail: a curated exception list, because no provider *publishes* which
+#: response formats it accepts. Ceiling — a new model that cannot produce SRT is
+#: published until it is added here. Upgrade path — read the capability from the
+#: provider where it states one, or request a format every model supports and
+#: synthesise the SRT here; the timestamp-less families cannot support that
+#: either, so this list would survive the change.
+TRANSCRIPTION_SRT_UNSUPPORTED: frozenset[str] = frozenset(
+    {
+        "gpt-4o-mini-transcribe",
+        "gpt-4o-mini-transcribe-2025-03-20",
+        "gpt-4o-mini-transcribe-2025-12-15",
+        "gpt-4o-transcribe",
+        "gpt-4o-transcribe-diarize",
+        "gpt-transcribe",
+        "gpt-live-transcribe",
+        "gpt-realtime-whisper",
+    }
+)
+
+
+def transcription_can_serve(model_id: str) -> bool:
+    """Whether this transcription model can answer with the SRT we must return.
+
+    `whisper-1` and every local Studio Hub Whisper model can; see
+    `TRANSCRIPTION_SRT_UNSUPPORTED` for the ones that cannot.
+    """
+    return model_id not in TRANSCRIPTION_SRT_UNSUPPORTED
+
 # ---------------------------------------------------------------------------
 # Discovery strategies
 # ---------------------------------------------------------------------------
