@@ -173,10 +173,13 @@ makes a working transcription model a prerequisite for stocking voices at all.
 With no Hub it refuses and says so; silently doing nothing would look exactly like
 success.
 
-- **The gateway owns the clip.** `voice_import.import_folder` copies each reference
-  into `DATA_DIR/voice-library/<voice-id>/` and records the clip's `audio_sha256`,
-  rather than pointing at wherever the clip came from. A catalogue pointing into
-  someone else's folder breaks the voice the day that folder moves.
+- **The gateway owns the clip, and the folder is the whole voice.** A voice folder
+  is `reference.<ext>` + `transcript.txt` + `segments.json` + `metadata.json`, so a
+  lost `voices.json` is recoverable from the folders and a folder is exactly the
+  unit that would later be copied to a node. Import copies into
+  `DATA_DIR/voice-library/<voice-id>/` and never points at the folder it read from:
+  that folder is often a Downloads folder the owner will empty, and a catalogue
+  pointing into it breaks the voice the day he does.
 - **Two shapes are accepted, because both are things people have**: a folder of
   per-voice folders (the old library layout) and a folder of loose audio files. The
   old importer read only the first, so a clip dropped in by hand was silently
@@ -197,7 +200,7 @@ success.
 ## Verification
 
 ```bash
-.venv/bin/python tests/test_e2e.py              # 143 checks, isolated mock upstream
+.venv/bin/python tests/test_e2e.py              # 146 checks, isolated mock upstream
 .venv/bin/python tests/test_fleet_standalone.py # 40 checks, real Hub(s) as locations
 .venv/bin/python tests/test_ui.py               # 87 checks, drives the real app
 ```
