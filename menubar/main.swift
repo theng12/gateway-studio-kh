@@ -80,12 +80,28 @@ struct AppConfig: Codable {
     /// still decodes; `nil` is treated as "has not launched before".
     var hasLaunchedBefore: Bool?
 
+    /// Whether quitting the app leaves the gateway running.
+    ///
+    /// **Defaults to `false`, and that default was changed deliberately.** The
+    /// gateway outliving the app looks convenient — Story Studio keeps working
+    /// when the menu bar app is closed — but it makes a rebuild impossible to
+    /// verify by hand: on the next launch the app *adopts* the surviving process,
+    /// so "quit and reopen" leaves you on the old code, with no symptom other
+    /// than a feature quietly not working. Measured once: a gateway served for
+    /// two hours across four rebuilds. An orphaned process is not a feature you
+    /// can see; a checkbox you can read is.
+    ///
+    /// Optional so a config written before it existed still decodes; `nil` reads
+    /// as `false`, which is the new default.
+    var keepGatewayRunning: Bool?
+
     static func makeDefault() -> AppConfig {
         let home = FileManager.default.homeDirectoryForCurrentUser.path
         return AppConfig(
             gatewayDir: "\(home)/Developer/gateway-kh",
             port: 8000,
-            autoStartGateway: true
+            autoStartGateway: true,
+            keepGatewayRunning: false
         )
     }
 }
@@ -421,6 +437,9 @@ final class GatewayController {
         environment["GATEWAY_ENV_FILE"] = AppPaths.env.path
         // Run the source in place; no install step required.
         environment["PYTHONPATH"] = workingDirectory.path
+        // The gateway reports this at /health, so the app can tell whether the
+        // process it is talking to is the one it just installed.
+        environment["GATEWAY_BUILD"] = appBuild
         task.environment = environment
 
         if !FileManager.default.fileExists(atPath: logPath) {
@@ -499,6 +518,112 @@ final class GatewayController {
             // Adopted, not spawned. Stopping it is still what was asked for.
             kill(adopted, SIGTERM)
             adoptedPid = nil
+        }
+        // Whatever else is holding the port, even if we never learned its pid —
+        // which is exactly the case that makes a restart silently ineffective.
+        killPortHolders()
+    }
+
+    /// Kill anything listening on our port, by asking the OS who that is.
+    ///
+    /// `stop()` alone could only kill a process it already knew about, so a
+    /// gateway whose `/health` had been unreachable — or one started before this
+    /// app ran — survived a restart and was then adopted. That is the difference
+    /// between "restart" and "restart, probably". `lsof -ti` names the holders
+    /// regardless of how they started.
+    /// Is anything still listening on our port?
+    func portIsHeld() -> Bool {
+        let task = Process()
+        task.executableURL = URL(fileURLWithPath: "/usr/sbin/lsof")
+        task.arguments = ["-ti", "tcp:\(port)", "-sTCP:LISTEN"]
+        task.standardOutput = FileHandle.nullDevice
+        task.standardError = FileHandle.nullDevice
+        do { try task.run() } catch { return false }
+        task.waitUntilExit()
+        return task.terminationStatus == 0
+    }
+
+    @discardableResult
+    func killPortHolders() -> [pid_t] {
+        let task = Process()
+        task.executableURL = URL(fileURLWithPath: "/usr/sbin/lsof")
+        task.arguments = ["-ti", "tcp:\(port)", "-sTCP:LISTEN"]
+        let pipe = Pipe()
+        task.standardOutput = pipe
+        task.standardError = FileHandle.nullDevice
+        do {
+            try task.run()
+        } catch {
+            return []
+        }
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        task.waitUntilExit()
+        let pids = (String(data: data, encoding: .utf8) ?? "")
+            .split(whereSeparator: { $0 == "\n" || $0 == " " })
+            .compactMap { pid_t($0.trimmingCharacters(in: .whitespaces)) }
+            .filter { $0 > 0 && $0 != getpid() }
+        for pid in pids { kill(pid, SIGTERM) }
+        return pids
+    }
+
+    // MARK: Build identity
+
+    /// The build stamp of the app that is running.
+    lazy var appBuild: String = {
+        Bundle.main.object(forInfoDictionaryKey: "GatewayBuild") as? String ?? "unknown"
+    }()
+
+    /// What the running gateway says it is, or `nil` when nothing answers.
+    func runningBuild(_ completion: @escaping (String?) -> Void) {
+        guard let url = URL(string: "http://127.0.0.1:\(port)/health") else {
+            completion(nil); return
+        }
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 4.0
+        URLSession.shared.dataTask(with: request) { data, response, _ in
+            let code = (response as? HTTPURLResponse)?.statusCode ?? 0
+            var build: String?
+            if code == 200, let data,
+               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                build = json["build"] as? String
+            }
+            DispatchQueue.main.async { completion(build) }
+        }.resume()
+    }
+
+    /// A sentence a person can act on, comparing the two builds.
+    ///
+    /// This is the check that was missing: an adopted gateway running code from
+    /// before a rebuild has no symptom except a feature that quietly does not
+    /// work, and the app had no way to say so.
+    func buildReport(_ completion: @escaping (String, Bool) -> Void) {
+        runningBuild { [weak self] running in
+            guard let self else { return }
+            guard let running else {
+                completion("Nothing is listening on port \(self.port), so nothing is running.", false)
+                return
+            }
+            if running == "unknown" {
+                completion("A gateway is running but does not say which build it is. "
+                           + "Restart it to be sure.", false)
+            } else if running == self.appBuild {
+                completion("Gateway is up to date — build \(running).", true)
+            } else {
+                completion("The gateway is running build \(running), but this app is "
+                           + "\(self.appBuild). It is serving older code — restart it.",
+                           false)
+            }
+        }
+    }
+
+    /// Stop whatever is running and start this build, for the menu and the button.
+    func restartCleanly() {
+        killPortHolders()
+        process = nil
+        adoptedPid = nil
+        stopping = false
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { [weak self] in
+            self?.start()
         }
     }
 
@@ -814,6 +939,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var studioHubStartItem: NSMenuItem!
     private var studioHubRunning = false
 
+    /// Quitting the app stops the gateway it started, unless asked otherwise.
+    ///
+    /// **This is a behaviour change, and the old one was a mistake.** Leaving the
+    /// gateway running means the next launch *adopts* it, so "quit and reopen"
+    /// silently keeps serving pre-rebuild code — measured once at two hours across
+    /// four rebuilds, with no symptom but a feature quietly not working. The
+    /// convenience it bought (Story Studio keeps working when the app is closed)
+    /// is real, so it is one checkbox away in Settings — but the safe thing is now
+    /// the default, and the app says which build is running either way.
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        if ConfigStore.shared.config.keepGatewayRunning == true {
+            return .terminateNow
+        }
+        GatewayController.shared.stop()
+        // Terminating a process is asynchronous, so give the port a moment to be
+        // released — otherwise the next launch races the old listener and adopts
+        // it, which is the whole problem this is here to fix.
+        GatewayController.shared.killPortHolders()
+        let deadline = Date().addingTimeInterval(2.0)
+        while Date() < deadline, GatewayController.shared.portIsHeld() {
+            usleep(100_000)
+        }
+        return .terminateNow
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         if let button = statusItem.button {
@@ -925,6 +1075,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         menu.addItem(.separator())
 
+        menu.addItem(item("Check Gateway…", #selector(checkGateway)))
+        menu.addItem(item("What's New", #selector(showWhatsNew)))
+        menu.addItem(.separator())
         menu.addItem(item("Settings…", #selector(openSettings), key: ","))
         menu.addItem(item("Open data folder", #selector(openData)))
         menu.addItem(item("Open log", #selector(openLog)))
@@ -1023,6 +1176,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @objc private func quit() { NSApp.terminate(nil) }
+
+    /// The same two answers the Overview page gives, from the menu bar, because
+    /// "is this the latest build?" is asked when something looks wrong — and the
+    /// window may not be open.
+    @objc private func checkGateway() {
+        GatewayController.shared.buildReport { message, _ in
+            let alert = NSAlert()
+            alert.messageText = "Gateway status"
+            alert.informativeText = message
+            alert.alertStyle = .informational
+            alert.addButton(withTitle: "OK")
+            alert.addButton(withTitle: "Restart Gateway")
+            if alert.runModal() == .alertSecondButtonReturn {
+                GatewayController.shared.restartCleanly()
+            }
+        }
+    }
+
+    @objc private func showWhatsNew() { WhatsNewWindow.shared.show() }
 
     // MARK: Studio Hub
 

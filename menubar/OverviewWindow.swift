@@ -159,6 +159,7 @@ final class OverviewSection: NSObject, AppSection {
     private var tiles: [String: StatTile] = [:]
     private var modalityStack = NSStackView()
     private var hubLabel = NSTextField(labelWithString: "—")
+    private var buildLabel: NSTextField!
     private var guidanceLabel: NSTextField!
     private var activityStack = NSStackView()
 
@@ -271,9 +272,23 @@ final class OverviewSection: NSObject, AppSection {
         actions.spacing = 8
         actions.addArrangedSubview(button("Open Provider Console", #selector(openConsole)))
         actions.addArrangedSubview(button("Refresh", #selector(refreshNow)))
+        // "Am I running the latest?" used to be unanswerable from the app, and a
+        // stale gateway adopted on launch had no symptom but a feature quietly not
+        // working. These two are that answer.
+        actions.addArrangedSubview(button("Check Gateway", #selector(checkGateway)))
+        actions.addArrangedSubview(button("Restart Gateway", #selector(restartGateway)))
+        actions.addArrangedSubview(button("What's New", #selector(showWhatsNew)))
         actions.addArrangedSubview(button("Open Log", #selector(openLog)))
         actions.addArrangedSubview(button("Open Data Folder", #selector(openData)))
         root.addArrangedSubview(actions)
+
+        // The build check reports here, next to the other status text rather than
+        // in a dialog: an answer you have to dismiss is one you stop asking for.
+        buildLabel = NSTextField(labelWithString: "")
+        buildLabel.font = .systemFont(ofSize: 11.5)
+        buildLabel.textColor = .secondaryLabelColor
+        buildLabel.lineBreakMode = .byTruncatingTail
+        root.addArrangedSubview(buildLabel)
 
         // Scrolls, for the same reason the Fleet page does: this content has a
         // required height (stat tiles, modality rows, activity) which, pinned
@@ -507,6 +522,38 @@ final class OverviewSection: NSObject, AppSection {
     }
 
     // MARK: Actions
+
+    @objc private func checkGateway() {
+        buildLabel.textColor = .secondaryLabelColor
+        buildLabel.stringValue = "Checking the gateway…"
+        GatewayController.shared.buildReport { [weak self] message, ok in
+            guard let self else { return }
+            self.buildLabel.textColor = ok ? .secondaryLabelColor : .systemOrange
+            self.buildLabel.stringValue = message
+        }
+    }
+
+    /// Stop whatever holds the port and start this build.
+    ///
+    /// Deliberately not `restart()`: that could only stop a process it already knew
+    /// about, so a gateway started before this app ran survived a "restart" and was
+    /// adopted again. This kills the port holder by pid and then says what happened.
+    @objc private func restartGateway() {
+        buildLabel.textColor = .secondaryLabelColor
+        let killed = GatewayController.shared.killPortHolders()
+        buildLabel.stringValue = killed.isEmpty
+            ? "Restarting the gateway…"
+            : "Stopped \(killed.count) process\(killed.count == 1 ? "" : "es") on port "
+              + "\(GatewayController.shared.port); restarting…"
+        GatewayController.shared.restartCleanly()
+        // Long enough for the new process to answer, short enough to feel like a
+        // button and not a spinner.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 6.0) { [weak self] in
+            self?.checkGateway()
+        }
+    }
+
+    @objc private func showWhatsNew() { WhatsNewWindow.shared.show() }
 
     @objc private func openConsole() { MainWindow.shared.show(section: "providers") }
 

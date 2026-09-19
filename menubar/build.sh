@@ -100,8 +100,21 @@ cp "$ROOT/requirements.txt" "$APP/Contents/Resources/gateway/"
 # Shipped read-only defaults. User data lives in Application Support.
 [ -f "$ROOT/data/voices.json" ] && cp "$ROOT/data/voices.json" "$APP/Contents/Resources/gateway/data/"
 
+echo "==> stamping the build"
+# One identity, written in two places the app and the gateway each read, so
+# "is the thing running this?" is answerable instead of assumed. A stale gateway
+# serving old code through a rebuild is invisible without this — measured: one ran
+# for two hours across four rebuilds. The stamp is the commit plus the minute it
+# was built, because two builds of the same commit are still two builds.
+BUILD_ID="$(git -C "$ROOT" rev-parse --short HEAD 2>/dev/null || echo nogit)-$(date -u +%Y%m%d%H%M)"
+echo "$BUILD_ID" > "$APP/Contents/Resources/gateway/BUILD"
+echo "    build $BUILD_ID"
+
+echo "==> bundling what's new"
+cp "$HERE/whats-new.md" "$APP/Contents/Resources/whats-new.md"
+
 echo "==> writing Info.plist"
-cat > "$APP/Contents/Info.plist" <<'PLIST'
+cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -112,7 +125,8 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
     <key>CFBundleExecutable</key><string>GatewayKH</string>
     <key>CFBundlePackageType</key><string>APPL</string>
     <key>CFBundleShortVersionString</key><string>0.1.0</string>
-    <key>CFBundleVersion</key><string>1</string>
+    <key>CFBundleVersion</key><string>$BUILD_ID</string>
+    <key>GatewayBuild</key><string>$BUILD_ID</string>
     <key>CFBundleIconFile</key><string>AppIcon</string>
     <key>LSMinimumSystemVersion</key><string>13.0</string>
     <key>NSHighResolutionCapable</key><true/>

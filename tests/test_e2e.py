@@ -212,6 +212,12 @@ def main() -> int:
         "GATEWAY_APP_SUPPORT": str(tmp),
         "GATEWAY_API_KEY": GW_KEY,
         "GATEWAY_PORT": str(GW_PORT),
+        # A known build stamp, which is also how the app passes its own: the menu
+        # bar app sets GATEWAY_BUILD when it spawns the gateway, and Check Gateway
+        # compares that answer against the app's Info.plist. A fixed value here
+        # makes the reading deterministic instead of depending on whether a BUILD
+        # file happens to sit beside the package.
+        "GATEWAY_BUILD": "test-build-0000",
         # A clean slate: without this the gateway would migrate the developer's
         # real credentials and configured providers into the test run.
         "GATEWAY_NO_MIGRATE": "1",
@@ -264,6 +270,11 @@ def main() -> int:
             print("\n\033[1m1. Bootstrap and provider registry\033[0m")
             health = httpx.get(f"{BASE}/health").json()
             check("health ok", health["status"] == "ok")
+            # The stamp the app compares against its own. Without it a gateway
+            # adopted from a previous build is indistinguishable from the current
+            # one, which is how four rebuilds "took effect" without taking effect.
+            check("health says which build is running",
+                  health.get("build") == "test-build-0000", repr(health.get("build")))
             # Counted from the shipped list rather than hardcoded: adding a
             # provider is a legitimate change, and a literal here fails for a
             # reason that has nothing to do with what the check is about.

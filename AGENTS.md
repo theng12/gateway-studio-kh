@@ -393,9 +393,9 @@ success.
 ## Verification
 
 ```bash
-.venv/bin/python tests/test_e2e.py              # 324 checks, isolated mock upstream
+.venv/bin/python tests/test_e2e.py              # 325 checks, isolated mock upstream
 .venv/bin/python tests/test_fleet_standalone.py # 45 checks, real Hub(s) as locations
-.venv/bin/python tests/test_ui.py               # 96-99 checks, drives the real app
+.venv/bin/python tests/test_ui.py               # 105 checks, drives the real app
 ```
 
 `test_e2e.py` is fully isolated (`GATEWAY_DATA`/`GATEWAY_APP_SUPPORT` to a temp
@@ -450,6 +450,45 @@ So: **kill by PID, never by pattern**, confirm port 8000 is actually free, and
 confirm the gateway PID *changed* before measuring anything. A verification is only
 evidence if it names the process it measured. `pgrep -f` for reading is fine; only
 `pkill -f` is dangerous, and only when the pattern appears in your own command.
+
+**Quitting stops the gateway, deliberately, and the app can say which build is
+running.** This was the owner's request: *"if i want to restart or update or sth i
+want to be able to do it by hand instead of relying on you to help me."* So:
+
+  * `applicationShouldTerminate` stops the child, runs `killPortHolders()`, and
+    waits (≤2 s) until `portIsHeld()` is false. Verified: quit → **port 8000 free**,
+    no uvicorn left. The opt-out is a Settings checkbox, *"Keep the gateway running
+    after I quit"* (`AppConfig.keepGatewayRunning`, default `false`) — default off,
+    because an adopted stale gateway is the failure the owner actually hit.
+  * **The build stamp is the whole mechanism.** `menubar/build.sh` writes
+    `Contents/Resources/gateway/BUILD` (`<short-sha>-<UTC yyyymmddHHMM>`) and sets
+    `GatewayBuild` in `Info.plist`; the app passes it as `GATEWAY_BUILD` when it
+    spawns, and `gateway/build.py` resolves env → `BUILD` beside the package →
+    `"unknown"`. `/health` publishes it. **Check Gateway** compares the running
+    stamp with the app's own and answers in one sentence; the stale answer names
+    *both* builds. Measured against a process started by hand with
+    `GATEWAY_BUILD=fake-old-build-000000000000`: *"The gateway is running build
+    fake-old-build-000000000000, but this app is cd866d5-202609191712. It is
+    serving older code — restart it."* **Restart Gateway** then killed that pid
+    (2414) and started the app's own (3252, stamp `cd866d5-…`), which is why it
+    kills by port holder rather than calling the ordinary `restart()`.
+
+**A killed gateway comes back within seconds, so testing adoption takes a quit.**
+Measured: killing only the gateway left the app running, its health timer
+respawned a gateway stamped with the app's own build, and my hand-started "stale"
+one lost the race for the port (`[Errno 48] address already in use`) — the
+detection looked broken when it was the simulation that was. To exercise adoption,
+**quit the app first**, start the foreign process, then `open` the app: it adopts
+what answers `/health` instead of spawning. That is the only order that proves the
+path.
+
+**Read a control's title to know it was built; press it to know it works.**
+`tests/test_ui.py` gained `press_detail_button(title)` — the same three-level walk
+as `detail_button_titles`, using `AXPress`, because `entire contents` is refused as
+a specifier (-1700) and a title-only check would have passed for Fleet's Test and
+Remove while they were wired to nothing. The suite now presses **Check Gateway**
+and asserts the answer names a build (either sentence — which one is the
+environment's business, and the stale case was verified by hand).
 
 ## Working rules
 

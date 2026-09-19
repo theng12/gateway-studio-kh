@@ -1,0 +1,88 @@
+# What's new in gateway-kh
+
+Newest first. This is the same list the **What's New** button in the app shows.
+
+---
+
+## The app now stops the gateway when you quit
+
+**This is the one to know about.** Quitting used to leave the gateway running, and
+the next launch would *adopt* that old process — so "quit and reopen" quietly kept
+serving the previous build. One gateway ran for two hours across four rebuilds
+because of it, and the only symptom was a feature that silently did not work.
+
+- Quitting now stops the gateway and releases port 8000.
+- **Settings → "Keep the gateway running after I quit"** restores the old
+  behaviour if you want Story Studio to stay up while the app is closed. Off by
+  default.
+- **Check Gateway** on the Overview page tells you whether the running gateway is
+  the build this app installed, and **Restart Gateway** fixes it.
+
+## Every build identifies itself
+
+The app and the gateway now both carry a build stamp (commit + build time).
+`/health` reports it, and the app compares it, so "am I running the latest?" has an
+answer instead of a guess.
+
+---
+
+## New providers and lanes
+
+- **xAI is connected properly.** Grok chat and all three Grok image models, plus
+  **Grok video** — which needed its own adapter, because xAI's video API is
+  deferred (submit, then poll) and its image API rejects the `size` field every
+  other provider accepts.
+- **fal is connected for image, video and speech.** ElevenLabs Turbo v2.5 works
+  through fal, and **your own ElevenLabs voices are offered on that lane** — fal
+  accepts their ids unchanged, so a voice you saved from your account works
+  through either route.
+- **Music works at all now.** Suno V6 and Google's Lyria 3 Clip, both verified
+  with real audio.
+- Your fal picks: Nano Banana 2 Lite, GPT Image 2.5 (Sunburst and Flare), Seedance
+  2.5, H3 Max, Gemini Omni Flash 1.1 — text and image versions of each.
+
+## Voices
+
+- **Add by ID.** Paste a voice id from a share link and save it. ElevenLabs also
+  needs the owner id, which the window asks for.
+- **Search the provider's public library** still works, and now a voice you added
+  by id is offered wherever it belongs.
+
+## Nothing broken is offered any more
+
+The Models page no longer lists a model that cannot run. That removed:
+
+- nine OpenAI transcription models — only `whisper-1` can return the SRT this
+  gateway must send
+- Google's Lyria on the free tier, which has no Lyria
+- OpenRouter's Lyria rows — it lists them but publishes no way to call them
+
+If a row is there, it runs.
+
+## Things that were wrong and are fixed
+
+A full audit found roughly fifty defects. The ones you would have hit:
+
+- **Claude models were broken before you used one.** Anthropic reports a finished
+  answer as `end_turn`, and Story Studio only accepts a clean stop — so every
+  successful Claude job would have looked truncated.
+- **Your local voices had vanished from the narration picker.** Models had been
+  renamed to publish under one namespace and voices under another, so they stopped
+  matching. All ten are back.
+- **Three URLs could return a 500 just by typing a silly number** — including the
+  route the Jobs window uses. One of them (`-1`) meant "give me every job ever
+  recorded".
+- **You could not switch a location off** without a 500, and **Remove** on the
+  Fleet page was pushed off the edge of the window where you could not click it.
+- **Transcription quoted you one model and ran another.**
+- **Reusing an Idempotency-Key across two different things returned the wrong
+  job** as if it had succeeded.
+- **The Fleet page counted Studio Hub's own test probes as your machines** — it
+  read "3 machines, 2 offline" for one Mac. Now it reads one, and says how many
+  probe entries it hid.
+
+## Artifacts
+
+Received artifacts are temporary: kept **7 days or 10 GB, whichever comes first**,
+editable in Settings. Nothing under an hour old is ever removed, because a
+freshly-written artifact is about to be fetched.

@@ -28,6 +28,7 @@ final class SettingsSection: NSObject, AppSection {
     private var retentionUsageLabel: NSTextField!
     private var loginCheck: NSButton!
     private var autoStartCheck: NSButton!
+    private var keepRunningCheck: NSButton!
     private var statusLabel: NSTextField!
 
     lazy var view: NSView = buildContent()
@@ -128,7 +129,21 @@ final class SettingsSection: NSObject, AppSection {
             checkboxWithTitle: "Start the gateway automatically when this app opens",
             target: self, action: #selector(toggleAutoStart)
         )
+        // Off by default. Leaving the gateway running means the next launch adopts
+        // it, so a rebuild silently keeps serving the old code — the bug this
+        // setting exists to expose rather than to repeat.
+        keepRunningCheck = NSButton(
+            checkboxWithTitle: "Keep the gateway running after I quit",
+            target: self, action: #selector(toggleKeepRunning)
+        )
         root.addArrangedSubview(PageKit.formRow("Login", [loginCheck, autoStartCheck]))
+        root.addArrangedSubview(PageKit.formRow("On quit", [keepRunningCheck]))
+        root.addArrangedSubview(PageKit.help(
+            "Off: quitting stops the gateway and frees the port, so reopening always "
+            + "runs the build you just installed. On: the gateway keeps serving Story "
+            + "Studio while this app is closed — but a rebuild will not take effect "
+            + "until you press Restart Gateway."
+        ))
 
         root.addArrangedSubview(divider())
 
@@ -198,6 +213,7 @@ final class SettingsSection: NSObject, AppSection {
     private func refresh() {
         loginCheck?.state = LaunchAgent.isInstalled ? .on : .off
         autoStartCheck?.state = ConfigStore.shared.config.autoStartGateway ? .on : .off
+        keepRunningCheck?.state = ConfigStore.shared.config.keepGatewayRunning == true ? .on : .off
         keyField?.stringValue = EnvFile.apiKey()
         runtimeLabel?.stringValue = GatewayController.shared.runtimeDescription
         dataLabel?.stringValue = AppPaths.data.path
@@ -304,6 +320,10 @@ final class SettingsSection: NSObject, AppSection {
 
     @objc private func toggleAutoStart() {
         ConfigStore.shared.update { $0.autoStartGateway = autoStartCheck.state == .on }
+    }
+
+    @objc private func toggleKeepRunning() {
+        ConfigStore.shared.update { $0.keepGatewayRunning = keepRunningCheck.state == .on }
     }
 
     @objc private func save() {

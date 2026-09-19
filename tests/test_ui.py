@@ -423,6 +423,59 @@ def detail_button_titles() -> list[str]:
     return titles
 
 
+def press_detail_button(title: str) -> bool:
+    """Press the detail-pane button whose title contains `title`; True if pressed.
+
+    Reading a button's title only proves it was *built*. The Fleet page's Test and
+    Remove were wired to nothing while their titles read correctly, so a claim that
+    a control works needs it pressed. The same three-level walk as
+    `detail_button_titles`, because `entire contents` is refused as a specifier.
+    """
+    try:
+        raw = osa(wrap(f'''
+            tell {MAIN_WINDOW} to tell splitter group 1
+                set hit to "no"
+                repeat with element in UI elements
+                    try
+                        if class of element is button and (title of element) contains "{title}" then
+                            perform action "AXPress" of element
+                            set hit to "yes"
+                        end if
+                    end try
+                    try
+                        repeat with inner in (buttons of element)
+                            if (title of inner) contains "{title}" then
+                                perform action "AXPress" of inner
+                                set hit to "yes"
+                            end if
+                        end repeat
+                    end try
+                    try
+                        repeat with child in (UI elements of element)
+                            try
+                                if class of child is button and (title of child) contains "{title}" then
+                                    perform action "AXPress" of child
+                                    set hit to "yes"
+                                end if
+                            end try
+                            try
+                                repeat with deep in (buttons of child)
+                                    if (title of deep) contains "{title}" then
+                                        perform action "AXPress" of deep
+                                        set hit to "yes"
+                                    end if
+                                end repeat
+                            end try
+                        end repeat
+                    end try
+                end repeat
+                return hit
+            end tell'''))
+    except RuntimeError:
+        return False
+    return raw.strip() == "yes"
+
+
 def wait_for_detail(needle: str, timeout: float = 30.0) -> str:
     """Wait until the detail pane contains `needle`, then return its text.
 
@@ -738,6 +791,45 @@ def main() -> int:
     check(f"the model count on screen matches the API ({enabled})",
           isinstance(enabled, int) and f"\n{enabled}\n" in f"\n{body}\n", body[:200])
 
+    # Which build is running. A gateway outlives the app, so on launch this app
+    # adopts whatever already answers /health — measured: a gateway from 21:47 was
+    # still serving at 23:33 through four rebuilds, and one of those cycles had
+    # already been reported as verified. The stamp is what makes that visible.
+    check("the health payload says which build is running",
+          isinstance(health_payload.get("build"), str) and health_payload["build"],
+          status[:200])
+
+    action_titles = detail_button_titles()
+    check("offers a way to check, restart and read about the gateway",
+          {"Check Gateway", "Restart Gateway", "What's New"} <= set(action_titles),
+          f"{action_titles}")
+
+    # Pressing is the only thing that proves it is wired: Fleet's Test and Remove
+    # were once titled correctly and connected to nothing.
+    #
+    # Deliberately not asserting "up to date". A gateway left over from an older
+    # build is exactly what this button exists to report, so which of the answers
+    # comes back is the environment's business. What must hold is that it names a
+    # build instead of staying silent — the stale case says both builds, which was
+    # verified by hand against a process stamped `fake-old-build`.
+    pressed = press_detail_button("Check Gateway")
+    check("pressing Check Gateway is wired", pressed, "no button was pressed")
+    reply = ""
+    if pressed:
+        for _ in range(20):
+            time.sleep(1)
+            reply = next(
+                (line for line in detail_texts().splitlines()
+                 if "build" in line.lower() or "nothing is running" in line.lower()),
+                "",
+            )
+            if reply and "Checking" not in reply:
+                break
+    check("and answers with the running build, or says nothing is running",
+          ("build" in reply.lower() and ("up to date" in reply or "serving older code" in reply))
+          or "nothing is running" in reply,
+          reply or "(no status line appeared)")
+
     # The first version of this view built fine and was unreadable: the bar rows
     # had no height, so the stack view crushed them together. "It opened" would
     # never have caught that — measuring the rows does.
@@ -916,6 +1008,33 @@ def main() -> int:
     settings_buttons = detail_button_titles()
     check("and a way to run it now",
           any("Prune now" in title for title in settings_buttons), f"{settings_buttons}")
+
+    # Quitting stops the gateway unless the owner opts out, so reopening always
+    # runs the build just installed. Two legs, because either alone can be true
+    # while the feature is absent: the help text can be written without a control,
+    # and a control can exist with nothing saying what it does.
+    check("Settings says what quitting does to the gateway",
+          "On quit" in settings
+          and "quitting stops the gateway and frees the port" in settings,
+          settings[-420:])
+    quit_boxes = osa(wrap(f'''
+        tell {MAIN_WINDOW} to tell splitter group 1
+            set acc to ""
+            try
+                repeat with c in (checkboxes of scroll area 2)
+                    set acc to acc & (title of c) & "\\n"
+                end repeat
+            end try
+            try
+                repeat with c in (checkboxes of it)
+                    set acc to acc & (title of c) & "\\n"
+                end repeat
+            end try
+            return acc
+        end tell'''))
+    check("and has the checkbox that decides it",
+          "Keep the gateway running after I quit" in quit_boxes,
+          f"checkboxes: {quit_boxes.strip()[:200]}")
     # A page, not a window: its controls live in the detail pane, and there is
     # no second window to close.
     #

@@ -37,6 +37,7 @@ from fastapi import Depends, FastAPI, File, Form, Header, Query, Request, Respon
 from fastapi.responses import JSONResponse
 
 from . import __version__
+from .build import build_id
 from .adapters import BackendError, BackendRequest, adapter_for
 from .catalog import MODALITIES, catalog
 from .config import ARTIFACT_DIR, gateway_api_key, is_loopback
@@ -351,10 +352,13 @@ def health() -> dict[str, Any]:
     return {
         "status": "ok",
         "service": "gateway-kh",
-        # The app adopts a gateway it did not start (quitting the app leaves the
-        # service running, deliberately). Reporting the pid is what lets it
-        # still stop that process on request rather than only pretending to.
+        # The app adopts a gateway it did not start, so reporting the pid is what
+        # lets it still stop that process on request rather than only pretending
+        # to — and reporting the **build** is what lets it notice that the process
+        # it adopted is running code from before the last rebuild. Without this the
+        # only symptom is a feature quietly not working.
         "pid": os.getpid(),
+        "build": build_id(),
         "providers": {
             "total": len(providers),
             "configured": sum(1 for p in providers if p["configured"]),

@@ -406,11 +406,12 @@ other session in `~/Developer/_handoffs/2026-09-18-gateway-kh-fleet-contract-to-
 ## Verification
 
 ```bash
-.venv/bin/python tests/test_e2e.py            # 110 checks, mock upstream
-.venv/bin/python tests/test_fleet_standalone.py  # a real Hub used as a location
+.venv/bin/python tests/test_e2e.py            # 325 checks, mock upstream
+.venv/bin/python tests/test_fleet_standalone.py  # 45 checks, a real Hub used as a location
+.venv/bin/python tests/test_ui.py             # 105 checks, drives the installed app
 ```
 
-110 checks against a **real HTTP upstream** (a local mock provider), exercising the admin API,
+325 checks against a **real HTTP upstream** (a local mock provider), exercising the admin API,
 credential storage, live discovery, modality inference, the Story catalogue contract, chat/image/TTS
 generation, transcription upload, the worker, artifacts, idempotency, provider/model enable-disable
 on both the catalogue and the dispatch path, manual model addition, the voice registry, and the 402
