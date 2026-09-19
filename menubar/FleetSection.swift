@@ -76,12 +76,12 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
         locationTable.rowHeight = 22
         locationTable.usesAlternatingRowBackgroundColors = true
         for (identifier, title, width) in [
-            ("llocation", "Location", 160),
-            ("lrole", "Role", 100),
-            ("lhub", "Hub", 80),
+            ("llocation", "Location", 150),
+            ("lrole", "Role", 80),
+            ("lhub", "Hub", 70),
             ("lmachines", "Machines", 80),
-            ("lstatus", "Status", 260),
-            ("lactions", "Actions", 260),
+            ("lstatus", "Status", 220),
+            ("lactions", "Actions", 340),
         ] {
             let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier(identifier))
             column.title = title
@@ -463,11 +463,12 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
         }
         views.append(button("Rename", #selector(renameController(_:))))
         if !isLocal {
-            views.append(button("Token", #selector(setCredential(_:))))
-            // The broad token, needed only to create, list or remove shared voices.
-            // Kept as a separate, labelled act so the narrow credential stays the
-            // one used for everything else.
-            views.append(button("Hub token", #selector(setHubToken(_:))))
+            // One credentials action, not two. Five buttons did not fit this cell,
+            // and AppKit left the overflow out of the view hierarchy entirely — so
+            // **Remove** was unreachable from the app while its endpoint worked.
+            // Merging the tokens also puts the pair in one place, which is where
+            // the difference between them belongs.
+            views.append(button("Credentials…", #selector(editCredentials(_:))))
             views.append(button("Remove", #selector(removeController(_:))))
         }
 
@@ -611,90 +612,102 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
         }
     }
 
-    /// Replace one location's credential, without re-typing its address.
-    @objc private func setCredential(_ sender: NSButton) {
+    /// Both of a location's credentials, in one place, each labelled with what it is for.
+    ///
+    /// They are different values on purpose — the Hub refuses shared-voice routes to
+    /// a fleet token so a node's credential can never administer the controller that
+    /// owns it — and that difference is exactly what belongs in one explanation
+    /// rather than two separate buttons.
+    @objc private func editCredentials(_ sender: NSButton) {
         guard let id = sender.identifier?.rawValue else { return }
         let label = locations.first { ($0["id"] as? String) == id }?["label"] as? String ?? id
 
-        let field = NSSecureTextField(string: "")
-        field.placeholderString = "fleet credential"
-        field.frame = NSRect(x: 0, y: 0, width: 300, height: 24)
+        func field(_ placeholder: String) -> NSSecureTextField {
+            let field = NSSecureTextField(string: "")
+            field.placeholderString = placeholder
+            field.translatesAutoresizingMaskIntoConstraints = false
+            field.widthAnchor.constraint(equalToConstant: 320).isActive = true
+            return field
+        }
+        func caption(_ text: String) -> NSTextField {
+            let caption = NSTextField(labelWithString: text)
+            caption.font = .systemFont(ofSize: 11)
+            caption.textColor = .secondaryLabelColor
+            caption.lineBreakMode = .byWordWrapping
+            caption.maximumNumberOfLines = 3
+            caption.preferredMaxLayoutWidth = 320
+            return caption
+        }
+
+        let fleet = field("fleet token")
+        let hub = field("Hub token (optional)")
+        let stack = NSStackView(views: [
+            caption("Fleet token — from Connections. Runs work and reads fleet state."),
+            fleet,
+            caption("Hub token — from Connections. Only to put a voice into this controller's "
+                    + "library; never used to run work. Leave empty if you do not share voices."),
+            hub,
+        ])
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 5
+        stack.frame = NSRect(x: 0, y: 0, width: 320, height: 150)
 
         let alert = NSAlert()
-        alert.messageText = "Credential for \(label)"
+        alert.messageText = "Credentials for \(label)"
         alert.informativeText =
-            "Use the controller's fleet credential — it is enough for everything this gateway "
-            + "does, and unlike its Hub service token it cannot change that controller's settings "
-            + "or shut it down. Replacing this does not disturb the location's name, address or models."
-        alert.accessoryView = field
-        alert.addButton(withTitle: "Replace")
+            "Leave a field empty to keep what is already stored. This does not disturb the "
+            + "location's name, address or models."
+        alert.accessoryView = stack
+        alert.addButton(withTitle: "Save")
         alert.addButton(withTitle: "Cancel")
-        alert.window.initialFirstResponder = field
-
+        alert.window.initialFirstResponder = fleet
         guard alert.runModal() == .alertFirstButtonReturn else { return }
-        let token = field.stringValue.trimmingCharacters(in: .whitespaces)
-        guard !token.isEmpty else {
-            addStatus.textColor = .secondaryLabelColor
-            addStatus.stringValue = "A credential is required."
-            return
-        }
+
+        let fleetToken = fleet.stringValue.trimmingCharacters(in: .whitespaces)
+        let hubToken = hub.stringValue.trimmingCharacters(in: .whitespaces)
+        guard !fleetToken.isEmpty || !hubToken.isEmpty else { return }
+
         addStatus.textColor = .secondaryLabelColor
-        addStatus.stringValue = "Replacing…"
-        GatewayAPI.put("/admin/api/fleet/controllers/\(id)/credential", body: ["token": token]) { [weak self] result in
+        addStatus.stringValue = "Saving…"
+
+        // Fleet token first: its reply is the one that reports scope and discovery.
+        let finish: () -> Void = { [weak self] in
             guard let self else { return }
-            switch result {
-            case .failure(let error):
-                self.addStatus.stringValue = "Could not replace it — \(error)"
-            case .success(let payload):
-                self.describe(
-                    payload["credential"] as? [String: Any],
-                    verb: "Replaced",
-                    discovered: payload["discovered"] as? Int
-                )
+            guard !hubToken.isEmpty else { self.reload(); return }
+            GatewayAPI.put("/admin/api/fleet/controllers/\(id)/hub-token",
+                           body: ["token": hubToken]) { [weak self] result in
+                guard let self else { return }
+                if case .failure(let error) = result {
+                    self.addStatus.textColor = .systemOrange
+                    self.addStatus.stringValue = "Saved the fleet token, but not the Hub token — \(error)"
+                } else {
+                    self.addStatus.textColor = .secondaryLabelColor
+                    self.addStatus.stringValue =
+                        "Saved. \(label) keeps its fleet token for work, and can now be given shared voices."
+                }
                 self.reload()
             }
         }
-    }
 
-    /// Store a controller's Hub token, which only shared voices need.
-    ///
-    /// Separate from **Token** because it is the broad credential: the Hub refuses
-    /// shared-voice routes to a fleet token on purpose, so that a node's credential
-    /// can never administer the controller that owns it. This one is therefore kept
-    /// for those routes alone and is never used to run work.
-    @objc private func setHubToken(_ sender: NSButton) {
-        guard let id = sender.identifier?.rawValue else { return }
-        let label = locations.first { ($0["id"] as? String) == id }?["label"] as? String ?? id
-
-        let field = NSSecureTextField(string: "")
-        field.placeholderString = "the controller's Hub token"
-        field.frame = NSRect(x: 0, y: 0, width: 300, height: 24)
-
-        let alert = NSAlert()
-        alert.messageText = "Hub token for \(label)"
-        alert.informativeText =
-            "From that controller's Connections page, the token labelled Hub token — not the Fleet "
-            + "token. It is needed only to put a voice into the controller's library and let it "
-            + "reach that location's Macs, and it is never used to run work or read fleet state. "
-            + "Leave it unset and this location simply keeps taking voices the way it does now."
-        alert.accessoryView = field
-        alert.addButton(withTitle: "Save")
-        alert.addButton(withTitle: "Cancel")
-        alert.window.initialFirstResponder = field
-        guard alert.runModal() == .alertFirstButtonReturn else { return }
-
-        let token = field.stringValue.trimmingCharacters(in: .whitespaces)
-        guard !token.isEmpty else { return }
-        GatewayAPI.put("/admin/api/fleet/controllers/\(id)/hub-token", body: ["token": token]) { [weak self] result in
+        guard !fleetToken.isEmpty else {
+            finish()
+            return
+        }
+        GatewayAPI.put("/admin/api/fleet/controllers/\(id)/credential",
+                       body: ["token": fleetToken]) { [weak self] result in
             guard let self else { return }
             switch result {
             case .failure(let error):
                 self.addStatus.textColor = .systemOrange
                 self.addStatus.stringValue = "Could not save it — \(error)"
-            case .success:
-                self.addStatus.textColor = .secondaryLabelColor
-                self.addStatus.stringValue =
-                    "Saved. \(label) can now be given shared voices; everything else still uses its fleet token."
+            case .success(let payload):
+                self.describe(
+                    payload["credential"] as? [String: Any],
+                    verb: "Saved",
+                    discovered: payload["discovered"] as? Int
+                )
+                finish()
             }
         }
     }
@@ -731,12 +744,38 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
         }
     }
 
+    /// Remove a location, after saying what that costs.
+    ///
+    /// Destructive and not undoable from here: it forgets the credential as well as
+    /// the row, so putting it back means pasting a token again. A stray click on a
+    /// table row should not do that, and the confirmation names the location so
+    /// there is no doubt which one is going.
     @objc private func removeController(_ sender: NSButton) {
         guard let id = sender.identifier?.rawValue else { return }
+        let label = locations.first { ($0["id"] as? String) == id }?["label"] as? String ?? id
+
+        let alert = NSAlert()
+        alert.messageText = "Remove \(label)?"
+        alert.informativeText =
+            "This gateway stops talking to that controller and forgets its credentials. Nothing on "
+            + "the controller itself changes, and its models stop being offered here until you add "
+            + "it again and paste a token."
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Remove")
+        alert.addButton(withTitle: "Cancel")
+        // Cancel is the default, so a stray Return does not remove a location.
+        alert.buttons.first?.keyEquivalent = ""
+        alert.buttons.last?.keyEquivalent = "\r"
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+
         GatewayAPI.delete("/admin/api/fleet/controllers/\(id)") { [weak self] result in
             guard let self else { return }
             if case .failure(let error) = result {
+                self.addStatus.textColor = .systemOrange
                 self.addStatus.stringValue = "Could not remove it — \(error)"
+            } else {
+                self.addStatus.textColor = .secondaryLabelColor
+                self.addStatus.stringValue = "Removed \(label)."
             }
             self.reload()
         }

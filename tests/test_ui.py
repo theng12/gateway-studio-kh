@@ -300,11 +300,13 @@ def table_columns(scroll_area: int, nested: bool = False) -> int:
 
 
 def table_button_titles(scroll_area: int, nested: bool = False) -> list[str]:
-    """Button titles inside a page's table rows.
+    """Every button title inside a table's rows, **all** of them per cell.
 
-    `table_texts` reads static text only, so the Fleet page's Actions column is
-    invisible to it. This reads the buttons themselves, which is the only way to
-    prove the row actions exist rather than merely being wired up in code.
+    This used to read `button 1 of c` — the first button of each cell. That is why
+    the Fleet page's row actions looked like `['Rename', 'Test']` when each cell
+    actually holds four: the helper could not see past the first, and the check it
+    fed passed while proving nothing. A cell's controls sit one level down
+    (the cell holds a stack view), so both levels are walked.
     """
     target = (
         f"scroll area {scroll_area} of scroll area 2" if nested else f"scroll area {scroll_area}"
@@ -317,7 +319,18 @@ def table_button_titles(scroll_area: int, nested: bool = False) -> list[str]:
                 repeat with r from 1 to (count of rows)
                     repeat with c in (UI elements of row r)
                         try
-                            set acc to acc & (title of button 1 of c) & sep
+                            repeat with b in (buttons of c)
+                                set acc to acc & (title of b) & sep
+                            end repeat
+                        end try
+                        try
+                            repeat with child in (UI elements of c)
+                                try
+                                    repeat with deep in (buttons of child)
+                                        set acc to acc & (title of deep) & sep
+                                    end repeat
+                                end try
+                            end repeat
                         end try
                     end repeat
                 end repeat
@@ -812,15 +825,25 @@ def main() -> int:
     check("lists this Mac as the local location", local_label in locations_cells,
           f"looking for {local_label!r} in {locations_cells}")
 
-    # Every location must be renameable, and this Mac must not offer Remove.
+    # Every location must be renameable, and a real controller must offer the whole
+    # set of row actions — including Remove. This check used to pass while reading
+    # only the first button of each cell, so it reported success against a table
+    # whose actions it could not actually see.
     configured = api_get("/admin/api/fleet/controllers").get("controllers", [])
     action_titles = table_button_titles(1, nested=True)
-    check("offers Rename on every location",
-          action_titles.count("Rename") == 1 + len(configured), f"{action_titles}")
-    check("offers Test and Remove only for real controllers",
-          action_titles.count("Remove") == len(configured)
-          and action_titles.count("Test") == len(configured),
-          f"{action_titles} with {len(configured)} configured")
+    check("the local row offers Rename", "Rename" in action_titles, f"{action_titles}")
+    if configured:
+        check("a controller row offers Test, Rename, Credentials and Remove",
+              {"Test", "Rename", "Credentials…", "Remove"} <= set(action_titles),
+              f"{action_titles} with {len(configured)} configured")
+        check("and this Mac is not offered Remove",
+              action_titles.count("Remove") == len(configured), f"{action_titles}")
+    else:
+        # Saying so, rather than passing quietly: with no controller rows there is
+        # nothing here to check, and a vacuous pass is how the actions column went
+        # unverified in the first place.
+        skip("a controller row offers Test, Rename, Credentials and Remove",
+             "no controllers are configured, so there is no such row to read")
 
     # The rest of this section reads what the local Hub reports, so it needs the
     # Hub running. Standalone or controller both work — that is the point — but
