@@ -80,8 +80,8 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
             ("lrole", "Role", 100),
             ("lhub", "Hub", 80),
             ("lmachines", "Machines", 80),
-            ("lstatus", "Status", 300),
-            ("lactions", "Actions", 170),
+            ("lstatus", "Status", 260),
+            ("lactions", "Actions", 260),
         ] {
             let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier(identifier))
             column.title = title
@@ -464,6 +464,10 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
         views.append(button("Rename", #selector(renameController(_:))))
         if !isLocal {
             views.append(button("Token", #selector(setCredential(_:))))
+            // The broad token, needed only to create, list or remove shared voices.
+            // Kept as a separate, labelled act so the narrow credential stays the
+            // one used for everything else.
+            views.append(button("Hub token", #selector(setHubToken(_:))))
             views.append(button("Remove", #selector(removeController(_:))))
         }
 
@@ -648,6 +652,49 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
                     discovered: payload["discovered"] as? Int
                 )
                 self.reload()
+            }
+        }
+    }
+
+    /// Store a controller's Hub token, which only shared voices need.
+    ///
+    /// Separate from **Token** because it is the broad credential: the Hub refuses
+    /// shared-voice routes to a fleet token on purpose, so that a node's credential
+    /// can never administer the controller that owns it. This one is therefore kept
+    /// for those routes alone and is never used to run work.
+    @objc private func setHubToken(_ sender: NSButton) {
+        guard let id = sender.identifier?.rawValue else { return }
+        let label = locations.first { ($0["id"] as? String) == id }?["label"] as? String ?? id
+
+        let field = NSSecureTextField(string: "")
+        field.placeholderString = "the controller's Hub token"
+        field.frame = NSRect(x: 0, y: 0, width: 300, height: 24)
+
+        let alert = NSAlert()
+        alert.messageText = "Hub token for \(label)"
+        alert.informativeText =
+            "From that controller's Connections page, the token labelled Hub token — not the Fleet "
+            + "token. It is needed only to put a voice into the controller's library and let it "
+            + "reach that location's Macs, and it is never used to run work or read fleet state. "
+            + "Leave it unset and this location simply keeps taking voices the way it does now."
+        alert.accessoryView = field
+        alert.addButton(withTitle: "Save")
+        alert.addButton(withTitle: "Cancel")
+        alert.window.initialFirstResponder = field
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+
+        let token = field.stringValue.trimmingCharacters(in: .whitespaces)
+        guard !token.isEmpty else { return }
+        GatewayAPI.put("/admin/api/fleet/controllers/\(id)/hub-token", body: ["token": token]) { [weak self] result in
+            guard let self else { return }
+            switch result {
+            case .failure(let error):
+                self.addStatus.textColor = .systemOrange
+                self.addStatus.stringValue = "Could not save it — \(error)"
+            case .success:
+                self.addStatus.textColor = .secondaryLabelColor
+                self.addStatus.stringValue =
+                    "Saved. \(label) can now be given shared voices; everything else still uses its fleet token."
             }
         }
     }
