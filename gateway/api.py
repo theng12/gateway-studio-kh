@@ -214,6 +214,19 @@ def _job_envelope(job: dict[str, Any]) -> dict[str, Any]:
     if job["state"] == "succeeded":
         if modality == "chat":
             body["output_text"] = result.get("text") or ""
+            # **A deliberate exception to "publish what is known".** A provider that
+            # states no finish reason at all is published as a clean stop, because
+            # this field is a hard gate on the consumer's side: it refuses anything
+            # that is not a clean stop as a truncated response, so publishing
+            # `null` — the honest value — would turn a *working* generation into a
+            # failure. We only reach here with `state == "succeeded"` and text in
+            # hand, which is what a completed generation looks like, so `stop` is
+            # the almost-certainly-true reading rather than an invented one.
+            #
+            # A reason the provider *does* state is never rewritten: `length`,
+            # `content_filter` and anything unrecognised pass through so the
+            # consumer refuses them. Marked rather than silent because it is the
+            # one place here that chooses a useful value over a strictly-known one.
             body["finish_reason"] = payload.get("finish_reason") or "stop"
         elif modality == "image":
             url = f"/v1/images/{job['id']}/file"
@@ -573,6 +586,9 @@ def chat_completions(payload: dict[str, Any]) -> dict[str, Any]:
             {
                 "index": 0,
                 "message": {"role": "assistant", "content": result.text or ""},
+                # Same deliberate exception as `_job_envelope`: an absent reason
+                # becomes a clean stop because the field is a hard gate and we have
+                # text in hand. A stated reason is never rewritten.
                 "finish_reason": (result.payload or {}).get("finish_reason") or "stop",
             }
         ],

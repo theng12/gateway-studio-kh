@@ -961,6 +961,23 @@ def main() -> int:
                 check("usage is passed through, not invented",
                       isinstance(body.get("usage"), dict), f"{body.get('usage')}")
 
+            # A provider's own vocabulary has to be *translated*, and half a
+            # translation is worse than none: Anthropic's map had two identity
+            # entries, so a successful Claude completion published `end_turn`,
+            # which the consumer refuses as truncated — every working Claude job
+            # would have read as a cut-off answer. The values are the contract's
+            # words, and `max_tokens` must keep mapping to the one reason that is
+            # genuinely truncated.
+            from gateway.adapters.openai_compat import ANTHROPIC_STOP_MAP as _STOP
+            check("Anthropic's clean stops are translated to the contract's word",
+                  _STOP["end_turn"] == "stop" and _STOP["stop_sequence"] == "stop",
+                  f"{_STOP}")
+            check("and a genuinely truncated generation is still reported as truncated",
+                  _STOP["max_tokens"] == "length", f"{_STOP}")
+            check("no finish reason is passed through in a provider's own vocabulary",
+                  all(v == "stop" or v == "length" for v in _STOP.values()),
+                  f"{_STOP}")
+
             # Groq was added for cheap cloud transcription. It is OpenAI-compatible,
             # so it needs no adapter of its own — the check is that it is wired as a
             # provider at all, with both lanes, and that the modality gate agrees.

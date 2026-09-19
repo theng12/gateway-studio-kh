@@ -25,12 +25,25 @@ from .base import BackendError, BackendRequest, BackendResult
 CHAT_TIMEOUT = httpx.Timeout(300.0, connect=10.0, read=300.0)
 MEDIA_TIMEOUT = httpx.Timeout(600.0, connect=10.0, read=600.0)
 
-# Finish reasons Story Studio accepts as a clean stop. Anything else (notably
-# `length`) is refused as a truncated response, so it is passed through
-# unmodified rather than being laundered into a success.
+# Anthropic's own names for a finish reason, translated into the vocabulary the
+# contract uses — which is OpenAI's, because every other chat lane here speaks it.
+#
+# **The map existed but two of its three entries were identity mappings**, so a
+# *successful* Claude completion published `finish_reason: "end_turn"`. Story
+# Studio accepts only a clean stop and refuses anything else as a truncated
+# response, so every working Claude job would have read as truncated — a
+# translation half-finished is worse than none, because it looks deliberate.
+# `max_tokens` is the one it got right, and it stays: that genuinely *is* a
+# truncated generation and must be passed through as `length` so the consumer
+# refuses it.
+#
+# Anything not named here is passed through unmodified rather than laundered into
+# a success. An unrecognised reason is a reason to be unsure, and the safe
+# direction is the consumer refusing the job rather than a partial answer being
+# presented as a whole one.
 ANTHROPIC_STOP_MAP = {
-    "end_turn": "end_turn",
-    "stop_sequence": "stop_sequence",
+    "end_turn": "stop",
+    "stop_sequence": "stop",
     "max_tokens": "length",
 }
 
