@@ -1214,6 +1214,61 @@ def main() -> int:
                   "tts" in _P["fal-ai"].modalities and _serves2(_P["fal-ai"], "tts"),
                   f"{_P['fal-ai'].modalities}")
 
+            print("\n\033[1m10f. xAI image and video, and Lyria music, are their own shapes\033[0m")
+            # xAI's image API rejects `size` outright — measured live:
+            # `HTTP 400: Argument not supported: size` — so the OpenAI-compatible
+            # shim, which sends it for every provider, published three models that
+            # failed on use. Its video API is deferred, which no OpenAI-shaped
+            # handler is. Both have their own path now.
+            from gateway.adapters.base import BackendRequest as _BR2
+            from gateway.adapters.xai import _image_body as _xai_image, _video_body as _xai_video
+
+            def xai_req(model_id, modality, **params):
+                return _BR2(provider_id="xai-direct", model_id=model_id, modality=modality,
+                            params=params, values={"api_key": "x"},
+                            base_url="https://api.x.ai/v1", display_name="xAI")
+
+            img = _xai_image(xai_req("grok-imagine-image", "image", prompt="a cup"))
+            check("xAI image never sends `size`, which it rejects",
+                  "size" not in img, f"{sorted(img)}")
+            check("and asks for base64 so no second fetch is needed",
+                  img.get("response_format") == "b64_json" and img.get("prompt") == "a cup",
+                  f"{img}")
+
+            vid = _xai_video(xai_req("grok-imagine-video-1.5", "video",
+                                     prompt="a boat", duration_seconds=30))
+            check("xAI video clamps a duration into the documented 1-15 range",
+                  vid.get("duration") == 15, f"{vid.get('duration')!r}")
+            check("and an image for image-to-video is an object, not `image_url`",
+                  _xai_video(xai_req("grok-imagine-video-1.5", "video", prompt="x",
+                                     reference_asset_url="https://e/x.png")).get("image")
+                  == {"url": "https://e/x.png"})
+            check("xAI declares and serves video now",
+                  _serves2(_P["xai-direct"], "video") and "video" in _P["xai-direct"].modalities,
+                  f"{_P['xai-direct'].modalities}")
+
+            # Lyria is served through Gemini's own `:generateContent` and returns
+            # **inline base64**, with the lyrics interleaved in the same parts array
+            # — so the adapter scans every part rather than indexing the first.
+            from gateway.adapters.google import _prompt_text as _lyria_text
+            check("Lyria composes lyrics and title into the prompt, because it has no field for them",
+                  "Lyrics:" in _lyria_text({"prompt": "p", "title": "T", "lyrics": "L"}),
+                  _lyria_text({"prompt": "p", "title": "T", "lyrics": "L"}))
+            check("and refuses rather than sending an empty prompt",
+                  _lyria_text({}) == "", repr(_lyria_text({})))
+            from gateway.providers.definitions import music_can_serve as _music_ok
+            check("the WebSocket-only Lyria model is withheld, not offered",
+                  not _music_ok("lyria-realtime-exp"), "it has no unary generate call")
+            check("and the one-shot Lyria models are allowed",
+                  _music_ok("lyria-3-clip-preview") and _music_ok("lyria-3.5"))
+            check("Google serves music now, and the free tier does not declare it",
+                  _serves2(_P["google-ai"], "music")
+                  and "music" not in _P["google-ai-free"].modalities,
+                  f"paid={_P['google-ai'].modalities} free={_P['google-ai-free'].modalities}")
+            check("OpenRouter cannot serve music, so its Lyria rows stay withheld",
+                  not _serves2(_P["openrouter-main"], "music"),
+                  "its API publishes no music path at all")
+
             print("\n\033[1m11. Manual model add (provider shipped an unlisted model)\033[0m")
             r = httpx.post(f"{BASE}/admin/api/providers/mock-remote/models", headers=AUTH,
                            json={"model_id": "mock-brand-new", "display_name": "Brand New",

@@ -117,6 +117,35 @@ Story Studio's picker would be empty. Discovery keeps only fal categories
 *changer*, a realtime voice and speech-to-speech endpoints, none of which accept
 the `text` this adapter sends, and id-based inference was pulling them in.
 
+**xAI is OpenAI-compatible for chat and nothing else.** Its image API rejects
+`size` outright — measured: `HTTP 400: Argument not supported: size` — so
+delegating images to the OpenAI shim published three models that failed on use;
+it takes `aspect_ratio` and `resolution` instead. Its video API is a **deferred**
+endpoint (`POST /v1/videos/generations` → `request_id` → poll
+`GET /v1/videos/{id}`), which no OpenAI-shaped handler is. Hence `KIND_XAI` with
+its own adapter, delegating only chat. Two traps in the video poll: **202 means
+still working, and a failure arrives as HTTP 200** with `status: "failed"` — so
+branch on the JSON `status`, never on the HTTP code, or a failed generation reads
+as a success. The first frame is `image: {url}` (an object), not the `image_url`
+string the Python SDK accepts.
+
+**Lyria music is Gemini's `:generateContent`, not a `:predict`, and the audio is
+inline base64.** It lives at `candidates[0].content.parts[N].inlineData` — and
+Google warns explicitly that the lyrics are interleaved in the same array, so
+**scan every part**; indexing `[0]` silently yields no audio. `lyria-realtime-exp`
+is withheld: it is a bidirectional WebSocket session with no unary call, so it
+could never answer a one-shot request. Lyria is **paid-tier only**, which is why
+`google-ai-free` does not declare the music modality. A 200 carrying candidates
+but no audio part is transient on the preview model — observed live, succeeding on
+the next identical call — so it is raised `retryable`; a safety refusal is
+different and carries `promptFeedback.blockReason`.
+
+**OpenRouter publishes no music path at all.** Its catalogue genuinely lists
+`google/lyria-3-*` with a live upstream provider, but its OpenAPI has zero
+occurrences of "lyria" or "music" across 92 paths — the only audio-output shape it
+documents is the TTS-shaped chat contract. Those rows are therefore withheld
+rather than implemented: a listing is not a serving contract.
+
 **An upload past 25 MB is refused 413, not queued and then failed.** Every cloud
 transcription API on the gateway caps a single upload there, and a caller that
 crosses it should be told the number rather than handed a provider error after
@@ -336,7 +365,7 @@ success.
 ## Verification
 
 ```bash
-.venv/bin/python tests/test_e2e.py              # 301 checks, isolated mock upstream
+.venv/bin/python tests/test_e2e.py              # 312 checks, isolated mock upstream
 .venv/bin/python tests/test_fleet_standalone.py # 45 checks, real Hub(s) as locations
 .venv/bin/python tests/test_ui.py               # 94-97 checks, drives the real app
 ```

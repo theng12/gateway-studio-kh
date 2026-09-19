@@ -39,6 +39,9 @@ KIND_MINIMAX = "minimax"
 KIND_ELEVENLABS = "elevenlabs"
 KIND_FISH = "fish"
 KIND_STUDIO_HUB = "studio_hub"
+#: xAI is OpenAI-compatible for chat, but its image and video APIs are its own
+#: shape (no `size`, and video is deferred), so it needs a dedicated adapter.
+KIND_XAI = "xai"
 
 #: Kinds that actually have a generation adapter.
 #:
@@ -61,6 +64,7 @@ IMPLEMENTED_KINDS: frozenset[str] = frozenset(
         KIND_BFL,
         KIND_MINIMAX,
         KIND_ELEVENLABS,
+        KIND_XAI,
     }
 )
 
@@ -99,6 +103,21 @@ TRANSCRIPTION_SRT_UNSUPPORTED: frozenset[str] = frozenset(
         "gpt-realtime-whisper",
     }
 )
+
+
+#: Music models that cannot answer a one-shot generation.
+#:
+#: `lyria-realtime-exp` is a **bidirectional WebSocket session** — Google documents
+#: only `client.aio.live.music.connect(...)` for it, with `set_weighted_prompts`,
+#: `play()` and a stream of audio chunks. There is no unary generate call, so a
+#: request through this gateway could never complete; it would publish and then
+#: hang or fail. Withheld rather than implemented.
+MUSIC_UNSERVABLE: frozenset[str] = frozenset({"lyria-realtime-exp"})
+
+
+def music_can_serve(model_id: str) -> bool:
+    """Whether this music model can answer a normal, single-shot request."""
+    return model_id not in MUSIC_UNSERVABLE
 
 
 def transcription_can_serve(model_id: str) -> bool:
@@ -289,12 +308,13 @@ PROVIDER_DEFINITIONS: tuple[ProviderDefinition, ...] = (
     ProviderDefinition(
         id="xai-direct",
         display_name="xAI",
-        category="language",
-        kind=KIND_OPENAI_COMPATIBLE,
+        category="multi",
+        # Chat is OpenAI-compatible; image and video are xAI's own shapes.
+        kind=KIND_XAI,
         base_url="https://api.x.ai/v1",
-        modalities=("chat", "image"),
+        modalities=("chat", "image", "video"),
         discovery=DISCOVERY_OPENAI_MODELS,
-        description="Grok chat and image generation.",
+        description="Grok chat, image and video generation.",
         docs_url="https://docs.x.ai",
         credential_fields=(_api_key("XAI_API_KEY", placeholder="xai-…"),),
     ),

@@ -32,6 +32,8 @@ from .kie import KieBackend
 from .minimax import MiniMaxBackend
 from .openai_compat import OpenAICompatibleBackend
 from .studio_hub import StudioHubBackend
+from .google import generate_music
+from .xai import XaiBackend
 
 from ..providers.definitions import (
     IMPLEMENTED_KINDS,
@@ -45,6 +47,7 @@ from ..providers.definitions import (
     KIND_MINIMAX,
     KIND_OPENAI_COMPATIBLE,
     KIND_STUDIO_HUB,
+    KIND_XAI,
     ProviderDefinition,
 )
 
@@ -78,6 +81,11 @@ class GoogleBackend:
         self._inner = OpenAICompatibleBackend()
 
     def generate(self, request: BackendRequest) -> BackendResult:
+        # Music is the one modality the OpenAI-compatible surface cannot carry:
+        # Lyria is served through Gemini's own `:generateContent`, returning inline
+        # base64 audio, so it has a native path rather than a delegation.
+        if request.modality == "music":
+            return generate_music(request)
         base = (request.values.get("base_url") or request.base_url).rstrip("/")
         if not base.endswith("/openai"):
             base = f"{base}/openai"
@@ -104,6 +112,7 @@ _BFL = BflBackend()
 _MINIMAX = MiniMaxBackend()
 _ELEVENLABS = ElevenLabsBackend()
 _STUDIO_HUB = StudioHubBackend()
+_XAI = XaiBackend()
 
 _BY_KIND: dict[str, Backend] = {
     KIND_OPENAI_COMPATIBLE: _OPENAI_COMPATIBLE,
@@ -116,6 +125,7 @@ _BY_KIND: dict[str, Backend] = {
     KIND_MINIMAX: _MINIMAX,
     KIND_ELEVENLABS: _ELEVENLABS,
     KIND_STUDIO_HUB: _STUDIO_HUB,
+    KIND_XAI: _XAI,
 }
 
 
@@ -153,7 +163,8 @@ _MODALITIES_BY_KIND: dict[str, frozenset[str]] = {
     # OpenAI-compatible transcription route 404s on Google, and publishing it was
     # tried and reverted. `image` and `tts` have real handlers and are left to
     # answer for themselves.
-    KIND_GOOGLE: frozenset({"chat", "image", "tts"}),
+    # Music (Lyria) is native; the rest is the OpenAI-compatible shim.
+    KIND_GOOGLE: frozenset({"chat", "image", "tts", "music"}),
     KIND_FAL: frozenset({"image", "video", "tts"}),
     KIND_KIE: frozenset({"image", "video", "music"}),
     KIND_FISH: frozenset({"tts"}),
@@ -161,6 +172,8 @@ _MODALITIES_BY_KIND: dict[str, frozenset[str]] = {
     KIND_MINIMAX: frozenset({"image", "video", "music", "tts"}),
     KIND_ELEVENLABS: frozenset({"tts"}),
     KIND_STUDIO_HUB: frozenset({"image", "tts", "transcription"}),
+    # Chat is delegated to the OpenAI shim; image and video are native.
+    KIND_XAI: frozenset({"chat", "image", "video"}),
 }
 
 assert set(_MODALITIES_BY_KIND) == set(_BY_KIND), (

@@ -27,6 +27,7 @@ from .definitions import (
     DISCOVERY_STATIC,
     PROVIDERS_BY_ID,
     ProviderDefinition,
+    music_can_serve,
     transcription_can_serve,
 )
 from .discovery import DiscoveryResult, DiscoveredModel, discover
@@ -227,6 +228,8 @@ class ModelInventory:
                 if modality == "transcription" and not transcription_can_serve(
                     str(model["model_id"])
                 ):
+                    continue
+                if modality == "music" and not music_can_serve(str(model["model_id"])):
                     continue
                 output.append((definition, model))
         return output
