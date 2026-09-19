@@ -348,13 +348,19 @@ def bulk_models(payload: dict[str, Any]) -> Any:
     This is the "search for a family, click once" path: the same filters the
     browser uses, applied server-side so it covers every match rather than only
     the rows the page happened to load.
+
+    **`only_enabled` is honoured**, and it has to be. It was hardcoded off here
+    while the page sent it, so with "Enabled only" ticked the button said *"Disable
+    all 23 matching"* and the request would have disabled **all 445** OpenRouter
+    models — a bulk action doing far more than the sentence the owner agreed to.
+    A confirmation that names a number must be the number acted on.
     """
     matched = _filter_models(
         _flat_models(),
         q=payload.get("q"),
         modality=payload.get("modality"),
         provider_id=payload.get("provider_id"),
-        only_enabled=False,
+        only_enabled=bool(payload.get("only_enabled")),
     )
     enabled = bool(payload.get("enabled"))
     return {"changed": _apply(matched, enabled), "matched": len(matched), "enabled": enabled}

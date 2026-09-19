@@ -78,6 +78,14 @@ implemented for `openai_compat` and `studio_hub`: **enable OpenAI's transcriptio
 models, not Google's.** Verified end to end — `whisper-1` through the gateway
 returns a real SRT.
 
+**A model that is enabled but cannot serve is the worst state, and OpenRouter's
+`:batch` variants are exactly that.** They are the providers' Batch APIs — half
+price, turnaround in hours — and a normal `/chat/completions` request answers
+**404 "This model is only available through the Batch API."** So an enabled `:batch`
+row publishes to Story Studio and fails the moment it is picked. Eight of the
+owner's twenty-three enabled OpenRouter models are these. Do not enable them; the
+live sibling without the suffix is the same model on a route that answers.
+
 ## Ports
 
 - **8000** is this gateway, chosen because it is Story Studio's *default*

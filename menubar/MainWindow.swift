@@ -31,7 +31,7 @@ protocol AppSection: AnyObject {
 /// their own sidebar pages, so each instance opens the console on the matching
 /// view via its URL hash. That is the whole difference between the two sections;
 /// the page, its data and its controls are shared.
-final class ConsoleSection: NSObject, AppSection, WKNavigationDelegate {
+final class ConsoleSection: NSObject, AppSection, WKNavigationDelegate, WKUIDelegate {
     static let models = ConsoleSection(
         title: "Models", symbol: "square.stack.3d.up", viewName: "models"
     )
@@ -54,6 +54,12 @@ final class ConsoleSection: NSObject, AppSection, WKNavigationDelegate {
     private lazy var webView: WKWebView = {
         let web = WKWebView(frame: .zero, configuration: WKWebViewConfiguration())
         web.navigationDelegate = self
+        // Without a UI delegate, `confirm()` and `alert()` in the page are **silent
+        // no-ops**: `confirm` returns false, so a handler that asks first simply
+        // returns and nothing happens. That is why "Disable all matching" looked
+        // dead — and why every `alert(e.message)` in the console was invisible, so
+        // the errors that would have explained it never appeared either.
+        web.uiDelegate = self
         // A WKWebView reports its content's size as an intrinsic size and resists
         // compression, so the console page — which is wide — made the detail
         // column demand ~1720pt. The column is shared with every other page, so
@@ -115,6 +121,53 @@ final class ConsoleSection: NSObject, AppSection, WKNavigationDelegate {
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         webView.evaluateJavaScript("setView('\(viewName)');") { result, error in
         }
+    }
+
+    // MARK: JavaScript dialogs
+
+    /// The page asks before acting; this is what makes that question appear.
+    ///
+    /// The confirm button says what the action is rather than "OK", because the
+    /// only caller is a bulk enable or disable and "OK" would leave the count in
+    /// the message as the only clue about which way it goes.
+    func webView(
+        _ webView: WKWebView,
+        runJavaScriptConfirmPanelWithMessage message: String,
+        initiatedByFrame frame: WKFrameInfo,
+        completionHandler: @escaping (Bool) -> Void
+    ) {
+        let alert = NSAlert()
+        alert.messageText = message
+        alert.addButton(withTitle: Self.verb(in: message))
+        alert.addButton(withTitle: "Cancel")
+        // Cancel is the default: Return must not make a bulk change.
+        alert.buttons.first?.keyEquivalent = ""
+        alert.buttons.last?.keyEquivalent = "\r"
+        completionHandler(alert.runModal() == .alertFirstButtonReturn)
+    }
+
+    /// Errors from the page were being swallowed whole. Now they are shown.
+    func webView(
+        _ webView: WKWebView,
+        runJavaScriptAlertPanelWithMessage message: String,
+        initiatedByFrame frame: WKFrameInfo,
+        completionHandler: @escaping () -> Void
+    ) {
+        let alert = NSAlert()
+        alert.messageText = "The console reported a problem"
+        alert.informativeText = message
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "OK")
+        alert.runModal()
+        completionHandler()
+    }
+
+    /// `Enable all …` / `Disable all …` / `Clear …` → the verb alone.
+    private static func verb(in message: String) -> String {
+        for word in ["Enable", "Disable", "Clear", "Remove", "Delete"] where message.hasPrefix(word) {
+            return word
+        }
+        return "OK"
     }
 
     private static let startingPage = """
