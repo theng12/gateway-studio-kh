@@ -253,8 +253,14 @@ def main() -> int:
             print("\n\033[1m1. Bootstrap and provider registry\033[0m")
             health = httpx.get(f"{BASE}/health").json()
             check("health ok", health["status"] == "ok")
-            check("18 built-in providers + 4 custom", health["providers"]["total"] == 22,
-                  f"got {health['providers']['total']}")
+            # Counted from the shipped list rather than hardcoded: adding a
+            # provider is a legitimate change, and a literal here fails for a
+            # reason that has nothing to do with what the check is about.
+            from gateway.providers.definitions import PROVIDER_DEFINITIONS as _SHIPPED
+            expected_providers = len(_SHIPPED) + 4  # + the four custom ones above
+            check(f"{len(_SHIPPED)} built-in providers + 4 custom",
+                  health["providers"]["total"] == expected_providers,
+                  f"got {health['providers']['total']}, expected {expected_providers}")
             # A kind having an adapter is not the same claim as that adapter
             # serving every modality the provider declares, so this asks the
             # per-provider question too: `mock-google` declares video and the
@@ -913,6 +919,20 @@ def main() -> int:
             check("and the reason names the missing audio",
                   "audio" in po_confirm.text.lower(), po_confirm.text[:140])
 
+            # An upload past the ceiling is refused with the number, not queued
+            # and then failed by the provider. `UploadFile` spools to disk, so the
+            # assertion is about the *answer*, not about memory.
+            from gateway.api import _MAX_UPLOAD_BYTES
+            oversized = req(client, "POST", "/v1/audio/transcriptions/quotes",
+                            files={"file": ("big.mp3", b"\x00" * (_MAX_UPLOAD_BYTES + 1024),
+                                            "audio/mpeg")},
+                            data={"model": stt_now[0]["id"] if stt_now else "x"})
+            check("an oversized upload is refused, not queued", oversized.status_code == 413,
+                  f"got {oversized.status_code} {oversized.text[:120]}")
+            check("and it says what the limit is",
+                  str(_MAX_UPLOAD_BYTES // (1024 * 1024)) in oversized.text,
+                  oversized.text[:140])
+
             # The documented rollback transport. Nothing exercised it, so a broken
             # finish_reason or usage mapping here would have been found by Story
             # Studio rather than by us.
@@ -929,6 +949,20 @@ def main() -> int:
                       f"{body['choices'][0].get('finish_reason')}")
                 check("usage is passed through, not invented",
                       isinstance(body.get("usage"), dict), f"{body.get('usage')}")
+
+            # Groq was added for cheap cloud transcription. It is OpenAI-compatible,
+            # so it needs no adapter of its own — the check is that it is wired as a
+            # provider at all, with both lanes, and that the modality gate agrees.
+            from gateway.adapters import serves as _serves
+            from gateway.providers.definitions import PROVIDERS_BY_ID as _ALL
+            groq = _ALL.get("groq-main")
+            check("Groq is a known provider",
+                  groq is not None, f"{[k for k in _ALL if 'groq' in k]}")
+            if groq is not None:
+                check("it offers chat and transcription",
+                      set(groq.modalities) == {"chat", "transcription"}, f"{groq.modalities}")
+                check("and its adapter serves both",
+                      _serves(groq, "chat") and _serves(groq, "transcription"))
 
             print("\n\033[1m11. Manual model add (provider shipped an unlisted model)\033[0m")
             r = httpx.post(f"{BASE}/admin/api/providers/mock-remote/models", headers=AUTH,

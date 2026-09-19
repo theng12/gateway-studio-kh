@@ -76,15 +76,28 @@ delegates to the OpenAI-compatible shim, which is what serves
 on use, which is exactly what this whole section exists to prevent. Transcription is
 implemented for `openai_compat` and `studio_hub`: **enable OpenAI's transcription
 models, not Google's.** Verified end to end — `whisper-1` through the gateway
-returns a real SRT.
+returns a real SRT. **Groq was added to that list on 2026-09-19** (chat and
+transcription, through the same shim, at roughly a tenth of OpenAI's price per
+audio-minute); it needs `GROQ_API_KEY` before its models appear, because nothing
+is published from an unconfigured provider.
+
+**An upload past 25 MB is refused 413, not queued and then failed.** Every cloud
+transcription API on the gateway caps a single upload there, and a caller that
+crosses it should be told the number rather than handed a provider error after
+the bytes have been staged and a job queued that cannot succeed. The ceiling is
+one flat number because no provider *publishes* its limit over its API —
+`ponytail:` in `api.py` names the upgrade path (read it per model, the way TTS
+limits come from `maximum_text_length_per_request`). **413, never 402.**
 
 **A model that is enabled but cannot serve is the worst state, and OpenRouter's
 `:batch` variants are exactly that.** They are the providers' Batch APIs — half
 price, turnaround in hours — and a normal `/chat/completions` request answers
 **404 "This model is only available through the Batch API."** So an enabled `:batch`
-row publishes to Story Studio and fails the moment it is picked. Eight of the
-owner's twenty-three enabled OpenRouter models are these. Do not enable them; the
-live sibling without the suffix is the same model on a route that answers.
+row publishes to Story Studio and fails the moment it is picked. **Nine of the
+owner's twenty-three enabled OpenRouter models were these, and on 2026-09-19 he
+had them switched off** — each had its working non-`:batch` sibling enabled, so
+nothing was lost and OpenRouter went from 23 enabled to 14. Do not re-enable them;
+the sibling without the suffix is the same model on a route that answers.
 
 ## Received artifacts are temporary
 
@@ -273,7 +286,7 @@ success.
 ## Verification
 
 ```bash
-.venv/bin/python tests/test_e2e.py              # 235 checks, isolated mock upstream
+.venv/bin/python tests/test_e2e.py              # 240 checks, isolated mock upstream
 .venv/bin/python tests/test_fleet_standalone.py # 41 checks, real Hub(s) as locations
 .venv/bin/python tests/test_ui.py               # 97 checks, drives the real app
 ```

@@ -67,6 +67,21 @@ _UPLOADS: dict[str, tuple[bytes | None, str, str, float, str]] = {}
 #: than the one quoted and confirmed.
 _UPLOAD_TTL_S = 3600.0
 
+#: Refuse an audio upload larger than this, before it is held or sent anywhere.
+#:
+#: Every cloud transcription API on the gateway caps a single upload — OpenAI's
+#: whisper endpoint at 25 MB — and a caller that crosses it should be told what
+#: the limit is, not handed a provider error after the gateway has buffered the
+#: bytes, staged them on disk and queued a job that cannot succeed. 25 MB is also
+#: the shared floor rather than OpenAI's quirk: Groq accepts the same ceiling, so
+#: one number is honest for both lanes.
+#:
+#: ponytail: one flat ceiling for every transcription provider, because none of
+#: them *publishes* its limit over its API. Ceiling — a provider with a larger cap
+#: is under-used. Upgrade path — read it per model once a provider states it, the
+#: way TTS limits are read from `maximum_text_length_per_request`.
+_MAX_UPLOAD_BYTES = 25 * 1024 * 1024
+
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
@@ -866,6 +881,18 @@ async def transcription_quote(
 
     if file is not None:
         content = await file.read()
+        # Checked here, before anything is held or staged. `UploadFile` spools to
+        # disk rather than buffering in memory, so an oversized upload does not
+        # exhaust the process — but it would still be written, staged and queued
+        # against a provider that is going to refuse it, and the caller would get
+        # a provider-shaped failure instead of the one sentence that explains it.
+        if len(content) > _MAX_UPLOAD_BYTES:
+            raise GatewayError(
+                413,
+                f"That audio is {len(content) / (1024 * 1024):.1f} MB; the limit is "
+                f"{_MAX_UPLOAD_BYTES // (1024 * 1024)} MB per request.",
+                "UPLOAD_TOO_LARGE",
+            )
         _prune_uploads(now := time.time())
         _UPLOADS[quote_id] = (
             content,

@@ -215,12 +215,17 @@ PROVIDER_DEFINITIONS: tuple[ProviderDefinition, ...] = (
     ProviderDefinition(
         id="groq-main",
         display_name="Groq",
-        category="language",
+        category="multi",
         kind=KIND_OPENAI_COMPATIBLE,
         base_url="https://api.groq.com/openai/v1",
-        modalities=("chat",),
+        # Chat *and* transcription, both through the OpenAI-compatible shim that is
+        # already this kind's whole adapter — so the second lane needs no dispatch
+        # code. Transcription is the reason to care: Groq serves Whisper
+        # large-v3-turbo at roughly a tenth of OpenAI's price per audio-minute, and
+        # the gateway's transcription path is already proven end to end.
+        modalities=("chat", "transcription"),
         discovery=DISCOVERY_OPENAI_MODELS,
-        description="Very fast open-model inference.",
+        description="Very fast open-model inference, and cheap Whisper transcription.",
         docs_url="https://console.groq.com/docs",
         credential_fields=(_api_key("GROQ_API_KEY", placeholder="gsk_…"),),
     ),
