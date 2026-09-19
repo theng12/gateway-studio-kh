@@ -162,6 +162,25 @@ def main() -> int:
               f"site_id={site.get('site_id')} controller_id={site.get('controller_id')}")
         print(f"       reported role: {site['role']}")
         check("it reports machines", len(site["machines"]) >= 1)
+        # A Hub lists its own connectivity probes as machines — `probe-fleet` and
+        # `probe-hub`, both labelled "probe" and permanently unreachable. Counting
+        # them made this Mac read as "3 machines, 2 offline", which is the exact
+        # figure the owner wants the Fleet page for; at six sites it would read as
+        # ~12 broken machines when nothing is wrong.
+        probes = [m for m in site["machines"] if str(m.get("machine") or "").startswith("probe-")]
+        check("the Hub's own probe entries are not reported as the owner's machines",
+              not probes, f"{[m.get('machine') for m in probes]}")
+        if site.get("probe_machines_hidden"):
+            check("and the page is told how many were hidden, so nothing vanishes silently",
+                  site["probe_machines_hidden"] == 2,
+                  f"hidden={site['probe_machines_hidden']}")
+            check("the machine total agrees with the machines that remain",
+                  (site.get("machine_summary") or {}).get("total") == len(site["machines"]),
+                  f"summary={site.get('machine_summary')} listed={len(site['machines'])}")
+            check("and the offline count is not inflated by them",
+                  site["machine_summary"].get("unreachable", 0)
+                  == sum(1 for m in site["machines"] if not m.get("reachable")),
+                  f"{site['machine_summary']}")
         check("the location also became a provider",
               provider_id in [p["id"] for p in
                               client.get(f"{base}/admin/api/providers").json()["providers"]])

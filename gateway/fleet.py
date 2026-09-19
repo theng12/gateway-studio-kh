@@ -590,6 +590,16 @@ def _running_jobs(batches: list[dict]) -> list[dict]:
     return live
 
 
+def _is_probe_machine(machine: dict) -> bool:
+    """Whether a machine the Hub lists is one of its own connectivity probes.
+
+    Named `probe-<something>` and labelled "probe" by the Hub. Matched on the id
+    rather than the label: a label is the owner's to change, and this must not
+    start hiding a real machine because someone called it "probe".
+    """
+    return str(machine.get("machine") or "").startswith("probe-")
+
+
 def _probe(base: str, token: str, *, timeout: float = _TIMEOUT) -> dict:
     """Read one controller. Never raises: a failure *is* the result."""
     started = time.time()
@@ -693,6 +703,33 @@ def _probe(base: str, token: str, *, timeout: float = _TIMEOUT) -> dict:
     activity = stats.get("fleet_activity") or {}
     controller = capabilities.get("controller")
     controller = controller if isinstance(controller, dict) else {}
+    # Studio Hub lists its own connectivity probes as machines. They are not
+    # hardware: this Mac has one machine and the Hub reported three — `local` plus
+    # `probe-fleet` and `probe-hub`, both labelled "probe" and permanently
+    # unreachable. Counting them inflates the offline figure the owner asked this
+    # page for, and at six sites it would read as ~12 broken machines when nothing
+    # is wrong. They are dropped here, from one place, so the counts, the machine
+    # table and the routing capacity all agree; the number hidden is reported so
+    # nothing disappears silently.
+    all_machines = [m for m in (overview.get("machines") or []) if isinstance(m, dict)]
+    real_machines = [m for m in all_machines if not _is_probe_machine(m)]
+    activity_machines = [m for m in (activity.get("machines") or []) if isinstance(m, dict)]
+    real_activity = [m for m in activity_machines if not _is_probe_machine(m)]
+    hidden = len(all_machines) - len(real_machines)
+
+    summary = dict(overview.get("summary") or {})
+    if hidden:
+        # Recomputed from the machines that remain rather than adjusted from the
+        # Hub's totals: subtracting the probe count would assume what state they
+        # were in, and `machine_summary.reachable` is what the router divides by.
+        reachable = sum(1 for m in real_machines if m.get("reachable"))
+        summary.update({
+            "total": len(real_machines),
+            "reachable": reachable,
+            "unreachable": len(real_machines) - reachable,
+            "probe_entries_hidden": hidden,
+        })
+
     location.update({
         "reachable": True,
         # Prefer the Hub's own identity; fall back to the older sources only when
@@ -702,14 +739,15 @@ def _probe(base: str, token: str, *, timeout: float = _TIMEOUT) -> dict:
         "site_id": capabilities.get("site_id") or controller.get("site_id"),
         "controller_id": controller.get("controller_id"),
         "ready": controller.get("ready"),
-        "machines": overview.get("machines") or [],
-        "machine_summary": overview.get("summary") or {},
+        "machines": real_machines,
+        "machine_summary": summary,
+        "probe_machines_hidden": hidden,
         "nodes": node_rows,
         "node_summary": nodes.get("summary") or {},
         "running_jobs": _running_jobs(jobs.get("batches") or []),
         "activity": {
             "pulse": activity.get("pulse") or {},
-            "machines": activity.get("machines") or [],
+            "machines": real_activity,
             "observed_at": activity.get("observed_at"),
         },
         "by_machine": stats.get("by_machine") or {},
@@ -826,6 +864,18 @@ def _summarise(rows: list[dict]) -> dict:
     machines_up = sum(
         1 for row in rows for machine in row["machines"] if machine.get("reachable")
     )
+    # Counted **per machine** from the already-filtered activity list, not from the
+    # Hub's aggregate `pulse`. The aggregate carries no machine identity, so a
+    # probe counted as `offline` in it could not be taken back out — which is
+    # exactly how two phantom machines reached the headline. Deriving the pulse
+    # here means the probes cannot re-enter the numbers by another route. Falls
+    # back to the Hub's own aggregate for a Hub that reports no per-machine state.
+    derived: dict[str, int] = {}
+    for row in rows:
+        for machine in row["activity"]["machines"]:
+            state = str(machine.get("state") or "unknown")
+            derived[state] = derived.get(state, 0) + 1
+    pulse = derived or pulse
     if pulse:
         # Every state except `offline` means the Hub can reach the machine.
         online = sum(count for state, count in pulse.items() if state != "offline")
@@ -847,6 +897,11 @@ def _summarise(rows: list[dict]) -> dict:
         "machines_online": online,
         "machines_offline": offline,
         "pulse": pulse,
+        # Said out loud rather than silently dropped: a page that hides rows
+        # without saying so is the same failure as one that invents them.
+        "probe_machines_hidden": sum(
+            int(row.get("probe_machines_hidden") or 0) for row in rows
+        ),
         "jobs_completed": completed,
         "jobs_failed": failed,
         "running_jobs": sum(len(row["running_jobs"]) for row in rows),

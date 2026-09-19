@@ -113,6 +113,20 @@ had them switched off** — each had its working non-`:batch` sibling enabled, s
 nothing was lost and OpenRouter went from 23 enabled to 14. Do not re-enable them;
 the sibling without the suffix is the same model on a route that answers.
 
+**A Hub lists its own connectivity probes as machines, and they must not be
+counted as the owner's hardware.** Studio Hub reports `probe-fleet` and
+`probe-hub` — labelled "probe", permanently unreachable — beside the real machine.
+This Mac read as "3 machines, 2 offline", which is exactly the figure the owner
+wants the Fleet page for; at six sites it would read as ~12 broken machines when
+nothing is wrong. `fleet._is_probe_machine` drops them from the machine list, the
+machine table, the routing capacity and the activity list, from one place, and
+`probe_machines_hidden` says how many were hidden — a page that hides rows without
+saying so is the same failure as one that invents them. The online/offline counts
+are derived **per machine** from the filtered activity list rather than from the
+Hub's aggregate `pulse`, because the aggregate carries no machine identity and a
+probe counted in it could not be taken back out. Matched on the id, never the
+label: the label is the owner's to change.
+
 ## Received artifacts are temporary
 
 The gateway is a **receiver**, not the owner: a node renders an artifact, this Mac
@@ -301,7 +315,7 @@ success.
 
 ```bash
 .venv/bin/python tests/test_e2e.py              # 292 checks, isolated mock upstream
-.venv/bin/python tests/test_fleet_standalone.py # 41 checks, real Hub(s) as locations
+.venv/bin/python tests/test_fleet_standalone.py # 45 checks, real Hub(s) as locations
 .venv/bin/python tests/test_ui.py               # 94-97 checks, drives the real app
 ```
 
