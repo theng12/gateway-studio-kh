@@ -504,18 +504,21 @@ exercised without touching his machine. `test_fleet_standalone.py` is deliberate
 different: it uses his real Hub on purpose, which is why it is the suite to run
 knowingly.
 
-**Two of its checks fail when the Hub's own Subtitle worker is unwell, and that is
-not a gateway defect.** "a transcription ran on the location end to end" and "the
-artifact comes back through the gateway" drive a real transcription through the
-Hub's subtitle worker. Measured on 2026-09-20: the Hub **auto-updated itself from
-0.6.18 to 0.6.23 mid-suite**, restarting its workers underneath an in-flight job,
-and the suite reported `Hub lost contact with a possibly accepted Subtitle worker
-attempt`. Afterwards the worker was alive and answering (401 on `/health` in
-1.7 ms) but had never loaded a model — 11 open files, 38 MB RSS — and a direct
-`_transcribe` of a 13 s clip that had taken ~30 s earlier **timed out at 400 s**.
-Read the failure, not just the count: a worker that answers `/health` is not a
-worker that transcribes, and the gateway's voice annotation depends on this same
-route.
+**Two of its checks were failing for a Hub-side worker restart, and it was
+transient — check before reporting it as a defect.** "a transcription ran on the
+location end to end" and "the artifact comes back through the gateway" drive a real
+transcription through the Hub's subtitle worker. Measured on 2026-09-20: the Hub
+**auto-updated itself from 0.6.18 to 0.6.23 mid-suite**, restarting its workers
+underneath an in-flight job, and the suite reported `Hub lost contact with a
+possibly accepted Subtitle worker attempt`. In that window the worker was alive and
+answering (401 on `/health` in 1.7 ms) but had loaded no model — 11 open files,
+38 MB RSS — and a direct `_transcribe` of a 13 s clip that had taken ~30 s earlier
+**timed out at 400 s**. **It recovered by itself**: a later worker (new pid, then
+85 s old) transcribed the same clip in under 100 s and the suite went **45/45 on
+re-run**. So: a worker answering `/health` is not a worker that transcribes, the
+gateway's voice annotation depends on that same route, and the right response to
+this failure is to re-run before filing it — an auto-update mid-run is the usual
+cause.
 
 **`test_ui.py` drives the real, installed app**, so run it deliberately rather than
 reflexively. It takes over the app's windows through Accessibility, and loading new
