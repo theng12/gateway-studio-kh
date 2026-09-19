@@ -25,6 +25,8 @@ final class VoicesSection: NSObject, AppSection, NSTableViewDataSource, NSTableV
     private var providerPopup: NSPopUpButton!
     private var libraryCheck: NSButton!
     private var searchField: NSSearchField!
+    private var addByIdField: NSTextField!
+    private var addByOwnerField: NSTextField!
     private var summaryLabel: NSTextField!
     private var detailLabel: NSTextField!
     private var addButton: NSButton!
@@ -87,6 +89,39 @@ final class VoicesSection: NSObject, AppSection, NSTableViewDataSource, NSTableV
         bar.alignment = .centerY
         root.addArrangedSubview(bar)
         bar.widthAnchor.constraint(equalTo: root.widthAnchor, constant: -56).isActive = true
+
+        // ---- Add a voice by its id, without searching for it.
+        //
+        // The library search only finds what the provider will *search* for, and a
+        // voice the owner already knows the id of — from a share link, or another
+        // app's config — could not be saved at all: `addSelected` only ever acts on
+        // rows in the table. The gateway API has always accepted an explicit id, so
+        // this is the field that was missing rather than the capability.
+        addByIdField = NSTextField()
+        addByIdField.placeholderString = "Voice ID (from a share link)"
+        addByIdField.controlSize = .small
+        addByIdField.widthAnchor.constraint(equalToConstant: 240).isActive = true
+
+        // ElevenLabs is the one provider that needs more than an id: its library
+        // import route is `/v1/voices/add/{owner_id}/{voice_id}`.
+        addByOwnerField = NSTextField()
+        addByOwnerField.placeholderString = "Owner ID (ElevenLabs only)"
+        addByOwnerField.controlSize = .small
+        addByOwnerField.widthAnchor.constraint(equalToConstant: 200).isActive = true
+
+        let addByIdButton = NSButton(title: "Add by ID", target: self, action: #selector(addByID))
+        addByIdButton.bezelStyle = .rounded
+        addByIdButton.controlSize = .small
+
+        let byIdBar = NSStackView(views: [
+            PageKit.label("Add by ID", size: 12, colour: .secondaryLabelColor),
+            addByIdField, addByOwnerField, addByIdButton, NSView(),
+        ])
+        byIdBar.orientation = .horizontal
+        byIdBar.spacing = 8
+        byIdBar.alignment = .centerY
+        root.addArrangedSubview(byIdBar)
+        byIdBar.widthAnchor.constraint(equalTo: root.widthAnchor, constant: -56).isActive = true
 
         summaryLabel = NSTextField(labelWithString: "Loading…")
         summaryLabel.font = .systemFont(ofSize: 11.5)
@@ -509,6 +544,67 @@ final class VoicesSection: NSObject, AppSection, NSTableViewDataSource, NSTableV
             }
             self.reload()
         }
+    }
+
+
+    /// Save a provider voice the owner already has the id of.
+    ///
+    /// The library search can only find what the provider will search for, so a
+    /// voice known from a share link had no way in. The gateway API has always
+    /// accepted an explicit id — this is the missing field, not a missing
+    /// capability.
+    ///
+    /// A provider must be chosen: an id alone is ambiguous, and "All providers"
+    /// is not a provider. ElevenLabs additionally needs the library voice's
+    /// **owner id**, because its import route is
+    /// `/v1/voices/add/{owner_id}/{voice_id}` — refusing locally with that
+    /// sentence beats a 422 from the far end.
+    @objc private func addByID() {
+        let voiceId = addByIdField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !voiceId.isEmpty else {
+            report("Type the voice id first.", ok: false)
+            return
+        }
+        let providerId = selectedProviderId()
+        guard !providerId.isEmpty else {
+            report("Choose the provider that owns that voice — an id alone does not say.", ok: false)
+            return
+        }
+        if providerKind(providerId) == "elevenlabs"
+            && addByOwnerField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            report("ElevenLabs needs the voice's owner id as well — it is in the same share link.", ok: false)
+            return
+        }
+        var body: [String: Any] = ["provider_id": providerId, "provider_voice_id": voiceId]
+        let owner = addByOwnerField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !owner.isEmpty { body["owner_id"] = owner }
+
+        summaryLabel.stringValue = "Saving that voice…"
+        summaryLabel.textColor = .secondaryLabelColor
+        GatewayAPI.post("/admin/api/voices/import", body: body) { [weak self] result in
+            guard let self else { return }
+            switch result {
+            case .failure(let error):
+                self.report("Could not save that voice — \(error.localizedDescription)", ok: false)
+            case .success(let payload):
+                let name = ((payload["voice"] as? [String: Any])?["display_name"] as? String) ?? voiceId
+                self.addByIdField.stringValue = ""
+                self.addByOwnerField.stringValue = ""
+                self.report("Saved \(name). It is on — tick it off if you do not want it offered.", ok: true)
+                self.refreshVoices()
+            }
+        }
+    }
+
+    /// The kind behind a provider id, for the one place that needs it.
+    private func providerKind(_ providerId: String) -> String {
+        providers.first(where: { $0.id == providerId })?.kind ?? ""
+    }
+
+    /// Say what happened, and make failure look like failure.
+    private func report(_ message: String, ok: Bool) {
+        summaryLabel.textColor = ok ? .secondaryLabelColor : .systemRed
+        summaryLabel.stringValue = message
     }
 
     @objc private func addSelected() {

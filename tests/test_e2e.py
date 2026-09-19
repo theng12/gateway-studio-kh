@@ -869,8 +869,11 @@ def main() -> int:
             req(client, "POST", "/admin/api/providers/mock-google/models/enabled",
                 json={"model_ids": ["gemini-2.5-pro", "veo-3"], "enabled": True})
             veo = req(client, "GET", "/admin/api/models?q=veo-3").json()["models"]
-            check("the unservable model really is enabled in inventory",
-                  bool(veo) and veo[0]["enabled"], f"{veo}")
+            # It is enabled in the store but **not listed**, because a row you can
+            # tick that can never publish is a control that does nothing. The
+            # owner asked for exactly that after OpenRouter's Lyria rows.
+            check("an unservable model is not listed as something to tick",
+                  veo == [], f"{veo}")
             chat_ids = {m["id"] for m in req(client, "GET", "/v1/chat/models").json()["models"]}
             video_ids = {m["id"] for m in req(client, "GET", "/v1/videos/models").json()["models"]}
             check("the lane its adapter does serve is published",
@@ -1268,6 +1271,55 @@ def main() -> int:
             check("OpenRouter cannot serve music, so its Lyria rows stay withheld",
                   not _serves2(_P["openrouter-main"], "music"),
                   "its API publishes no music path at all")
+
+            print("\n\033[1m10g. Saving a library voice by its id\033[0m")
+            # The library *search* can only find what the provider will search
+            # for, so a voice known from a share link had no way in. The API has
+            # always taken an explicit id; the app had no field for it.
+            bad = req(client, "POST", "/admin/api/voices/import",
+                      json={"provider_id": "nobody", "provider_voice_id": "abc"})
+            check("adding by id refuses an unknown provider", bad.status_code == 404,
+                  f"{bad.status_code}")
+            check("and refuses a missing id rather than saving nothing",
+                  req(client, "POST", "/admin/api/voices/import",
+                      json={"provider_id": "mock-remote"}).status_code == 422)
+            # ElevenLabs is the one provider that needs more than the id, because
+            # its import route is /v1/voices/add/{owner_id}/{voice_id}.
+            owner = req(client, "POST", "/admin/api/voices/import",
+                        json={"provider_id": "elevenlabs-direct", "provider_voice_id": "abc"})
+            check("ElevenLabs asks for the owner id instead of 422-ing obscurely",
+                  owner.status_code == 422 and "owner_id" in owner.text,
+                  f"{owner.status_code} {owner.text[:120]}")
+            added_by_id = req(client, "POST", "/admin/api/voices/import",
+                              json={"provider_id": "mock-remote", "provider_voice_id": "voice-by-id",
+                                    "display_name": "Saved By Id"})
+            check("a voice can be saved from an explicit id alone",
+                  added_by_id.status_code == 200
+                  and (added_by_id.json().get("voice") or {}).get("enabled") is True,
+                  added_by_id.text[:160])
+            listed = req(client, "GET", "/admin/api/voices?provider_id=mock-remote").json()
+            check("and it appears in the catalogue straight away",
+                  any(v["provider_voice_id"] == "voice-by-id" for v in listed["voices"]),
+                  f"{[v['provider_voice_id'] for v in listed['voices']]}")
+            # Removed again: an added voice changes the counts section 15 checks,
+            # and this test is about the route, not about owning a voice.
+            saved_id = (added_by_id.json().get("voice") or {}).get("id", "")
+            check("and can be removed again",
+                  req(client, "DELETE", f"/admin/api/voices/{saved_id}").status_code == 200,
+                  saved_id)
+
+            # The console must not advertise a model that can never run: a row you
+            # can tick that will never publish is a control that does nothing.
+            console = req(client, "GET", "/admin/api/models?limit=2000").json()["models"]
+            openrouter_music = [m for m in console
+                                if m["provider_id"] == "openrouter-main" and m["modality"] == "music"]
+            check("a model the provider cannot serve is not listed as something to tick",
+                  not openrouter_music, f"{[m['model_id'] for m in openrouter_music]}")
+            bad_stt = [m["model_id"] for m in console
+                       if m["modality"] == "transcription"
+                       and not _stt_ok(m["model_id"])]
+            check("and no SRT-incapable transcription model is listed either",
+                  not bad_stt, f"{bad_stt}")
 
             print("\n\033[1m11. Manual model add (provider shipped an unlisted model)\033[0m")
             r = httpx.post(f"{BASE}/admin/api/providers/mock-remote/models", headers=AUTH,

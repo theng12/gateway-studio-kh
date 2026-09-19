@@ -146,6 +146,24 @@ occurrences of "lyria" or "music" across 92 paths — the only audio-output shap
 documents is the TTS-shaped chat contract. Those rows are therefore withheld
 rather than implemented: a listing is not a serving contract.
 
+**The console must not list a model that can never run.** `ModelInventory.can_publish`
+is the single rule, and both readers use it: the catalogue asks it to decide what
+to publish, and `_flat_models` asks it to decide what to *show*. They were two
+separate sets of conditions and the console's was the weaker one, so it advertised
+rows the catalogue silently dropped — nine OpenAI transcription models of which
+only `whisper-1` can return SRT, four `google-ai-free` Lyria rows on a tier that
+has no Lyria, and OpenRouter's two Lyria rows. A row you can tick that will never
+publish is a control that does nothing, which is what the owner asked to stop.
+
+**A provider voice known by its id can be saved without searching for it.** The
+library search only finds what the provider will *search* for, and
+"Add to my account" only ever acted on rows already in the table, so a voice known
+from a share link had no way in. `POST /admin/api/voices/import` always accepted an
+explicit `provider_voice_id`; the Voices window now has fields for it and for the
+owner id. **ElevenLabs is the one provider that needs both**, because its import
+route is `/v1/voices/add/{owner_id}/{voice_id}` — refused locally with that
+sentence rather than as an opaque 422 from the far end.
+
 **An upload past 25 MB is refused 413, not queued and then failed.** Every cloud
 transcription API on the gateway caps a single upload there, and a caller that
 crosses it should be told the number rather than handed a provider error after
@@ -365,9 +383,9 @@ success.
 ## Verification
 
 ```bash
-.venv/bin/python tests/test_e2e.py              # 312 checks, isolated mock upstream
+.venv/bin/python tests/test_e2e.py              # 320 checks, isolated mock upstream
 .venv/bin/python tests/test_fleet_standalone.py # 45 checks, real Hub(s) as locations
-.venv/bin/python tests/test_ui.py               # 94-97 checks, drives the real app
+.venv/bin/python tests/test_ui.py               # 96-99 checks, drives the real app
 ```
 
 `test_e2e.py` is fully isolated (`GATEWAY_DATA`/`GATEWAY_APP_SUPPORT` to a temp

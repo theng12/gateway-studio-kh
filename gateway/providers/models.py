@@ -190,6 +190,38 @@ class ModelInventory:
                 output.append(item)
         return output
 
+    def can_publish(self, definition: Any, model: dict[str, Any]) -> bool:
+        """Whether this model could ever be offered to Story Studio.
+
+        **One rule, two readers.** The catalogue asks it to decide what to publish,
+        and the console asks it to decide what to list — because a model that can
+        never run should not be shown as something to tick either. They were two
+        separate sets of conditions, and the console's was the weaker one, so it
+        advertised rows the catalogue would silently drop.
+
+        Three questions, finest last:
+
+          1. does the provider **declare** the modality at all;
+          2. does its adapter **serve** that modality (a kind having an adapter is
+             not the same claim — Google declares six and serves four);
+          3. is there a **per-model** reason it cannot answer (OpenAI's newer
+             transcription models cannot return the SRT this gateway must send;
+             Lyria's realtime model has no one-shot call).
+        """
+        from ..adapters import serves
+
+        modality = str(model.get("modality") or "")
+        if modality not in definition.modalities:
+            return False
+        if not serves(definition, modality):
+            return False
+        model_id = str(model.get("model_id") or "")
+        if modality == "transcription" and not transcription_can_serve(model_id):
+            return False
+        if modality == "music" and not music_can_serve(model_id):
+            return False
+        return True
+
     def enabled_models(self, modality: str) -> list[tuple[ProviderDefinition, dict[str, Any]]]:
         """Every enabled model of a modality across every enabled provider.
 
@@ -205,14 +237,8 @@ class ModelInventory:
         serves four of the six modalities Google declares, so a discovered video
         row published and then failed on use.
         """
-        from ..adapters import serves
-
         output: list[tuple[ProviderDefinition, dict[str, Any]]] = []
         for provider_id, definition in self._every_definition():
-            if modality not in definition.modalities:
-                continue
-            if not serves(definition, modality):
-                continue
             if not self.credentials.is_enabled(provider_id):
                 continue
             if not self.credentials.is_configured(provider_id):
@@ -220,16 +246,7 @@ class ModelInventory:
             for model in self.models_for(provider_id, include_disabled=False):
                 if model["modality"] != modality:
                     continue
-                # A per-model capability, not a per-kind one. The gateway asks
-                # every cloud transcription lane for `response_format: "srt"`, and
-                # most of OpenAI's newer transcription models answer that with a
-                # 400 — so they were tickable and then failed on use. Same rule as
-                # the modality gate above, one level finer.
-                if modality == "transcription" and not transcription_can_serve(
-                    str(model["model_id"])
-                ):
-                    continue
-                if modality == "music" and not music_can_serve(str(model["model_id"])):
+                if not self.can_publish(definition, model):
                     continue
                 output.append((definition, model))
         return output

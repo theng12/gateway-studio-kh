@@ -259,10 +259,21 @@ def remove_model(provider_id: str, model_id: str) -> Any:
 # on, rather than opening eighteen panels to do it.
 # ---------------------------------------------------------------------------
 def _flat_models() -> list[dict[str, Any]]:
+    """Every model the console can show, minus the ones that could never run.
+
+    A model whose modality its provider's adapter does not serve is **not listed
+    at all**. It could never be published, so offering it as something to tick is
+    a control that does nothing — and the owner asked for exactly that to stop
+    happening with OpenRouter's two Lyria rows, which its catalogue lists while
+    publishing no music request path for them. The cache still holds them, so
+    nothing discovered is lost; the console just stops advertising the impossible.
+    """
     rows: list[dict[str, Any]] = []
     for definition in registry.definitions():
         enabled_provider = registry.credentials.is_enabled(definition.id)
         for model in registry.models.models_for(definition.id, include_disabled=True):
+            if not registry.models.can_publish(definition, model):
+                continue
             rows.append(
                 {
                     "provider_id": definition.id,

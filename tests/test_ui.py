@@ -806,6 +806,12 @@ def main() -> int:
     voices_buttons = detail_button_titles()
     check("offers adding voices from a folder",
           any("Add voices" in title for title in voices_buttons), f"{voices_buttons}")
+    # A voice whose id the owner already knows — from a share link — had no way in:
+    # the library search only finds what the provider will search for, and "Add to
+    # my account" only acts on rows already in the table. The API always accepted
+    # an explicit id; the field was what was missing.
+    check("offers saving a voice by its id",
+          any("Add by ID" in title for title in voices_buttons), f"{voices_buttons}")
 
     if rows > 3:
         # `expect_exact=False` because this Mac's active input source is **Khmer**,
@@ -843,6 +849,16 @@ def main() -> int:
 
     # The enable checkbox lives inside a cell view, and what matters is that
     # clicking it reaches the gateway — not merely that the box repaints.
+    # The field itself, not just the button: a button with nothing to type into is
+    # the same dead control in a different shape. System Events does not expose a
+    # placeholder, so this counts the fields — search, the id, and the owner id
+    # ElevenLabs needs — which is the part that can actually break.
+    field_count = int(osa(wrap(
+        f"tell {MAIN_WINDOW} to tell splitter group 1 to return (count of text fields)"
+    )) or 0)
+    check("and a field to type the id into, plus one for the owner id",
+          field_count >= 3, f"{field_count} text fields on the Voices page")
+
     checkbox = ("checkbox 1 of UI element 1 of row 1 of table 1 of scroll area 2 "
                 "of splitter group 1")
     if rows > 0:
