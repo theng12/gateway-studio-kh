@@ -366,6 +366,34 @@ def bulk_models(payload: dict[str, Any]) -> Any:
     return {"changed": _apply(matched, enabled), "matched": len(matched), "enabled": enabled}
 
 
+@router.get("/api/settings/retention", dependencies=[Depends(require_admin)])
+def get_retention() -> dict[str, Any]:
+    """How long received artifacts are kept, and how much is there now."""
+    from . import retention
+
+    return {**retention.settings(), "usage": retention.usage()}
+
+
+@router.put("/api/settings/retention", dependencies=[Depends(require_admin)])
+def set_retention(payload: dict[str, Any]) -> Any:
+    """Change the limits. Whichever is reached first prunes."""
+    from . import retention
+
+    saved = retention.save(
+        max_age_days=payload.get("max_age_days"),
+        max_bytes=payload.get("max_bytes"),
+    )
+    return {**saved, "usage": retention.usage()}
+
+
+@router.post("/api/artifacts/prune", dependencies=[Depends(require_admin)])
+def prune_artifacts() -> dict[str, Any]:
+    """Run the policy now, and report what it did rather than that it ran."""
+    from . import retention
+
+    return {**retention.prune(), "usage": retention.usage()}
+
+
 # ---------------------------------------------------------------------------
 # Voices
 #

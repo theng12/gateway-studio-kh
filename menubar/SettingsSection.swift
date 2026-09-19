@@ -23,6 +23,9 @@ final class SettingsSection: NSObject, AppSection {
     private var dataLabel: NSTextField!
     private var portField: NSTextField!
     private var keyField: NSTextField!
+    private var retentionDaysField: NSTextField!
+    private var retentionGBField: NSTextField!
+    private var retentionUsageLabel: NSTextField!
     private var loginCheck: NSButton!
     private var autoStartCheck: NSButton!
     private var statusLabel: NSTextField!
@@ -82,6 +85,36 @@ final class SettingsSection: NSObject, AppSection {
             NSButton(title: "Regenerate", target: self, action: #selector(regenerateKey)),
         ], spacing: 8)
         root.addArrangedSubview(PageKit.formRow("Key", [keyField, keyButtons] as [NSView]))
+
+        root.addArrangedSubview(divider())
+
+        // ---- received artifacts
+        //
+        // The gateway only *receives* these: a node renders them, this Mac hands
+        // them to Story Studio, and Story Studio keeps the copy that matters. So
+        // they are temporary here — and nothing removed them at all before this.
+        root.addArrangedSubview(PageKit.sectionTitle("Received artifacts"))
+        root.addArrangedSubview(PageKit.help(
+            "Images, audio and subtitles pass through this Mac on their way to Story Studio, "
+            + "which keeps its own copy. They are deleted when either limit is reached — "
+            + "whichever comes first, oldest first. A file newer than an hour is never removed, "
+            + "so work in flight is safe."
+        ))
+        retentionDaysField = NSTextField(string: "")
+        retentionDaysField.widthAnchor.constraint(equalToConstant: 70).isActive = true
+        retentionGBField = NSTextField(string: "")
+        retentionGBField.widthAnchor.constraint(equalToConstant: 70).isActive = true
+        root.addArrangedSubview(PageKit.formRow("Keep for", [
+            retentionDaysField,
+            PageKit.label("days, or", size: 12, colour: .secondaryLabelColor),
+            retentionGBField,
+            PageKit.label("GB", size: 12, colour: .secondaryLabelColor),
+        ]))
+        retentionUsageLabel = PageKit.label("", size: 11.5, colour: .secondaryLabelColor, wrapping: true)
+        root.addArrangedSubview(PageKit.formRow("In use", [
+            retentionUsageLabel,
+            NSButton(title: "Prune now", target: self, action: #selector(pruneNow)),
+        ] as [NSView]))
 
         root.addArrangedSubview(divider())
 
@@ -145,6 +178,62 @@ final class SettingsSection: NSObject, AppSection {
         runtimeLabel?.stringValue = GatewayController.shared.runtimeDescription
         dataLabel?.stringValue = AppPaths.data.path
         statusLabel?.stringValue = "Config: \(ConfigStore.shared.configPath)"
+        loadRetention()
+    }
+
+    /// The limits live in the gateway, not in this app, so they are read from it.
+    private func loadRetention() {
+        GatewayAPI.get("/admin/api/settings/retention") { [weak self] result in
+            guard let self, case .success(let payload) = result else { return }
+            let days = (payload["max_age_days"] as? Double) ?? 7
+            let bytes = (payload["max_bytes"] as? Double) ?? (10 * 1024 * 1024 * 1024)
+            self.retentionDaysField?.stringValue = String(format: "%g", days)
+            self.retentionGBField?.stringValue = String(format: "%g", bytes / (1024 * 1024 * 1024))
+            self.describeRetention(payload["usage"] as? [String: Any])
+        }
+    }
+
+    private func describeRetention(_ usage: [String: Any]?) {
+        guard let usage else { return }
+        let files = usage["files"] as? Int ?? 0
+        let bytes = (usage["bytes"] as? Double) ?? 0
+        let formatted = ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .file)
+        retentionUsageLabel?.stringValue =
+            "\(files) file\(files == 1 ? "" : "s"), \(formatted) — Story Studio keeps its own copy"
+    }
+
+    /// Save the limits and run the policy, so the effect of a change is visible now
+    /// rather than at the next hourly pass.
+    @objc private func pruneNow() {
+        let days = Double(retentionDaysField.stringValue.trimmingCharacters(in: .whitespaces))
+        let gb = Double(retentionGBField.stringValue.trimmingCharacters(in: .whitespaces))
+        var body: [String: Any] = [:]
+        if let days { body["max_age_days"] = days }
+        if let gb { body["max_bytes"] = gb * 1024 * 1024 * 1024 }
+
+        GatewayAPI.put("/admin/api/settings/retention", body: body) { [weak self] result in
+            guard let self else { return }
+            if case .failure(let error) = result {
+                self.statusLabel.stringValue = "Could not save the limits — \(error)"
+                return
+            }
+            GatewayAPI.post("/admin/api/artifacts/prune", body: [:]) { [weak self] result in
+                guard let self else { return }
+                switch result {
+                case .failure(let error):
+                    self.statusLabel.stringValue = "Could not prune — \(error)"
+                case .success(let payload):
+                    let deleted = payload["deleted"] as? Int ?? 0
+                    let freed = (payload["freed_bytes"] as? Double) ?? 0
+                    self.statusLabel.stringValue = deleted == 0
+                        ? "Nothing to remove — everything is inside the limits."
+                        : "Removed \(deleted) file\(deleted == 1 ? "" : "s"), "
+                          + ByteCountFormatter.string(fromByteCount: Int64(freed), countStyle: .file)
+                          + " freed."
+                    self.describeRetention(payload["usage"] as? [String: Any])
+                }
+            }
+        }
     }
 
     // MARK: Actions

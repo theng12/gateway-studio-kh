@@ -86,6 +86,28 @@ row publishes to Story Studio and fails the moment it is picked. Eight of the
 owner's twenty-three enabled OpenRouter models are these. Do not enable them; the
 live sibling without the suffix is the same model on a route that answers.
 
+## Received artifacts are temporary
+
+The gateway is a **receiver**, not the owner: a node renders an artifact, this Mac
+downloads it and serves it to Story Studio, and **Story Studio keeps the copy that
+matters**. Nothing removed them at all before `gateway/retention.py`, so
+`data/artifacts/` grew without bound.
+
+Two limits, whichever is reached first, both editable in Settings or over the API
+(`/api/settings/retention`, `/api/artifacts/prune`) — default **7 days or 10 GB**:
+
+- **Age** is the normal one. An artifact Story Studio has not fetched in a week is
+  not going to be.
+- **Size** is the backstop for a burst. Long videos can pass the cap inside a day,
+  so the oldest go first and the newest stay fetchable.
+
+**Nothing younger than an hour is ever removed**, whatever the limits say. A
+freshly-written artifact is about to be fetched and a staged upload is being read
+by a running job, so the newest files are safe by construction rather than by luck.
+The settings live in `DATA_DIR/retention.json`, not `.env`: the menu bar app
+rewrites `.env` wholesale when it saves the key and the gateway reads that file once
+at import, so a setting there would be dropped or ignored until a restart.
+
 ## Ports
 
 - **8000** is this gateway, chosen because it is Story Studio's *default*
@@ -251,9 +273,9 @@ success.
 ## Verification
 
 ```bash
-.venv/bin/python tests/test_e2e.py              # 166 checks, isolated mock upstream
+.venv/bin/python tests/test_e2e.py              # 179 checks, isolated mock upstream
 .venv/bin/python tests/test_fleet_standalone.py # 40 checks, real Hub(s) as locations
-.venv/bin/python tests/test_ui.py               # 87 checks, drives the real app
+.venv/bin/python tests/test_ui.py               # 88 checks, drives the real app
 ```
 
 `test_e2e.py` is fully isolated (`GATEWAY_DATA`/`GATEWAY_APP_SUPPORT` to a temp

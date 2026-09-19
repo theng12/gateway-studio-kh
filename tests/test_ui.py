@@ -766,6 +766,16 @@ def main() -> int:
     check("Settings shows the runtime", "runtime" in settings.lower(), settings[:160])
     check("Settings shows the data folder", "gateway-kh" in settings)
     check("Settings states what it is for", "API key" in settings, settings[:200])
+    # Artifact retention: the limits are editable here, and the page says where the
+    # received copies go so it is clear they are not the ones Story Studio keeps.
+    check("Settings offers the artifact retention limits",
+          "Received artifacts" in settings and "Keep for" in settings and "In use" in settings,
+          settings[-260:])
+    # "Prune now" is a button, and `detail_texts` only reads static text — the same
+    # distinction that hid the Fleet row actions.
+    settings_buttons = detail_button_titles()
+    check("and a way to run it now",
+          any("Prune now" in title for title in settings_buttons), f"{settings_buttons}")
     # A page, not a window: its controls live in the detail pane, and there is
     # no second window to close.
     check("Settings has an API key field",

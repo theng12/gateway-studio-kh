@@ -1054,6 +1054,70 @@ def main() -> int:
                   refused.status_code == 403 and "not been allowed" in refused.text,
                   f"HTTP {refused.status_code} {refused.text[:140]}")
 
+            print("\n\033[1m19. Received artifacts are temporary\033[0m")
+            # The gateway is a receiver, not the owner: Story Studio keeps the copy
+            # that matters. Nothing removed these at all before, so the directory
+            # grew without bound.
+            import time as _time
+
+            artifacts = tmp / "artifacts"
+            artifacts.mkdir(parents=True, exist_ok=True)
+            now = _time.time()
+            day = 86400.0
+
+            def stage(name: str, age_days: float, size: int = 1024) -> Path:
+                path = artifacts / name
+                path.write_bytes(b"x" * size)
+                stamp = now - age_days * day
+                os.utime(path, (stamp, stamp))
+                return path
+
+            ancient = stage("ancient.mp4", 30)          # over any sane age limit
+            old = stage("old.mp4", 9)                   # over 7 days
+            recent = stage("recent.mp4", 2)             # inside 7 days
+            fresh = stage("fresh.mp4", 0.01)            # inside the protected hour
+
+            got = req(client, "GET", "/admin/api/settings/retention").json()
+            check("the defaults are the ones asked for: 7 days or 10 GB",
+                  got["max_age_days"] == 7 and got["max_bytes"] == 10 * 1024**3,
+                  f"{got['max_age_days']} days / {got['max_bytes']} bytes")
+            check("and it reports what is actually stored",
+                  got["usage"]["files"] >= 4, f"{got['usage']}")
+
+            out = req(client, "POST", "/admin/api/artifacts/prune", json={}).json()
+            check("pruning removes what is past the age limit",
+                  not ancient.exists() and not old.exists(),
+                  f"ancient={ancient.exists()} old={old.exists()}")
+            check("and keeps what is inside it", recent.exists() and fresh.exists())
+            check("a file newer than the protection window is never removed",
+                  fresh.exists(), "the newest artifact must survive even an aggressive cap")
+            check("it reports what it removed rather than only that it ran",
+                  out["deleted"] == 2 and out["deleted_by_age"] == 2 and out["freed_bytes"] > 0,
+                  f"{ {k: out[k] for k in ('deleted','deleted_by_age','deleted_by_size','freed_bytes')} }")
+
+            # The size limit is the backstop, and it takes the oldest first.
+            big = [stage(f"bulk-{i}.bin", age_days=3 - i * 0.5, size=900 * 1024) for i in range(3)]
+            saved = req(client, "PUT", "/admin/api/settings/retention",
+                        json={"max_bytes": 2 * 1024 * 1024}).json()
+            check("the limits can be edited", saved["max_bytes"] == 2 * 1024 * 1024, f"{saved}")
+            after = req(client, "POST", "/admin/api/artifacts/prune", json={}).json()
+            check("the size cap removes the oldest first",
+                  not big[0].exists() and big[-1].exists(),
+                  f"oldest kept={big[0].exists()} newest kept={big[-1].exists()}")
+            check("and says which limit did it",
+                  after["deleted_by_size"] >= 1, f"{after}")
+            check("the newest is still protected even when the cap is exceeded",
+                  fresh.exists() and after["protected_files"] >= 1, f"protected={after['protected_files']}")
+            check("a limit of zero days is clamped rather than deleting everything",
+                  req(client, "PUT", "/admin/api/settings/retention",
+                      json={"max_age_days": 0}).json()["max_age_days"] > 0)
+            check("a cap too small to hold one video is raised to a workable floor",
+                  req(client, "PUT", "/admin/api/settings/retention",
+                      json={"max_bytes": 700 * 1024}).json()["max_bytes"] == 1024 * 1024)
+            check("the defaults can be restored",
+                  req(client, "PUT", "/admin/api/settings/retention",
+                      json={"max_age_days": 7, "max_bytes": 10 * 1024**3}).json()["max_age_days"] == 7)
+
     finally:
         for proc in processes:
             try:
