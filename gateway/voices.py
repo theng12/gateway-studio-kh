@@ -823,6 +823,24 @@ def story_row(voice: Voice) -> dict[str, Any]:
     }
 
 
+def accepted_voice_providers(provider_id: str, model_id: str) -> set[str]:
+    """Which providers' voices may be used with this model.
+
+    Normally one: a voice belongs to the provider that serves the model. The
+    exception is a **proxy that speaks another provider's ids unchanged** — fal's
+    ElevenLabs routes, which the owner has driven with ElevenLabs voice ids many
+    times. Without it the picker offered only the twenty names fal happens to
+    `example`, so a voice saved from his own account was invisible for that lane
+    while working perfectly through it. Keyed on the provider's *kind* and the
+    word `elevenlabs` in the endpoint, never on a hardcoded provider id.
+    """
+    accepted = {provider_id}
+    owner = registry.definition(provider_id)
+    if owner is not None and owner.kind == KIND_FAL and "elevenlabs" in model_id.lower():
+        accepted |= {d.id for d in registry.definitions() if d.kind == KIND_ELEVENLABS}
+    return accepted
+
+
 def voices_for_model(compound_model_id: str) -> list[dict[str, Any]]:
     """Voices usable with a namespaced catalogue model id.
 
@@ -841,6 +859,14 @@ def voices_for_model(compound_model_id: str) -> list[dict[str, Any]]:
     rather than "the namespaces disagree". Both spellings are accepted because
     both are really sent — a saved Story Studio preset still holds the pre-merge
     id, which is exactly why every row also publishes `legacy_ids`.
+
+    **fal's ElevenLabs routes take ElevenLabs voices, so those are offered too.**
+    fal proxies ElevenLabs and accepts a voice id unchanged — the owner confirms
+    he has used them that way many times — but the picker only offered the twenty
+    names fal happens to `example`, because a voice is matched on its *provider*.
+    So a voice he had saved from his own ElevenLabs account was invisible for the
+    fal lane while working perfectly through it. A fal endpoint with `elevenlabs`
+    in its id now also accepts every voice from an `elevenlabs` provider.
     """
     from .fleet import publish_id
 
@@ -848,10 +874,12 @@ def voices_for_model(compound_model_id: str) -> list[dict[str, Any]]:
     if not provider_id:
         return [story_row(v) for v in voice_registry().enabled_voices()]
 
+    accepted = accepted_voice_providers(provider_id, raw_model)
+
     rows: list[dict[str, Any]] = []
     needle = raw_model.lower()
     for voice in voice_registry().enabled_voices():
-        if provider_id not in {voice.provider_id, publish_id(voice.provider_id)}:
+        if not ({voice.provider_id, publish_id(voice.provider_id)} & accepted):
             continue
         local_model = str((voice.raw or {}).get("tts_model_id") or "")
         if voice.source == SOURCE_LOCAL and local_model:

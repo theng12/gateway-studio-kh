@@ -155,6 +155,16 @@ only `whisper-1` can return SRT, four `google-ai-free` Lyria rows on a tier that
 has no Lyria, and OpenRouter's two Lyria rows. A row you can tick that will never
 publish is a control that does nothing, which is what the owner asked to stop.
 
+**A proxy that speaks another provider's ids is the one exception to "a voice
+belongs to its provider".** fal's ElevenLabs routes accept an ElevenLabs voice id
+unchanged — the owner has driven them that way many times, and it is now verified
+through the gateway (his own voice, 51,871 bytes of MP3). Matching a voice on its
+provider alone meant the picker offered only the twenty names fal happens to
+`example`, so a voice saved from his own account was invisible for that lane while
+working perfectly through it. `accepted_voice_providers` keys the exception on the
+provider's *kind* and the word `elevenlabs` in the endpoint — never on a hardcoded
+provider id, and never for a lane that is not ElevenLabs.
+
 **A provider voice known by its id can be saved without searching for it.** The
 library search only finds what the provider will *search* for, and
 "Add to my account" only ever acted on rows already in the table, so a voice known
@@ -383,7 +393,7 @@ success.
 ## Verification
 
 ```bash
-.venv/bin/python tests/test_e2e.py              # 320 checks, isolated mock upstream
+.venv/bin/python tests/test_e2e.py              # 324 checks, isolated mock upstream
 .venv/bin/python tests/test_fleet_standalone.py # 45 checks, real Hub(s) as locations
 .venv/bin/python tests/test_ui.py               # 96-99 checks, drives the real app
 ```

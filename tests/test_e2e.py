@@ -1203,6 +1203,23 @@ def main() -> int:
             check("an unnamed voice falls back to fal's own default",
                   _fal_input(fal_req("fal-ai/elevenlabs/tts/turbo-v2.5", "tts",
                                      text="hi")).get("voice") == "Rachel")
+            check("and an ElevenLabs voice id is passed through untouched, because fal takes it",
+                  _fal_input(fal_req("fal-ai/elevenlabs/tts/turbo-v2.5", "tts", text="hi",
+                                     voice_id="elevenlabs-direct::pNInz6obpgDQGcFmaJgB")
+                             ).get("voice") == "pNInz6obpgDQGcFmaJgB")
+            # fal proxies ElevenLabs, so its ElevenLabs lane may use voices from
+            # the ElevenLabs provider — otherwise the picker offered only the
+            # twenty names fal `example`s and a voice saved from the owner's own
+            # account was invisible for that lane while working through it.
+            from gateway.voices import accepted_voice_providers as _accepted
+            check("fal's ElevenLabs lane also offers the ElevenLabs provider's voices",
+                  "elevenlabs-direct" in _accepted("fal-ai", "fal-ai/elevenlabs/tts/turbo-v2.5"),
+                  f"{sorted(_accepted('fal-ai', 'fal-ai/elevenlabs/tts/turbo-v2.5'))}")
+            check("and a fal lane that is not ElevenLabs does not",
+                  _accepted("fal-ai", "fal-ai/zonos2") == {"fal-ai"},
+                  f"{sorted(_accepted('fal-ai', 'fal-ai/zonos2'))}")
+            check("nor does any other provider borrow another's voices",
+                  _accepted("studio-hub", "mlx/x") == {"studio-hub"})
 
             # The endpoint list has to be what the adapter can serve, one level
             # finer than the modality gate: fal's audio family includes a voice
