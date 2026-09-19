@@ -432,6 +432,42 @@ def voice_library(provider_id: str, q: str = "", page: int = 0) -> Any:
     }
 
 
+@router.post("/api/voices/add", dependencies=[Depends(require_admin)])
+def add_voices(payload: dict[str, Any]) -> Any:
+    """Stock the catalogue from a folder the owner picked.
+
+    Two shapes are accepted, because both are things people actually have: a folder
+    of per-voice folders, and a folder of loose audio files. Each voice's clip is
+    copied into the gateway's own library so the voice survives the source folder
+    being moved, and then transcribed through Studio Hub to produce the segments
+    Qwen3 Base requires. Named `add` rather than `import` because
+    `POST /api/voices/import` already means something else here — copying a
+    provider's library voice into the owner's account at that provider.
+    """
+    from . import voice_import
+
+    folder = str(payload.get("folder") or "").strip()
+    if not folder:
+        return _error(400, "Pick a folder to add voices from.")
+    result = voice_import.import_folder(Path(folder).expanduser())
+    if not result["imported"] and not result["skipped"]:
+        return _error(400, "That folder has no audio files in it.")
+    if payload.get("annotate", True):
+        result["annotation"] = voice_import.start_annotation(
+            str(payload.get("transcription_model") or ""),
+            force=bool(payload.get("force")),
+        )
+    return result
+
+
+@router.get("/api/voices/add/status", dependencies=[Depends(require_admin)])
+def voices_add_status() -> dict[str, Any]:
+    """Progress of the transcription pass that makes added voices usable."""
+    from . import voice_import
+
+    return voice_import.annotation_state()
+
+
 @router.post("/api/voices/refresh", dependencies=[Depends(require_admin)])
 def refresh_voices(provider_id: str | None = None) -> dict[str, Any]:
     voices = voice_registry()

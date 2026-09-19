@@ -240,11 +240,18 @@ def _fish_voice(definition: ProviderDefinition, item: Any, *, mine: bool) -> Voi
 
 
 def _local_voices() -> list[Voice]:
-    """This Mac's own reference clips, from the voice catalogue."""
-    if not VOICES_PATH.exists():
+    """This Mac's own reference clips, from the voice catalogue.
+
+    The writable copy is preferred **at read time**. `VOICES_PATH` is resolved once
+    when the process starts, so on a fresh install it points at the shipped default
+    and keeps pointing there — a voice added afterwards would not appear until a
+    restart, which reads exactly like the import having failed.
+    """
+    path = WRITABLE_VOICES_PATH if WRITABLE_VOICES_PATH.exists() else VOICES_PATH
+    if not path.exists():
         return []
     try:
-        payload = json.loads(VOICES_PATH.read_text(encoding="utf-8"))
+        payload = json.loads(path.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError):
         return []
     entries = payload.get("voices") if isinstance(payload, dict) else payload

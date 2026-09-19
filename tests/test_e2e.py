@@ -816,6 +816,94 @@ def main() -> int:
                 check("and not for an unrelated model", len(other["voices"]) == 0,
                       f"got {len(other['voices'])}")
 
+            print("\n\033[1m16. Stocking voices from a folder\033[0m")
+            # Both shapes are things people actually have: the existing library's
+            # per-voice folders, and loose audio files — the second being what you
+            # get by copying a clip in and expecting it to become a voice, which the
+            # old importer silently skipped.
+            import struct
+            import wave
+
+            def write_wav(path, seconds=0.2):
+                with wave.open(str(path), "wb") as handle:
+                    handle.setnchannels(1)
+                    handle.setsampwidth(2)
+                    handle.setframerate(16000)
+                    handle.writeframes(struct.pack("<h", 0) * int(16000 * seconds))
+
+            picked = tmp / "picked"
+            (picked / "Blue Room").mkdir(parents=True)
+            write_wav(picked / "Blue Room" / "reference.wav")
+            (picked / "Blue Room" / "metadata.json").write_text(
+                json.dumps({"name": "Blue - Calm and Deep", "language": "en", "gender": "m"})
+            )
+            (picked / "Blue Room" / "transcript.txt").write_text("a blue reference")
+            write_wav(picked / "Morgan.wav")
+            (picked / "Morgan.txt").write_text("a morgan reference")
+            (picked / "notes.md").write_text("not audio")
+            (picked / "empty folder").mkdir()
+
+            added = req(client, "POST", "/admin/api/voices/add",
+                        json={"folder": str(picked), "annotate": False}).json()
+            names = sorted(v["display_name"] for v in added["imported"])
+            check("a folder of voice folders is accepted", "Blue" in names, f"{names}")
+            check("a loose audio file is accepted as a voice", "Morgan" in names, f"{names}")
+            check("a folder with no audio is reported, not ignored",
+                  [s["name"] for s in added["skipped"]] == ["empty folder"],
+                  f"{[s['name'] for s in added['skipped']]}")
+            check("a sidecar transcript is picked up",
+                  any(v["has_transcript"] for v in added["imported"] if v["display_name"] == "Morgan"))
+            check("a new voice still needs segments",
+                  all(v["needs_segments"] for v in added["imported"]))
+
+            library = Path(added["library"])
+            copied = sorted(p.name for p in library.iterdir())
+            check("the clips are copied into the gateway's own library",
+                  copied == ["voice-blue-room", "voice-morgan"], f"{copied}")
+
+            catalog = json.loads(Path(added["catalog"]).read_text())
+            ours = [v for v in catalog["voices"] if v["id"] in {"voice-blue-room", "voice-morgan"}]
+            check("the copy is where the catalogue says it is",
+                  len(ours) == 2 and all(Path(v["reference_path"]).parent.parent == library
+                                         for v in ours),
+                  f"{[v.get('reference_path') for v in ours]}")
+            ids = [v["id"] for v in catalog["voices"]]
+            check("the catalogue keeps what was already there",
+                  len(ids) > len(added["imported"]), f"{len(ids)} total")
+            check("and has no duplicate ids", len(ids) == len(set(ids)), f"{ids}")
+            stored = next(v for v in catalog["voices"] if v["id"] == "voice-morgan")
+            check("the clip's own hash is stored for location matching",
+                  len(str(stored.get("audio_sha256") or "")) == 64)
+
+            again = req(client, "POST", "/admin/api/voices/add",
+                        json={"folder": str(picked), "annotate": False}).json()
+            after = json.loads(Path(added["catalog"]).read_text())
+            check("re-adding the same folder updates rather than duplicates",
+                  len(after["voices"]) == len(catalog["voices"]),
+                  f"{len(catalog['voices'])} -> {len(after['voices'])}")
+            check("and reports what it saw again", len(again["imported"]) == 2)
+
+            # Segments come from Studio Hub's transcription, so with no Hub there is
+            # nothing to transcribe with. Saying that is the whole point: silently
+            # doing nothing would look identical to success. Checked directly rather
+            # than over HTTP, because this suite runs a mock Hub — the one case that
+            # cannot be produced through the API here is "there is no Hub at all".
+            from gateway import voice_import
+
+            real_base_url = voice_import.hub_base_url
+            voice_import.hub_base_url = lambda: ""
+            guard = voice_import.start_annotation()
+            voice_import.hub_base_url = real_base_url
+            check("with no Hub it refuses to pretend the voices are usable",
+                  guard.get("running") is False
+                  and "Studio Hub is not running" in str(guard.get("error")),
+                  f"running={guard.get('running')} error={guard.get('error')}")
+
+            status = req(client, "GET", "/admin/api/voices/add/status").json()
+            check("the progress endpoint reports a shape the window can poll",
+                  {"running", "total", "done", "current", "results"} <= set(status),
+                  f"{sorted(status)}")
+
     finally:
         for proc in processes:
             try:

@@ -163,12 +163,43 @@ button ever called them — so Test and Remove were unreachable from the app whi
 the endpoints worked. `tests/test_ui.py` now reads the buttons themselves
 (`table_button_titles`), because `table_texts` sees static text only.
 
+## Voices are stocked, not configured
+
+A voice is a reference clip plus a transcript, and **the transcript is not
+decoration**: Qwen3 Base is a cloning model and refuses a reference without
+aligned timestamps (`REFERENCE_TRANSCRIPT_ALIGNMENT_REQUIRED`). So
+`voice_import.start_annotation` transcribes each clip **through Studio Hub**, which
+makes a working transcription model a prerequisite for stocking voices at all.
+With no Hub it refuses and says so; silently doing nothing would look exactly like
+success.
+
+- **The gateway owns the clip.** `voice_import.import_folder` copies each reference
+  into `DATA_DIR/voice-library/<voice-id>/` and records the clip's `audio_sha256`,
+  rather than pointing at wherever the clip came from. A catalogue pointing into
+  someone else's folder breaks the voice the day that folder moves.
+- **Two shapes are accepted, because both are things people have**: a folder of
+  per-voice folders (the old library layout) and a folder of loose audio files. The
+  old importer read only the first, so a clip dropped in by hand was silently
+  skipped — which is exactly what "I copied it in and nothing happened" was.
+- **Re-importing the same name updates that voice, never duplicates it**, and
+  segments are dropped only when the audio itself changed, since otherwise they
+  would describe audio that is no longer there.
+- **`_local_voices` prefers the writable catalogue at read time.** `VOICES_PATH` is
+  resolved once at process start, so on a fresh install it points at the shipped
+  default and keeps pointing there — an added voice would not appear until a
+  restart, which reads as the import having failed.
+- **Across locations, a voice is staged per job.** The gateway uploads the clip to
+  whichever location runs the work, so every location can use every gateway voice
+  with nothing pre-copied; the `audio_sha256` match skips that upload where the
+  controller already holds the clip. Pushing the whole library to every node so no
+  upload is ever needed is Studio Hub's `fleet-sync`, deliberately deferred.
+
 ## Verification
 
 ```bash
-.venv/bin/python tests/test_e2e.py              # 129 checks, isolated mock upstream
+.venv/bin/python tests/test_e2e.py              # 143 checks, isolated mock upstream
 .venv/bin/python tests/test_fleet_standalone.py # 40 checks, real Hub(s) as locations
-.venv/bin/python tests/test_ui.py               # 86 checks, drives the real app
+.venv/bin/python tests/test_ui.py               # 87 checks, drives the real app
 ```
 
 `test_e2e.py` is fully isolated (`GATEWAY_DATA`/`GATEWAY_APP_SUPPORT` to a temp

@@ -73,7 +73,15 @@ final class VoicesSection: NSObject, AppSection, NSTableViewDataSource, NSTableV
         refresh.bezelStyle = .rounded
         refresh.controlSize = .small
 
-        let bar = NSStackView(views: [providerPopup, searchField, libraryCheck, NSView(), refresh])
+        // Stocking the library, which is a different act from ticking voices on and
+        // off: it belongs beside Refresh, not among the selection actions.
+        let addVoices = NSButton(title: "Add voices…", target: self, action: #selector(pickVoices))
+        addVoices.bezelStyle = .rounded
+        addVoices.controlSize = .small
+
+        let bar = NSStackView(views: [
+            providerPopup, searchField, libraryCheck, NSView(), addVoices, refresh,
+        ])
         bar.orientation = .horizontal
         bar.spacing = 8
         bar.alignment = .centerY
@@ -171,6 +179,112 @@ final class VoicesSection: NSObject, AppSection, NSTableViewDataSource, NSTableV
         summaryLabel.stringValue = "Discovering voices…"
         GatewayAPI.post("/admin/api/voices/refresh") { [weak self] _ in
             self?.reload()
+        }
+    }
+
+    /// Stock the catalogue from a folder the owner picks.
+    ///
+    /// Both shapes are accepted because both are things people have: a folder of
+    /// per-voice folders, and a folder of loose audio files — which is what you get
+    /// by copying a clip in and expecting it to become a voice.
+    @objc private func pickVoices() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.prompt = "Add voices"
+        panel.message =
+            "Pick a folder of voices, or a folder of audio files. One voice per folder, "
+            + "or one voice per file — either works."
+        guard panel.runModal() == .OK, let folder = panel.url else { return }
+
+        summaryLabel.textColor = .secondaryLabelColor
+        summaryLabel.stringValue = "Adding voices…"
+        GatewayAPI.post("/admin/api/voices/add", body: [
+            "folder": folder.path,
+            "annotate": true,
+        ]) { [weak self] result in
+            guard let self else { return }
+            switch result {
+            case .failure(let error):
+                self.summaryLabel.textColor = .systemOrange
+                self.summaryLabel.stringValue = "Could not add them — \(error)"
+            case .success(let payload):
+                let imported = payload["imported"] as? [[String: Any]] ?? []
+                let skipped = payload["skipped"] as? [[String: Any]] ?? []
+                self.reportAdded(imported: imported, skipped: skipped,
+                                 annotation: payload["annotation"] as? [String: Any])
+            }
+        }
+    }
+
+    /// Say what was added, then follow the transcription that makes them usable.
+    private func reportAdded(
+        imported: [[String: Any]], skipped: [[String: Any]], annotation: [String: Any]?
+    ) {
+        reload()
+        let names = imported.compactMap { $0["display_name"] as? String }
+        var line = names.isEmpty
+            ? "Nothing new was added."
+            : "Added \(names.count) voice\(names.count == 1 ? "" : "s"): "
+              + names.prefix(4).joined(separator: ", ")
+              + (names.count > 4 ? " +\(names.count - 4) more" : "")
+        if !skipped.isEmpty {
+            line += " · skipped " + skipped.compactMap { $0["name"] as? String }
+                .prefix(3).joined(separator: ", ")
+        }
+        summaryLabel.textColor = .secondaryLabelColor
+        summaryLabel.stringValue = line
+
+        guard let annotation else { return }
+        if let error = annotation["error"] as? String, !error.isEmpty {
+            // The usual one: no Hub, so there is nothing to transcribe with. A
+            // voice without segments cannot clone, so this is not cosmetic.
+            summaryLabel.textColor = .systemOrange
+            summaryLabel.stringValue = "\(line) — but they cannot be used yet: \(error)"
+            return
+        }
+        if annotation["running"] as? Bool == true {
+            followAnnotation()
+        } else if (annotation["total"] as? Int ?? 0) == 0 {
+            summaryLabel.stringValue = line + " Every one already has a transcript."
+        }
+    }
+
+    /// Poll the transcription pass until it finishes, then say what happened.
+    private func followAnnotation() {
+        GatewayAPI.get("/admin/api/voices/add/status") { [weak self] result in
+            guard let self, case .success(let state) = result else { return }
+            let done = state["done"] as? Int ?? 0
+            let total = state["total"] as? Int ?? 0
+            let current = state["current"] as? String ?? ""
+
+            if state["running"] as? Bool == true {
+                self.summaryLabel.textColor = .secondaryLabelColor
+                self.summaryLabel.stringValue =
+                    "Making them usable — transcribing \(done + 1) of \(total)"
+                    + (current.isEmpty ? "…" : ": \(current)")
+                DispatchQueue.main.asyncAfter(deadline: .now() + 2) { self.followAnnotation() }
+                return
+            }
+
+            let results = state["results"] as? [[String: Any]] ?? []
+            let failed = results.filter { $0["ok"] as? Bool == false }
+            let ok = results.count - failed.count
+            self.reload()
+            if failed.isEmpty {
+                self.summaryLabel.textColor = .secondaryLabelColor
+                self.summaryLabel.stringValue =
+                    "Ready — \(ok) voice\(ok == 1 ? "" : "s") transcribed and usable."
+            } else {
+                // Name them. "Some failed" is not something anyone can act on.
+                self.summaryLabel.textColor = .systemOrange
+                let why = failed.prefix(2).map {
+                    "\($0["name"] as? String ?? "?") (\($0["detail"] as? String ?? "?"))"
+                }.joined(separator: "; ")
+                self.summaryLabel.stringValue =
+                    "\(ok) transcribed, \(failed.count) could not be: \(why)"
+            }
         }
     }
 

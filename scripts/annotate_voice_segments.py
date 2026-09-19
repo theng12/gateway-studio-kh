@@ -1,20 +1,15 @@
 #!/usr/bin/env python3
 """Annotate imported voices with timestamped transcript segments.
 
-Studio Hub's Qwen3 **Base** models reject a clone reference supplied without
-aligned timestamps:
+Kept as a script because it is useful from a terminal, but the work lives in
+`gateway/voice_import.py` so the app's **Add voices…** button and this cannot drift
+apart. Qwen3 **Base** refuses a reference without aligned timestamps
+(`REFERENCE_TRANSCRIPT_ALIGNMENT_REQUIRED`), so this is what makes a stocked voice
+usable rather than merely present.
 
-    REFERENCE_TRANSCRIPT_ALIGNMENT_REQUIRED: This model needs a transcript
-    matching the selected reference segment. Supply timestamped transcript
-    segments.
-
-The old Voice Studio stored only a flat transcript, so the timestamps are
-generated here -- using the Mac's own Whisper, which already works, rather than
-by hand. Each reference clip is transcribed with word timestamps, the SRT is
-parsed into segments, and the result is written back to `data/voices.json` as
-`reference_segments`.
-
-Idempotent: voices that already have segments are skipped unless --force.
+The clips are transcribed **through Studio Hub**, so the Hub has to be running and
+have a working transcription model. With no Hub there is nothing to transcribe with,
+and this says so rather than reporting success.
 
 Usage:
   python scripts/annotate_voice_segments.py [--force] [--model WHISPER_MODEL_ID]
@@ -23,138 +18,49 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import json
-import re
 import sys
 import time
 from pathlib import Path
 
-import httpx
-
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from gateway.config import VOICES_PATH, WRITABLE_VOICES_PATH  # noqa: E402
-from gateway.hub import hub_base_url, hub_headers  # noqa: E402
-
-# Read the effective catalogue (which may be the shipped default) but always
-# WRITE to the user's data directory — never into the read-only bundle.
-VOICES = VOICES_PATH
-OUT = WRITABLE_VOICES_PATH
-DEFAULT_MODEL = "mlx-community/whisper-base-mlx"
-POLL_S = 2.0
-DEADLINE_S = 600.0
-
-_TIMING = re.compile(
-    r"(\d+):(\d{2}):(\d{2})[,.](\d{3})\s*-->\s*(\d+):(\d{2}):(\d{2})[,.](\d{3})"
-)
-
-
-def _seconds(hours: str, minutes: str, secs: str, millis: str) -> float:
-    return int(hours) * 3600 + int(minutes) * 60 + int(secs) + int(millis) / 1000.0
-
-
-def parse_srt(text: str) -> list[dict]:
-    segments: list[dict] = []
-    for block in re.split(r"\n\s*\n", text.strip()):
-        lines = [line for line in block.splitlines() if line.strip()]
-        if not lines:
-            continue
-        timing_index = next((i for i, line in enumerate(lines) if _TIMING.search(line)), None)
-        if timing_index is None:
-            continue
-        match = _TIMING.search(lines[timing_index])
-        if match is None:
-            continue
-        body = " ".join(lines[timing_index + 1 :]).strip()
-        segments.append(
-            {
-                "start": _seconds(*match.groups()[:4]),
-                "end": _seconds(*match.groups()[4:]),
-                "text": body,
-            }
-        )
-    return segments
-
-
-def transcribe(client: httpx.Client, base: str, headers: dict, audio: Path, model: str) -> list[dict]:
-    with audio.open("rb") as handle:
-        response = client.post(
-            f"{base}/api/hub/transcription/jobs",
-            headers=headers,
-            files={"files": (audio.name, handle, "application/octet-stream")},
-            data={"model": model, "item_ids": "0", "word_timestamps": "true"},
-        )
-    if response.status_code >= 400:
-        raise RuntimeError(f"submit HTTP {response.status_code}: {response.text[:200]}")
-    batch_id = str((response.json() or {}).get("batch_id") or "")
-    if not batch_id:
-        raise RuntimeError("hub returned no batch_id")
-
-    deadline = time.monotonic() + DEADLINE_S
-    while time.monotonic() < deadline:
-        summary = client.get(
-            f"{base}/api/hub/transcription/jobs/{batch_id}", headers=headers
-        ).json() or {}
-        items = summary.get("items") or []
-        state = str((items[0] if items else {}).get("state") or "").lower()
-        if state in {"done", "succeeded"}:
-            break
-        if state in {"error", "failed", "cancelled"}:
-            raise RuntimeError(f"item {state}: {(items[0] or {}).get('error')}")
-        time.sleep(POLL_S)
-    else:
-        raise RuntimeError("timed out")
-
-    artifact = client.get(
-        f"{base}/api/hub/transcription/jobs/{batch_id}/items/0/artifact",
-        headers=headers,
-        params={"format": "srt"},
-    )
-    if artifact.status_code >= 400:
-        raise RuntimeError(f"artifact HTTP {artifact.status_code}")
-    return parse_srt(artifact.text)
+from gateway import voice_import  # noqa: E402
 
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--force", action="store_true")
-    parser.add_argument("--model", default=DEFAULT_MODEL)
+    parser.add_argument("--force", action="store_true",
+                        help="re-transcribe voices that already have segments")
+    parser.add_argument("--model", default=voice_import.DEFAULT_TRANSCRIPTION_MODEL)
     args = parser.parse_args()
 
-    base = hub_base_url()
-    if not base:
-        print("Studio Hub is not running (no hub-ready.json).")
+    state = voice_import.start_annotation(args.model, force=args.force)
+    if state.get("error"):
+        print(state["error"])
         return 1
-    headers = hub_headers()
+    if state["total"] == 0:
+        print("every voice already has segments (use --force to redo them)")
+        return 0
 
-    data = json.loads(VOICES.read_text(encoding="utf-8"))
-    voices = data.get("voices", [])
-    print(f"annotating {len(voices)} voices via {base} using {args.model}\n")
+    print(f"annotating {state['total']} voices using {state['transcription_model']}\n")
+    while True:
+        state = voice_import.annotation_state()
+        if not state["running"]:
+            break
+        if state["current"]:
+            print(f"  {state['current']}")
+        time.sleep(1.0)
 
     failures = 0
-    with httpx.Client(timeout=httpx.Timeout(180.0, connect=10.0)) as client:
-        for voice in voices:
-            name = voice.get("display_name") or voice.get("id")
-            if voice.get("reference_segments") and not args.force:
-                print(f"  {name:10} already annotated ({len(voice['reference_segments'])} segments)")
-                continue
-            path = Path(str(voice.get("reference_path") or ""))
-            if not path.exists():
-                print(f"  {name:10} SKIP - reference missing")
-                failures += 1
-                continue
-            try:
-                segments = transcribe(client, base, headers, path, args.model)
-            except Exception as exc:  # noqa: BLE001
-                print(f"  {name:10} FAILED - {exc}")
-                failures += 1
-                continue
-            voice["reference_segments"] = segments
-            print(f"  {name:10} {len(segments)} segments, {segments[-1]['end']:.1f}s")
-
-    OUT.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
-    print(f"\nwrote {OUT}")
+    for result in state["results"]:
+        mark = "ok  " if result["ok"] else "FAIL"
+        failures += 0 if result["ok"] else 1
+        print(f"  {mark} {result['name']:12} {result['detail']}")
+    if state.get("error"):
+        print(state["error"])
+        return 1
+    print(f"\n{len(state['results']) - failures} annotated, {failures} failed")
     return 1 if failures else 0
 
 

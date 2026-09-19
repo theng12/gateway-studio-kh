@@ -1,143 +1,68 @@
 #!/usr/bin/env python3
-"""Import voices from the old Voice Studio into gateway-kh.
+"""Import voices into gateway-kh.
 
-The Qwen3 **Base** models Studio Hub ships are cloning models, not preset-speaker
-models: a generation without a reference clip fails with "Voice cloning needs a
-reference voice or private reference upload". The owner's voices already exist,
-with reference audio and transcripts, in the previous Voice Studio, so this
-imports them rather than inventing placeholder names.
+Kept as a script because it is useful from a terminal and for a bulk first-time
+import, but the work lives in `gateway/voice_import.py` so the app's **Add voices…**
+button and this cannot drift apart. Prefer the app: it copies each clip into the
+gateway's own library, records the clip's hash, and then transcribes it through
+Studio Hub — without which a voice cannot clone at all.
 
-Writes `data/voices.json`. Reference paths are absolute and machine-specific --
-that is correct here, because a voice is a local asset on this Mac.
+Accepts a folder of per-voice folders (the old Voice Studio layout) or a folder of
+loose audio files. A voice is a folder with reference audio, or an audio file, plus
+an optional transcript (`transcript.txt`, or a sidecar beside a loose file).
 
 Usage:
-  python scripts/import_voices.py [--source DIR] [--model TTS_MODEL_ID]
+  python scripts/import_voices.py [--source DIR] [--annotate]
 """
 
 from __future__ import annotations
 
 import argparse
-import json
-import os
 import sys
+import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from gateway.config import WRITABLE_VOICES_PATH  # noqa: E402
+from gateway import voice_import  # noqa: E402
 
 DEFAULT_SOURCE = Path.home() / "pinokio/api/voicestudio-mac.git/app/voices"
-# Voices belong with the user's data, not in the bundle: the bundle is
-# read-only in normal use and is replaced wholesale on update.
-OUT = WRITABLE_VOICES_PATH
-
-# The cloning-capable local model. Qwen3 Base takes a reference clip; the
-# CustomVoice/VoiceDesign variants take a preset speaker instead.
-DEFAULT_MODEL = "Qwen3-TTS-12Hz-0.6B-Base-4bit"
-
-AUDIO_EXTENSIONS = (".mp3", ".wav", ".flac", ".m4a", ".ogg")
-
-
-def short_name(full: str) -> str:
-    """'Christian - Slow & Calming' -> 'Christian'."""
-    for separator in (" - ", " – ", " — "):
-        if separator in full:
-            return full.split(separator, 1)[0].strip()
-    return full.strip()
-
-
-def find_audio(directory: Path) -> Path | None:
-    for extension in AUDIO_EXTENSIONS:
-        candidate = directory / f"reference{extension}"
-        if candidate.exists():
-            return candidate
-    return None
 
 
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--source", type=Path, default=DEFAULT_SOURCE)
-    parser.add_argument("--model", default=DEFAULT_MODEL)
+    parser.add_argument("--annotate", action="store_true",
+                        help="also transcribe them, which is what makes them usable")
+    parser.add_argument("--model", default=voice_import.DEFAULT_TRANSCRIPTION_MODEL)
     args = parser.parse_args()
 
-    if not args.source.is_dir():
-        print(f"source not found: {args.source}")
+    result = voice_import.import_folder(args.source)
+    print(f"imported {len(result['imported'])} voices -> {result['catalog']}")
+    for voice in result["imported"]:
+        note = "transcript" if voice["has_transcript"] else "NO transcript"
+        print(f"  {voice['display_name']:12} {note}")
+    for item in result["skipped"]:
+        print(f"  skipped {item['name']}: {item['reason']}")
+
+    if not args.annotate:
+        print("\nrun with --annotate (or use the app) to transcribe them; a voice "
+              "without segments cannot be cloned from")
+        return 0
+
+    state = voice_import.start_annotation(args.model)
+    if state.get("error"):
+        print(state["error"])
         return 1
-
-    voices: list[dict] = []
-    skipped: list[str] = []
-
-    for directory in sorted(p for p in args.source.iterdir() if p.is_dir()):
-        audio = find_audio(directory)
-        if audio is None:
-            skipped.append(f"{directory.name} (no reference audio)")
-            continue
-
-        metadata: dict = {}
-        metadata_path = directory / "metadata.json"
-        if metadata_path.exists():
-            try:
-                metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
-            except (json.JSONDecodeError, OSError):
-                metadata = {}
-
-        transcript = ""
-        transcript_path = directory / "transcript.txt"
-        if transcript_path.exists():
-            transcript = transcript_path.read_text(encoding="utf-8").strip()
-
-        full_name = str(metadata.get("name") or directory.name)
-        voices.append(
-            {
-                "id": f"voice-{directory.name}",
-                "display_name": short_name(full_name),
-                "full_name": full_name,
-                "language": str(metadata.get("language") or "en"),
-                "gender": metadata.get("gender"),
-                "description": full_name,
-                "provider": "Studio Hub (this Mac)",
-                "engine_name": "Qwen3 TTS",
-                "engine_id": "qwen3-tts",
-                "model_family": "qwen3-tts",
-                "tts_model_id": args.model,
-                "voice_tier": "custom",
-                "output_format": "wav",
-                "duration_seconds": metadata.get("duration_seconds"),
-                "preview_available": False,
-                # Consumed by the Studio Hub adapter to stage a clone reference.
-                # Not sent to Story Studio.
-                "reference_path": str(audio),
-                "reference_transcript": transcript,
-            }
-        )
-
-    OUT.parent.mkdir(parents=True, exist_ok=True)
-    OUT.write_text(
-        json.dumps(
-            {
-                "_comment": (
-                    "Generated by scripts/import_voices.py. `reference_path` and "
-                    "`reference_transcript` drive Qwen3 Base voice cloning on Studio Hub and "
-                    "are never exposed to Story Studio."
-                ),
-                "voices": voices,
-            },
-            indent=2,
-        )
-        + "\n",
-        encoding="utf-8",
-    )
-
-    print(f"imported {len(voices)} voices -> {OUT}")
-    for voice in voices:
-        transcript_note = "transcript" if voice["reference_transcript"] else "NO transcript"
-        print(f"  {voice['display_name']:10} {voice['full_name'][:44]:46} {transcript_note}")
-    if skipped:
-        print("skipped:")
-        for item in skipped:
-            print(f"  {item}")
-    return 0
+    while True:
+        state = voice_import.annotation_state()
+        if not state["running"]:
+            break
+        time.sleep(1.0)
+    for item in state["results"]:
+        print(f"  {'ok  ' if item['ok'] else 'FAIL'} {item['name']:12} {item['detail']}")
+    return 0 if all(item["ok"] for item in state["results"]) else 1
 
 
 if __name__ == "__main__":

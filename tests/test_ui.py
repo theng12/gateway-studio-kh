@@ -328,6 +328,57 @@ def table_button_titles(scroll_area: int, nested: bool = False) -> list[str]:
     return [line.strip() for line in raw.splitlines() if line.strip()]
 
 
+def detail_button_titles() -> list[str]:
+    """Every button title in the detail pane, tables and bars included.
+
+    `table_button_titles` walks a table's rows; this walks the pane, for a page
+    whose controls sit in a bar above the table (Voices has no scroller, so its
+    content is not inside `scroll area 2` at all).
+
+    `entire contents` cannot be used here — System Events refuses it as a
+    specifier (-1700) — so this walks three levels, which is where a bar's buttons
+    are actually reachable, and de-duplicates because an element can be seen from
+    more than one of them.
+    """
+    try:
+        raw = osa(wrap(f'''
+            set sep to (ASCII character 10)
+            tell {MAIN_WINDOW} to tell splitter group 1
+                set acc to ""
+                repeat with element in UI elements
+                    try
+                        if class of element is button then set acc to acc & (title of element) & sep
+                    end try
+                    try
+                        repeat with inner in (buttons of element)
+                            set acc to acc & (title of inner) & sep
+                        end repeat
+                    end try
+                    try
+                        repeat with child in (UI elements of element)
+                            try
+                                if class of child is button then set acc to acc & (title of child) & sep
+                            end try
+                            try
+                                repeat with deep in (buttons of child)
+                                    set acc to acc & (title of deep) & sep
+                                end repeat
+                            end try
+                        end repeat
+                    end try
+                end repeat
+                return acc
+            end tell'''))
+    except RuntimeError:
+        return []
+    titles: list[str] = []
+    for line in raw.splitlines():
+        title = line.strip()
+        if title and title != "missing value" and title not in titles:
+            titles.append(title)
+    return titles
+
+
 def wait_for_detail(needle: str, timeout: float = 30.0) -> str:
     """Wait until the detail pane contains `needle`, then return its text.
 
@@ -631,6 +682,12 @@ def main() -> int:
     check("shows a voice summary", "enabled" in voices_body.lower(), voices_body[:160])
     check("has a provider filter", detail_count("pop up buttons") == 1)
     check("has a library toggle", detail_count("checkboxes") >= 1)
+    # Stocking the library is the one control here that must exist as a button:
+    # the Fleet page once had actions wired to nothing at all, which no API test
+    # could see.
+    voices_buttons = detail_button_titles()
+    check("offers adding voices from a folder",
+          any("Add voices" in title for title in voices_buttons), f"{voices_buttons}")
 
     if rows > 3:
         # The exact character depends on the Mac's keyboard layout, so this asks
