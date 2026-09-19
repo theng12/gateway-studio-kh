@@ -22,7 +22,6 @@ all of them would be worse than useless.
 
 from __future__ import annotations
 
-import base64
 import json
 import time
 from dataclasses import dataclass, field
@@ -723,7 +722,14 @@ def story_row(voice: Voice) -> dict[str, Any]:
     """One voice in the shape Story Studio's parser expects.
 
     The price fields ride along for the same reason the catalogue rows carry
-    them: the parser drops entries whose price fields are missing.
+    them: the parser drops entries whose price fields are missing. This docstring
+    said that while the row published only `credits_per_1000_characters`, so the
+    other three of the model catalogue's zero-constants were absent — and the same
+    omission was in a **second** voice encoder in `catalog.py` that nothing
+    called. That duplicate is gone now; this is the one encoder, and it carries
+    the full balanced set. `chargeable` especially: the TTS quote route already
+    publishes it explicitly because the parser tests `=== true`, and an absent
+    field renders a claim the gateway never made.
     """
     definition = registry.definition(voice.provider_id)
     engine = str((voice.raw or {}).get("engine_name") or "")
@@ -751,6 +757,9 @@ def story_row(voice: Voice) -> dict[str, Any]:
         "custom_voice_id": voice.provider_voice_id if voice.owned else None,
         "public_voice_id": None if voice.owned else voice.provider_voice_id,
         "credits_per_1000_characters": 0,
+        "minimum_credits": 0,
+        "price_version": "flat",
+        "chargeable": True,
         # ElevenLabs returns mp3 and Fish can return either; both are accepted
         # by Story Studio, which transcodes locally.
         "output_format": "mp3" if voice.provider_id.startswith("elevenlabs") else "wav",

@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import email
 import json
 import io
 import socket
@@ -28,6 +29,13 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 ONE_PIXEL_PNG = base64.b64decode(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
 )
+
+#: What the gateway pushes to a controller when a voice is shared. Recorded here
+#: so the isolated suite can assert the fan-out really happened, that it used the
+#: **Hub** token rather than the fleet one, and that the wire shape is the one the
+#: Hub's shared-voice route wants. Reset by `POST /__test__/reset`.
+SHARED_VOICES: list[dict] = []
+SHARED_TOKENS: list[str] = []
 
 MODELS = [
     # The mock states the fields the catalogue's "publish what is known, and
@@ -105,18 +113,66 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(content)
 
+    def _raw(self) -> bytes:
+        """The request body, read **once**.
+
+        `_body()` and `_form()` both need it, and reading `rfile` twice is a
+        deadlock rather than an error: the first read drains the socket and the
+        second blocks forever waiting for bytes that will never come. That is
+        exactly how the shared-voice fan-out test first hung — `do_POST` parsed
+        JSON (getting `{}` from the multipart body) and then `_form()` waited for
+        the same bytes again.
+        """
+        if not hasattr(self, "_raw_cache"):
+            length = int(self.headers.get("Content-Length") or 0)
+            self._raw_cache = self.rfile.read(length) if length else b""
+        return self._raw_cache
+
     def _body(self) -> dict:
-        length = int(self.headers.get("Content-Length") or 0)
-        if not length:
+        raw = self._raw()
+        if not raw:
             return {}
         try:
-            return json.loads(self.rfile.read(length) or b"{}")
+            return json.loads(raw)
         except ValueError:
             return {}
 
     def do_GET(self) -> None:  # noqa: N802
         path = self.path.split("?")[0].rstrip("/")
         port = self.server.server_address[1]
+
+        # ---- the shared-voice fan-out, as a controller's Hub serves it.
+        #
+        # This exists so the *whole* sharing path can be exercised without writing
+        # anything to the owner's real Hub: the permission gate, the two-token
+        # distinction, the controllers-only push, and the wire shape. A stray voice
+        # on his live Hub is a side effect a test has no business causing.
+        if path == "/__test__/shared-voices":
+            self._json(200, {"voices": SHARED_VOICES, "tokens": SHARED_TOKENS})
+            return
+        if path == "/api/hub/shared-voices":
+            self._json(200, {"voices": SHARED_VOICES})
+            return
+        # The routes `fleet._probe` reads, so a location pointed at this mock can
+        # be *reachable* rather than erroring — the fan-out skips an unreachable
+        # location before it ever looks at its token, which would make the token
+        # assertion vacuous.
+        if path == "/api/hub/fleet/overview":
+            self._json(200, {"machines": [], "summary": {"machines": 0}})
+            return
+        if path == "/api/hub/fleet/nodes":
+            self._json(200, {"nodes": [], "summary": {"nodes": 0}})
+            return
+        if path == "/api/hub/capabilities":
+            self._json(200, {"controller": {"role": "controller", "ready": True},
+                             "site_id": "mock-site"})
+            return
+        if path == "/api/hub/stats":
+            self._json(200, {"fleet_activity": {}})
+            return
+        if path == "/api/hub/jobs":
+            self._json(200, {"batches": []})
+            return
 
         # Black Forest Labs polling: Ready with a delivery URL.
         if path.startswith("/bfl-poll/"):
@@ -157,11 +213,67 @@ class Handler(BaseHTTPRequestHandler):
             return
         self._json(404, {"error": {"message": "not found"}})
 
+    def _form(self) -> dict:
+        """Request fields, for a multipart upload or a JSON body.
+
+        The shared-voice push is **multipart** — the clip travels as a file part
+        beside the text fields — so `_body()` sees no JSON and the recording would
+        have been a silent `{}`, making every assertion about what was pushed
+        vacuous. File parts are recorded by size, which is enough to prove the clip
+        was actually uploaded.
+        """
+        ctype = self.headers.get("Content-Type") or ""
+        if "multipart/form-data" not in ctype:
+            return self._body()
+        raw = self._raw()
+        message = email.message_from_bytes(
+            b"Content-Type: " + ctype.encode() + b"\r\nMIME-Version: 1.0\r\n\r\n" + raw
+        )
+        out: dict = {}
+        for part in message.get_payload() or []:
+            name = part.get_param("name", header="content-disposition")
+            if not name:
+                continue
+            payload = part.get_payload(decode=True) or b""
+            if part.get_filename():
+                out[name] = f"<file {len(payload)} bytes>"
+                out["__file_bytes__"] = len(payload)
+            else:
+                out[name] = payload.decode("utf-8", "replace")
+        return out
+
     def do_POST(self) -> None:  # noqa: N802
+        # A handler instance serves one request per connection here (HTTP/1.0,
+        # close per request), but reset the cache anyway so a keep-alive reuse
+        # could never hand a later request the previous body.
+        self.__dict__.pop("_raw_cache", None)
         path = self.path.split("?")[0].rstrip("/")
         body = self._body()
         model = str(body.get("model") or "")
         port = self.server.server_address[1]
+
+        # ---- shared voices: record what the gateway pushed, and with which token.
+        if path == "/__test__/reset":
+            SHARED_VOICES.clear()
+            SHARED_TOKENS.clear()
+            self._json(200, {"ok": True})
+            return
+        if path == "/api/hub/shared-voices":
+            SHARED_TOKENS.append(str(self.headers.get("X-Hub-Token") or ""))
+            SHARED_VOICES.append(self._form())
+            # A controller accepts it and fans out to its own nodes; from the
+            # gateway's side the voice is installed, and a node that is off is that
+            # controller's `pending` to report, not the gateway's.
+            self._json(200, {
+                "created": True,
+                "voice": {
+                    "id": "abcdef123456",
+                    "segment_count": 1,
+                    "sync": {"installed": 1, "pending": 0},
+                    "targets": [{"machine": "mock-node", "status": "pending"}],
+                },
+            })
+            return
 
         if model == "mock-fail":
             self._json(429, {"error": {"message": "mock quota exhausted"}})

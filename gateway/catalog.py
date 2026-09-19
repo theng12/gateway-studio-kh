@@ -25,14 +25,11 @@ Story Studio treats the id as opaque and displays `display_name`.
 
 from __future__ import annotations
 
-import json
 import time
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any
 
 from . import limits
-from .config import VOICES_PATH
 from .constants import PRICE_VERSION, zero_pricing
 from .providers import registry
 from .providers.definitions import ProviderDefinition
@@ -125,6 +122,13 @@ def _image_row(model_id: str, definition: ProviderDefinition, model: dict[str, A
         # whereas a hidden control is not.
         "supports_reference_images": definition.kind == "studio_hub",
         "supports_image_to_image": definition.kind == "studio_hub",
+        # ponytail: `true` for every image model. Ceiling — a model with no seed
+        # parameter is offered a control it rejects. It is `true` because both
+        # lanes we serve *do* accept one: the studio_hub adapter passes `seed`
+        # through explicitly (see `_generate_image_or_voice`), and the curated
+        # cloud image models take one. A deliberate over-offer rather than an
+        # invented figure. Upgrade path — read it per model where a provider
+        # states it.
         "supports_seed": True,
         "min_reference_images": 1 if definition.kind == "studio_hub" else 0,
         "max_reference_images": 4 if definition.kind == "studio_hub" else 0,
@@ -319,12 +323,31 @@ def _tts_row(model_id: str, definition: ProviderDefinition, model: dict[str, Any
         "supports_speed": supports_speed,
         "minimum_speed": minimum_speed,
         "maximum_speed": maximum_speed,
+        # ponytail: hardcoded per *kind*, not per model. Ceiling — a voice-cloning
+        # model from a kind not listed here is advertised as non-cloning, and a
+        # cloning-capable provider outside these three would be under-described.
+        # It is not a made-up value for the lanes we actually serve (the local Hub
+        # IS a cloning lane, and Fish and ElevenLabs both offer cloning), so it is
+        # marked rather than nulled. Upgrade path — read it where a provider states
+        # it, the way `maximum_input_characters` is read.
         "supports_voice_cloning": definition.kind in {"studio_hub", "fish", "elevenlabs"},
         "preview_policy": "none",
         "generation_enabled": True,
         "queue_class": "direct",
         "supported_languages": languages[:40],
+        # ponytail: a conservative concurrency of 1 for every TTS lane. Ceiling —
+        # a provider that accepts several submissions at once is under-used.
+        # Deliberately the safe direction: over-scheduling is what makes a provider
+        # reject work, and nothing here publishes its real limit. Upgrade path —
+        # per-provider values once stated.
         "provider_submit_concurrency": 1,
+        # ponytail: one invented temperature range for every TTS model that takes
+        # one. Ceiling — a model with a narrower or wider range is described
+        # wrongly, and the control fails at the provider outside its real bounds.
+        # The local MLX engines and Fish do accept a temperature, so the knob is
+        # real rather than decorative; only its range is assumed. Upgrade path —
+        # read it per model, and drop the control entirely where a provider states
+        # no `temperature` parameter.
         "controls": [
             {
                 "name": "temperature",
@@ -363,6 +386,11 @@ def _transcription_row(model_id: str, definition: ProviderDefinition, model: dic
         "language": "multilingual",
         "supported_languages": [],
         "supports_language_auto_detect": True,
+        # ponytail: a conservative worker count of 1 for every transcription lane.
+        # Ceiling — a provider that accepts several uploads at once is under-used,
+        # and nothing here publishes its real limit. Deliberately the safe
+        # direction, because over-scheduling is what makes a provider reject work.
+        # Upgrade path — per-provider values once stated.
         "available_workers": 1,
     }
 
@@ -428,6 +456,14 @@ def _chat_row(model_id: str, definition: ProviderDefinition, model: dict[str, An
 
     # Only control names already published here are gated — adding new ones would
     # offer Story Studio knobs it has no rendering for.
+    #
+    # A provider that states no `supported_parameters` at all keeps both controls.
+    # That is a deliberate over-offer, not an invented measurement: temperature is
+    # near-universal for chat, and `max_output_tokens` is enforced by this gateway
+    # rather than by the provider, so a model that never mentioned either still
+    # accepts both. Gating them on a silent provider would hide working controls;
+    # `max_output_tokens` is therefore kept even when the list is present but lacks
+    # it, for the same reason.
     controls = ["temperature", "max_output_tokens"]
     if parameters is not None:
         controls = [c for c in controls if c == "max_output_tokens" or c in parameters]
@@ -504,8 +540,6 @@ _ROW_BUILDERS = {
 class Catalog:
     def __init__(self) -> None:
         self._rows: dict[str, list[dict[str, Any]]] = {m: [] for m in MODALITIES}
-        self._voices: list[dict[str, Any]] = []
-        self._voice_refs: dict[str, dict[str, Any]] = {}
         self._built_at = 0.0
         self._signature: tuple = ()
         self.rebuild(force=True)
@@ -568,7 +602,6 @@ class Catalog:
             rows[modality] = list(merged.values())
 
         self._rows = rows
-        self._voices, self._voice_refs = self._load_voices()
         self._signature = signature
         self._built_at = time.time()
 
@@ -658,79 +691,11 @@ class Catalog:
         row.update(zero_pricing(modality))
         return row
 
-    def _load_voices(self) -> tuple[list[dict[str, Any]], dict[str, dict[str, Any]]]:
-        """Returns (Story-facing rows, private reference map).
-
-        Reference audio and transcripts are local assets that Studio Hub needs
-        for cloning. They are kept OUT of the Story row deliberately: Story
-        Studio has no use for them, and leaking a local filesystem path through
-        a catalogue response would be careless.
-        """
-        if not VOICES_PATH.exists():
-            return [], {}
-        try:
-            raw = json.loads(VOICES_PATH.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError):
-            return [], []
-        entries = raw.get("voices") if isinstance(raw, dict) else raw
-        entries = [v for v in (entries or []) if isinstance(v, dict)]
-
-        references: dict[str, dict[str, Any]] = {}
-        for voice in entries:
-            path = voice.get("reference_path")
-            if path:
-                references[str(voice["id"])] = {
-                    "path": str(path),
-                    "transcript": voice.get("reference_transcript") or "",
-                    "segments": voice.get("reference_segments") or [],
-                    "name": voice.get("display_name") or voice["id"],
-                }
-        return [self._story_voice(v) for v in entries], references
-
-    def voice_reference(self, voice_id: str) -> dict[str, Any] | None:
-        """Reference clip for a voice, for providers that need cloning input."""
-        self.rebuild()
-        return self._voice_refs.get(voice_id)
-
-    def _story_voice(self, voice: dict[str, Any]) -> dict[str, Any]:
-        return {
-            "id": voice["id"],
-            "display_name": voice["display_name"],
-            "language": voice.get("language", "en"),
-            "description": voice.get("description", ""),
-            "provider": voice.get("provider", ""),
-            "engine_name": voice.get("engine_name", ""),
-            "engine_id": voice.get("engine_id", ""),
-            "model_family": voice.get("model_family", ""),
-            "model_revision_id": voice.get("model_revision_id"),
-            "voice_tier": voice.get("voice_tier", "standard"),
-            "voice_revision": voice.get("voice_revision", 1),
-            "custom_voice_id": voice.get("custom_voice_id"),
-            "public_voice_id": voice.get("public_voice_id"),
-            "credits_per_1000_characters": 0,
-            "output_format": voice.get("output_format", "wav"),
-            # MUST be exactly 'published'; Story Studio treats any other value
-            # as a generation gate and silently hides the voice.
-            "catalog_status": "published",
-            "quote_enabled": True,
-            "generation_enabled": True,
-            "preview_available": voice.get("preview_available", False),
-            "preview_url": voice.get("preview_url"),
-            "preview_text": voice.get("preview_text"),
-            "preview_notice": voice.get("preview_notice"),
-            "is_saved": voice.get("is_saved", False),
-            "tts_model_id": voice.get("tts_model_id", ""),
-            "tts_model_name": voice.get("tts_model_name", ""),
-        }
-
     # -- reads ------------------------------------------------------------
     def rows(self, modality: str) -> list[dict[str, Any]]:
         self.rebuild()
         return self._rows.get(modality, [])
 
-    def voices(self) -> list[dict[str, Any]]:
-        self.rebuild()
-        return self._voices
 
     def all_rows(self) -> list[dict[str, Any]]:
         self.rebuild()

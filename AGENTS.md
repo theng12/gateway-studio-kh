@@ -286,7 +286,7 @@ success.
 ## Verification
 
 ```bash
-.venv/bin/python tests/test_e2e.py              # 240 checks, isolated mock upstream
+.venv/bin/python tests/test_e2e.py              # 257 checks, isolated mock upstream
 .venv/bin/python tests/test_fleet_standalone.py # 41 checks, real Hub(s) as locations
 .venv/bin/python tests/test_ui.py               # 97 checks, drives the real app
 ```
@@ -295,6 +295,20 @@ success.
 dir, `GATEWAY_NO_MIGRATE=1`, random port, own key) — it cannot disturb the live
 config. `test_fleet_standalone.py` starts its own gateway and Hub on a random
 port, so it is equally safe.
+
+**"Fully isolated" had a hole, and it was measured.** `hub.find_ready_file()`
+falls back to the owner's real
+`~/Library/Application Support/StudioHub Standalone/hub-ready.json`, so the
+isolated gateway saw his **live Hub as its local location** — and the new
+shared-voice fan-out test pushed a voice onto it. It had to be deleted from his
+Hub by hand. `test_e2e.py` now sets **`STUDIOHUB_READY_FILE`** to a path inside
+the temp dir, so there is no local Hub in a test run at all. Any new isolated
+suite must do the same, and any test that reaches a *location* must point it at
+the mock — the mock serves `/api/hub/shared-voices` (multipart, recording both the
+payload and the `X-Hub-Token` it was sent) precisely so the fan-out can be
+exercised without touching his machine. `test_fleet_standalone.py` is deliberately
+different: it uses his real Hub on purpose, which is why it is the suite to run
+knowingly.
 
 **`test_ui.py` drives the real, installed app**, so run it deliberately rather than
 reflexively. It takes over the app's windows through Accessibility, and loading new

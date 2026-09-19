@@ -215,6 +215,17 @@ def main() -> int:
         # A clean slate: without this the gateway would migrate the developer's
         # real credentials and configured providers into the test run.
         "GATEWAY_NO_MIGRATE": "1",
+        # **Point the local Hub discovery at nothing.**
+        #
+        # `hub.find_ready_file()` falls back to the owner's real
+        # `~/Library/Application Support/StudioHub Standalone/hub-ready.json`, so
+        # without this the isolated gateway sees his live Hub as its *local
+        # location* — and a suite documented as "cannot disturb the live config"
+        # could reach it. It did: an earlier version of the shared-voice fan-out
+        # test pushed a voice onto his real Hub and had to have it deleted. The
+        # only reason nothing else broke is that no other section selects the
+        # local lane; that was luck, not isolation.
+        "STUDIOHUB_READY_FILE": str(tmp / "no-such-hub-ready.json"),
         "PYTHONPATH": str(ROOT),
         "PYTHONUNBUFFERED": "1",
     }
@@ -1144,8 +1155,22 @@ def main() -> int:
                   len(story) == len(local) - 1, f"got {len(story)} of {len(local)}")
             check("every Story voice publishes catalog_status=published",
                   all(v["catalog_status"] == "published" for v in story))
-            check("every Story voice publishes zero price fields",
-                  all(v["credits_per_1000_characters"] == 0 for v in story))
+            # The full balanced zero set, not just one field. The encoder's own
+            # docstring claimed "the price fields ride along" while publishing only
+            # `credits_per_1000_characters` — and a second, dead voice encoder in
+            # `catalog.py` had the same gap, so fixing one would not have fixed the
+            # other. There is one encoder now; this pins what it must carry.
+            check("every Story voice publishes the full price shape",
+                  bool(story) and all(
+                      v["credits_per_1000_characters"] == 0
+                      and v["minimum_credits"] == 0
+                      and v["price_version"] == "flat"
+                      and v["chargeable"] is True
+                      for v in story),
+                  f"{[{k: v.get(k) for k in ('credits_per_1000_characters', 'minimum_credits', 'price_version', 'chargeable')} for v in story[:2]]}")
+            check("and no voice is published that Story Studio's parser would drop",
+                  all(v["catalog_status"] == "published" and v["quote_enabled"]
+                      and v["generation_enabled"] for v in story))
 
             httpx.post(f"{BASE}/admin/api/voices/enabled", headers=AUTH,
                        json={"items": [victim["id"]], "enabled": True})
@@ -1402,6 +1427,102 @@ def main() -> int:
             check("a voice without permission cannot be shared, even when asked for",
                   refused.status_code == 403 and "not been allowed" in refused.text,
                   f"HTTP {refused.status_code} {refused.text[:140]}")
+
+            print("\n\033[1m18b. Sharing a voice actually reaches a controller\033[0m")
+            # The fan-out is the most heavily specified path in this codebase and
+            # had NO endpoint-level test: only its pure helpers were covered, so the
+            # two-token distinction — the thing AGENTS.md says "is what keeps a sold
+            # node from being a sold controller" — was asserted nowhere. The mock
+            # upstream serves a Hub's shared-voice routes, so the whole path runs
+            # here without writing a voice to the owner's real Hub.
+            mock = f"http://127.0.0.1:{MOCK_PORT}"
+            httpx.post(f"{mock}/__test__/reset")
+
+            # The route requires aligned timestamps, and `push_to_controller`
+            # refuses before sending when readiness has problems — so give the voice
+            # the timings the clone needs. Written the way the annotation step
+            # writes them, since there is no Hub here to transcribe against.
+            catalog_path = Path(added["catalog"])
+            payload = json.loads(catalog_path.read_text())
+            for row in payload["voices"]:
+                if row["id"] == "voice-morgan":
+                    row["reference_transcript"] = "a morgan reference"
+                    row["reference_segments"] = [
+                        {"start": 0.0, "end": 1.0, "text": "a morgan reference"}
+                    ]
+            catalog_path.write_text(json.dumps(payload, indent=2) + "\n")
+            req(client, "POST", "/admin/api/voices/shared",
+                json={"items": ["voice-morgan"], "acknowledged": True})
+            shareable = json.loads(catalog_path.read_text())
+            morgan = next(v for v in shareable["voices"] if v["id"] == "voice-morgan")
+            check("the voice is now ready to share",
+                  not voice_import.shared_readiness(morgan)["problems"],
+                  f"{voice_import.shared_readiness(morgan)['problems']}")
+
+            # A location whose *fleet* token is set but whose Hub token is not.
+            ghost = req(client, "POST", "/admin/api/fleet/controllers",
+                        json={"label": "Mock Hub", "url": mock,
+                              "token": "mock-fleet-token"}).json()["controller"]
+            ghost_id = ghost["id"]
+
+            first = req(client, "POST", "/admin/api/voices/share",
+                        json={"items": ["voice-morgan"]}).json()
+            row = next((r for r in first["results"] if r["location"] == "Mock Hub"), {})
+            check("a location with no Hub token is skipped, and the reason names why",
+                  row.get("ok") is False
+                  and "fleet token on purpose" in str(row.get("detail")),
+                  f"{row}")
+            recorded = httpx.get(f"{mock}/__test__/shared-voices").json()
+            check("and nothing at all was pushed to it", recorded["voices"] == [],
+                  f"{recorded}")
+            check("so the fleet token was never used for a shared-voice push",
+                  "mock-fleet-token" not in recorded["tokens"], f"{recorded['tokens']}")
+
+            # Now give it the Hub token and push for real.
+            stored_hub = req(client, "PUT", f"/admin/api/fleet/controllers/{ghost_id}/hub-token",
+                             json={"token": "mock-hub-token"})
+            check("a Hub token can be stored for a location",
+                  stored_hub.status_code == 200, stored_hub.text[:140])
+            second = req(client, "POST", "/admin/api/voices/share",
+                         json={"items": ["voice-morgan"]}).json()
+            row = next((r for r in second["results"] if r["location"] == "Mock Hub"), {})
+            check("the controller is pushed to", row.get("ok") is True, f"{row}")
+            recorded = httpx.get(f"{mock}/__test__/shared-voices").json()
+            check("the controller really received the voice",
+                  len(recorded["voices"]) == 1, f"{recorded}")
+            check("and the push used the **Hub** token, never the fleet token",
+                  recorded["tokens"] == ["mock-hub-token"], f"{recorded['tokens']}")
+
+            sent = recorded["voices"][0]
+            check("the clip itself was uploaded, not just its metadata",
+                  int(sent.get("__file_bytes__") or 0) > 0, f"{sent}")
+            check("the id on the wire is the 12-hex the receiver demands",
+                  len(str(sent.get("voice_id") or "")) == 12, f"{sent.get('voice_id')}")
+            check("the push carries the clip's own hash, so a re-push refreshes",
+                  str(sent.get("audio_sha256")) == str(morgan.get("audio_sha256")),
+                  f"{sent.get('audio_sha256')} vs {morgan.get('audio_sha256')}")
+            check("and the timings in the route's own key and shape",
+                  json.loads(sent.get("transcript_segments") or "[]")[0]["start_seconds"] == 0.0,
+                  f"{sent.get('transcript_segments')}")
+            check("a node that is off reads as a wait, not as a failure",
+                  "will install when that Mac is next on" in str(row.get("detail") or ""),
+                  f"{row.get('detail')}")
+            # Controllers only: the gateway never talks to a node. This Mac is a
+            # location too, and it has no Hub token — so it must be *reported* as
+            # skipped rather than silently omitted, and it must never be pushed to
+            # as though it were a controller. With `STUDIOHUB_READY_FILE` pointed
+            # at nothing there is no local Hub here, which is what makes this
+            # assertion mean something.
+            local_rows = [r for r in second["results"] if r["location"] != "Mock Hub"]
+            check("this Mac is listed as a location and reported as not reachable",
+                  len(local_rows) == 1 and local_rows[0]["ok"] is False,
+                  f"{second['results']}")
+            check("so the fan-out pushed to exactly one controller",
+                  len([r for r in second["results"] if r["ok"]]) == 1,
+                  f"{[(r['location'], r['ok']) for r in second['results']]}")
+            req(client, "DELETE", f"/admin/api/fleet/controllers/{ghost_id}")
+            check("the test location is removed again",
+                  req(client, "GET", "/admin/api/fleet/controllers").json()["controllers"] == [])
 
             print("\n\033[1m20. A location must be a real address\033[0m")
             # Anything used to be accepted: `http://7` and `http://not a url` became
