@@ -5,47 +5,57 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>gateway-kh — provider control</title>
 <style>
+  /* The same design language as the rest of the app.
+     Everything here comes from system colours, so this page follows the Mac's
+     appearance and accent exactly as the native pages do — the two are used side
+     by side and previously looked like two different applications: this page had a
+     fixed dark-navy palette while every other page is neutral and system-driven.
+     Metrics mirror `menubar/PageKit.swift`: 28 padding, 26/600 page title, 13 body,
+     11.5 secondary, 6 radius for controls. */
   :root {
-    --bg: #0e1117; --panel: #161b24; --panel2: #1c2230; --line: #262d3b;
-    --text: #e6eaf2; --dim: #8b95a8; --accent: #4d9cff; --ok: #34d17f;
-    --warn: #f0b429; --bad: #f2555a; --radius: 10px;
+    color-scheme: light dark;
+    --bg: Canvas; --panel: Canvas; --panel2: color-mix(in srgb, CanvasText 6%, Canvas);
+    --line: color-mix(in srgb, CanvasText 16%, Canvas);
+    --text: CanvasText; --dim: color-mix(in srgb, CanvasText 58%, Canvas);
+    --tertiary: color-mix(in srgb, CanvasText 40%, Canvas);
+    --accent: AccentColor; --on-accent: AccentColorText;
+    --ok: #1a7f37; --warn: #8a6100; --bad: #c0392b; --radius: 6px;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --ok: #4ec97a; --warn: #e0b341; --bad: #ff6b6b; }
   }
   * { box-sizing: border-box; }
   body {
     margin: 0; background: var(--bg); color: var(--text);
-    font: 14px/1.5 ui-sans-serif, -apple-system, "SF Pro Text", system-ui, sans-serif;
+    font: 13px/1.5 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
   }
-  header {
-    position: sticky; top: 0; z-index: 10; background: rgba(14,17,23,.94);
-    backdrop-filter: blur(12px); border-bottom: 1px solid var(--line); padding: 12px 22px;
-  }
+  /* A page heading, not a toolbar: the same 26pt title and one-line purpose every
+     other page in this window opens with. */
+  .heading { padding: 26px 28px 0; }
+  .heading h1 { font-size: 26px; margin: 0 0 6px; font-weight: 600; letter-spacing: -.2px; }
+  .heading p { margin: 0; font-size: 13px; color: var(--dim); max-width: 620px; }
   .row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-  h1 { font-size: 15px; margin: 0; font-weight: 650; letter-spacing: .2px; }
-  h1 span { color: var(--dim); font-weight: 400; }
+  h1 { font-size: 26px; margin: 0 0 6px; font-weight: 600; letter-spacing: -.2px; }
   .spacer { flex: 1; }
-  .stat { color: var(--dim); font-size: 12.5px; }
+  .stat { color: var(--dim); font-size: 11.5px; }
   .stat b { color: var(--text); font-weight: 600; }
-  main { max-width: 1240px; margin: 0 auto; padding: 18px 22px 80px; }
-
-  .tabs { display: flex; gap: 4px; margin-top: 10px; }
-  .tab {
-    background: transparent; border: 1px solid transparent; color: var(--dim);
-    padding: 6px 14px; border-radius: 8px; cursor: pointer; font-size: 13px; font-weight: 550;
-  }
-  .tab:hover { color: var(--text); background: var(--panel2); }
-  .tab.on { background: var(--panel2); border-color: var(--line); color: var(--text); }
+  /* Fills the pane, like every other page here. It was a centred 1240px column,
+     which left the table short of the right edge on a wide window. */
+  main { margin: 0; padding: 0 28px 60px; }
 
   button {
     background: var(--panel2); color: var(--text); border: 1px solid var(--line);
     padding: 7px 13px; border-radius: 8px; cursor: pointer; font-size: 13px; font-weight: 500;
   }
-  button:hover { border-color: #39445a; background: #232b3a; }
-  button.primary { background: var(--accent); border-color: var(--accent); color: #05121f; font-weight: 600; }
+  button:hover { background: color-mix(in srgb, CanvasText 14%, Canvas); }
+  button.primary { background: var(--accent); border-color: transparent; color: var(--on-accent); font-weight: 500; }
   button.primary:hover { filter: brightness(1.08); }
   button.sm { padding: 4px 9px; font-size: 12px; }
   button:disabled { opacity: .5; cursor: default; }
   input[type=text], input[type=password], select {
-    background: #0b0e14; color: var(--text); border: 1px solid var(--line);
+    background: color-mix(in srgb, CanvasText 4%, Canvas); color: var(--text);
+    border: 1px solid var(--line);
     border-radius: 8px; padding: 7px 10px; font-size: 13px; width: 100%;
     font-family: ui-monospace, "SF Mono", monospace;
   }
@@ -69,9 +79,9 @@
     font-size: 11px; padding: 2px 8px; border-radius: 99px; border: 1px solid var(--line);
     color: var(--dim); white-space: nowrap;
   }
-  .badge.ok { color: var(--ok); border-color: #1d5c3d; background: #0e2a1d; }
-  .badge.warn { color: var(--warn); border-color: #5c4a1d; background: #2a2210; }
-  .badge.bad { color: var(--bad); border-color: #5c1d21; background: #2a1013; }
+  .badge.ok { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 40%, transparent); background: color-mix(in srgb, var(--ok) 12%, transparent); }
+  .badge.warn { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 40%, transparent); background: color-mix(in srgb, var(--warn) 12%, transparent); }
+  .badge.bad { color: var(--bad); border-color: color-mix(in srgb, var(--bad) 40%, transparent); background: color-mix(in srgb, var(--bad) 12%, transparent); }
   .desc { color: var(--dim); font-size: 12.5px; padding: 0 15px 10px; }
   .body { border-top: 1px solid var(--line); padding: 14px 15px; background: var(--panel2); }
   .fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; }
@@ -87,36 +97,32 @@
     text-transform: uppercase; letter-spacing: .4px; padding: 8px 10px;
     border-bottom: 1px solid var(--line); position: sticky; top: 0; background: var(--panel);
   }
-  tbody td { padding: 6px 10px; border-bottom: 1px solid #1e2431; vertical-align: middle; }
+  tbody td { padding: 6px 10px; border-bottom: 1px solid var(--line); vertical-align: middle; }
+  /* Alternating rows, the way every native table in this window reads. */
+  tbody tr:nth-child(even) { background: color-mix(in srgb, CanvasText 3%, Canvas); }
   tbody tr:hover { background: #1a202b; }
-  tbody tr.on { background: #12251b; }
+  tbody tr.on { background: color-mix(in srgb, var(--ok) 14%, transparent); }
   .mid { font-family: ui-monospace, monospace; font-size: 11.5px; color: var(--dim); }
   .tablewrap { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; }
   .scroll { max-height: calc(100vh - 340px); overflow: auto; }
   .empty { color: var(--dim); font-size: 13px; padding: 26px; text-align: center; }
   .spin { display: inline-block; animation: sp 1s linear infinite; }
   @keyframes sp { to { transform: rotate(360deg); } }
-  code { font-family: ui-monospace, monospace; background: #0b0e14; padding: 1px 5px; border-radius: 4px; }
+  code { font-family: ui-monospace, monospace; background: var(--panel2); padding: 1px 5px; border-radius: 4px; }
   input[type=checkbox] { width: 15px; height: 15px; accent-color: var(--accent); cursor: pointer; }
 </style>
 </head>
 <body>
-<header>
-  <div class="row">
-    <h1>gateway-kh <span>· provider control</span></h1>
-    <div class="spacer"></div>
-    <div class="stat" id="stats">loading…</div>
-  </div>
-  <div class="tabs">
-    <button class="tab on" id="tab-models" onclick="setView('models')">Models</button>
-    <button class="tab" id="tab-providers" onclick="setView('providers')">Providers</button>
-  </div>
-</header>
-
 <main>
   <!-- MODELS -->
   <section id="view-models">
-    <div class="filters">
+    <div class="heading">
+      <h1>Models</h1>
+      <p>Every model this gateway has discovered. Only ticked models are offered to Story Studio —
+         everything else stays discovered but hidden.</p>
+      <div class="stat" id="stats" style="margin-top:8px">loading…</div>
+    </div>
+    <div class="filters" style="margin-top:18px">
       <div class="grow"><input type="text" id="m-q" placeholder="Search models by name or id…" autocomplete="off"></div>
       <select id="m-modality"></select>
       <select id="m-provider"></select>
@@ -147,8 +153,13 @@
 
   <!-- PROVIDERS -->
   <section id="view-providers" style="display:none">
+    <div class="heading">
+      <h1>Providers</h1>
+      <p>Where work can run: cloud APIs and your own Studio Hub locations, each with its key and
+         the models it offers.</p>
+    </div>
     <div id="local-note" class="hint" style="margin:10px 0 0"></div>
-    <div class="row" style="margin-bottom:14px">
+    <div class="row" style="margin:14px 0">
       <div class="stat" id="hubline"></div>
       <div class="spacer"></div>
       <input type="text" id="filter" placeholder="Filter providers…" style="max-width:260px">
@@ -181,11 +192,12 @@ async function api(path, opts) {
 }
 
 function setView(view) {
+  // No tab strip here: Models and Providers are each their own page in this
+  // window's sidebar, so a second switcher inside the page was two controls for
+  // one decision. The section decides which view loads.
   state.view = view;
   document.getElementById('view-models').style.display = view === 'models' ? '' : 'none';
   document.getElementById('view-providers').style.display = view === 'providers' ? '' : 'none';
-  document.getElementById('tab-models').classList.toggle('on', view === 'models');
-  document.getElementById('tab-providers').classList.toggle('on', view === 'providers');
   if (view === 'models') loadModels();
   else loadProviders();
 }
@@ -426,7 +438,7 @@ function providerModelList(p, models) {
       : '<div class="empty">No models yet. Save a key and re-discover, or add one manually below.</div>';
   }
   return `<div class="body" style="padding:8px 0;background:transparent">` + models.models.map(m => `
-    <div class="row" style="padding:4px 0;border-bottom:1px solid #1e2431">
+    <div class="row" style="padding:4px 0;border-bottom:1px solid var(--line)">
       <input type="checkbox" ${m.enabled ? 'checked' : ''} onchange="setModel('${esc(p.id)}','${esc(m.model_id)}', this.checked)">
       <div style="flex:1;min-width:0">
         <div style="font-size:13px">${esc(m.display_name)}</div>
