@@ -179,6 +179,10 @@ final class VoicesSection: NSObject, AppSection, NSTableViewDataSource, NSTableV
         actions.addArrangedSubview(button("Share with fleet", #selector(shareWithFleet)))
         addButton = button("Add to my account", #selector(addSelected))
         actions.addArrangedSubview(addButton)
+        // Three different things can happen to a recording — used whole, cut to a
+        // shorter aligned window, or refused — and from the outside they look the
+        // same. This is where the app says which, per model.
+        actions.addArrangedSubview(button("Reference…", #selector(checkReference)))
         actions.addArrangedSubview(button("Stop preview", #selector(stopPreview)))
         root.addArrangedSubview(actions)
 
@@ -599,6 +603,90 @@ final class VoicesSection: NSObject, AppSection, NSTableViewDataSource, NSTableV
     /// The kind behind a provider id, for the one place that needs it.
     private func providerKind(_ providerId: String) -> String {
         providers.first(where: { $0.id == providerId })?.kind ?? ""
+    }
+
+    /// What will actually happen to this voice's recording on each local model.
+    ///
+    /// The gateway answers this from the Hub's own catalogue, so every figure in
+    /// the report — a model's floor, target and maximum, whether it needs a
+    /// transcript — is the Hub's statement rather than ours. Where the Hub states
+    /// nothing the report says *unverified* instead of inventing a window.
+    @objc private func checkReference() {
+        let rows = selectedRows()
+        guard rows.count == 1, let voiceId = rows[0]["id"] as? String else {
+            report("Pick exactly one voice — this reports on its recording.", ok: false)
+            return
+        }
+        // A voice id carries `::` and may carry `/`, and this client builds URLs
+        // by concatenation, so everything outside the unreserved set is escaped.
+        let unreserved = CharacterSet(charactersIn:
+            "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~")
+        let encoded = voiceId.addingPercentEncoding(withAllowedCharacters: unreserved) ?? voiceId
+        summaryLabel.textColor = .secondaryLabelColor
+        summaryLabel.stringValue = "Checking how this recording is used…"
+        GatewayAPI.get("/admin/api/voices/\(encoded)/reference") { [weak self] result in
+            guard let self else { return }
+            switch result {
+            case .failure(let error):
+                self.report("Could not check it — \(error.localizedDescription)", ok: false)
+            case .success(let payload):
+                self.showReference(payload)
+            }
+        }
+    }
+
+    private func showReference(_ payload: [String: Any]) {
+        let name = (payload["display_name"] as? String) ?? "This voice"
+        let clip = payload["clip"] as? [String: Any] ?? [:]
+        let models = payload["models"] as? [[String: Any]] ?? []
+
+        // "Not measured" rather than a plausible number: a voice imported before
+        // its duration was recorded genuinely does not state one.
+        func length(_ value: Any?) -> String {
+            guard let seconds = value as? Double else { return "not measured" }
+            return String(format: "%.2fs", seconds)
+        }
+
+        var lines = [
+            "\(name) — clip \(length(clip["duration_seconds"])), "
+            + "speech \(length(clip["speech_seconds"])), "
+            + "\(clip["segments"] as? Int ?? 0) timed segments, "
+            + "transcript \(((clip["has_transcript"] as? Bool) ?? false) ? "yes" : "no")",
+            "",
+        ]
+        let width = models.map { (($0["display_name"] as? String) ?? "").count }.max() ?? 0
+        for model in models {
+            let title = (model["display_name"] as? String) ?? ""
+            let indent = String(repeating: " ", count: max(0, width - title.count))
+            lines.append("\(title)\(indent)  \((model["verdict"] as? String) ?? "")")
+            if let warning = model["warning"] as? String, !warning.isEmpty {
+                lines.append("\(String(repeating: " ", count: width))  ⚠ \(warning)")
+            }
+        }
+        lines.append("")
+        lines.append("A window is cut at whole timed segments and the transcript is rewritten "
+                     + "to match it. Nothing here shortens the recording you loaded — the "
+                     + "clip stays whole and each model takes what its own contract allows.")
+
+        let text = NSTextView(frame: NSRect(x: 0, y: 0, width: 560, height: 330))
+        text.isEditable = false
+        text.font = .monospacedSystemFont(ofSize: 11.5, weight: .regular)
+        text.string = lines.joined(separator: "\n")
+        text.isVerticallyResizable = true
+        text.textContainer?.widthTracksTextView = true
+        let scroll = NSScrollView(frame: NSRect(x: 0, y: 0, width: 560, height: 330))
+        scroll.hasVerticalScroller = true
+        scroll.borderType = .bezelBorder
+        scroll.documentView = text
+
+        let alert = NSAlert()
+        alert.messageText = "How each local model uses this recording"
+        alert.informativeText = ""
+        alert.alertStyle = .informational
+        alert.accessoryView = scroll
+        alert.addButton(withTitle: "OK")
+        alert.runModal()
+        report("Checked \(models.count) local models.", ok: true)
     }
 
     /// Say what happened, and make failure look like failure.

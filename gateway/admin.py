@@ -487,6 +487,118 @@ def list_voices(
     }
 
 
+@router.get("/api/voices/{voice_id:path}/reference", dependencies=[Depends(require_admin)])
+def voice_reference(voice_id: str) -> dict[str, Any]:
+    """How one voice's clip stands against every local model that could use it.
+
+    The question this answers is the one the app could not: *will my recording
+    actually be used on this model, and if not, what happens instead?* Three
+    different things can happen to a clip, and they look identical from the
+    outside — it is used whole, the Hub picks a shorter aligned window out of it,
+    or the job is refused. Silence about which is what makes a clone sound wrong
+    with nothing to point at.
+
+    Every number here is the Hub's own, read from its catalogue; nothing is
+    derived from a model name or from a default. Where the Hub states nothing,
+    the answer says so rather than guessing a window, because a plausible default
+    is exactly what this codebase keeps auditing out.
+    """
+    from .fleet import publish_id
+    from .providers.definitions import KIND_STUDIO_HUB
+    from .voices import (
+        ID_SEPARATOR,
+        reference_contract,
+        reference_support,
+        resolve,
+        voices_for_model,
+    )
+
+    voice = resolve(voice_id)
+    if voice is None:
+        # `_error`, not a raised HTTPException: that is the shape every other
+        # route in this module answers with, and `HTTPException` is not imported
+        # here at all — raising it was a NameError, which surfaced as a 500 for a
+        # voice id that simply does not exist.
+        return _error(404, f"no voice {voice_id!r}")
+
+    raw = voice.raw or {}
+    segments = [s for s in (raw.get("reference_segments") or []) if isinstance(s, dict)]
+    transcript = str(raw.get("reference_transcript") or "").strip()
+    duration = raw.get("duration_seconds")
+    # The Hub trims to speech before it compares against a window, so the span
+    # the transcript covers is the honest measure of "will this be cut" — and it
+    # is reported next to the clip length rather than instead of it.
+    speech_span = None
+    if segments:
+        try:
+            speech_span = round(max(float(s.get("end") or 0) for s in segments)
+                                - min(float(s.get("start") or 0) for s in segments), 2)
+        except (TypeError, ValueError):
+            speech_span = None
+
+    models: list[dict[str, Any]] = []
+    for definition, model in registry.models.enabled_models("tts"):
+        if definition.kind != KIND_STUDIO_HUB:
+            continue
+        raw_model = str(model.get("model_id"))
+        support = reference_support(definition.id, raw_model)
+        contract = reference_contract(definition.id, raw_model)
+        maximum = contract.get("maximum_duration_seconds")
+        minimum = contract.get("minimum_duration_seconds")
+        needs_transcript = str(contract.get("transcript") or "").lower() == "required"
+
+        verdict: str
+        warning: str | None = None
+        if support is False:
+            verdict = "takes no reference clip"
+        elif support is None:
+            verdict = "limits unverified — the clip is passed through unchanged"
+        elif isinstance(minimum, (int, float)) and speech_span is not None and speech_span < minimum:
+            verdict = "refused"
+            warning = (f"this voice's speech covers {speech_span}s, under this "
+                       f"model's {minimum}s floor")
+        elif needs_transcript and not transcript:
+            verdict = "refused"
+            warning = "this model needs a transcript and the voice has none"
+        elif isinstance(maximum, (int, float)) and speech_span is not None and speech_span > maximum:
+            verdict = f"the Hub picks a shorter aligned window (max {maximum}s)"
+        elif isinstance(maximum, (int, float)):
+            verdict = f"used whole (under this model's {maximum}s maximum)"
+        else:
+            verdict = "used whole"
+
+        if not segments and support is not False:
+            warning = warning or ("no aligned segments: a clip longer than this "
+                                  "model's window cannot be cut to match its transcript")
+        # The id Story Studio would ask with: locations publish under the maker,
+        # so reporting the concrete `studio-hub-<controller>` here would name a
+        # provider no picker ever sends. The voice count is asked the same way,
+        # through the published id, so it exercises the real lookup path.
+        published = f"{publish_id(definition.id)}{ID_SEPARATOR}{raw_model}"
+        models.append({
+            "model_id": published,
+            "display_name": model.get("display_name") or raw_model,
+            "support": support,
+            "contract": contract,
+            "verdict": verdict,
+            "warning": warning,
+            "voices": len(voices_for_model(published)),
+        })
+
+    return {
+        "voice_id": voice.id,
+        "display_name": voice.display_name,
+        "clip": {
+            "duration_seconds": duration,
+            "speech_seconds": speech_span,
+            "segments": len(segments),
+            "has_transcript": bool(transcript),
+            "path": str(raw.get("reference_path") or ""),
+        },
+        "models": models,
+    }
+
+
 @router.get("/api/voices/library", dependencies=[Depends(require_admin)])
 def voice_library(provider_id: str, q: str = "", page: int = 0) -> Any:
     """Live search of a provider's public voice library."""

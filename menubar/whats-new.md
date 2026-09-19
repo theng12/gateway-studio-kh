@@ -4,6 +4,39 @@ Newest first. This is the same list the **What's New** button in the app shows.
 
 ---
 
+## Your voices now work on every model that can clone
+
+Only **one** of your eight local voice models offered any voices. Every voice you
+imported was stamped with the model it happened to be tuned against, and a voice
+was matched to a model by that exact string — so picking OmniVoice or VoxCPM2 for
+quality gave you an empty voice list, which reads as "you have no voices" rather
+than "those clips belong to another build". **All eight now offer all ten**, and a
+model that says it does not clone still gets none.
+
+## Your recordings are never shortened
+
+Every model states its own reference window and the gateway now **reads** it
+instead of guessing at it. Nothing here crops your clips: the recording stays
+whole, and each model takes what its own contract allows — OmniVoice up to 10s,
+Qwen3 up to 15s, VoxCPM2 as much as you give it. A model that wants a longer
+reference in future is honoured automatically, because the number comes from the
+model rather than from us.
+
+**Reference…** on the Voices page shows, for the voice you select, exactly what
+each local model will do with it — used whole, shortened to a shorter aligned
+window, refused, or limits unverified — and warns when a clip is under a model's
+floor or missing the transcript a model needs.
+
+## Fixed: a location showed this Mac's models
+
+A Studio Hub location added on the Fleet page discovered **this Mac's** model list
+instead of its own, because one discovery path skipped the location's address and
+fell back to the local Hub. Two sites would have shown identical model lists, and
+work routed to one could have been sent for a model only the other has. Fixed, and
+now tested.
+
+---
+
 ## The app now stops the gateway when you quit
 
 **This is the one to know about.** Quitting used to leave the gateway running, and

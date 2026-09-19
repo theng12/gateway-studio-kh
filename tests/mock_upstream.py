@@ -174,6 +174,54 @@ class Handler(BaseHTTPRequestHandler):
             self._json(200, {"batches": []})
             return
 
+        # ---- what a location's models *are*, for the local voice lane.
+        #
+        # `model-packages` says what is installed; `catalog` says what each model
+        # is — whether it clones at all (a preset-speaker tier does not) and what
+        # reference contract it declares. Both are served here so the voice
+        # matching, the per-model reference report and the no-invented-numbers
+        # rule can be asserted without a real Hub.
+        #
+        # Three deliberate shapes:
+        #   mock-hub/clone-model        catalogued, audited contract (3/8/15s)
+        #   mock-hub/preset-model       catalogued, `declared: false` — no reference
+        #   mock-hub/uncatalogued-model installed but absent from the catalogue
+        #                               → *unverified*, which must still be offered
+        if path == "/api/hub/model-packages":
+            self._json(200, {"models": [
+                {"package_id": "clone-model", "model_id": "mock-hub/clone-model",
+                 "engine": "voice-mlx", "files_state": "files_verified",
+                 "dispatch_state": "eligible", "revision": "a" * 40},
+                {"package_id": "preset-model", "model_id": "mock-hub/preset-model",
+                 "engine": "voice-mlx", "files_state": "files_verified",
+                 "dispatch_state": "eligible", "revision": "b" * 40},
+                {"package_id": "uncatalogued-model", "model_id": "mock-hub/uncatalogued-model",
+                 "engine": "voice-mlx", "files_state": "files_verified",
+                 "dispatch_state": "eligible", "revision": "c" * 40},
+            ]})
+            return
+        if path == "/api/hub/catalog":
+            self._json(200, {"models": [
+                {"repo": "mock-hub/clone-model", "family": "mock-clone",
+                 "capabilities": ["tts", "voice-cloning", "multilingual"],
+                 "reference_audio": {
+                     "declared": True, "supported": True, "profile_audited": True,
+                     "profile_source": "audit",
+                     "minimum_duration_seconds": 3, "target_duration_seconds": 8,
+                     "recommended_duration_seconds": {"minimum": 8, "maximum": 12},
+                     "maximum_duration_seconds": 15,
+                     "transcript": "required",
+                     "timestamped_transcript_segments":
+                         "required_when_model_specific_selection_is_needed",
+                 }},
+                {"repo": "mock-hub/preset-model", "family": "mock-preset",
+                 "capabilities": ["tts", "expressive"],
+                 "reference_audio": {"declared": False, "supported": False,
+                                     "profile_audited": False,
+                                     "profile_source": "unverified"}},
+            ]})
+            return
+
         # Black Forest Labs polling: Ready with a delivery URL.
         if path.startswith("/bfl-poll/"):
             self._json(200, {

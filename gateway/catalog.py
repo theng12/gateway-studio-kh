@@ -299,6 +299,24 @@ def _tts_characters(model_id: str, model: dict[str, Any], definition: ProviderDe
 _TTS_NO_SPEED = {"eleven_v3"}
 
 
+def _supports_cloning(definition: ProviderDefinition, raw: dict[str, Any]) -> bool:
+    """Whether a model clones, as the provider states it.
+
+    Read from the model's own `reference_audio` block when it has one. An
+    explicit `declared: false` or `supported: false` is the only thing that
+    withholds the claim — a model that says *nothing* keeps the per-kind default,
+    because "unstated" must not silently become "cannot", which is how ten
+    working voices disappear from a picker with no error to explain it.
+    """
+    reference = raw.get("reference_audio")
+    if isinstance(reference, dict) and reference:
+        if reference.get("declared") is False or reference.get("supported") is False:
+            return False
+        if reference.get("declared") is True or reference.get("supported") is True:
+            return True
+    return definition.kind in {"studio_hub", "fish", "elevenlabs"}
+
+
 def _tts_row(model_id: str, definition: ProviderDefinition, model: dict[str, Any]) -> dict[str, Any]:
     raw = model.get("raw") or {}
     supports_speed = model_id not in _TTS_NO_SPEED
@@ -323,14 +341,20 @@ def _tts_row(model_id: str, definition: ProviderDefinition, model: dict[str, Any
         "supports_speed": supports_speed,
         "minimum_speed": minimum_speed,
         "maximum_speed": maximum_speed,
-        # ponytail: hardcoded per *kind*, not per model. Ceiling — a voice-cloning
-        # model from a kind not listed here is advertised as non-cloning, and a
-        # cloning-capable provider outside these three would be under-described.
-        # It is not a made-up value for the lanes we actually serve (the local Hub
-        # IS a cloning lane, and Fish and ElevenLabs both offer cloning), so it is
-        # marked rather than nulled. Upgrade path — read it where a provider states
-        # it, the way `maximum_input_characters` is read.
-        "supports_voice_cloning": definition.kind in {"studio_hub", "fish", "elevenlabs"},
+        # Per model where the provider states it. The Hub publishes, for every
+        # model it catalogues, whether a reference clip is `declared` and
+        # `supported` — and Qwen3's CustomVoice and VoiceDesign tiers answer
+        # `false`, because they use preset speakers and a described voice rather
+        # than a recording. The per-kind rule this replaced claimed `true` for
+        # them, which tells Story Studio to offer a voice picker with nothing in
+        # it: the same "control that does nothing" the rest of this file removes.
+        #
+        # ponytail: the per-kind default still stands behind it for kinds that
+        # publish nothing per model (fish, elevenlabs) — their cloning is a
+        # provider fact today. Ceiling — a cloning-capable provider outside these
+        # three is under-described. Upgrade path — the same read, once they state
+        # it, which is how `maximum_input_characters` already works.
+        "supports_voice_cloning": _supports_cloning(definition, raw),
         "preview_policy": "none",
         "generation_enabled": True,
         "queue_class": "direct",

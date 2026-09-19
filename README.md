@@ -406,9 +406,9 @@ other session in `~/Developer/_handoffs/2026-09-18-gateway-kh-fleet-contract-to-
 ## Verification
 
 ```bash
-.venv/bin/python tests/test_e2e.py            # 325 checks, mock upstream
+.venv/bin/python tests/test_e2e.py            # 337 checks, mock upstream
 .venv/bin/python tests/test_fleet_standalone.py  # 45 checks, a real Hub used as a location
-.venv/bin/python tests/test_ui.py             # 105 checks, drives the installed app
+.venv/bin/python tests/test_ui.py             # 107 checks, drives the installed app
 ```
 
 325 checks against a **real HTTP upstream** (a local mock provider), exercising the admin API,

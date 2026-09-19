@@ -100,6 +100,10 @@ class Voice:
             # Which model a *local* voice belongs to. Empty for provider voices,
             # which work with every TTS model that provider offers.
             "tts_model_id": str((self.raw or {}).get("tts_model_id") or ""),
+            # The clip's own length, when it was measured at import. Reported
+            # rather than inferred: a voice whose duration was never recorded
+            # says `None` instead of a plausible guess.
+            "duration_seconds": (self.raw or {}).get("duration_seconds"),
         }
 
 
@@ -320,6 +324,11 @@ def _local_voices() -> list[Voice]:
                 raw={
                     "engine_name": entry.get("engine_name"),
                     "tts_model_id": entry.get("tts_model_id"),
+                    # How long the recording is, as measured when it was imported.
+                    # Needed to say whether a model's window will cut it, and it
+                    # is the *clip* length rather than the speech span the
+                    # segments describe.
+                    "duration_seconds": entry.get("duration_seconds"),
                     # Carried through so the Studio Hub adapter can stage the
                     # clone reference without re-reading the catalogue file.
                     "reference_path": entry.get("reference_path"),
@@ -841,13 +850,88 @@ def accepted_voice_providers(provider_id: str, model_id: str) -> set[str]:
     return accepted
 
 
+def _model_record(provider_id: str, model_id: str) -> dict[str, Any] | None:
+    """A model's own record, looking behind a published maker id.
+
+    Story Studio asks for `studio-hub::<model>` — the **maker** — while the model
+    belongs to one *location* (`studio-hub-<controller>`), and that is where its
+    catalogue facts were stored. Unless the published id is mapped back first,
+    every lookup misses, and a miss is not neutral: it reads as *unverified*,
+    which offers the voice (safe) but silently loses the contract — including the
+    `declared: false` that must withhold a preset-voice model from a voice picker.
+    """
+    from .fleet import FLEET_PROVIDER_ID, publish_id
+
+    candidates = [provider_id]
+    if provider_id == FLEET_PROVIDER_ID:
+        candidates = [d.id for d in registry.definitions()
+                      if publish_id(d.id) == FLEET_PROVIDER_ID] or [provider_id]
+    for candidate in candidates:
+        for model in registry.models.models_for(candidate, include_disabled=True):
+            if str(model.get("model_id")) == model_id:
+                return model
+    return None
+
+
+def reference_contract(provider_id: str, model_id: str) -> dict[str, Any]:
+    """The Hub's own statement about a model's reference clip, or `{}`.
+
+    Read, never computed. Verified against Hub 0.6.18: `/api/hub/catalog`
+    publishes per model a `reference_audio` block carrying `declared`,
+    `supported`, `profile_audited` and — when the profile has been audited —
+    `minimum`/`target`/`recommended`/`maximum_duration_seconds`, whether a
+    transcript is required, and whether timestamped segments are needed for
+    model-specific selection.
+
+    `{}` means **unstated**, which is not the same as "no reference": a model
+    absent from the catalogue (VoxCPM2 8-bit is installed but not catalogued)
+    is *unverified*, and inventing a window for it — from its upstream docs or
+    anywhere else — would be the plausible-default mistake this codebase keeps
+    auditing out.
+    """
+    model = _model_record(provider_id, model_id)
+    if model is None:
+        return {}
+    block = (model.get("raw") or {}).get("reference_audio")
+    return dict(block) if isinstance(block, dict) else {}
+
+
+def reference_support(provider_id: str, model_id: str) -> bool | None:
+    """Does this model take a reference clip? `True`, `False`, or `None` if unstated.
+
+    Three answers, because collapsing them is the bug. A model that *says* it
+    cannot clone must not be offered voices — picking one would fail on use,
+    which is the `:batch` trap. A model that says *nothing* must not be treated
+    as one that cannot, because that is how ten working voices disappear from a
+    picker with no error anywhere to explain it.
+    """
+    contract = reference_contract(provider_id, model_id)
+    if contract:
+        if contract.get("declared") is False or contract.get("supported") is False:
+            return False
+        if contract.get("declared") is True or contract.get("supported") is True:
+            return True
+    model = _model_record(provider_id, model_id)
+    if model is None:
+        return None
+    capabilities = (model.get("raw") or {}).get("capabilities")
+    if isinstance(capabilities, list) and capabilities:
+        return "voice-cloning" in capabilities
+    return None
+
+
 def voices_for_model(compound_model_id: str) -> list[dict[str, Any]]:
     """Voices usable with a namespaced catalogue model id.
 
     Two different rules, because the providers genuinely differ:
 
-      * a **local** voice belongs to one model — Qwen3 Base needs *its* clip, so
-        the match is on the voice's own `tts_model_id`;
+      * **which local models a local voice may be used with is the model's own
+        statement**, not the tier the voice was minted against. Every voice this
+        Mac owns was stamped `Qwen3-TTS-12Hz-0.6B-Base-4bit` when it was
+        imported, and matching on that string alone hid all ten of them from the
+        other seven clone-capable local rows — an empty picker, which reads as
+        "no voices" rather than "the namespaces disagree". The clip is a
+        recording; the window it needs belongs to the model, and the Hub cuts it;
       * a **provider** voice works with every TTS model that provider offers, so
         the match is on the provider alone.
 
@@ -875,18 +959,16 @@ def voices_for_model(compound_model_id: str) -> list[dict[str, Any]]:
         return [story_row(v) for v in voice_registry().enabled_voices()]
 
     accepted = accepted_voice_providers(provider_id, raw_model)
+    takes_reference = reference_support(provider_id, raw_model)
 
     rows: list[dict[str, Any]] = []
-    needle = raw_model.lower()
     for voice in voice_registry().enabled_voices():
         if not ({voice.provider_id, publish_id(voice.provider_id)} & accepted):
             continue
-        local_model = str((voice.raw or {}).get("tts_model_id") or "")
-        if voice.source == SOURCE_LOCAL and local_model:
-            if not (
-                needle.endswith(local_model.lower())
-                or local_model.lower().endswith(needle)
-            ):
-                continue
+        if voice.source == SOURCE_LOCAL and takes_reference is False:
+            # The model states it does not clone (preset speakers, voice design,
+            # a fixed voicepack). A reference offered here is a control that
+            # fails on use, so it is withheld rather than advertised.
+            continue
         rows.append(story_row(voice))
     return rows

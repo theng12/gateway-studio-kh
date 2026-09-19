@@ -905,6 +905,45 @@ def main() -> int:
     check("offers saving a voice by its id",
           any("Add by ID" in title for title in voices_buttons), f"{voices_buttons}")
 
+    # The recording *is* the input on the local lane, and three different things
+    # can happen to it — used whole, cut to a shorter aligned window, or refused —
+    # which look identical from the outside. This report is the only place that
+    # says which, so it gets pressed rather than merely found: a title proves a
+    # button was built, not that it answers.
+    if any("Reference" in title for title in voices_buttons):
+        osa(wrap(f"tell {MAIN_WINDOW} to tell splitter group 1 to select row 1 "
+                 "of table 1 of scroll area 2"))
+        time.sleep(1.0)
+        check("offers a per-model reference report",
+              press_detail_button("Reference"), f"{voices_buttons}")
+        # The report is a modal, so the suite has to close it or everything after
+        # this talks to an alert instead of the window.
+        for _ in range(12):
+            time.sleep(1.0)
+            closed = osa(wrap('''
+                tell application "System Events" to tell process "GatewayKH"
+                    set hit to "no"
+                    repeat with w in windows
+                        try
+                            repeat with t in (static texts of w)
+                                if (value of t as string) contains "local model uses this recording" then
+                                    click button 1 of w
+                                    set hit to "yes"
+                                end if
+                            end repeat
+                        end try
+                    end repeat
+                    return hit
+                end tell'''))
+            if closed.strip() == "yes":
+                break
+        time.sleep(1.5)
+        check("and the report says how many models it checked",
+              "Checked" in detail_texts() and "local models" in detail_texts(),
+              detail_texts()[-160:])
+    else:
+        skip("offers a per-model reference report", "the button is not in the bar")
+
     if rows > 3:
         # `expect_exact=False` because this Mac's active input source is **Khmer**,
         # so `keystroke "z"` delivers a Khmer character — the keystroke lands, the

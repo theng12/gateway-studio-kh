@@ -29,6 +29,7 @@ import shutil
 import threading
 import time
 from pathlib import Path
+from typing import Any
 
 import httpx
 
@@ -723,19 +724,28 @@ def _transcribe(client: httpx.Client, base: str, headers: dict, audio: Path, mod
         raise RuntimeError("the Hub returned no batch id")
 
     deadline = time.time() + TRANSCRIBE_DEADLINE_S
+    item: dict = {}
     while time.time() < deadline:
         summary = client.get(
             f"{base}/api/hub/transcription/jobs/{batch_id}", headers=headers
         ).json() or {}
         items = summary.get("items") or []
-        state = str((items[0] if items else {}).get("state") or "").lower()
+        item = items[0] if items else {}
+        state = str(item.get("state") or "").lower()
         if state in {"done", "succeeded"}:
             break
         if state in {"error", "failed", "cancelled"}:
-            raise RuntimeError(f"transcription {state}: {(items[0] or {}).get('error')}")
+            raise RuntimeError(f"transcription {state}: {item.get('error')}")
         time.sleep(POLL_S)
     else:
         raise RuntimeError("transcription timed out")
+
+    # The job's own metadata first: `GET .../jobs/{id}` already returns each
+    # item's worker payload, so this is both richer and one round trip cheaper
+    # than the artifact.
+    segments = _segments_from_metadata(item)
+    if segments:
+        return segments
 
     artifact = client.get(
         f"{base}/api/hub/transcription/jobs/{batch_id}/items/0/artifact",
@@ -745,6 +755,73 @@ def _transcribe(client: httpx.Client, base: str, headers: dict, audio: Path, mod
     if artifact.status_code >= 400:
         raise RuntimeError(f"the Hub returned no transcript (HTTP {artifact.status_code})")
     return parse_srt(artifact.text)
+
+
+def _segments_from_metadata(item: dict) -> list[dict]:
+    """The worker's own segments, from the job metadata rather than its SRT.
+
+    The artifact route serves **only** SRT — it takes no `format` parameter and
+    is a `FileResponse` on the `.srt` file — while `GET /api/hub/transcription/jobs/{id}`
+    hands back the worker payload as `metadata`. The segments are the same ones
+    the SRT was rendered from, so reading them loses nothing and saves a request.
+
+    **Word timings are used where the engine produces them.** The Hub's audits
+    describe reference-window selection as "speech-aware and word-boundary-aligned",
+    and its `_best_segment_window` cuts on whole segment boundaries — so finer
+    segments let it fit closer to a model's cap instead of stopping a cue short.
+    Measured on this Mac: `whisper-base-mlx` returns an **empty** `words` list
+    even when `word_timestamps: "true"` is requested, so today this is a no-op and
+    windows land on cue boundaries. A clip of 13.45s in three cues therefore
+    yields an ~8.7s window under a 10s cap rather than a 10s one.
+
+    ponytail: cue-level is the ceiling while the installed subtitle engine emits
+    no word timings. Upgrade path — an engine that does (the Hub's `nemotron`
+    path builds words itself), or mlx-whisper returning `words`; this function
+    then starts returning word-level entries with no change at the call site.
+    """
+    metadata = item.get("metadata")
+    if not isinstance(metadata, dict):
+        return []
+    raw = metadata.get("segments")
+    if not isinstance(raw, list):
+        return []
+
+    cues: list[dict] = []
+    words: list[dict] = []
+    for segment in raw:
+        if not isinstance(segment, dict):
+            continue
+        text = str(segment.get("text") or "").strip()
+        cue = _span(segment.get("start"), segment.get("end"), text)
+        if cue:
+            cues.append(cue)
+        for word in segment.get("words") or []:
+            if not isinstance(word, dict):
+                continue
+            spoken = _span(word.get("start"), word.get("end"), str(word.get("word") or "").strip())
+            if spoken:
+                words.append(spoken)
+    # A partial word list would describe audio the cues do not agree with, so it
+    # is all-or-nothing: either every cue offered words and they cover the clip,
+    # or the cues stand.
+    return words if words and len(words) >= len(cues) else cues
+
+
+def _span(start: Any, end: Any, text: str) -> dict | None:
+    """One `{start, end, text}` entry, or None when it cannot be trusted.
+
+    Ordered and non-empty is the whole contract the Hub's `_validated_segments`
+    asks for; anything else is dropped here rather than sent to be refused.
+    """
+    try:
+        begin = float(start)
+        finish = float(end)
+    except (TypeError, ValueError):
+        return None
+    text = str(text or "").strip()
+    if not text or finish <= begin or begin < 0:
+        return None
+    return {"start": begin, "end": finish, "text": text}
 
 
 #: One annotation pass at a time, with its progress readable while it runs. A

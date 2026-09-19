@@ -400,18 +400,78 @@ _HUB_ENGINE_MODALITY = {
 }
 
 
+def _hub_catalog(base: str, token: str) -> dict[str, dict[str, Any]]:
+    """Per-model capabilities and reference contracts, from the Hub's catalogue.
+
+    `/api/hub/model-packages` answers *what is installed*; `/api/hub/catalog`
+    answers *what a model is* — including whether it clones at all and what
+    reference contract it declares. Neither endpoint answers the other's
+    question, so both are read. Verified against Hub 0.6.18: the catalogue
+    publishes, per model, `capabilities` (with `voice-cloning`) and a
+    `reference_audio` block carrying `declared`/`supported`/`profile_audited`
+    plus `minimum`/`target`/`recommended`/`maximum_duration_seconds` and
+    whether a transcript is required.
+
+    **A missing catalogue is not a missing capability.** If this endpoint is
+    unavailable or slow the models still publish; they simply carry no
+    reference facts, and every reader treats that as *unverified* rather than
+    as "cannot clone". That distinction is the whole point: a model wrongly
+    offered as non-cloning loses its voices silently, while an unverified one
+    is offered and reported honestly.
+
+    Indexed by `repo` (the Hub's spelling of a model id), falling back to any
+    `model_id` key so a future rename does not silently empty this map.
+    """
+    from ..hub import hub_headers  # local import: avoids a cycle
+
+    try:
+        response = httpx.get(
+            f"{base.rstrip('/')}/api/hub/catalog",
+            headers=hub_headers(token),
+            timeout=TIMEOUT,
+        )
+    except httpx.HTTPError:
+        return {}
+    if response.status_code >= 400:
+        return {}
+    payload = response.json() or {}
+    rows = payload.get("models") or payload.get("items") or []
+    if not isinstance(rows, list):
+        return {}
+
+    indexed: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        key = str(row.get("repo") or row.get("model_id") or "").strip()
+        if key:
+            indexed[key] = row
+    return indexed
+
+
 def _studio_hub(definition: ProviderDefinition, values: dict[str, str]) -> DiscoveryResult:
-    """Read the Hub's model packages.
+    """Read the Hub's model packages, enriched with its catalogue's per-model facts.
 
     Deliberately NOT `/api/hub/capabilities`: in standalone packaging that
     endpoint builds its model rows from a GenStudio audit candidate which
     returns None unconditionally, so it advertises **zero models**. The
     authoritative sources are `/api/hub/model-packages` (readiness) and
-    `/api/hub/catalog`.
+    `/api/hub/catalog` (capabilities and reference contracts).
     """
     from ..hub import hub_base_url, hub_headers  # local import: avoids a cycle
 
-    base = (values.get("base_url") or "").strip() or hub_base_url()
+    # `definition.base_url` before the local Hub, like every other strategy in
+    # this file. It was missing here, and the omission was not harmless: a
+    # controller added on the Fleet page declares **no** `base_url` credential
+    # (its address lives on the definition), so `values` never carried one and
+    # every remote location fell through to `hub_base_url()` — this Mac's own
+    # Hub. Each location therefore discovered the *local* machine's models, and
+    # a job routed to site B could be dispatched for a model only site A has.
+    base = (
+        (values.get("base_url") or "").strip()
+        or getattr(definition, "base_url", "")
+        or hub_base_url()
+    )
     if not base:
         return DiscoveryResult(error="Studio Hub is not running (no hub-ready.json found)")
 
@@ -432,6 +492,11 @@ def _studio_hub(definition: ProviderDefinition, values: dict[str, str]) -> Disco
     if not isinstance(packages, list):
         return DiscoveryResult(error="unexpected Hub model-packages payload")
 
+    # What each model *is*, as opposed to whether it is installed. Best effort:
+    # an empty map leaves every model's reference facts absent, which readers
+    # report as unverified rather than as "this model cannot clone".
+    catalog = _hub_catalog(base, values.get("hub_token", ""))
+
     models: list[DiscoveredModel] = []
     for package in packages:
         if not isinstance(package, dict):
@@ -444,6 +509,24 @@ def _studio_hub(definition: ProviderDefinition, values: dict[str, str]) -> Disco
         if not model_id:
             continue
         files_state = str(package.get("files_state") or "")
+        raw: dict[str, Any] = {
+            "package_id": package.get("package_id"),
+            "engine": engine,
+            # `files_verified` never means "ready": readiness combines
+            # files, runtime, OS and chip. Surface the raw state and let
+            # the operator see it rather than collapsing it to a boolean.
+            "files_state": files_state,
+            "dispatch_state": package.get("dispatch_state"),
+            "revision": package.get("revision"),
+        }
+        # The Hub states these per model, so read them rather than deriving
+        # either from the engine name: Qwen3's Base tiers clone and its
+        # CustomVoice tiers do not, and they share an engine.
+        facts = catalog.get(model_id) or {}
+        if facts:
+            raw["capabilities"] = facts.get("capabilities") or []
+            raw["reference_audio"] = facts.get("reference_audio") or {}
+            raw["family"] = facts.get("family")
         models.append(
             DiscoveredModel(
                 model_id=model_id,
@@ -454,16 +537,7 @@ def _studio_hub(definition: ProviderDefinition, values: dict[str, str]) -> Disco
                     model_id.split("/")[-1],
                 ),
                 modality=modality,
-                raw={
-                    "package_id": package.get("package_id"),
-                    "engine": engine,
-                    # `files_verified` never means "ready": readiness combines
-                    # files, runtime, OS and chip. Surface the raw state and let
-                    # the operator see it rather than collapsing it to a boolean.
-                    "files_state": files_state,
-                    "dispatch_state": package.get("dispatch_state"),
-                    "revision": package.get("revision"),
-                },
+                raw=raw,
             )
         )
     return DiscoveryResult(models=models)

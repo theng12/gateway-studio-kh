@@ -203,6 +203,33 @@ def main() -> int:
                     {"id": "veo-3", "display_name": "Veo 3", "modality": "video"},
                 ],
             },
+            {
+                # A **location**, pointed at the mock rather than the owner's real
+                # Hub — which is why the id carries the location prefix: a
+                # location publishes its models under `studio-hub::`, and that
+                # published id is the one Story Studio asks voices with. It serves
+                # `model-packages` (installed) and `catalog` (what each model *is*),
+                # which is what the local voice lane reads to decide which models a
+                # recording may be used with.
+                "id": "studio-hub-mock",
+                "display_name": "Mock Hub",
+                "category": "multi",
+                "kind": "studio_hub",
+                "base_url": f"http://127.0.0.1:{MOCK_PORT}",
+                "modalities": ["tts"],
+                "discovery": "studio_hub",
+                "description": "Test location.",
+                # Declared, and optional, exactly as the built-in local provider
+                # does. A user-defined provider with no `credential_fields` gets
+                # the loader's default of one **required** `api_key`, and a
+                # location has no key to give: it would stay unconfigured, and an
+                # unconfigured provider publishes nothing however many of its
+                # models are switched on.
+                "credential_fields": [
+                    {"key": "hub_token", "label": "Hub token", "secret": True,
+                     "required": False},
+                ],
+            },
         ]
     }))
 
@@ -279,8 +306,8 @@ def main() -> int:
             # provider is a legitimate change, and a literal here fails for a
             # reason that has nothing to do with what the check is about.
             from gateway.providers.definitions import PROVIDER_DEFINITIONS as _SHIPPED
-            expected_providers = len(_SHIPPED) + 4  # + the four custom ones above
-            check(f"{len(_SHIPPED)} built-in providers + 4 custom",
+            expected_providers = len(_SHIPPED) + 5  # + the five custom ones above
+            check(f"{len(_SHIPPED)} built-in providers + 5 custom",
                   health["providers"]["total"] == expected_providers,
                   f"got {health['providers']['total']}, expected {expected_providers}")
             # A kind having an adapter is not the same claim as that adapter
@@ -1551,18 +1578,25 @@ def main() -> int:
             restored = req(client, "GET", "/v1/voices").json()["voices"]
             check("re-enabling restores it", victim["id"] in {v["id"] for v in restored})
 
-            # A local voice belongs to one model; the match is on the voice's
-            # own tts_model_id, not on the provider alone.
+            # Which models a local voice may be used with is the **model's**
+            # statement, not the tier the voice was minted against. This pair used
+            # to assert the opposite — that a voice is returned for its own
+            # `tts_model_id` and for nothing else — which is exactly the rule that
+            # hid all ten of the owner's voices from the other seven clone-capable
+            # local rows, because every one of them was stamped with the same
+            # Qwen3 tier at import. A model that *states* it takes no reference is
+            # still withheld, and section 20 proves that against a Hub that says so.
             model_id = str(victim.get("tts_model_id") or "")
-            check("a local voice reports the model it belongs to", bool(model_id), model_id)
+            check("a local voice reports the model it was minted against", bool(model_id), model_id)
             if model_id:
                 scoped = req(client, "GET", f"/v1/voices?model_id=studio-hub-local::{model_id}").json()
                 check("a local voice is returned for its own model",
                       len(scoped["voices"]) > 0, f"got {len(scoped['voices'])}")
                 other = req(client, "GET",
                             "/v1/voices?model_id=studio-hub-local::some-other-model").json()
-                check("and not for an unrelated model", len(other["voices"]) == 0,
-                      f"got {len(other['voices'])}")
+                check("and, that model stating nothing, it is offered there too",
+                      len(other["voices"]) == len(scoped["voices"]),
+                      f"{len(other['voices'])} vs {len(scoped['voices'])}")
 
             print("\n\033[1m16. Stocking voices from a folder\033[0m")
             # Both shapes are things people actually have: the existing library's
@@ -1997,6 +2031,130 @@ def main() -> int:
             check("the defaults can be restored",
                   req(client, "PUT", "/admin/api/settings/retention",
                       json={"max_age_days": 7, "max_bytes": 10 * 1024**3}).json()["max_age_days"] == 7)
+
+            # ------------------------------------------------------------------
+            print("\n\033[1m20. A local voice belongs to whichever models clone\033[0m")
+            # The local lane is the one place a recording is the *input*, so
+            # "may this voice be used with this model?" is the model's own
+            # statement — not the tier the voice happened to be minted against.
+            # Every voice this Mac owns was stamped with one Qwen3 tier at import,
+            # and matching on that string alone hid all of them from the other
+            # clone-capable rows.
+            httpx.post(f"{BASE}/admin/api/providers/studio-hub-mock/credentials",
+                       headers=AUTH, json={"values": {"hub_token": "mock-token"}})
+            httpx.post(f"{BASE}/admin/api/providers/studio-hub-mock/enabled",
+                       headers=AUTH, json={"enabled": True})
+            # Asked for explicitly: every field this kind declares is optional, so
+            # storing them does not by itself mark the provider configured, and the
+            # credentials route only auto-discovers a provider it considers
+            # configured. Without this the model list is empty and reads as "the
+            # location has nothing" rather than "nobody asked it".
+            httpx.post(f"{BASE}/admin/api/providers/studio-hub-mock/refresh", headers=AUTH)
+            hub_payload = httpx.get(f"{BASE}/admin/api/providers/studio-hub-mock/models",
+                                    headers=AUTH).json()
+            installed = {m["model_id"]: m for m in hub_payload["models"]}
+            # Only the token is stored. The address lives on the definition, as it
+            # does for every controller the Fleet page adds — and `_studio_hub`
+            # used to skip that fallback and go straight to this Mac's own Hub, so
+            # every remote location discovered the *local* machine's models. This
+            # check is what catches that: a location pointed at the mock must find
+            # the mock's models, and this run has no local Hub at all.
+            check("a location discovers its own Hub's models, not the local one",
+                  len(installed) == 3,
+                  f"{sorted(installed)} error="
+                  f"{hub_payload.get('error') or hub_payload.get('discovery_error')}")
+            check("a catalogued model carries the reference contract the Hub stated",
+                  ((installed.get("mock-hub/clone-model") or {}).get("raw") or {})
+                  .get("reference_audio", {}).get("maximum_duration_seconds") == 15,
+                  f"{(installed.get('mock-hub/clone-model') or {}).get('raw')}")
+            check("an installed model the catalogue omits keeps no contract",
+                  "reference_audio" not in
+                  ((installed.get("mock-hub/uncatalogued-model") or {}).get("raw") or {}),
+                  f"{(installed.get('mock-hub/uncatalogued-model') or {}).get('raw')}")
+
+            httpx.post(f"{BASE}/admin/api/models/enabled", headers=AUTH, json={
+                "items": [{"provider_id": "studio-hub-mock", "model_id": mid}
+                          for mid in installed],
+                "enabled": True,
+            })
+
+            # One local voice, written where the catalogue is read from. A short
+            # silent wav is enough: nothing here decodes it, the *facts* are what
+            # the matching and the report are about.
+            import wave as _wave
+            clip = tmp / "reference.wav"
+            with _wave.open(str(clip), "wb") as handle:
+                handle.setnchannels(1)
+                handle.setsampwidth(2)
+                handle.setframerate(24000)
+                handle.writeframes(b"\x00\x00" * 24000)
+            (tmp / "voices.json").write_text(json.dumps({"voices": [{
+                "id": "voice-mock",
+                "display_name": "Mock Voice",
+                "language": "en",
+                "description": "Mock Voice",
+                "gender": "m",
+                "engine_name": "Qwen3 TTS",
+                "engine_id": "qwen3-tts",
+                "tts_model_id": "Qwen3-TTS-12Hz-0.6B-Base-4bit",
+                "reference_path": str(clip),
+                "reference_transcript": "one two three",
+                "reference_segments": [
+                    {"start": 0.0, "end": 4.0, "text": "one two"},
+                    {"start": 5.0, "end": 11.0, "text": "three"},
+                ],
+                "duration_seconds": 11.0,
+                "audio_sha256": "0" * 64,
+            }]}))
+
+            def voices_for(model_id: str) -> list:
+                return req(client, "GET", "/v1/voices",
+                           params={"model_id": model_id}).json()["voices"]
+
+            cloned = voices_for("studio-hub::mock-hub/clone-model")
+            preset = voices_for("studio-hub::mock-hub/preset-model")
+            unknown = voices_for("studio-hub::mock-hub/uncatalogued-model")
+            check("a voice is offered for a model that declares cloning",
+                  len(cloned) == 1, f"{len(cloned)}")
+            check("and is withheld from a model that declares it takes no reference",
+                  len(preset) == 0, f"{len(preset)}: {[v.get('id') for v in preset]}")
+            check("a model the catalogue does not describe is unverified, not excluded",
+                  len(unknown) == 1, f"{len(unknown)}")
+
+            # The publication follows the same statement, because a row claiming
+            # cloning for a preset-speaker model offers a picker with nothing in it.
+            published = {r["id"]: r for r in req(client, "GET", "/v1/tts/models").json()["models"]}
+            check("the catalogue tells Story Studio the same thing",
+                  published.get("studio-hub::mock-hub/clone-model", {})
+                  .get("supports_voice_cloning") is True
+                  and published.get("studio-hub::mock-hub/preset-model", {})
+                  .get("supports_voice_cloning") is False,
+                  f"{[(k, v.get('supports_voice_cloning')) for k, v in published.items() if 'mock-hub' in k]}")
+
+            report = req(client, "GET",
+                         "/admin/api/voices/studio-hub-local::voice-mock/reference").json()
+            by_model = {m["model_id"]: m for m in report["models"]}
+            stated = by_model.get("studio-hub::mock-hub/clone-model") or {}
+            check("the reference report repeats the Hub's numbers, unrounded",
+                  (stated.get("contract") or {}).get("maximum_duration_seconds") == 15
+                  and (stated.get("contract") or {}).get("target_duration_seconds") == 8,
+                  f"{stated.get('contract')}")
+            check("it says a 11s recording is used whole under a 15s maximum",
+                  "used whole" in str(stated.get("verdict")), f"{stated.get('verdict')}")
+            check("it says which model takes no reference at all",
+                  "takes no reference" in str(by_model.get(
+                      "studio-hub::mock-hub/preset-model", {}).get("verdict")),
+                  f"{by_model.get('studio-hub::mock-hub/preset-model')}")
+            unverified = by_model.get("studio-hub::mock-hub/uncatalogued-model") or {}
+            check("and says unverified where the Hub stated nothing, inventing no maximum",
+                  "unverified" in str(unverified.get("verdict"))
+                  and not (unverified.get("contract") or {}).get("maximum_duration_seconds"),
+                  f"{unverified.get('verdict')} / {unverified.get('contract')}")
+            check("it reports the clip's own measurements",
+                  report["clip"]["duration_seconds"] == 11.0
+                  and report["clip"]["segments"] == 2
+                  and report["clip"]["has_transcript"] is True,
+                  f"{report['clip']}")
 
     finally:
         for proc in processes:

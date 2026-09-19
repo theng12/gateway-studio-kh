@@ -290,6 +290,20 @@ the roster. Lookups of "the providers" must go through
 `registry.definitions()`, not the static `PROVIDERS_BY_ID` map — four separate
 bugs came from iterating the static map and silently omitting derived providers.
 
+**A location's address comes from its *definition*, and one strategy forgot that.**
+Every discovery strategy resolves its base as `values.get("base_url") or
+definition.base_url` — a credential may override the address, but the address
+itself is structural. `_studio_hub` was the only one that went straight from the
+credential values to `hub_base_url()`, and that fallback is **this Mac's own Hub**.
+A controller added on the Fleet page declares no `base_url` credential at all (its
+address lives on the derived definition), so every remote location discovered the
+*local* machine's models — each site showing the same list, and a job routed to
+site B dispatchable for a model only site A has. Found while pointing a test
+location at the mock: the provider reported "Studio Hub is not running (no
+hub-ready.json found)" and discovered zero models, which is what
+`test_e2e.py`'s section 20 now asserts against. The bug was latent only because no
+second location was configured yet.
+
 **Adding a location must also discover its models, and say what it found.**
 Nothing refreshes models on a timer (`fleet.start_refresher` refreshes
 *reachability*, not models), so a location added without a refresh shows none —
@@ -390,12 +404,84 @@ success.
   instead of one per controller. Bytes decide identity: a re-push refreshes, and an
   id already holding different audio is a 409.
 
+### A reference clip's contract belongs to the model, and the Hub states it
+
+**Read it, never derive it.** `/api/hub/catalog` publishes, per model, a
+`reference_audio` block — measured on Hub 0.6.18 against this Mac:
+
+| | min | target | preferred | max | transcript |
+|---|---|---|---|---|---|
+| Qwen3-TTS `*-Base-*` (4 tiers) | 3 s | 8 s | 8–12 s | **15 s** | required |
+| OmniVoice-bfloat16 | 3 s | — | 3–10 s | **10 s** | optional |
+| VoxCPM2 (4-bit, bf16) | — | — | — | **not stated** (`profile_audited: false`) | — |
+| Qwen3 `CustomVoice` / `VoiceDesign` | — | — | — | **`declared: false`** — not cloning models | — |
+
+`providers/discovery.py` reads this alongside `/api/hub/model-packages` (readiness)
+— neither endpoint answers the other's question — and carries `capabilities` +
+`reference_audio` in the model's `raw`. `voices.reference_contract` /
+`reference_support` read it back. **The engines are more permissive than the Hub**:
+Qwen3-TTS has no reference cap in its own code at all, and OmniVoice's
+`_trim_long_audio` does nothing below **20 s** (measured by calling it: a 13.45 s
+clip comes back untouched at any `max_duration`). So the 10 s and 15 s above are
+Voice Studio's audited guardrails, and the gateway must not mirror, round or
+invent them — a model that wants a 60 s reference will publish 60 and be honoured.
+
+**A local voice belongs to whichever models clone — never to the tier it was
+minted against.** Every voice the owner imported was stamped
+`tts_model_id: "Qwen3-TTS-12Hz-0.6B-Base-4bit"` (`voice_import.DEFAULT_TTS_MODEL`),
+and `voices_for_model` filtered local voices on an exact match with that string.
+**One of the eight clone-capable local rows offered any voices**; the picker was
+empty for the other seven, which reads as "you have no voices" rather than "those
+clips belong to another build". The match is now the **model's own statement**.
+
+**Three answers, never two.** `reference_support` returns `True`, `False`, or
+`None`:
+- `declared`/`supported: false` → the model says it does not clone (preset
+  speakers, voice design). Voices are **withheld**; offering one fails on use.
+- `true` → offered.
+- **absent** → *unverified*, and the voice is **still offered**. A miss must not
+  read as "cannot": VoxCPM2 8-bit is installed but absent from the catalogue, and
+  treating that as non-cloning would hide all ten voices again. The report says
+  "limits unverified" instead of leaving a blank.
+
+`catalog._supports_cloning` applies the same read to the published
+`supports_voice_cloning`. It used to be per **kind** (`studio_hub`, `fish`,
+`elevenlabs`), which claimed cloning for a preset-speaker row and so offered Story
+Studio a picker with nothing in it. **No currently-published row changed**: all
+eight local rows declare `true`, and fish/elevenlabs keep the per-kind default.
+
+**Nothing in the gateway truncates a reference; the Hub does the cutting.**
+`studio_hub._stage_voice_reference` uploads `path.read_bytes()` verbatim, and
+`reference_audio.prepare()` on the Hub side trims silence, then — only if the clip
+still exceeds the model's maximum — keeps the longest run of **whole timed
+segments** that fits and rewrites the transcript to match. So the recording stays
+whole and each model takes what its own contract allows; that is why B (a baked
+10 s copy) was dropped in favour of deriving at use time.
+
+**The segments are cue-level because the installed engine emits no words.**
+`voice_import._transcribe` prefers the job's own `metadata.segments` over the SRT
+artifact (the artifact route serves *only* SRT — it has no `format` parameter at
+all), and expands per-word timings when an engine provides them. Measured:
+`whisper-base-mlx` returns an empty `words` list even with
+`word_timestamps: "true"`, so window selection lands on cue boundaries — a 13.45 s
+clip in three cues yields an ~8.7 s window under a 10 s cap rather than a 10 s
+one. Finer segments would fit closer, and `_words_to_segments`-style expansion
+already handles it; the `ponytail:` names that upgrade path.
+
+**`GET /admin/api/voices/{voice_id}/reference` answers "what happens to my
+recording?"** — per enabled local model: the contract as the Hub stated it, and a
+verdict (used whole / the Hub picks a shorter aligned window / refused / takes no
+reference / limits unverified) with a warning when the clip is under a model's
+floor, a required transcript is missing, or there are no aligned segments. The
+Voices window's **Reference…** button shows it. Nothing in it is computed from a
+model name.
+
 ## Verification
 
 ```bash
-.venv/bin/python tests/test_e2e.py              # 325 checks, isolated mock upstream
+.venv/bin/python tests/test_e2e.py              # 337 checks, isolated mock upstream
 .venv/bin/python tests/test_fleet_standalone.py # 45 checks, real Hub(s) as locations
-.venv/bin/python tests/test_ui.py               # 105 checks, drives the real app
+.venv/bin/python tests/test_ui.py               # 107 checks, drives the real app
 ```
 
 `test_e2e.py` is fully isolated (`GATEWAY_DATA`/`GATEWAY_APP_SUPPORT` to a temp
