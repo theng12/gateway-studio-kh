@@ -920,6 +920,51 @@ def main() -> int:
                   {"running", "total", "done", "current", "results"} <= set(status),
                   f"{sorted(status)}")
 
+            print("\n\033[1m17. Readiness for the fleet (shared voices)\033[0m")
+            # Pure functions on a catalogue entry, deliberately: they must not care
+            # which data directory the caller happens to be using.
+            #
+            # The Hub's shared-voice receiver validates hard, and its refusals name a
+            # field rather than a voice — useless across a hundred-node push. These
+            # are the gateway answering "which voice, and why" before sending.
+            unacknowledged = {
+                "id": "voice-morgan", "display_name": "Morgan", "language": "en",
+                "gender": "f", "audio_sha256": "c" * 64,
+                "reference_path": str(library / "voice-morgan" / "reference.wav"),
+            }
+            ready = voice_import.shared_readiness(unacknowledged)
+            check("a voice with no acknowledgement is not ready to share",
+                  not ready["ready"]
+                  and any("acknowledged" in p for p in ready["problems"]),
+                  f"{ready['problems']}")
+            check("and its missing segments are named, because that breaks cloning",
+                  any("segments" in p for p in ready["problems"]), f"{ready['problems']}")
+
+            # The receiver enforces `voice_id must be exactly 12 lowercase hex
+            # characters` (measured: 400 otherwise), so a gateway id like
+            # `voice-morgan` cannot be pushed at all.
+            shared_id = voice_import.shared_voice_id(
+                {"id": "voice-morgan", "audio_sha256": "a" * 64}
+            )
+            check("the shared id is the 12 hex the receiver demands",
+                  shared_id == "a" * 12, shared_id)
+            check("an unhashed voice has no shareable id rather than a wrong one",
+                  voice_import.shared_voice_id({"id": "voice-morgan"}) == "")
+
+            fields = voice_import.push_fields({
+                "id": "voice-morgan", "display_name": "Morgan", "language": "en",
+                "gender": "f", "audio_sha256": "b" * 64, "license": "self-owned",
+                "permission_acknowledged": True, "reference_transcript": "hi",
+                "reference_path": str(library / "voice-morgan" / "reference.wav"),
+            })
+            check("the push carries exactly what the receiver declares",
+                  {"voice_id", "audio_sha256", "name", "language", "gender", "license",
+                   "notes", "source_url", "transcript",
+                   "permission_acknowledged"} <= set(fields),
+                  f"{sorted(fields)}")
+            check("an unknown gender becomes the receiver's 'n', not an empty string",
+                  voice_import.push_fields({"gender": None})["gender"] == "n")
+
     finally:
         for proc in processes:
             try:

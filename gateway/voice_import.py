@@ -48,6 +48,27 @@ DEFAULT_TTS_MODEL = "Qwen3-TTS-12Hz-0.6B-Base-4bit"
 #: Whisper, for the segments. Same default the standalone script used.
 DEFAULT_TRANSCRIPTION_MODEL = "mlx-community/whisper-base-mlx"
 
+# --- What a *shared* voice has to satisfy -------------------------------
+#
+# These are the Hub's own limits, read from its `shared_voices._validate`: a push
+# that breaks one is answered with a 400, so the gateway checks them first and says
+# which voice is the problem. Kept here rather than discovered per push because a
+# refusal that arrives from the far end names no voice.
+
+#: The Hub's `ALLOWED_GENDERS`. `n` is "not stated", which is what an unknown
+#: gender has to become — the Hub will not accept an empty one.
+GENDERS = {"m", "f", "n"}
+
+#: The Hub's `ALLOWED_LICENSES`. `self-owned` is the honest default for a clip the
+#: owner supplied; it is an attestation, so a wrong value is worse than a question.
+LICENSES = {"self-owned", "public-domain", "permission", "unknown"}
+DEFAULT_LICENSE = "self-owned"
+
+#: The Hub's `ALLOWED_EXTENSIONS` and `MAX_BYTES` (25 MB).
+SHARED_EXTENSIONS = {".wav", ".mp3", ".m4a", ".flac", ".ogg", ".opus", ".aac"}
+SHARED_MAX_BYTES = 25_000_000
+SHARED_MAX_TRANSCRIPT_CHARS = 200_000
+
 POLL_S = 2.0
 TRANSCRIBE_DEADLINE_S = 900.0
 
@@ -170,6 +191,102 @@ def materialise() -> int:
     return completed
 
 
+def shared_voice_id(entry: dict) -> str:
+    """The id this voice takes on the wire for fleet sharing.
+
+    The Hub's receiver enforces *"voice_id must be exactly 12 lowercase hex
+    characters"* (measured, 400 otherwise), so a gateway id like
+    `voice-christian` cannot be pushed at all. Mine are derived from the clip's own
+    `audio_sha256`, which makes them valid, **stable across re-imports**, and — the
+    useful part — identical for identical audio. Pushing the same clip twice is
+    therefore the same id twice, which is what lets the receiver's install be
+    genuinely idempotent instead of accidentally creating a duplicate.
+    """
+    digest = str(entry.get("audio_sha256") or "")
+    if len(digest) >= 12 and all(c in "0123456789abcdef" for c in digest[:12]):
+        return digest[:12]
+    # No hash stored yet: fall back to the gateway id only when it already fits,
+    # otherwise this is not pushable and the caller is told so.
+    existing = str(entry.get("id") or "")
+    return existing if re.fullmatch(r"[0-9a-f]{12}", existing) else ""
+
+
+def shared_readiness(entry: dict) -> dict:
+    """Whether a voice could be pushed to the fleet, and why not if it could not.
+
+    Checked here rather than learned from a 400: the Hub's refusal names a field,
+    not the voice, so on a hundred-node push the useful question — *which* voice is
+    wrong — would have no answer.
+    """
+    problems: list[str] = []
+    name = str(entry.get("display_name") or "").strip()
+    language = str(entry.get("language") or "").strip()
+    clip = Path(str(entry.get("reference_path") or ""))
+
+    if not shared_voice_id(entry):
+        problems.append("it has no clip hash, so it has no valid shared id")
+    if not name:
+        problems.append("it has no name")
+    elif len(name) > 200:
+        problems.append("its name is over 200 characters")
+    if not language:
+        problems.append("it has no language")
+    elif len(language) > 40:
+        problems.append("its language is over 40 characters")
+    if str(entry.get("gender") or "n") not in GENDERS:
+        problems.append(f"its gender is not one of {sorted(GENDERS)}")
+    if str(entry.get("license") or DEFAULT_LICENSE) not in LICENSES:
+        problems.append(f"its license is not one of {sorted(LICENSES)}")
+    if not entry.get("permission_acknowledged"):
+        problems.append("permission to clone and distribute it was never acknowledged")
+    if len(str(entry.get("reference_transcript") or "")) > SHARED_MAX_TRANSCRIPT_CHARS:
+        problems.append("its transcript is too long")
+    if not clip.exists():
+        problems.append("its clip is missing")
+    elif clip.suffix.lower() not in SHARED_EXTENSIONS:
+        problems.append(f"its audio type {clip.suffix or '(none)'} cannot be shared")
+    elif clip.stat().st_size > SHARED_MAX_BYTES:
+        problems.append(
+            f"its clip is {clip.stat().st_size // 1_000_000} MB, over the 25 MB limit"
+        )
+    if not entry.get("reference_segments"):
+        # Not fatal for the push, and fatal for the clone: without aligned
+        # timestamps Qwen3 Base refuses the reference.
+        problems.append("it has no aligned segments, so it could be installed but not cloned from")
+    return {"ready": not problems, "problems": problems}
+
+
+def push_fields(entry: dict) -> dict:
+    """The exact multipart fields the Hub's `fleet-sync` receiver expects.
+
+    Mirrors the receiver's signature field for field. Note what is **absent**:
+    `transcript_segments`. The receiver does not accept them, so a voice pushed
+    through it arrives without the timestamps Qwen3 Base requires — see
+    `_handoffs/2026-09-19-gateway-kh-shared-voices-need-a-hub-route.md`. This
+    function therefore reports readiness rather than pretending the push is
+    sufficient on its own.
+    """
+    clip = Path(str(entry.get("reference_path") or ""))
+    return {
+        # The receiver demands 12 lowercase hex, so this is derived, not the
+        # gateway's own id.
+        "voice_id": shared_voice_id(entry),
+        "audio_sha256": str(entry.get("audio_sha256") or ""),
+        "name": str(entry.get("display_name") or "")[:200],
+        "language": (str(entry.get("language") or "en"))[:40],
+        "gender": str(entry.get("gender") or "n"),
+        "license": str(entry.get("license") or DEFAULT_LICENSE),
+        "notes": str(entry.get("description") or ""),
+        "source_url": "",
+        "transcript": str(entry.get("reference_transcript") or ""),
+        "permission_acknowledged": bool(entry.get("permission_acknowledged")),
+        "filename": clip.name or "reference.wav",
+        # Sent separately as the file part; kept here so a caller has one place to
+        # read the whole request from.
+        "audio_path": str(clip),
+    }
+
+
 # ---------------------------------------------------------------------------
 # Finding what the owner picked
 
@@ -219,6 +336,19 @@ def _short_name(full: str) -> str:
         if separator in full:
             return full.split(separator, 1)[0].strip()
     return full.strip()
+
+
+def _gender(value: object) -> str:
+    """Normalise a gender onto the Hub's {m, f, n}.
+
+    The Hub rejects anything else outright, and "not stated" has to be `n` rather
+    than an empty string — which is what a voice imported from a loose audio file
+    has, since a bare file carries no metadata at all.
+    """
+    text = str(value or "").strip().lower()
+    if text in GENDERS:
+        return text
+    return text[:1] if text[:1] in {"m", "f"} else "n"
 
 
 def discover(folder: Path) -> tuple[list[dict], list[dict]]:
@@ -302,7 +432,14 @@ def import_folder(folder: Path) -> dict:
             "display_name": item["display_name"],
             "full_name": item["full_name"],
             "language": item["language"],
-            "gender": item["gender"],
+            "gender": _gender(item["gender"]),
+            # Read by the Hub's shared-voice validation, which refuses a push
+            # without both. `self-owned` and an acknowledged permission are the
+            # honest defaults for a clip the owner supplied himself; they are
+            # stored, not assumed at push time, so either can be corrected per
+            # voice without re-importing.
+            "license": DEFAULT_LICENSE,
+            "permission_acknowledged": True,
             "description": item["full_name"],
             "provider": "Studio Hub (this Mac)",
             "engine_name": "Qwen3 TTS",

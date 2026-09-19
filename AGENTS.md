@@ -200,7 +200,7 @@ success.
 ## Verification
 
 ```bash
-.venv/bin/python tests/test_e2e.py              # 146 checks, isolated mock upstream
+.venv/bin/python tests/test_e2e.py              # 152 checks, isolated mock upstream
 .venv/bin/python tests/test_fleet_standalone.py # 40 checks, real Hub(s) as locations
 .venv/bin/python tests/test_ui.py               # 87 checks, drives the real app
 ```
