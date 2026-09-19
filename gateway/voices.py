@@ -282,6 +282,10 @@ def _local_voices() -> list[Voice]:
                     "reference_path": entry.get("reference_path"),
                     "reference_transcript": entry.get("reference_transcript"),
                     "reference_segments": entry.get("reference_segments"),
+                    # Whether the owner has granted permission to clone and
+                    # distribute this voice. False until he says so, per voice.
+                    "permission_acknowledged": bool(entry.get("permission_acknowledged")),
+                    "license": entry.get("license"),
                 },
             )
         )

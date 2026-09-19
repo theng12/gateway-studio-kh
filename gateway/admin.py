@@ -468,6 +468,47 @@ def voices_add_status() -> dict[str, Any]:
     return voice_import.annotation_state()
 
 
+@router.post("/api/voices/shared", dependencies=[Depends(require_admin)])
+def set_voices_shared(payload: dict[str, Any]) -> Any:
+    """Grant or withdraw permission to clone and distribute these voices.
+
+    An attestation, so it is explicit and per voice. Import leaves every voice
+    private: the owner has voices he does not want distributed, and a default of
+    "allowed" would distribute them by accident.
+    """
+    from . import voice_import
+
+    items = payload.get("items")
+    if not isinstance(items, list):
+        return _error(422, "expected {'items': [voice_id, ...], 'acknowledged': bool}")
+    result = voice_import.set_permission(
+        [str(i) for i in items],
+        bool(payload.get("acknowledged")),
+        license=str(payload.get("license") or ""),
+    )
+    return result
+
+
+@router.get("/api/voices/shared", dependencies=[Depends(require_admin)])
+def list_shared_voices() -> dict[str, Any]:
+    """The voices that currently carry permission, and why any could not be pushed."""
+    from . import voice_import
+
+    entries = voice_import.shareable()
+    return {
+        "voices": [
+            {
+                "id": v.get("id"),
+                "display_name": v.get("display_name"),
+                "license": v.get("license"),
+                "shared_id": voice_import.shared_voice_id(v),
+                "readiness": voice_import.shared_readiness(v),
+            }
+            for v in entries
+        ]
+    }
+
+
 @router.post("/api/voices/refresh", dependencies=[Depends(require_admin)])
 def refresh_voices(provider_id: str | None = None) -> dict[str, Any]:
     voices = voice_registry()

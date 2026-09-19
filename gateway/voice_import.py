@@ -164,11 +164,59 @@ def write_voice_files(entry: dict) -> None:
                 # Whether this voice can clone at all: no segments, no reference.
                 "has_transcript": bool(transcript),
                 "segment_count": len(segments or []),
+                # Permission to clone and distribute, granted per voice and never
+                # assumed. `license` exists only once it has been granted.
+                "permission_acknowledged": bool(entry.get("permission_acknowledged")),
+                "license": entry.get("license"),
             }, indent=2) + "\n",
             encoding="utf-8",
         )
     except OSError:
         return
+
+
+def set_permission(
+    voice_ids: list[str], acknowledged: bool, *, license: str = ""
+) -> dict:
+    """Record, or withdraw, permission to clone and distribute these voices.
+
+    **This is an attestation, so it is never assumed.** A voice is private until
+    someone says otherwise: the owner has private voices he does not want cloned or
+    distributed, and a default of "allowed" would distribute them by accident. That
+    is also why import leaves it false — the tick has to be a deliberate act, not a
+    side effect of adding a clip.
+
+    Withdrawing is as important as granting: `acknowledged=False` puts a voice back
+    to private, including one that was already pushed.
+    """
+    wanted = {str(v) for v in voice_ids if v}
+    if not wanted:
+        return {"changed": 0, "acknowledged": acknowledged}
+
+    payload = _read_catalog()
+    changed = 0
+    for entry in payload.get("voices") or []:
+        if str(entry.get("id")) not in wanted:
+            continue
+        entry["permission_acknowledged"] = bool(acknowledged)
+        if acknowledged:
+            chosen = license or str(entry.get("license") or "") or DEFAULT_LICENSE
+            entry["license"] = chosen if chosen in LICENSES else DEFAULT_LICENSE
+        else:
+            # Withdrawn: the license was part of the permission, so it goes too.
+            # Leaving it behind would let a later push look authorised.
+            entry.pop("license", None)
+        entry["shared_at"] = time.time() if acknowledged else None
+        write_voice_files(entry)
+        changed += 1
+
+    _write_catalog(payload)
+    return {"changed": changed, "acknowledged": bool(acknowledged)}
+
+
+def shareable() -> list[dict]:
+    """Voices that carry permission, and could actually be pushed."""
+    return [v for v in voices() if v.get("permission_acknowledged")]
 
 
 def materialise() -> int:
@@ -434,12 +482,12 @@ def import_folder(folder: Path) -> dict:
             "language": item["language"],
             "gender": _gender(item["gender"]),
             # Read by the Hub's shared-voice validation, which refuses a push
-            # without both. `self-owned` and an acknowledged permission are the
-            # honest defaults for a clip the owner supplied himself; they are
-            # stored, not assumed at push time, so either can be corrected per
-            # voice without re-importing.
-            "license": DEFAULT_LICENSE,
-            "permission_acknowledged": True,
+            # without a license and an explicit acknowledgement. **Both start
+            # unset**: permission to clone and distribute is the owner's to grant
+            # per voice, deliberately, because some of his voices are private.
+            # Adding a clip must never be mistaken for granting it.
+            "permission_acknowledged": False,
+            "shared_at": None,
             "description": item["full_name"],
             "provider": "Studio Hub (this Mac)",
             "engine_name": "Qwen3 TTS",

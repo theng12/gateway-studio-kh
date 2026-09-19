@@ -965,6 +965,57 @@ def main() -> int:
             check("an unknown gender becomes the receiver's 'n', not an empty string",
                   voice_import.push_fields({"gender": None})["gender"] == "n")
 
+            print("\n\033[1m18. Permission to clone and distribute is deliberate\033[0m")
+            # The owner has private voices. A default of "allowed" would distribute
+            # them by accident, so adding a clip must never be mistaken for granting
+            # permission, and withdrawing must be as easy as granting.
+            added_entry = next(
+                (v for v in json.loads(Path(added["catalog"]).read_text())["voices"]
+                 if v["id"] == "voice-morgan"), {}
+            )
+            check("a newly added voice is private until the owner says otherwise",
+                  added_entry.get("permission_acknowledged") is False
+                  and not added_entry.get("license"),
+                  f"ack={added_entry.get('permission_acknowledged')} license={added_entry.get('license')}")
+            check("and it is therefore not shareable",
+                  not voice_import.shared_readiness(added_entry)["ready"])
+
+            granted = req(client, "POST", "/admin/api/voices/shared",
+                          json={"items": ["voice-morgan"], "acknowledged": True}).json()
+            check("permission can be granted for one voice",
+                  granted.get("changed") == 1, f"{granted}")
+            after_grant = next(
+                v for v in json.loads(Path(added["catalog"]).read_text())["voices"]
+                if v["id"] == "voice-morgan"
+            )
+            check("granting records a license, which the Hub requires",
+                  after_grant.get("license") == "self-owned"
+                  and after_grant.get("permission_acknowledged") is True,
+                  f"license={after_grant.get('license')}")
+            # The folder carries it too, so the permission travels with the voice.
+            meta = json.loads((library / "voice-morgan" / "metadata.json").read_text())
+            check("the permission is written into the voice's own folder",
+                  meta.get("permission_acknowledged") is True and meta.get("license") == "self-owned",
+                  f"{meta}")
+            check("and the gateway can list what is shareable",
+                  [v["id"] for v in
+                   req(client, "GET", "/admin/api/voices/shared").json()["voices"]] == ["voice-morgan"])
+
+            revoked = req(client, "POST", "/admin/api/voices/shared",
+                          json={"items": ["voice-morgan"], "acknowledged": False}).json()
+            after_revoke = next(
+                v for v in json.loads(Path(added["catalog"]).read_text())["voices"]
+                if v["id"] == "voice-morgan"
+            )
+            check("permission can be withdrawn again",
+                  revoked.get("changed") == 1
+                  and after_revoke.get("permission_acknowledged") is False,
+                  f"{after_revoke.get('permission_acknowledged')}")
+            check("withdrawing drops the license with it, so nothing looks authorised",
+                  not after_revoke.get("license"), f"license={after_revoke.get('license')}")
+            check("and the voice is private again in the list",
+                  req(client, "GET", "/admin/api/voices/shared").json()["voices"] == [])
+
     finally:
         for proc in processes:
             try:

@@ -103,9 +103,10 @@ final class VoicesSection: NSObject, AppSection, NSTableViewDataSource, NSTableV
         for (id, title, width) in [
             ("on", "", 34),
             ("preview", "", 30),
-            ("name", "Voice", 230),
-            ("language", "Language", 80),
-            ("details", "Description", 300),
+            ("name", "Voice", 210),
+            ("language", "Language", 70),
+            ("fleet", "Fleet", 80),
+            ("details", "Description", 290),
             ("source", "Source", 80),
         ] {
             let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier(id))
@@ -130,6 +131,10 @@ final class VoicesSection: NSObject, AppSection, NSTableViewDataSource, NSTableV
         actions.spacing = 8
         actions.addArrangedSubview(button("Enable selected", #selector(enableSelected)))
         actions.addArrangedSubview(button("Disable selected", #selector(disableSelected)))
+        // Permission to clone and distribute is granted deliberately, never by a
+        // stray click, and it is per voice because some voices are private.
+        actions.addArrangedSubview(button("Allow fleet sharing…", #selector(allowSharing)))
+        actions.addArrangedSubview(button("Make private", #selector(makePrivate)))
         addButton = button("Add to my account", #selector(addSelected))
         actions.addArrangedSubview(addButton)
         actions.addArrangedSubview(button("Stop preview", #selector(stopPreview)))
@@ -381,6 +386,76 @@ final class VoicesSection: NSObject, AppSection, NSTableViewDataSource, NSTableV
         }
     }
 
+    /// Grant permission to clone and distribute the selected voices.
+    ///
+    /// Behind a confirmation on purpose. This records the owner's permission, and
+    /// he has voices he does not want cloned or distributed — so it states exactly
+    /// what is being granted, to how many voices, before anything is written.
+    @objc private func allowSharing() {
+        let chosen = selectedRows().filter { ($0["id"] as? String)?.hasPrefix("studio-hub-local") == true }
+        let ids = chosen.compactMap { $0["id"] as? String }
+        guard !ids.isEmpty else {
+            summaryLabel.textColor = .systemOrange
+            summaryLabel.stringValue =
+                "Select the voices to share first — only this Mac's own voices can be shared."
+            return
+        }
+        let already = chosen.filter {
+            (($0["raw"] as? [String: Any])?["permission_acknowledged"] as? Bool) == true
+        }.count
+
+        let alert = NSAlert()
+        alert.messageText = ids.count == 1
+            ? "Allow cloning and distribution of this voice?"
+            : "Allow cloning and distribution of these \(ids.count) voices?"
+        alert.informativeText =
+            "This records that you have permission to clone and distribute "
+            + (ids.count == 1 ? "this voice" : "these voices")
+            + " across the machines in your fleet. Only allow voices you own or are licensed to "
+            + "distribute — anything you do not allow stays private and is never copied to "
+            + "another machine."
+            + (already > 0 ? "\n\n\(already) of them already allow it." : "")
+        alert.addButton(withTitle: "Allow sharing")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+
+        GatewayAPI.post("/admin/api/voices/shared",
+                        body: ["items": ids, "acknowledged": true]) { [weak self] result in
+            guard let self else { return }
+            switch result {
+            case .failure(let error):
+                self.summaryLabel.textColor = .systemOrange
+                self.summaryLabel.stringValue = "Could not record it — \(error)"
+            case .success:
+                self.summaryLabel.textColor = .secondaryLabelColor
+                self.summaryLabel.stringValue =
+                    "Recorded your permission for \(ids.count) voice\(ids.count == 1 ? "" : "s")."
+            }
+            self.reload()
+        }
+    }
+
+    /// Withdraw permission for the selected voices, in one act and with no dialog:
+    /// making something private again is the safe direction.
+    @objc private func makePrivate() {
+        let ids = selectedRows().compactMap { $0["id"] as? String }
+            .filter { $0.hasPrefix("studio-hub-local") }
+        guard !ids.isEmpty else { return }
+        GatewayAPI.post("/admin/api/voices/shared",
+                        body: ["items": ids, "acknowledged": false]) { [weak self] result in
+            guard let self else { return }
+            if case .failure(let error) = result {
+                self.summaryLabel.textColor = .systemOrange
+                self.summaryLabel.stringValue = "Could not change it — \(error)"
+            } else {
+                self.summaryLabel.textColor = .secondaryLabelColor
+                self.summaryLabel.stringValue =
+                    "\(ids.count) voice\(ids.count == 1 ? " is" : "s are") private again."
+            }
+            self.reload()
+        }
+    }
+
     @objc private func addSelected() {
         for row in selectedRows() {
             guard let providerId = row["provider_id"] as? String,
@@ -498,6 +573,22 @@ final class VoicesSection: NSObject, AppSection, NSTableViewDataSource, NSTableV
         case "language":
             field.stringValue = (voice["language"] as? String ?? "").uppercased()
             field.textColor = .secondaryLabelColor
+        case "fleet":
+            // Only this Mac's own voices can be shared, and only once the owner has
+            // allowed it. "Private" has to be visible, or he cannot tell which of
+            // his voices would be copied to another machine.
+            let mine = (voice["id"] as? String)?.hasPrefix("studio-hub-local") == true
+            let allowed = (voice["raw"] as? [String: Any])?["permission_acknowledged"] as? Bool == true
+            if !mine {
+                field.stringValue = "—"
+                field.textColor = .tertiaryLabelColor
+            } else if allowed {
+                field.stringValue = "Shared"
+                field.textColor = .secondaryLabelColor
+            } else {
+                field.stringValue = "Private"
+                field.textColor = .tertiaryLabelColor
+            }
         case "details":
             var bits = [voice["description"] as? String ?? ""]
             if let gender = voice["gender"] as? String, !gender.isEmpty { bits.append(gender) }
