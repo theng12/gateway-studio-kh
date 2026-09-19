@@ -219,6 +219,58 @@ def shareable() -> list[dict]:
     return [v for v in voices() if v.get("permission_acknowledged")]
 
 
+def share(voice_ids: list[str], *, wait: bool = True) -> dict:
+    """Push the named voices to every location. Never raises.
+
+    Pushed to **controllers only** — the gateway does not talk to nodes, and the
+    controller fans out to its own. That is why this is six requests and not a
+    hundred, and why a node being off is `pending` rather than a failure.
+
+    Each location needs the controller's **Hub token**, not its fleet token: the Hub
+    refuses these routes to a fleet token deliberately, so a sold node can never
+    administer a controller. A location without one is skipped and says so rather
+    than failing silently.
+    """
+    from . import fleet
+
+    wanted = {str(v) for v in voice_ids if v}
+    entries = [v for v in voices() if str(v.get("id")) in wanted]
+    missing = sorted(wanted - {str(v.get("id")) for v in entries})
+
+    results: list[dict] = []
+    for entry in entries:
+        for location in fleet.locations():
+            label = str(location.get("label") or location.get("id"))
+            if not location.get("reachable"):
+                results.append({
+                    "voice": entry.get("display_name"), "location": label,
+                    "ok": False, "detail": location.get("error") or "not reachable",
+                })
+                continue
+            token = fleet.admin_token_for(str(location.get("id") or ""))
+            if not token:
+                results.append({
+                    "voice": entry.get("display_name"), "location": label, "ok": False,
+                    "detail": "no Hub token stored for this location, and these routes are "
+                              "refused to a fleet token on purpose",
+                })
+                continue
+            outcome = push_to_controller(
+                entry, str(location.get("url") or ""), token, wait=wait
+            )
+            results.append({
+                "voice": entry.get("display_name"),
+                "location": label,
+                "ok": outcome.get("ok", False),
+                "created": outcome.get("created"),
+                "voice_id": outcome.get("voice_id"),
+                "segments": outcome.get("segments"),
+                "detail": outcome.get("detail") or summarise_targets(outcome.get("targets") or []),
+                "sync": outcome.get("sync"),
+            })
+    return {"pushed": len(entries), "unknown": missing, "results": results}
+
+
 def materialise() -> int:
     """Write the derived files for every voice that is missing them.
 
@@ -304,20 +356,42 @@ def shared_readiness(entry: dict) -> dict:
     return {"ready": not problems, "problems": problems}
 
 
-def push_fields(entry: dict) -> dict:
-    """The exact multipart fields the Hub's `fleet-sync` receiver expects.
+def shared_segments(entry: dict) -> list[dict]:
+    """The segments in the shape the Hub's shared-voice route requires.
 
-    Mirrors the receiver's signature field for field. Note what is **absent**:
-    `transcript_segments`. The receiver does not accept them, so a voice pushed
-    through it arrives without the timestamps Qwen3 Base requires — see
-    `_handoffs/2026-09-19-gateway-kh-shared-voices-need-a-hub-route.md`. This
-    function therefore reports readiness rather than pretending the push is
-    sufficient on its own.
+    **Not the shape this module stores.** Mine are `{start, end, text}` because the
+    Hub's *receiver* uses that; the shared-voice *route* wants
+    `{start_seconds, end_seconds, text}`. Converting here rather than storing both
+    keeps one source of truth on disk and one place where the difference is
+    explained — and getting it wrong would be silent, because the field would be
+    present and simply ignored.
+    """
+    out: list[dict] = []
+    for segment in entry.get("reference_segments") or []:
+        if not isinstance(segment, dict):
+            continue
+        start = segment.get("start_seconds", segment.get("start"))
+        end = segment.get("end_seconds", segment.get("end"))
+        text = str(segment.get("text") or "").strip()
+        if start is None or end is None or not text:
+            continue
+        out.append({"start_seconds": float(start), "end_seconds": float(end), "text": text})
+    return out
+
+
+def push_fields(entry: dict) -> dict:
+    """The exact multipart fields the Hub's shared-voice route expects.
+
+    Mirrors the route's table field for field. `transcript_segments` is sent as JSON
+    in the Hub's own `start_seconds`/`end_seconds` shape, and a transcript without
+    it is refused — deliberately, because the alternative is a hundred nodes
+    installing a voice that then refuses to clone with it.
     """
     clip = Path(str(entry.get("reference_path") or ""))
     return {
-        # The receiver demands 12 lowercase hex, so this is derived, not the
-        # gateway's own id.
+        # 12 lowercase hex, derived from the bytes. The Hub keeps it, so one clip
+        # carries one id across every controller instead of one id per controller,
+        # and the gateway's mapping stays one row per voice.
         "voice_id": shared_voice_id(entry),
         "audio_sha256": str(entry.get("audio_sha256") or ""),
         "name": str(entry.get("display_name") or "")[:200],
@@ -327,12 +401,87 @@ def push_fields(entry: dict) -> dict:
         "notes": str(entry.get("description") or ""),
         "source_url": "",
         "transcript": str(entry.get("reference_transcript") or ""),
+        "transcript_segments": json.dumps(shared_segments(entry)),
         "permission_acknowledged": bool(entry.get("permission_acknowledged")),
         "filename": clip.name or "reference.wav",
         # Sent separately as the file part; kept here so a caller has one place to
         # read the whole request from.
         "audio_path": str(clip),
     }
+
+
+def push_to_controller(
+    entry: dict, base: str, hub_token: str, *, wait: bool = True, timeout: float = 900.0
+) -> dict:
+    """Create or refresh one shared voice on one controller. Never raises.
+
+    The controller fans out to its own joined nodes; `wait=true` makes it run one
+    pass before answering, so this can report what happened per node instead of
+    only that the request was accepted.
+    """
+    if not base or not hub_token:
+        return {"ok": False, "detail": "No address or Hub token for that controller."}
+    readiness = shared_readiness(entry)
+    if readiness["problems"]:
+        # Refused here, naming the voice, rather than as a 400 from the far end that
+        # names only a field and leaves you guessing across a fleet.
+        return {"ok": False, "detail": "; ".join(readiness["problems"])}
+
+    fields = push_fields(entry)
+    clip = Path(fields["audio_path"])
+    form = {
+        key: str(value) for key, value in fields.items()
+        if key not in {"audio_path", "filename"}
+    }
+    try:
+        with clip.open("rb") as handle:
+            response = httpx.post(
+                f"{base.rstrip('/')}/api/hub/shared-voices",
+                params={"wait": "true"} if wait else None,
+                headers={"X-Hub-Token": hub_token},
+                files={"audio": (fields["filename"], handle, "application/octet-stream")},
+                data=form,
+                timeout=timeout,
+            )
+    except httpx.HTTPError as exc:
+        return {"ok": False, "detail": f"{type(exc).__name__}: {exc}"[:200]}
+
+    if response.status_code >= 400:
+        return {"ok": False, "status": response.status_code, "detail": response.text[:300]}
+    body = response.json() or {}
+    voice = body.get("voice") or {}
+    return {
+        "ok": True,
+        "created": bool(body.get("created")),
+        "voice_id": voice.get("id"),
+        "segments": voice.get("segment_count"),
+        "sync": voice.get("sync") or {},
+        "targets": voice.get("targets") or [],
+    }
+
+
+def summarise_targets(targets: list[dict]) -> str:
+    """A sentence a person can act on, from the route's per-node statuses.
+
+    `pending` is not a failure and must not read as one: it means that Mac was off
+    and the controller's reconciler will retry. Calling it an error would send
+    someone to a site that was never broken.
+    """
+    if not targets:
+        return "no nodes reported"
+    counts: dict[str, int] = {}
+    for target in targets:
+        key = str(target.get("status") or "unknown")
+        counts[key] = counts.get(key, 0) + 1
+    parts: list[str] = []
+    if counts.get("synced"):
+        parts.append(f"{counts['synced']} installed")
+    if counts.get("pending"):
+        parts.append(f"{counts['pending']} will install when that Mac is next on")
+    for key in ("failed", "conflict", "unsupported"):
+        if counts.get(key):
+            parts.append(f"{counts[key]} {key}")
+    return ", ".join(parts) if parts else "no nodes reported"
 
 
 # ---------------------------------------------------------------------------

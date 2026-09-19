@@ -135,6 +135,7 @@ final class VoicesSection: NSObject, AppSection, NSTableViewDataSource, NSTableV
         // stray click, and it is per voice because some voices are private.
         actions.addArrangedSubview(button("Allow fleet sharing…", #selector(allowSharing)))
         actions.addArrangedSubview(button("Make private", #selector(makePrivate)))
+        actions.addArrangedSubview(button("Share with fleet", #selector(shareWithFleet)))
         addButton = button("Add to my account", #selector(addSelected))
         actions.addArrangedSubview(addButton)
         actions.addArrangedSubview(button("Stop preview", #selector(stopPreview)))
@@ -383,6 +384,54 @@ final class VoicesSection: NSObject, AppSection, NSTableViewDataSource, NSTableV
         guard !ids.isEmpty else { return }
         GatewayAPI.post("/admin/api/voices/enabled", body: ["items": ids, "enabled": enabled]) { [weak self] _ in
             self?.reload()
+        }
+    }
+
+    /// Push allowed voices to every location, and say what happened at each.
+    ///
+    /// Controllers only — the gateway never talks to nodes, and each controller
+    /// fans out to its own. A node that is switched off is reported as waiting, not
+    /// as a failure: calling it an error would send someone to a site that was
+    /// never broken.
+    @objc private func shareWithFleet() {
+        let ids = selectedRows().compactMap { $0["id"] as? String }
+            .filter { $0.hasPrefix("studio-hub-local") }
+        guard !ids.isEmpty else {
+            summaryLabel.textColor = .systemOrange
+            summaryLabel.stringValue = "Select the voices to share first."
+            return
+        }
+        summaryLabel.textColor = .secondaryLabelColor
+        summaryLabel.stringValue = "Sharing \(ids.count) voice\(ids.count == 1 ? "" : "s") with the fleet…"
+        GatewayAPI.post("/admin/api/voices/share", body: ["items": ids]) { [weak self] result in
+            guard let self else { return }
+            switch result {
+            case .failure(let error):
+                self.summaryLabel.textColor = .systemOrange
+                self.summaryLabel.stringValue = "Could not share them — \(error)"
+            case .success(let payload):
+                let results = payload["results"] as? [[String: Any]] ?? []
+                let ok = results.filter { $0["ok"] as? Bool == true }
+                let bad = results.filter { $0["ok"] as? Bool == false }
+                if let first = ok.first {
+                    self.summaryLabel.textColor = .secondaryLabelColor
+                    var line = "Shared \(ok.count) of \(results.count): "
+                        + "\(first["voice"] as? String ?? "?") at \(first["location"] as? String ?? "?")"
+                        + " — \(first["detail"] as? String ?? "")"
+                    if let segments = first["segments"] as? Int { line += " · \(segments) timings kept" }
+                    if !bad.isEmpty {
+                        line += " · \(bad.count) location\(bad.count == 1 ? "" : "s") could not take it"
+                        self.summaryLabel.textColor = .systemOrange
+                    }
+                    self.summaryLabel.stringValue = line
+                } else {
+                    self.summaryLabel.textColor = .systemOrange
+                    // Name the reason. The common one is a missing Hub token, and
+                    // these routes refuse a fleet token on purpose.
+                    let why = bad.first?["detail"] as? String ?? "no location accepted it"
+                    self.summaryLabel.stringValue = "Nothing was shared — \(why)"
+                }
+            }
         }
     }
 

@@ -489,6 +489,48 @@ def set_voices_shared(payload: dict[str, Any]) -> Any:
     return result
 
 
+@router.post("/api/voices/share", dependencies=[Depends(require_admin)])
+def share_voices(payload: dict[str, Any]) -> Any:
+    """Push voices the owner has allowed to every location.
+
+    Controllers only: the gateway never talks to nodes, and each controller fans out
+    to its own. A location needs its **Hub** token for this, not its fleet token —
+    the Hub refuses these routes to a fleet token on purpose.
+    """
+    from . import voice_import
+
+    items = payload.get("items")
+    if not isinstance(items, list) or not items:
+        return _error(422, "expected {'items': [voice_id, ...]}")
+
+    unshared = [
+        v.get("display_name")
+        for v in voice_import.voices()
+        if str(v.get("id")) in {str(i) for i in items} and not v.get("permission_acknowledged")
+    ]
+    if unshared:
+        # The permission is the owner's to grant, per voice, and this is the one
+        # place it could be bypassed by asking to push something never allowed.
+        return _error(
+            403,
+            "These voices have not been allowed for cloning and distribution: "
+            + ", ".join(str(n) for n in unshared),
+        )
+    return voice_import.share([str(i) for i in items])
+
+
+@router.put("/api/fleet/controllers/{controller_id}/hub-token", dependencies=[Depends(require_admin)])
+def fleet_set_admin_token(controller_id: str, payload: dict[str, Any]) -> Any:
+    """Store a controller's Hub token, used only to administer shared voices."""
+    try:
+        row = fleet.set_admin_token(controller_id, str(payload.get("token") or ""))
+    except ValueError as exc:
+        return _error(400, str(exc))
+    if row is None:
+        return _error(404, "No such controller.")
+    return {"controller": row, "controllers": fleet.controllers()}
+
+
 @router.get("/api/voices/shared", dependencies=[Depends(require_admin)])
 def list_shared_voices() -> dict[str, Any]:
     """The voices that currently carry permission, and why any could not be pushed."""

@@ -67,11 +67,29 @@ def _fleet_definitions_by_id() -> dict[str, ProviderDefinition]:
             credential_fields=(
                 CredentialField(
                     key="hub_token",
-                    label="Hub service token",
+                    label="Fleet token",
                     env_var=f"FLEET_{controller_id.upper()}_HUB_TOKEN",
                     secret=True,
-                    placeholder="the controller's Hub service token",
-                    help_text="From the controller's Connections page.",
+                    placeholder="the controller's fleet token",
+                    help_text=(
+                        "From the controller's Connections page, the token labelled Fleet token. "
+                        "Enough for everything this gateway does with a location's work, and it "
+                        "cannot change that controller's settings or identity."
+                    ),
+                ),
+                CredentialField(
+                    key="admin_token",
+                    label="Hub token (shared voices only)",
+                    env_var=f"FLEET_{controller_id.upper()}_ADMIN_TOKEN",
+                    secret=True,
+                    required=False,
+                    placeholder="the controller's Hub token",
+                    help_text=(
+                        "The token Connections labels Hub token. Optional, and needed only to "
+                        "create, list or remove shared voices — the Hub refuses those routes to a "
+                        "fleet token on purpose, so a node's credential can never administer a "
+                        "controller. It is never used to run work or read fleet state."
+                    ),
                 ),
             ),
             # Opt-in, like every provider except the local Hub: adding a site

@@ -132,9 +132,51 @@ def _token_for(controller_id: str) -> str:
         return ""
 
 
-def _set_token(controller_id: str, token: str) -> None:
+def _set_token(controller_id: str, token: str, *, admin: bool = False) -> None:
     from .providers import registry
-    registry.credentials.set_values(provider_id_for(controller_id), {"hub_token": token})
+    registry.credentials.set_values(
+        provider_id_for(controller_id), {"admin_token" if admin else "hub_token": token}
+    )
+
+
+def admin_token_for(controller_id: str) -> str:
+    """A controller's Hub token, for the routes the fleet credential may not use.
+
+    Separate from `_token_for` on purpose. Shared-voice administration is refused to
+    a fleet credential by design — that separation is what stops a *sold node's*
+    credential from administering the controller that owns it — so the gateway holds
+    two values per controller and uses this one only for those routes. It is never
+    used to dispatch work or read fleet state.
+    """
+    if controller_id == LOCAL_ID:
+        try:
+            # This Mac's own Hub token, which is the operator token by definition
+            # because it is this machine's own Hub.
+            return hub_token() or ""
+        except Exception:  # noqa: BLE001
+            return ""
+    try:
+        from .providers import registry
+        return str(
+            registry.credentials.resolved(provider_id_for(controller_id)).get("admin_token") or ""
+        )
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def set_admin_token(controller_id: str, token: str) -> dict | None:
+    """Store a controller's Hub token for shared-voice administration."""
+    clean = (token or "").strip()
+    if not clean:
+        raise ValueError("A token is required.")
+    if controller_id == LOCAL_ID:
+        raise ValueError("This Mac administers its own Hub directly.")
+    row = next((r for r in _read() if r.get("id") == controller_id), None)
+    if row is None:
+        return None
+    _set_token(controller_id, clean, admin=True)
+    invalidate()
+    return _masked(row)
 
 
 def _clear_token(controller_id: str) -> None:

@@ -965,6 +965,37 @@ def main() -> int:
             check("an unknown gender becomes the receiver's 'n', not an empty string",
                   voice_import.push_fields({"gender": None})["gender"] == "n")
 
+            print("\n\033[1m17b. The wire shapes that fail silently when wrong\033[0m")
+            # Stored segments are {start, end, text} because the Hub's *receiver*
+            # uses that; the shared-voice *route* wants start_seconds/end_seconds.
+            # Sending the stored shape would be accepted and ignored — a voice that
+            # installs everywhere and clones nowhere.
+            converted = voice_import.shared_segments(
+                {"reference_segments": [{"start": 1.5, "end": 2.5, "text": "hello"}]}
+            )
+            check("segments are converted to the shape the shared-voice route wants",
+                  converted == [{"start_seconds": 1.5, "end_seconds": 2.5, "text": "hello"}],
+                  f"{converted}")
+            check("a segment with no text is dropped rather than sent blank",
+                  voice_import.shared_segments(
+                      {"reference_segments": [{"start": 0, "end": 1, "text": "  "}]}
+                  ) == [])
+            pushed = voice_import.push_fields({
+                "id": "voice-x", "display_name": "X", "language": "en", "gender": "n",
+                "audio_sha256": "d" * 64, "license": "self-owned",
+                "permission_acknowledged": True, "reference_transcript": "hi",
+                "reference_segments": [{"start": 0.0, "end": 1.0, "text": "hi"}],
+                "reference_path": str(library / "voice-morgan" / "reference.wav"),
+            })
+            check("the push sends the timings as JSON in the route's own key",
+                  json.loads(pushed["transcript_segments"])[0]["start_seconds"] == 0.0,
+                  pushed.get("transcript_segments"))
+            check("'pending' reads as a wait, never as a failure",
+                  voice_import.summarise_targets([
+                      {"status": "synced"}, {"status": "pending"}, {"status": "pending"},
+                  ]) == "1 installed, 2 will install when that Mac is next on",
+                  voice_import.summarise_targets([{"status": "pending"}]))
+
             print("\n\033[1m18. Permission to clone and distribute is deliberate\033[0m")
             # The owner has private voices. A default of "allowed" would distribute
             # them by accident, so adding a clip must never be mistaken for granting
@@ -1015,6 +1046,13 @@ def main() -> int:
                   not after_revoke.get("license"), f"license={after_revoke.get('license')}")
             check("and the voice is private again in the list",
                   req(client, "GET", "/admin/api/voices/shared").json()["voices"] == [])
+            # The permission is the owner's to grant. Share must not be a way round
+            # it — asking for a voice that was never allowed is refused, not queued.
+            refused = req(client, "POST", "/admin/api/voices/share",
+                          json={"items": ["voice-morgan"]})
+            check("a voice without permission cannot be shared, even when asked for",
+                  refused.status_code == 403 and "not been allowed" in refused.text,
+                  f"HTTP {refused.status_code} {refused.text[:140]}")
 
     finally:
         for proc in processes:

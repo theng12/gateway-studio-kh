@@ -205,13 +205,36 @@ success.
 - **Across locations, a voice is staged per job.** The gateway uploads the clip to
   whichever location runs the work, so every location can use every gateway voice
   with nothing pre-copied; the `audio_sha256` match skips that upload where the
-  controller already holds the clip. Pushing the whole library to every node so no
-  upload is ever needed is Studio Hub's `fleet-sync`, deliberately deferred.
+  controller already holds the clip.
+- **Sharing a voice to the fleet needs two different tokens, and that is the point.**
+  `POST /api/hub/shared-voices` (Hub 0.5.3+) creates a **Hub-owned** voice on a
+  controller, which then fans out to its own joined nodes. Those routes require the
+  controller's **Hub token** — a *fleet* token is refused on purpose, *"and that
+  difference is what keeps a sold node from being a sold controller."* So a
+  controller holds two stored values: `hub_token` (fleet credential: dispatch and
+  fleet reads) and `admin_token` (Hub token: shared voices only, never used to run
+  work). A location without an `admin_token` is skipped with that reason rather than
+  failing obscurely. The gateway pushes to **controllers only** — six requests, not
+  a hundred — because it never talks to nodes.
+- **The two wire shapes differ, and getting it wrong is silent.** Stored segments are
+  `{start, end, text}` (the Hub *receiver*'s shape); the shared-voice *route* wants
+  `{start_seconds, end_seconds, text}`, sent as `transcript_segments` JSON.
+  `voice_import.shared_segments` converts, and a transcript without timings is
+  refused 400 by the Hub — deliberately, because the alternative is a hundred nodes
+  installing a voice that then refuses to clone with it.
+- **`pending` is a wait, not a failure.** A node that is switched off reports
+  `pending` and the controller's reconciler retries every 30 s;
+  `voice_import.summarise_targets` says *"will install when that Mac is next on"*,
+  because calling it an error would send someone to a site that was never broken.
+- **The id is derived from the bytes**, `audio_sha256[:12]` — 12 lowercase hex, which
+  the Hub requires and keeps, so one clip carries one id across all six controllers
+  instead of one per controller. Bytes decide identity: a re-push refreshes, and an
+  id already holding different audio is a 409.
 
 ## Verification
 
 ```bash
-.venv/bin/python tests/test_e2e.py              # 161 checks, isolated mock upstream
+.venv/bin/python tests/test_e2e.py              # 166 checks, isolated mock upstream
 .venv/bin/python tests/test_fleet_standalone.py # 40 checks, real Hub(s) as locations
 .venv/bin/python tests/test_ui.py               # 87 checks, drives the real app
 ```
