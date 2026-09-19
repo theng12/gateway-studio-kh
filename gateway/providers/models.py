@@ -25,7 +25,6 @@ from ..config import MODEL_CACHE_PATH, write_secret
 from .credentials import CredentialStore
 from .definitions import (
     DISCOVERY_STATIC,
-    IMPLEMENTED_KINDS,
     PROVIDERS_BY_ID,
     ProviderDefinition,
 )
@@ -197,12 +196,20 @@ class ModelInventory:
         Providers whose kind has no adapter are skipped entirely. They remain
         discoverable and configurable — the point is that a model which would
         fail the moment Story Studio used it must never appear in the picker.
+
+        So is a modality the adapter does not serve. "There is an adapter for
+        this kind" was the only question asked here, and it is not the same one:
+        Google's adapter forwards everything to the OpenAI-compatible shim, which
+        serves four of the six modalities Google declares, so a discovered video
+        row published and then failed on use.
         """
+        from ..adapters import serves
+
         output: list[tuple[ProviderDefinition, dict[str, Any]]] = []
         for provider_id, definition in self._every_definition():
             if modality not in definition.modalities:
                 continue
-            if definition.kind not in IMPLEMENTED_KINDS:
+            if not serves(definition, modality):
                 continue
             if not self.credentials.is_enabled(provider_id):
                 continue
@@ -215,7 +222,10 @@ class ModelInventory:
 
     # -- writes -----------------------------------------------------------
     def set_model_enabled(self, provider_id: str, model_id: str, enabled: bool) -> None:
-        if provider_id not in PROVIDERS_BY_ID:
+        # Same reason as `add_user_model`: the static map does not hold the
+        # locations derived from the fleet roster, and a location's models are
+        # the ones most likely to be switched on one at a time.
+        if self._definition(provider_id) is None:
             raise KeyError(provider_id)
         bucket = self._data["enabled"].setdefault(provider_id, {})
         bucket[model_id] = bool(enabled)
@@ -231,10 +241,21 @@ class ModelInventory:
     def add_user_model(
         self, provider_id: str, model_id: str, display_name: str, modality: str
     ) -> None:
-        """Add a model a provider released but discovery cannot see."""
-        if provider_id not in PROVIDERS_BY_ID:
+        """Add a model a provider released but discovery cannot see.
+
+        Resolved through `_definition`, **not** the static map. A Studio Hub
+        location is a provider like any other, but it is derived at runtime from
+        the fleet roster and so is never in `PROVIDERS_BY_ID`. The admin route
+        checks the id with `registry.definition()` — which *does* know locations —
+        and then this rejected the very id that had just been accepted, raising a
+        bare `KeyError` that no `except ValueError` caught. Adding a model by hand
+        to one of the owner's locations answered **500**, which is the failure
+        mode this codebase has paid for four times already.
+        """
+        definition = self._definition(provider_id)
+        if definition is None:
             raise KeyError(provider_id)
-        if modality not in PROVIDERS_BY_ID[provider_id].modalities:
+        if modality not in definition.modalities:
             raise ValueError(
                 f"'{modality}' is not a modality of provider '{provider_id}'"
             )
@@ -258,6 +279,40 @@ class ModelInventory:
         ]
         (self._data["enabled"].get(provider_id) or {}).pop(model_id, None)
         self._save()
+
+    def cached_provider_ids(self) -> list[str]:
+        """Every provider id the cache holds anything for."""
+        return sorted(
+            set(self._data.get("providers", {}))
+            | set(self._data.get("enabled", {}))
+            | set(self._data.get("user", {}))
+        )
+
+    def forget_provider(self, provider_id: str) -> int:
+        """Drop every trace of a provider that no longer exists.
+
+        Called when a Studio Hub location is removed, so this is not tidiness:
+        the cache is what a rediscovered provider is seeded from. A location that
+        went away left its whole model list and every enable/disable decision
+        behind, and `enabled` is the owner's own answer to "should this be offered
+        to Story Studio?" — carrying that answer over to a *different* location
+        that happened to reuse the id would publish models nobody approved. The
+        credential store already forgets the token for exactly this reason; the
+        models and the decisions have to go with it.
+
+        Returns how many cached models were dropped, and never raises: this runs
+        on the removal path, and failing to tidy up must not block the removal.
+        """
+        dropped = 0
+        cached = self._data.get("providers", {}).get(provider_id)
+        if isinstance(cached, dict):
+            models = cached.get("models")
+            dropped = len(models) if isinstance(models, list) else 0
+        self._data.get("providers", {}).pop(provider_id, None)
+        self._data.get("enabled", {}).pop(provider_id, None)
+        self._data.get("user", {}).pop(provider_id, None)
+        self._save()
+        return dropped
 
     # -- projection -------------------------------------------------------
     def summary(self) -> dict[str, Any]:

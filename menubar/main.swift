@@ -347,6 +347,13 @@ final class GatewayController {
             guard let self else { return }
             if alive {
                 self.isStarting = false
+                // Adopting a gateway that is still shutting down used to leave
+                // `stopping == true`, which is only ever cleared inside `spawn`.
+                // When that process then died, the health poll refused to restart
+                // it (`guard !stopping`) and the gateway stayed down with the menu
+                // reading "Stopped" — after Settings → Save had said it was
+                // restarting. Adopting means we are not stopping anything.
+                self.stopping = false
                 self.publish(.starting)
                 self.startHealthPolling()
             } else {
@@ -438,7 +445,19 @@ final class GatewayController {
             // Unexpected exit. This is a background service: bring it back with
             // exponential backoff rather than leaving Story Studio with no
             // endpoint and no explanation.
+            //
+            // Bounded, like the probe path (`restartAttempts < 8`). This path had
+            // no cap at all, so a gateway that could not start — most often
+            // because something else already held the port — was respawned every
+            // 30 seconds forever, writing a failure into the log each time.
             self.restartAttempts += 1
+            if self.restartAttempts > 8 {
+                self.publish(.failed(
+                    "Gateway exited (code \(finished.terminationStatus)) and has not come back "
+                    + "after \(self.restartAttempts - 1) attempts. Check the log, then Start Gateway."
+                ))
+                return
+            }
             let delay = min(pow(2.0, Double(self.restartAttempts)), 30.0)
             self.publish(.failed(
                 "Gateway exited (code \(finished.terminationStatus)); restarting in \(Int(delay))s"

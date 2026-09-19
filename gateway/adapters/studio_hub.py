@@ -300,7 +300,17 @@ def _generate_image_or_voice(request: BackendRequest) -> BackendResult:
     headers = _headers(request)
     modality = _HUB_MODALITY[request.modality]
 
-    item: dict[str, Any] = {"params": request.params.get("params") or {}}
+    # A caller-supplied `params` is passed through to the Hub, but it has to be an
+    # object: `request.params.get("params")` could be a string or a list, and the
+    # very next line assigns into it, so a malformed field became a `TypeError`
+    # that settled the job as an internal-looking failure instead of saying what
+    # was wrong.
+    supplied = request.params.get("params")
+    if supplied is not None and not isinstance(supplied, dict):
+        raise BackendError(
+            "'params' must be an object of Hub parameters.", code="INVALID_PARAMS"
+        )
+    item: dict[str, Any] = {"params": dict(supplied or {})}
     if request.modality == "image":
         item["prompt"] = str(request.params.get("prompt") or "")
         for key in ("seed", "width", "height", "aspect_ratio", "resolution"):

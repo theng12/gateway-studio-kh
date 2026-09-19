@@ -92,7 +92,11 @@ final class JobsSection: NSObject, AppSection, NSTableViewDataSource, NSTableVie
         root.addArrangedSubview(scroll)
         NSLayoutConstraint.activate([
             scroll.widthAnchor.constraint(equalTo: root.widthAnchor, constant: -56),
-            scroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 260),
+            // Low on purpose. This was 260 — a *required* height, which is the
+            // one thing a page must never propagate outwards: AppKit satisfies it
+            // by growing the window. A table is meant to absorb spare space, not
+            // to demand it, so the floor is only here to stop it collapsing.
+            scroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 140),
         ])
 
         // ---- detail
@@ -101,6 +105,13 @@ final class JobsSection: NSObject, AppSection, NSTableViewDataSource, NSTableVie
         detailLabel.textColor = .secondaryLabelColor
         detailLabel.isSelectable = true
         detailLabel.translatesAutoresizingMaskIntoConstraints = false
+        // A wrapping label's required height is its text, and `error_detail` is
+        // arbitrarily long. Without a cap, selecting one failed job grew the
+        // window — the same defect as the page-level one, arriving through a
+        // single label. Four lines is enough to read a failure and it stays
+        // selectable in full.
+        detailLabel.maximumNumberOfLines = 4
+        detailLabel.lineBreakMode = .byTruncatingTail
         root.addArrangedSubview(detailLabel)
         detailLabel.widthAnchor.constraint(equalTo: root.widthAnchor, constant: -56).isActive = true
 

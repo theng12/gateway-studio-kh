@@ -86,12 +86,26 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
             let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier(identifier))
             column.title = title
             column.width = CGFloat(width)
-            column.minWidth = 60
+            // The Actions column holds four buttons that are ~277pt wide together.
+            // At `minWidth = 60` it could be squeezed to 60, and because AppKit's
+            // default autoresizing style makes the *last* column absorb the
+            // difference, "Remove" was pushed outside the clip view and could
+            // neither be seen nor clicked at the default window width — the buttons
+            // were live and unreachable, which is the same defect as wiring them to
+            // nothing. A measured floor plus a horizontal scroller means they can
+            // always be reached, at any window size.
+            column.minWidth = identifier == "lactions" ? 285 : 60
             locationTable.addTableColumn(column)
         }
+        locationTable.columnAutoresizingStyle = .noColumnAutoresizing
         let locationScroll = NSScrollView()
         locationScroll.documentView = locationTable
         locationScroll.hasVerticalScroller = true
+        // Columns keep their widths and the pane scrolls, rather than the last
+        // column being squeezed out of reach. The table is wider than the pane at
+        // anything under ~1200pt, and unreachable controls are worse than a
+        // scrollbar.
+        locationScroll.hasHorizontalScroller = true
         locationScroll.borderType = .bezelBorder
         locationScroll.translatesAutoresizingMaskIntoConstraints = false
         root.addArrangedSubview(PageKit.sectionTitle("Locations"))
@@ -158,9 +172,11 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
             column.minWidth = 60
             runningTable.addTableColumn(column)
         }
+        runningTable.columnAutoresizingStyle = .noColumnAutoresizing
         let runningScroll = NSScrollView()
         runningScroll.documentView = runningTable
         runningScroll.hasVerticalScroller = true
+        runningScroll.hasHorizontalScroller = true
         runningScroll.borderType = .bezelBorder
         runningScroll.translatesAutoresizingMaskIntoConstraints = false
         root.addArrangedSubview(runningScroll)
@@ -174,7 +190,7 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
             "Another Mac running Studio Hub. Standalone or controller, both work. "
             + "A new machine can be added while it is still standalone and keep working "
             + "after it is promoted to a controller; nothing here depends on the role. "
-            + "Use its address and its **fleet credential** — that is sufficient for "
+            + "Use its address and its fleet credential — that is sufficient for "
             + "everything this gateway does, and it cannot change the controller's "
             + "settings or identity the way its Hub service token can. A controller reports its own "
             + "nodes — this gateway never contacts them directly. Every location below can be "
@@ -256,8 +272,17 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
             switch result {
             case .failure(let error):
                 self.summaryLabel.stringValue = "Could not read the fleet — \(error)"
+                // Clear *every* table, not just the machines one. The Locations
+                // and Running-now tables kept their previous contents, so an error
+                // banner sat above rows still claiming a reachability that had not
+                // been measured this time. Stale numbers presented as current are
+                // the same failure as inventing them.
                 self.machines = []
+                self.locations = []
+                self.runningRows = []
                 self.table.reloadData()
+                self.runningTable.reloadData()
+                self.statusLabel.stringValue = ""
             case .success(let payload):
                 self.render(payload)
             }

@@ -303,12 +303,22 @@ async function bulk(enabled) {
   const n = state.meta.matched;
   if (!n) return;
   const what = [f.q ? `matching “${f.q}”` : '', f.modality ? `in ${f.modality}` : '',
-                f.provider_id ? `from ${f.provider_id}` : ''].filter(Boolean).join(' ');
-  if (!confirm(`${enabled ? 'Enable' : 'Disable'} all ${n} models ${what || '(everything)'}?`)) return;
+                f.provider_id ? `from ${f.provider_id}` : '',
+                f.only_enabled ? 'that are enabled right now' : ''].filter(Boolean).join(' ');
+  // The server refuses a bulk action that names nothing, so an unfiltered click
+  // has to say "all of them" out loud. Otherwise an accidental click with the
+  // filters cleared would be the same request as a deliberate one, and that is
+  // exactly how the whole catalogue got disabled once.
+  const body = { ...f, enabled };
+  if (!what) body.scope = 'all';
+  const sentence = what
+    ? `${enabled ? 'Enable' : 'Disable'} all ${n} models ${what}?`
+    : `${enabled ? 'Enable' : 'Disable'} ALL ${n} models — every model in the catalogue, with no filter?`;
+  if (!confirm(sentence)) return;
   try {
     const r = await api('/models/bulk', {
       method: 'POST', headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({ ...f, enabled })
+      body: JSON.stringify(body)
     });
     await loadModels();
     await loadStatus();

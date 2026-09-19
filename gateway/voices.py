@@ -292,9 +292,33 @@ def _local_voices() -> list[Voice]:
     return voices
 
 
+def _studio_hub_voices(definition: ProviderDefinition, _values: dict[str, str]) -> list[Voice]:
+    """The gateway's own voice catalogue — published **once**, not once per location.
+
+    Every Studio Hub location used to run `_local_voices()`, which reads *this Mac's*
+    catalogue and ignores the definition entirely. Two things were wrong with that:
+
+      * with N locations every voice appeared N times — three junk locations turned
+        ten voices into thirty identical rows, and the owner saw it;
+      * a remote controller's own library was never read at all, so a location with
+        voices the gateway had never heard of contributed nothing while claiming to
+        contribute this Mac's.
+
+    The handoff with the Studio Hub session settles which behaviour is wanted:
+    *"Gateway owns the voice list, each node owns its library."* The list is the
+    gateway's, so it is published by the gateway alone. A location's own library is
+    reached by staging a reference to it, not by listing it here.
+    """
+    from .fleet import LOCAL_ID, provider_id_for
+
+    if definition.id != provider_id_for(LOCAL_ID):
+        return []
+    return _local_voices()
+
+
 _DISCOVERY = {
     KIND_ELEVENLABS: _elevenlabs_account,
-    KIND_STUDIO_HUB: lambda d, v: _local_voices(),
+    KIND_STUDIO_HUB: _studio_hub_voices,
 }
 
 
@@ -502,7 +526,13 @@ class VoiceRegistry:
             if provider_id and definition.id != provider_id:
                 continue
             if definition.kind == KIND_STUDIO_HUB:
-                out.extend(_local_voices())
+                # Through the same function `discover()` uses, not `_local_voices()`
+                # directly. Calling it here was the actual site of the multiplication
+                # bug: this path ignored the definition, so every added location
+                # appended the whole local catalogue again — ten voices became twenty,
+                # then thirty — and it bypassed `discover()`, so a fix made there
+                # changed nothing the owner could see.
+                out.extend(_studio_hub_voices(definition, {}))
                 continue
             if not registry.credentials.is_configured(definition.id):
                 continue
@@ -748,7 +778,18 @@ def voices_for_model(compound_model_id: str) -> list[dict[str, Any]]:
         the match is on the voice's own `tts_model_id`;
       * a **provider** voice works with every TTS model that provider offers, so
         the match is on the provider alone.
+
+    **The provider id is matched in both namespaces.** The catalogue publishes
+    every Studio Hub row under the maker (`studio-hub::<model>`) while a local
+    voice is minted under the concrete provider (`studio-hub-local`), so an
+    exact string comparison silently matched nothing: the narration voice picker
+    for the local lane returned an empty list, and empty reads as "no voices"
+    rather than "the namespaces disagree". Both spellings are accepted because
+    both are really sent — a saved Story Studio preset still holds the pre-merge
+    id, which is exactly why every row also publishes `legacy_ids`.
     """
+    from .fleet import publish_id
+
     provider_id, _, raw_model = compound_model_id.partition(ID_SEPARATOR)
     if not provider_id:
         return [story_row(v) for v in voice_registry().enabled_voices()]
@@ -756,7 +797,7 @@ def voices_for_model(compound_model_id: str) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     needle = raw_model.lower()
     for voice in voice_registry().enabled_voices():
-        if voice.provider_id != provider_id:
+        if provider_id not in {voice.provider_id, publish_id(voice.provider_id)}:
             continue
         local_model = str((voice.raw or {}).get("tts_model_id") or "")
         if voice.source == SOURCE_LOCAL and local_model:

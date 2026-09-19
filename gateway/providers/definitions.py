@@ -21,6 +21,7 @@ Design rules:
 from __future__ import annotations
 
 import json
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 
 from ..config import CUSTOM_PROVIDERS_PATH
@@ -545,5 +546,17 @@ for _custom in _load_custom_providers():
 ALL_PROVIDER_DEFINITIONS: tuple[ProviderDefinition, ...] = tuple(PROVIDERS_BY_ID.values())
 
 
-def providers_for_modality(modality: str) -> tuple[ProviderDefinition, ...]:
-    return tuple(p for p in ALL_PROVIDER_DEFINITIONS if modality in p.modalities)
+def providers_for_modality(
+    modality: str, definitions: Iterable[ProviderDefinition] | None = None
+) -> tuple[ProviderDefinition, ...]:
+    """Built-in providers offering a modality, or the ones you pass in.
+
+    **Pass `definitions`.** The default is the static built-in list, which cannot
+    see a Studio Hub location added on the Fleet page — four separate bugs in this
+    codebase came from iterating the static map and silently omitting derived
+    providers, and this helper had exactly that shape with no caller to reveal it.
+    Callers that mean "every provider" must pass `registry.definitions()`; the
+    default exists only for code that genuinely means "built-ins".
+    """
+    source = ALL_PROVIDER_DEFINITIONS if definitions is None else tuple(definitions)
+    return tuple(p for p in source if modality in p.modalities)

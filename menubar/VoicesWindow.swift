@@ -123,7 +123,13 @@ final class VoicesSection: NSObject, AppSection, NSTableViewDataSource, NSTableV
         root.addArrangedSubview(scroll)
         NSLayoutConstraint.activate([
             scroll.widthAnchor.constraint(equalTo: root.widthAnchor, constant: -56),
-            scroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 320),
+            // A *required* 320pt floor was the whole reason this page could grow
+            // the window: the natural height came to ~630pt against ~532pt of
+            // content at the 860x560 minimum, and AppKit satisfies a required
+            // height by enlarging the window — measured at 1162pt on the Fleet
+            // page once already. The table is the thing that should absorb spare
+            // space, so its floor is only there to stop it collapsing.
+            scroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 140),
         ])
 
         let actions = NSStackView()
@@ -666,10 +672,24 @@ final class VoicesSection: NSObject, AppSection, NSTableViewDataSource, NSTableV
         guard sender.tag < rows.count, let id = rows[sender.tag]["id"] as? String else { return }
         let enabled = sender.state == .on
         rows[sender.tag]["enabled"] = enabled
-        // Deliberately no reload: a full refresh would rebuild the table and
-        // fight the checkbox the user just clicked. The next reload shows the
-        // corrected totals.
-        GatewayAPI.post("/admin/api/voices/enabled", body: ["items": [id], "enabled": enabled])
+        let index = sender.tag
+        // Deliberately no reload on success: a full refresh would rebuild the
+        // table and fight the checkbox the user just clicked. The next reload
+        // shows the corrected totals.
+        //
+        // But a *failed* write has to be undone. The checkbox was flipped before
+        // the request went out and the result was discarded, so a refused change
+        // left the box showing a state the gateway never accepted — and this is the
+        // one control whose whole meaning is "is this voice offered?".
+        GatewayAPI.post("/admin/api/voices/enabled", body: ["items": [id], "enabled": enabled]) {
+            result in
+            if case .failure(let error) = result {
+                self.rows[index]["enabled"] = !enabled
+                sender.state = enabled ? .off : .on
+                self.summaryLabel.stringValue = "Could not change that voice — \(error.localizedDescription)"
+                self.summaryLabel.textColor = .systemRed
+            }
+        }
     }
 
     @objc private func playRow(_ sender: NSButton) {

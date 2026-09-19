@@ -273,9 +273,9 @@ success.
 ## Verification
 
 ```bash
-.venv/bin/python tests/test_e2e.py              # 179 checks, isolated mock upstream
-.venv/bin/python tests/test_fleet_standalone.py # 40 checks, real Hub(s) as locations
-.venv/bin/python tests/test_ui.py               # 88 checks, drives the real app
+.venv/bin/python tests/test_e2e.py              # 235 checks, isolated mock upstream
+.venv/bin/python tests/test_fleet_standalone.py # 41 checks, real Hub(s) as locations
+.venv/bin/python tests/test_ui.py               # 97 checks, drives the real app
 ```
 
 `test_e2e.py` is fully isolated (`GATEWAY_DATA`/`GATEWAY_APP_SUPPORT` to a temp
@@ -318,10 +318,20 @@ to `/Applications/gateway-kh.app`. **"It builds" is not "it works."**
   1162pt on a 1080pt screen, putting its bottom edge and resize corner off-screen
   where they could not be reached. A page whose content has a required height
   (tables with minimums, forms, dashboards) wraps its body in an `NSScrollView`
-  with a `FlippedView` document, as `FleetSection` and `OverviewSection` do. Pages
-  that fill the pane (Jobs, Voices, Providers) need no scroller, because a table
-  with a flexible height has nothing to propagate. Verify with: force the window
-  to 700pt, visit every section, and confirm the height does not change.
+  with a `FlippedView` document, as `FleetSection`, `OverviewSection` and
+  `SettingsSection` do. Pages that fill the pane (Jobs, Voices, Providers) need no
+  scroller, because a table with a flexible height has nothing to propagate — but
+  that only holds while the table's minimum really is *small*. Voices declared
+  `heightAnchor >= 320` and Jobs `>= 260`: a **required** floor is exactly the
+  thing that propagates, so both could still grow the window at the 860x560
+  minimum, and Jobs' wrapping detail label could grow it from a single long
+  `error_detail`. Keep a table's floor low (140 is enough to stop it collapsing)
+  and cap any wrapping label with `maximumNumberOfLines`. Settings had the mirror
+  -image problem: `bottomAnchor <= host` did stop the growth, and left the surplus
+  with nowhere to go, so its bottom rows were clipped with no scrollbar — a form
+  is a scroller page. **This is tested now**: `test_ui.py` forces the window to
+  700pt, visits every section, and asserts the size does not change, then puts the
+  owner's size back. Do not rely on the manual procedure alone; it is automated.
 - Mark deliberate simplifications with a `ponytail:` comment naming **the ceiling
   and the upgrade path** — a curated exception list, a flat default, a fixed pool
   size. Unmarked, the next reader cannot tell a considered trade-off from an

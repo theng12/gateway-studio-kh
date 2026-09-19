@@ -107,10 +107,30 @@ def main() -> int:
 
     # The owner's curated limits, for lanes that publish none. Placed before the
     # gateway starts, because the file is read at catalogue build.
+    #
+    # Three entries, and each one is a different half of the rule:
+    #   * `limits-probe` is not a discovered model at all — it is the fixture for
+    #     the pure `limits.gap()` checks;
+    #   * `mock-chat-plain` is a real row whose provider states nothing, so the
+    #     curated value is the one that must appear in the catalogue;
+    #   * `mock-chat-1` states its own values, and the file deliberately
+    #     contradicts them, so that "a provider's value always wins" is proven
+    #     through the catalogue rather than only inside `gap()`.
     (tmp / "model-limits.local.json").write_text(json.dumps({
-        "models": {"mock-remote::limits-probe": {
-            "context_window_tokens": 1000000, "max_output_tokens": 128000,
-        }},
+        "models": {
+            "mock-remote::limits-probe": {
+                "context_window_tokens": 1000000, "max_output_tokens": 128000,
+            },
+            "mock-remote::mock-chat-plain": {
+                "context_window_tokens": 65536, "max_output_tokens": 4096,
+            },
+            "mock-remote::mock-chat-1": {
+                "context_window_tokens": 999999, "max_output_tokens": 999999,
+            },
+            "mock-remote::mock-tts-plain": {
+                "maximum_input_characters": 12345,
+            },
+        },
     }))
 
     # A custom provider definition pointing at the mock. This also exercises the
@@ -163,6 +183,26 @@ def main() -> int:
                     {"id": "speech-2.8-turbo", "display_name": "MM Speech", "modality": "tts"},
                 ],
             },
+            {
+                # Google's adapter is the OpenAI-compatible shim, which serves
+                # chat/image/tts/transcription — and Google *declares* six
+                # modalities. This provider declares a lane the adapter cannot
+                # serve so the gate is proven on the catalogue rather than only on
+                # the mapping table: the chat model must publish and the video
+                # model, with nothing behind it, must not.
+                "id": "mock-google",
+                "display_name": "Mock Google",
+                "category": "multi",
+                "kind": "google",
+                "base_url": f"http://127.0.0.1:{MOCK_PORT}",
+                "modalities": ["chat", "video"],
+                "discovery": "static",
+                "description": "Test provider.",
+                "static_models": [
+                    {"id": "gemini-2.5-pro", "display_name": "Gemini Pro", "modality": "chat"},
+                    {"id": "veo-3", "display_name": "Veo 3", "modality": "video"},
+                ],
+            },
         ]
     }))
 
@@ -213,8 +253,17 @@ def main() -> int:
             print("\n\033[1m1. Bootstrap and provider registry\033[0m")
             health = httpx.get(f"{BASE}/health").json()
             check("health ok", health["status"] == "ok")
-            check("18 built-in providers + 3 custom", health["providers"]["total"] == 21,
+            check("18 built-in providers + 4 custom", health["providers"]["total"] == 22,
                   f"got {health['providers']['total']}")
+            # A kind having an adapter is not the same claim as that adapter
+            # serving every modality the provider declares, so this asks the
+            # per-provider question too: `mock-google` declares video and the
+            # adapter serves none, and the console is told which lanes those are.
+            _providers = httpx.get(f"{BASE}/admin/api/providers", headers=AUTH).json()["providers"]
+            _google = next((p for p in _providers if p["id"] == "mock-google"), None)
+            check("a provider declaring an unservable lane is reported as having one",
+                  _google is not None and _google["unserved_modalities"] == ["video"],
+                  f"{_google and _google.get('unserved_modalities')}")
             check("every provider has a working adapter",
                   all(p["generation_supported"] for p in
                       httpx.get(f"{BASE}/admin/api/providers", headers=AUTH).json()["providers"]))
@@ -238,7 +287,7 @@ def main() -> int:
 
             models = httpx.get(f"{BASE}/admin/api/providers/mock-remote/models", headers=AUTH).json()
             found = {m["model_id"]: m for m in models["models"]}
-            check("discovery found all 6 mock models", len(found) == 6, f"got {sorted(found)}")
+            check("discovery found every mock model", len(found) == 9, f"got {sorted(found)}")
             check("modality inference: chat", found.get("mock-chat-1", {}).get("modality") == "chat")
             check("modality inference: image", found.get("mock-image-1", {}).get("modality") == "image")
             check("modality inference: tts", found.get("mock-tts-1", {}).get("modality") == "tts")
@@ -279,7 +328,15 @@ def main() -> int:
                   {"stale", "ageMs", "loadedAt"} <= set(cat["freshness"]))
             check("freshness not stale", cat["freshness"]["stale"] is False)
             check("freshness ageMs credible", cat["freshness"]["ageMs"] < 30 * 60 * 1000)
-            row = cat["models"][0]
+            # Keyed by id, not by position. `cat["models"][0]` was the whole
+            # "row contract" section, and every claim in it was about whichever
+            # row happened to sort first — add a model and the checks silently
+            # start describing a different one.
+            by_id = {r["id"]: r for r in cat["models"]}
+            positioned = by_id.get("mock-remote::mock-chat-1")
+            check("the row the contract is checked against is present",
+                  positioned is not None, f"{sorted(by_id)[:6]}")
+            row = positioned or cat["models"][0]
             check("row publishes namespaced id", "::" in row["id"], row["id"])
             check("row publishes zero price fields",
                   row["input_credits_per_million_tokens"] == 0
@@ -287,9 +344,16 @@ def main() -> int:
                   and row["minimum_credits"] == 0)
             check("row publishes price_version + cost_tier",
                   bool(row["price_version"]) and bool(row["cost_tier"]))
-            check("row publishes identity aliases",
-                  row["customer_handle"] == row["id"] and row["legacy_ids"] == [])
-            check("row publishes context window from provider", row["context_window_tokens"] == 32000)
+            check("every row's customer_handle is its own id",
+                  all(r["customer_handle"] == r["id"] for r in cat["models"]),
+                  f"{[r['id'] for r in cat['models'] if r['customer_handle'] != r['id']][:3]}")
+            check("a cloud vendor row carries no aliases",
+                  row["legacy_ids"] == [], f"{row['legacy_ids']}")
+            check("row publishes context window from provider",
+                  row["context_window_tokens"] == 32000, f"{row['context_window_tokens']}")
+            check("and a second model publishes its own, different window",
+                  by_id["mock-remote::mock-chat-2"]["context_window_tokens"] == 128000,
+                  f"{by_id.get('mock-remote::mock-chat-2', {}).get('context_window_tokens')}")
 
             # A staged voice reference belongs to the controller that minted it.
             # Keyed by voice alone, a reference staged on one location would be
@@ -327,6 +391,19 @@ def main() -> int:
                   limits_module.gap("max_output_tokens", None, "nobody", "nothing") is None)
             check("a provider's own value is not overridden by the curated file",
                   row["context_window_tokens"] == 32000, f"{row['context_window_tokens']}")
+            # ...and the file still does its job where the provider said nothing.
+            # Both halves have to be checked through the catalogue: the pure
+            # `gap()` checks above prove the function, not that the catalogue
+            # consults it, and the old version of this check pointed at a model
+            # that was not in the curated file at all, so it proved neither.
+            plain = by_id.get("mock-remote::mock-chat-plain")
+            check("the curated file fills a gap the provider left",
+                  plain is not None and plain["context_window_tokens"] == 65536,
+                  f"{plain and plain.get('context_window_tokens')}")
+            bare = by_id.get("mock-remote::mock-chat-bare")
+            check("a model neither source knows stays unknown, not zero",
+                  bare is not None and bare["context_window_tokens"] is None,
+                  f"{bare and bare.get('context_window_tokens')}")
             # A published 0 is a claim that the model accepts nothing, which is a
             # different statement from "the provider did not say". Story Studio's
             # own rule forbids the two from sharing a value, so an unpublished
@@ -336,29 +413,56 @@ def main() -> int:
             # models accept image input — so the catalogue claimed no model had
             # vision and Story Studio hid the control that uses it. The two fields
             # must now agree with each other and with the provider's own answer.
+            #
+            # This has to require a *stated* corpus. With every model silent, both
+            # lists were empty and passed — and the hardcoding it exists to catch
+            # would have published `["text"]`/`false`, which agree with each other,
+            # so it would have passed then too.
+            stated = [r for r in cat["models"] if isinstance(r.get("input_modalities"), list)]
+            check("some models state their input modalities, so the check means something",
+                  len(stated) >= 2, f"{[r['id'] for r in stated]}")
             disagreed = [
-                r["id"] for r in cat["models"]
-                if isinstance(r.get("input_modalities"), list)
-                and r.get("supports_vision") != ("image" in r["input_modalities"])
+                r["id"] for r in stated
+                if r.get("supports_vision") != ("image" in r["input_modalities"])
             ]
             check("vision support agrees with the published input modalities",
-                  not disagreed, f"{disagreed[:3]}")
+                  len(stated) >= 2 and not disagreed, f"{disagreed[:3]}")
+            check("a model the provider says takes images is published with vision",
+                  any(r.get("supports_vision") is True for r in stated),
+                  f"{[(r['id'], r.get('supports_vision')) for r in stated]}")
+            check("and a model it does not is published without",
+                  any(r.get("supports_vision") is False for r in stated),
+                  f"{[(r['id'], r.get('supports_vision')) for r in stated]}")
             unstated = [
                 r["id"] for r in cat["models"]
                 if r.get("input_modalities") is None and r.get("supports_vision") is not None
             ]
             check("vision is null when the provider states no modalities",
-                  not unstated, f"{unstated[:3]}")
+                  unstated == [], f"{unstated[:3]}")
+            check("and there really is a model that states none",
+                  any(r.get("input_modalities") is None for r in cat["models"]))
 
             zero_ctx = [r["id"] for r in cat["models"] if r.get("context_window_tokens") == 0]
             check("no chat row publishes a zero context window", not zero_ctx, f"{zero_ctx[:3]}")
             # The output allowance was hardcoded to one number for every model on
             # every provider, so a model allowing 131,072 was described as 8,192.
             # A single shared value across a real catalogue is that bug returning.
-            allowances = {r.get("max_output_tokens") for r in cat["models"]}
+            #
+            # It has to be judged on the rows that *state* one, and it has to
+            # require more than one of them: `{None}` has exactly one distinct
+            # value, so the old check passed on a catalogue where nobody stated
+            # anything at all.
+            allow_stated = [
+                r for r in cat["models"] if isinstance(r.get("max_output_tokens"), int)
+            ]
+            allowances = {r["max_output_tokens"] for r in allow_stated}
+            check("several models state their own output allowance",
+                  len(allow_stated) >= 2, f"{[(r['id'], r['max_output_tokens']) for r in allow_stated]}")
             check("output allowance is per model, not one shared constant",
-                  len(allowances - {None}) != 1 or len(cat["models"]) == 1,
-                  f"distinct values: {sorted(v for v in allowances if v)[:5]}")
+                  len(allowances) > 1, f"distinct values: {sorted(allowances)}")
+            check("and a model that states none publishes null rather than a constant",
+                  any(r.get("max_output_tokens") is None for r in cat["models"]),
+                  f"{[(r['id'], r.get('max_output_tokens')) for r in cat['models']]}")
 
             # Every model kind publishes the serving provider under the same
             # name. Story Studio's handoff states that contract, and it is a
@@ -473,6 +577,22 @@ def main() -> int:
             # line, so a stringified dict both breaks the type and shows up as
             # garbage. ElevenLabs publishes objects; 32 of them were flattened
             # with `str()` into "{\'language_id\': \'en\', ...}".
+            #
+            # Driven through the converter directly, because the corpus that
+            # exposed this bug is an ElevenLabs account that is not configured
+            # here. The old version of this check read `.get("supported_languages")`
+            # from whatever rows happened to exist — all of which published an
+            # empty list, so it passed without looking at a language at all.
+            from gateway.catalog import _language_codes
+            check("a provider's language objects become plain codes",
+                  _language_codes([{"language_id": "en", "name": "English"},
+                                   {"language_id": "af", "name": "Afrikaans"}]) == ["en", "af"],
+                  f"{_language_codes([{'language_id': 'en', 'name': 'English'}])}")
+            check("a provider's bare language strings work too",
+                  _language_codes(["en", "ja"]) == ["en", "ja"])
+            check("and no code is ever a Python repr",
+                  not any("{" in c or "'" in c
+                          for c in _language_codes([{"language_id": "en"}, {"code": "de"}])))
             tts_rows_now = req(client, "GET", "/v1/tts/models").json().get("models", [])
             bad_langs = [
                 entry
@@ -480,29 +600,62 @@ def main() -> int:
                 for entry in (r.get("supported_languages") or [])
                 if not isinstance(entry, str) or "{" in entry or "'" in entry
             ]
-            check("tts languages are plain codes, never stringified objects",
+            check("and no live row carries a stringified language",
                   not bad_langs, f"{bad_langs[:2]}")
 
             # The per-request character limit is per model. It was one invented
             # number (40,000) for every TTS model, which over-promised the local
             # lane and Fish by eight times — a request that long simply fails.
-            tts_limits = {r.get("maximum_input_characters") for r in tts_rows_now}
-            check("tts character limit is per model, not one invented constant",
-                  len([v for v in tts_limits if v]) != 1 or len(tts_rows_now) == 1,
-                  f"distinct limits: {sorted(v for v in tts_limits if v)}")
-            # The local lane auto-splits, so it can carry a long script; 25,000
-            # is the agreed figure and the Hub chunks at sentence boundaries
-            # rather than hard-capping.
-            local_limits = {
-                r.get("maximum_input_characters")
-                for r in tts_rows_now if "studio-hub" in str(r.get("id"))
-            }
-            check("the local lane publishes the agreed 25,000 ceiling",
-                  local_limits <= {25000}, f"{local_limits}")
+            #
+            # Checked through the row builder, because the isolated corpus holds
+            # one TTS model and the old check's `or len(...) == 1` escape hatch
+            # made it pass by definition. A provider that states its own limit has
+            # to win, and the local lane has to get the agreed 25,000.
+            from gateway.catalog import _tts_characters, _TTS_CHARACTERS_DEFAULT
+            from gateway.providers.definitions import PROVIDERS_BY_ID as _DEFS
+            import dataclasses as _dc
+            _local = _DEFS["studio-hub-local"]
+            # `mock-remote` is a user-defined provider, so it lives in the temp
+            # `providers.local.json` the gateway subprocess reads — not in this
+            # process's static map. Only `.id` is read for the curated lookup, so a
+            # relabelled copy is the honest stand-in.
+            _mock = _dc.replace(_local, id="mock-remote")
+            check("a provider that states its own limit is published with it",
+                  _tts_characters("m", {"raw": {"maximum_text_length_per_request": 5000}},
+                                  _mock) == 5000)
+            check("the local lane gets the agreed 25,000 default",
+                  _tts_characters("m", {"raw": {}}, _local) == 25000
+                  == _TTS_CHARACTERS_DEFAULT)
+            check("a provider's stated limit wins over the curated file",
+                  _tts_characters("mock-tts-1", {"raw": {"maximum_text_length_per_request": 5000}},
+                                  _mock) == 5000)
+            check("the owner's curated limit is honoured where nobody stated one",
+                  _tts_characters("mock-tts-plain", {"raw": {}}, _mock) == 12345,
+                  f"{_tts_characters('mock-tts-plain', {'raw': {}}, _mock)}")
+            check("the mock model's stated limit reaches the catalogue",
+                  any(r.get("maximum_input_characters") == 5000
+                      for r in tts_rows_now if "mock-tts-1" in str(r.get("id"))),
+                  f"{[(r.get('id'), r.get('maximum_input_characters')) for r in tts_rows_now]}")
+            check("and a curated limit reaches the catalogue on its own row",
+                  any(r.get("maximum_input_characters") == 12345
+                      for r in tts_rows_now if "mock-tts-plain" in str(r.get("id"))),
+                  f"{[(r.get('id'), r.get('maximum_input_characters')) for r in tts_rows_now]}")
+            check("no live tts row publishes the old flat 40,000",
+                  all(r.get("maximum_input_characters") != 40000 for r in tts_rows_now),
+                  f"{[(r.get('id'), r.get('maximum_input_characters')) for r in tts_rows_now]}")
             check("every tts row publishes a positive character limit",
                   all(isinstance(r.get("maximum_input_characters"), int)
                       and r["maximum_input_characters"] > 0 for r in tts_rows_now),
                   f"{[(r.get('id'), r.get('maximum_input_characters')) for r in tts_rows_now[:3]]}")
+            # The old flat 40,000 also survived in the quote route, which meant
+            # Story Studio validated a narration against a limit that contradicted
+            # the model row it came from.
+            quoted = req(client, "POST", "/v1/tts/quotes",
+                         json={"model_id": tts_rows_now[0]["id"], "text": "hello"}).json()
+            check("the quote publishes the same limit as the model row",
+                  quoted["maximum_input_characters"] == tts_rows_now[0]["maximum_input_characters"],
+                  f"quote {quoted.get('maximum_input_characters')} vs row "
+                  f"{tts_rows_now[0].get('maximum_input_characters')}")
 
             # A model cannot both be English-only and able to detect language,
             # and these are multilingual MLX Whisper models. Unknown publishes
@@ -614,6 +767,168 @@ def main() -> int:
             check("disabled model drops from the catalogue",
                   not any(single in m for m in remaining), str(remaining))
             check("other models of the same provider survive", len(remaining) >= 1)
+
+            print("\n\033[1m10b. A bulk action must say which models it means\033[0m")
+            # Incident, and it was mine: a type-fuzz sent `{}` here and the
+            # handler treated it as "no filter", matched every model in the
+            # catalogue — 1,624 — and disabled all of them. One malformed
+            # request was enough to empty the picker. A bulk action is only ever
+            # meant to act on a set the owner described, so this asserts the
+            # refusal *and* that the refusal changed nothing, because a guard
+            # that still writes would be worse than no guard.
+            before = req(client, "GET", "/admin/api/models?limit=1000").json()
+            total = before["total"]
+            enabled_before = before["enabled_total"]
+            refused = httpx.post(f"{BASE}/admin/api/models/bulk", headers=AUTH, json={})
+            check("a bulk action that names nothing is refused",
+                  refused.status_code == 400, f"got {refused.status_code}")
+            check("and the refusal explains how to mean everything on purpose",
+                  "scope" in refused.text, refused.text[:160])
+            after = req(client, "GET", "/admin/api/models?limit=1000").json()
+            check("and the refusal changed nothing at all",
+                  after["enabled_total"] == enabled_before,
+                  f"{enabled_before} -> {after['enabled_total']}")
+            check("the whole catalogue is still there after the refusal",
+                  after["total"] == total, f"{total} -> {after['total']}")
+
+            described = req(client, "GET",
+                            "/admin/api/models?provider_id=mock-remote").json()["matched"]
+            ok = httpx.post(f"{BASE}/admin/api/models/bulk", headers=AUTH,
+                            json={"provider_id": "mock-remote", "enabled": True})
+            check("a described bulk action is accepted",
+                  ok.status_code == 200, ok.text[:160])
+            check("and it acts on exactly the set it matched",
+                  ok.json()["matched"] == described,
+                  f"matched {ok.json().get('matched')}, filter matched {described}")
+
+            # The confirmation names a number, so the number acted on has to be
+            # that one. `only_enabled` used to be hardcoded off here while the
+            # page sent it, so a button reading "Disable all 23 matching" would
+            # have disabled all 445.
+            httpx.post(f"{BASE}/admin/api/models/bulk", headers=AUTH,
+                       json={"provider_id": "mock-remote", "enabled": True})
+            httpx.post(f"{BASE}/admin/api/models/enabled", headers=AUTH,
+                       json={"items": [{"provider_id": "mock-remote",
+                                        "model_id": "mock-chat-2"}], "enabled": False})
+            subset = httpx.post(f"{BASE}/admin/api/models/bulk", headers=AUTH,
+                                json={"provider_id": "mock-remote", "enabled": False,
+                                      "only_enabled": True})
+            check("only_enabled acts on the enabled subset, not on every match",
+                  subset.json()["matched"] < described,
+                  f"matched {subset.json().get('matched')} of {described}")
+
+            everything = httpx.post(f"{BASE}/admin/api/models/bulk", headers=AUTH,
+                                    json={"scope": "all", "enabled": True})
+            check("'all of them' is accepted when it is said in a word of its own",
+                  everything.status_code == 200 and everything.json()["matched"] == total,
+                  everything.text[:160])
+
+            # The console has to send that word, or the deliberate path is
+            # unreachable from the app and the guard has broken the button it
+            # was meant to protect.
+            page = req(client, "GET", "/admin/").text
+            check("the console says 'all' out loud when no filter is set",
+                  "body.scope = 'all'" in page)
+
+            print("\n\033[1m10c. Bad input is a 4xx, and a lane with nothing behind it is not offered\033[0m")
+            # Every one of these was a 500, or a wrong answer, found by audit.
+            huge = req(client, "GET", "/v1/account/jobs?page_size=99999999999999999999999")
+            check("an absurd page_size is a 4xx, not a 500",
+                  400 <= huge.status_code < 500, f"got {huge.status_code} {huge.text[:100]}")
+            neg = req(client, "GET", "/v1/account/jobs?page_size=-1")
+            check("a negative page_size is a 4xx, not 'unlimited'",
+                  400 <= neg.status_code < 500, f"got {neg.status_code}")
+            ok_page = req(client, "GET", "/v1/account/jobs?page_size=5")
+            check("a sensible page_size still works", ok_page.status_code == 200)
+
+            # A lane the adapter cannot serve must never reach the picker: the
+            # model is enabled, and it is still not offered.
+            #
+            # `mock-google` needs a credential to be publishable at all — nothing
+            # is offered from an unconfigured provider — so it has one for the same
+            # reason `mock-remote` does.
+            req(client, "POST", "/admin/api/providers/mock-google/credentials",
+                json={"values": {"api_key": "mock-google-key"}})
+            req(client, "POST", "/admin/api/providers/mock-google/models/enabled",
+                json={"model_ids": ["gemini-2.5-pro", "veo-3"], "enabled": True})
+            veo = req(client, "GET", "/admin/api/models?q=veo-3").json()["models"]
+            check("the unservable model really is enabled in inventory",
+                  bool(veo) and veo[0]["enabled"], f"{veo}")
+            chat_ids = {m["id"] for m in req(client, "GET", "/v1/chat/models").json()["models"]}
+            video_ids = {m["id"] for m in req(client, "GET", "/v1/videos/models").json()["models"]}
+            check("the lane its adapter does serve is published",
+                  any("gemini-2.5-pro" in i for i in chat_ids), f"{sorted(chat_ids)[:8]}")
+            check("a lane the adapter cannot serve is withheld, not offered then refused",
+                  not any("veo-3" in i for i in video_ids), f"{sorted(video_ids)}")
+
+            # An idempotency key identifies one request; a request has a modality.
+            chat_id = next((i for i in sorted(chat_ids) if "mock-chat-1" in i), "")
+            img_id = req(client, "GET", "/v1/image/models").json()["models"][0]["id"]
+            shared_key = f"e2e-cross-modality-{int(time.time())}"
+            took = req(client, "POST", "/v1/chat/responses",
+                       json={"model_id": chat_id, "input": [{"role": "user", "content": "x"}]},
+                       headers={"Idempotency-Key": shared_key})
+            check("a chat request takes the key", took.status_code in (200, 202),
+                  f"{took.status_code}")
+            clash = req(client, "POST", "/v1/images/generations",
+                        json={"model_id": img_id, "prompt": "x"},
+                        headers={"Idempotency-Key": shared_key})
+            check("reusing that key for an image request is refused, not answered with a chat job",
+                  clash.status_code == 409,
+                  f"got {clash.status_code}: {clash.text[:140]}")
+
+            # The model that was quoted is the model that runs. Confirm used to
+            # ignore the quote's model and run the first enabled transcription row.
+            stt_now = req(client, "GET", "/v1/transcription/models").json()["models"]
+            if stt_now:
+                picked = stt_now[-1]["id"]
+                q2 = req(client, "POST", "/v1/audio/transcriptions/quotes",
+                         files={"file": ("clip.mp3", b"\xff\xfb\x90\x00" + b"\x00" * 512,
+                                         "audio/mpeg")},
+                         data={"model": picked})
+                qid = q2.json().get("id", "")
+                # No `model` field on the confirm at all: it has to come from the
+                # quote, not from a fallback.
+                c2 = req(client, "POST", f"/v1/audio/transcriptions/quotes/{qid}/confirm",
+                         headers={"Idempotency-Key": f"e2e-stt-model-{int(time.time())}"})
+                check("confirm returns 202 without being told the model",
+                      c2.status_code == 202, c2.text[:160])
+                if c2.status_code == 202:
+                    check("and the job runs the model that was quoted",
+                          c2.json()["model_id"] == picked,
+                          f"quoted {picked}, ran {c2.json()['model_id']}")
+                    poll(client, f"/v1/transcriptions/{c2.json()['id']}")
+
+            # A price-only quote holds no audio, and saying so is different from
+            # claiming the quote expired. Both used to be 410, so a caller that
+            # had merely quoted was told to re-quote — and would fail again.
+            price_only = req(client, "POST", "/v1/audio/transcriptions/quotes",
+                             json={"model": stt_now[0]["id"] if stt_now else "x"})
+            po_id = price_only.json().get("id", "")
+            po_confirm = req(client, "POST",
+                             f"/v1/audio/transcriptions/quotes/{po_id}/confirm",
+                             headers={"Idempotency-Key": f"e2e-stt-po-{int(time.time())}"})
+            check("confirming a price-only quote says the audio is missing, not that it expired",
+                  po_confirm.status_code == 400, f"got {po_confirm.status_code}")
+            check("and the reason names the missing audio",
+                  "audio" in po_confirm.text.lower(), po_confirm.text[:140])
+
+            # The documented rollback transport. Nothing exercised it, so a broken
+            # finish_reason or usage mapping here would have been found by Story
+            # Studio rather than by us.
+            sync = req(client, "POST", "/v1/chat/completions",
+                       json={"model": chat_id, "messages": [{"role": "user", "content": "hi"}]})
+            check("the synchronous completions transport answers", sync.status_code == 200,
+                  f"{sync.status_code} {sync.text[:140]}")
+            if sync.status_code == 200:
+                body = sync.json()
+                check("it is OpenAI-shaped", body.get("object") == "chat.completion"
+                      and isinstance(body.get("choices"), list) and body["choices"])
+                check("finish_reason is a clean stop the consumer accepts",
+                      body["choices"][0].get("finish_reason") in {"stop", "length"},
+                      f"{body['choices'][0].get('finish_reason')}")
+                check("usage is passed through, not invented",
+                      isinstance(body.get("usage"), dict), f"{body.get('usage')}")
 
             print("\n\033[1m11. Manual model add (provider shipped an unlisted model)\033[0m")
             r = httpx.post(f"{BASE}/admin/api/providers/mock-remote/models", headers=AUTH,
@@ -1053,6 +1368,42 @@ def main() -> int:
             check("a voice without permission cannot be shared, even when asked for",
                   refused.status_code == 403 and "not been allowed" in refused.text,
                   f"HTTP {refused.status_code} {refused.text[:140]}")
+
+            print("\n\033[1m20. A location must be a real address\033[0m")
+            # Anything used to be accepted: `http://7` and `http://not a url` became
+            # real locations with credentials, polled on every fleet read. Worse,
+            # each one re-published the local Mac's voice catalogue, so three junk
+            # locations turned ten voices into thirty identical rows.
+            for body, why in (
+                ({"url": 7}, "a number is not an address"),
+                ({"url": "not a url"}, "spaces are not a host"),
+                ({"url": "http://host:notaport"}, "a port has to be a number"),
+                ({"url": "http://host:99999"}, "a port has to be in range"),
+                ({"url": "http://"}, "there has to be a host"),
+                ({"url": ""}, "an address is required"),
+                ({"label": 5, "url": "http://127.0.0.1:9"}, "the label must be text"),
+            ):
+                r = req(client, "POST", "/admin/api/fleet/controllers", json=body)
+                check(f"refused: {why}", r.status_code == 400, f"HTTP {r.status_code} {r.text[:80]}")
+            check("and none of them were added",
+                  req(client, "GET", "/admin/api/fleet/controllers").json()["controllers"] == [],
+                  f"{req(client, 'GET', '/admin/api/fleet/controllers').json()}")
+
+            # The gateway's voice list belongs to the gateway, not to each location.
+            # A location used to contribute the *local* catalogue, so every added
+            # controller multiplied every voice.
+            before = len(req(client, "GET", "/v1/voices").json()["voices"])
+            added2 = req(client, "POST", "/admin/api/fleet/controllers",
+                         json={"label": "Voice Multiplication Check",
+                               "url": "http://127.0.0.1:9", "token": "x"}).json()
+            after = req(client, "GET", "/v1/voices").json()["voices"]
+            check("adding a location does not multiply the voice list",
+                  len(after) == before, f"{before} voices became {len(after)}")
+            ids = [v["id"] for v in after]
+            check("and no voice is listed twice", len(ids) == len(set(ids)),
+                  f"{[i for i in ids if ids.count(i) > 1][:3]}")
+            req(client, "DELETE",
+                f"/admin/api/fleet/controllers/{added2['controller']['id']}")
 
             print("\n\033[1m19. Received artifacts are temporary\033[0m")
             # The gateway is a receiver, not the owner: Story Studio keeps the copy

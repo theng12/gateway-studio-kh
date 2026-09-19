@@ -57,9 +57,14 @@ def _urls_from_result_json(raw: Any) -> list[str]:
             parsed = json.loads(raw)
         except (ValueError, TypeError):
             return []
-    elif isinstance(raw, dict):
-        parsed = raw
     else:
+        parsed = raw
+    # A string that parses to a list or a null — `"[]"`, `"null"` — is a shape a
+    # provider can legitimately return when it produced no result. It used to
+    # reach `.get()` and raise `AttributeError`, which the worker turned into a
+    # failure whose detail read like an internal crash rather than "the provider
+    # returned nothing to download".
+    if not isinstance(parsed, dict):
         return []
 
     urls: list[str] = []

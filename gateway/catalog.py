@@ -138,7 +138,9 @@ def _image_row(model_id: str, definition: ProviderDefinition, model: dict[str, A
         # — per-model values once a provider publishes them.
         "reference_strength_mode": "none",
         "supported_reference_strengths": [],
-        "max_prompt_characters": 4000,
+        "max_prompt_characters": _curated_or(
+            "max_prompt_characters", 4000, definition.id, model_id
+        ),
         "operations": ["text-to-image", "image-to-image"],
         "requires_admission_permit": False,
         "availability_note": None,
@@ -158,29 +160,55 @@ def _video_row(model_id: str, definition: ProviderDefinition, model: dict[str, A
     # enabled video model (Gemini Omni, 4-10s@720p) happens to accept both.
     # Upgrade path — a curated per-model variant table, or read it from the
     # provider once one publishes it.
+    #
+    # `modes` and `generates_audio` are NOT part of that simplification, and
+    # leaving them flat was a defect of the same kind as `supports_vision: false`:
+    #
+    #   * every video model was advertised as image-to-video only, while the
+    #     curated list contains text-to-video endpoints whose own ids say so
+    #     (`happyhorse-1-1/text-to-video`, `kling/v3-turbo-text-to-video`). A
+    #     model that only takes text was offered a control it cannot honour, and
+    #     one that takes text was not offered the control it needs;
+    #   * `generates_audio: False` was a definite "no" for every model, and Google
+    #     Veo 3 generates audio. Story Studio reads a definite false as "do not
+    #     offer this", so the honest answer for a silent provider is `null`.
+    raw_id = str(model.get("model_id") or model_id or "").lower()
+    text_capable = "text-to-video" in raw_id or "t2v" in raw_id
+    modes = ["text-to-video", "image-to-video"] if text_capable else ["image-to-video"]
+    raw = model.get("raw") or {}
+    stated_audio = raw.get("generates_audio") if isinstance(raw, dict) else None
     return {
-        "modes": ["image-to-video"],
+        "modes": modes,
         "aspect_ratios": ["16:9", "9:16", "1:1"],
-        "generates_audio": False,
+        "generates_audio": stated_audio if isinstance(stated_audio, bool) else None,
         "variants": [
             {
-                "operation": "image-to-video",
-                "duration_seconds": 5,
+                "operation": mode,
+                "duration_seconds": seconds,
                 "resolution": "720p",
                 "credits_per_video": 0,
                 "minimum_credits": 0,
                 "price_version": PRICE_VERSION,
-            },
-            {
-                "operation": "image-to-video",
-                "duration_seconds": 10,
-                "resolution": "720p",
-                "credits_per_video": 0,
-                "minimum_credits": 0,
-                "price_version": PRICE_VERSION,
-            },
+            }
+            for mode in modes
+            for seconds in (5, 10)
         ],
     }
+
+
+def _curated_or(field: str, fallback: int, provider_id: str, model_id: str) -> int:
+    """The owner's curated value for a limiter, else a documented flat default.
+
+    `limits.py` advertises four fields. Two of them — `max_prompt_characters` and
+    `maximum_input_characters` — were loaded and then never consulted by anything,
+    so the file promised the owner a control he did not have and the invented flat
+    default quietly beat his own knowledge. Both now route through here or through
+    `_tts_characters`.
+    """
+    curated = limits.gap(field, None, provider_id, model_id)
+    if isinstance(curated, (int, float)) and curated > 0:
+        return int(curated)
+    return fallback
 
 
 def _language_codes(languages: Any) -> list[str]:
@@ -232,12 +260,23 @@ def _language_codes(languages: Any) -> list[str]:
 _TTS_CHARACTERS_DEFAULT = 25000
 
 
-def _tts_characters(model: dict[str, Any], definition: ProviderDefinition) -> int:
+def _tts_characters(model_id: str, model: dict[str, Any], definition: ProviderDefinition) -> int:
+    """The per-request text limit for one TTS model.
+
+    Order: what the provider states, then what the owner curated, then the flat
+    25,000 default. The curated step was missing, even though
+    `maximum_input_characters` is one of the four fields `limits.py` advertises
+    and loads — so the owner could write a limit for a model and the *invented*
+    default would beat his own curated knowledge, which is the wrong way round.
+    """
     raw = model.get("raw") or {}
     for key in ("maximum_text_length_per_request", "max_characters_request_subscribed_user"):
         value = raw.get(key)
         if isinstance(value, (int, float)) and value > 0:
             return int(value)
+    curated = limits.gap("maximum_input_characters", None, definition.id, model_id)
+    if isinstance(curated, (int, float)) and curated > 0:
+        return int(curated)
     return _TTS_CHARACTERS_DEFAULT
 
 
@@ -267,7 +306,7 @@ def _tts_row(model_id: str, definition: ProviderDefinition, model: dict[str, Any
     # when it is non-empty, so an empty list shows nothing rather than a lie.
     languages = _language_codes(raw.get("languages"))
     return {
-        "maximum_input_characters": _tts_characters(model, definition),
+        "maximum_input_characters": _tts_characters(model_id, model, definition),
         # Speed is per model, not per provider: eleven_v3 publishes no speed
         # control at all, and fal's turbo lane allows 0.7-1.2 where the direct
         # one allows 0.5-2. `controls` reflects that rather than claiming a
@@ -361,8 +400,18 @@ def _chat_row(model_id: str, definition: ProviderDefinition, model: dict[str, An
     # out the answer" share a value. Its check is `supports_vision === true`, and
     # its own message for a missing value reads "does not publish image-input
     # support" — so `null` is what it already expects for "unstated".
-    def _positive(value: Any) -> int | None:
-        return int(value) if isinstance(value, (int, float)) and value > 0 else None
+    def _stated(value: Any) -> int | None:
+        """The number the provider published, including a published `0`.
+
+        This deliberately does **not** filter out zero. `0` here is a claim — a
+        model that accepts no context — and collapsing it to `None` made the
+        curated file's figure publish as though the provider had stated it, which
+        is the attribution rule this whole section is about. A missing or
+        non-numeric value is the only thing that means "it did not say".
+        """
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return None
+        return int(value)
 
     architecture = raw.get("architecture")
     inputs = architecture.get("input_modalities") if isinstance(architecture, dict) else None
@@ -390,10 +439,10 @@ def _chat_row(model_id: str, definition: ProviderDefinition, model: dict[str, An
     return {
         "queue_class": "direct",
         "context_window_tokens": limits.gap(
-            "context_window_tokens", _positive(context), definition.id, model_id
+            "context_window_tokens", _stated(context), definition.id, model_id
         ),
         "max_output_tokens": limits.gap(
-            "max_output_tokens", _positive(completion), definition.id, model_id
+            "max_output_tokens", _stated(completion), definition.id, model_id
         ),
         "controls": controls,
         "input_modalities": inputs,
@@ -401,18 +450,44 @@ def _chat_row(model_id: str, definition: ProviderDefinition, model: dict[str, An
         "supports_structured_output": structured,
         "structured_output_mode": "json_object" if structured else None,
         "supports_web_search": _supports("web_search", "web_search_options"),
-        "returns_citations": False,
+        # Neither of these is stated by any provider here, and a definite `false`
+        # is not the same statement as "unknown": Story Studio reads
+        # `supports_vision === true` to decide whether to offer a control at all,
+        # and the same shape applies to these. `returns_citations: False` was
+        # published for every model — including ones whose provider states web
+        # search — so "none" and "could not work it out" shared a value, which is
+        # the rule this whole section exists to enforce.
+        "returns_citations": None,
     }
 
 
 def _music_row(model_id: str, definition: ProviderDefinition, model: dict[str, Any]) -> dict[str, Any]:
+    """A music lane row.
+
+    `supported_languages: ["en"]` and `supports_instrumental: True` were published
+    for every music model where nothing states either — byte-for-byte the bug
+    already fixed in `_tts_row`, which now publishes an empty list for a provider
+    that does not enumerate its languages. English-only is a claim about Suno and
+    Lyria that nobody made, and an instrumental toggle offered against a model
+    that cannot do it fails on use.
+    """
+    raw = model.get("raw") or {}
+    languages = _language_codes(raw.get("languages")) if isinstance(raw, dict) else []
+    instrumental = raw.get("supports_instrumental") if isinstance(raw, dict) else None
     return {
         "coming_soon": False,
-        "max_prompt_characters": 2000,
+        # ponytail: flat caps for every music model, deliberately at the
+        # conservative end — the same trade the image lane records at
+        # `max_prompt_characters`. Upgrade path — per-model values from the
+        # provider, or the owner's curated file (which is now actually read; it
+        # advertised `max_prompt_characters` and nothing consulted it).
+        "max_prompt_characters": _curated_or(
+            "max_prompt_characters", 2000, definition.id, model_id
+        ),
         "max_lyrics_characters": 4000,
         "max_title_characters": 200,
-        "supports_instrumental": True,
-        "supported_languages": ["en"],
+        "supports_instrumental": instrumental if isinstance(instrumental, bool) else None,
+        "supported_languages": languages,
     }
 
 

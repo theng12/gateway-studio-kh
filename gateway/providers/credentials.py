@@ -166,7 +166,15 @@ class CredentialStore:
         self._save()
 
     def set_enabled(self, provider_id: str, enabled: bool) -> None:
-        if provider_id not in PROVIDERS_BY_ID:
+        # Resolved through `_definition`, not the static map: a Studio Hub
+        # location is derived from the fleet roster and is never in
+        # `PROVIDERS_BY_ID`. The admin route checks the id with
+        # `registry.definition()` — which *does* know locations — and then this
+        # raised a bare `KeyError` that nothing catches, so switching one of the
+        # owner's locations off answered **500**. Filthy fifth instance of the
+        # same mistake, and the most likely one to be hit: the credential is
+        # stored for a location the moment it is added.
+        if self._definition(provider_id) is None:
             raise KeyError(provider_id)
         entry = self._data["providers"].setdefault(provider_id, {})
         entry["enabled"] = bool(enabled)

@@ -21,7 +21,7 @@ from fastapi import APIRouter, Depends, Header, Request, Response
 from fastapi.responses import HTMLResponse, JSONResponse
 
 from .activity import story_activity
-from .adapters import support_status
+from .adapters import serves, support_status
 from .catalog import catalog
 from . import fleet
 from .config import is_loopback
@@ -120,6 +120,19 @@ def list_providers(scope: str | None = None) -> dict[str, Any]:
         supported, reason = support_status(definition) if definition else (False, "unknown")
         described["generation_supported"] = supported
         described["unsupported_reason"] = reason
+        # A provider can be supported *as a kind* and still declare a lane its
+        # adapter cannot serve — Google declares six modalities and the adapter
+        # serves three. The catalogue already withholds those rows, so the console
+        # should be able to say which ones rather than leaving the owner to
+        # discover it by enabling a model that never appears.
+        described["unserved_modalities"] = (
+            sorted(
+                m for m in definition.modalities
+                if not serves(definition, m)
+            )
+            if definition
+            else []
+        )
         items.append(described)
     # Configured and enabled first: the list is long and the useful rows matter.
     items.sort(key=lambda p: (not p["enabled"], not p["configured"], p["display_name"].lower()))
@@ -354,7 +367,27 @@ def bulk_models(payload: dict[str, Any]) -> Any:
     all 23 matching"* and the request would have disabled **all 445** OpenRouter
     models — a bulk action doing far more than the sentence the owner agreed to.
     A confirmation that names a number must be the number acted on.
+
+    **An unfiltered call is refused.** With no filter at all this matched every
+    model in the catalogue and disabled all 1,624 of them; a single malformed
+    request (`{}`) was enough, and it took the whole picker with it. A bulk action
+    is only ever meant to act on a *set the owner described* — a search, a
+    modality, a provider, or the enabled ones — so one of those has to be present.
+    Doing it to everything is still possible, but it has to be said out loud with
+    `scope: "all"`, because "I did not say which" and "I said all of them" must
+    not look the same. That is the same rule the voice permission follows, and for
+    the same reason.
     """
+    described = any(
+        payload.get(field) for field in ("q", "modality", "provider_id", "only_enabled")
+    )
+    if not described and payload.get("scope") != "all":
+        return _error(
+            400,
+            "A bulk action has to say which models it means: pass a search, a "
+            "modality, a provider, or only_enabled. To act on every model in the "
+            "catalogue, pass scope: \"all\".",
+        )
     matched = _filter_models(
         _flat_models(),
         q=payload.get("q"),
@@ -765,6 +798,13 @@ def fleet_controllers() -> dict[str, Any]:
 
 @router.post("/api/fleet/controllers", dependencies=[Depends(require_admin)])
 def fleet_add_controller(payload: dict[str, Any]) -> Any:
+    # Strings only. `str(7)` is "7", which is a valid-looking hostname, so a number
+    # sent by mistake used to become a real location at `http://7` — complete with a
+    # credential, a place in every probe, and a row to delete by hand.
+    for field in ("label", "url", "token"):
+        value = payload.get(field)
+        if value is not None and not isinstance(value, str):
+            return _error(400, f"'{field}' must be text.")
     try:
         row = fleet.add_controller(
             str(payload.get("label") or ""),

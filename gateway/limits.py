@@ -93,8 +93,18 @@ def gap(field: str, published: Any, provider_id: str, model_id: str) -> Any:
 
     The order matters and is not a preference: a live value from the provider is
     current, and this file is not.
+
+    **`0` is a stated value, not a silence.** This used to test `published > 0`,
+    so a provider that published `context_length: 0` — a real claim that the
+    model accepts nothing — was treated as if it had said nothing and the curated
+    file's number was published *as though the provider had stated it*. That is
+    the one thing this module exists to prevent: "none" and "could not work it
+    out" sharing a value, and then the wrong one being attributed to the
+    provider. A caller that has no value to state passes `None`.
     """
-    if isinstance(published, (int, float)) and published > 0:
-        return published
+    if isinstance(published, (int, float)) and not isinstance(published, bool):
+        return int(published)
     curated = for_model(provider_id, model_id).get(field)
-    return curated if isinstance(curated, (int, float)) and curated > 0 else None
+    if isinstance(curated, (int, float)) and not isinstance(curated, bool):
+        return int(curated)
+    return None

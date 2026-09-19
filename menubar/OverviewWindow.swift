@@ -47,6 +47,11 @@ final class StatTile: NSView {
         valueLabel.stringValue = value
         titleLabel.stringValue = title
     }
+
+    /// Show "unknown" without losing the caption.
+    func blank() {
+        valueLabel.stringValue = "—"
+    }
 }
 
 /// A labelled proportional bar, for the per-modality breakdown.
@@ -346,6 +351,11 @@ final class OverviewSection: NSObject, AppSection {
             guard let self else { return }
             guard case .success(let payload) = result else {
                 self.subtitleLabel.stringValue = "Waiting for the gateway…"
+                // The tiles, the modality bars and the hub lines all kept their
+                // previous values, so a failed read showed stale numbers beside a
+                // message saying the gateway was not answering. Blank them: an
+                // em-dash is honest, a number from an earlier read is not.
+                self.clearStats()
                 return
             }
 
@@ -427,6 +437,18 @@ final class OverviewSection: NSObject, AppSection {
 
             self.loadActivity()
         }
+    }
+
+    /// Blank everything the status read fills, so a failed read cannot leave a
+    /// previous read's numbers on screen looking current.
+    private func clearStats() {
+        for tile in tiles.values {
+            tile.blank()
+        }
+        modalityStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
+        hubLabel.stringValue = "—"
+        guidanceLabel.isHidden = true
+        activityStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
     }
 
     private func loadActivity() {

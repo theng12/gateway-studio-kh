@@ -30,10 +30,39 @@ ONE_PIXEL_PNG = base64.b64decode(
 )
 
 MODELS = [
-    {"id": "mock-chat-1", "name": "Mock Chat One", "context_length": 32000},
-    {"id": "mock-chat-2", "name": "Mock Chat Two", "context_length": 128000},
+    # The mock states the fields the catalogue's "publish what is known, and
+    # nothing else" checks actually inspect, in the spellings a real provider
+    # uses: `context_length` and `top_provider.max_completion_tokens` are
+    # OpenRouter's, and `architecture.input_modalities` is how it says a model
+    # takes images. With every field absent — which is how this list started —
+    # those checks passed without reading a single value: a model that states
+    # nothing is trivially consistent with itself, and the hardcoding they exist
+    # to catch (`supports_vision: false`, one shared `max_output_tokens`) would
+    # have reintroduced `input_modalities: ["text"]`, which *agrees*.
+    {
+        "id": "mock-chat-1", "name": "Mock Chat One", "context_length": 32000,
+        "top_provider": {"max_completion_tokens": 8192},
+        "architecture": {"input_modalities": ["text"]},
+    },
+    {
+        "id": "mock-chat-2", "name": "Mock Chat Two", "context_length": 128000,
+        "top_provider": {"max_completion_tokens": 16384},
+        "architecture": {"input_modalities": ["text", "image"]},
+    },
+    # States nothing at all: the half of the rule that says an unstated value
+    # arrives as null rather than as a plausible default.
+    {"id": "mock-chat-bare", "name": "Mock Chat Bare"},
+    # Also states nothing, but the owner's curated file has a value for it, so
+    # this is the row that proves a gap gets filled rather than merely that the
+    # gap-filling function works in isolation.
+    {"id": "mock-chat-plain", "name": "Mock Chat Plain"},
     {"id": "mock-image-1", "name": "Mock Image One"},
-    {"id": "mock-tts-1", "name": "Mock TTS One"},
+    # States its own character limit, which must beat the 25,000 default.
+    {"id": "mock-tts-1", "name": "Mock TTS One",
+     "maximum_text_length_per_request": 5000},
+    # States nothing, so the owner's curated file is the only source. The two
+    # together are what prove the precedence order rather than just asserting it.
+    {"id": "mock-tts-plain", "name": "Mock TTS Plain"},
     {"id": "mock-whisper-1", "name": "Mock Whisper One"},
     {"id": "mock-fail", "name": "Mock Failing Model"},
 ]

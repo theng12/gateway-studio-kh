@@ -130,6 +130,60 @@ assert set(_BY_KIND) == set(IMPLEMENTED_KINDS), (
 )
 
 
+#: Which modalities each kind's adapter *actually* serves.
+#:
+#: A kind having an adapter is not the same claim as that adapter serving a
+#: modality, and the import-time assert above only compares kinds — so a modality
+#: missing *inside* a working kind was invisible. It was not harmless:
+#:
+#:   * `google-ai` declares six modalities, and `GoogleBackend` forwards all of
+#:     them to the OpenAI-compatible shim, which serves four. A discovered
+#:     `veo*` row (mapped to video) or `lyria*` row (music) published to Story
+#:     Studio and then failed on use — the exact state this codebase calls the
+#:     worst one, because the picker offers it and the provider refuses it;
+#:   * `kie-ai-images` declares `chat` while `KieBackend` serves image, video and
+#:     music only. No curated chat model exists for it, so it bit only a
+#:     hand-added row — which is precisely what "add a model by hand" does.
+#:
+#: `studio_hub` is accurate both ways, so locations are unaffected.
+_MODALITIES_BY_KIND: dict[str, frozenset[str]] = {
+    KIND_OPENAI_COMPATIBLE: frozenset({"chat", "image", "tts", "transcription"}),
+    KIND_ANTHROPIC: frozenset({"chat"}),
+    # The shim's four, minus transcription: that one is *measured* broken — the
+    # OpenAI-compatible transcription route 404s on Google, and publishing it was
+    # tried and reverted. `image` and `tts` have real handlers and are left to
+    # answer for themselves.
+    KIND_GOOGLE: frozenset({"chat", "image", "tts"}),
+    KIND_FAL: frozenset({"image", "video"}),
+    KIND_KIE: frozenset({"image", "video", "music"}),
+    KIND_FISH: frozenset({"tts"}),
+    KIND_BFL: frozenset({"image"}),
+    KIND_MINIMAX: frozenset({"image", "video", "music", "tts"}),
+    KIND_ELEVENLABS: frozenset({"tts"}),
+    KIND_STUDIO_HUB: frozenset({"image", "tts", "transcription"}),
+}
+
+assert set(_MODALITIES_BY_KIND) == set(_BY_KIND), (
+    "adapter/modality table mismatch — "
+    f"missing: {sorted(set(_BY_KIND) - set(_MODALITIES_BY_KIND))}, "
+    f"stale: {sorted(set(_MODALITIES_BY_KIND) - set(_BY_KIND))}"
+)
+
+
+def serves(definition: ProviderDefinition, modality: str) -> bool:
+    """Whether this provider can actually run this modality.
+
+    The single gate the catalogue reads, so "there is an adapter for the kind"
+    and "that adapter serves this modality" cannot drift apart again.
+    """
+    if definition.kind not in IMPLEMENTED_KINDS:
+        return False
+    served = _MODALITIES_BY_KIND.get(definition.kind)
+    if served is None:
+        return False
+    return modality in served
+
+
 def adapter_for(definition: ProviderDefinition) -> Backend:
     backend = _BY_KIND.get(definition.kind)
     if backend is not None:
@@ -139,12 +193,17 @@ def adapter_for(definition: ProviderDefinition) -> Backend:
     )
 
 
-def support_status(definition: ProviderDefinition) -> tuple[bool, str]:
+def support_status(definition: ProviderDefinition, modality: str | None = None) -> tuple[bool, str]:
     """(can_generate, human explanation) for the admin UI."""
     if definition.kind in PENDING_KINDS:
         return False, PENDING_KINDS[definition.kind]
     if definition.kind not in _BY_KIND:
         return False, f"no adapter for kind '{definition.kind}'"
+    if modality is not None and not serves(definition, modality):
+        return False, (
+            f"the {definition.kind} adapter does not serve {modality} — "
+            "this model is withheld from Story Studio rather than offered and then refused"
+        )
     return True, ""
 
 
@@ -162,5 +221,6 @@ __all__ = [
     "StudioHubBackend",
     "UnsupportedBackend",
     "adapter_for",
+    "serves",
     "support_status",
 ]

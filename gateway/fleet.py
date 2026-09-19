@@ -36,6 +36,7 @@ import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import httpx
 
@@ -186,6 +187,23 @@ def _clear_token(controller_id: str) -> None:
         registry.credentials.forget(provider_id_for(controller_id))
     except Exception:  # noqa: BLE001
         pass
+
+
+def _forget_models(controller_id: str) -> int:
+    """Forget the cached models and the enable/disable decisions too.
+
+    A credential is not the only thing a removed location leaves behind. Its
+    discovered models and the owner's per-model choices survived in
+    `models_cache.json`, so re-adding a location — or any id collision — would
+    silently inherit decisions made about a machine that is no longer on the
+    fleet. `fleet.json` currently holds no controllers while the cache still
+    lists six `studio-hub-*` providers, which is exactly this leak.
+    """
+    try:
+        from .providers import registry
+        return registry.models.forget_provider(provider_id_for(controller_id))
+    except Exception:  # noqa: BLE001
+        return 0
 
 
 #: The one route that tells a controller's two credentials apart.
@@ -365,13 +383,38 @@ def _masked(row: dict) -> dict:
     }
 
 
+def _validate_address(url: str) -> str:
+    """Return a usable address, or raise with what is wrong with it.
+
+    Anything was accepted before this: `http://7` and `http://not a url` both became
+    real locations, complete with credentials and a place in every probe. A junk
+    location is not harmless — it is polled on every fleet read, it publishes voice
+    rows, and it has to be found and deleted by hand.
+    """
+    candidate = (url or "").strip()
+    if not candidate:
+        raise ValueError("An address is required.")
+    if not candidate.startswith(("http://", "https://")):
+        candidate = "http://" + candidate
+    parsed = urlsplit(candidate)
+    if parsed.scheme not in {"http", "https"}:
+        raise ValueError("An address must start with http:// or https://.")
+    if not parsed.netloc:
+        raise ValueError("That address has no host in it.")
+    if any(character.isspace() for character in parsed.netloc):
+        raise ValueError("An address cannot contain spaces.")
+    if ":" in parsed.netloc:  # a port was given; it has to be a port
+        port = parsed.netloc.rsplit(":", 1)[1]
+        if not port.isdigit() or not 1 <= int(port) <= 65535:
+            raise ValueError(f"'{port}' is not a valid port.")
+    if not parsed.hostname:
+        raise ValueError("That address has no host in it.")
+    return candidate.rstrip("/")
+
+
 def add_controller(label: str, url: str, token: str) -> dict:
     """Remember a location controller. Re-adding the same address updates it."""
-    url = (url or "").strip().rstrip("/")
-    if not url:
-        raise ValueError("An address is required.")
-    if not url.startswith(("http://", "https://")):
-        url = "http://" + url
+    url = _validate_address(url)
     rows = _read()
     existing = next((row for row in rows if row.get("url") == url), None)
     if existing:
@@ -402,6 +445,49 @@ def add_controller(label: str, url: str, token: str) -> dict:
     return _masked(existing)
 
 
+def reconcile_cached_locations() -> list[str]:
+    """Drop cached models belonging to locations that are no longer on the roster.
+
+    Removal already forgets a location's models as it goes, but the cache
+    accumulated before that existed: `fleet.json` holds no controllers while
+    `models_cache.json` still lists six `studio-hub-*` providers, one of which
+    also carried a switched-on transcription model. Inert today — the catalogue is
+    built by walking the live definitions, so an orphan publishes nothing — but it
+    is a standing invitation for a stale decision to be inherited.
+
+    **Conservative by construction**, because the failure mode of a wrong sweep is
+    losing live locations' models: it only ever considers ids under this module's
+    own `studio-hub-` prefix, and it compares against `registry.definitions()`,
+    which is built from the roster file on disk. If the live set cannot be read it
+    does nothing at all rather than treating "I could not read it" as "there is
+    nothing".
+    """
+    try:
+        from .providers import registry
+        live = {d.id for d in registry.definitions()}
+    except Exception:  # noqa: BLE001
+        return []
+    if not live:
+        # An empty live set means the lookup failed, not that every provider was
+        # deleted. Never act on it.
+        return []
+    try:
+        cached = registry.models.cached_provider_ids()
+    except Exception:  # noqa: BLE001
+        return []
+    orphans = [
+        provider_id
+        for provider_id in cached
+        if provider_id.startswith(PROVIDER_PREFIX) and provider_id not in live
+    ]
+    for provider_id in orphans:
+        try:
+            registry.models.forget_provider(provider_id)
+        except Exception:  # noqa: BLE001
+            pass
+    return orphans
+
+
 def remove_controller(controller_id: str) -> bool:
     rows = _read()
     keep = [row for row in rows if row.get("id") != controller_id]
@@ -410,6 +496,8 @@ def remove_controller(controller_id: str) -> bool:
     _write(keep)
     # The location is gone, so its token must not linger in the store.
     _clear_token(controller_id)
+    # Nor its models, nor which of them the owner had switched on.
+    _forget_models(controller_id)
     invalidate()
     return True
 
@@ -444,11 +532,29 @@ def rename_controller(controller_id: str, label: str) -> dict | None:
 # Reading a location
 
 
-def _fetch(client: httpx.Client, base: str, token: str, path: str):
+def _fetch(client: httpx.Client, base: str, token: str, path: str) -> dict:
+    """Fetch one controller route and insist on a JSON *object*.
+
+    Both halves matter for `_probe`'s "never raises" promise. A hub that answers
+    200 with a non-JSON body — an HTML error page from a proxy, a truncated
+    response — raised out of `json()`; a body that parses as a list or a bare
+    `null` got through and then blew up on the first `.get()`. `_probe` catches
+    only httpx errors, so both reached the routing path, which put a 500 in front
+    of a generation request. Every caller here expects an object, so anything
+    else is a failed read, reported as one.
+    """
     headers = {"X-Hub-Token": token} if token else {}
     response = client.get(base.rstrip("/") + path, headers=headers)
     response.raise_for_status()
-    return response.json()
+    try:
+        parsed = response.json()
+    except ValueError as exc:
+        raise httpx.HTTPError(f"{path} answered 200 with a body that is not JSON: {exc}") from exc
+    if not isinstance(parsed, dict):
+        raise httpx.HTTPError(
+            f"{path} answered with a JSON {type(parsed).__name__}, expected an object"
+        )
+    return parsed
 
 
 def _running_jobs(batches: list[dict]) -> list[dict]:
@@ -513,7 +619,17 @@ def _probe(base: str, token: str, *, timeout: float = _TIMEOUT) -> dict:
     try:
         with httpx.Client(timeout=timeout) as client:
             overview = _fetch(client, base, token, "/api/hub/fleet/overview")
-            nodes = _fetch(client, base, token, "/api/hub/fleet/nodes")
+            try:
+                # The node roster is the *second* thing to go wrong on a Hub that
+                # is up: measured live, a Hub mid-rebuild answered
+                # `fleet/overview`, `capabilities`, `stats` and `settings` with 200
+                # while `fleet/nodes` alone returned 500. Requiring it made that
+                # location read as entirely offline — "HTTP 500 from the
+                # controller" — which is wrong and, worse, hides six working
+                # machines behind one broken route.
+                nodes = _fetch(client, base, token, "/api/hub/fleet/nodes")
+            except httpx.HTTPError:
+                nodes = {}
             try:
                 jobs = _fetch(client, base, token, "/api/hub/jobs")
             except httpx.HTTPError:
@@ -919,7 +1035,10 @@ def routing_candidates(
     # view up to one refresher interval old can be wrong about a site that died
     # seconds ago, and the job then settles as `failed` -- which is the outcome
     # this endpoint already prefers to making the caller wait.
-    rows = {str(row.get("id")): row for row in snapshot(allow_stale=True)["locations"]}
+    rows = {
+        str(row.get("id")): row
+        for row in (snapshot(allow_stale=True).get("locations") or [])
+    }
     candidates: list[dict] = []
     for definition in registry.definitions():
         location_id = controller_id_from(definition.id)

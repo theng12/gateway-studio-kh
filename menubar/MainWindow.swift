@@ -72,6 +72,9 @@ final class ConsoleSection: NSObject, AppSection, WKNavigationDelegate, WKUIDele
         return web
     }()
     private var loaded = false
+    /// Set when a load fails, so the next activation tries the network again
+    /// instead of talking to WebKit's error page.
+    private var lastLoadFailed = false
 
     lazy var view: NSView = webView
 
@@ -85,8 +88,16 @@ final class ConsoleSection: NSObject, AppSection, WKNavigationDelegate, WKUIDele
         // Load once, then reload on later visits only if the gateway is up —
         // re-loading on every activation would discard half-finished edits in
         // the console's own forms.
-        if !loaded {
+        //
+        // `lastLoadFailed` is the exception, and it is load-bearing. `loaded` was
+        // set *before* the load, so a first load that failed left WebKit's error
+        // page up permanently: every later activation — including View → Reload
+        // Console — took the JavaScript-only branch and evaluated `setView(...)`
+        // against a page that had never run. The only recovery was quitting and
+        // relaunching the app. A failed load has to be retried for real.
+        if !loaded || lastLoadFailed {
             loaded = true
+            lastLoadFailed = false
             load(target, into: webView)
         } else {
             // Already loaded: move the page to this section's view. Call setView
@@ -94,6 +105,19 @@ final class ConsoleSection: NSObject, AppSection, WKNavigationDelegate, WKUIDele
             // depend on the page happening to listen for `hashchange`.
             webView.evaluateJavaScript("setView('\(viewName)');")
         }
+    }
+
+    /// The console could not be fetched. Say so, and make the next visit retry.
+    func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+        lastLoadFailed = true
+    }
+
+    func webView(
+        _ webView: WKWebView,
+        didFailProvisionalNavigation navigation: WKNavigation!,
+        withError error: Error
+    ) {
+        lastLoadFailed = true
     }
 
     /// If the gateway is not listening yet, say so plainly instead of showing a

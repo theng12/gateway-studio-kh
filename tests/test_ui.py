@@ -175,6 +175,37 @@ def window_title() -> str:
         return ""
 
 
+def window_size() -> tuple[int, int]:
+    """The real window's (width, height). `(-1, -1)` when it cannot be read.
+
+    Two things about this are not obvious and both were got wrong first time.
+    `MAIN_WINDOW` is already the window reference, so `size of window 1` resolves
+    against a window as if it had windows and errors at runtime. And coercing the
+    size record `as string` concatenates the two numbers — `1157, 1050` becomes
+    `"11571050"` — so the components have to be read through a variable and joined
+    explicitly. Getting either wrong returns `(-1, -1)`, and a caller comparing
+    that to itself passes without measuring anything, which is exactly how the
+    resize guard first passed. The guard now asserts the read worked.
+    """
+    try:
+        raw = osa(wrap(f'''
+            set w to {MAIN_WINDOW}
+            set s to size of w
+            return ((item 1 of s) as text) & "x" & ((item 2 of s) as text)'''))
+        width, _, height = raw.partition("x")
+        return int(width.strip()), int(height.strip())
+    except (RuntimeError, ValueError):
+        return -1, -1
+
+
+def set_window_size(width: int, height: int) -> None:
+    """Resize the real window. Restored by the caller — this is the owner's app."""
+    osa(wrap(f'''
+        set w to {MAIN_WINDOW}
+        set size of w to {{{width}, {height}}}'''))
+    time.sleep(1.0)
+
+
 def open_section(name: str) -> str:
     """Select a section from the real View menu and return the window title."""
     osa(wrap(f'click menu item "{name}" of menu 1 of menu bar item "View" of menu bar 1'))
@@ -592,11 +623,43 @@ def main() -> int:
     check("a live status line is pinned in the sidebar",
           "Running on 127.0.0.1" in summary and "providers" in summary, summary[:120])
 
+    # Force the window small before visiting the pages, as AGENTS.md prescribes:
+    # at the restored size a page with a too-tall required height simply fits, so
+    # sizing to the frame the owner might actually use is what makes the check
+    # able to fail. The original size is put back afterwards — this is his app.
+    original_size = window_size()
+    baseline_size = original_size
+    # An unreadable size must fail, not silently reduce every check below to
+    # `(-1, -1) == (-1, -1)`. That is how the first version of this guard passed
+    # without measuring anything.
+    check("the window size can be read", original_size[0] > 0, f"{original_size}")
+    if original_size[0] > 0:
+        set_window_size(max(original_size[0], 900), 700)
+        baseline_size = window_size()
+        check("the window can be forced to the 700pt test height",
+              baseline_size[1] == 700, f"{baseline_size}")
+
     for row, name, expected in SECTIONS:
         title = open_section(name)
         check(f"View → {name} selects it", title == expected, title)
         check(f"still exactly one window on “{name}”", window_count() == 1,
               f"{window_count()} windows")
+        # AGENTS.md makes this a working rule — "a page must never be able to
+        # resize the window", with the Fleet page as the recorded 1162pt
+        # casualty — and nothing enforced it. Visit every section and confirm the
+        # window keeps the size it had, because AppKit satisfies a page's
+        # *required* height by growing the window, which puts its bottom edge and
+        # resize corner off-screen where they cannot be reached.
+        after_size = window_size()
+        check(f"“{name}” did not resize the window",
+              after_size == baseline_size,
+              f"{baseline_size} became {after_size}")
+
+    # Put the owner's window back where it was.
+    if original_size[0] > 0:
+        set_window_size(*original_size)
+        check("the window size was restored after the test",
+              window_size() == original_size, f"{original_size} -> {window_size()}")
 
     # Selecting by sidebar row must agree with the View menu, or the two ways of
     # navigating have drifted apart.
@@ -628,10 +691,17 @@ def main() -> int:
         ["curl", "-s", "-m", "10", f"http://127.0.0.1:{gateway_port()}/health"],
         capture_output=True, text=True,
     ).stdout
-    if '"enabled_models"' in status:
-        enabled = json.loads(status)["models"]["enabled_models"]
-        check(f"the model count on screen matches the API ({enabled})",
-              f"\n{enabled}\n" in f"\n{body}\n", body[:200])
+    # Read the payload unconditionally. This was wrapped in
+    # `if '"enabled_models"' in status:`, so if the health shape ever changed the
+    # check silently never ran and reported nothing — and a check that does not
+    # run cannot fail. The count it reads is also asserted as a token rather than
+    # a substring, or "0" matches the "0" inside "30".
+    health_payload = json.loads(status)
+    check("the health payload still carries an enabled-model count",
+          "enabled_models" in (health_payload.get("models") or {}), status[:200])
+    enabled = (health_payload.get("models") or {}).get("enabled_models")
+    check(f"the model count on screen matches the API ({enabled})",
+          isinstance(enabled, int) and f"\n{enabled}\n" in f"\n{body}\n", body[:200])
 
     # The first version of this view built fine and was unreadable: the bar rows
     # had no height, so the stack view crushed them together. "It opened" would
@@ -703,14 +773,19 @@ def main() -> int:
           any("Add voices" in title for title in voices_buttons), f"{voices_buttons}")
 
     if rows > 3:
-        # The exact character depends on the Mac's keyboard layout, so this asks
-        # only that the keystroke reached the field — see `type_into`.
+        # `expect_exact=False` because this Mac's active input source is **Khmer**,
+        # so `keystroke "z"` delivers a Khmer character — the keystroke lands, the
+        # value is not what was asked for. That is also why the assertion is about
+        # the *shape* of the result rather than its content: it used to be
+        # `0 <= filtered < rows`, which passes on zero rows, i.e. on a filter that
+        # threw the entire list away. A search that leaves nothing is a bug, not a
+        # pass.
         typed = type_into("text field 1", "z", expect_exact=False)
         time.sleep(2.0)
         filtered = detail_rows()
         check("the search box receives typed text", typed != "", f"field holds {typed!r}")
-        check(f"typing filters the table ({rows} → {filtered})", 0 <= filtered < rows,
-              f"still {filtered}")
+        check(f"typing filters the table to a non-empty subset ({rows} → {filtered})",
+              0 < filtered < rows, f"still {filtered}")
         cleared = clear_field("text field 1")
         time.sleep(2.0)
         check("clearing the search restores the full list",
@@ -778,25 +853,35 @@ def main() -> int:
           any("Prune now" in title for title in settings_buttons), f"{settings_buttons}")
     # A page, not a window: its controls live in the detail pane, and there is
     # no second window to close.
-    check("Settings has an API key field",
-          int(osa(wrap(
-              f"tell {MAIN_WINDOW} to return (count of text fields of splitter group 1)"
-          ))) >= 2)
+    #
+    # Settings now wraps its body in a scroller (a form has a required height, so
+    # without one it clipped its own bottom rows), which puts its fields one level
+    # deeper. Read whichever container holds them, the way `detail_texts` does,
+    # rather than assuming the page's depth.
+    def settings_fields(expression: str) -> list[str]:
+        raw = osa(wrap(f'''
+            tell {MAIN_WINDOW} to tell splitter group 1
+                set acc to ""
+                try
+                    repeat with i from 1 to (count of text fields of {expression})
+                        set p to position of text field i of {expression}
+                        set acc to acc & ((item 1 of p) as string) & "\\n"
+                    end repeat
+                end try
+                return acc
+            end tell'''))
+        return [line for line in raw.splitlines() if line.strip()]
+
+    field_x = settings_fields("scroll area 2")
+    if len(field_x) < 2:
+        field_x = settings_fields("it")
+    check("Settings has an API key field", len(field_x) >= 2, f"{len(field_x)} fields")
     check("no stray window was opened", window_count() == 1, f"{window_count()} windows")
 
     # The form is two columns: every field starts at the same x. It used to stack
     # a caption above each control, which left labels and fields at a different x
     # on every row — the "settings alignment" the owner reported.
-    field_x = osa(wrap(f'''
-        tell {MAIN_WINDOW} to tell splitter group 1
-            set acc to ""
-            repeat with i from 1 to (count of text fields)
-                set p to position of text field i
-                set acc to acc & ((item 1 of p) as string) & "\\n"
-            end repeat
-            return acc
-        end tell'''))
-    values = [line for line in field_x.splitlines() if line.strip()]
+    values = field_x
     xs = sorted(set(values))
     check("Settings has fields to align", len(values) >= 2, f"{len(values)} fields")
     check("every Settings field starts in one column", len(xs) == 1, f"field x values: {xs}")
@@ -902,11 +987,21 @@ def main() -> int:
           isinstance(fleet_summary.get("machines_offline"), int), f"{fleet_summary}")
 
     # Tokens must never come back from the API, even masked-but-complete.
+    #
+    # The non-emptiness of the list is part of the claim. `all(...)` over an empty
+    # list is `True`, and this install has no controllers configured, so the check
+    # passed for years without inspecting a single row. The Fleet row-action check
+    # above already skips with a stated reason when nothing is configured; this one
+    # now says the same thing rather than asserting nothing.
     controllers = api_get("/admin/api/fleet/controllers")["controllers"]
-    check("no controller token is returned by the API",
-          all("token" not in row or row.get("token") in (None, "")
-              for row in controllers),
-          f"{controllers}")
+    if not controllers:
+        skip("no controller token is returned by the API",
+             "no controllers are configured, so there is no roster row to inspect")
+    else:
+        check("no controller token is returned by the API",
+              all("token" not in row or row.get("token") in (None, "")
+                  for row in controllers),
+              f"{controllers}")
 
     # ------------------------------------------------------------------
     print("\n\033[1m8. Status menu\033[0m")

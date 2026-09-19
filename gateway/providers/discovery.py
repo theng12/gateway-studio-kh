@@ -172,11 +172,29 @@ def _openai_models(definition: ProviderDefinition, values: dict[str, str]) -> Di
                 # the catalogue publishes as the model's output allowance. It was
                 # being discarded, and the catalogue then invented a number for
                 # every model instead.
+                #
+                # Every spelling the chat encoder reads has to survive here, or the
+                # encoder's fallbacks are dead code: it looks for
+                # `context_window`, `input_token_limit`, `max_completion_tokens`
+                # and `output_token_limit` after the OpenRouter spellings, and
+                # those are exactly what a vLLM- or LiteLLM-style
+                # `/v1/models` publishes — so a provider that stated its limits
+                # plainly was published as `null`, which reads as "it said
+                # nothing". Reading every spelling is only meaningful if the
+                # spellings reach the reader.
                 raw={
                     k: v
                     for k, v in entry.items()
                     if k in {"id", "name", "owned_by", "context_length", "pricing",
-                             "top_provider", "architecture", "supported_parameters"}
+                             "top_provider", "architecture", "supported_parameters",
+                             "context_window", "input_token_limit", "inputTokenLimit",
+                             "max_completion_tokens", "output_token_limit",
+                             "outputTokenLimit",
+                             # The TTS character limit. `_tts_characters` reads
+                             # both spellings, and the catalogue check that a
+                             # provider's own limit wins could not see either.
+                             "maximum_text_length_per_request",
+                             "max_characters_request_subscribed_user"}
                 },
             )
         )

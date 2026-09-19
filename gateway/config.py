@@ -72,6 +72,16 @@ _MIGRATED_FILES = (
     "gateway.sqlite3",
     "providers.local.json",
     "voices.json",
+    # The owner's own curated limit table. It was omitted, so on an upgrade the
+    # file stayed behind in the pre-bundle directory: still *read*, because
+    # `limits.py` falls back to the legacy path, but no longer the file anything
+    # else looked at — and a curated value the owner cannot find is the same as
+    # one he never wrote.
+    "model-limits.local.json",
+    # Per-voice enable/disable, which is his answer to "offer this voice?" — the
+    # same class of decision as the model toggles `models_cache.json` carries.
+    # Voice *permissions* travel in the voice's own folder metadata; this does not.
+    "voices_state.json",
 )
 
 

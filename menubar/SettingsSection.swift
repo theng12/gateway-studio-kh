@@ -140,18 +140,42 @@ final class SettingsSection: NSObject, AppSection {
         statusLabel = PageKit.label("", size: 11.5, colour: .secondaryLabelColor, wrapping: true)
         root.addArrangedSubview(PageKit.formRow("", [actions, statusLabel] as [NSView]))
 
-        // A form has a natural height, so its bottom is `lessThanOrEqualTo` the
-        // host rather than pinned to it. Pinning it made the stack view hand the
-        // leftover height to the heading, which opened a ~360pt void between the
-        // title and "Gateway". The table pages do the opposite on purpose: their
-        // tables are meant to absorb that space.
-        let container = NSView()
-        container.addSubview(root)
+        // A form has a natural height, and it *must not* be able to grow the
+        // window — but `lessThanOrEqualTo` only stops the growth. It left the
+        // surplus with nowhere to go, so on a shorter window the bottom of the
+        // page (the Startup checkboxes, Save, Reveal data and the status line)
+        // was compressed and clipped with no scrollbar: the controls the owner
+        // needed were the ones that disappeared. Wrapping the body in a scroller
+        // satisfies both halves of the rule — the page fits the window, and
+        // everything on it stays reachable.
+        let document = FlippedView()
+        document.translatesAutoresizingMaskIntoConstraints = false
+        document.addSubview(root)
+
+        let pageScroll = NSScrollView()
+        pageScroll.hasVerticalScroller = true
+        pageScroll.drawsBackground = false
+        pageScroll.translatesAutoresizingMaskIntoConstraints = false
+        pageScroll.documentView = document
+
         NSLayoutConstraint.activate([
-            root.topAnchor.constraint(equalTo: container.topAnchor),
-            root.leadingAnchor.constraint(equalTo: container.leadingAnchor),
-            root.trailingAnchor.constraint(equalTo: container.trailingAnchor),
-            root.bottomAnchor.constraint(lessThanOrEqualTo: container.bottomAnchor),
+            root.topAnchor.constraint(equalTo: document.topAnchor),
+            root.leadingAnchor.constraint(equalTo: document.leadingAnchor),
+            root.trailingAnchor.constraint(equalTo: document.trailingAnchor),
+            root.bottomAnchor.constraint(equalTo: document.bottomAnchor),
+
+            document.leadingAnchor.constraint(equalTo: pageScroll.contentView.leadingAnchor),
+            document.trailingAnchor.constraint(equalTo: pageScroll.contentView.trailingAnchor),
+            document.topAnchor.constraint(equalTo: pageScroll.contentView.topAnchor),
+        ])
+
+        let container = NSView()
+        container.addSubview(pageScroll)
+        NSLayoutConstraint.activate([
+            pageScroll.topAnchor.constraint(equalTo: container.topAnchor),
+            pageScroll.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            pageScroll.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            pageScroll.bottomAnchor.constraint(equalTo: container.bottomAnchor),
         ])
         return container
     }
@@ -184,11 +208,28 @@ final class SettingsSection: NSObject, AppSection {
     /// The limits live in the gateway, not in this app, so they are read from it.
     private func loadRetention() {
         GatewayAPI.get("/admin/api/settings/retention") { [weak self] result in
-            guard let self, case .success(let payload) = result else { return }
-            let days = (payload["max_age_days"] as? Double) ?? 7
-            let bytes = (payload["max_bytes"] as? Double) ?? (10 * 1024 * 1024 * 1024)
-            self.retentionDaysField?.stringValue = String(format: "%g", days)
-            self.retentionGBField?.stringValue = String(format: "%g", bytes / (1024 * 1024 * 1024))
+            guard let self else { return }
+            guard case .success(let payload) = result else {
+                // Never invent the numbers. This used to fall back to 7 days and
+                // 10 GB on *any* failure — and those invented values were what
+                // "Prune now" then wrote back to the gateway, so a read that
+                // failed could silently overwrite the owner's real limits with
+                // defaults. An empty field is honest; a wrong number is not.
+                self.retentionDaysField?.stringValue = ""
+                self.retentionGBField?.stringValue = ""
+                if case .failure(let error) = result {
+                    self.retentionUsageLabel?.stringValue =
+                        "Could not read the limits — \(error.localizedDescription)"
+                }
+                return
+            }
+            if let days = payload["max_age_days"] as? Double {
+                self.retentionDaysField?.stringValue = String(format: "%g", days)
+            }
+            if let bytes = payload["max_bytes"] as? Double {
+                self.retentionGBField?.stringValue =
+                    String(format: "%g", bytes / (1024 * 1024 * 1024))
+            }
             self.describeRetention(payload["usage"] as? [String: Any])
         }
     }

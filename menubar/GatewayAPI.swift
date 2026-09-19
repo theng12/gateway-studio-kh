@@ -13,12 +13,24 @@ enum GatewayAPIError: LocalizedError {
     case http(Int)
     case malformed
 
+    /// A refused request, carrying what the gateway actually said.
+    ///
+    /// Every non-200 used to collapse into "The gateway returned HTTP 409" or,
+    /// worse, "The gateway rejected the API key" — and 403 is not an API-key
+    /// problem at all. The gateway answers 403 with the real reason ("These
+    /// voices have not been allowed for cloning and distribution: …"), so a
+    /// permission decision the owner had made was reported to him as a broken
+    /// key. The server's own sentence is the only useful thing on the wire.
+    case refused(Int, String)
+
     var errorDescription: String? {
         switch self {
         case .notRunning: return "The gateway is not running."
         case .badURL: return "Bad gateway URL."
         case .unauthorized: return "The gateway rejected the API key."
         case .http(let code): return "The gateway returned HTTP \(code)."
+        case .refused(let code, let detail):
+            return detail.isEmpty ? "The gateway returned HTTP \(code)." : detail
         case .malformed: return "The gateway returned an unexpected response."
         }
     }
@@ -100,19 +112,54 @@ enum GatewayAPI {
                 return
             }
             let code = (response as? HTTPURLResponse)?.statusCode ?? 0
-            if code == 401 || code == 403 {
+            if code == 401 {
                 DispatchQueue.main.async { completion(.failure(GatewayAPIError.unauthorized)) }
                 return
             }
-            guard code == 200, let data, !data.isEmpty else {
-                DispatchQueue.main.async { completion(.failure(GatewayAPIError.http(code))) }
+            guard code == 200 else {
+                // Read the reason before deciding what to say. `admin.py` answers
+                // every refusal as `{"detail": "..."}`, deliberately, and that
+                // sentence is the difference between "your key is wrong" and
+                // "you have not allowed these voices to be shared".
+                let detail = GatewayAPI.detail(from: data)
+                let failure: GatewayAPIError = code == 403
+                    ? .refused(code, detail.isEmpty ? "The gateway refused this action." : detail)
+                    : .refused(code, detail)
+                DispatchQueue.main.async { completion(.failure(failure)) }
                 return
             }
-            // An empty body is legal for some POSTs; treat it as an empty object
-            // rather than a failure.
-            let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] ?? [:]
+            // A 200 is not automatically a payload. A proxy page, a renamed
+            // endpoint or a top-level array used to become `[:]` — a *successful*
+            // empty result — so the Fleet page showed "0 of 0 locations reachable"
+            // and the Voices page "0 of 0 voices enabled" as if it had measured
+            // something. "I could not read the answer" must not look like "the
+            // answer is nothing."
+            guard let data, !data.isEmpty else {
+                DispatchQueue.main.async { completion(.success([:])) }
+                return
+            }
+            guard let parsed = try? JSONSerialization.jsonObject(with: data),
+                  let json = parsed as? [String: Any] else {
+                DispatchQueue.main.async { completion(.failure(GatewayAPIError.malformed)) }
+                return
+            }
             DispatchQueue.main.async { completion(.success(json)) }
         }.resume()
+    }
+
+    /// The gateway's own explanation for a refusal, if it sent one.
+    static func detail(from data: Data?) -> String {
+        guard let data, !data.isEmpty,
+              let parsed = try? JSONSerialization.jsonObject(with: data),
+              let object = parsed as? [String: Any] else { return "" }
+        if let text = object["detail"] as? String { return text }
+        // FastAPI's own validation shape: `{"detail": [{"msg": ...}]}`.
+        if let rows = object["detail"] as? [[String: Any]] {
+            let messages = rows.compactMap { $0["msg"] as? String }
+            if !messages.isEmpty { return messages.joined(separator: " ") }
+        }
+        if let text = object["message"] as? String { return text }
+        return ""
     }
 
     // MARK: Formatting helpers shared by the windows

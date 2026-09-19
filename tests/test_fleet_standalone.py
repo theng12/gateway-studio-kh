@@ -34,6 +34,19 @@ READY = Path.home() / "Library/Application Support/StudioHub Standalone/hub-read
 failures: list[str] = []
 checks = 0
 
+#: Every status this suite ever sees. The 402 rule is the strongest contract in
+#: the repo — Story Studio holds a credit lock keyed on the API key, sees one 402,
+#: and the key is dead permanently — and this suite used to assert it with
+#: `check("no 402 anywhere", True)`, a literal. It claimed to uphold the rule
+#: while measuring nothing. Recording happens in one place, an httpx response
+#: hook on the shared client, so a route added later is covered by default
+#: rather than by whoever remembers.
+statuses: set[int] = set()
+
+
+def _record(response: "httpx.Response") -> None:
+    statuses.add(response.status_code)
+
 
 def check(label: str, ok: bool, detail: str = "") -> None:
     global checks
@@ -42,6 +55,24 @@ def check(label: str, ok: bool, detail: str = "") -> None:
     print(f"  {tag} {label}" + (f" — {detail}" if detail and not ok else ""))
     if not ok:
         failures.append(label)
+
+
+skipped: list[str] = []
+
+
+def skip(label: str, reason: str) -> None:
+    """A check whose *environment* is missing, with the reason stated.
+
+    This Hub is the owner's live install and is sometimes mid-rebuild — measured
+    while `packaging/stage_voice.py --runtime` was staging the runtimes, the Hub
+    answered `fleet/overview`, `capabilities`, `stats` and `settings` with 200 and
+    `/api/hub/model-packages` with `{"models": []}`, so nothing could be discovered
+    from it. That is not a gateway defect and reporting it as one teaches the
+    reader to ignore failures. Reachability, credentials and the role checks still
+    run; only the model-dependent ones step aside.
+    """
+    skipped.append(label)
+    print(f"  \033[33mSKIP\033[0m {label} — {reason}")
 
 
 def free_port() -> int:
@@ -56,6 +87,20 @@ def main() -> int:
         return 1
     hub = json.loads(READY.read_text())
     hub_url, hub_token = hub["url"].rstrip("/"), hub["token"]
+
+    # Does this Hub actually have any model packages installed? It is the owner's
+    # live install, so it is sometimes mid-rebuild, and a Hub that answers but
+    # offers nothing cannot prove anything about discovery or dispatch. Asked once,
+    # up front, so the reason is stated rather than inferred from nine failures.
+    packaged = 0
+    try:
+        probe = httpx.get(f"{hub_url}/api/hub/model-packages",
+                          headers={"X-Hub-Token": hub_token}, timeout=10)
+        if probe.status_code == 200:
+            packaged = len((probe.json() or {}).get("models") or [])
+    except (httpx.HTTPError, ValueError):
+        packaged = 0
+    no_models = packaged == 0
 
     tmp = Path(tempfile.mkdtemp(prefix="gateway-fleet-"))
     (tmp / "data").mkdir(parents=True, exist_ok=True)
@@ -81,7 +126,9 @@ def main() -> int:
         deadline = time.time() + 40
         while time.time() < deadline:
             try:
-                if httpx.get(f"{base}/health", timeout=2).status_code == 200:
+                probe = httpx.get(f"{base}/health", timeout=2)
+                statuses.add(probe.status_code)
+                if probe.status_code == 200:
                     break
             except httpx.HTTPError:
                 time.sleep(0.4)
@@ -89,7 +136,8 @@ def main() -> int:
             print("gateway did not start")
             return 1
 
-        client = httpx.Client(timeout=40, headers=auth)
+        client = httpx.Client(timeout=40, headers=auth,
+                              event_hooks={"response": [_record]})
 
         print("\n\033[1m1. A standalone Hub is accepted as a location\033[0m")
         added = client.post(f"{base}/admin/api/fleet/controllers", json={
@@ -122,15 +170,22 @@ def main() -> int:
         # Adding discovered them: nothing refreshes models on a timer, so an added
         # location that showed none would read as "it has nothing" rather than
         # "nobody asked it yet".
-        check("adding a location discovers its models",
-              isinstance(added.json().get("discovered"), int)
-              and added.json().get("discovered") > 0,
-              f"discovered={added.json().get('discovered')} err={added.json().get('discovery_error')}")
-        described = client.get(f"{base}/admin/api/providers/{provider_id}/models").json()
-        models = described.get("models") or []
-        check("models discovered from the location", len(models) > 0, f"{len(models)}")
-        stt_models = [m["model_id"] for m in models if m.get("modality") == "transcription"]
-        check("transcription models are among them", bool(stt_models), f"{len(models)} models")
+        if no_models:
+            skip("adding a location discovers its models",
+                 "this Hub reports 0 model packages installed, so there is nothing to discover")
+            skip("models discovered from the location", "the Hub offers no model packages")
+            skip("transcription models are among them", "the Hub offers no model packages")
+            models: list[dict] = []
+        else:
+            check("adding a location discovers its models",
+                  isinstance(added.json().get("discovered"), int)
+                  and added.json().get("discovered") > 0,
+                  f"discovered={added.json().get('discovered')} err={added.json().get('discovery_error')}")
+            described = client.get(f"{base}/admin/api/providers/{provider_id}/models").json()
+            models = described.get("models") or []
+            check("models discovered from the location", len(models) > 0, f"{len(models)}")
+            stt_models = [m["model_id"] for m in models if m.get("modality") == "transcription"]
+            check("transcription models are among them", bool(stt_models), f"{len(models)} models")
 
         print("\n\033[1m2c. The credential is checked, and can be replaced\033[0m")
         # Both of a controller's credentials reach every route this gateway calls,
@@ -252,26 +307,41 @@ def main() -> int:
               not any(provider_id in m["id"] or second_provider in m["id"] for m in catalogue),
               f"{[m['id'] for m in catalogue if provider_id in m['id'] or second_provider in m['id']][:3]}")
         dupes = [m["id"] for m in catalogue if "mlx-community/whisper-base-mlx" in m["id"]]
-        check("a model offered by two locations is published once",
-              len(dupes) == 1, f"{dupes}")
-        check("the row is attributed to the maker, not the site",
-              all(m.get("provider_name") == "Studio Hub"
-                  for m in catalogue if m["id"] in dupes),
-              f"{[(m['id'], m.get('provider_name')) for m in catalogue if m['id'] in dupes]}")
-        # The id genuinely changed (`studio-hub-local::X` -> `studio-hub::X`), and
-        # Story Studio matches a stored selection against every legacy id, so
-        # carrying the superseded ones is what stops a saved preset reading as
-        # `vanished` across this change. BOTH locations' old ids must survive.
-        merged_row = next((m for m in catalogue if m["id"] in dupes), {})
-        aliases = [str(a) for a in (merged_row.get("legacy_ids") or [])]
-        check("a superseded site-scoped id survives as an alias, from every location",
-              any(a.startswith(f"{provider_id}::") for a in aliases)
-              and any(a.startswith(f"{second_provider}::") for a in aliases),
-              f"{aliases}")
+        if no_models:
+            # The merge itself is proven above by "no published id names either
+            # location" — these three name the specific Whisper row, which cannot
+            # exist on a Hub with no packages installed.
+            skip("a model offered by two locations is published once",
+                 "this Hub reports 0 model packages installed")
+            skip("the row is attributed to the maker, not the site",
+                 "this Hub reports 0 model packages installed")
+            skip("a superseded site-scoped id survives as an alias, from every location",
+                 "this Hub reports 0 model packages installed")
+            check("no model reaches Story Studio from an empty Hub", not dupes, f"{dupes}")
+        else:
+            check("a model offered by two locations is published once",
+                  len(dupes) == 1, f"{dupes}")
+            check("the row is attributed to the maker, not the site",
+                  all(m.get("provider_name") == "Studio Hub"
+                      for m in catalogue if m["id"] in dupes),
+                  f"{[(m['id'], m.get('provider_name')) for m in catalogue if m['id'] in dupes]}")
+            # The id genuinely changed (`studio-hub-local::X` -> `studio-hub::X`), and
+            # Story Studio matches a stored selection against every legacy id, so
+            # carrying the superseded ones is what stops a saved preset reading as
+            # `vanished` across this change. BOTH locations' old ids must survive.
+            merged_row = next((m for m in catalogue if m["id"] in dupes), {})
+            aliases = [str(a) for a in (merged_row.get("legacy_ids") or [])]
+            check("a superseded site-scoped id survives as an alias, from every location",
+                  any(a.startswith(f"{provider_id}::") for a in aliases)
+                  and any(a.startswith(f"{second_provider}::") for a in aliases),
+                  f"{aliases}")
 
         story_ids = [m["id"] for m in catalogue
                      if m["id"].startswith("studio-hub::") and m["id"] in dupes]
-        check("they reach the Story Studio catalogue", bool(story_ids), f"{story_ids}")
+        if no_models:
+            skip("they reach the Story Studio catalogue", "no model packages on this Hub")
+        else:
+            check("they reach the Story Studio catalogue", bool(story_ids), f"{story_ids}")
 
         succeeded = None
         hub_errors: list[str] = []
@@ -313,22 +383,30 @@ def main() -> int:
                 break
             hub_errors.append(f"{story_id}: {(done.get('failure_reason') or state)[:120]}")
 
-        check("a transcription ran on the location end to end", succeeded is not None,
-              " | ".join(hub_errors)[:300])
-        check("the id Story Studio sent is the id it is told back",
-              bool(echoed) and all(sent == back for sent, back in echoed), f"{echoed}")
-        if succeeded:
-            story_id, job_id = succeeded
-            print(f"       ran {story_id}")
-            srt = client.get(f"{base}/v1/transcriptions/{job_id}/srt")
-            check("the artifact comes back through the gateway",
-                  srt.status_code == 200 and b"-->" in srt.content,
-                  f"HTTP {srt.status_code}")
+        if no_models:
+            skip("a transcription ran on the location end to end",
+                 "this Hub has no transcription model installed to run one")
+            skip("the id Story Studio sent is the id it is told back",
+                 "no job was submitted, because the Hub has no model to run it on")
+            skip("the artifact comes back through the gateway",
+                 "no job ran, so there is no artifact to fetch")
         else:
-            # Not a pass, and not silently skipped: say whose fault it is.
-            print("       the Hub refused every transcription model it offers:"
-                  f" {' | '.join(hub_errors)[:200]}")
-            check("the artifact comes back through the gateway", False, "no job succeeded")
+            check("a transcription ran on the location end to end", succeeded is not None,
+                  " | ".join(hub_errors)[:300])
+            check("the id Story Studio sent is the id it is told back",
+                  bool(echoed) and all(sent == back for sent, back in echoed), f"{echoed}")
+            if succeeded:
+                story_id, job_id = succeeded
+                print(f"       ran {story_id}")
+                srt = client.get(f"{base}/v1/transcriptions/{job_id}/srt")
+                check("the artifact comes back through the gateway",
+                      srt.status_code == 200 and b"-->" in srt.content,
+                      f"HTTP {srt.status_code}")
+            else:
+                # Not a pass, and not silently skipped: say whose fault it is.
+                print("       the Hub refused every transcription model it offers:"
+                      f" {' | '.join(hub_errors)[:200]}")
+                check("the artifact comes back through the gateway", False, "no job succeeded")
 
         print("\n\033[1m5. Nothing was gated on the role\033[0m")
         # Both locations are local-scope providers because they are machines, not
@@ -347,7 +425,14 @@ def main() -> int:
               {provider_id, second_provider} <= local_ids
               and not ({provider_id, second_provider} & cloud_ids),
               f"local has {len(local_ids)}, cloud has {len(cloud_ids)}")
-        check("no 402 anywhere", True)
+        # Not a formality. A 402 from *any* route in this run would kill the key
+        # Story Studio calls with, and the fleet routes are the ones that talk to
+        # a real Hub, so this is where an upstream refusing work is most likely to
+        # surface as the wrong status.
+        check("no response in the whole run was 402", 402 not in statuses,
+              f"statuses seen {sorted(statuses)}")
+        check("and the run actually recorded responses", len(statuses) > 0,
+              f"statuses seen {sorted(statuses)}")
     finally:
         server.terminate()
         try:
@@ -357,6 +442,10 @@ def main() -> int:
         shutil.rmtree(tmp, ignore_errors=True)
 
     print("\n" + "=" * 70)
+    if skipped:
+        print(f"\033[33m{len(skipped)} skipped\033[0m (environment, not the gateway):")
+        for name in skipped:
+            print(f"  - {name}")
     if failures:
         print(f"\033[31m{len(failures)} of {checks} fleet checks FAILED\033[0m")
         for name in failures:

@@ -33,7 +33,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
-from fastapi import Depends, FastAPI, File, Form, Header, Request, Response, UploadFile
+from fastapi import Depends, FastAPI, File, Form, Header, Query, Request, Response, UploadFile
 from fastapi.responses import JSONResponse
 
 from . import __version__
@@ -53,7 +53,18 @@ API_KEY = gateway_api_key()
 # Uploaded audio for transcription quotes, held between the quote and its
 # confirm. In memory on purpose: it is a single-process gateway and the payload
 # is a transient request body, not state worth persisting.
-_UPLOADS: dict[str, tuple[bytes, str, str, float]] = {}
+_UPLOADS: dict[str, tuple[bytes | None, str, str, float, str]] = {}
+#: A staged audio upload, held between the quote and the confirm.
+#:
+#: `content` is `None` for a quote that carried a model but no audio — the
+#: price-only call. It is stored rather than left out so that confirm can tell
+#: "you never sent audio with this quote" (400, and the caller can fix it) from
+#: "this quote has expired" (410, and Story Studio must re-quote). Both used to
+#: be 410, which sent the caller to re-quote a request that would fail again.
+#: The model is stored with it because the quote's whole purpose is to name the
+#: model that will run; confirm used to ignore it and run the first enabled
+#: transcription row instead — a different model, possibly a different provider,
+#: than the one quoted and confirmed.
 _UPLOAD_TTL_S = 3600.0
 
 
@@ -65,6 +76,16 @@ async def lifespan(_: FastAPI):
     # The gateway only *receives* artifacts; Story Studio keeps the copy that
     # matters. Without this the directory grew without bound.
     retention.start_pruner()
+    # Cached models belonging to a location that is no longer on the roster. The
+    # cache outlived the locations: six `studio-hub-*` providers were still in it
+    # with no controllers configured, one carrying a switched-on model. Inert,
+    # but a stale enable/disable decision must never be inherited by a location
+    # that did not make it.
+    try:
+        fleet.reconcile_cached_locations()
+    except Exception:  # noqa: BLE001
+        # A tidy-up must never stop the gateway from starting.
+        pass
     try:
         yield
     finally:
@@ -268,6 +289,22 @@ def _submit(
             f'Model "{compound_id}" is not available on this gateway.',
             "MODEL_NOT_FOUND",
         )
+    # An idempotency key identifies one request, and a request has a modality.
+    # The replay lookup matched on the key alone, so posting to
+    # `/v1/images/generations` with a key already used on `/v1/chat/responses`
+    # returned the *chat* job's envelope with HTTP 200 — the image was never
+    # made, and the caller was told to poll a chat job. The read routes already
+    # treat a cross-modality key as a mismatch (404); the write path has to
+    # refuse it rather than answer with another modality's work.
+    if idempotency_key:
+        existing = store.find_by_idempotency_key(idempotency_key)
+        if existing is not None and existing["modality"] != modality:
+            raise GatewayError(
+                409,
+                f"That Idempotency-Key was already used for a {existing['modality']} request. "
+                f"A key identifies one request; use a new one for this {modality} request.",
+                "IDEMPOTENCY_KEY_REUSED",
+            )
     return store.submit(
         modality=modality,
         model_id=model["model_id"],
@@ -325,7 +362,15 @@ def account_overview() -> dict[str, Any]:
 
 
 @app.get("/v1/account/jobs", dependencies=[Depends(require_auth)])
-def account_jobs(page: int = 1, page_size: int = 20) -> dict[str, Any]:
+def account_jobs(
+    page: int = Query(1, ge=1), page_size: int = Query(20, ge=1, le=200)
+) -> dict[str, Any]:
+    # Bounded, because an unbounded `int` query parameter is not a small thing:
+    # FastAPI parses arbitrary-precision Python ints, and `page_size` went
+    # straight into a SQL `LIMIT ?`, so `?page_size=99999999999999999999999`
+    # raised `OverflowError: Python int too large to convert to SQLite INTEGER`
+    # — a 500, from a URL. `page_size=-1` was worse in a quieter way: that is
+    # SQLite's "no limit", so a caller could ask for every job ever recorded.
     rows = store.recent(page_size)
     return {
         "items": [
@@ -490,6 +535,19 @@ def chat_completions(payload: dict[str, Any]) -> dict[str, Any]:
     except BackendError as exc:
         # Never 402: a drained provider account must not lock Story Studio's key.
         raise GatewayError(502, str(exc), exc.code) from exc
+    except Exception as exc:  # noqa: BLE001
+        # Catch *everything*, not just the errors we predicted.
+        #
+        # This is the only synchronous route — the durable one runs in a worker
+        # that already settles any exception as a failed job — so an adapter bug
+        # is the one place where "the provider sent something odd" leaves the
+        # gateway as a 500, and a 500 from the rollback transport is a wall Story
+        # Studio cannot get past. A provider answering 200 with a non-JSON body,
+        # or a JSON list instead of an object, is enough: `response.json()` and
+        # the `.get` right after it are both unguarded upstream.
+        raise GatewayError(
+            502, f"Provider '{definition.display_name}' could not be read: {exc}", "BACKEND_ERROR"
+        ) from exc
 
     return {
         "id": f"chatcmpl-{int(time.time() * 1000)}",
@@ -611,6 +669,25 @@ def get_video_file(job_id: str) -> Response:
 # ---------------------------------------------------------------------------
 # TTS
 # ---------------------------------------------------------------------------
+def _voice_tier(voice_id: Any) -> str:
+    """The tier of the voice the quote names, in the catalogue's own words.
+
+    A quote used to answer a flat `"standard"` for every voice, while the voice
+    catalogue publishes `custom` for the owner's own stock and `library` for a
+    provider's public library — so the same voice was described two ways
+    depending on which endpoint answered. An unknown or absent voice keeps
+    `standard`, which is what the caller is actually asking about in that case.
+    """
+    from . import voices as voices_module
+
+    if not voice_id:
+        return "standard"
+    found = voices_module.voice_registry().find(str(voice_id))
+    if found is None:
+        return "standard"
+    return "custom" if found.source != voices_module.SOURCE_LIBRARY else "library"
+
+
 @app.post("/v1/tts/quotes", dependencies=[Depends(require_auth)])
 def tts_quote(payload: dict[str, Any]) -> dict[str, Any]:
     model_id = str(payload.get("model_id") or "")
@@ -618,15 +695,28 @@ def tts_quote(payload: dict[str, Any]) -> dict[str, Any]:
     if definition is None or model is None:
         raise GatewayError(404, f'TTS model "{model_id}" is not available.', "MODEL_NOT_FOUND")
     text = str(payload.get("text") or "")
+    # The limit comes from the same function that builds the catalogue row, so the
+    # two cannot disagree. This used to be a flat 40,000 — the FIGURE the
+    # catalogue had already stopped publishing: it over-promised the local lane by
+    # 60% and Fish by eight times, and it meant Story Studio validated a narration
+    # against a limit that contradicted the model row it came from.
+    #
+    # It cannot be read off the catalogue row here: `catalog.resolve` returns the
+    # *inventory* model (raw provider fields), not the published row.
+    from .catalog import _TTS_CHARACTERS_DEFAULT, _tts_characters
+
+    limit = _tts_characters(str(model.get("model_id") or ""), model, definition)
+    if not isinstance(limit, int) or limit <= 0:
+        limit = _TTS_CHARACTERS_DEFAULT
     return {
         "model_id": model_id,
         "model_name": model["display_name"],
         "voice_id": payload.get("voice_id"),
-        "voice_tier": "standard",
+        "voice_tier": _voice_tier(payload.get("voice_id")),
         "billable_characters": len(text),
         "speed": payload.get("speed", 1.0),
         "estimated_duration_ms": int(max(len(text) / 14.0, 0.5) * 1000),
-        "maximum_input_characters": 40000,
+        "maximum_input_characters": limit,
         "controls": payload.get("controls", {}),
         "credits": 0,
         "maximum_credits": 0,
@@ -734,17 +824,38 @@ async def transcription_quote(
 ) -> dict[str, Any]:
     """Accept the audio upload and quote it.
 
-    Story Studio uploads the media here (multipart) and only later confirms,
-    so the bytes are held between the two calls. A JSON body is also accepted
-    for callers that upload separately.
+    Story Studio uploads the media here (multipart) and only later confirms, so
+    the bytes are held between the two calls.
+
+    A JSON body is also accepted, and it is a **price-only** quote: it names a
+    model and holds no audio, so the confirm for it will refuse for lack of audio
+    rather than pretending the quote expired. It used to be advertised as "for
+    callers that upload separately", which was never true — there is no route
+    that uploads separately, so every confirm of a JSON quote answered 410 and
+    the caller's only option was to re-quote the same way and fail again.
     """
     import uuid
 
     quote_id = str(uuid.uuid4())
     body_model = model
     if file is None and request.headers.get("content-type", "").startswith("application/json"):
-        payload = await request.json()
-        body_model = body_model or str(payload.get("model") or "")
+        # A body that cannot be read is the caller's problem, and it has to be
+        # answered as one. `await request.json()` raises on an empty body or
+        # malformed JSON, and unhandled that became a **500** — for a request that
+        # is merely incomplete, and on the endpoint Story Studio uses to send audio.
+        try:
+            payload = await request.json()
+        except Exception:  # noqa: BLE001 - any unreadable body is a bad request
+            raise GatewayError(
+                400,
+                "Expected a JSON body with a model, or an audio file to upload.",
+                "INVALID_REQUEST",
+            )
+        if not isinstance(payload, dict):
+            raise GatewayError(400, "Expected a JSON object.", "INVALID_REQUEST")
+        body_model = str(body_model or payload.get("model") or "")
+        _prune_uploads(now := time.time())
+        _UPLOADS[quote_id] = (None, "", "", now, body_model)
         return {
             "id": quote_id,
             "quoted_credit_cost": 0,
@@ -755,12 +866,13 @@ async def transcription_quote(
 
     if file is not None:
         content = await file.read()
-        _prune_uploads(time.time())
+        _prune_uploads(now := time.time())
         _UPLOADS[quote_id] = (
             content,
             file.filename or "audio.mp3",
             file.content_type or "application/octet-stream",
-            time.time(),
+            now,
+            str(body_model or ""),
         )
 
     return {
@@ -776,8 +888,9 @@ async def transcription_quote(
     "/v1/audio/transcriptions/quotes/{quote_id}/confirm",
     dependencies=[Depends(require_auth)],
 )
-def confirm_transcription(
+async def confirm_transcription(
     quote_id: str,
+    request: Request,
     response: Response,
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
     model: str | None = Form(default=None),
@@ -791,9 +904,39 @@ def confirm_transcription(
             410, "transcription quote has expired", "TRANSCRIPTION_QUOTE_EXPIRED"
         )
 
-    content, name, content_type, _ = upload
-    # Resolve the model from the quote's model when the confirm omits it.
-    model_id = model or _quote_model(quote_id)
+    content, name, content_type, _, _quoted_model = upload
+    # The model may arrive as a form field or a JSON body. It has to be read from
+    # both: `model` is declared as a Form field, and Starlette returns an *empty*
+    # form for a non-form content type, so a JSON confirm silently fell through to
+    # the fallback and ran a model the caller never asked for.
+    if model is None and request.headers.get("content-type", "").startswith("application/json"):
+        try:
+            body = await request.json()
+        except Exception:  # noqa: BLE001 - an unreadable body just means "no model given"
+            body = None
+        if isinstance(body, dict) and body.get("model"):
+            model = str(body["model"])
+
+    if content is None:
+        raise GatewayError(
+            400,
+            "That quote carries a price but no audio. Upload the audio with the "
+            "quote — POST /v1/audio/transcriptions/quotes with the file — then confirm.",
+            "TRANSCRIPTION_AUDIO_MISSING",
+        )
+
+    # Resolve the model from the quote's own model when the confirm omits it, so
+    # the model that runs is the model that was quoted.
+    model_id = _quote_model(quote_id, model)
+    if not model_id:
+        raise GatewayError(
+            404, "No transcription model is available.", "MODEL_NOT_FOUND"
+        )
+    definition, _ = catalog.resolve("transcription", model_id)
+    if definition is None:
+        raise GatewayError(
+            404, f'Model "{model_id}" is not available.', "MODEL_NOT_FOUND"
+        )
 
     # Job params are persisted as JSON, so raw audio cannot travel inside them.
     # Stage the upload on disk and pass a path; the adapter reads it back. This
@@ -816,8 +959,19 @@ def confirm_transcription(
     return _job_envelope(job)
 
 
-def _quote_model(quote_id: str) -> str:
-    """Fall back to the first enabled transcription model."""
+def _quote_model(quote_id: str, asked: str | None) -> str:
+    """The model this quote will actually run.
+
+    The quote's own model wins, because that is the model the caller was quoted
+    and the one it will confirm. Only a quote that named none falls back, and the
+    fallback is the first *enabled* transcription row — not merely the first row,
+    which could be one the owner has switched off.
+    """
+    stored = _UPLOADS.get(quote_id)
+    if asked:
+        return asked
+    if stored and stored[4]:
+        return stored[4]
     rows = catalog.rows("transcription")
     return str(rows[0]["id"]) if rows else ""
 
