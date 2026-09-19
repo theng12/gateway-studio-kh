@@ -423,6 +423,24 @@ direct `curl` against the configured port.
 Always rebuild before claiming the app works: `./menubar/build.sh`, which installs
 to `/Applications/gateway-kh.app`. **"It builds" is not "it works."**
 
+**Restarting the app is not the same as restarting the gateway, and a stale one
+survives a rebuild.** The gateway deliberately outlives the app, so on launch the
+app **adopts** whatever already answers `/health` instead of spawning a new one.
+Two ways this bit:
+
+  * `pkill -f "GatewayKH"` **kills the shell running it**, because that shell's own
+    command line contains the pattern. The rest of the command never runs, so the
+    uvicorn is never killed and the next `open` adopts it. Measured: a gateway from
+    21:47 was still serving at 23:33, through four "rebuild and restart" cycles —
+    one of which had already been reported as verified.
+  * even without that, killing the app only triggers a spawn that **fails to bind**
+    if the old gateway is still holding 8000, and the app then adopts the old one.
+
+So: **kill by PID, never by pattern**, confirm port 8000 is actually free, and
+confirm the gateway PID *changed* before measuring anything. A verification is only
+evidence if it names the process it measured. `pgrep -f` for reading is fine; only
+`pkill -f` is dangerous, and only when the pattern appears in your own command.
+
 ## Working rules
 
 - **Never hand another session a description of behaviour that is not deployed yet.** A handoff
