@@ -2156,6 +2156,74 @@ def main() -> int:
                   and report["clip"]["has_transcript"] is True,
                   f"{report['clip']}")
 
+            # ------------------------------------------------------------------
+            print("\n\033[1m21. How a reference clip is read, and how it is reported\033[0m")
+            # `_transcribe` asks the Hub for word timings, then reads the job's own
+            # `metadata.segments` (the SRT artifact route cannot carry them at all).
+            # Measured against the real Hub: whisper-base-mlx returns an empty
+            # `words` list, so cue passthrough is today's real path and the word
+            # expansion is what a future engine will use.
+            from gateway.voice_import import _segments_from_metadata, _span
+
+            hub_shape = {"metadata": {"segments": [
+                {"id": 0, "start": 0.92, "end": 4.82, "text": "But at his feet, a small fox.", "words": []},
+                {"id": 1, "start": 6.14, "end": 9.6, "text": "Its hind leg was bent.", "words": []},
+            ]}}
+            cues = _segments_from_metadata(hub_shape)
+            check("cue-level segments pass through unchanged",
+                  cues == [{"start": 0.92, "end": 4.82, "text": "But at his feet, a small fox."},
+                           {"start": 6.14, "end": 9.6, "text": "Its hind leg was bent."}],
+                  f"{cues}")
+
+            wordy = {"metadata": {"segments": [{
+                "start": 0.0, "end": 2.0, "text": "Hello there friend",
+                "words": [{"word": "Hello", "start": 0.0, "end": 0.6},
+                          {"word": "there", "start": 0.7, "end": 1.1},
+                          {"word": "friend", "start": 1.2, "end": 2.0}]}]}}
+            check("word timings are expanded, because window selection cuts on them",
+                  [s["text"] for s in _segments_from_metadata(wordy)] == ["Hello", "there", "friend"],
+                  f"{_segments_from_metadata(wordy)}")
+            # All-or-nothing: one cue offering words while another offers none
+            # would describe audio the other cue does not agree with.
+            mixed = {"metadata": {"segments": [
+                {"start": 0.0, "end": 1.0, "text": "one", "words": [{"word": "one", "start": 0, "end": 1}]},
+                {"start": 1.0, "end": 2.0, "text": "two three", "words": []},
+            ]}}
+            check("a partial word list falls back to the cues",
+                  [s["text"] for s in _segments_from_metadata(mixed)] == ["one", "two three"],
+                  f"{_segments_from_metadata(mixed)}")
+
+            check("a span that cannot be trusted is dropped, not sent to be refused",
+                  _span("x", 1, "t") is None and _span(2, 1, "t") is None
+                  and _span(0, 1, "   ") is None and _span(-1, 1, "t") is None,
+                  f"{_span(2, 1, 't')} / {_span(0, 1, '   ')}")
+            check("no metadata yields no segments rather than an exception",
+                  _segments_from_metadata({}) == []
+                  and _segments_from_metadata({"metadata": None}) == []
+                  and _segments_from_metadata({"metadata": {"segments": "nonsense"}}) == [])
+
+            # A voice with no clip at all must be told so. Computing a verdict per
+            # model from a clip that does not exist answered "used whole" for every
+            # one of them — a provider voice, described as though its recording had
+            # been measured here.
+            payload = json.loads((tmp / "voices.json").read_text())
+            payload["voices"].append({
+                "id": "voice-no-clip", "display_name": "No Clip Voice",
+                "language": "en", "description": "No Clip Voice",
+                "reference_transcript": "", "reference_segments": [],
+            })
+            (tmp / "voices.json").write_text(json.dumps(payload))
+            bare = req(client, "GET",
+                       "/admin/api/voices/studio-hub-local::voice-no-clip/reference").json()
+            check("a voice with no clip reports that instead of a verdict per model",
+                  bare["models"] == [] and bare["clip"]["present"] is False
+                  and "no reference clip" in str(bare.get("note")),
+                  f"{bare.get('note')} / models={len(bare['models'])}")
+            check("and a voice with a clip still reports present",
+                  req(client, "GET",
+                      "/admin/api/voices/studio-hub-local::voice-mock/reference")
+                  .json()["clip"]["present"] is True)
+
     finally:
         for proc in processes:
             try:

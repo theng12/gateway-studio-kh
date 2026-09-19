@@ -917,7 +917,11 @@ def main() -> int:
         check("offers a per-model reference report",
               press_detail_button("Reference"), f"{voices_buttons}")
         # The report is a modal, so the suite has to close it or everything after
-        # this talks to an alert instead of the window.
+        # this talks to an alert instead of the window. Matched on the *shape* of a
+        # modal — one button, titled OK — rather than on its wording: the wording
+        # depends on the voice (a local voice gets the per-model table, a provider
+        # voice gets "no reference clip on this Mac"), and matching one sentence
+        # left the other alert open, which failed the next 29 checks.
         for _ in range(12):
             time.sleep(1.0)
             closed = osa(wrap('''
@@ -925,12 +929,12 @@ def main() -> int:
                     set hit to "no"
                     repeat with w in windows
                         try
-                            repeat with t in (static texts of w)
-                                if (value of t as string) contains "local model uses this recording" then
+                            if (count of buttons of w) is 1 then
+                                if (title of button 1 of w) is "OK" then
                                     click button 1 of w
                                     set hit to "yes"
                                 end if
-                            end repeat
+                            end if
                         end try
                     end repeat
                     return hit
@@ -938,9 +942,15 @@ def main() -> int:
             if closed.strip() == "yes":
                 break
         time.sleep(1.5)
-        check("and the report says how many models it checked",
-              "Checked" in detail_texts() and "local models" in detail_texts(),
-              detail_texts()[-160:])
+        # Which sentence comes back depends on the voice in row 1: a local voice
+        # gets the per-model table, a provider voice gets "no reference clip on
+        # this Mac" — because its audio lives with the provider and computing a
+        # verdict here would invent one. Both are the report answering.
+        answer = detail_texts()
+        check("and the report answers for whichever voice is selected",
+              ("Checked" in answer and "local models" in answer)
+              or "No local reference clip" in answer,
+              answer[-160:])
     else:
         skip("offers a per-model reference report", "the button is not in the bar")
 

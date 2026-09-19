@@ -525,6 +525,33 @@ def voice_reference(voice_id: str) -> dict[str, Any]:
     segments = [s for s in (raw.get("reference_segments") or []) if isinstance(s, dict)]
     transcript = str(raw.get("reference_transcript") or "").strip()
     duration = raw.get("duration_seconds")
+    path = str(raw.get("reference_path") or "")
+
+    # A provider voice — ElevenLabs', Fish's — has **no clip on this Mac at all**;
+    # its audio lives with the provider and the provider applies its own rules.
+    # Computing a verdict per local model from a clip that does not exist said
+    # "used whole" for every one of them: a confident answer to a question nobody
+    # asked, and exactly the kind of output the rest of this file exists to avoid.
+    if not path and not segments:
+        return {
+            "voice_id": voice.id,
+            "display_name": voice.display_name,
+            "clip": {
+                "present": False,
+                "duration_seconds": duration,
+                "speech_seconds": None,
+                "segments": 0,
+                "has_transcript": bool(transcript),
+                "path": "",
+            },
+            "models": [],
+            "note": (
+                f"This voice has no reference clip on this Mac. It belongs to "
+                f"{voice.provider_id} and is used on that provider's side, which "
+                "applies its own rules — reference windows here govern local "
+                "voices only."
+            ),
+        }
     # The Hub trims to speech before it compares against a window, so the span
     # the transcript covers is the honest measure of "will this be cut" — and it
     # is reported next to the clip length rather than instead of it.
@@ -589,11 +616,12 @@ def voice_reference(voice_id: str) -> dict[str, Any]:
         "voice_id": voice.id,
         "display_name": voice.display_name,
         "clip": {
+            "present": True,
             "duration_seconds": duration,
             "speech_seconds": speech_span,
             "segments": len(segments),
             "has_transcript": bool(transcript),
-            "path": str(raw.get("reference_path") or ""),
+            "path": path,
         },
         "models": models,
     }

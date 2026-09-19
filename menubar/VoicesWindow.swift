@@ -640,6 +640,20 @@ final class VoicesSection: NSObject, AppSection, NSTableViewDataSource, NSTableV
         let clip = payload["clip"] as? [String: Any] ?? [:]
         let models = payload["models"] as? [[String: Any]] ?? []
 
+        // A provider voice has no clip here, so there is nothing to report per
+        // model. Say that, rather than showing a table that would have to invent
+        // a verdict for every model.
+        if let note = payload["note"] as? String, models.isEmpty {
+            let alert = NSAlert()
+            alert.messageText = name
+            alert.informativeText = note
+            alert.alertStyle = .informational
+            alert.addButton(withTitle: "OK")
+            alert.runModal()
+            report("No local reference clip for this voice.", ok: true)
+            return
+        }
+
         // "Not measured" rather than a plausible number: a voice imported before
         // its duration was recorded genuinely does not state one.
         func length(_ value: Any?) -> String {

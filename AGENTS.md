@@ -407,7 +407,8 @@ success.
 ### A reference clip's contract belongs to the model, and the Hub states it
 
 **Read it, never derive it.** `/api/hub/catalog` publishes, per model, a
-`reference_audio` block — measured on Hub 0.6.18 against this Mac:
+`reference_audio` block — measured on Hub 0.6.18 and **re-verified unchanged on
+0.6.23**, which the Hub auto-updated itself to mid-session:
 
 | | min | target | preferred | max | transcript |
 |---|---|---|---|---|---|
@@ -479,7 +480,7 @@ model name.
 ## Verification
 
 ```bash
-.venv/bin/python tests/test_e2e.py              # 337 checks, isolated mock upstream
+.venv/bin/python tests/test_e2e.py              # 344 checks, isolated mock upstream
 .venv/bin/python tests/test_fleet_standalone.py # 45 checks, real Hub(s) as locations
 .venv/bin/python tests/test_ui.py               # 107 checks, drives the real app
 ```
@@ -502,6 +503,19 @@ payload and the `X-Hub-Token` it was sent) precisely so the fan-out can be
 exercised without touching his machine. `test_fleet_standalone.py` is deliberately
 different: it uses his real Hub on purpose, which is why it is the suite to run
 knowingly.
+
+**Two of its checks fail when the Hub's own Subtitle worker is unwell, and that is
+not a gateway defect.** "a transcription ran on the location end to end" and "the
+artifact comes back through the gateway" drive a real transcription through the
+Hub's subtitle worker. Measured on 2026-09-20: the Hub **auto-updated itself from
+0.6.18 to 0.6.23 mid-suite**, restarting its workers underneath an in-flight job,
+and the suite reported `Hub lost contact with a possibly accepted Subtitle worker
+attempt`. Afterwards the worker was alive and answering (401 on `/health` in
+1.7 ms) but had never loaded a model — 11 open files, 38 MB RSS — and a direct
+`_transcribe` of a 13 s clip that had taken ~30 s earlier **timed out at 400 s**.
+Read the failure, not just the count: a worker that answers `/health` is not a
+worker that transcribes, and the gateway's voice annotation depends on this same
+route.
 
 **`test_ui.py` drives the real, installed app**, so run it deliberately rather than
 reflexively. It takes over the app's windows through Accessibility, and loading new
@@ -588,7 +602,13 @@ environment's business, and the stale case was verified by hand).
   behaviour nobody had verified.
 - Prefer the **graphify** graph (`graphify-out/`, gitignored, rebuildable) over
   grepping for architecture, caller and impact questions. Keep it current with
-  `graphify extract . --update` after structural work.
+  `graphify extract . --update` after structural work. Two things it needs around
+  it: the docs in the tree need an LLM key, so run it as
+  `graphify extract . --update --code-only` unless someone wants to spend a key on
+  the prose (the code graph is the part that answers architecture questions); and
+  it reports a **syntax error in `menubar/VoicesWindow.swift`** that is a parser
+  limitation, not a defect — `swiftc -parse` is clean and the app builds, so check
+  the compiler before believing it.
 - **A page must never be able to resize the window.** A section pinned straight
   to the host propagates its content's *required* height outwards, and AppKit
   satisfies it by growing the NSWindow — the Fleet page did exactly that, to
