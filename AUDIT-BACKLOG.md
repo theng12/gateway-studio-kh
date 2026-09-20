@@ -521,15 +521,34 @@ instead.***
 
 ## What to do next, in order
 
-1. Shape 2.1, 2.2 (video modes, voice language) — both are published wrong facts
-   with a stated source available to read instead.
-2. Shape 3.1 (curated limits in the model's own field) — the `8192` bug's sibling,
-   and the same `limit_source` fix already exists in the codebase.
-3. Shape 6.2 and 6.3 — a hand-edited `.env` that does nothing, and a re-imported
-   voice that keeps playing the old take.
-4. Shape 3 "the one that is now actually wrong" — Orpheus's 170-character cap:
-   needs the owner's decision.
+Every HIGH and MED-HIGH finding is now closed. What is left is MED and below, in
+the order worth doing:
 
+1. **Shape 6.4 — the 30-minute `freshness.stale` gate is unreachable**, because
+   `freshness()` calls `rebuild()` first and resets the clock. Story Studio is told
+   `stale: false, ageMs ≈ 0` about a list assembled from a cache that can be days
+   old. **This one needs your decision and must not be changed silently**: making
+   the gate fire would disable every model on a stale inventory — a visible outage —
+   so the choice is between an honest inventory age and a gate that can trip.
+2. **Shape 2.1, 2.2 — video modes and voice language are published wrong**, with a
+   stated source that could be read instead.
+3. **Shape 1.2 and 6.6 — `/health` says "running" from a URL in a file, and the
+   Fleet page's Refresh does not discover models.** Both are the same defect as the
+   counts that read "enabled" as "offered": the page that exists to say what is
+   available is not measuring it.
+4. **Shape 4.4 — a disabled model still runs if it was disabled after submit**, and
+   a Hub refresh that flips `catalogued` mid-queue does not stop the job.
+5. The rest of Shape 3 — values we invented sitting in a provider's own field —
+   behind the `*_source` convention you have not chosen yet.
+
+Decisions still yours: 6.4 above (add `discovery_age_ms`, or let `stale` trip);
+Shape 3.1 (companion `*_source` fields for the curated limits); and Shape 3 "the one
+that is now actually wrong" — Orpheus publishes a 25,000-character limit while
+AGENTS.md says its engine caps at 170, so either it is unticked or the Hub serves
+`TextGuidance`.
+
+Done in Batch 3: 6.2 (`.env` read live), 6.3 (placement cache keyed on the clip),
+6.5 (a voice listed twice), 5.3 (bytes are a voice's identity).
 Done in Batch 2: 5.1 (the operator token), 1.1 (routing × `can_publish`), 4.10 /
 1.10 (`_VALID_KINDS`).
 Done in Batch 1: 4.1, 4.2, 5.2, and Shape 5.5's app half.
