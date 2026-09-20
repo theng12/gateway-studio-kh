@@ -24,6 +24,57 @@ instances across the console and the menu bar.
 
 ---
 
+## Decisions closed — do not reopen (2026-09-20)
+
+Three threads the owner settled. Recorded so a later session does not spend time
+re-investigating them.
+
+- **OpenCode Zen / Go — not accepted. Do not raise it again.** Kept only so nobody
+  repeats the work: `GET https://opencode.ai/zen/v1/models` *is* public (200, 74
+  models), which is what makes third-party "no API key, no signup" plugins look
+  functional — but `POST …/chat/completions` with a free model answers
+  `403 FreeTierError: "OpenCode's free tier can only be used from within OpenCode"`,
+  identically across four User-Agents, and that wording gates on the *client* rather
+  than on credentials, so an API key would not lift it. Paid models keyless answer
+  `401 AuthError: Missing API key`. The free capacity the owner wanted is already
+  wired elsewhere — 26 free rows offered through OpenRouter and Token Harbor,
+  including `deepseek-v4-flash:free`, the same model Zen gives away.
+- **Kie V6 end-to-end — deferred to the owner.** He will run the generation himself
+  and report; if it fails we fix it then. The lane is restored and reachable
+  (`kie-ai-images::V6` is published in `/v1/music/models`); what has never been proven
+  is a *real* generation through the gateway, which costs about 12 credits. Do not
+  spend them.
+- **The fleet suite's two Hub-transcription failures — resolved, and not a defect.**
+  "a transcription ran on the location end to end" and "the artifact comes back
+  through the gateway" failed on three consecutive runs while the Hub's voice runtime
+  held a worker at 38 MB RSS that had loaded no model. A Studio Hub quit/reopen
+  cleared it: **fleet 50/50**. The documented remedy on that Mac — restart the Hub,
+  do not file it as a gateway bug — was correct, and re-running the suite was never
+  going to fix it.
+
+## Reaching this gateway from another device (Tailscale)
+
+Verified on this Mac on 2026-09-20, whose Tailscale address is `100.118.161.120`:
+
+1. Set `GATEWAY_HOST=0.0.0.0` in `.env` (the app writes `127.0.0.1` there when the key
+   is absent, and Settings → Save touches it).
+2. Restart the gateway. `http://100.118.161.120:8000` then answers **and**
+   `http://127.0.0.1:8000` still does. That second half matters: binding the Tailscale
+   address *alone* leaves loopback dark and silently breaks Story Studio's configured
+   `genstudio_url`. Use `0.0.0.0`, never the Tailscale address by itself.
+3. The first request from another device is refused, and so is one from this Mac:
+   `/admin/*` demands the gateway key whenever the bind is not loopback, because the
+   check is about the bind rather than the caller. The console then shows a key field
+   naming that reason — paste the key from Settings once and that browser remembers
+   it. The menu-bar app injects the key itself, so it never asks.
+4. `/v1/...` still wants the Story Studio key, unchanged.
+
+Both halves were broken before `75ddb9e`: `spawn` passed `--host 127.0.0.1` on the
+command line whatever `.env` said, so the setting was a lie, and the console had no way
+to send a key at all. Contents needed fixing too — an `<img src>` sends no headers, so
+previews and downloads fetch bytes and use a blob URL rather than putting the key in a
+URL.
+
 ## A second result from one request, and the index that was accepted and ignored (2026-09-20)
 
 The owner asked: *"for the cloud api providers. do we retain the generated assets
