@@ -771,7 +771,15 @@ def main() -> int:
     check("reports the gateway as running", "Gateway running" in body, body[:120])
     check("shows the endpoint and uptime", "127.0.0.1:" in body and "up " in body)
     check("shows provider counts", "/18" in body)
-    check("shows a model count", "discovered" in body)
+    # **"enabled", not "discovered".** The tile read "Offered of N discovered" while
+    # N counted only models on providers that are switched on, so turning a provider
+    # off made the *discovered* count fall — the opposite of what the word means. It
+    # reads "Offered of N enabled" now, which is also the set the withheld count is
+    # taken from, so the sentence adds up. Asserted as a count rather than as the word
+    # that happened to be there.
+    check("shows a model count",
+          "Offered of " in body and "enabled" in body,
+          [line for line in body.splitlines() if "Offered" in line][:2])
     check("shows the modality breakdown", "OFFERED TO STORY STUDIO" in body.upper())
     check("shows the local runner state", "Studio Hub" in body)
 
