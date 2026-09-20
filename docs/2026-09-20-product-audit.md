@@ -14,7 +14,7 @@ My design assessment: retain the native app and the single gateway API. Concentr
 
 ### P1: keyless network mode admits arbitrary bearer tokens
 
-[MEASURED, source] `gateway/api.py:167` and `gateway/admin.py:69` only reject a token mismatch when the configured key is nonempty. `gateway/config.py:267` explicitly describes keyless use as a loopback development convenience; changing the bind address does not add an equivalent key requirement to either guard. The live host was loopback during the audit; this is a configuration-triggered defect, not a claim of an observed intrusion.
+[MEASURED, source] `gateway/api.py:168` and `gateway/admin.py:66` only reject a token mismatch when the configured key is nonempty. `gateway/config.py:267` explicitly describes keyless use as a loopback development convenience; changing the bind address does not add an equivalent key requirement to either guard. The live host was loopback during the audit; this is a configuration-triggered defect, not a claim of an observed intrusion.
 
 Repair: refuse authenticated API access when bound beyond loopback without a configured key. Preserve the documented local development behavior and live key rotation.
 
@@ -52,13 +52,13 @@ Repair: enforce the restriction in the shared publication rule for the actual Op
 
 ### P2: Audio lacks a usable voice-selection flow
 
-[MEASURED, UI and source] Audio offers a plain Voice text field (`CreateField.Kind.voice` becomes `NSTextField`). The model-aware `/v1/voices?model_id=…` endpoint already exists (`gateway/api.py:510`), but this screen does not use it.
+[MEASURED, UI and source] Audio offers a plain Voice text field (`CreateField.Kind.voice` becomes `NSTextField`). The model-aware `/v1/voices?model_id=…` endpoint already exists (`gateway/api.py:507–509`), but this screen does not use it.
 
 Next work: searchable compatible voices, language and provider labels, preview, and a clear route to import/manage voices. Keep explicit-ID entry as an advanced escape hatch. Never choose an unrequested speaker silently or broaden private-voice permissions.
 
 ### P2: Create layout has conflicting width requirements
 
-[MEASURED, UI and source] Audio help text was clipped in the rendered app. The form column is fixed at 390 points, but `PageKit.formRow` requests a 150-point label, a 12-point gap, and a 330-point control: 492 points. The output requires at least 320 points, and completed text output requests 520 points. See `CreateSection.swift:172–173, 211, 242–257, 461` and `PageKit.swift:122–149`.
+[MEASURED, UI and source] Audio help text was clipped in the rendered app. The form column is fixed at 390 points, but `PageKit.formRow` requests a 150-point label, a 12-point gap, and a 330-point control: 492 points. The output requires at least 320 points, and completed text output requests 520 points. See `CreateSection.swift:164–165, 207, 252, 259, 463` and `PageKit.swift:112, 125–142`.
 
 Next work: labels above controls within Create, flexible controls, and an output pane that stacks below the form in a narrow window. Preserve system fonts, native focus rings, keyboard access, and light/dark appearance. Verify empty, long-result, failure, and upload states at the minimum window size.
 

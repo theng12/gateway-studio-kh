@@ -30,6 +30,13 @@ pass. The native check validates state, not rendered layout. Paid generations,
 Content Pack installation and restart reconciliation remain unverified. The
 running app has not been restarted to activate this batch.
 
+[MEASURED] Local bundle `menubar/build/gateway-kh.app` was built with
+`./menubar/build.sh --no-install`, stamp `91b45db-202609201216`. Its bundled
+modified Python sources match code checkpoint `91b45db`; its isolated API import
+passed (55 routes), and `codesign --verify --deep --strict` passed. This is build
+and import verification, not an installed-app UI pass. No Git remote is configured;
+work remains on `codex/app-audit-foundation`.
+
 ---
 
 Written 2026-09-20 after the owner asked: *"can you see any patterns of bug we
