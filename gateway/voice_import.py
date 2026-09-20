@@ -423,7 +423,10 @@ def push_fields(entry: dict) -> dict:
         "voice_id": shared_voice_id(entry),
         "audio_sha256": str(entry.get("audio_sha256") or ""),
         "name": str(entry.get("display_name") or "")[:200],
-        "language": (str(entry.get("language") or "en"))[:40],
+        # Verbatim. `shared_readiness` refuses a voice with no language before this
+        # is reached, so a fallback here would only ever hide a claim — and "en" was
+        # exactly that claim reaching the fleet.
+        "language": str(entry.get("language") or "")[:40],
         "gender": str(entry.get("gender") or "n"),
         "license": str(entry.get("license") or DEFAULT_LICENSE),
         "notes": str(entry.get("description") or ""),
@@ -547,6 +550,23 @@ def voice_id_for_digest(digest: str) -> str:
     return f"voice-{digest[:12]}"
 
 
+def _metadata_for_file(audio: Path) -> dict:
+    """A loose clip's own facts, from a sibling `<name>.json` when it has one.
+
+    Loose files used to have no way to state anything, so their language was
+    *assumed* to be English. Reading a sidecar is the same treatment the transcript
+    already gets (`<name>.txt`), and it costs nothing when the file is absent.
+    """
+    sidecar = audio.with_suffix(".json")
+    if not sidecar.exists():
+        return {}
+    try:
+        payload = json.loads(sidecar.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
 def _audio_in(directory: Path) -> Path | None:
     """The reference clip inside a voice folder.
 
@@ -628,7 +648,13 @@ def discover(folder: Path) -> tuple[list[dict], list[dict]]:
                 "slug_id": f"voice-{_slug(entry.name)}",
                 "display_name": _short_name(full_name) or entry.name,
                 "full_name": full_name,
-                "language": str(metadata.get("language") or "en"),
+                # **Not `or "en"`.** A clip whose language nobody stated was stored
+                # as English and republished as this voice's own, which also made the
+                # readiness gate's "it has no language" unreachable. The Hub really
+                # does require a language ("language is required"), so the honest
+                # sequence is: store nothing, refuse the push locally in one sentence,
+                # and let the owner state it.
+                "language": str(metadata.get("language") or ""),
                 "gender": metadata.get("gender"),
                 "audio": audio,
                 "transcript": _text(entry / "transcript.txt"),
@@ -637,12 +663,20 @@ def discover(folder: Path) -> tuple[list[dict], list[dict]]:
             # A loose file is a voice: one clip, one entry. Any sidecar transcript
             # beside it is used if it is there.
             full_name = entry.stem
+            # A loose clip is a voice with no folder to carry its facts, so a sibling
+            # `<name>.json` is read if it is there — the same way the transcript
+            # sidecar already is. **Without it the language is empty, not "en":** a
+            # bare audio file states nothing, and inventing English is what made the
+            # fleet receive a voice labelled in a language nobody chose. A voice with
+            # no language cannot be pushed, and the readiness gate says so in one
+            # sentence before the Hub would answer 400 naming only a field.
+            sidecar = _metadata_for_file(entry)
             item = {
                 "slug_id": f"voice-{_slug(entry.stem)}",
-                "display_name": _short_name(full_name) or entry.stem,
+                "display_name": _short_name(str(sidecar.get("name") or full_name)) or entry.stem,
                 "full_name": full_name,
-                "language": "en",
-                "gender": None,
+                "language": str(sidecar.get("language") or ""),
+                "gender": sidecar.get("gender"),
                 "audio": entry,
                 "transcript": _text(entry.with_suffix(".txt")),
             }

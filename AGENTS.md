@@ -51,6 +51,24 @@ differently — `context_length` vs `inputTokenLimit`, `top_provider.max_complet
 vs `outputTokenLimit`, `maximum_text_length_per_request` — so read every spelling
 before concluding a provider said nothing.
 
+**A published `0` is a claim, and an `or` chain throws it away.** `_first_stated()`
+exists because `raw.get("context_length") or raw.get("context_window") or …` treats a
+stated `0` as absent: the lookup falls through, `_stated` and `limits.gap` — both
+written specifically to preserve a stated zero — never see one, and the owner's
+curated value is published *as the provider's*. Read every spelling with a
+first-non-`None` lookup, never with `or`.
+
+**A voice's language is stated or it is absent — never assumed English.** Imports
+used to store `"en"` for any clip whose metadata said nothing, which reached the fleet
+as a claim and made the readiness gate's "it has no language" unreachable. A folder
+reads its `metadata.json`; a loose clip reads a sibling `<name>.json` (as it already
+read a sibling `.txt`); nothing stated means `""`, and `story_row` then publishes
+Story Studio's `"multilingual"` sentinel. **The Hub requires a language** (`raise
+ValueError("language is required")`), so a language-less voice is refused a fleet push
+locally in one sentence — which is the gate working, not a regression. The ten voices
+imported before this still say `"en"`; the old import wrote it either way, so the
+original is unrecoverable and clearing them would be a guess.
+
 **Changing an int to `null` is a breaking change for the reader.** It made an
 unreachable fallback in Story Studio live (their `normalizeMaxOutputTokens`
 substitutes 8,192 and prints it as the model's own figure). The field-change
@@ -719,7 +737,7 @@ model name.
 ## Verification
 
 ```bash
-.venv/bin/python tests/test_e2e.py              # 436 checks, isolated mock upstream
+.venv/bin/python tests/test_e2e.py              # 439 checks, isolated mock upstream
 .venv/bin/python tests/test_fleet_standalone.py # 47 checks, real Hub(s) as locations
 .venv/bin/python tests/test_ui.py               # 109 checks, drives the real app
 ```

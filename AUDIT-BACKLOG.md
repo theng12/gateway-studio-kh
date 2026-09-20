@@ -313,13 +313,20 @@ answer" produce the same value.
    `google/gemini-omni-flash` carry `category: "text-to-video"` and would publish
    wrongly. *Fix: read `raw["category"]` before the id heuristic; do not assert a
    mode when nothing states one.*
-2. **`gateway/voice_import.py:577,590,399` → `voices.py:802` — voice `language`
-   becomes `"en"`.** Folder imports do `metadata.get("language") or "en"`, loose
-   files are hardcoded, and `push_fields` does `or "en"`. It is stored and
-   republished, so `story_row`'s `"multilingual"` sentinel never applies. Live: all
-   ten `studio-hub-local::voice-*` rows publish `language: "en"` for clips whose
-   language nobody stated, and the Voices window prints "EN". It also makes the
-   "it has no language" readiness gate unreachable. *Fix: store `""`.*
+2. **FIXED this session.** Nothing is invented now: a folder stores what its
+   metadata states, a loose clip reads a sibling `<name>.json` (the way it already
+   read a sibling `.txt`), and `push_fields` sends the value verbatim. **The Hub
+   really does require a language** (measured from its own validator: `raise
+   ValueError("language is required")`), so the readiness gate's "it has no language"
+   is a mirror of a real remote refusal — and it was unreachable precisely because
+   the import always wrote `"en"`. The consequence, which is honest rather than
+   avoidable: **a loose clip whose language nobody states cannot be pushed to the
+   fleet until one is given**, and the gateway now says so locally in one sentence
+   instead of the Hub answering 400 naming only a field.
+   The owner's ten existing voices still say `"en"`, and that is **not** corrected
+   here: the old import wrote `"en"` whether or not the source stated one, so the
+   original is not recoverable and clearing them would be a second guess. Correcting
+   them is his call.
 3. **`gateway/catalog.py:123-124,133-134,148` — image
    `supports_reference_images` / `supports_image_to_image` / `min`/`max_reference_images`
    are a definite `False`/`0` for everything non-`studio_hub`**, while the same row's
@@ -330,10 +337,11 @@ answer" produce the same value.
 4. **`gateway/catalog.py:143-144` — image `reference_strength_mode` is `"none"`**
    and `supported_reference_strengths` is `[]` for every model, including
    `studio_hub` rows that do use reference images. *Fix: read from the Hub raw, else null.*
-5. **`gateway/catalog.py:428-440` — a provider-published `0` is erased by the `or`
-   chain** before `_stated` and `limits.gap` (both written specifically to preserve
-   a stated zero) ever see it, so the curated number is published as the provider's.
-   *Fix: a first-non-`None` lookup instead of `or`.*
+5. **FIXED this session.** `_first_stated()` replaces the `or` chain, so a
+   published `0` survives to `_stated` and `limits.gap` — both of which were written
+   specifically to preserve one and could never see one. ("It said zero" and "it said
+   nothing" are different answers; the chain made them the same answer, and then the
+   curated value was published *as the provider's*.)
 6. **`gateway/catalog.py:511` — chat `structured_output_mode` becomes
    `"json_object"`** when the provider merely lists `response_format`/`structured_outputs`,
    even if it only supports `json_schema`. *Fix: derive the mode from the stated

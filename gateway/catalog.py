@@ -576,25 +576,41 @@ def _transcription_row(model_id: str, definition: ProviderDefinition, model: dic
     }
 
 
+def _first_stated(raw: dict[str, Any], keys: tuple[str, ...]) -> Any:
+    """The first key the provider actually stated, **including a stated `0`**.
+
+    An `or` chain erases a published zero: `0` is falsy, so the lookup falls through
+    to the next spelling, then to `None`, and the owner's curated value is published
+    as though the provider had stated it. `_stated` and `limits.gap` were both
+    written specifically to preserve a stated zero — and neither could ever see one,
+    because the chain ran first and threw it away.
+
+    "It said zero" and "it said nothing" are different answers, and the whole of
+    Shape 2 is the cost of letting them share a value.
+    """
+    for key in keys:
+        value = raw.get(key)
+        if value is not None:
+            return value
+    return None
+
+
 def _chat_row(model_id: str, definition: ProviderDefinition, model: dict[str, Any]) -> dict[str, Any]:
     raw = model.get("raw") or {}
     # Providers spell the same two figures differently: OpenRouter uses
     # `context_length` / `top_provider.max_completion_tokens`, Google uses
     # `inputTokenLimit` / `outputTokenLimit`. Read every spelling before
     # concluding a provider said nothing.
-    context = (
-        raw.get("context_length")
-        or raw.get("context_window")
-        or raw.get("inputTokenLimit")
-        or raw.get("input_token_limit")
+    context = _first_stated(
+        raw, ("context_length", "context_window", "inputTokenLimit", "input_token_limit")
     )
-    top = raw.get("top_provider") or {}
-    completion = (
-        top.get("max_completion_tokens")
-        or raw.get("max_completion_tokens")
-        or raw.get("outputTokenLimit")
-        or raw.get("output_token_limit")
-    )
+    top = raw.get("top_provider")
+    top = top if isinstance(top, dict) else {}
+    completion = _first_stated(top, ("max_completion_tokens",))
+    if completion is None:
+        completion = _first_stated(
+            raw, ("max_completion_tokens", "outputTokenLimit", "output_token_limit")
+        )
 
     # Unknown is published as `null`, never as a number or a `false`.
     #

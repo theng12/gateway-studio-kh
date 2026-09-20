@@ -2057,6 +2057,11 @@ def main() -> int:
             (picked / "Blue Room" / "transcript.txt").write_text("a blue reference")
             write_wav(picked_parent_clip, seconds=0.2)
             (picked / "Morgan.txt").write_text("a morgan reference")
+            # A loose clip's facts come from a sibling JSON, the same way its
+            # transcript comes from a sibling .txt. Without one the language is
+            # empty — and a voice with no language cannot be pushed, because the Hub
+            # requires one. This fixture wants a pushable voice.
+            (picked / "Morgan.json").write_text(json.dumps({"language": "en"}))
             (picked / "notes.md").write_text("not audio")
             (picked / "empty folder").mkdir()
 
@@ -2183,6 +2188,34 @@ def main() -> int:
             check("and the catalogue still lists it",
                   any(v["id"] == morgan_id for v in catalog["voices"]),
                   f"{len(catalog['voices'])} entries")
+
+            # **A language nobody stated is not English.** Every import used to store
+            # "en", which was republished as the voice's own and reached the fleet as
+            # a claim — and it made the readiness gate's "it has no language"
+            # unreachable. The Hub genuinely requires one ("language is required"),
+            # so the honest order is: store nothing, refuse the push locally in one
+            # sentence, and let the owner state it.
+            _lang_dir = tmp / "picked-nolang"
+            _lang_dir.mkdir()
+            write_wav(_lang_dir / "No Language.wav", seconds=0.3)
+            _nl = req(client, "POST", "/admin/api/voices/add",
+                      json={"folder": str(_lang_dir), "annotate": False}).json()
+            _nl_row = next(v for v in json.loads(Path(added["catalog"]).read_text())["voices"]
+                           if v["id"] in {i["id"] for i in _nl["imported"]})
+            check("a clip whose language nobody stated does not claim English",
+                  _nl_row["language"] == "", f"{_nl_row['language']!r}")
+            # ...and the guard that was unreachable now fires, locally, once.
+            _readiness = voice_import.shared_readiness(_nl_row)
+            check("so a language-less voice is refused a fleet push, in one sentence",
+                  not _readiness["ready"]
+                  and any("no language" in p for p in _readiness["problems"]),
+                  f"{_readiness['problems']}")
+            # The sentinel `story_row` publishes for "many, unenumerated" is only
+            # reachable when the stored language is genuinely empty.
+            _nl_story = next(r for r in req(client, "GET", "/v1/voices").json()["voices"]
+                             if r["id"].endswith(_nl_row["id"]))
+            check("and Story Studio is told 'multilingual', not a definite language",
+                  _nl_story["language"] == "multilingual", f"{_nl_story['language']}")
 
             # One voice, listed once. `voices()` concatenated what discovery had
             # cached with what the owner had saved and never de-duplicated, so a
