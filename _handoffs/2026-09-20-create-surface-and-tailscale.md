@@ -70,6 +70,22 @@ Traps learned this session:
 
 ## Open, unverified, or waiting on the owner
 
+- **`AGENTS.md` still needs a real compression pass, and this is unfinished.** It was
+  over the injection budget (65138 bytes against a ~65222-byte threshold), so its tail
+  was being clipped on every load. It is now **64506** — under the threshold, with the
+  stale suite counts corrected (e2e 521, UI 128) — but that is a ~1% trim, not the
+  significant one it needs. A first attempt ran for a long time and delivered little
+  while *adding* a sentence it had been told not to add (removed). The task, if you
+  take it: compress to roughly **55000–60000 bytes** by tightening prose only. Never
+  drop a measured number, an identifier, a `ponytail:` note, a "never/must/do not"
+  instruction, or a "measured live" evidence sentence; never add new content; keep
+  every `##`/`###` heading in order. Verify with
+  `grep -c '^## ' AGENTS.md` (must stay 11) and by checking that `can_publish`,
+  `enabled_models`, `maximum_input_characters`, `_HARD_CAP_CHARACTERS`,
+  `TRANSCRIPTION_SRT_UNSUPPORTED`, `ponytail:`, `402`, `15,000`,
+  `AUDIT-BACKLOG.md`, `freshness` and `inventoryAgeMs` all still appear. The
+  largest, most compressible sections are "Voices are stocked, not configured"
+  (17.7 KB) and "Discovery ≠ availability" (13 KB).
 - **The native Create pages have never been *looked at*.** They are verified
   structurally (UI 128/128) but `screencapture` is blocked, so no one has seen them.
   The owner was asked to click through Create → Audio, Subtitle, Image, Music, Video,

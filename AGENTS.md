@@ -2,9 +2,9 @@
 
 One API in front of every local Studio Hub location and 18 cloud providers, so
 **Story Studio KH points at a single URL** (`http://127.0.0.1:8000`) and its model
-pickers fill. Story Studio's own architecture contract requires it to call
-exactly one endpoint and treat it as GenStudio — this is that endpoint. Story
-Studio needs **zero code changes**, only `genstudio_url` and an API key.
+pickers fill. Story Studio's architecture contract requires it to call exactly one
+endpoint and treat it as GenStudio — this is that endpoint. It needs **zero code
+changes**, only `genstudio_url` and an API key.
 
 Read `README.md` for the design; this file is the part that is expensive to
 rediscover.
@@ -13,8 +13,8 @@ rediscover.
 
 - **Never return 402.** Story Studio holds a credit lock keyed on the API key. If
   it ever sees 402 and no balance is published, that hold **never clears** and the
-  key is dead permanently. A provider running out of funds surfaces as a settled
-  `failed` job. The e2e suite asserts that no response in a whole run is 402.
+  key is dead permanently. A provider out of funds surfaces as a settled `failed`
+  job. The e2e suite asserts that no response in a whole run is 402.
 - **Publish the shape of a priced catalogue with every amount at zero.** Do not
   omit price fields: Story Studio's parsers build explicit object literals and
   **drop any row whose price fields are absent**, which empties the picker
@@ -32,66 +32,65 @@ rediscover.
 
 ## Publish what is known, and nothing else
 
-The single most productive rule to audit against, taken from Story Studio's own
-notes: *never let "the answer is none" and "I could not work out the answer"
-produce the same value, and never invent a number the customer will mistake for
-the model's own.*
+The single most productive rule to audit against, from Story Studio's own notes:
+*never let "the answer is none" and "I could not work out the answer" produce the
+same value, and never invent a number the customer will mistake for the model's
+own.*
 
 Every field a provider does not state is published as **`null`**, never as a
 plausible default. Auditing for this found, in order: `context_window_tokens: 0`
-on 37 rows, `max_output_tokens` hardcoded to `8192` for every model on every
-provider, `supports_vision: false` for every model while 273 of OpenRouter's 445
-accept images, `provider_name` missing on video and keyed differently on
-transcription, transcription claiming English-only *and* auto-detect, TTS
-languages published as stringified Python dicts, and Google's
-`inputTokenLimit`/`outputTokenLimit` being discarded.
+on 37 rows, `max_output_tokens` hardcoded to `8192` on every provider,
+`supports_vision: false` for every model while 273 of OpenRouter's 445 accept
+images, `provider_name` missing on video and keyed differently on transcription,
+transcription claiming English-only *and* auto-detect, TTS languages published as
+stringified Python dicts, and Google's `inputTokenLimit`/`outputTokenLimit`
+discarded.
 
 **When a provider states it, read it.** Providers spell the same figure
 differently — `context_length` vs `inputTokenLimit`, `top_provider.max_completion_tokens`
 vs `outputTokenLimit`, `maximum_text_length_per_request` — so read every spelling
-before concluding a provider said nothing.
+before concluding nothing was said.
 
 **A published `0` is a claim, and an `or` chain throws it away.** `_first_stated()`
 exists because `raw.get("context_length") or raw.get("context_window") or …` treats a
 stated `0` as absent: the lookup falls through, `_stated` and `limits.gap` — both
-written specifically to preserve a stated zero — never see one, and the owner's
-curated value is published *as the provider's*. Read every spelling with a
-first-non-`None` lookup, never with `or`.
+written to preserve a stated zero — never see one, and the owner's curated value
+is published *as the provider's*. Read every spelling with a first-non-`None`
+lookup, never with `or`.
 
 **A voice's language is stated or it is absent — never assumed English.** Imports
-used to store `"en"` for any clip whose metadata said nothing, which reached the fleet
-as a claim and made the readiness gate's "it has no language" unreachable. A folder
-reads its `metadata.json`; a loose clip reads a sibling `<name>.json` (as it already
-read a sibling `.txt`); nothing stated means `""`, and `story_row` then publishes
-Story Studio's `"multilingual"` sentinel. **The Hub requires a language** (`raise
-ValueError("language is required")`), so a language-less voice is refused a fleet push
-locally in one sentence — which is the gate working, not a regression. The ten voices
-imported before this still say `"en"`; the old import wrote it either way, so the
-original is unrecoverable and clearing them would be a guess.
+used to store `"en"` for any clip whose metadata said nothing, which reached the
+fleet as a claim and made the readiness gate's "it has no language" unreachable. A
+folder reads its `metadata.json`; a loose clip reads a sibling `<name>.json` (as it
+already read a sibling `.txt`); nothing stated means `""`, and `story_row` then
+publishes Story Studio's `"multilingual"` sentinel. **The Hub requires a language**
+(`raise ValueError("language is required")`), so a language-less voice is refused
+a fleet push locally in one sentence — the gate working, not a regression. The ten
+voices imported before this still say `"en"`; the old import wrote it either way,
+so the original is unrecoverable and clearing them would be a guess.
 
 **Changing an int to `null` is a breaking change for the reader.** It made an
 unreachable fallback in Story Studio live (their `normalizeMaxOutputTokens`
-substitutes 8,192 and prints it as the model's own figure). The field-change
-audit sent with the handoff is the pattern: list every field whose *guarantee*
-changed, not just its value.
+substitutes 8,192 and prints it as the model's own figure). The field-change audit
+sent with the handoff is the pattern: list every field whose *guarantee* changed,
+not just its value.
 
 **One value must stay invented:** TTS `maximum_input_characters` — Story Studio
 calls `.toLocaleString()` on it unconditionally, so `null` would crash the page
 rather than degrade it. Per model where the provider states one (ElevenLabs
 publishes it), otherwise **15,000** on a Studio Hub location and 25,000 on a cloud
-lane — and every one of them carries `maximum_input_characters_source`
-(`provider` / `curated` / `gateway`), because "we chose this" has to be readable
-next to the number.
+lane — and each carries `maximum_input_characters_source` (`provider` / `curated` /
+`gateway`), because "we chose this" has to be readable next to the number.
 
 **The local lane presents one number, and chunking is Studio Hub's job.** Every
 Studio Hub location publishes **15,000** (`catalog._TTS_CHARACTERS_LOCAL`), whatever
 engine is behind it, because the Hub takes the complete script and renders
 sentence-safe sections. The caller is told what it may submit; it is never told how
-the work is cut up. The owner's rule, and it is a *presentation* decision rather
-than a measurement — so the gateway does **not** mirror the Hub's audited
+the work is cut up. That is the owner's *presentation* decision rather than a
+measurement — so the gateway does **not** mirror the Hub's audited
 `execution_contract.text_max_characters` (10,000–40,000 across the installed set),
-which was correct in principle and wrong in effect for a field the caller cannot
-act on. That mirroring was tried and withdrawn on 2026-09-20.
+correct in principle and wrong in effect for a field the caller cannot act on. The
+mirroring was tried and withdrawn on 2026-09-20.
 
 **The one exception, and it sequences itself.** A model the Hub does not section
 gets the whole script, so an engine cliff applies as a ceiling instead:
@@ -100,14 +99,14 @@ table) is consulted **only while `long_form_delivery` is absent** for that model
 So Orpheus publishes 170 today and **becomes 15,000 automatically** the moment the
 Hub starts sectioning it — no gateway change, no coordination. Handoff:
 `_handoffs/2026-09-20-gateway-local-tts-limit-15000-and-chunking-ownership.md`.
-`spark-tts-mlx` is *deliberately absent* from that table even though the Hub's
-table says 750: it is `auto-split`, so 750 is where quality is best, not a limit on
-what may be sent.
+`spark-tts-mlx` is *deliberately absent* from that table even though the Hub's says
+750: it is `auto-split`, so 750 is where quality is best, not a limit on what may
+be sent.
 
 **A uniform section size is not ≤200, whatever it looks like.** The Hub's two
 hard-cap engines are Bark at **150** and Orpheus at **170**, so a 200-character
 section is past both and a 180-character one is still past Bark — the tightest
-engine sets the bound, not the typical one. Every other family already sections at
+engine sets the bound, not the typical one. Every other family sections at
 280–3000, and a uniform 150 would mean 100 sections per 15,000-character request
 for engines that need 5, against the Hub's own measured coverage curve (99.4% at
 288, 83% at 600). Per-family budgets, which the Hub already has and justifies, are
@@ -119,7 +118,7 @@ carry a companion `*_source` — `provider`, `curated` (the owner's
 `model-limits.local.json`) or `gateway` (ours: a documented default or the
 recorded cliff). Measured live: 48 chat rows `provider`, **18 `curated`** — the
 curated file's 24 entries are all the same `1000000/128000`, a flat default
-wearing the clothes of per-model knowledge, and Story Studio rendered it as the
+wearing the clothes of per-model knowledge, which Story Studio rendered as the
 model's own window. The value is still published (nulling it makes Story Studio
 substitute its own 8,192, which is worse); it is now labelled. **The value and its
 source come from one function**, because a separate "where did that come from?"
@@ -134,35 +133,35 @@ reaches Story Studio until it is enabled. The local Studio Hub is the sole
 exception (`auto_enable_discovered`), and that is deliberate. A provider whose
 kind has no adapter stays discoverable and configurable but **its models are
 withheld** — offering a model that fails on use is worse than not offering it.
-`IMPLEMENTED_KINDS` in `providers/definitions.py` is the single source of truth,
-and `adapters/__init__.py` asserts at import that its table agrees.
+`IMPLEMENTED_KINDS` in `providers/definitions.py` is the single source of truth;
+`adapters/__init__.py` asserts at import that its table agrees.
 
 **A kind having an adapter does not mean every modality of it works.** That assert
 compares *kinds*, and a modality can be missing inside one. The Google backend
 delegates to the OpenAI-compatible shim, which is what serves
 `/audio/transcriptions` — so a Google transcription row would publish and then fail
-on use, which is exactly what this whole section exists to prevent. Transcription is
-implemented for `openai_compat` and `studio_hub`: **enable OpenAI's transcription
-models, not Google's.** Verified end to end — `whisper-1` through the gateway
-returns a real SRT. **Groq serves chat through the same shim** and needs
-`GROQ_API_KEY` before its models appear. **Its Whisper cannot serve transcription
-here** — measured live 2026-09-20, `HTTP 400: response_format must be one of
-[json text verbose_json]`, and this gateway must ask for `srt` — so
-`whisper-large-v3` and `whisper-large-v3-turbo` are withheld.
+on use, exactly what this section exists to prevent. Transcription is implemented
+for `openai_compat` and `studio_hub`: **enable OpenAI's transcription models, not
+Google's.** Verified end to end — `whisper-1` through the gateway returns a real
+SRT. **Groq serves chat through the same shim** and needs `GROQ_API_KEY` before its
+models appear. **Its Whisper cannot serve transcription here** — measured live
+2026-09-20, `HTTP 400: response_format must be one of [json text verbose_json]`,
+and this gateway must ask for `srt` — so `whisper-large-v3` and
+`whisper-large-v3-turbo` are withheld.
 
 **The gateway asks every cloud transcription lane for `response_format: "srt"`,
 so a model that cannot answer in SRT must not be offered.** On OpenAI's side only
 `whisper-1` can — the `gpt-4o-transcribe` and `gpt-transcribe` families accept
 `json`/`text` only and answer 400, and `gpt-4o-transcribe-diarize`,
 `gpt-live-transcribe` and `gpt-realtime-whisper` are diarising or streaming
-endpoints rather than timestamped transcription. Ticking one of those published a
-model that failed the moment anything used it, which is the `:batch` trap again.
-They are listed in `TRANSCRIPTION_SRT_UNSUPPORTED` (`providers/definitions.py`)
-and withheld from Story Studio; they stay visible in the inventory, so ticking one
-still works as a control, it just never publishes. Google's transcription rows are
-impossible for a different reason (the route does not exist) and are refused by
-the modality gate. Curated rather than discovered, because no provider publishes
-which formats it accepts.
+endpoints rather than timestamped transcription. Ticking one published a model
+that failed the moment anything used it, the `:batch` trap again. They are listed
+in `TRANSCRIPTION_SRT_UNSUPPORTED` (`providers/definitions.py`) and withheld from
+Story Studio; they stay visible in the inventory, so ticking one still works as a
+control, it just never publishes. Google's transcription rows are impossible for a
+different reason (the route does not exist) and are refused by the modality gate.
+Curated rather than discovered, because no provider publishes which formats it
+accepts.
 
 **fal publishes a per-endpoint JSON schema, and reading it is not optional.**
 `https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=<id>` states the exact
@@ -174,8 +173,8 @@ default. The failure mode is what makes this expensive: **fal's queue accepts an
 body and validates at the worker**, so a wrong body reports the job `COMPLETED`
 and only fails when the result is fetched — a `422 {"detail":[{"type":"missing"…}]}`
 in place of the artifact. Verified live: submitting `{}` to four fal endpoints
-queued and "completed" all four and cost nothing, because the worker rejected
-each one for a missing `prompt`/`text`.
+queued and "completed" all four and cost nothing, because the worker rejected each
+for a missing `prompt`/`text`.
 
 **fal's TTS lane is its ElevenLabs routes, and it has no voice list.** The model
 schema carries no voice endpoint and no `enum` on `voice` — only twenty
@@ -216,62 +215,62 @@ documents is the TTS-shaped chat contract. Those rows are therefore withheld
 rather than implemented: a listing is not a serving contract.
 
 **The console must not list a model that can never run.** `ModelInventory.can_publish`
-is the single rule, and both readers use it: the catalogue asks it to decide what
-to publish, and `_flat_models` asks it to decide what to *show*. They were two
-separate sets of conditions and the console's was the weaker one, so it advertised
-rows the catalogue silently dropped — nine OpenAI transcription models of which
-only `whisper-1` can return SRT, four `google-ai-free` Lyria rows on a tier that
-has no Lyria, and OpenRouter's two Lyria rows. A row you can tick that will never
-publish is a control that does nothing, which is what the owner asked to stop.
+is the single rule, and both readers use it: the catalogue asks it what to publish,
+and `_flat_models` asks it what to *show*. They were two separate sets of
+conditions and the console's was the weaker one, so it advertised rows the
+catalogue silently dropped — nine OpenAI transcription models of which only
+`whisper-1` can return SRT, four `google-ai-free` Lyria rows on a tier that has no
+Lyria, and OpenRouter's two Lyria rows. A row you can tick that will never publish
+is a control that does nothing, which is what the owner asked to stop.
 
 **A proxy that speaks another provider's ids is the one exception to "a voice
 belongs to its provider".** fal's ElevenLabs routes accept an ElevenLabs voice id
 unchanged — the owner has driven them that way many times, and it is now verified
-through the gateway (his own voice, 51,871 bytes of MP3). Matching a voice on its
-provider alone meant the picker offered only the twenty names fal happens to
-`example`, so a voice saved from his own account was invisible for that lane while
-working perfectly through it. `accepted_voice_providers` keys the exception on the
+through the gateway (his own voice, 51,871 bytes of MP3). Matching on the provider
+alone meant the picker offered only the twenty names fal happens to `example`, so a
+voice saved from his own account was invisible for that lane while working
+perfectly through it. `accepted_voice_providers` keys the exception on the
 provider's *kind* and the word `elevenlabs` in the endpoint — never on a hardcoded
 provider id, and never for a lane that is not ElevenLabs.
 
 **A provider voice known by its id can be saved without searching for it.** The
-library search only finds what the provider will *search* for, and
-"Add to my account" only ever acted on rows already in the table, so a voice known
-from a share link had no way in. `POST /admin/api/voices/import` always accepted an
-explicit `provider_voice_id`; the Voices window now has fields for it and for the
-owner id. **ElevenLabs is the one provider that needs both**, because its import
-route is `/v1/voices/add/{owner_id}/{voice_id}` — refused locally with that
-sentence rather than as an opaque 422 from the far end.
+library search only finds what the provider will *search* for, and "Add to my
+account" only acted on rows already in the table, so a voice known from a share
+link had no way in. `POST /admin/api/voices/import` always accepted an explicit
+`provider_voice_id`; the Voices window now has fields for it and for the owner id.
+**ElevenLabs is the one provider that needs both**, because its import route is
+`/v1/voices/add/{owner_id}/{voice_id}` — refused locally with that sentence rather
+than as an opaque 422 from the far end.
 
 **An upload past 25 MB is refused 413, not queued and then failed.** Every cloud
 transcription API on the gateway caps a single upload there, and a caller that
-crosses it should be told the number rather than handed a provider error after
-the bytes have been staged and a job queued that cannot succeed. The ceiling is
-one flat number because no provider *publishes* its limit over its API —
-`ponytail:` in `api.py` names the upgrade path (read it per model, the way TTS
-limits come from `maximum_text_length_per_request`). **413, never 402.**
+crosses it should be told the number rather than handed a provider error after the
+bytes have been staged and a job queued that cannot succeed. The ceiling is one
+flat number because no provider *publishes* its limit over its API — `ponytail:`
+in `api.py` names the upgrade path (read it per model, the way TTS limits come from
+`maximum_text_length_per_request`). **413, never 402.**
 
 **A voice the caller did not choose is never invented.** A missing `voice_id` used
 to become a specific named speaker — `English_expressive_narrator` on MiniMax,
 `alloy` on the OpenAI-compatible shim — so a narration came back in a voice nobody
 picked and nothing said so. Both refuse now, naming the field. fal's `Rachel` and
 ElevenLabs' account-first-voice stay, because those providers genuinely default and
-the catalogue offers that default *as a voice*. The same rule covers **speed**: fal's
-routes accept 0.7–1.2 while the catalogue published 0.5–2.0, and the adapter *dropped*
-anything outside its range — a caller picked a speed it had been told was valid and
-got normal speed. It refuses now, and `catalog._TTS_SPEED_RANGES` publishes the
+the catalogue offers that default *as a voice*. **speed** follows the same rule:
+fal's routes accept 0.7–1.2 while the catalogue published 0.5–2.0, and the adapter
+*dropped* anything outside its range — a caller picked a speed it had been told was
+valid and got normal speed. It refuses now, and `catalog._TTS_SPEED_RANGES` publishes the
 accepted range, so what is offered is what is sent.
 
 **A toggle has to still be a toggle when the job runs.** The worker re-checked
 *provider* enablement only, so a model switched off after submit still ran, a Hub
 refresh that flipped `catalogued`/`memory_eligible` mid-queue did not stop the job,
 and a modality the adapter cannot serve was still dispatched. It now asks
-`enabled_models(modality)` — the one function the catalogue is built from — and fails
-`MODEL_NOT_OFFERABLE` naming the model, provider and modality. **The same rule is
-enforced at the door:** `add_user_model` refuses a modality nothing serves, because
-`can_publish` requires `serves()` and the form only asked whether the provider
-*declared* it (Google declares six, serves four) — so it could create a row that was
-enabled, counted in the header, and never published.
+`enabled_models(modality)` — the one function the catalogue is built from — and
+fails `MODEL_NOT_OFFERABLE` naming the model, provider and modality. **The same
+rule is enforced at the door:** `add_user_model` refuses a modality nothing serves,
+because `can_publish` requires `serves()` and the form only asked whether the
+provider *declared* it (Google declares six, serves four) — so it could create a
+row that was enabled, counted in the header, and never published.
 
 **A model that is enabled but cannot serve is the worst state, and OpenRouter's
 `:batch` variants are exactly that.** They are the providers' Batch APIs — half
@@ -293,7 +292,7 @@ needed) and distinguishes **three** states, never two: no ready-file, a ready-fi
 with nothing behind it, and one that answers. `advertised` keeps the old meaning;
 the probe detail names which failure it is; the age is published and the answer
 cached 5 s so a poll does not stall exactly when the Hub is down. The same probe
-gates `start_annotation`, which had promised "refuses without a reachable Hub" while
+gates `start_annotation`, which promised "refuses without a reachable Hub" while
 gating on URL presence — a stale file made every voice fail in turn instead of
 saying the one actionable sentence. Anything that acts on a location's *models*
 needs its **`provider_id`** (`studio-hub-<controller-id>`), which the fleet payload
@@ -302,9 +301,9 @@ publishes per location on both branches, so no client derives it.
 **A Hub lists its own connectivity probes as machines, and they must not be
 counted as the owner's hardware.** Studio Hub reports `probe-fleet` and
 `probe-hub` — labelled "probe", permanently unreachable — beside the real machine.
-This Mac read as "3 machines, 2 offline", which is exactly the figure the owner
-wants the Fleet page for; at six sites it would read as ~12 broken machines when
-nothing is wrong. `fleet._is_probe_machine` drops them from the machine list, the
+This Mac read as "3 machines, 2 offline", exactly the figure the owner wants the
+Fleet page for; at six sites it would read as ~12 broken machines when nothing is
+wrong. `fleet._is_probe_machine` drops them from the machine list, the
 machine table, the routing capacity and the activity list, from one place, and
 `probe_machines_hidden` says how many were hidden — a page that hides rows without
 saying so is the same failure as one that invents them. The online/offline counts
@@ -348,13 +347,13 @@ key still opens the door. A rotation that appears to have happened and has not i
 worse than one that visibly failed.
 
 `get()` now re-stats `ENV_PATH` and re-reads on a change, the credential store reads
-through it (no second copy, no `reload_env` to forget to call), and `require_auth`
-reads `gateway_api_key()` per request. `admin.require_admin` already did. Note the
-pass in `tests/test_e2e.py`: the suite's key lives in the temp `.env` rather than
-the spawned environment, because `get()` prefers `os.environ` and a key passed there
-would shadow the file and make the rotation untestable — and it asserts a *wrong*
-key is refused first, since a `.env` that failed to load leaves a keyless gateway
-that accepts anything.
+through it (no second copy, no `reload_env` to forget), and `require_auth` reads
+`gateway_api_key()` per request. `admin.require_admin` already did. Note the pass in
+`tests/test_e2e.py`: the suite's key lives in the temp `.env` rather than the spawned
+environment, because `get()` prefers `os.environ` and a key passed there would shadow
+the file and make the rotation untestable — and it asserts a *wrong* key is refused
+first, since a `.env` that failed to load leaves a keyless gateway that accepts
+anything.
 
 **`/admin/api/*` is deliberately open from loopback** (`require_admin` trusts
 loopback and demands the token only when bound elsewhere), which is why a `curl`
@@ -382,11 +381,10 @@ Story surface (`/v1/...`), which always requires the key.
 ## Locations are providers — but not separate products
 
 A Studio Hub location added on the Fleet page is also a **provider**: its models
-are discovered and work is dispatched through the same `studio_hub` adapter,
-which takes a per-provider address and token. **Standalone and controller both
-work** — nothing gates on the role; it is read only to display it. Story Studio
-must never learn a second address: the gateway is the only thing that knows the
-locations.
+are discovered and work is dispatched through the same `studio_hub` adapter, which
+takes a per-provider address and token. **Standalone and controller both work** —
+nothing gates on the role; it is read only to display it. Story Studio must never
+learn a second address: the gateway is the only thing that knows the locations.
 
 **But a location is not a product, so its models publish under one namespace.**
 `fleet.publish_id` collapses every location into `studio-hub`, and
@@ -394,19 +392,19 @@ locations.
 **one** catalogue entry with N possible sites — not N entries sharing one
 `display_name`. The alternative showed the same model once per site, turned "which
 model?" into "which building?", and broke a saved preset whenever its site went
-offline. The old GenStudio reached the same conclusion, and one of its migrations
-is named `0338_kokoro_names_the_maker_not_the_machines`. Namespace by **maker**;
-a cloud vendor keeps its own id, because two vendors genuinely offering the same
-model *are* different products.
+offline. The old GenStudio reached the same conclusion, and one of its migrations is
+named `0338_kokoro_names_the_maker_not_the_machines`. Namespace by **maker**; a
+cloud vendor keeps its own id, because two vendors genuinely offering the same model
+*are* different products.
 
 Routing follows the split Studio Hub declares for itself in
 `/api/hub/capabilities` — `authority: {global: "genstudio", site_local_scheduler:
 "sqlite", global_job_claiming: false}`:
 
 - **The gateway chooses the site, never the machine.** `fleet.route` ranks
-  candidates by pressure (`queue / eligible_physical_machine_slots`) then a
-  weighted lottery whose weight is the eligible slot count. Which machine has the
-  memory for a model is machine-specific and belongs to the controller.
+  candidates by pressure (`queue / eligible_physical_machine_slots`) then a weighted
+  lottery whose weight is the eligible slot count. Which machine has the memory for
+  a model is machine-specific and belongs to the controller.
 - **Capacity belongs in the weight, never as a rank term.** Ported from the old
   `MultiSiteAssignment`, whose comment records both failures: sorting by raw size
   made a small site unreachable, ignoring size overloaded the small sites.
@@ -426,10 +424,10 @@ bugs came from iterating the static map and silently omitting derived providers.
 **A location's address comes from its *definition*, and one strategy forgot that.**
 Every discovery strategy resolves its base as `values.get("base_url") or
 definition.base_url` — a credential may override the address, but the address
-itself is structural. `_studio_hub` was the only one that went straight from the
-credential values to `hub_base_url()`, and that fallback is **this Mac's own Hub**.
-A controller added on the Fleet page declares no `base_url` credential at all (its
-address lives on the derived definition), so every remote location discovered the
+itself is structural. `_studio_hub` was the only one that went from the
+credential values straight to `hub_base_url()`, and that fallback is **this Mac's
+own Hub**. A controller added on the Fleet page declares no `base_url` credential at
+all (its address lives on the derived definition), so every location discovered the
 *local* machine's models — each site showing the same list, and a job routed to
 site B dispatchable for a model only site A has. Found while pointing a test
 location at the mock: the provider reported "Studio Hub is not running (no
@@ -439,19 +437,19 @@ second location was configured yet.
 
 **Adding a location must also discover its models, and say what it found.**
 Nothing refreshes models on a timer (`fleet.start_refresher` refreshes
-*reachability*, not models), so a location added without a refresh shows none —
-and "no models" reads as "it has nothing" rather than "nobody asked it yet".
-Discovered models arrive **disabled**, as everything remote must, so the Fleet page
-says how many were found and that none are available until enabled.
+*reachability*, not models), so a location added without a refresh shows none — and
+"no models" reads as "it has nothing" rather than "nobody asked it yet". Discovered
+models arrive **disabled**, as everything remote must, so the Fleet page says how
+many were found and that none are available until enabled.
 
 **A credential must be checked where it is entered, because both of a controller's
 credentials work everywhere.** `/api/hub/settings` answers 200 to the operator
 token, 403 to a fleet credential, and **401 to a wrong or absent one** (measured
 against Hub 0.5.1 — a rejected token must never be reported as the fleet
-credential). The gateway classifies it when a location is added, when its
-credential is replaced, and on every connection test, and reports an operator token
-in orange with what it can do. `PUT /api/fleet/controllers/{id}/credential`
-replaces a token without touching the name, address or models.
+credential). The gateway classifies it when a location is added, when its credential
+is replaced, and on every connection test, and reports an operator token in orange
+with what it can do. `PUT /api/fleet/controllers/{id}/credential` replaces a token
+without touching the name, address or models.
 
 **An absent credential stays absent — the operator token belongs to *this Mac's*
 Hub and to no other address.** `hub_headers(token)` was `token or hub_token()`,
@@ -460,8 +458,8 @@ its token since forgotten) had **this Mac's operator token** put in `X-Hub-Token
 and sent to whatever address the owner had typed on the Fleet page. That token is
 full operator scope here: it can change this Hub's settings and identity, reach its
 storage and shut it down. It is the mistake `credential_scope` exists to stop the
-owner making by hand, made by the code instead — and it is silent, because a remote
-Hub that accepts it simply works.
+owner making by hand, made by the code instead — and silent, because a remote Hub
+that accepts it simply works.
 
 `token` is now a **required** argument and the fallback is reachable only through
 `local=True`, which callers derive from the **provider id**
@@ -470,31 +468,31 @@ the address is the one part an owner supplies. Local-only paths call
 `local_hub_headers()`. A future call site therefore cannot inherit a credential by
 omission: it fails with the wrong or absent token rather than with this Mac's.
 `tests/mock_upstream.py` records every `X-Hub-Token` it receives, so the assertion
-is about the **wire**, not about a helper's return value — restoring the old line
-makes the new checks fail with the sentinel visible on requests to the mock.
+is about the **wire**, not a helper's return value — restoring the old line makes the
+new checks fail with the sentinel visible on requests to the mock.
 
 **A custom provider's kind is checked against `IMPLEMENTED_KINDS` itself, not a
 copy.** `_VALID_KINDS` was a second hand-written set and had already fallen behind
 (`KIND_XAI` was missing), so `"kind": "xai"` in a hand-written
 `providers.local.json` was dropped without a word. Being skipped is recorded with a
 reason, logged, and published as `skipped_custom_providers` on
-`/admin/api/providers`, **which the console renders** — a field nothing draws is
-the same defect as a control that does nothing.
+`/admin/api/providers`, **which the console renders** — a field nothing draws is the
+same defect as a control that does nothing.
 
 **A location's name is a label, never an identity, and renaming must stay safe at
 any time.** `fleet.rename_controller` changes only the label — the controller id,
 its address, its token and its enabled state are untouched — so renaming can never
 cost a re-entry of a credential, and it is safe after that location's models are
-discovered and enabled. That holds only because the provider id is derived from
-the **controller id** (`studio-hub-<controller-id>`) and the model id from the
-provider, so never derive an id, key or path from a label. `fleet.json` also
-carries `local_label`: this Mac is a location in the same list and is renamed the
-same way, so a write that adds or removes a controller must preserve it.
+discovered and enabled. That holds only because the provider id is derived from the
+**controller id** (`studio-hub-<controller-id>`) and the model id from the provider,
+so never derive an id, key or path from a label. `fleet.json` also carries
+`local_label`: this Mac is a location in the same list and is renamed the same way,
+so a write that adds or removes a controller must preserve it.
 
 Row actions in a table are worth testing through the UI, not just the API: the
 Fleet page had `testController` and `removeController` **wired to nothing** — no
-button ever called them — so Test and Remove were unreachable from the app while
-the endpoints worked. `tests/test_ui.py` now reads the buttons themselves
+button ever called them — so Test and Remove were unreachable from the app while the
+endpoints worked. `tests/test_ui.py` now reads the buttons themselves
 (`table_button_titles`), because `table_texts` sees static text only.
 
 ## Voices are stocked, not configured
@@ -757,44 +755,41 @@ model name.
 outcome record — each fix, how it was measured, and what was deliberately left.
 Four lessons worth carrying forward: read a provider's own classification rather
 than guessing from a name (but keep `modalities[0]` for a provider that states
-nothing — requiring one would have dropped 265 live chat models); a merged
-location row answers for every site offering it (`_merge_capabilities` unions
-cloning, takes the smallest character budget and the intersection of the speed
-range); a controller is identified by its Hub's stable `site_id`, never its
-address (when that fix invalidated the fleet suite's way of making a second
-location, the setup was relying on the bug); and **a provider's API can move under
-you** — Kie took Suno off `/api/v1/generate*` and onto the *same* `jobs/createTask`
-route its images use, with the api-model `ai-music-api/generate` at the top level
-and the tier (`V6`/`V6_MINI`/`V6_WILD`) in `input.model`, and the result in a `data`
-**array**, not `resultUrls`. An out-of-date reference had it
-withdrawn and then restored (12 credits, in the backlog).
+nothing — requiring one would have dropped 265 live chat models); a merged location
+row answers for every site offering it (`_merge_capabilities` unions cloning, takes
+the smallest character budget and the intersection of the speed range); a controller
+is identified by its Hub's stable `site_id`, never its address (when that fix
+invalidated the fleet suite's way of making a second location, the setup was relying
+on the bug); and **a provider's API can move under you** — Kie took Suno off
+`/api/v1/generate*` and onto the *same* `jobs/createTask` route its images use, with
+the api-model `ai-music-api/generate` at the top level and the tier
+(`V6`/`V6_MINI`/`V6_WILD`) in `input.model`, and the result in a `data` **array**,
+not `resultUrls`. An out-of-date reference had it withdrawn and then restored (12
+credits, in the backlog).
 
 ## Verification
 
 ```bash
-.venv/bin/python tests/test_e2e.py              # 485 checks, isolated mock upstream
+.venv/bin/python tests/test_e2e.py              # 521 checks, isolated mock upstream
 .venv/bin/python tests/test_fleet_standalone.py # 50 checks, real Hub(s) as locations
-.venv/bin/python tests/test_ui.py               # 109 checks, drives the real app
+.venv/bin/python tests/test_ui.py               # 128 checks, drives the real app
 ```
 
 `test_e2e.py` is fully isolated (`GATEWAY_DATA`/`GATEWAY_APP_SUPPORT` to a temp
 dir, `GATEWAY_NO_MIGRATE=1`, random port, own key) — it cannot disturb the live
-config. `test_fleet_standalone.py` starts its own gateway and Hub on a random
-port, so it is equally safe.
+config. `test_fleet_standalone.py` starts its own gateway and Hub on a random port,
+so it is equally safe.
 
-**"Fully isolated" had a hole, and it was measured.** `hub.find_ready_file()`
-falls back to the owner's real
-`~/Library/Application Support/StudioHub Standalone/hub-ready.json`, so the
-isolated gateway saw his **live Hub as its local location** — and the new
-shared-voice fan-out test pushed a voice onto it. It had to be deleted from his
-Hub by hand. `test_e2e.py` now sets **`STUDIOHUB_READY_FILE`** to a path inside
-the temp dir, so there is no local Hub in a test run at all. Any new isolated
-suite must do the same, and any test that reaches a *location* must point it at
-the mock — the mock serves `/api/hub/shared-voices` (multipart, recording both the
-payload and the `X-Hub-Token` it was sent) precisely so the fan-out can be
-exercised without touching his machine. `test_fleet_standalone.py` is deliberately
-different: it uses his real Hub on purpose, which is why it is the suite to run
-knowingly.
+**"Fully isolated" had a hole.** `hub.find_ready_file()` falls back to the owner's
+real `~/Library/Application Support/StudioHub Standalone/hub-ready.json`, so an
+isolated gateway saw his **live Hub as its local location** and a fan-out test
+pushed a voice onto it, deleted by hand afterwards. `test_e2e.py` now sets
+**`STUDIOHUB_READY_FILE`** inside the temp dir, so a test run has no local Hub. Any
+new isolated suite must do the same, and any test that reaches a *location* must
+point it at the mock — which serves `/api/hub/shared-voices` (multipart, recording
+the payload and `X-Hub-Token`) so the fan-out is exercised without touching his
+machine. `test_fleet_standalone.py` deliberately uses his real Hub, which is why it
+is the suite to run knowingly.
 
 **Two of its checks were failing for a Hub-side worker restart, and it was
 transient — check before reporting it as a defect.** "a transcription ran on the
@@ -807,21 +802,22 @@ answering (401 on `/health` in 1.7 ms) but had loaded no model — 11 open files
 38 MB RSS — and a direct `_transcribe` of a 13 s clip that had taken ~30 s earlier
 **timed out at 400 s**. **It recovered by itself**: a later worker (new pid, then
 85 s old) transcribed the same clip in under 100 s and the suite went **45/45 on
-re-run**. So: a worker answering `/health` is not a worker that transcribes, the
-gateway's voice annotation depends on that same route, and the right response to
-this failure is to re-run before filing it — an auto-update mid-run is the usual
-cause.
+re-run**. On 2026-09-20 a Studio Hub quit/reopen cleared a three-run failure of the
+same two checks and gave **50/50**. So a worker answering `/health` is not a worker
+that transcribes, voice annotation depends on that same route, and the remedy is a
+Hub restart — re-running the suite will not do it.
 
 **`test_ui.py` drives the real, installed app**, so run it deliberately rather than
-reflexively. It takes over the app's windows through Accessibility, and loading new
-code needs the app restarted, which interrupts whatever the owner is doing — he
-asked for a pause on that once, and then lifted it. So: run it when the change is
-UI-specific or when a claim about the app needs proving, and prefer the two isolated
-suites plus a direct `curl` for everything else. Rebuilding is always safe;
-**restarting the app is the part that intrudes**. **Never run it for a change that
-touches no app file** — two runs against identical code gave two different failures. It also needs **Accessibility
-permission**, and it skips its Hub-dependent checks with a stated reason when Studio
-Hub is stopped, because a stopped Hub is an environment state, not a gateway defect.
+reflexively: it takes over the app's windows through Accessibility, loading new code
+needs the app restarted, and that interrupts whatever the owner is doing (he asked
+for a pause on it once, then lifted it). Run it when the change is UI-specific or
+when a claim about the app needs proving, and prefer the two isolated suites plus a
+direct `curl` for everything else. Rebuilding is always safe; **restarting the app
+is the part that intrudes**. **Never run it for a change that touches no app file**
+— two runs against identical code gave two different failures. It also needs
+**Accessibility permission**, and it skips its Hub-dependent checks with a stated
+reason when Studio Hub is stopped, because a stopped Hub is an environment state,
+not a gateway defect.
 
 Verifying a change without touching his session: the isolated suites above, plus a
 direct `curl` against the configured port.
@@ -835,8 +831,8 @@ app **adopts** whatever already answers `/health` instead of spawning a new one.
 Two ways this bit:
 
   * `pkill -f "GatewayKH"` **kills the shell running it**, because that shell's own
-    command line contains the pattern. The rest of the command never runs, so the
-    uvicorn is never killed and the next `open` adopts it. Measured: a gateway from
+    command line contains the pattern, so the rest of the command never runs, the
+    uvicorn is never killed, and the next `open` adopts it. Measured: a gateway from
     21:47 was still serving at 23:33, through four "rebuild and restart" cycles —
     one of which had already been reported as verified.
   * even without that, killing the app only triggers a spawn that **fails to bind**
@@ -870,21 +866,20 @@ want to be able to do it by hand instead of relying on you to help me."* So:
     kills by port holder rather than calling the ordinary `restart()`.
 
 **A killed gateway comes back within seconds, so testing adoption takes a quit.**
-Measured: killing only the gateway left the app running, its health timer
-respawned a gateway stamped with the app's own build, and my hand-started "stale"
-one lost the race for the port (`[Errno 48] address already in use`) — the
-detection looked broken when it was the simulation that was. To exercise adoption,
-**quit the app first**, start the foreign process, then `open` the app: it adopts
-what answers `/health` instead of spawning. That is the only order that proves the
-path.
+Killing only the gateway leaves the app running, whose health timer respawns one
+stamped with the app's own build, so a hand-started "stale" gateway loses the race
+for the port (`[Errno 48] address already in use`) and the detection looks broken
+when it was the simulation. To exercise adoption, **quit the app first**, start the
+foreign process, then `open` the app: it adopts what answers `/health` instead of
+spawning, and that is the only order that proves the path.
 
 **Read a control's title to know it was built; press it to know it works.**
 `tests/test_ui.py` gained `press_detail_button(title)` — the same three-level walk
 as `detail_button_titles`, using `AXPress`, because `entire contents` is refused as
 a specifier (-1700) and a title-only check would have passed for Fleet's Test and
-Remove while they were wired to nothing. The suite now presses **Check Gateway**
-and asserts the answer names a build (either sentence — which one is the
-environment's business, and the stale case was verified by hand).
+Remove while they were wired to nothing. The suite now presses **Check Gateway** and
+asserts the answer names a build (either sentence — which one is the environment's
+business, and the stale case was verified by hand).
 
 ## Working rules
 
@@ -893,16 +888,16 @@ environment's business, and the stale case was verified by hand).
   to whoever measures it, and they will measure it. This happened: a note promised `legacy_ids` on
   every Studio Hub row while the live gateway still published `[]`, because the code was in the
   bundle and the process had not been restarted. The Story Studio session checked, found the note
-  wrong, and was right. Either restart and measure the **running** service first, or say plainly
-  that the change is built but not yet live. Both sessions lost time in one day to notes asserting
-  behaviour nobody had verified.
+  wrong, and was right. Either restart and measure the **running** service first, or say plainly that
+  the change is built but not yet live. Both sessions lost a day to notes asserting behaviour nobody
+  had verified.
 - Prefer the **graphify** graph (`graphify-out/`, gitignored, rebuildable) over
   grepping for architecture, caller and impact questions. Keep it current with
   `graphify extract . --update` after structural work. Two things it needs around
   it: the docs in the tree need an LLM key, so run it as
   `graphify extract . --update --code-only` unless someone wants to spend a key on
-  the prose (the code graph is the part that answers architecture questions); and
-  it reports a **syntax error in `menubar/VoicesWindow.swift`** that is a parser
+  the prose (the code graph is the part that answers architecture questions); and it
+  reports a **syntax error in `menubar/VoicesWindow.swift`** that is a parser
   limitation, not a defect — `swiftc -parse` is clean and the app builds, so check
   the compiler before believing it.
 - **A page must never be able to resize the window.** A section pinned straight
@@ -915,16 +910,16 @@ environment's business, and the stale case was verified by hand).
   `SettingsSection` do. Pages that fill the pane (Jobs, Voices, Providers) need no
   scroller, because a table with a flexible height has nothing to propagate — but
   that only holds while the table's minimum really is *small*. Voices declared
-  `heightAnchor >= 320` and Jobs `>= 260`: a **required** floor is exactly the
-  thing that propagates, so both could still grow the window at the 860x560
-  minimum, and Jobs' wrapping detail label could grow it from a single long
-  `error_detail`. Keep a table's floor low (140 is enough to stop it collapsing)
-  and cap any wrapping label with `maximumNumberOfLines`. Settings had the mirror
-  -image problem: `bottomAnchor <= host` did stop the growth, and left the surplus
-  with nowhere to go, so its bottom rows were clipped with no scrollbar — a form
-  is a scroller page. **This is tested now**: `test_ui.py` forces the window to
-  700pt, visits every section, and asserts the size does not change, then puts the
-  owner's size back. Do not rely on the manual procedure alone; it is automated.
+  `heightAnchor >= 320` and Jobs `>= 260`: a **required** floor is exactly the thing
+  that propagates, so both could still grow the window at the 860x560 minimum, and
+  Jobs' wrapping detail label could grow it from a single long `error_detail`. Keep
+  a table's floor low (140 is enough to stop it collapsing) and cap any wrapping
+  label with `maximumNumberOfLines`. Settings had the mirror-image problem:
+  `bottomAnchor <= host` did stop the growth, and left the surplus with nowhere to
+  go, so its bottom rows were clipped with no scrollbar — a form is a scroller page.
+  **This is tested now**: `test_ui.py` forces the window to 700pt, visits every
+  section, and asserts the size does not change, then puts the owner's size back. Do
+  not rely on the manual procedure alone; it is automated.
 - Mark deliberate simplifications with a `ponytail:` comment naming **the ceiling
   and the upgrade path** — a curated exception list, a flat default, a fixed pool
   size. Unmarked, the next reader cannot tell a considered trade-off from an
@@ -935,13 +930,12 @@ environment's business, and the stale case was verified by hand).
   discovery — it re-sorts `models_cache.json`. So `stale` is `false` by
   construction, and a reader trusting it was trusting an artifact of being asked.
   **Left exactly as it was, deliberately**: making the gate fire would disable
-  every model on a stale inventory, which is an outage rather than a fix.
-  `inventoryAgeMs` / `inventoryOldestProvider` / `inventoryOldestAt` are the
-  honest pair, recorded during the rebuild from the oldest contributing provider
-  snapshot. Measured live: `ageMs` 4.8 s against an inventory **19 hours** old
-  (`openrouter-main`, read the previous morning) — which is the fact the old
-  envelope hid. `null` means no provider ever reported a fetch time: unknown, not
-  zero.
+  every model on a stale inventory, an outage rather than a fix.
+  `inventoryAgeMs` / `inventoryOldestProvider` / `inventoryOldestAt` are the honest
+  pair, recorded during the rebuild from the oldest contributing provider snapshot.
+  Measured live: `ageMs` 4.8 s against an inventory **19 hours** old
+  (`openrouter-main`, read the previous morning) — the fact the old envelope hid.
+  `null` means no provider ever reported a fetch time: unknown, not zero.
 - **The Hub's `TextGuidance`** (`soft_max_chars`, `chunking`) is authoritative
   about local voice engines but is **not served over its API** (checked against
   0.6.29: `/api/hub/catalog` carries `long_form_delivery`, with a per-model
@@ -960,7 +954,4 @@ environment's business, and the stale case was verified by hand).
   same rule as "read a control's title to know it was built": the file you can
   find is not automatically the file that is running, and the Hub auto-updates
   itself often enough (0.6.18 → 0.6.23 → 0.6.29 → 0.6.31 within one session) that
-  the difference is not hypothetical. Also worth knowing: the Hub's field comment
-  says `hard-cap` engines' UI *"should soft-block"*, which is why the cliff is
-  published as `maximum_input_characters` at all — it is the Hub's instruction
-  carried out, not a number of ours.
+  the difference is not hypothetical.
