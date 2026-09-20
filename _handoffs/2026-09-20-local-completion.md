@@ -33,7 +33,7 @@ means inherited or worker evidence not yet independently confirmed.
 | U04, U07, U13, U14 | Browser Generate/Keep use parsed responses, exact-payload ambiguous retry, serialized status reads, provider error/retry | `[MEASURED]` 9 Node action tests pass; rendered mock Generate attaches an image and Keep becomes Kept. |
 | U01, U05, U06, U08–U12, U15, U16 | Authenticated byte helper, bounded WebKit loading/retry, refreshed key injection, explicit native failures | `[MEASURED]` 2 native transport checks pass (compiled Swift and local HTTP fixtures); final integrated native inspection pending. |
 | U02, U03, F01–F04 | Native drafts/recovery/voice choice/capabilities/scrolling form and Jobs outputs | `[MEASURED]` Native state regressions pass, including typed drafts, transport ambiguity and stale callbacks. Six-lane minimum-width geometry passes. Rendered native Image submits once, shows two mock outputs and previews authenticated bytes; Jobs pinning works. |
-| P01–P03, P05 | Honest empty bundled voice defaults, locked dependencies/runtime identity, required icon/signature validation | `[MEASURED]` 9 packaging tests pass; final app build/install pending. Reproducibility is dependency/runtime identity, not byte-identical bundle output. |
+| P01–P03, P05 | Honest empty bundled voice defaults, locked dependencies/runtime identity, required icon/signature validation | `[MEASURED]` 10 packaging tests pass; signed arm64 app installed and running. Signature reverified after startup. Reproducibility is dependency/runtime identity, not byte-identical bundle output. |
 | P04 | Dry-run-first copied-profile relocation with validated paths, backup and rollback | `[MEASURED]` 7 fixture tests pass, including unavailable old home. Optional live history remains archived. |
 | F05 | Private archive import/inspect/inventory/download; truthful unavailable commerce responses | `[MEASURED]` 9 backend + 2 browser checks pass. Full trusted delivery/install and authoring/preview/export are NOT complete: original store account/receipt/signing authority is unavailable. No ownership/signature/Keychain bypass. |
 
@@ -72,6 +72,30 @@ original store authority or a supported publisher-signed export and Story Studio
 
 ## Installation record
 
-Pending final native integration, independent review and signed build. Do not
-read the backup or source-test results above as proof that the installed app is
-already running.
+- `[MEASURED]` Installed `/Applications/gateway-kh.app`, build
+  `1e516e1-202609201631`, arm64 executable and bundled Python 3.11.16.
+  `/health` reports the identical build at `http://127.0.0.1:8000`.
+- `[MEASURED]` Post-launch strict/deep signature verification passes. The first
+  installation exposed Python bytecode writes invalidating the resource seal;
+  the launcher now uses `-B`, builds remove generated caches before signing,
+  and the post-launch bundle contains no `__pycache__` directories.
+- `[MEASURED]` Wrong-key Story request returns 403; zero processed/live jobs.
+  Ten recording SHA-256 values and six restored catalogue/settings files remain
+  byte-identical to the pre-install backup after startup. No real generation.
+- `[MEASURED]` The normal checkout is
+  `/build/Developer/gateway-kh/repository`; local main was fast-forwarded
+  to the reviewed work. The unrelated `.DS_Store` modification was retained with
+  identical SHA-256. No push, publish, hosted workflow or remote mutation occurred.
+- `[MEASURED]` Existing `menubar.json` was backed up and only its `gatewayDir`
+  relocated to the nested repository. The bundled runtime is used in the app.
+- `[MEASURED]` Providers is open for the owner's local key entry. The only
+  configured provider at handoff is local Studio Hub; its health is reachable,
+  but model generation and weight readiness were not tested.
+
+The overall handoff is **not 100% closed**: F05 trusted delivery/install/reinstall
+and authoring/preview/export remain open. The transfer archives and authoring
+sources remain separate, private and untouched; the new archive shelf does not
+silently import or install them. To proceed, establish original Store account,
+receipt and signing-key authority (or a supported publisher-signed export) and
+the actual Story Studio installation. Unknown accepted provider work still needs
+manual reconciliation; no provider-specific recovery poller is claimed.
