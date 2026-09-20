@@ -111,6 +111,9 @@ def _image_row(model_id: str, definition: ProviderDefinition, model: dict[str, A
                 "reference_generation_price_version": PRICE_VERSION,
             }
         )
+    max_prompt_characters, max_prompt_source = _limit_with_source(
+        "max_prompt_characters", None, 4000, definition.id, model_id
+    )
     return {
         "execution_label": "Local" if definition.kind == "studio_hub" else "Remote",
         "aspect_ratios": _IMAGE_RATIOS,
@@ -142,9 +145,8 @@ def _image_row(model_id: str, definition: ProviderDefinition, model: dict[str, A
         # — per-model values once a provider publishes them.
         "reference_strength_mode": "none",
         "supported_reference_strengths": [],
-        "max_prompt_characters": _curated_or(
-            "max_prompt_characters", 4000, definition.id, model_id
-        ),
+        "max_prompt_characters": max_prompt_characters,
+        "max_prompt_characters_source": max_prompt_source,
         "operations": ["text-to-image", "image-to-image"],
         "requires_admission_permit": False,
         "availability_note": None,
@@ -200,19 +202,41 @@ def _video_row(model_id: str, definition: ProviderDefinition, model: dict[str, A
     }
 
 
-def _curated_or(field: str, fallback: int, provider_id: str, model_id: str) -> int:
-    """The owner's curated value for a limiter, else a documented flat default.
+#: Where a published limit came from. The values are deliberately dull, and
+#: `provider` is the only one that means "the model's own figure".
+#:
+#:   provider — the provider (or the Hub, for a location) stated it.
+#:   curated  — the owner's `model-limits.local.json` filled a silence.
+#:   gateway  — our own documented default or recorded table.
+LIMIT_SOURCES = ("provider", "curated", "gateway")
 
-    `limits.py` advertises four fields. Two of them — `max_prompt_characters` and
-    `maximum_input_characters` — were loaded and then never consulted by anything,
-    so the file promised the owner a control he did not have and the invented flat
-    default quietly beat his own knowledge. Both now route through here or through
-    `_tts_characters`.
+
+def _limit_with_source(
+    field: str, published: Any, fallback: int | None, provider_id: str, model_id: str
+) -> tuple[Any, str]:
+    """A limit and where it came from, decided **once**.
+
+    Story Studio renders these fields as the model's own window or character
+    budget, and it cannot tell a number the provider published from one this
+    gateway chose. The owner's `model-limits.local.json` makes that concrete: its
+    24 rows all carry the identical `1000000/128000`, which is a flat default
+    wearing the clothes of per-model knowledge. The value is still published —
+    nulling it is a breaking change for the reader, and Story Studio substitutes
+    its own 8,192 when a window is absent, which is worse — but it now arrives
+    with a companion `*_source` saying whose number it is.
+
+    Value and provenance are returned together because they are one decision. A
+    separate "where did that come from?" function is free to disagree with the
+    chooser the first time either gains a step.
     """
+    if published is not None:
+        return published, "provider"
     curated = limits.gap(field, None, provider_id, model_id)
-    if isinstance(curated, (int, float)) and curated > 0:
-        return int(curated)
-    return fallback
+    if isinstance(curated, (int, float)) and not isinstance(curated, bool) and curated > 0:
+        return int(curated), "curated"
+    if fallback is None:
+        return None, "gateway"
+    return fallback, "gateway"
 
 
 def _language_codes(languages: Any) -> list[str]:
@@ -263,25 +287,88 @@ def _language_codes(languages: Any) -> list[str]:
 #: Hub's own per-model `TextGuidance` when it is served.
 _TTS_CHARACTERS_DEFAULT = 25000
 
+#: Engines the Hub declares as `chunking="hard-cap"`, with the character cliff its
+#: own catalogue records.
+#:
+#: **Read from the Hub, not guessed, and not served over its API.** Measured
+#: against Hub 0.6.29: `/api/hub/catalog` carries `family`, `capabilities`,
+#: `reference_audio` and `long_form_delivery` (including a per-model
+#: `section_max_characters` for everything it *does* section) but **no**
+#: `text_guidance` — so `soft_max_chars` is the one fact that has to be recorded
+#: here. These two numbers are verbatim from the Hub's own table
+#: (`components/voice/app/backend/catalog.py`, read 2026-09-20): bark 150 and
+#: orpheus 170, both `hard-cap`, note *"past the cap, output degrades or
+#: silences"*.
+#:
+#: `spark-tts-mlx` is 750 there and deliberately **absent**: it is `auto-split`,
+#: so 750 is where quality is best, not a limit on what may be sent — publishing
+#: it as a maximum would refuse text that works.
+#:
+#: ponytail: two families, hand-listed, and only consulted while the Hub does not
+#: long-form split that model (see `_hard_cap_characters`). Ceiling — a third
+#: hard-cap family the Hub adds is over-promised until this list is extended.
+#: Upgrade path — the Hub serves `text_guidance.soft_max_chars`, at which point
+#: this table and its staleness both disappear.
+_HARD_CAP_CHARACTERS = {"orpheus": 170, "bark": 150}
 
-def _tts_characters(model_id: str, model: dict[str, Any], definition: ProviderDefinition) -> int:
-    """The per-request text limit for one TTS model.
 
-    Order: what the provider states, then what the owner curated, then the flat
-    25,000 default. The curated step was missing, even though
-    `maximum_input_characters` is one of the four fields `limits.py` advertises
-    and loads — so the owner could write a limit for a model and the *invented*
-    default would beat his own curated knowledge, which is the wrong way round.
+def _hard_cap_characters(raw: dict[str, Any]) -> int | None:
+    """The character cliff for a model the Hub does **not** long-form split.
+
+    `long_form_delivery` is the served half of this decision: when it is present
+    the Hub takes a complete script for that model and sections it itself, so its
+    section size is not a limit on what may be submitted. When it is `null` the
+    script goes to the engine whole, and an engine with a hard cap silences past
+    it.
+
+    Gating on that field rather than on the family alone means the recorded cap
+    **stops applying by itself** the day the Hub learns to section that family —
+    the numbers go stale, the rule does not.
+    """
+    if raw.get("long_form_delivery"):
+        return None
+    return _HARD_CAP_CHARACTERS.get(str(raw.get("family") or "").strip().lower())
+
+
+def _tts_characters(
+    model_id: str, model: dict[str, Any], definition: ProviderDefinition
+) -> tuple[int, str]:
+    """One TTS text limit **and where it came from**, decided once.
+
+    Returned together deliberately. The value and its provenance answer one
+    question — "who chose this number?" — and two functions asking the same
+    questions in the same order are free to disagree the first time one of them
+    gains a step. That drift is the shape this codebase keeps finding.
+
+    Order: what the provider states, then the owner's curated value, then the
+    engine's own hard cap, then the flat 25,000 default. The curated step was
+    missing once, even though `maximum_input_characters` is one of the four fields
+    `limits.py` advertises and loads — so the owner could write a limit for a
+    model and the *invented* default beat his own curated knowledge, which is the
+    wrong way round.
+
+    The hard cap is a **ceiling**, not a preference: past it the engine silences
+    rather than refusing, so a curated value may be more conservative than the
+    cliff but never past it. Before this, Orpheus published 25,000 while its engine
+    stops at 170 — Story Studio validated against a number that was never true,
+    which is the whole of Shape 3.
     """
     raw = model.get("raw") or {}
     for key in ("maximum_text_length_per_request", "max_characters_request_subscribed_user"):
         value = raw.get(key)
         if isinstance(value, (int, float)) and value > 0:
-            return int(value)
+            return int(value), "provider"
+
     curated = limits.gap("maximum_input_characters", None, definition.id, model_id)
-    if isinstance(curated, (int, float)) and curated > 0:
-        return int(curated)
-    return _TTS_CHARACTERS_DEFAULT
+    curated = int(curated) if isinstance(curated, (int, float)) and curated > 0 else None
+
+    cap = _hard_cap_characters(raw)
+    if cap is not None and (curated is None or curated > cap):
+        # Our own recorded number, standing in for a limit the Hub does not serve.
+        return cap, "gateway"
+    if curated:
+        return curated, "curated"
+    return _TTS_CHARACTERS_DEFAULT, "gateway"
 
 
 #: Models that offer no speed control.
@@ -327,8 +414,14 @@ def _tts_row(model_id: str, definition: ProviderDefinition, model: dict[str, Any
     # VoxCPM2 that are not English-only. Story Studio renders this list only
     # when it is non-empty, so an empty list shows nothing rather than a lie.
     languages = _language_codes(raw.get("languages"))
+    maximum_input_characters, characters_source = _tts_characters(model_id, model, definition)
     return {
-        "maximum_input_characters": _tts_characters(model_id, model, definition),
+        "maximum_input_characters": maximum_input_characters,
+        # Where that number came from. Story Studio renders the field as the
+        # model's own figure, so "we chose this" has to be findable next to it —
+        # a companion field rather than a comment, because the reader is a
+        # program.
+        "maximum_input_characters_source": characters_source,
         # Speed is per model, not per provider: eleven_v3 publishes no speed
         # control at all, and fal's turbo lane allows 0.7-1.2 where the direct
         # one allows 0.5-2. `controls` reflects that rather than claiming a
@@ -496,14 +589,18 @@ def _chat_row(model_id: str, definition: ProviderDefinition, model: dict[str, An
     # Where the provider published nothing, the owner's curated file may know.
     # Gap-filling only: a live provider value always wins, because a file goes
     # stale and a provider does not.
+    context_window, context_source = _limit_with_source(
+        "context_window_tokens", _stated(context), None, definition.id, model_id
+    )
+    max_output, output_source = _limit_with_source(
+        "max_output_tokens", _stated(completion), None, definition.id, model_id
+    )
     return {
         "queue_class": "direct",
-        "context_window_tokens": limits.gap(
-            "context_window_tokens", _stated(context), definition.id, model_id
-        ),
-        "max_output_tokens": limits.gap(
-            "max_output_tokens", _stated(completion), definition.id, model_id
-        ),
+        "context_window_tokens": context_window,
+        "context_window_tokens_source": context_source,
+        "max_output_tokens": max_output,
+        "max_output_tokens_source": output_source,
         "controls": controls,
         "input_modalities": inputs,
         "supports_vision": ("image" in inputs) if inputs else None,
@@ -534,6 +631,9 @@ def _music_row(model_id: str, definition: ProviderDefinition, model: dict[str, A
     raw = model.get("raw") or {}
     languages = _language_codes(raw.get("languages")) if isinstance(raw, dict) else []
     instrumental = raw.get("supports_instrumental") if isinstance(raw, dict) else None
+    max_prompt_characters, max_prompt_source = _limit_with_source(
+        "max_prompt_characters", None, 2000, definition.id, model_id
+    )
     return {
         "coming_soon": False,
         # ponytail: flat caps for every music model, deliberately at the
@@ -541,9 +641,8 @@ def _music_row(model_id: str, definition: ProviderDefinition, model: dict[str, A
         # `max_prompt_characters`. Upgrade path — per-model values from the
         # provider, or the owner's curated file (which is now actually read; it
         # advertised `max_prompt_characters` and nothing consulted it).
-        "max_prompt_characters": _curated_or(
-            "max_prompt_characters", 2000, definition.id, model_id
-        ),
+        "max_prompt_characters": max_prompt_characters,
+        "max_prompt_characters_source": max_prompt_source,
         "max_lyrics_characters": 4000,
         "max_title_characters": 200,
         "supports_instrumental": instrumental if isinstance(instrumental, bool) else None,
@@ -565,6 +664,7 @@ class Catalog:
     def __init__(self) -> None:
         self._rows: dict[str, list[dict[str, Any]]] = {m: [] for m in MODALITIES}
         self._built_at = 0.0
+        self._inventory_oldest: tuple[str, float] | None = None
         self._signature: tuple = ()
         self.rebuild(force=True)
 
@@ -599,6 +699,7 @@ class Catalog:
         from . import fleet
 
         usable = fleet.usable_location_ids()
+        contributed: dict[str, float] = {}
         for modality in MODALITIES:
             # One row per model, however many locations offer it. A location is a
             # provider internally — that is what gives it discovery, a credential
@@ -608,6 +709,13 @@ class Catalog:
             # whenever its site went offline.
             merged: dict[str, dict[str, Any]] = {}
             for definition, model in registry.models.enabled_models(modality):
+                # Recorded while assembling, not recomputed when asked: the
+                # freshness of the *inventory* is a property of the rows that were
+                # built from it. One `fetched_at` per contributing provider.
+                if definition.id not in contributed:
+                    fetched = registry.models.cached(definition.id).get("fetched_at")
+                    if isinstance(fetched, (int, float)) and fetched > 0:
+                        contributed[definition.id] = float(fetched)
                 row = self._story_row(modality, definition, model, usable=usable)
                 existing = merged.get(row["id"])
                 if existing is None:
@@ -628,6 +736,11 @@ class Catalog:
         self._rows = rows
         self._signature = signature
         self._built_at = time.time()
+        # The oldest snapshot these rows were assembled from, or `None` when no
+        # provider ever reported one — which is *unknown*, not zero.
+        self._inventory_oldest = (
+            min(contributed.items(), key=lambda item: item[1]) if contributed else None
+        )
 
     def _story_row(
         self,
@@ -729,12 +842,41 @@ class Catalog:
         return out
 
     def freshness(self) -> dict[str, Any]:
+        """How fresh this catalogue is — which is **two different questions**.
+
+        `ageMs` is how long ago the rows were last *assembled*, and it can never
+        exceed `REBUILD_TTL_S`: `rebuild()` sets `_built_at` and this calls
+        `rebuild()` first, so `ageMs ≈ 0` and `stale` is unreachable by
+        construction. That is not a bug to fix by making the gate fire — every
+        model would be disabled the moment a build aged past 30 minutes — but it
+        does mean `stale` is not the fact it appears to be, and a reader that
+        trusted it was trusting an artifact of being asked.
+
+        `inventoryAgeMs` is the honest one: how old the **oldest provider snapshot**
+        these rows were assembled from is. `rebuild()` runs no discovery — it
+        re-sorts `models_cache.json` — so a row can be assembled now from a model
+        list read days ago. `stale` is left exactly as it was, deliberately: this
+        adds the fact that was missing rather than silently changing a gate Story
+        Studio reads. `null` means no provider ever reported a fetch time, which is
+        *unknown*, not zero.
+        """
         self.rebuild()
         age_ms = max(0, int((time.time() - self._built_at) * 1000))
+        oldest = self._inventory_oldest
+        inventory_age_ms = (
+            max(0, int((time.time() - oldest[1]) * 1000)) if oldest else None
+        )
         return {
             "stale": age_ms > STALE_AFTER_MS,
             "ageMs": age_ms,
             "loadedAt": datetime.fromtimestamp(self._built_at, tz=timezone.utc).isoformat(),
+            "inventoryAgeMs": inventory_age_ms,
+            "inventoryOldestProvider": oldest[0] if oldest else None,
+            "inventoryOldestAt": (
+                datetime.fromtimestamp(oldest[1], tz=timezone.utc).isoformat()
+                if oldest
+                else None
+            ),
         }
 
     def envelope(self, modality: str) -> dict[str, Any]:

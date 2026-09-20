@@ -751,9 +751,9 @@ def tts_quote(payload: dict[str, Any]) -> dict[str, Any]:
     # *inventory* model (raw provider fields), not the published row.
     from .catalog import _TTS_CHARACTERS_DEFAULT, _tts_characters
 
-    limit = _tts_characters(str(model.get("model_id") or ""), model, definition)
+    limit, limit_source = _tts_characters(str(model.get("model_id") or ""), model, definition)
     if not isinstance(limit, int) or limit <= 0:
-        limit = _TTS_CHARACTERS_DEFAULT
+        limit, limit_source = _TTS_CHARACTERS_DEFAULT, "gateway"
     return {
         "model_id": model_id,
         "model_name": model["display_name"],
@@ -763,6 +763,10 @@ def tts_quote(payload: dict[str, Any]) -> dict[str, Any]:
         "speed": payload.get("speed", 1.0),
         "estimated_duration_ms": int(max(len(text) / 14.0, 0.5) * 1000),
         "maximum_input_characters": limit,
+        # Same value, same decision, and the same label as the model row carries:
+        # a quote that disagreed with the row it came from is what put the old flat
+        # 40,000 on this route after the catalogue had stopped publishing it.
+        "maximum_input_characters_source": limit_source,
         "controls": payload.get("controls", {}),
         "credits": 0,
         "maximum_credits": 0,

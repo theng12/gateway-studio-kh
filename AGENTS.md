@@ -21,9 +21,12 @@ rediscover.
   entirely. `credits_per_*: 0`, `minimum_credits: 0`, `price_version: "flat"`,
   `chargeable: true`, and a balanced `0/0/0` settlement triple are all
   load-bearing.
-- **`freshness` is a hard gate.** `stale: true` disables every model, and a copy
-  older than 30 minutes is refused. Computed from the last catalogue rebuild, not
-  process start.
+- **`freshness` is a hard gate Story Studio reads — and the one we publish cannot
+  trip.** `stale: true` disables every model on their side, and the field is
+  computed from the last catalogue *rebuild*, which `freshness()` performs before
+  reading it — so it is always `false`. Do not "fix" that by making it fire (it
+  would disable every model on a stale inventory); the honest number is
+  `inventoryAgeMs`. See the freshness bullet in Working rules.
 - **`finish_reason` must be a clean stop** — `length` is refused as truncated.
 - **Artifact URLs stay on the API origin** (relative paths only).
 
@@ -57,7 +60,36 @@ changed, not just its value.
 **One value must stay invented:** TTS `maximum_input_characters` — Story Studio
 calls `.toLocaleString()` on it unconditionally, so `null` would crash the page
 rather than degrade it. Per model where the provider states one (ElevenLabs
-publishes it), 25,000 otherwise, documented in the handoff as theirs to move.
+publishes it), 25,000 otherwise.
+
+**But "invented" is not "unbounded", and one lane proved it.** Orpheus was
+published at 25,000 while its engine silences past **170** — Story Studio
+validated a narration against a number that was never true, which is the one item
+in Shape 3 that was already wrong rather than latent. The Hub declares this in its
+own catalogue (`chunking="hard-cap"`, `soft_max_chars`) but does **not** serve it,
+so the cliff is recorded in `catalog._HARD_CAP_CHARACTERS` with its source and
+date. Two things keep that honest:
+  * the cap applies **only while the Hub does not long-form split that model** —
+    `long_form_delivery` is served, and when it is present the Hub sections the
+    script itself, so the recorded number stops applying by itself. The numbers
+    go stale; the rule does not;
+  * `spark-tts-mlx` is *deliberately absent* even though the Hub's table says 750:
+    it is `auto-split`, so 750 is where quality is best, not a limit on what may
+    be sent. Publishing it as a maximum would refuse text that works.
+
+**Every limit now says whose number it is.** `context_window_tokens`,
+`max_output_tokens`, `max_prompt_characters` and `maximum_input_characters` each
+carry a companion `*_source` — `provider`, `curated` (the owner's
+`model-limits.local.json`) or `gateway` (ours: a documented default or the
+recorded cliff). Measured live: 48 chat rows `provider`, **18 `curated`** — the
+curated file's 24 entries are all the same `1000000/128000`, a flat default
+wearing the clothes of per-model knowledge, and Story Studio rendered it as the
+model's own window. The value is still published (nulling it makes Story Studio
+substitute its own 8,192, which is worse); it is now labelled. **The value and its
+source come from one function**, because a separate "where did that come from?"
+reader is free to disagree with the chooser the first time either gains a step —
+which is how the quote route kept publishing a flat 40,000 after the catalogue had
+stopped.
 
 ## Discovery ≠ availability
 
@@ -632,7 +664,7 @@ model name.
 ## Verification
 
 ```bash
-.venv/bin/python tests/test_e2e.py              # 403 checks, isolated mock upstream
+.venv/bin/python tests/test_e2e.py              # 416 checks, isolated mock upstream
 .venv/bin/python tests/test_fleet_standalone.py # 45 checks, real Hub(s) as locations
 .venv/bin/python tests/test_ui.py               # 109 checks, drives the real app
 ```
@@ -788,8 +820,25 @@ environment's business, and the stale case was verified by hand).
   and the upgrade path** — a curated exception list, a flat default, a fixed pool
   size. Unmarked, the next reader cannot tell a considered trade-off from an
   oversight.
+- **`freshness` reports two ages, and only one of them can go stale.** `ageMs`
+  times the last *assembly* and can never reach the 30-minute gate: `freshness()`
+  calls `rebuild()` first, which resets the clock, and `rebuild()` runs no
+  discovery — it re-sorts `models_cache.json`. So `stale` is `false` by
+  construction, and a reader trusting it was trusting an artifact of being asked.
+  **Left exactly as it was, deliberately**: making the gate fire would disable
+  every model on a stale inventory, which is an outage rather than a fix.
+  `inventoryAgeMs` / `inventoryOldestProvider` / `inventoryOldestAt` are the
+  honest pair, recorded during the rebuild from the oldest contributing provider
+  snapshot. Measured live: `ageMs` 4.8 s against an inventory **19 hours** old
+  (`openrouter-main`, read the previous morning) — which is the fact the old
+  envelope hid. `null` means no provider ever reported a fetch time: unknown, not
+  zero.
 - **The Hub's `TextGuidance`** (`soft_max_chars`, `chunking`) is authoritative
-  about local voice engines but is **not served over its API**. Our local
-  families are `auto-split` with no soft max; the hard-capping ones (Bark 150,
-  Orpheus 170) are not exposed. If one ever is, the flat 25,000 default becomes
-  wrong.
+  about local voice engines but is **not served over its API** (checked against
+  0.6.29: `/api/hub/catalog` carries `long_form_delivery`, with a per-model
+  `section_max_characters` for everything it *does* section, but no
+  `text_guidance`). The hard-capping families are therefore recorded in
+  `catalog._HARD_CAP_CHARACTERS` — bark 150, orpheus 170, read from the Hub's own
+  table — and the record is gated on `long_form_delivery` so the Hub can obsolete
+  it without anyone editing the gateway. **When the Hub serves `text_guidance`,
+  that table and its staleness both disappear.**

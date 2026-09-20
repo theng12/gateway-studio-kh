@@ -337,14 +337,25 @@ Every deliberate simplification must carry a `ponytail:` comment naming the ceil
 **and** the upgrade path.
 
 ### Misattribution (our number in a field the consumer reads as the model's own)
-1. **`gateway/catalog.py:501,504` — the curated `model-limits.local.json` is
-   published in `context_window_tokens` / `max_output_tokens`.** The live file's 24
-   rows all use the identical `1000000/128000` pair, which is provably a flat
-   default rather than per-model knowledge, and Story Studio renders it as the
-   model's own window. The fix pattern already exists at `api.py:392`
-   (`limit_source: "gateway"`). *Fix: emit a companion `*_source` field, or keep
-   curated values out of the model-owned field.* **This is the highest-value item
-   in this section** — it is the same class as the `8192` bug already removed.
+1. **FIXED — companion `*_source` fields are published.** `context_window_tokens`,
+   `max_output_tokens`, `max_prompt_characters` and `maximum_input_characters` each
+   carry one, with values `provider` / `curated` / `gateway`. The value is still
+   published rather than nulled — Story Studio substitutes its own 8,192 for a
+   missing window, which is worse than a labelled number — and it now travels with
+   a statement of whose number it is. Measured live: 48 chat rows `provider`,
+   **18 `curated`** (the file's identically-valued `1000000/128000`), 0 unsourced.
+   Value and provenance come from **one function**, because a separate "where did
+   that come from?" reader is free to disagree with the chooser — which is exactly
+   how the TTS quote route kept publishing a flat 40,000 after the catalogue had
+   stopped.
+2. **FIXED — the one that was already wrong.** Orpheus published
+   `maximum_input_characters: 25000` while its engine silences past **170**. The
+   Hub declares this in its own catalogue and does not serve it, so the cliff is
+   recorded in `catalog._HARD_CAP_CHARACTERS` (bark 150, orpheus 170), **gated on
+   the served `long_form_delivery`** so it stops applying by itself if the Hub
+   learns to section that family. `spark-tts-mlx` (750 in the Hub's table) is
+   deliberately *not* capped: it is `auto-split`, so 750 is a soft best, not a
+   limit. Verified live: the Orpheus row publishes 170.
 2. **`gateway/catalog.py:188-199` — video `duration_seconds` pinned to `(5, 10)`
    and `resolution: "720p"` for every video model**, published as the model's own
    variants; the ponytail at `:158` names only the prompt cap.
@@ -394,16 +405,11 @@ Every deliberate simplification must carry a `ponytail:` comment naming the ceil
 - All price fields pinned to 0; `provider_submit_concurrency`/`available_workers`
   of 1; `_TTS_NO_SPEED`; retention's 7 days / 10 GB and its clamp bounds.
 
-### The one that is now actually wrong
-**`gateway/catalog.py:264-284,331` — TTS `maximum_input_characters` is 25,000 for
-every lane that states none, and Orpheus is now published.** The Hub's
-`mlx-community/orpheus-3b-0.1-ft-4bit` is live (inherited from the migration) with
-`maximum_input_characters: 25000`, while AGENTS.md itself records Orpheus as
-hard-capping at **170** characters. Story Studio validates narration against
-25,000 and the engine truncates or fails far earlier. *Fix: per-model from the
-Hub's `TextGuidance` (the Hub does not serve it today) or curate it — keeping the
-field a positive integer. **Needs the owner's call on whether to untick Orpheus
-instead.***
+### The one that was already wrong — FIXED
+Orpheus published 25,000 while its engine silences past 170; see Shape 3.1's second
+item above. The owner's call was **not to untick it**: the model works, only its
+advertised limit was wrong, and the Hub's own catalogue states the cliff — so it is
+curated (with its source and date) rather than removed from the picker.
 
 ---
 
@@ -471,15 +477,17 @@ instead.***
 2. **FIXED this session — see the Fixed list above** (`.env` was a frozen snapshot).
 3. **FIXED this session — see the Fixed list above** (voice placement outlived the
    recording it was made for).
-4. **`gateway/catalog.py:731-738` — the 30-minute `freshness.stale` gate is
-   unreachable.** `freshness()` calls `rebuild()` first, which resets `_built_at`,
-   so the reported `ageMs` is always under the 20 s rebuild TTL. `rebuild()` runs no
-   discovery, so Story Studio is told `stale: false, ageMs ≈ 0` about a model list
-   assembled from `models_cache.json`, whose `fetched_at` can be days old. The hard
-   gate recorded in AGENTS.md is dead code. **Needs a decision:** report a real
-   inventory age (and let the gate fire — which would disable every model on a
-   stale inventory, possibly a big visible outage) or keep `stale` as-is and add a
-   separate, honest `inventory_age`. *Do not change this one silently.*
+4. **FIXED as decided — the honest age, not a gate that fires.** `freshness` now
+   publishes `inventoryAgeMs` / `inventoryOldestProvider` / `inventoryOldestAt`
+   alongside the unchanged `stale` / `ageMs`, recorded during the rebuild from the
+   oldest contributing provider snapshot (`null` when no provider ever reported a
+   fetch time: unknown, not zero). **`stale` was left exactly as it was**, on
+   purpose: making the gate fire would disable every model on a stale inventory —
+   an outage dressed as a fix — and the diagnosis is now available without it.
+   Measured live: `ageMs` **4.8 s** against an inventory **19 hours** old
+   (`openrouter-main`, read the previous morning). That gap is the fact the old
+   envelope hid, and the e2e suite asserts both halves — that `ageMs` cannot reach
+   the gate, and that the inventory age is published next to it.
 5. **FIXED this session — see the Fixed list above** (the same voice listed twice).
 6. **`gateway/providers/models.py:89-119` + `menubar/FleetSection.swift:269-290` —
    discovery is manual and the Fleet page's "Refresh" does not discover.** It hits
@@ -521,32 +529,30 @@ instead.***
 
 ## What to do next, in order
 
-Every HIGH and MED-HIGH finding is now closed. What is left is MED and below, in
-the order worth doing:
+Every HIGH, MED-HIGH **and the three open decisions** are now closed. What is left
+is MED and below:
 
-1. **Shape 6.4 — the 30-minute `freshness.stale` gate is unreachable**, because
-   `freshness()` calls `rebuild()` first and resets the clock. Story Studio is told
-   `stale: false, ageMs ≈ 0` about a list assembled from a cache that can be days
-   old. **This one needs your decision and must not be changed silently**: making
-   the gate fire would disable every model on a stale inventory — a visible outage —
-   so the choice is between an honest inventory age and a gate that can trip.
-2. **Shape 2.1, 2.2 — video modes and voice language are published wrong**, with a
-   stated source that could be read instead.
-3. **Shape 1.2 and 6.6 — `/health` says "running" from a URL in a file, and the
+1. **Shape 1.2 and 6.6 — `/health` says "running" from a URL in a file, and the
    Fleet page's Refresh does not discover models.** Both are the same defect as the
    counts that read "enabled" as "offered": the page that exists to say what is
-   available is not measuring it.
-4. **Shape 4.4 — a disabled model still runs if it was disabled after submit**, and
+   available is not measuring it. This is the largest remaining cluster and the
+   cheapest to feel — a stopped Hub that answers health.
+2. **Shape 2.1, 2.2 — video modes and voice language are published wrong**, with a
+   stated source that could be read instead. Same rule as Orpheus: read, never
+   derive.
+3. **Shape 4.4 — a disabled model still runs if it was disabled after submit**, and
    a Hub refresh that flips `catalogued` mid-queue does not stop the job.
-5. The rest of Shape 3 — values we invented sitting in a provider's own field —
-   behind the `*_source` convention you have not chosen yet.
+4. **The rest of Shape 3 — values we invented sitting in a provider's own field.**
+   The `*_source` convention is now settled and in use, so these are mechanical:
+   video `duration_seconds`, the 21 curated fal example voices,
+   `estimated_duration_ms`, `anthropic.DEFAULT_MAX_TOKENS`, music's lyrics and
+   title caps, and the modality inference in `discovery.py`.
+5. Shape 5.4 — the reserved `studio-hub` namespace is claimable by a custom
+   provider, and "is a location" is defined two ways (`catalog.py` by kind,
+   `fleet.py` by id prefix).
 
-Decisions still yours: 6.4 above (add `discovery_age_ms`, or let `stale` trip);
-Shape 3.1 (companion `*_source` fields for the curated limits); and Shape 3 "the one
-that is now actually wrong" — Orpheus publishes a 25,000-character limit while
-AGENTS.md says its engine caps at 170, so either it is unticked or the Hub serves
-`TextGuidance`.
-
+Done in this batch: 3.1 (the `*_source` fields), Shape 3's Orpheus cap, 6.4 (the
+honest inventory age — decision taken: report it, do not make `stale` trip).
 Done in Batch 3: 6.2 (`.env` read live), 6.3 (placement cache keyed on the clip),
 6.5 (a voice listed twice), 5.3 (bytes are a voice's identity).
 Done in Batch 2: 5.1 (the operator token), 1.1 (routing × `can_publish`), 4.10 /

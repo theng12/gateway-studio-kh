@@ -418,6 +418,23 @@ def main() -> int:
                   {"stale", "ageMs", "loadedAt"} <= set(cat["freshness"]))
             check("freshness not stale", cat["freshness"]["stale"] is False)
             check("freshness ageMs credible", cat["freshness"]["ageMs"] < 30 * 60 * 1000)
+            # **Two questions, two numbers.** `ageMs` times the last *assembly*,
+            # and it can never reach the 30-minute gate: `freshness()` calls
+            # `rebuild()` first, which resets the clock, and `rebuild()` runs no
+            # discovery — it re-sorts a cache whose per-provider `fetched_at` can be
+            # days old. Asserted as it behaves rather than as it reads, so nobody
+            # later mistakes `stale: false` for a measurement of the inventory.
+            check("the assemble age cannot reach the staleness gate",
+                  cat["freshness"]["ageMs"] < 20 * 1000,
+                  f"{cat['freshness']['ageMs']}ms vs a 30-minute gate")
+            check("so the inventory age is published as its own field",
+                  "inventoryAgeMs" in cat["freshness"]
+                  and "inventoryOldestProvider" in cat["freshness"],
+                  f"{sorted(cat['freshness'])}")
+            check("and it is never younger than the assembly it describes",
+                  cat["freshness"]["inventoryAgeMs"] is None
+                  or cat["freshness"]["inventoryAgeMs"] >= cat["freshness"]["ageMs"],
+                  f"inventory={cat['freshness']['inventoryAgeMs']} assemble={cat['freshness']['ageMs']}")
             # Keyed by id, not by position. `cat["models"][0]` was the whole
             # "row contract" section, and every claim in it was about whichever
             # row happened to sort first — add a model and the checks silently
@@ -503,6 +520,23 @@ def main() -> int:
             check("a model neither source knows stays unknown, not zero",
                   bare is not None and bare["context_window_tokens"] is None,
                   f"{bare and bare.get('context_window_tokens')}")
+
+            # **Whose number is it.** Story Studio renders these as the model's own
+            # window and cannot tell a provider's figure from one this gateway
+            # chose: the owner's curated file has 24 rows carrying the identical
+            # `1000000/128000`, which is a flat default wearing the clothes of
+            # per-model knowledge. The value is still published — nulling it makes
+            # Story Studio substitute its own 8,192, which is worse — but now with
+            # a companion field saying where it came from.
+            check("a provider's own window is labelled as the provider's",
+                  row.get("context_window_tokens_source") == "provider",
+                  f"{row.get('context_window_tokens_source')}")
+            check("a window the curated file supplied is labelled as curated",
+                  plain.get("context_window_tokens_source") == "curated",
+                  f"{plain.get('context_window_tokens_source')}")
+            check("and one nobody supplied is labelled as ours, not as a fact",
+                  bare.get("context_window_tokens_source") == "gateway",
+                  f"{bare.get('context_window_tokens_source')}")
             # A published 0 is a claim that the model accepts nothing, which is a
             # different statement from "the provider did not say". Story Studio's
             # own rule forbids the two from sharing a value, so an unpublished
@@ -721,16 +755,45 @@ def main() -> int:
             _mock = _dc.replace(_local, id="mock-remote")
             check("a provider that states its own limit is published with it",
                   _tts_characters("m", {"raw": {"maximum_text_length_per_request": 5000}},
-                                  _mock) == 5000)
-            check("the local lane gets the agreed 25,000 default",
-                  _tts_characters("m", {"raw": {}}, _local) == 25000
-                  == _TTS_CHARACTERS_DEFAULT)
+                                  _mock) == (5000, "provider"))
+            # The limit and where it came from, from one function: they answer one
+            # question, so they are decided once.
+            check("the local lane gets the agreed 25,000 default, marked as ours",
+                  _tts_characters("m", {"raw": {}}, _local) == (25000, "gateway")
+                  and _TTS_CHARACTERS_DEFAULT == 25000)
             check("a provider's stated limit wins over the curated file",
                   _tts_characters("mock-tts-1", {"raw": {"maximum_text_length_per_request": 5000}},
-                                  _mock) == 5000)
+                                  _mock) == (5000, "provider"))
             check("the owner's curated limit is honoured where nobody stated one",
-                  _tts_characters("mock-tts-plain", {"raw": {}}, _mock) == 12345,
+                  _tts_characters("mock-tts-plain", {"raw": {}}, _mock) == (12345, "curated"),
                   f"{_tts_characters('mock-tts-plain', {'raw': {}}, _mock)}")
+
+            # An engine the Hub declares as `hard-cap` silences past its cliff, and
+            # the Hub does not serve that number over its API — so it is recorded
+            # here and labelled as ours rather than published as the model's own.
+            # Orpheus published 25,000 while its engine stops at 170, which is the
+            # one item in Shape 3 that was *already wrong* rather than latent.
+            check("a hard-cap engine is not over-promised (Orpheus: 170)",
+                  _tts_characters("m", {"raw": {"family": "orpheus"}}, _local) == (170, "gateway"))
+            check("and Bark's cliff is recorded too",
+                  _tts_characters("m", {"raw": {"family": "bark"}}, _local) == (150, "gateway"))
+            # The served half of the decision: `long_form_delivery` present means
+            # the Hub sections the script itself, so the cliff stops applying — the
+            # recorded numbers go stale, the rule does not.
+            check("a family the Hub long-form splits is not capped by a recorded cliff",
+                  _tts_characters("m", {"raw": {"family": "orpheus",
+                                                "long_form_delivery": {"split_method": "sentence_safe"}}},
+                                  _local) == (25000, "gateway"))
+            # `spark-tts-mlx` is 750 in the Hub's table and `auto-split`: that is
+            # where quality is best, not a limit on what may be sent. Publishing it
+            # as a maximum would refuse text that works.
+            check("an auto-split family's soft maximum is not published as a limit",
+                  _tts_characters("m", {"raw": {"family": "spark-tts-mlx"}}, _local)
+                  == (25000, "gateway"))
+            check("a provider that states its own limit still beats the recorded cliff",
+                  _tts_characters("m", {"raw": {"family": "orpheus",
+                                                "maximum_text_length_per_request": 90}},
+                                  _local) == (90, "provider"))
             check("the mock model's stated limit reaches the catalogue",
                   any(r.get("maximum_input_characters") == 5000
                       for r in tts_rows_now if "mock-tts-1" in str(r.get("id"))),
@@ -739,6 +802,12 @@ def main() -> int:
                   any(r.get("maximum_input_characters") == 12345
                       for r in tts_rows_now if "mock-tts-plain" in str(r.get("id"))),
                   f"{[(r.get('id'), r.get('maximum_input_characters')) for r in tts_rows_now]}")
+            check("and the catalogue says where each limit came from",
+                  (next((r for r in tts_rows_now if "mock-tts-1" in str(r.get("id"))), {})
+                   .get("maximum_input_characters_source") == "provider")
+                  and (next((r for r in tts_rows_now if "mock-tts-plain" in str(r.get("id"))), {})
+                       .get("maximum_input_characters_source") == "curated"),
+                  f"{[(r.get('id'), r.get('maximum_input_characters_source')) for r in tts_rows_now]}")
             check("no live tts row publishes the old flat 40,000",
                   all(r.get("maximum_input_characters") != 40000 for r in tts_rows_now),
                   f"{[(r.get('id'), r.get('maximum_input_characters')) for r in tts_rows_now]}")
@@ -755,6 +824,11 @@ def main() -> int:
                   quoted["maximum_input_characters"] == tts_rows_now[0]["maximum_input_characters"],
                   f"quote {quoted.get('maximum_input_characters')} vs row "
                   f"{tts_rows_now[0].get('maximum_input_characters')}")
+            check("and says where that limit came from, as the row does",
+                  quoted.get("maximum_input_characters_source")
+                  == tts_rows_now[0].get("maximum_input_characters_source"),
+                  f"quote {quoted.get('maximum_input_characters_source')} vs row "
+                  f"{tts_rows_now[0].get('maximum_input_characters_source')}")
 
             # A model cannot both be English-only and able to detect language,
             # and these are multilingual MLX Whisper models. Unknown publishes

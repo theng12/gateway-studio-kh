@@ -545,6 +545,13 @@ def _studio_hub(definition: ProviderDefinition, values: dict[str, str]) -> Disco
             raw["capabilities"] = facts.get("capabilities") or []
             raw["reference_audio"] = facts.get("reference_audio") or {}
             raw["family"] = facts.get("family")
+            # Whether the Hub takes a **complete script** for this model and
+            # sections it itself, and how. Read, never derived: `null` means it
+            # does not long-form split this model at all, which is exactly the set
+            # whose engine has a hard character cliff. It is also the gate that
+            # lets a recorded cap stop applying by itself if the Hub gains
+            # long-form delivery for that family.
+            raw["long_form_delivery"] = facts.get("long_form_delivery")
             # The floor *and* the Hub's own verdict for the machine it runs on,
             # so "too big for this location" is read rather than computed here —
             # and it is that location's verdict, not this Mac's, which matters
