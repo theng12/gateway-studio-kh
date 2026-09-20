@@ -3,8 +3,9 @@
 Execution status is recorded in [`_handoffs/2026-09-20-local-completion.md`](../../../_handoffs/2026-09-20-local-completion.md).
 The checklist below preserves the original acceptance specification; do not
 mistake a planned item for a completed feature. Tasks 1–7 have implemented repairs
-and isolated evidence. Task 8 is an archive-only partial delivery with an explicit
-trust/ownership blocker. Tasks 9–10 record final integration and installation in
+and isolated evidence. Task 8 is an archive-only partial delivery: trusted
+installation has a trust/ownership blocker, while offline authoring/preview/export
+is separately unfinished. Tasks 9–10 record local integration and installation in
 the execution record.
 
 > **For agentic workers:** Use subagent-driven-development or executing-plans for each assigned task. Read the task brief, global rules and project contracts; do not commit or delegate. Only the orchestrator edits this plan and the handoff ledger.
@@ -115,6 +116,15 @@ Wave A: Tasks 1, 3, 4, 6 can run in parallel; Astra owns Task 2 and contract inv
 ### Task 8: Real personal Content Pack workflow — F05
 
 **Files:** new `gateway/content_packs.py`, associated isolated tests, existing content API stubs, library UI after route contract is settled.
+
+**Continuation finding:** Story's registry validates at revision 289 (271 records).
+Its existing builder supports unsigned Store-profile archives and keeps that
+structural validation separate from signed ownership receipts. Do not treat
+missing Store credentials as a reason to stop offline authoring work. Reuse the
+actual schema/builder and registry authority; do not copy a reduced schema into
+Gateway or create a second identity registry. Story dependencies are not installed
+in its checkout yet. Production trust and receipt/Keychain checks remain mandatory
+for installation, independently of authoring/export readiness.
 
 - [ ] Read current `/build/Developer/story-studio-kh` consumer source and applicable instructions. Record required manifests, account/quote/purchase/receipt/download fields, trust/identity/keychain rules and supported install entry point before implementation.
 - [ ] Implement local import/inspect/hash/archive validation and inventory in private Application Support. Preserve imported archives; reject unsafe archives and incompatible manifests.

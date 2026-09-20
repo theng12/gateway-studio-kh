@@ -35,7 +35,7 @@ means inherited or worker evidence not yet independently confirmed.
 | U02, U03, F01–F04 | Native drafts/recovery/voice choice/capabilities/scrolling form and Jobs outputs | `[MEASURED]` Native state regressions pass, including typed drafts, transport ambiguity and stale callbacks. Six-lane minimum-width geometry passes. Rendered native Image submits once, shows two mock outputs and previews authenticated bytes; Jobs pinning works. |
 | P01–P03, P05 | Honest empty bundled voice defaults, locked dependencies/runtime identity, required icon/signature validation | `[MEASURED]` 10 packaging tests pass; signed arm64 app installed and running. Signature reverified after startup. Reproducibility is dependency/runtime identity, not byte-identical bundle output. |
 | P04 | Dry-run-first copied-profile relocation with validated paths, backup and rollback | `[MEASURED]` 7 fixture tests pass, including unavailable old home. Optional live history remains archived. |
-| F05 | Private archive import/inspect/inventory/download; truthful unavailable commerce responses | `[MEASURED]` 9 backend + 2 browser checks pass. Full trusted delivery/install and authoring/preview/export are NOT complete: original store account/receipt/signing authority is unavailable. No ownership/signature/Keychain bypass. |
+| F05 | Private archive import/inspect/inventory/download; truthful unavailable commerce responses | `[MEASURED]` 9 backend + 2 browser checks pass. Trusted delivery/install is blocked on original Store account/receipt/key authority. Gateway authoring/preview/export is separately unfinished, not inherently blocked by Store credentials. No ownership/signature/Keychain bypass. |
 
 ## Integrated evidence
 
@@ -95,7 +95,31 @@ original store authority or a supported publisher-signed export and Story Studio
 The overall handoff is **not 100% closed**: F05 trusted delivery/install/reinstall
 and authoring/preview/export remain open. The transfer archives and authoring
 sources remain separate, private and untouched; the new archive shelf does not
-silently import or install them. To proceed, establish original Store account,
-receipt and signing-key authority (or a supported publisher-signed export) and
-the actual Story Studio installation. Unknown accepted provider work still needs
-manual reconciliation; no provider-specific recovery poller is claimed.
+silently import or install them. Trusted restoration needs original Store
+account, receipt and signing-key authority (or a supported publisher-signed
+export) and the actual Story Studio installation. Unknown accepted provider work
+still needs manual reconciliation; no provider-specific recovery poller is claimed.
+
+## Continuation audit
+
+- `[MEASURED]` The Story source checkout's read-only command
+  `node scripts/content-packs/authoring-registry.mjs validate` exits 0:
+  `authoring registry revision 289: 271 records`. No reservation or source edit
+  was made. Story's `node_modules` directory is absent on this Mac.
+- `[MEASURED, source]` Story's publisher tooling can build Store-profile archives
+  without a private signing key; ownership is established separately during
+  installation. Therefore missing Store credentials are **not** a blanket blocker
+  for authoring. The remaining Gateway editor/preview/export integration must
+  reuse Story's schemas and builder, respect registry identities and immutable
+  published versions, and avoid manufacturing a receipt or a new trust anchor.
+- `[MEASURED]` Fresh remote inspection found source-Mac production checkpoint
+  commit `dc557f8`; its documentation was merged into the development branch
+  without conflicts. The fixed source-Mac app and its data were not touched.
+- `[MEASURED]` The installed new-Mac app still serves build
+  `1e516e1-202609201631` with zero processed jobs, and strict/deep signature
+  verification passes. Documentation synchronization does not change that bundle.
+- `[MEASURED]` After merging the remote documentation, fresh local checks exited
+  0: e2e 521; HTTP 11; recovery 9; adapter checkpoints 3; retention 3;
+  relocation 7; archive library 9; audit regressions 6; claims 2; packaging 10;
+  JavaScript 11; native transport 2; Create state 1; Jobs outputs 2; layout 1.
+  These are isolated/mock checks, not paid-provider or real-Hub generation tests.
