@@ -16,6 +16,21 @@
     color-scheme: light dark;
     --bg: Canvas; --panel: Canvas; --panel2: color-mix(in srgb, CanvasText 6%, Canvas);
     --line: color-mix(in srgb, CanvasText 16%, Canvas);
+    /* **A button has to look like a button, and a dead one must not.** These were
+       `--panel2` (6% of the text colour) with a 16% border, and on the dark palette
+       that is a flat near-black rectangle barely distinguishable from the card it
+       sits on — so every control looked like a dark label, and a *disabled* one
+       differed only by `opacity: .5` layered on top of an already-invisible fill.
+       The owner's words: "don't really know if it's clickable or greyed out."
+       Now the enabled state is raised — a fill you can see and a border you can
+       see — and the disabled state is **flat**: no fill, a faint outline, dimmer
+       text. Affordance and its absence are two different drawings rather than one
+       drawing at two opacities, so nothing has to be inferred. */
+    --btn: color-mix(in srgb, CanvasText 14%, Canvas);
+    --btn-hover: color-mix(in srgb, CanvasText 24%, Canvas);
+    --btn-active: color-mix(in srgb, CanvasText 10%, Canvas);
+    --btn-line: color-mix(in srgb, CanvasText 34%, Canvas);
+    --btn-dead-line: color-mix(in srgb, CanvasText 10%, Canvas);
     --text: CanvasText; --dim: color-mix(in srgb, CanvasText 58%, Canvas);
     --tertiary: color-mix(in srgb, CanvasText 40%, Canvas);
     --accent: AccentColor; --on-accent: AccentColorText;
@@ -45,14 +60,29 @@
   main { margin: 0; padding: 0 28px 60px; }
 
   button {
-    background: var(--panel2); color: var(--text); border: 1px solid var(--line);
+    background: var(--btn); color: var(--text); border: 1px solid var(--btn-line);
     padding: 7px 13px; border-radius: 8px; cursor: pointer; font-size: 13px; font-weight: 500;
   }
-  button:hover { background: color-mix(in srgb, CanvasText 14%, Canvas); }
+  button:hover:not(:disabled) { background: var(--btn-hover); }
+  button:active:not(:disabled) { background: var(--btn-active); }
+  button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
   button.primary { background: var(--accent); border-color: transparent; color: var(--on-accent); font-weight: 500; }
-  button.primary:hover { filter: brightness(1.08); }
+  button.primary:hover:not(:disabled) { filter: brightness(1.08); }
   button.sm { padding: 4px 9px; font-size: 12px; }
-  button:disabled { opacity: .5; cursor: default; }
+  /* Flat, not faded — and `opacity` is deliberately gone. Halving the opacity of a
+     dark fill left a disabled button looking like a quieter enabled one, which is
+     the whole complaint. A dead control keeps its shape as a slot but loses the
+     fill that says "press me", and its label drops to `--tertiary` so it reads as
+     inert even at a glance or at low contrast. */
+  button:disabled {
+    background: transparent; border-color: var(--btn-dead-line);
+    color: var(--tertiary); opacity: 1; cursor: default;
+  }
+  /* A faded accent still reads as pressable, so a disabled primary goes flat too. */
+  button.primary:disabled {
+    background: var(--btn-dead-line); border-color: transparent; color: var(--tertiary);
+    filter: none;
+  }
   input[type=text], input[type=password], select {
     background: color-mix(in srgb, CanvasText 4%, Canvas); color: var(--text);
     border: 1px solid var(--line);

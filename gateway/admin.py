@@ -70,7 +70,15 @@ def _error(status: int, detail: str) -> JSONResponse:
 def admin_ui() -> HTMLResponse:
     if not _UI_PATH.exists():
         return HTMLResponse("<h1>gateway-kh</h1><p>Admin UI file is missing.</p>", status_code=500)
-    return HTMLResponse(_UI_PATH.read_text(encoding="utf-8"))
+    # **`no-store`, because the page is read from disk on every request and a cached
+    # copy is a UI that cannot be seen to have changed.** The app hosts this in a
+    # WKWebView, so without it a reload after an edit can serve the previous page and
+    # a fix looks like it did not apply — which is exactly how a styling change gets
+    # reported as broken twice.
+    return HTMLResponse(
+        _UI_PATH.read_text(encoding="utf-8"),
+        headers={"Cache-Control": "no-store, must-revalidate"},
+    )
 
 
 # ---------------------------------------------------------------------------

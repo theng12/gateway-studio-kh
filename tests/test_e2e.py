@@ -1680,6 +1680,14 @@ def main() -> int:
                   and "privacyBadge(p.data_use, p.free_tier)" in console_html
                   and "retention unverified" in console_html,
                   "the badge helper must be defined and called by both tables")
+            # The app hosts this page in a WKWebView. A cached copy would serve the
+            # *previous* console after an edit, so a styling fix would look like it
+            # had not applied — which is how one gets reported as broken twice.
+            check("and the console page is served no-store, so a reload shows the current UI",
+                  "no-store" in (
+                      req(client, "GET", "/admin/").headers.get("cache-control") or ""
+                  ),
+                  "a cached page makes a UI change invisible")
 
             print("\n\033[1m10e. Provider input shapes must match the provider's own schema\033[0m")
             # fal publishes a per-endpoint JSON schema, and these are read off it.
