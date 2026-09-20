@@ -202,6 +202,46 @@ earlier in the session left its worker wedged.
 
 
 
+## The six native Create pages, and a menu that had fallen behind (2026-09-20)
+
+Phase 3. The app now has `Section("Create")` above `Section("Library & app")` with
+Studio Hub's six lanes in its order and with its owner-facing names — **Audio,
+Subtitle, Image, Music, Video, Chat**. `PageKit` already carried Studio Hub's house
+grammar (`heading`, `sectionTitle`, `empty`, `formRow`, `help`), so the page is **one
+view driven by a `CreateLane` value**: heading, form left, result right with its empty
+state, Generate, poll, preview. Studio Hub frames its three workspaces with one shared
+body so they *"cannot drift apart one fix at a time"*; six near-copies here would
+drift the same way, faster, so there are none.
+
+Images preview in an `NSImageView`; audio and video get an Open (in whatever the owner
+already plays them with) rather than a reimplemented transport, plus Save… and
+**Keep** — an asset made here directly has no project holding the copy that matters.
+`GatewayAPI.upload` is new, because transcription is the only lane whose payload is
+not JSON, and it keeps the same `{"detail": …}` refusal handling as every other call:
+the value of a 413 is the sentence naming the limit.
+
+**The defect this exposed: the View menu was a hand-kept list and fell behind
+immediately.** Adding the lanes to the sidebar left the menu without them — the UI
+suite found it by clicking "Audio" and getting `Can't get menu item "Audio"`. It is now
+built from `MainWindow.viewMenuSections` through a single action, so a section that
+exists in the sidebar cannot exist without a door. Key equivalents for pages that
+already had them are deliberately unchanged (⌘1 Overview, ⌘2 Jobs, ⌘3 Voices, ⌘4
+Models, ⌘5 Providers, ⌘6 Fleet): renumbering to match the new order would retrain the
+owner's fingers for no gain.
+
+**Evidence: UI 128/128** against the real installed app — every lane appears in the
+sidebar and the View menu, each selects its own window, and none resizes the window
+(the 700pt guard now visits all fifteen rows). The build stamp names HEAD
+(`e26f650-202609201039`). Two failures on the way were each diagnosed rather than
+re-run until green: the missing menu items (a real defect, fixed above) and a status
+line still reading *"Starting on 127.0.0.1:8000…"* seconds after a relaunch (the app's
+status timer had not ticked — the re-run is clean).
+
+**Not verified, and not claimed:** the native page was never *looked at*.
+`screencapture` is refused without Screen Recording permission, so the claim above is
+structural — from the accessibility tree — not visual. The console's Create page *was*
+rendered and looked at, and it is the same design, but that is a different surface.
+
 ## Batch 4 — every remaining item, and what closed it (2026-09-20)
 
 The `### Open (as written — every item below is closed; see Batch 4 at the top)` lists below are kept as the audit wrote them, for the reasoning and
