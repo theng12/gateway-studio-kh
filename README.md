@@ -2,6 +2,8 @@
 
 **Moving to another computer or starting implementation?** Read the current [new-computer handoff](_handoffs/2026-09-20-new-computer-handoff.md) and [open-issue ledger](_handoffs/2026-09-20-open-issues.md). They distinguish verified defects, proposed features, committed code and live state.
 
+For voices, settings and Content Packs, see the [asset transfer inventory](_handoffs/2026-09-20-asset-transfer.md). Owner-private transfer files are separate from the source repository.
+
 A personal **model gateway**: one API in front of many backends, so Story Studio KH points at a
 single URL and its model pickers fill up — with no stocking step, no credits, no customers and no
 per-model setup.

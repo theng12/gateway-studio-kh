@@ -6,6 +6,7 @@ Owner direction: audit the replacement for GenStudio, identify bugs and proposed
 
 - Repository: **https://github.com/theng12/gateway-kh**. Use the private repository and its `main` branch after this handoff's PR is merged. Do not start from an old ZIP or the installed app's bundled source.
 - Read this file, [the open-issue ledger](2026-09-20-open-issues.md), then `AGENTS.md` and `README.md`.
+- Moving owner assets too? Read the [asset transfer inventory and restore notes](2026-09-20-asset-transfer.md). The private transfer payload is separate from GitHub.
 - [MEASURED] Audit source baseline: `fcfde43`; first repair code: `91b45db`; previous baseline: `e360fbb`. Source locations in the issue ledger refer to `fcfde43` unless stated otherwise.
 - [MEASURED] Existing evidence and design direction: [product audit](../docs/2026-09-20-product-audit.md). Earlier audit outcomes: [AUDIT-BACKLOG.md](../AUDIT-BACKLOG.md). Statements there that older batches are “all closed” do not close the new ledger.
 - [MEASURED] The audit used three Luna workers for backend, UI, and portability inventories. The primary agent checked the promoted findings against source and reproduced five backend failures offline. Worker-only findings remain explicitly `[REPORTED]`; they are not signed off by agreement alone.
