@@ -133,6 +133,13 @@ def list_providers(scope: str | None = None) -> dict[str, Any]:
             if definition
             else []
         )
+        # **A free lane is a trade, not just a price.** The console shows this
+        # beside the provider so "free" never silently means "your prompts may train
+        # someone's model" — the owner has private voices, and this is the one place
+        # the difference is visible. `unverified` is published as itself rather than
+        # omitted: "nobody has checked" must not render as "safe".
+        described["data_use"] = (definition.data_use if definition else "unverified")
+        described["free_tier"] = bool(definition.free_tier) if definition else False
         items.append(described)
     # Configured and enabled first: the list is long and the useful rows matter.
     items.sort(key=lambda p: (not p["enabled"], not p["configured"], p["display_name"].lower()))
@@ -272,6 +279,24 @@ def remove_model(provider_id: str, model_id: str) -> Any:
 # exist so the owner can search across every provider at once and switch models
 # on, rather than opening eighteen panels to do it.
 # ---------------------------------------------------------------------------
+def _is_free_lane(definition: Any, model_id: str) -> bool:
+    """Whether a row is a provider's free offer, read from what is stated.
+
+    Two cases, and nothing guessed between them: the provider **is** the free tier
+    (`free_tier`, set on the definition), or the id carries the suffix its provider
+    uses to mark a free route — `:free` on OpenRouter and Token Harbor, `-free` on
+    Fish.
+
+    A model that is merely cheap, or on a provider whose trial credits happen to be
+    unspent, is **not** free, and calling it that would be a number the owner acts
+    on. That is why this reads a declaration rather than inferring from a price.
+    """
+    if definition.free_tier:
+        return True
+    lowered = str(model_id or "").lower()
+    return lowered.endswith(":free") or lowered.endswith("-free")
+
+
 def _flat_models() -> list[dict[str, Any]]:
     """Every model the console can show, minus the ones that could never run.
 
@@ -298,6 +323,12 @@ def _flat_models() -> list[dict[str, Any]]:
                     "modality": model["modality"],
                     "source": model["source"],
                     "enabled": model["enabled"],
+                    # **The trade travels with the row.** A free model's privacy
+                    # stance is its provider's, so the picker shows it without a
+                    # second lookup, and both facts come from one place so they
+                    # cannot disagree.
+                    "free_lane": _is_free_lane(definition, model["model_id"]),
+                    "data_use": definition.data_use,
                 }
             )
     return rows

@@ -30,6 +30,7 @@ from .definitions import (
     ProviderDefinition,
     image_reference_state,
     music_can_serve,
+    chat_can_serve,
     transcription_can_serve,
 )
 from .discovery import DiscoveryResult, DiscoveredModel, discover
@@ -221,6 +222,13 @@ class ModelInventory:
         if modality == "transcription" and not transcription_can_serve(model_id):
             return False
         if modality == "music" and not music_can_serve(model_id):
+            return False
+        # A chat catalogue is not a list of chat models. NVIDIA NIM answers every
+        # one of its 82 rows with only `{id, owned_by}`, so its embeddings, its
+        # safety classifiers, its reward model, its OCR parsers and its translators
+        # were all offered as chat and failed on use. This is the third instance of
+        # the shape; see `chat_can_serve`.
+        if modality == "chat" and not chat_can_serve(model_id):
             return False
         # An image endpoint whose own classification requires a reference image,
         # on a kind whose image body cannot send one. fal's queue accepts the

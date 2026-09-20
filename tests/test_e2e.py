@@ -1565,12 +1565,121 @@ def main() -> int:
                   and not _stt_ok("gpt-4o-mini-transcribe")
                   and not _stt_ok("gpt-4o-transcribe-diarize"),
                   "these accept json/text only")
+            # Groq's Whisper is the same trap and was found by *running* it, not by
+            # reading: measured live 2026-09-20, `HTTP 400: response_format must be
+            # one of [json text verbose_json]`. This list matches the bare id, so the
+            # check that matters as much as the withhold is that the local Hub's
+            # namespaced Whisper still serves.
+            check("and Groq's Whisper, which refuses SRT outright, is withheld too",
+                  not _stt_ok("whisper-large-v3")
+                  and not _stt_ok("whisper-large-v3-turbo")
+                  and _stt_ok("mlx-community/whisper-large-v3-turbo"),
+                  "the local lane's namespaced id must survive the rule")
             # The rule has to reach the catalogue, not just the helper.
             published_stt = {m["id"] for m in
                              req(client, "GET", "/v1/transcription/models").json()["models"]}
             check("no published transcription row is one the gateway cannot read back",
                   all(_stt_ok(i.split("::", 1)[-1]) for i in published_stt),
                   f"{sorted(published_stt)}")
+            # **A chat catalogue is not a list of chat models.** NVIDIA NIM answers
+            # every one of its 82 rows with only `{id, owned_by}` — measured live on
+            # 2026-09-20 — so its embeddings, safety classifiers, reward model, OCR
+            # parsers and translators carried no type at all and were offered as
+            # `modality: chat`, publishable. Ticking one reached Story Studio and
+            # failed on use. Same shape as the SRT rule above; third time.
+            from gateway.providers.definitions import chat_can_serve as _chat_ok
+            check("a non-chat endpoint listed in a chat catalogue is withheld",
+                  not _chat_ok("nvidia/embed-qa-4")
+                  and not _chat_ok("nvidia/nemotron-3-embed-1b")
+                  and not _chat_ok("nvidia/nvclip")
+                  and not _chat_ok("nvidia/nemotron-3.5-content-safety")
+                  and not _chat_ok("nvidia/llama-3.1-nemoguard-8b-topic-control")
+                  and not _chat_ok("nvidia/nemotron-4-340b-reward")
+                  and not _chat_ok("nvidia/nemotron-parse")
+                  and not _chat_ok("nvidia/riva-translate-4b-instruct-v2")
+                  and not _chat_ok("nvidia/ising-calibration-1.5-31b")
+                  and not _chat_ok("google/deplot"),
+                  "embeddings, guards, reward, parsers and translators are not chat")
+            # A speech model in a chat catalogue is the same defect, and Groq's
+            # `/models` really does list these: `canopylabs/orpheus-v1-english` and
+            # `orpheus-arabic-saudi` are TTS. Withholding is scoped to `chat`, so the
+            # local Orpheus **speech** lane must survive it.
+            check("and a speech model listed in a chat catalogue is withheld as chat",
+                  not _chat_ok("canopylabs/orpheus-v1-english")
+                  and not _chat_ok("canopylabs/orpheus-arabic-saudi"),
+                  "Groq lists Orpheus TTS models beside its chat models")
+            # The rule also catches the same defect on other providers, which is why
+            # it is not scoped to NVIDIA: these are classifiers and streaming
+            # translators that were equally tickable.
+            check("and the same rule catches it wherever else it appears",
+                  not _chat_ok("openai/gpt-oss-safeguard-20b")
+                  and not _chat_ok("meta-llama/llama-guard-4-12b")
+                  and not _chat_ok("nvidia/nemotron-3.5-content-safety:free")
+                  and not _chat_ok("gpt-realtime-translate")
+                  and not _chat_ok("gemini-3.5-live-translate-preview"),
+                  "guard/translator families across five more providers")
+            # A vision model is a chat model that takes an image, so it must survive:
+            # withholding these would remove working lanes, which is the opposite
+            # mistake and the one that is easy to make with a word rule.
+            check("but a vision-capable chat model is still a chat model",
+                  _chat_ok("meta/llama-3.2-11b-vision-instruct")
+                  and _chat_ok("microsoft/phi-3-vision-128k-instruct")
+                  and _chat_ok("nvidia/vila")
+                  and _chat_ok("nvidia/neva-22b")
+                  and _chat_ok("nvidia/llama-3.1-nemotron-70b-instruct")
+                  and _chat_ok("gemma-4-31b-it"),
+                  "the rule must not withhold a working lane")
+            # And it has to reach the console, or an operator can still tick one.
+            chat_console = req(client, "GET", "/admin/api/models?limit=2000").json()["models"]
+            guard_rows = [m["model_id"] for m in chat_console
+                          if m["modality"] == "chat" and not _chat_ok(m["model_id"])]
+            check("no non-chat family is listed as something to tick",
+                  not guard_rows, f"{guard_rows[:6]}")
+            # **A free lane is a trade, not just a price.** "Free" and "your prompts
+            # may train someone's model" are the same offer on these providers, and
+            # the owner has private voices — so the stance is published, and
+            # `unverified` is published as itself rather than omitted, because
+            # "nobody has checked" must not render as "safe".
+            provs = {p["id"]: p for p in
+                     req(client, "GET", "/admin/api/providers").json()["providers"]}
+            check("a provider that states it may retain prompts is marked non-private",
+                  provs.get("tokenharbor", {}).get("data_use") == "non_private"
+                  and provs.get("google-ai-free", {}).get("data_use") == "non_private",
+                  f"tokenharbor={provs.get('tokenharbor', {}).get('data_use')} "
+                  f"google-ai-free={provs.get('google-ai-free', {}).get('data_use')}")
+            check("and one nobody has checked says unverified, not safe",
+                  provs.get("openai-direct", {}).get("data_use") == "unverified"
+                  and provs.get("nvidia-nim-main", {}).get("data_use") == "unverified",
+                  f"openai-direct={provs.get('openai-direct', {}).get('data_use')} "
+                  f"nvidia={provs.get('nvidia-nim-main', {}).get('data_use')}")
+            check("a provider that is the free tier is marked as one, a paid sibling is not",
+                  provs.get("google-ai-free", {}).get("free_tier") is True
+                  and provs.get("google-ai", {}).get("free_tier") is False
+                  and provs.get("openrouter-main", {}).get("free_tier") is False,
+                  f"free={provs.get('google-ai-free', {}).get('free_tier')} "
+                  f"paid={provs.get('google-ai', {}).get('free_tier')}")
+            # The per-row mark reads a declaration, not a price: a model that is
+            # merely cheap is not free, and saying so would be a number the owner
+            # acts on.
+            from gateway.admin import _is_free_lane as _free
+            _tier = next(d for d in _SHIPPED if d.id == "google-ai-free")
+            _paid = next(d for d in _SHIPPED if d.id == "google-ai")
+            check("a free row is read from what the provider states, not from a price",
+                  _free(_tier, "gemini-3.8-flash") is True
+                  and _free(_paid, "gemini-3.8-flash") is False
+                  and _free(_paid, "deepseek/deepseek-v4-flash:free") is True
+                  and _free(_paid, "s2.1-pro-free") is True
+                  and _free(_paid, "deepseek-v4-flash") is False,
+                  "free-tier provider, or a `:free`/`-free` id, and nothing else")
+            # ...and it has to be drawn, or it is the "a field nothing renders is
+            # the same defect as a control that does nothing" case.
+            console_html = req(client, "GET", "/admin/").text
+            check("and the console actually draws the mark on the rows it applies to",
+                  "privacyBadge" in console_html
+                  and "privacyBadge(r.data_use, r.free_lane)" in console_html
+                  and "privacyBadge(p.data_use, p.free_tier)" in console_html
+                  and "retention unverified" in console_html,
+                  "the badge helper must be defined and called by both tables")
 
             print("\n\033[1m10e. Provider input shapes must match the provider's own schema\033[0m")
             # fal publishes a per-endpoint JSON schema, and these are read off it.

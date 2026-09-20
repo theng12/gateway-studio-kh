@@ -261,6 +261,26 @@ function populateFilters(data) {
   filtersPopulated = true;
 }
 
+// **A free lane is a trade, not just a price.** On these providers "free" and
+// "your prompts may train someone's model" are the same offer, and the owner has
+// private voices — so the mark travels with the row wherever a model is chosen.
+//
+// `unverified` is drawn as itself, never omitted: "nobody has checked what this
+// provider does with your prompts" must not render as "safe". It is only drawn on
+// free lanes, because badging every paid row with it would be noise that trains the
+// eye to skip the mark that matters.
+function privacyBadge(dataUse, isFreeLane) {
+  if (!isFreeLane && dataUse !== 'non_private') return '';
+  const parts = [];
+  if (isFreeLane) parts.push('<span class="badge ok">free</span>');
+  if (dataUse === 'non_private') {
+    parts.push('<span class="badge warn" title="This provider states it may retain or train on what you send. Do not route confidential material here.">non-private</span>');
+  } else if (isFreeLane) {
+    parts.push('<span class="badge warn" title="This lane is free, and nothing on the gateway states what the provider does with your prompts. Unverified is not the same as safe.">retention unverified</span>');
+  }
+  return ` ${parts.join(' ')}`;
+}
+
 function renderModels() {
   const rows = state.modelRows;
   const { matched, listable_total, enabled_total, returned } = state.meta;
@@ -278,7 +298,8 @@ function renderModels() {
         <div class="mid">${esc(r.model_id)}</div>
       </td>
       <td style="font-size:12.5px">${esc(r.provider_name)}
-        ${r.provider_enabled ? '' : '<span class="badge warn">provider off</span>'}</td>
+        ${r.provider_enabled ? '' : '<span class="badge warn">provider off</span>'}
+        ${privacyBadge(r.data_use, r.free_lane)}</td>
       <td><span class="badge">${esc(r.modality)}</span></td>
     </tr>`).join('');
 
@@ -408,6 +429,7 @@ function providerCard(p) {
   badges.push(p.configured ? '<span class="badge ok">key set</span>' : '<span class="badge bad">no key</span>');
   if (p.last_error) badges.push(`<span class="badge bad" title="${esc(p.last_error)}">discovery error</span>`);
   badges.push(`<span class="badge">${p.publishable_model_count}/${p.model_count} offered</span>`);
+  badges.push(privacyBadge(p.data_use, p.free_tier));
 
   const fields = p.configured_fields.map(f => `
     <div>

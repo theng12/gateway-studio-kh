@@ -144,10 +144,11 @@ delegates to the OpenAI-compatible shim, which is what serves
 on use, which is exactly what this whole section exists to prevent. Transcription is
 implemented for `openai_compat` and `studio_hub`: **enable OpenAI's transcription
 models, not Google's.** Verified end to end — `whisper-1` through the gateway
-returns a real SRT. **Groq was added to that list on 2026-09-19** (chat and
-transcription, through the same shim, at roughly a tenth of OpenAI's price per
-audio-minute); it needs `GROQ_API_KEY` before its models appear, because nothing
-is published from an unconfigured provider.
+returns a real SRT. **Groq serves chat through the same shim** and needs
+`GROQ_API_KEY` before its models appear. **Its Whisper cannot serve transcription
+here** — measured live 2026-09-20, `HTTP 400: response_format must be one of
+[json text verbose_json]`, and this gateway must ask for `srt` — so
+`whisper-large-v3` and `whisper-large-v3-turbo` are withheld.
 
 **The gateway asks every cloud transcription lane for `response_format: "srt"`,
 so a model that cannot answer in SRT must not be offered.** On OpenAI's side only

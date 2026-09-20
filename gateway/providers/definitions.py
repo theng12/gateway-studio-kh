@@ -105,6 +105,22 @@ TRANSCRIPTION_SRT_UNSUPPORTED: frozenset[str] = frozenset(
         "gpt-transcribe",
         "gpt-live-transcribe",
         "gpt-realtime-whisper",
+        # **Groq's Whisper cannot answer in SRT either**, which is why its
+        # transcription rows are withheld rather than offered: measured live on
+        # 2026-09-20, `HTTP 400: response_format must be one of [json text
+        # verbose_json]`. An earlier note in AGENTS.md claimed Groq transcription
+        # worked through this gateway; it did not, and the cost of believing it is a
+        # published model that fails the moment it is used.
+        #
+        # Matched on the bare id, which is safe **only** because the local Hub's
+        # Whisper carries a namespaced id (`mlx-community/whisper-large-v3-turbo`)
+        # that this does not match. ponytail: provider-blind, because every id here
+        # happens to belong to one provider. Ceiling — a second provider serving
+        # `whisper-large-v3` *with* SRT support would be withheld wrongly. Upgrade
+        # path — key this on `(provider_id, model_id)` and pass the provider from
+        # `can_publish`, which already holds the definition.
+        "whisper-large-v3",
+        "whisper-large-v3-turbo",
     }
 )
 
@@ -239,6 +255,63 @@ def transcription_can_serve(model_id: str) -> bool:
     """
     return model_id not in TRANSCRIPTION_SRT_UNSUPPORTED
 
+
+#: Model families a provider lists in the **same `/models` catalogue as its chat
+#: models**, but whose endpoint is not a chat completion. Every provider here
+#: publishes only `{id, owned_by}` — measured on NVIDIA NIM 2026-09-20: all 82 rows
+#: come back with no type field at all — so nothing in the catalogue says
+#: `nvidia/embed-qa-4` is an embedding endpoint, `nemotron-4-340b-reward` scores
+#: completions, `nemotron-parse` is OCR, or `riva-translate-4b-instruct` translates.
+#: They were therefore all published as `modality: chat` and marked publishable, so
+#: ticking one produced a row that reached Story Studio and failed the moment it was
+#: picked — the same shape as the OpenAI-SRT and OpenRouter-`:batch` traps.
+#:
+#: Matched on the id, because a family name is the only signal there is. Vision
+#: models are deliberately **not** in this list: `meta/llama-3.2-11b-vision-instruct`,
+#: `microsoft/phi-3-vision-128k-instruct`, `nvidia/vila` and `nvidia/neva-22b` are
+#: chat models that happen to accept an image, and the chat lane serves them.
+#:
+#: ponytail: a curated family list, because no provider *publishes* the endpoint
+#: type. Ceiling — a new embedding or classifier family is published until its name
+#: is added here. Upgrade path — read the type from the provider where it states one
+#: (NVIDIA's build pages do, its API does not), or probe the model once at discovery
+#: and record the verdict; either would retire this list.
+NON_CHAT_MODEL_WORDS: tuple[str, ...] = (
+    "embed",
+    "nvclip",
+    "nemoguard",
+    "guard",
+    "content-safety",
+    "topic-control",
+    "reward",
+    "parse",
+    "deplot",
+    "translate",
+    "calibration",
+    # Groq's catalogue carries `canopylabs/orpheus-v1-english` and
+    # `orpheus-arabic-saudi` beside its chat models. Those are **TTS** models — the
+    # same Orpheus the local Studio Hub lane runs for speech — so a chat completion
+    # against them cannot work, and Groq declares no tts modality for the gateway to
+    # route them to instead. Withholding applies to the `chat` modality only, so the
+    # local Orpheus speech lane is untouched.
+    "orpheus",
+)
+
+
+def chat_can_serve(model_id: str) -> bool:
+    """Whether a chat row can actually answer a chat completion.
+
+    Measured live before this rule existed: it withholds **31** rows across six
+    providers (NVIDIA NIM 21, OpenRouter 4, Experiential Labs 3, OpenAI 1,
+    Google 1, Google free 1) and **not one of them was enabled**, so nothing the
+    owner could have picked changed — the same standard the fal image-to-image fix
+    was held to. The non-NVIDIA catches are real: `gpt-realtime-translate`,
+    `gemini-3.5-live-translate-preview`, `gpt-oss-safeguard-20b`/`120b` and
+    `llama-guard-4-12b` are all classifiers or streaming translators, not chat.
+    """
+    haystack = str(model_id or "").lower()
+    return not any(word in haystack for word in NON_CHAT_MODEL_WORDS)
+
 # ---------------------------------------------------------------------------
 # Discovery strategies
 # ---------------------------------------------------------------------------
@@ -292,6 +365,32 @@ class ProviderDefinition:
     #: is the point of the thing.
     auto_enable_discovered: bool = False
     notes: str = ""
+    #: What the provider says it does with the prompts it is sent.
+    #:
+    #: Three values, never two, and **`unverified` is the default** — the honest
+    #: value when nobody has checked is "I do not know", and defaulting to
+    #: `private` would publish a promise the provider never made. So the field
+    #: means: `non_private` (the provider states it may retain or train on what
+    #: you send), `private` (it states it does not), `unverified` (no statement
+    #: found — **not** a claim of safety).
+    #:
+    #: Only what is documented is marked. Google's free tier is published as using
+    #: content to improve their products while the paid tier is not, so
+    #: `google-ai-free` is `non_private` and `google-ai` is left `unverified`
+    #: until the paid statement is cited here too. Token Harbor's own note already
+    #: says its free routes may retain prompts.
+    #:
+    #: This exists because "free" and "your prompts may train someone's model" are
+    #: the same offer here, and the owner has private voices — a picker that shows
+    #: the price but not the trade is the thing this field fixes.
+    data_use: str = "unverified"
+    #: Whether the whole provider *is* a free tier, rather than a paid vendor that
+    #: happens to carry some free rows. Stated explicitly because deriving it from
+    #: the id would be the identity-from-a-label mistake, and because the console
+    #: marks the two cases differently: a free provider charges nothing for
+    #: everything, a paid aggregator charges for everything except the rows whose
+    #: own id says `:free`.
+    free_tier: bool = False
 
     @property
     def primary_field(self) -> str:
@@ -386,6 +485,11 @@ PROVIDER_DEFINITIONS: tuple[ProviderDefinition, ...] = (
         description="Separate free-tier key, ranked against the paid Google route.",
         docs_url="https://ai.google.dev/gemini-api/docs/models",
         credential_fields=(_api_key("GOOGLE_AI_FREE_API_KEY", label="API key (free tier)"),),
+        # Google publishes that the **free** tier uses content to improve their
+        # products while the paid tier does not. That is the whole trade for a free
+        # key, so it is recorded as a fact about the lane rather than left in a doc.
+        data_use="non_private",
+        free_tier=True,
     ),
     ProviderDefinition(
         id="groq-main",
@@ -441,6 +545,7 @@ PROVIDER_DEFINITIONS: tuple[ProviderDefinition, ...] = (
         docs_url="https://tokenharbor.ai",
         credential_fields=(_api_key("TOKENHARBOR_API_KEY"),),
         notes="Free routes may retain prompts and responses. Treat as non-private.",
+        data_use="non_private",
     ),
     ProviderDefinition(
         id="experiential-labs",

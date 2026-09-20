@@ -81,6 +81,61 @@ should read the route table or restart the app, not trust the label.
 
 ---
 
+## A chat catalogue is not a list of chat models (2026-09-20)
+
+The owner asked to look at free providers — *"nvidia, openrouter and all the other
+providers who offers free"*. Auditing what was actually offerable found the
+**third** instance of the same shape, and it was live on NVIDIA.
+
+**NVIDIA NIM answers every one of its 82 rows with only `{id, owned_by}`** —
+measured, no type field at all. So its embeddings (`nvidia/embed-qa-4`,
+`nemotron-3-embed-1b`, `nvclip`), safety classifiers (`nemotron-3.5-content-safety`,
+the `nemoguard` pair, `llama-guard-4-12b`), a reward model (`nemotron-4-340b-reward`),
+OCR/parsers (`nemotron-parse`, `google/deplot`), translators (`riva-translate-4b-*`)
+and a calibration model were all published as `modality: chat`, **publishable**, and
+offered as something to tick. Enabling one produced a model that reached Story
+Studio and failed the moment it was picked. Free NVIDIA capacity was the obvious
+next pool to drain, so this was about to be hit.
+
+`chat_can_serve()` withholds the families by id, consulted from `can_publish` beside
+the SRT and music rules. Measured live before the change: it withholds **34 rows
+across six providers** (NVIDIA 21, OpenRouter 4, Experiential Labs 3, OpenAI 1,
+Google 1, Google free 1) and **not one was enabled** — nothing the owner could pick
+changed, the same standard the fal image-to-image fix was held to. The non-NVIDIA
+catches are real: `gpt-realtime-translate`, `gemini-3.5-live-translate-preview`,
+`gpt-oss-safeguard-20b`/`120b` and `llama-guard-4-12b` are classifiers or streaming
+translators. Vision models are deliberately excluded from the rule — a vision chat
+model is a chat model that takes an image, and withholding those would remove
+working lanes.
+
+**Groq's Whisper does not serve this gateway, and the notes here said it did.**
+`whisper-large-v3` answers `HTTP 400: response_format must be one of [json text
+verbose_json]` — measured live by *running* a transcription, not by reading — and
+this gateway must ask for `srt`. Both Groq Whisper ids are now withheld.
+`AGENTS.md` had claimed since 2026-09-19 that Groq transcription worked through the
+shim; that claim was wrong in the direction that publishes a model failing on use,
+and it is corrected. The list matches the bare id, which is safe only because the
+local Hub's Whisper carries a namespaced id (`mlx-community/whisper-large-v3-turbo`)
+that it cannot match — asserted, so a future edit that breaks that cannot pass
+silently.
+
+**Free lanes now say what they do with your prompts.** `ProviderDefinition.data_use`
+is three-valued with **`unverified` as the default**, because "nobody checked" must
+not publish as "safe": `non_private` for Google's free tier (published as using
+content to improve their products, unlike the paid tier) and Token Harbor (its own
+note already said so), `unverified` for everything else. `free_tier` marks a
+provider that *is* a free tier, and `_is_free_lane` reads a declaration rather than a
+price, so a merely-cheap model is not called free. The console draws it on the model
+rows and the provider cards — a field nothing renders is the same defect as a
+control that does nothing — and the e2e suite asserts the HTML actually calls it.
+
+**Enabled in the same pass:** 17 curated models (0 missing, each id verified against
+the live catalogue first) — Groq chat (`openai/gpt-oss-120b`, `qwen/qwen3.8-27b`),
+6 OpenRouter `:free` rows, and 7 NVIDIA chat models. Offered went **110 → 127**.
+Verified live, not assumed: a Groq chat completion returned a real answer.
+
+---
+
 ## Batch 4 — every remaining item, and what closed it (2026-09-20)
 
 The `### Open (as written — every item below is closed; see Batch 4 at the top)` lists below are kept as the audit wrote them, for the reasoning and
