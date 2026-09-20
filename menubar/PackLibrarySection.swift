@@ -11,8 +11,9 @@ final class PackLibrarySection: NSObject, AppSection {
 
     lazy var view: NSView = {
         let page = PageKit.page()
-        page.addArrangedSubview(PageKit.heading("Pack Library", "Preserve and inspect private Content Pack archives."))
+        page.addArrangedSubview(PageKit.heading("Pack Library", "Preserve archives and author private Topic Pack candidates."))
         page.addArrangedSubview(PageKit.help("Archive safety and SHA-256 checks do not establish ownership. Story Studio still needs trusted receipts or publisher signatures and compatible content before installation. Your transfer and authoring sources remain separate."))
+        page.addArrangedSubview(PageKit.help("Topic Pack drafts use your local Story Studio authoring tools and an existing registry reservation. Save, preview and export in the browser; exporting a candidate does not publish or install it."))
         let open = NSButton(title: "Open Pack Library in Browser", target: self, action: #selector(openLibrary))
         open.bezelStyle = .rounded
         page.addArrangedSubview(open)

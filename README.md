@@ -454,6 +454,52 @@ real store authority is connected; they never invent successful purchases.
 Legacy bundle-only transfer archives may be rejected by this conservative
 standalone archive importer; keep their original transfer copies.
 
+#### Private Topic Pack drafts and candidates
+
+The Pack Library's **Author a Topic Pack** section uses a local Story Studio
+source checkout's actual registry, schema and archive builder. It requires Node
+and that checkout's locked dependencies (`npm ci --ignore-scripts --no-audit
+--no-fund` in the Story checkout). Set `GATEWAY_STORY_SOURCE` in Gateway's local
+`.env` if the checkout is not at `~/Developer/story-studio-kh`, and
+`GATEWAY_AUTHORING_NODE` if Node is not available on PATH or at
+`/opt/homebrew/bin/node`. These are local prerequisites, not provider API keys.
+
+1. Obtain a reserved Topic Pack identity/version through Story Studio's existing
+   authoring-lead registry workflow (`scripts/content-packs/README.md` in that
+   checkout). Gateway reads and verifies that reservation; it does not create
+   product identities or modify the registry. No reservations produces an
+   explicit prerequisite message, not an invented pack.
+2. Choose the reservation and optionally an authored Topic Pack template, then
+   create a private draft. The template is copied, never edited in place.
+3. Edit and save the JSON document. Unfinished JSON can be saved; preview and
+   export require a valid document matching the reserved identity. Revision
+   checks refuse stale saves instead of overwriting newer work.
+4. Validate and preview, then export a candidate `.sspack`. The first successful
+   export freezes this version; download retries return the same archive. To
+   change an exported candidate, use a new registry reservation/version.
+
+An interrupted export can freeze the reserved version before the download
+succeeds. If either the saved hash metadata or its exact candidate bytes are
+missing or damaged, Gateway refuses recovery rather than rebuilding different
+bytes under that identity. Keep the private draft and use a new reservation/version;
+do not delete candidate metadata to force another export.
+
+Drafts and candidates live in private `DATA_DIR/content-authoring`, separate
+from the imported archive shelf and transfer sources. Saved drafts remain
+readable without the authoring tools. Export uses the Store delivery profile
+without a publisher private key: **structural validation is not a signed Store
+receipt, ownership, stocking, publication or installation**. Story Studio's
+supported trust and installation checks are still required. No generation runs
+as part of authoring.
+
+Optional local integration checks, using only a temporary synthetic registry:
+
+```bash
+node --test tests/test_story_authoring.mjs
+.venv/bin/python tests/test_pack_authoring_integration.py
+.venv/bin/python tests/serve_ui_fixture.py --authoring
+```
+
 `scripts/relocate_profile.py --help` documents a dry-run-first migration for
 copied profiles. Do not replay archived job history or replace a live profile
 wholesale. Keep voice recordings and pack libraries outside Git.

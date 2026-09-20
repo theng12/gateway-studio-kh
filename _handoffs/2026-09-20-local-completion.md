@@ -123,3 +123,58 @@ still needs manual reconciliation; no provider-specific recovery poller is claim
   relocation 7; archive library 9; audit regressions 6; claims 2; packaging 10;
   JavaScript 11; native transport 2; Create state 1; Jobs outputs 2; layout 1.
   These are isolated/mock checks, not paid-provider or real-Hub generation tests.
+
+## Authoring continuation — candidate, not yet deployed
+
+- `[MEASURED]` PR #4 is merged at `2eab438`. The same isolated worktree now
+  uses `codex/content-pack-authoring`; the normal checkout still has only its
+  unrelated `.DS_Store` change, with its recorded digest preserved. Earlier
+  “no push” statements above describe their checkpoints, not the later merge.
+- `[MEASURED]` Story's locked dependencies are now present (installed with
+  lifecycle scripts disabled). Registry revision remains 289 with 271 records
+  and **zero reserved Topic Packs**. The earlier missing-dependencies observation
+  is superseded; no reservation was invented or registry record changed.
+- `[MEASURED]` The uninstalled candidate implements private Topic Pack drafts,
+  shared-schema preview and Store-profile archive export. The real isolated
+  HTTP → Python → Node → Story builder → consumer-verifier check passes; the
+  staged bundled-Python smoke passes with identical download retries and zero
+  generation jobs. These happy-path results do not establish completion:
+  independent review found crash-recovery, original-receipt binding, stale
+  editor-state and bounded-read defects. Fixes and re-review remain required.
+- `[MEASURED]` The installed app remains build `1e516e1-202609201631`, healthy
+  on loopback 8000 with zero processed jobs and a valid strict/deep signature.
+  Ten recording hashes and all six restored catalogue/settings JSON files
+  match the pre-install backup. No candidate installation or live data change
+  has occurred during the authoring fix pass.
+- `[MEASURED]` Global instructions now explicitly assign Astra orchestration
+  and independent verification, Luna straightforward work, Terra cross-file
+  work and Sol at no more than high reasoning for integrity/security/lifecycle.
+  Ponytail and Graphify remain mandatory; Graphify is code-only and ignored.
+- F05 stays open until both the authoring fixes are verified and the separate
+  trusted delivery/install/reinstall acceptance is satisfied. Provider API
+  credentials, registry reservations and Store ownership/signing authority are
+  three distinct prerequisites; supplying model-provider keys does not grant
+  pack ownership. Enter secrets only in local settings, never in a handoff or Git.
+
+### Authoring review gate cleared
+
+- `[MEASURED]` Independent review and two bounded correction passes cleared the
+  original six findings plus FIFO-open blocking and raw sealed-flag recovery.
+  Preview/export now bind the saved reservation at Node entry and precommit;
+  candidate recovery requires exact durable metadata and bytes; persisted reads
+  are bounded/no-follow/nonblocking; editor refresh is coherent and guarded.
+- `[MEASURED]` Final source checks pass: Python authoring 21, Node bridge 12,
+  HTTP 5, real Story integration 1, JavaScript 21, isolated e2e 521, packaging 10,
+  archive library 9; 23 installed Python packages are dependency-compatible.
+  Existing upstream deprecation and intentional duplicate-ZIP warnings remain.
+- `[MEASURED]` Fresh private backup before installation:
+  `/build/Developer/gateway-kh/backups/pre-authoring-install-20260921-DVfK1s`.
+  Previous app signature, SQLite online-backup integrity and exported native
+  Create preferences verify. No live application data was replaced.
+- `[MEASURED]` Code-only Graphify update: 2,517 nodes / 6,235 edges. The graph is
+  ignored and no paid model extraction ran. The installed app is still the old
+  build until a later installation record explicitly supersedes it.
+- Rendered desktop/narrow inspection previously passed. A later two-editor
+  stale-export attempt stalled in browser automation at confirmation and is not
+  claimed as a pass or application failure; automated state tests and real HTTP
+  integration cover the corrected behavior. No independent visual signoff.

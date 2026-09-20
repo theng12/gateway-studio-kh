@@ -20,7 +20,7 @@ the execution record.
 
 ## Global constraints
 
-- Astra orchestrates and independently verifies; bounded workers use gpt-5.6-luna at max effort.
+- Astra owns planning, architecture, independent review, verification and integration. Prefer Luna for straightforward work, Terra for involved cross-file work, and Sol at no more than high reasoning for data-integrity, security and lifecycle work. Every bounded assignment names its base commit, owned files, deliverable and proving checks; parallel edits must not overlap.
 - Always apply Ponytail and Graphify. Apply Impeccable to UI and relevant Superpowers workflows. Existing owner authorization permits continuous execution and disjoint parallel workers.
 - Work in `codex/handoff-completion` under the Gateway container. Keep the original checkout and its modified .DS_Store intact.
 - Never return HTTP 402; preserve zero-credit catalogue/settlement fields, source labels, unknown values and non-blocking catalogue freshness.
@@ -122,8 +122,8 @@ Its existing builder supports unsigned Store-profile archives and keeps that
 structural validation separate from signed ownership receipts. Do not treat
 missing Store credentials as a reason to stop offline authoring work. Reuse the
 actual schema/builder and registry authority; do not copy a reduced schema into
-Gateway or create a second identity registry. Story dependencies are not installed
-in its checkout yet. Production trust and receipt/Keychain checks remain mandatory
+Gateway or create a second identity registry. Story dependencies have now been
+installed with lifecycle scripts disabled. Production trust and receipt/Keychain checks remain mandatory
 for installation, independently of authoring/export readiness.
 
 - [ ] Read current `/build/Developer/story-studio-kh` consumer source and applicable instructions. Record required manifests, account/quote/purchase/receipt/download fields, trust/identity/keychain rules and supported install entry point before implementation.
