@@ -20,10 +20,17 @@ from typing import Any
 
 import httpx
 
-from .base import BackendError, BackendRequest, BackendResult
+from .base import Artifact, BackendError, BackendRequest, BackendResult
 
 CHAT_TIMEOUT = httpx.Timeout(300.0, connect=10.0, read=300.0)
 MEDIA_TIMEOUT = httpx.Timeout(600.0, connect=10.0, read=600.0)
+
+#: How many images one request may ask for. No provider here *publishes* a maximum
+#: (`n` is documented as an integer and the real cap differs per model), so this is
+#: a gateway ceiling rather than a provider fact — which is why crossing it refuses
+#: with the number instead of clamping and quietly returning fewer than were asked
+#: for. The count also bounds how many downloads one job can perform.
+MAX_IMAGE_COUNT = 10
 
 # Anthropic's own names for a finish reason, translated into the vocabulary the
 # contract uses — which is OpenAI's, because every other chat lane here speaks it.
@@ -191,11 +198,37 @@ def _chat(request: BackendRequest) -> BackendResult:
     )
 
 
+def _image_count(params: dict[str, Any]) -> int:
+    """How many images the caller asked for, refusing anything that is not a count.
+
+    A wrong `n` used to be impossible to send because `n` was hardcoded to 1. Now
+    that it is reachable, a value the provider would reject — or that we would have
+    to round — is refused here, where the message can name the field, rather than at
+    the far end where it arrives as an opaque 400.
+    """
+    raw = params.get("n")
+    if raw is None:
+        return 1
+    if isinstance(raw, bool) or not isinstance(raw, (int, str)):
+        raise BackendError(f"n must be a whole number, got {raw!r}", code="INVALID_REQUEST")
+    try:
+        count = int(str(raw).strip())
+    except ValueError:
+        raise BackendError(
+            f"n must be a whole number, got {raw!r}", code="INVALID_REQUEST"
+        ) from None
+    if not 1 <= count <= MAX_IMAGE_COUNT:
+        raise BackendError(
+            f"n must be between 1 and {MAX_IMAGE_COUNT}, got {count}", code="INVALID_REQUEST"
+        )
+    return count
+
+
 def _image(request: BackendRequest) -> BackendResult:
     body: dict[str, Any] = {
         "model": request.model_id,
         "prompt": str(request.params.get("prompt") or ""),
-        "n": 1,
+        "n": _image_count(request.params),
         "size": _size_for(request.params),
     }
     # `b64_json` avoids a second fetch and sidesteps the same-origin rule.
@@ -231,7 +264,43 @@ def _image(request: BackendRequest) -> BackendResult:
     else:
         raise BackendError("provider returned neither b64_json nor url", code="IMAGE_FAILED")
 
-    return BackendResult(content=content, media_type="image/png", payload={"model": request.model_id})
+    # **Every entry is kept, not just the first.** `n: 2` asks for two images, and a
+    # provider may answer several even when asked for one; taking `entries[0]`
+    # discarded the rest silently. The first entry must still be fetchable, because
+    # it is the artifact the single-artifact image routes serve — a later one that
+    # will not fetch is counted in `variations_failed` rather than failing a call
+    # that did produce a usable image.
+    artifacts: list[Artifact] = [Artifact(content, "image/png")]
+    failed = 0
+    for raw_entry in entries[1:]:
+        extra = raw_entry or {}
+        try:
+            if extra.get("b64_json"):
+                extra_content = base64.b64decode(extra["b64_json"])
+            elif extra.get("url"):
+                fetched = httpx.get(extra["url"], timeout=MEDIA_TIMEOUT)
+                if fetched.status_code >= 400:
+                    failed += 1
+                    continue
+                extra_content = fetched.content
+            else:
+                failed += 1
+                continue
+        except (httpx.HTTPError, ValueError):
+            failed += 1
+            continue
+        artifacts.append(Artifact(extra_content, "image/png"))
+
+    result_payload: dict[str, Any] = {"model": request.model_id, "variation_count": len(entries)}
+    if failed:
+        result_payload["variations_failed"] = failed
+
+    return BackendResult(
+        content=artifacts[0].content,
+        media_type=artifacts[0].media_type,
+        payload=result_payload,
+        additional_artifacts=artifacts[1:],
+    )
 
 
 def _tts(request: BackendRequest) -> BackendResult:

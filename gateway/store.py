@@ -54,7 +54,39 @@ CREATE INDEX IF NOT EXISTS jobs_state_next ON jobs(state, next_action_at);
 _ADDED_COLUMNS: tuple[tuple[str, str], ...] = (
     ("provider_id", "TEXT"),
     ("result_json", "TEXT"),
+    ("artifacts_json", "TEXT"),
 )
+
+
+def artifacts_of(job: dict[str, Any]) -> list[dict[str, Any]]:
+    """Every artifact a job kept, first one first. The one reader of the list.
+
+    `asset_path`/`media_type` remain the *first* artifact because every
+    single-artifact route serves them, and a job written before
+    `artifacts_json` existed only has those. Both spellings are folded here so a
+    caller never has to know which one a given job happens to carry — and so
+    "this job produced one artifact" and "I could not work out how many" cannot
+    produce the same value.
+    """
+    raw = job.get("artifacts_json")
+    if raw:
+        try:
+            parsed = json.loads(raw)
+        except (TypeError, ValueError):
+            parsed = None
+        if isinstance(parsed, list):
+            rows = [r for r in parsed if isinstance(r, dict) and r.get("path")]
+            if rows:
+                return rows
+    if job.get("asset_path"):
+        return [
+            {
+                "asset_id": "0",
+                "path": job["asset_path"],
+                "media_type": job.get("media_type"),
+            }
+        ]
+    return []
 
 
 class JobStore:
@@ -132,6 +164,7 @@ class JobStore:
         *,
         asset_path: str | None = None,
         media_type: str | None = None,
+        artifacts: list[dict[str, Any]] | None = None,
         result: dict[str, Any] | None = None,
     ) -> None:
         self._update(
@@ -139,6 +172,7 @@ class JobStore:
             state="succeeded",
             asset_path=asset_path,
             media_type=media_type,
+            artifacts_json=json.dumps(artifacts) if artifacts is not None else None,
             result_json=json.dumps(result) if result is not None else None,
             next_action_at=None,
         )

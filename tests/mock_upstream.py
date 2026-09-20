@@ -61,6 +61,38 @@ KIE_TASKS: list[dict] = []
 #: audio the way the image and video checks sniff their magic bytes.
 MP3 = b"\xff\xfb\x90\x00" + b"\x00" * 2048
 
+#: A second track, byte-for-byte different from `MP3`. Suno answers one entry per
+#: variation, so the multi-artifact checks need two results that are genuinely
+#: distinct — identical bytes would let "both were kept" pass on a bug that stored
+#: the first one twice.
+MP3_ALT = b"\xff\xfb\x90\x00" + b"\x11" * 2048
+
+
+def one_pixel_png(rgb: tuple[int, int, int] = (0, 0, 0)) -> bytes:
+    """A valid 1x1 PNG of one colour.
+
+    Built rather than pasted so a multi-image response can hand back several
+    images that really do differ. Returns a real PNG (correct CRC per chunk), so a
+    test asserting the bytes are an image is testing an image.
+    """
+    import struct
+    import zlib
+
+    def chunk(tag: bytes, data: bytes) -> bytes:
+        return (
+            struct.pack(">I", len(data))
+            + tag
+            + data
+            + struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF)
+        )
+
+    return (
+        b"\x89PNG\r\n\x1a\n"
+        + chunk(b"IHDR", struct.pack(">IIBBBBB", 1, 1, 8, 2, 0, 0, 0))
+        + chunk(b"IDAT", zlib.compress(bytes((0, *rgb))))
+        + chunk(b"IEND", b"")
+    )
+
 MODELS = [
     # The mock states the fields the catalogue's "publish what is known, and
     # nothing else" checks actually inspect, in the spellings a real provider
@@ -193,6 +225,7 @@ class Handler(BaseHTTPRequestHandler):
             # `status`, with `resultJson` a JSON **string** holding a `data` array
             # of tracks (not the `resultUrls` keys the image/video lanes use).
             track = f"http://127.0.0.1:{port}/kie-track.mp3"
+            track_two = f"http://127.0.0.1:{port}/kie-track-2.mp3"
             self._json(200, {"code": 200, "msg": "success", "data": {
                 "taskId": (self.path.split("taskId=")[-1] if "taskId=" in self.path else "mock"),
                 "model": "ai-music-api/generate",
@@ -204,11 +237,20 @@ class Handler(BaseHTTPRequestHandler):
                      "image_url": f"http://127.0.0.1:{port}/kie-cover.jpeg",
                      "id": "mock-track", "duration": 164.8,
                      "model_name": "chirp-hawk", "prompt": "", "title": ""},
+                    # A second variation, which is what Suno really answers. The
+                    # gateway used to download `data[0]` only.
+                    {"audio_url": track_two, "stream_audio_url": track_two,
+                     "image_url": f"http://127.0.0.1:{port}/kie-cover.jpeg",
+                     "id": "mock-track-2", "duration": 171.2,
+                     "model_name": "chirp-hawk", "prompt": "", "title": ""},
                 ]}),
             }})
             return
         if path == "/kie-track.mp3":
             self._bytes(200, MP3, "audio/mpeg")
+            return
+        if path == "/kie-track-2.mp3":
+            self._bytes(200, MP3_ALT, "audio/mpeg")
             return
         if path == "/api/hub/shared-voices":
             self._json(200, {"voices": SHARED_VOICES})
@@ -500,9 +542,26 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if path.endswith("/images/generations"):
+            # `n` is honoured, and every entry is a *different* pixel, so a check
+            # that several images came back cannot pass on a bug that returned the
+            # first one repeatedly.
+            body = self._body()
+            try:
+                count = int(body.get("n") or 1)
+            except (TypeError, ValueError):
+                count = 1
+            count = max(1, min(count, 8))
             self._json(
                 200,
-                {"created": 0, "data": [{"b64_json": base64.b64encode(ONE_PIXEL_PNG).decode()}]},
+                {
+                    "created": 0,
+                    "data": [
+                        {"b64_json": base64.b64encode(
+                            one_pixel_png((index * 30 % 256, 40, 90))
+                        ).decode()}
+                        for index in range(count)
+                    ],
+                },
             )
             return
 

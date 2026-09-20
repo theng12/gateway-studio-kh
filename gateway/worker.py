@@ -125,16 +125,31 @@ def execute_job(job: dict[str, Any], store: JobStore) -> None:
         )
         return
 
-    asset_path: str | None = None
-    if result.content is not None:
-        path = Path(ARTIFACT_DIR) / f"{job_id}.{_ext_for(result.media_type)}"
-        path.write_bytes(result.content)
-        asset_path = str(path)
+    # **Every artifact the provider returned is written.** A job holds a list now,
+    # because a provider can answer several variations for one request (Suno sends
+    # one entry per track, an image call with `n` sends one per image) and keeping
+    # only the first made the rest unreachable. Artifact 0 keeps the original
+    # `{job_id}.{ext}` name, so every single-artifact route and every file already
+    # on disk is unchanged; the rest add an index.
+    stored: list[dict[str, Any]] = []
+    for index, artifact in enumerate(result.artifacts):
+        stem = job_id if index == 0 else f"{job_id}-{index}"
+        path = Path(ARTIFACT_DIR) / f"{stem}.{_ext_for(artifact.media_type)}"
+        path.write_bytes(artifact.content)
+        stored.append(
+            {
+                "asset_id": str(index),
+                "path": str(path),
+                "media_type": artifact.media_type,
+                "bytes": len(artifact.content),
+            }
+        )
 
     store.succeed(
         job_id,
-        asset_path=asset_path,
-        media_type=result.media_type,
+        asset_path=stored[0]["path"] if stored else None,
+        media_type=stored[0]["media_type"] if stored else None,
+        artifacts=stored,
         result={
             "text": result.text,
             "payload": result.payload,

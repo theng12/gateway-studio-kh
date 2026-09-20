@@ -47,6 +47,7 @@ from . import fleet
 from . import retention
 from .activity import is_story_path, record
 from .runtime import store, worker
+from .store import artifacts_of
 from .voices import story_row, tts_output_container, voice_registry, voices_for_model
 
 
@@ -252,10 +253,43 @@ def _job_envelope(job: dict[str, Any]) -> dict[str, Any]:
             body["output_url"] = url
         elif modality == "music":
             # Story Studio reads music results as an array of tracks, each with
-            # its own asset id, so a single-artifact shape would not be read.
-            url = f"/v1/music/jobs/{job['id']}/outputs/0"
-            body["outputs"] = [{"asset_id": "0", "url": url}]
-            body["output_url"] = url
+            # its own asset id, so a single-artifact shape would not be read. The
+            # array is every artifact the job kept — Suno answers several
+            # variations per call, and a fixed one-entry array is what made the
+            # second track unreachable.
+            outputs = [
+                {
+                    "asset_id": artifact["asset_id"],
+                    "url": f"/v1/music/jobs/{job['id']}/outputs/{artifact['asset_id']}",
+                }
+                for artifact in artifacts_of(job)
+            ]
+            body["outputs"] = outputs
+            if outputs:
+                body["output_url"] = outputs[0]["url"]
+        # **Every artifact a job kept is published, not just the first.** A provider
+        # can answer several variations for one request — Suno returns one entry per
+        # track, an image call with `n` returns one image each — and the singular
+        # `*_url` fields above can only ever name one of them, so the rest were
+        # written to disk and then unreachable by anyone. The singular fields stay
+        # exactly as they were (no existing reader changes) and the full list rides
+        # alongside them. Music builds its own list above, under the route prefix it
+        # has always published, so it is left alone.
+        if "outputs" not in body:
+            outputs = [
+                {
+                    "asset_id": artifact["asset_id"],
+                    "url": f"/v1/jobs/{job['id']}/outputs/{artifact['asset_id']}",
+                }
+                for artifact in artifacts_of(job)
+            ]
+            if outputs:
+                body["outputs"] = outputs
+        # A variation that would not download is *stated* rather than silent: a
+        # caller handed a shorter list than the provider produced can tell that from
+        # the response instead of having to guess why.
+        if payload.get("variations_failed"):
+            body["variations_failed"] = payload["variations_failed"]
         if payload.get("usage"):
             body["usage"] = payload["usage"]
 
@@ -655,13 +689,39 @@ def get_image_job(job_id: str) -> dict[str, Any]:
     return _job_envelope(_load_job(job_id, "image"))
 
 
-def _artifact_response(job: dict[str, Any], default_media: str) -> Response:
-    if job["state"] != "succeeded" or not job.get("asset_path"):
+def _artifact_response(
+    job: dict[str, Any], default_media: str, asset_id: str | None = None
+) -> Response:
+    """Serve one artifact from a job.
+
+    `asset_id` is the index a multi-artifact route names. It used to be accepted
+    by `/v1/music/jobs/{id}/outputs/{asset_id}` and then ignored, so every index
+    answered the first track — a control that did nothing, pointing at exactly the
+    variation a caller could not otherwise reach. Naming an index that does not
+    exist is refused rather than silently answered with track 0.
+    """
+    if job["state"] != "succeeded":
         raise GatewayError(409, "Job is not complete.", "JOB_NOT_COMPLETE")
-    path = Path(job["asset_path"])
+
+    rows = artifacts_of(job)
+    if not rows:
+        raise GatewayError(409, "Job is not complete.", "JOB_NOT_COMPLETE")
+
+    if asset_id is None:
+        chosen = rows[0]
+    else:
+        chosen = next((r for r in rows if str(r.get("asset_id")) == str(asset_id)), None)
+        if chosen is None:
+            raise GatewayError(
+                404,
+                f"This job has no artifact '{asset_id}'; it has {len(rows)}.",
+                "ARTIFACT_NOT_FOUND",
+            )
+
+    path = Path(chosen["path"])
     if not path.exists():
         raise GatewayError(410, "Artifact is gone.", "ARTIFACT_GONE")
-    return Response(content=path.read_bytes(), media_type=job.get("media_type") or default_media)
+    return Response(content=path.read_bytes(), media_type=chosen.get("media_type") or default_media)
 
 
 @app.get("/v1/images/{job_id}/file", dependencies=[Depends(require_auth)])
@@ -828,6 +888,38 @@ def get_tts_audio(job_id: str) -> Response:
     return _artifact_response(_load_job(job_id, "tts"), "audio/wav")
 
 
+#: The media type to fall back on per modality when a job recorded none. The stored
+#: type is what the provider actually answered, so it wins; this only covers a job
+#: whose artifact arrived with no `content-type` at all.
+_MEDIA_BY_MODALITY = {
+    "image": "image/png",
+    "video": "video/mp4",
+    "music": "audio/mpeg",
+    "tts": "audio/wav",
+    "transcription": "application/x-subrip",
+}
+
+
+@app.get("/v1/jobs/{job_id}/outputs/{asset_id}", dependencies=[Depends(require_auth)])
+def get_job_output(job_id: str, asset_id: str) -> Response:
+    """Serve one artifact of a job, by the asset id the job envelope published.
+
+    Modality-agnostic on purpose: the route that reaches the *second* result of a
+    multi-artifact job is the same shape whichever lane produced it, so a caller
+    that asked for two images, two video takes or two music variations fetches them
+    the same way. Music additionally keeps its own `/v1/music/jobs/…/outputs/…`
+    route, which it has always published.
+    """
+    job = store.get(job_id)
+    if job is None:
+        raise GatewayError(404, "No such job.", "JOB_NOT_FOUND")
+    return _artifact_response(
+        job,
+        _MEDIA_BY_MODALITY.get(str(job.get("modality")), "application/octet-stream"),
+        asset_id=asset_id,
+    )
+
+
 @app.post("/v1/jobs/{job_id}/cancel", dependencies=[Depends(require_auth)])
 def cancel_tts_job(job_id: str) -> dict[str, Any]:
     _load_job(job_id, "tts")
@@ -868,7 +960,7 @@ def get_music_job(job_id: str) -> dict[str, Any]:
 
 @app.get("/v1/music/jobs/{job_id}/outputs/{asset_id}", dependencies=[Depends(require_auth)])
 def get_music_output(job_id: str, asset_id: str) -> Response:
-    return _artifact_response(_load_job(job_id, "music"), "audio/mpeg")
+    return _artifact_response(_load_job(job_id, "music"), "audio/mpeg", asset_id=asset_id)
 
 
 # ---------------------------------------------------------------------------

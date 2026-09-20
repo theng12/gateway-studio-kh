@@ -23,7 +23,7 @@ adding one adapter, not reworking the gateway.
 from __future__ import annotations
 
 from .anthropic import AnthropicBackend
-from .base import Backend, BackendError, BackendRequest, BackendResult
+from .base import Artifact, Backend, BackendError, BackendRequest, BackendResult
 from .bfl import BflBackend
 from .elevenlabs import ElevenLabsBackend
 from .fal import FalBackend

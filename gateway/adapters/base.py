@@ -24,19 +24,50 @@ from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
 
 
+@dataclass(slots=True, frozen=True)
+class Artifact:
+    """One binary result: its bytes and the media type those bytes came back as."""
+
+    content: bytes
+    media_type: str | None = None
+
+
 @dataclass(slots=True)
 class BackendResult:
     """What a backend produced.
 
-    Exactly one of `content` (a binary artifact) or `text` (a language
-    response) is normally set. `payload` carries anything else worth surfacing
-    on the job envelope — a finish reason, a usage count, a resolved seed.
+    Exactly one of the artifacts or `text` (a language response) is normally set.
+    `payload` carries anything else worth surfacing on the job envelope — a
+    finish reason, a usage count, a resolved seed.
+
+    **A provider can answer more than one artifact for one request**, and `content`
+    is only the *first*: Suno answers two or more track variations per call, and an
+    OpenAI-shaped image call with `n: 2` answers two images. Everything past the
+    first rides in `additional_artifacts`. `content`/`media_type` stay the singular
+    spelling because every single-artifact lane and every existing caller reads
+    them; `artifacts` is the one place that answers "what did this job produce?",
+    so a reader never has to know which spelling an adapter happened to fill.
     """
 
     content: bytes | None = None
     media_type: str | None = None
     text: str | None = None
     payload: dict[str, Any] = field(default_factory=dict)
+    additional_artifacts: list[Artifact] = field(default_factory=list)
+
+    @property
+    def artifacts(self) -> list[Artifact]:
+        """Every artifact this result carries, first one first.
+
+        The first artifact is by definition `content`/`media_type`, so the two
+        spellings cannot drift: this is the only reader, and adapters that return
+        one artifact need not know `additional_artifacts` exists.
+        """
+        ordered: list[Artifact] = []
+        if self.content is not None:
+            ordered.append(Artifact(self.content, self.media_type))
+        ordered.extend(self.additional_artifacts)
+        return ordered
 
 
 class BackendError(Exception):

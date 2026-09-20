@@ -2091,6 +2091,13 @@ def main() -> int:
                   enabled.text[:120])
 
             def run_generation(label, submit_path, poll_path, body, artifact_path, signature=None):
+                """Run one lane to a fetched artifact, and return the settled envelope.
+
+                The envelope comes back so a caller can assert on what the job
+                *published* (an `outputs` list, say) and not only on the one artifact
+                this helper happens to fetch. Returns `None` if the lane did not
+                succeed.
+                """
                 key = f"e2e-{label}-{int(time.time())}"
                 submitted = req(
                     client, "POST", submit_path, json=body, headers={"Idempotency-Key": key}
@@ -2098,19 +2105,20 @@ def main() -> int:
                 if submitted.status_code != 202:
                     check(f"{label}: submit accepted", False,
                           f"{submitted.status_code} {submitted.text[:160]}")
-                    return
+                    return None
                 check(f"{label}: submit accepted", True)
                 job_id = submitted.json()["id"]
                 done = poll(client, poll_path.format(id=job_id))
                 check(f"{label}: succeeded", done["state"] == "succeeded",
                       (done.get("failure_reason") or "")[:200])
                 if done["state"] != "succeeded":
-                    return
+                    return None
                 artifact = req(client, "GET", artifact_path.format(id=job_id))
                 ok = artifact.status_code == 200 and (
                     signature(artifact.content) if signature else True
                 )
                 check(f"{label}: artifact valid ({len(artifact.content)} bytes)", ok)
+                return done
 
             is_png = lambda b: b[1:4] == b"PNG"
             is_mp4 = lambda b: b[4:8] == b"ftyp"
@@ -2122,6 +2130,54 @@ def main() -> int:
                 {"model_id": "mock-bfl::flux-pro-1.1", "prompt": "a lighthouse"},
                 "/v1/images/{id}/file", is_png,
             )
+            # **`n` is a real count now, and every image comes back.** It was
+            # hardcoded to 1 and the adapter took `entries[0]`, so a provider that
+            # answered several images had the rest written nowhere. The model is
+            # enabled for this one check and switched back off afterwards, because the
+            # catalogue counts later sections assert are about the shipped set.
+            httpx.post(f"{BASE}/admin/api/models/enabled", headers=AUTH,
+                       json={"items": [{"provider_id": "mock-remote",
+                                        "model_id": "mock-image-1"}], "enabled": True})
+            try:
+                two_images = run_generation(
+                    "shim-images-n2",
+                    "/v1/images/generations", "/v1/images/{id}",
+                    {"model_id": "mock-remote::mock-image-1",
+                     "prompt": "two lighthouses", "n": 2},
+                    "/v1/images/{id}/file", is_png,
+                )
+                image_outputs = (two_images or {}).get("outputs") or []
+                check("asking for two images gets two, and both are published",
+                      [o.get("asset_id") for o in image_outputs] == ["0", "1"],
+                      f"{image_outputs}")
+                shot_a = req(client, "GET", image_outputs[0]["url"]) if image_outputs else None
+                shot_b = req(client, "GET", image_outputs[1]["url"]) if len(image_outputs) > 1 else None
+                check("and they are two different pictures, not the first one twice",
+                      shot_a is not None and shot_b is not None
+                      and shot_a.status_code == 200 and shot_b.status_code == 200
+                      and is_png(shot_a.content) and is_png(shot_b.content)
+                      and shot_a.content != shot_b.content,
+                      f"{getattr(shot_a, 'status_code', '-')} "
+                      f"{getattr(shot_b, 'status_code', '-')}")
+                # A count no provider would take is refused with the range, rather
+                # than clamped: silently returning fewer than were asked for is the
+                # same defect as dropping the extras. The refusal happens in the
+                # adapter, so the job is accepted and then settles `failed`.
+                bad_submit = req(client, "POST", "/v1/images/generations",
+                                 json={"model_id": "mock-remote::mock-image-1",
+                                       "prompt": "x", "n": 99},
+                                 headers={"Idempotency-Key": f"e2e-n99-{int(time.time())}"})
+                bad_job = (poll(client, f"/v1/images/{bad_submit.json()['id']}")
+                           if bad_submit.status_code == 202 else {})
+                check("a count no provider would accept is refused, naming the range",
+                      bad_submit.status_code == 202
+                      and bad_job.get("state") == "failed"
+                      and "between 1 and 10" in (bad_job.get("failure_reason") or ""),
+                      f"{bad_submit.status_code} {bad_job.get('failure_reason')}")
+            finally:
+                httpx.post(f"{BASE}/admin/api/models/enabled", headers=AUTH,
+                           json={"items": [{"provider_id": "mock-remote",
+                                            "model_id": "mock-image-1"}], "enabled": False})
             run_generation(
                 "minimax-image",
                 "/v1/images/generations", "/v1/images/{id}",
@@ -2147,13 +2203,55 @@ def main() -> int:
             # that is exactly what an earlier version got wrong — it sent the tier
             # as the top-level model, which the provider answers with *"The model
             # name you specified is not supported"* (measured live 2026-09-20).
-            run_generation(
+            kie_music_envelope = run_generation(
                 "kie-music",
                 "/v1/music/generations", "/v1/music/jobs/{id}",
                 {"model_id": "mock-kie::V6", "lyrics": "a calm piano piece",
                  "style": "Classical", "title": "Peaceful", "instrumental": False},
                 "/v1/music/jobs/{id}/outputs/0", None,
             )
+            # **Suno answers several variations per call and a job keeps all of
+            # them.** Every url used to be parsed and then only `urls[0]` was
+            # downloaded, so the second track was written nowhere, and the route that
+            # exists to address a variation took an `asset_id` and ignored it — every
+            # index answered track 0. That is precisely the result a caller could not
+            # otherwise reach, so both halves are asserted here.
+            music_outputs = (kie_music_envelope or {}).get("outputs") or []
+            check("a music job publishes one output per track the provider returned",
+                  [o.get("asset_id") for o in music_outputs] == ["0", "1"],
+                  f"{music_outputs}")
+            first_track = (req(client, "GET", music_outputs[0]["url"])
+                           if len(music_outputs) > 0 else None)
+            second_track = (req(client, "GET", music_outputs[1]["url"])
+                            if len(music_outputs) > 1 else None)
+            check("and both tracks are really there, with different audio in each",
+                  first_track is not None and second_track is not None
+                  and first_track.status_code == 200 and second_track.status_code == 200
+                  and bool(first_track.content) and bool(second_track.content)
+                  and first_track.content != second_track.content,
+                  f"{getattr(first_track, 'status_code', '-')} "
+                  f"{getattr(second_track, 'status_code', '-')}")
+            if kie_music_envelope:
+                missing_track = req(
+                    client, "GET",
+                    f"/v1/music/jobs/{kie_music_envelope['id']}/outputs/7")
+                check("naming a variation the job does not have is refused, not answered with track 0",
+                      missing_track.status_code == 404
+                      and "ARTIFACT_NOT_FOUND" in missing_track.text,
+                      f"{missing_track.status_code} {missing_track.text[:120]}")
+                generic = req(
+                    client, "GET",
+                    f"/v1/jobs/{kie_music_envelope['id']}/outputs/1")
+                check("and the modality-agnostic outputs route reaches the second track too",
+                      generic.status_code == 200
+                      and second_track is not None
+                      and generic.content == second_track.content,
+                      f"{generic.status_code}")
+            else:
+                check("naming a variation the job does not have is refused, not answered with track 0",
+                      False, "the music lane did not succeed")
+                check("and the modality-agnostic outputs route reaches the second track too",
+                      False, "the music lane did not succeed")
             kie_tasks = httpx.get(
                 f"http://127.0.0.1:{MOCK_PORT}/__test__/kie-tasks").json()["tasks"]
             kie_music = [t for t in kie_tasks

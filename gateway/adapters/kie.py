@@ -24,7 +24,7 @@ from typing import Any
 
 import httpx
 
-from .base import BackendError, BackendRequest, BackendResult
+from .base import Artifact, BackendError, BackendRequest, BackendResult
 
 POLL_INTERVAL_S = 2.0
 JOB_DEADLINE_S = 900.0
@@ -34,6 +34,14 @@ ARTIFACT_TIMEOUT = httpx.Timeout(600.0, connect=10.0)
 
 _SUCCESS_STATES = {"success", "succeeded", "completed", "done"}
 _FAILURE_STATES = {"fail", "failed", "error", "cancelled"}
+
+#: Used only when the download answers no `content-type` at all. Music is an mp3
+#: (measured: the track url ends `.mp3` and serves `audio/mpeg`).
+_DEFAULT_MEDIA = {
+    "image": "image/png",
+    "video": "video/mp4",
+    "music": "audio/mpeg",
+}
 
 
 def _headers(request: BackendRequest) -> dict[str, str]:
@@ -264,30 +272,59 @@ class KieBackend:
             if not urls:
                 raise BackendError("kie returned no artifact url", code="PROVIDER_FAILED")
 
-            try:
-                artifact = client.get(urls[0], timeout=ARTIFACT_TIMEOUT)
-            except httpx.HTTPError as exc:
-                raise BackendError(
-                    f"artifact download failed: {exc}",
-                    code="PROVIDER_UNAVAILABLE",
-                    retryable=True,
-                ) from exc
+            # **Every url is downloaded, not just the first.** Suno answers a `data`
+            # array holding one entry per variation, and fetching only `urls[0]` meant
+            # the second track was parsed and then thrown away, with no way for a
+            # caller to reach it. The *first* must still succeed, because that is the
+            # artifact the single-artifact routes serve and the guarantee the old
+            # behaviour made; a later variation that will not fetch is counted in
+            # `variations_failed` instead of failing a call that did produce a usable
+            # track.
+            downloaded: list[tuple[bytes, str | None]] = []
+            failed = 0
+            for index, url in enumerate(urls):
+                try:
+                    fetched = client.get(url, timeout=ARTIFACT_TIMEOUT)
+                except httpx.HTTPError as exc:
+                    if index == 0:
+                        raise BackendError(
+                            f"artifact download failed: {exc}",
+                            code="PROVIDER_UNAVAILABLE",
+                            retryable=True,
+                        ) from exc
+                    failed += 1
+                    continue
 
-            if artifact.status_code >= 400:
-                raise BackendError(f"artifact HTTP {artifact.status_code}", code="PROVIDER_FAILED")
+                if fetched.status_code >= 400:
+                    if index == 0:
+                        raise BackendError(
+                            f"artifact HTTP {fetched.status_code}", code="PROVIDER_FAILED"
+                        )
+                    failed += 1
+                    continue
 
-        media_type = artifact.headers.get("content-type", "").split(";")[0].strip()
-        if not media_type:
-            media_type = {
-                "image": "image/png",
-                "video": "video/mp4",
-                # Music answers an mp3 (measured: the track url ends `.mp3` and
-                # serves `audio/mpeg`).
-                "music": "audio/mpeg",
-            }.get(request.modality, "application/octet-stream")
+                media_type = fetched.headers.get("content-type", "").split(";")[0].strip()
+                downloaded.append(
+                    (
+                        fetched.content,
+                        media_type or _DEFAULT_MEDIA.get(request.modality, "application/octet-stream"),
+                    )
+                )
 
+        payload: dict[str, Any] = {
+            "kie_task_id": task_id,
+            "provider_url": urls[0],
+            # How many variations the provider *offered*, so "this model makes one
+            # track" and "we dropped the rest" cannot read the same.
+            "variation_count": len(urls),
+        }
+        if failed:
+            payload["variations_failed"] = failed
+
+        first_content, first_media = downloaded[0]
         return BackendResult(
-            content=artifact.content,
-            media_type=media_type,
-            payload={"kie_task_id": task_id, "provider_url": urls[0]},
+            content=first_content,
+            media_type=first_media,
+            payload=payload,
+            additional_artifacts=[Artifact(c, m) for c, m in downloaded[1:]],
         )
