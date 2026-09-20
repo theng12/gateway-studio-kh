@@ -9,9 +9,144 @@ file is the durable record: what each shape is, every instance found, and the
 smallest honest fix. It is not a design document and it does not re-litigate
 anything the code already marks as deliberate.
 
-**Status of the six audits:** four returned (shapes 1, 2, 3, 6 — see each
-section). Two were still running when this file was written and will be appended.
-Findings are quoted with `file:line` from the tree at the time of the audit.
+**Status of the six audits:** **all six returned.** Shapes 1, 2, 3, 4, 5 and 6
+below each hold one audit's findings. Two of them audited the tree while the fixes
+in commit `ccc05ba` were being written, so a few of their line numbers moved and
+one of their findings (the status menu reading `enabled_models`) was already fixed
+by then and is recorded as closed rather than open. Findings are quoted with
+`file:line` from the tree at the time of the audit.
+
+**Fixed from this backlog so far:** Shape 1 (the `tts_model_id` misattribution —
+customer-visible), Shape 4 (#2, the Swift app reading a field the API never
+serialises; #3, `add_user_model` accepting an unserved modality), Shape 6 (#1, the
+destructive `.env` rewrite; #7, the menu-bar count) and the count-propagation
+instances across the console and the menu bar.
+
+---
+
+## Shape 4 — a control that does nothing, or one rule computed twice
+
+### Fixed (this session)
+- Fleet's `testController` / `removeController` were wired to nothing (earlier).
+- `_flat_models` and the catalogue used different conditions for "can this be
+  offered" (earlier: `can_publish` is now the single rule).
+- The console headline, per-provider badge, expanded list and menu-bar status all
+  counted "enabled" as "live". They now read the offered count.
+
+### Open
+1. **HIGH — `menubar/VoicesWindow.swift:442,489,535` send the registry id
+   (`studio-hub-local::voice-x`) while `voice_import.py:200/238` and
+   `admin.py:732` match the bare catalogue id (`voice-x`).** So granting a
+   permission reports success with `changed: 0`, "Share with fleet" pushes nothing,
+   and the 403 "not been allowed" guard is bypassed. The tests only exercise these
+   routes with bare ids, so the app path is uncaught. *Fix: normalise in
+   `voice_import` — match on the trailing `::` segment.*
+2. **HIGH — `voices.py:86-115` (`as_dict`) never serialises `raw`, but
+   `menubar/VoicesWindow.swift:722,498,834` read `row["raw"]`.**
+   (a) "Add to my account" never sends `owner_id`, so every ElevenLabs library
+   import gets a 422 — and `VoicesWindow.swift:725` discards the error.
+   (b) The Fleet column and the grant dialog read
+   `raw["permission_acknowledged"]`, so every local voice renders "Private" forever
+   and "N already allow it" is always 0. *Fix: publish `owner_id` and
+   `permission_acknowledged` as top-level fields, and surface the POST failure.*
+3. **MED — `providers/models.py:308-311` (`add_user_model`) accepts any *declared*
+   modality; `can_publish` also requires `serves()`.** The "Add model manually"
+   form therefore accepts a modality the adapter cannot serve (Google declares six,
+   serves four), the row is enabled and counted, and it never publishes.
+   `admin.py:128-135` even computes `unserved_modalities` "so the console can say
+   which ones" and nothing renders it. *Fix: reject in `add_user_model` when
+   `not serves(...)`, and render the field.*
+4. **MED — `worker.py:62-68` re-checks only the provider at execution time.** A
+   model disabled after submit still runs; a Hub refresh flipping
+   `catalogued`/`memory_eligible` mid-queue does not stop the job; and
+   `adapter_for` never consults `serves()`. *Fix: re-resolve the model and fail
+   `MODEL_DISABLED` / `MODEL_NOT_OFFERABLE`.*
+5. **MED — Kie music publishes with no music handler.** `KIND_KIE` includes
+   `music`, the Suno `V6` row is curated, and `adapters/kie.py:83-90` posts every
+   modality down the same `createTask` image/video route. *Fix: drop `music` from
+   the kind, the definition and the row, or implement and prove the route.*
+6. **MED — `providers/models.py:383` (`summary`) omits the `is_configured` gate
+   that `enabled_models` applies.** A provider switched on with its key cleared
+   inflates `publishable_models` — the number the app now labels "offered".
+   *Fix: skip unconfigured providers in `summary()`.*
+7. **MED-LOW — `admin_ui.html:463` "Browse in Models tab" cannot set its own
+   filter** (`filtersPopulated` is set before the select is populated, and on a
+   Providers-first launch the options do not exist yet). *Fix: `await loadModels()`
+   first.*
+8. **MED-LOW — the two console toggle paths can display a state the server
+   rejected** (`setModel` has no try/catch; `toggleModel` re-renders a stale list).
+   *Fix: try/catch + alert + re-read.*
+9. **LOW — `admin.py:836` has an unguarded `response.json()`** in the ElevenLabs
+   import path, which 500s on a non-JSON 200.
+10. **MED-LOW — `definitions.py:604-615` `_VALID_KINDS` is a second copy of
+    `IMPLEMENTED_KINDS` that omits `KIND_XAI`**, and a custom provider with an
+    unknown kind is skipped silently. *Fix: `_VALID_KINDS = frozenset(IMPLEMENTED_KINDS)`
+    and report skipped entries.* (Same finding as Shape 1.10 — one fix closes both.)
+11. **MED — `catalog._supports_cloning` and `voices.reference_support` are two
+    implementations of one rule with different fallbacks**, so a published
+    `supports_voice_cloning: true` can sit beside an empty voice picker. *Fix: have
+    `_tts_row` call `voices.reference_support`.*
+12. **MED — the TTS price shape is defined twice** (`constants.zero_pricing` vs the
+    hand-listed fields in `voices.story_row`), and the copy is already missing
+    `cost_tier` and `standard_credits`. *Fix: build it from `zero_pricing("tts")`.*
+
+---
+
+## Shape 5 — identity from a label, or two namespaces for one thing
+
+### Open
+1. **HIGH — this Mac's Hub operator token is sent to a remote location.**
+   `hub.py:139` is `token or hub_token()`, and a controller may legitimately have an
+   empty `hub_token` (added with no token, then refreshed). `hub_headers("")` then
+   falls back to **this Mac's** operator token and sends it in `X-Hub-Token` to the
+   owner-supplied remote address. Called from `adapters/studio_hub.py:60` and
+   `providers/discovery.py:481,430`. Same fallback shape as the already-fixed
+   `_studio_hub` base-url bug; the header path kept it. *Fix: never fall back for a
+   non-local provider — resolve the definition and pass the credential verbatim,
+   even empty.*
+2. **HIGH — voice share/permission use the wrong namespace** (Shape 4.1 above).
+3. **MED-HIGH — a local voice's identity is derived from the source file name.**
+   `voice_import.py:574,587` mints `voice-<slug(entry.name)>`, which is the catalogue
+   key *and* the on-disk path. So the same clip re-imported under a different name
+   becomes a second voice, two clips whose names slug alike silently replace each
+   other, and the stale-segment guard at `:659` is skipped for the legacy entries
+   that have no `audio_sha256`. The bytes are the real identity. *Fix: dedupe and
+   update on `audio_sha256`, reusing the existing id.*
+4. **MED — the reserved location namespace is claimable.** `definitions.py:562`
+   only rejects ids already built in, so `providers.local.json` may define
+   `studio-hub` or `studio-hub-*` — and `fleet.py:56,79` then treat that prefix as
+   "location". Such a provider publishes but can never be routed. Related: "is a
+   location" is defined by *kind* in `catalog.py:115` and by *id prefix* in
+   `fleet.py:92`. *Fix: reject the reserved ids, and use one predicate.*
+5. **MED-LOW — kind judged by id prefix.** `voices.py:823`
+   (`provider_id.startswith("elevenlabs")`) and the app's
+   `VoicesWindow.swift:489,536,833` (`hasPrefix("studio-hub-local")`) — the API
+   already publishes `kind` and `source`. *Fix: compare the kind / use `source`.*
+6. **MED-LOW — `models.py:284` (`set_many`) writes enable state for ids that are
+   not providers**, unlike `set_model_enabled` at `:278`; the published
+   `studio-hub` id can be written and is never swept (`fleet.py:481`). *Fix:
+   resolve through `_definition`.*
+7. **LOW — curated limits are keyed by the concrete provider id** (`limits.py:85`)
+   while README documents the visible `studio-hub::<model>` form, so an entry
+   written that way is silently ignored for every location. *Fix: also try the
+   published id.*
+8. **MED-LOW — `voices.py:742` (`_preview_model`) reads `static_models` only**, so a
+   discovered ElevenLabs voice with no preview synthesises against `model_id=""`
+   and 404s. *Fix: prefer the discovered TTS rows.*
+9. **LOW/SUSPECTED — `fleet.py:419` (`add_controller`) dedupes on the address, not
+   the Hub's stable `controller_id`/`site_id`** that `_probe` already reads. Re-adding
+   the same controller at a new address mints a second location and orphans the old
+   id's credential and every per-model enable decision. *Fix: match on the probed id
+   when available.*
+10. **MED — the merged location row keeps the first location's capability facts**
+    (`catalog.py:612-625`, `voices.py:873`), while routing picks by pressure. With
+    two Hubs the picker and the reference report can describe a location that will
+    not run the job. *Fix: prefer a record from a location that can publish it.*
+    (Same finding as Shape 1.5.)
+11. **LOW — `SettingsSection.swift:330`** does `Int(portField.stringValue) ?? 8000`,
+    silently rebinding the gateway to 8000 on an empty or mistyped port while
+    reporting "Saved. Restarting…".
+
 
 ---
 
