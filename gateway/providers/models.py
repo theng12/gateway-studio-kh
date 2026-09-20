@@ -20,6 +20,7 @@ import json
 import time
 from pathlib import Path
 from typing import Any, Callable
+from urllib.parse import urlsplit
 
 from ..config import MODEL_CACHE_PATH, write_secret
 from .credentials import CredentialStore
@@ -219,6 +220,16 @@ class ModelInventory:
         if not serves(definition, modality):
             return False
         model_id = str(model.get("model_id") or "")
+        if modality == "chat" and model_id.endswith(":batch"):
+            base = self.credentials.resolved(definition.id).get("base_url") or definition.base_url
+            # OpenRouter's batch-only routes cannot serve our chat-completions
+            # requests. Match the serving host, including custom provider entries.
+            try:
+                host = urlsplit(base).hostname
+            except ValueError:
+                return False
+            if host == "openrouter.ai":
+                return False
         if modality == "transcription" and not transcription_can_serve(model_id):
             return False
         if modality == "music" and not music_can_serve(model_id):

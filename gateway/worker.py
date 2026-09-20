@@ -191,7 +191,8 @@ class Worker:
                 if self._stop.is_set():
                     return
                 # Claim before executing so a second pass cannot re-enter.
-                self.store.mark_running(job["id"])
+                if not self.store.mark_running(job["id"]):
+                    continue
                 job["state"] = "running"
                 try:
                     execute_job(job, self.store)

@@ -63,7 +63,9 @@ def require_admin(
     from .config import gateway_api_key
 
     expected = gateway_api_key()
-    if expected and authorization[7:].strip() != expected:
+    if not expected:
+        raise AdminError(503, "Set GATEWAY_API_KEY before using the gateway beyond loopback.")
+    if authorization[7:].strip() != expected:
         raise AdminError(403, "Invalid API key.")
 
 

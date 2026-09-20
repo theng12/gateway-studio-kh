@@ -186,14 +186,17 @@ class JobStore:
             next_action_at=None,
         )
 
-    def mark_running(self, job_id: str) -> None:
-        """Claim a job for execution.
-
-        Clears `next_action_at` so a second worker pass cannot pick it up while
-        it runs. Only one worker thread exists, but making the claim explicit
-        keeps that guarantee in the store rather than in the caller's head.
-        """
-        self._update(job_id, state="running", next_action_at=None)
+    def mark_running(self, job_id: str) -> bool:
+        """Claim only work still accepted, not a cancelled row in an old snapshot."""
+        with self._lock:
+            result = self._conn.execute(
+                """UPDATE jobs SET state = 'running', next_action_at = NULL,
+                                   updated_at = ?
+                   WHERE id = ? AND state = 'accepted'""",
+                (time.time(), job_id),
+            )
+            self._conn.commit()
+            return result.rowcount == 1
 
     def cancel(self, job_id: str) -> dict[str, Any]:
         row = self.get(job_id)

@@ -1,0 +1,7 @@
+{
+  "baseline": "fcfde43",
+  "method": "offline console functions with mocked successful HTTP responses",
+  "successful_mock_requests": 2,
+  "generate_message": "res.json is not a function",
+  "keep_message": "r.json is not a function"
+}

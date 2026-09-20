@@ -23,3 +23,7 @@ menubar/vendor/
 
 # graphify knowledge graph (generated, not source)
 graphify-out/
+
+# Finder metadata and local development-tool state.
+.DS_Store
+.serena/
