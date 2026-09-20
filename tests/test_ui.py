@@ -36,6 +36,13 @@ APP_PROCESS = "GatewayKH"
 #: grouping are pinned by a test rather than by whoever last edited the layout.
 SIDEBAR = [
     "Overview",
+    "CREATE",
+    "Audio",
+    "Subtitle",
+    "Image",
+    "Music",
+    "Video",
+    "Chat",
     "LIBRARY & APP",
     "Jobs",
     "Voices",
@@ -49,13 +56,23 @@ SIDEBAR = [
 #: (sidebar row, menu title, window title). Settings is deliberately absent —
 #: it is opened with ⌘, or by clicking its sidebar row, and is checked in
 #: section 6 rather than duplicated in the View menu.
+#:
+#: Rows are 1-based, because that is what the accessibility layer counts. The
+#: Create lanes sit between Overview and the "Library & app" group, which is
+#: Studio Hub's grouping, so every management row shifted down by seven.
 SECTIONS = [
     (1, "Overview", "gateway-kh — Overview"),
-    (3, "Jobs", "gateway-kh — Jobs"),
-    (4, "Voices", "gateway-kh — Voices"),
-    (5, "Models", "gateway-kh — Models"),
-    (6, "Providers", "gateway-kh — Providers"),
-    (7, "Fleet", "gateway-kh — Fleet"),
+    (3, "Audio", "gateway-kh — Audio"),
+    (4, "Subtitle", "gateway-kh — Subtitle"),
+    (5, "Image", "gateway-kh — Image"),
+    (6, "Music", "gateway-kh — Music"),
+    (7, "Video", "gateway-kh — Video"),
+    (8, "Chat", "gateway-kh — Chat"),
+    (10, "Jobs", "gateway-kh — Jobs"),
+    (11, "Voices", "gateway-kh — Voices"),
+    (12, "Models", "gateway-kh — Models"),
+    (13, "Providers", "gateway-kh — Providers"),
+    (14, "Fleet", "gateway-kh — Fleet"),
 ]
 
 failures: list[str] = []
@@ -750,14 +767,19 @@ def main() -> int:
               window_size() == original_size, f"{original_size} -> {window_size()}")
 
     # Selecting by sidebar row must agree with the View menu, or the two ways of
-    # navigating have drifted apart.
+    # navigating have drifted apart. Row 3 is now a Create lane, so this also
+    # proves the new group is a real destination rather than a heading.
     sidebar_select(3)
     time.sleep(2.0)
     check("clicking a sidebar row selects the same section",
+          window_title() == "gateway-kh — Audio", window_title())
+    sidebar_select(10)
+    time.sleep(2.0)
+    check("and a management row still selects its section",
           window_title() == "gateway-kh — Jobs", window_title())
 
     # The row that the owner could not find before it existed.
-    sidebar_select(8)
+    sidebar_select(15)
     time.sleep(2.0)
     check("Settings is reachable by clicking its sidebar row",
           window_title() == "gateway-kh — Settings", window_title())

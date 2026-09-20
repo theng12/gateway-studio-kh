@@ -878,36 +878,24 @@ enum MainMenuBuilder {
         main.addItem(viewItem)
         let viewMenu = NSMenu(title: "View")
         viewItem.submenu = viewMenu
-        viewMenu.addItem(
-            withTitle: "Overview",
-            action: #selector(AppDelegate.openOverview),
-            keyEquivalent: "1"
-        ).target = target
-        viewMenu.addItem(
-            withTitle: "Jobs",
-            action: #selector(AppDelegate.openJobs),
-            keyEquivalent: "2"
-        ).target = target
-        viewMenu.addItem(
-            withTitle: "Voices",
-            action: #selector(AppDelegate.openVoices),
-            keyEquivalent: "3"
-        ).target = target
-        viewMenu.addItem(
-            withTitle: "Models",
-            action: #selector(AppDelegate.openModels),
-            keyEquivalent: "4"
-        ).target = target
-        viewMenu.addItem(
-            withTitle: "Providers",
-            action: #selector(AppDelegate.openConsole),
-            keyEquivalent: "5"
-        ).target = target
-        viewMenu.addItem(
-            withTitle: "Fleet",
-            action: #selector(AppDelegate.openFleet),
-            keyEquivalent: "6"
-        ).target = target
+        // **Built from the section list, not by hand.** Adding the six Create lanes
+        // to the sidebar without adding them here left the View menu offering a
+        // destination nothing could reach — the UI suite caught it by trying to
+        // click "Audio" and finding no such item. One action for every row means the
+        // menu cannot fall behind the sidebar again.
+        //
+        // The key equivalents are deliberately unchanged for the pages that already
+        // had them (⌘1 Overview, ⌘2 Jobs, ⌘3 Voices, ⌘4 Models, ⌘5 Providers,
+        // ⌘6 Fleet): renumbering to match the new order would silently retrain the
+        // owner's fingers. The Create lanes are reachable by name and by sidebar.
+        for (title, key) in MainWindow.viewMenuSections {
+            viewMenu.addItem(
+                withTitle: title,
+                action: #selector(AppDelegate.openSectionRow(_:)),
+                keyEquivalent: key
+            ).target = target
+        }
+        viewMenu.addItem(NSMenuItem.separator())
         viewMenu.addItem(
             withTitle: "Reload Console",
             action: #selector(AppDelegate.reloadConsole),
@@ -1174,6 +1162,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     // Not `private`: MainMenuBuilder references these by selector from another
     // type in this file.
     @objc func openOverview() { MainWindow.shared.show(section: "overview") }
+
+    /// One action for every View-menu row, so the menu is data rather than a
+    /// hand-kept list that can fall behind the sidebar.
+    @objc func openSectionRow(_ sender: NSMenuItem) {
+        MainWindow.shared.show(section: sender.title.lowercased())
+    }
 
     @objc func openJobs() { MainWindow.shared.show(section: "jobs") }
 

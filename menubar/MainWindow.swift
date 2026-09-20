@@ -227,16 +227,34 @@ final class MainWindow: NSObject, NSTableViewDataSource, NSTableViewDelegate {
 
     /// Section names accepted by `--open` and the menu.
     private static let order = [
-        "overview", "jobs", "voices", "models", "providers", "fleet", "settings",
+        "overview",
+        "audio", "subtitle", "image", "music", "video", "chat",
+        "jobs", "voices", "models", "providers", "fleet", "settings",
+    ]
+
+    /// The View menu, in sidebar order: (title, key equivalent).
+    ///
+    /// Derived from the same grouping the sidebar uses rather than typed out
+    /// again, because a section that exists in the sidebar but not here is a
+    /// destination with no door. Settings is deliberately absent — it is ⌘, and a
+    /// row in the sidebar already, so a third route to it would be a third thing to
+    /// keep in step.
+    static let viewMenuSections: [(title: String, key: String)] = [
+        ("Overview", "1"),
+        ("Audio", ""), ("Subtitle", ""), ("Image", ""),
+        ("Music", ""), ("Video", ""), ("Chat", ""),
+        ("Jobs", "2"), ("Voices", "3"), ("Models", "4"),
+        ("Providers", "5"), ("Fleet", "6"),
     ]
 
     /// A sidebar row is either a group header or a section.
     ///
     /// Studio Hub KH groups its sidebar into `Section("Create")` /
     /// `Section("Library & app")`; this mirrors that so the two apps are
-    /// navigated the same way. Everything this app shows is management, so there
-    /// is one working group — an empty "Create" heading would have been a lie
-    /// dressed as navigation.
+    /// navigated the same way. The Create group used to be absent on purpose —
+    /// *"an empty 'Create' heading would have been a lie dressed as navigation"* —
+    /// because every page here was management. It is not empty now: the six lanes
+    /// generate for real, so the heading names a group that exists.
     private enum SidebarRow {
         case header(String)
         case section(Int)
@@ -244,13 +262,20 @@ final class MainWindow: NSObject, NSTableViewDataSource, NSTableViewDelegate {
 
     private static let layout: [SidebarRow] = [
         .section(0),
-        .header("Library & app"),
+        .header("Create"),
         .section(1),
         .section(2),
         .section(3),
         .section(4),
         .section(5),
         .section(6),
+        .header("Library & app"),
+        .section(7),
+        .section(8),
+        .section(9),
+        .section(10),
+        .section(11),
+        .section(12),
     ]
 
     private var rowForSection: [Int: Int] {
@@ -296,6 +321,10 @@ final class MainWindow: NSObject, NSTableViewDataSource, NSTableViewDelegate {
     private func build() {
         sections = [
             OverviewSection.shared,
+            // The Create lanes, in Studio Hub's order, before the management pages —
+            // the same order its sidebar uses.
+            CreateSection.all[0], CreateSection.all[1], CreateSection.all[2],
+            CreateSection.all[3], CreateSection.all[4], CreateSection.all[5],
             JobsSection.shared,
             VoicesSection.shared,
             ConsoleSection.models,

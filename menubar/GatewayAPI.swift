@@ -79,6 +79,81 @@ enum GatewayAPI {
         request("DELETE", path, completion: completion ?? { _ in })
     }
 
+    /// A multipart POST, for the one route that carries a file.
+    ///
+    /// It exists rather than a generic "send bytes" because transcription is the
+    /// only lane here whose payload is not JSON, and the refusal handling has to
+    /// stay identical to `request`'s: the gateway answers a too-large file with a
+    /// 413 and a sentence naming the limit, and that sentence is the whole value of
+    /// the answer.
+    static func upload(
+        _ path: String,
+        fileField: String,
+        filename: String,
+        data: Data,
+        fields: [String: String],
+        completion: @escaping (Result<[String: Any], Error>) -> Void
+    ) {
+        guard GatewayController.shared.isRunning else {
+            DispatchQueue.main.async { completion(.failure(GatewayAPIError.notRunning)) }
+            return
+        }
+        guard let target = url(path) else {
+            DispatchQueue.main.async { completion(.failure(GatewayAPIError.badURL)) }
+            return
+        }
+        let boundary = "gateway-kh-\(UUID().uuidString)"
+        var body = Data()
+        for (name, value) in fields {
+            body.append("--\(boundary)\r\n".data(using: .utf8)!)
+            body.append("Content-Disposition: form-data; name=\"\(name)\"\r\n\r\n".data(using: .utf8)!)
+            body.append("\(value)\r\n".data(using: .utf8)!)
+        }
+        body.append("--\(boundary)\r\n".data(using: .utf8)!)
+        body.append("Content-Disposition: form-data; name=\"\(fileField)\"; filename=\"\(filename)\"\r\n".data(using: .utf8)!)
+        body.append("Content-Type: application/octet-stream\r\n\r\n".data(using: .utf8)!)
+        body.append(data)
+        body.append("\r\n--\(boundary)--\r\n".data(using: .utf8)!)
+
+        var req = URLRequest(url: target)
+        req.httpMethod = "POST"
+        // Longer than the JSON timeout: this carries the bytes and the gateway
+        // stages them before it answers.
+        req.timeoutInterval = 120
+        req.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+        let key = EnvFile.apiKey()
+        if !key.isEmpty {
+            req.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
+        }
+        req.httpBody = body
+
+        URLSession.shared.dataTask(with: req) { data, response, error in
+            if let error {
+                DispatchQueue.main.async { completion(.failure(error)) }
+                return
+            }
+            let code = (response as? HTTPURLResponse)?.statusCode ?? 0
+            if code == 401 {
+                DispatchQueue.main.async { completion(.failure(GatewayAPIError.unauthorized)) }
+                return
+            }
+            guard code == 200 || code == 202 else {
+                let detail = GatewayAPI.detail(from: data)
+                DispatchQueue.main.async {
+                    completion(.failure(GatewayAPIError.refused(code, detail)))
+                }
+                return
+            }
+            guard let data, !data.isEmpty,
+                  let parsed = try? JSONSerialization.jsonObject(with: data),
+                  let json = parsed as? [String: Any] else {
+                DispatchQueue.main.async { completion(.failure(GatewayAPIError.malformed)) }
+                return
+            }
+            DispatchQueue.main.async { completion(.success(json)) }
+        }.resume()
+    }
+
     private static func request(
         _ method: String,
         _ path: String,
