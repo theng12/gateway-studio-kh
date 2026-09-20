@@ -662,6 +662,11 @@ final class GatewayController {
 
     // MARK: Build identity
 
+    /// The user-facing version from the app bundle, or an explicit unknown.
+    lazy var appVersion: String = {
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "unknown"
+    }()
+
     /// The build stamp of the app that is running.
     lazy var appBuild: String = {
         Bundle.main.object(forInfoDictionaryKey: "GatewayBuild") as? String ?? "unknown"
@@ -1242,7 +1247,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         NSApp.activate(ignoringOtherApps: true)
         NSApp.orderFrontStandardAboutPanel(options: [
             .applicationName: "gateway-kh",
-            .applicationVersion: "0.1.0",
+            .applicationVersion: GatewayController.shared.appVersion,
             .credits: NSAttributedString(
                 string: "A personal model gateway.\n\nConsole: http://127.0.0.1:\(GatewayController.shared.port)/admin",
                 attributes: [
