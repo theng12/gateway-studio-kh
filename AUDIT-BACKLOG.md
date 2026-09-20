@@ -31,20 +31,45 @@ the line numbers. **Every item in them is now closed** except where a note says
 otherwise; this section is the outcome, with the evidence, so the lists are not
 misread as a to-do.
 
-All three suites were re-run after this batch: **e2e 478/478**, **fleet 50/50**,
-**UI 109/109**. The e2e count went 444 → 465 → 478 as checks were added; the fleet
+All three suites were re-run after this batch: **e2e 485/485**, **fleet 50/50**,
+**UI 109/109**. The e2e count went 444 → 465 → 478 → 485 as checks were added
+(the last seven for Kie's music lane); the fleet
 count 47 → 50.
 
 ### Shape 4 — a control that does nothing, or one rule computed twice
 
-- **4.5, Kie music** — withdrawn. Kie's music models are the **Suno** family, which
-  Kie documents as its own API (`/api/v1/generate*`, a flat body) and not the
-  Market `jobs/createTask` contract this adapter speaks, so the curated `V6` row
-  could only fail on use. Music is gone from `KIND_KIE`, the definition and the
-  row; `KieBackend` refuses it by name; `_MODALITIES_BY_KIND` no longer claims it.
-  A `ponytail:` names the upgrade path (implement the Suno route and measure it).
-  The provider's docs structure — a separate "Music Generation" section — is the
-  evidence; no key was spent.
+- **4.5, Kie music** — **withdrawn, then restored properly the same day.** The
+  first fix removed the lane: an out-of-date third-party reference (verified
+  2026-08-26) said Kie's Suno family was a dedicated `/api/v1/generate*` API that
+  this adapter could not speak, and Kie's docs do keep a separate "Music
+  Generation" section, so the curated `V6` row looked like a lane that could only
+  fail on use. **That reading was wrong.** Kie has since moved music onto the same
+  unified `POST /api/v1/jobs/createTask` route the adapter already speaks: the
+  top-level `model` is the constant **`ai-music-api/generate`** and the Suno tier
+  (`V6`, `V6_MINI`, `V6_WILD` — the page now strikes V4/V4_5/V5_5 through) rides
+  in **`input.model`**. Measured live on 2026-09-20, at a cost of **12 credits**:
+  such a body queued a task, `recordInfo` reported `state: "success"` with
+  `status: "SUCCESS"`, and `resultJson` parsed to
+  `{"code": 200, "data": [{audio_url, stream_audio_url, image_url, id, duration,
+  model_name, …}]}` — a **`data` array of tracks**, none of the `resultUrls` keys
+  the image and video lanes use. So there were two real bugs hidden behind the
+  withdrawal: the body named the tier where the route wants the api-model, and the
+  result parser would have reported *"no artifact url"* on a **successful**
+  generation. Both are fixed: `KieBackend` sends the constant at the top level and
+  the tier inside `input`, `_music_input` maps this gateway's music contract onto
+  Suno's (`lyrics`→`prompt`, camelCase and snake_case both accepted, `custom_mode`
+  inferred from `style`/`title` when the caller does not say), and
+  `_urls_from_result_json` reads `data[].audio_url`. Music is back in `KIND_KIE`,
+  the definition declares it, and the three live tiers are curated. The e2e suite
+  drives the whole lane against the mock and asserts the **wire body** — which is
+  the check that would have caught the original mistake.
+  - **What is still unproven:** that the *gateway* can carry a real song end to
+    end. The route, the body and the result shape are measured; a generation
+    through the gateway itself would cost another 12 credits and was left for the
+    owner to trigger by picking the model.
+  - **The 12 credits were spent by accident.** A probe intended to be rejected (a
+    valid api-model with no prompt) was accepted and queued; the balance read
+    1270.59 → 1258.59 confirmed it. Recorded here rather than quietly absorbed.
 - **4.6, `summary()` and `is_configured`** — **was already fixed** by deriving
   `publishable_models`/`by_modality` from `enabled_models()`, which applies the
   gate. Verified by reading; nothing to change.

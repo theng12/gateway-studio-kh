@@ -762,14 +762,17 @@ location row answers for every site offering it (`_merge_capabilities` unions
 cloning, takes the smallest character budget and the intersection of the speed
 range); a controller is identified by its Hub's stable `site_id`, never its
 address (when that fix invalidated the fleet suite's way of making a second
-location, the setup was relying on the bug); and one table with two readers is
-the only way to stop them drifting — image geometry, the TTS price shape, the
-cloning rule and the voice container each now have exactly one implementation.
+location, the setup was relying on the bug); and **a provider's API can move under
+you** — Kie took Suno off `/api/v1/generate*` and onto the *same* `jobs/createTask`
+route its images use, with the api-model `ai-music-api/generate` at the top level
+and the tier (`V6`/`V6_MINI`/`V6_WILD`) in `input.model`, and the result in a `data`
+**array**, not `resultUrls`. An out-of-date reference had it
+withdrawn and then restored (12 credits, in the backlog).
 
 ## Verification
 
 ```bash
-.venv/bin/python tests/test_e2e.py              # 478 checks, isolated mock upstream
+.venv/bin/python tests/test_e2e.py              # 485 checks, isolated mock upstream
 .venv/bin/python tests/test_fleet_standalone.py # 50 checks, real Hub(s) as locations
 .venv/bin/python tests/test_ui.py               # 109 checks, drives the real app
 ```

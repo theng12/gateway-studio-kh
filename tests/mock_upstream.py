@@ -47,6 +47,20 @@ SHARED_TOKENS: list[str] = []
 #: was built. Reset by `POST /__test__/reset`.
 HUB_TOKENS: list[dict] = []
 
+#: Every body this mock was sent on Kie's `jobs/createTask`, in order.
+#:
+#: Music and images share that route, so the *body* is the only thing that says
+#: which lane a request is on: the top-level `model` is the api-model
+#: (`ai-music-api/generate` for music) and the tier rides in `input.model`. A
+#: recording rather than a callback because the assertion is about the wire.
+#: Reset by `POST /__test__/reset`.
+KIE_TASKS: list[dict] = []
+
+#: A minimal MPEG audio frame: a valid 0xFFFB header followed by silence. Enough
+#: for the artifact route to serve as `audio/mpeg`; the lane check does not sniff
+#: audio the way the image and video checks sniff their magic bytes.
+MP3 = b"\xff\xfb\x90\x00" + b"\x00" * 2048
+
 MODELS = [
     # The mock states the fields the catalogue's "publish what is known, and
     # nothing else" checks actually inspect, in the spellings a real provider
@@ -163,6 +177,38 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path == "/__test__/hub-tokens":
             self._json(200, {"tokens": HUB_TOKENS})
+            return
+        # ---- Kie's unified task route, as a music task answers it.
+        #
+        # `createTask` is the *same* route Kie's images and videos use; the music
+        # lane differs only in the api-model name and the `resultJson` shape. This
+        # mock exists so the whole lane can run without spending the owner's
+        # credits — the real one was measured once by hand (12 credits) and that
+        # measurement is what these recorded bodies are asserted against.
+        if path == "/__test__/kie-tasks":
+            self._json(200, {"tasks": KIE_TASKS})
+            return
+        if path == "/api/v1/jobs/recordInfo":
+            # A finished task, in the shape the live API returned: `state` and
+            # `status`, with `resultJson` a JSON **string** holding a `data` array
+            # of tracks (not the `resultUrls` keys the image/video lanes use).
+            track = f"http://127.0.0.1:{port}/kie-track.mp3"
+            self._json(200, {"code": 200, "msg": "success", "data": {
+                "taskId": (self.path.split("taskId=")[-1] if "taskId=" in self.path else "mock"),
+                "model": "ai-music-api/generate",
+                "state": "success",
+                "status": "SUCCESS",
+                "creditsConsumed": 12.0,
+                "resultJson": json.dumps({"code": 200, "data": [
+                    {"audio_url": track, "stream_audio_url": track,
+                     "image_url": f"http://127.0.0.1:{port}/kie-cover.jpeg",
+                     "id": "mock-track", "duration": 164.8,
+                     "model_name": "chirp-hawk", "prompt": "", "title": ""},
+                ]}),
+            }})
+            return
+        if path == "/kie-track.mp3":
+            self._bytes(200, MP3, "audio/mpeg")
             return
         if path == "/api/hub/shared-voices":
             self._json(200, {"voices": SHARED_VOICES})
@@ -358,7 +404,15 @@ class Handler(BaseHTTPRequestHandler):
             SHARED_VOICES.clear()
             SHARED_TOKENS.clear()
             HUB_TOKENS.clear()
+            KIE_TASKS.clear()
             self._json(200, {"ok": True})
+            return
+        # ---- Kie's unified task route. Images, videos and music all land here;
+        # the recording is what lets the suite assert which lane a body was for.
+        if path == "/api/v1/jobs/createTask":
+            KIE_TASKS.append(body)
+            self._json(200, {"code": 200, "msg": "success",
+                             "data": {"taskId": f"task-{len(KIE_TASKS)}"}})
             return
         if path == "/api/hub/shared-voices":
             SHARED_TOKENS.append(str(self.headers.get("X-Hub-Token") or ""))

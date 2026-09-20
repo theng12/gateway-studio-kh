@@ -3,6 +3,17 @@
 Kie's flow is create → poll `recordInfo` → parse a `resultJson` **string**
 containing the artifact URLs. That embedded-JSON step is the only unusual part;
 everything else matches the standard async-task shape.
+
+**Music is the same route with a different api-model name.** Kie's Suno family
+used to be a dedicated `/api/v1/generate*` API, and it has since moved onto the
+unified Market route this adapter already speaks: the top-level `model` is the
+constant `ai-music-api/generate` and the **Suno tier** (`V6`, `V6_MINI`,
+`V6_WILD`) travels inside `input.model`. Measured live on 2026-09-20: that body
+queued a task, `recordInfo` reported `state: "success"` and a `resultJson`
+carrying a `data` **array of tracks** with `audio_url`, and the whole thing cost
+12 credits. Sending the tier as the top-level `model` instead is what an earlier
+version of this file did — the provider answers *"The model name you specified is
+not supported"*, because `V6` is not an api-model name there.
 """
 
 from __future__ import annotations
@@ -32,7 +43,69 @@ def _headers(request: BackendRequest) -> dict[str, str]:
     }
 
 
+#: The api-model name Kie's music lane lives under. The **Suno tier** goes in
+#: `input.model`; this name is the route's own and is the same for every tier.
+MUSIC_API_MODEL = "ai-music-api/generate"
+
+#: Music input fields forwarded unchanged. Kie spells them snake_case; a caller may
+#: send either spelling, and only the provider's spelling goes on the wire.
+_MUSIC_FIELDS: dict[str, tuple[str, ...]] = {
+    "style": ("style",),
+    "title": ("title",),
+    "negative_tags": ("negative_tags", "negativeTags"),
+    "vocal_gender": ("vocal_gender", "vocalGender"),
+    "style_weight": ("style_weight", "styleWeight"),
+    "weirdness_constraint": ("weirdness_constraint", "weirdnessConstraint"),
+    "audio_weight": ("audio_weight", "audioWeight"),
+    "persona_id": ("persona_id", "personaId"),
+    "persona_model": ("persona_model", "personaModel"),
+    "duration": ("duration", "duration_seconds"),
+}
+
+
+def _music_input(request: BackendRequest) -> dict[str, Any]:
+    """The Suno `input` block, from this gateway's music contract.
+
+    The music lane names the words `prompt`/`lyrics` and the knob `instrumental`;
+    Suno calls the lyrics `prompt`, takes `custom_mode`, and only honours
+    `style`/`title` in custom mode. `lyrics` wins over `prompt` when both are
+    present because the lyrics field is the specific one.
+    """
+    params = request.params
+    payload: dict[str, Any] = {"model": request.model_id}
+    text = params.get("lyrics")
+    if text is None:
+        text = params.get("prompt")
+    if text is not None:
+        payload["prompt"] = str(text)
+    if params.get("instrumental") is not None:
+        payload["instrumental"] = bool(params["instrumental"])
+
+    for wire_key, spellings in _MUSIC_FIELDS.items():
+        for spelling in spellings:
+            if params.get(spelling) is not None:
+                payload[wire_key] = params[spelling]
+                break
+
+    # **Which of Suno's two modes this is.** The caller's own `custom_mode` always
+    # wins. Without one, `style`/`title` are the tell: both are documented as
+    # custom-mode-only fields, so a request carrying either is a custom-mode
+    # request and one carrying only a prompt is Suno's simpler described-song mode.
+    # (The old dedicated API spelled this `customMode`; this one spells it
+    # `custom_mode`, so reading the payload beats defaulting to one spelling.)
+    explicit = params.get("custom_mode")
+    if explicit is None:
+        explicit = params.get("customMode")
+    if explicit is not None:
+        payload["custom_mode"] = bool(explicit)
+    else:
+        payload["custom_mode"] = bool(payload.get("style") or payload.get("title"))
+    return payload
+
+
 def _input_for(request: BackendRequest) -> dict[str, Any]:
+    if request.modality == "music":
+        return _music_input(request)
     payload: dict[str, Any] = {}
     if request.params.get("prompt") is not None:
         payload["prompt"] = str(request.params["prompt"])
@@ -75,30 +148,44 @@ def _urls_from_result_json(raw: Any) -> list[str]:
     for key in ("resultUrl", "url", "videoUrl", "imageUrl"):
         if isinstance(parsed.get(key), str):
             urls.append(str(parsed[key]))
+    # **Music answers a list of tracks, not a url key.** Measured live: the parsed
+    # `resultJson` for `ai-music-api/generate` is
+    # `{"code": 200, "data": [{audio_url, stream_audio_url, image_url, id, …}, …]}`
+    # — one entry per variation Suno made. None of the keys above exist, so the job
+    # would have reported "no artifact url" on a *successful* generation.
+    #
+    # ponytail: only the **first** track is kept, because a job holds one artifact
+    # and every other music lane here answers one url. Ceiling — a caller cannot
+    # reach the second variation. Upgrade path — store the array and serve
+    # `/v1/music/jobs/{id}/outputs/{n}`, which the route already takes an index for.
+    data = parsed.get("data")
+    if isinstance(data, list):
+        for entry in data:
+            if not isinstance(entry, dict):
+                continue
+            for key in ("audio_url", "video_url", "image_url", "resultUrl", "url"):
+                if isinstance(entry.get(key), str) and entry[key]:
+                    urls.append(str(entry[key]))
+                    break
     return urls
 
 
 class KieBackend:
     def generate(self, request: BackendRequest) -> BackendResult:
-        if request.modality not in {"image", "video"}:
-            # Music is deliberately absent. Kie's music models are its **Suno**
-            # family, which the provider documents as its own API
-            # (`/api/v1/generate*`, a flat body) — not the Market
-            # `jobs/createTask` contract this adapter speaks. Posting a
-            # `{model, input}` body there can only fail, so the lane is refused
-            # here as well as withheld from the catalogue.
-            #
-            # ponytail: not implemented rather than implemented blind. Ceiling —
-            # Kie music is unavailable through the gateway. Upgrade path — a
-            # dedicated Suno path (flat body, `/api/v1/generate`, its own
-            # record-info poll), measured with a real key before it is published.
+        if request.modality not in {"image", "video", "music"}:
             raise BackendError(
                 f"Kie does not serve '{request.modality}'", code="MODEL_MODALITY_MISMATCH"
             )
 
         base = (request.values.get("base_url") or request.base_url).rstrip("/")
         headers = _headers(request)
-        body = {"model": request.model_id, "input": _input_for(request)}
+        # **Music names its api-model, not the tier.** `ai-music-api/generate` is
+        # what the route accepts at the top level; the Suno tier (`V6`, `V6_MINI`,
+        # `V6_WILD`) rides inside `input.model`. Sending the tier at the top level
+        # is answered *"The model name you specified is not supported"* — measured
+        # live on 2026-09-20, which is how this line came to be written.
+        api_model = MUSIC_API_MODEL if request.modality == "music" else request.model_id
+        body = {"model": api_model, "input": _input_for(request)}
 
         with httpx.Client(timeout=SUBMIT_TIMEOUT) as client:
             try:
@@ -194,6 +281,9 @@ class KieBackend:
             media_type = {
                 "image": "image/png",
                 "video": "video/mp4",
+                # Music answers an mp3 (measured: the track url ends `.mp3` and
+                # serves `audio/mpeg`).
+                "music": "audio/mpeg",
             }.get(request.modality, "application/octet-stream")
 
         return BackendResult(

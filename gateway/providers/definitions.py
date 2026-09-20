@@ -485,9 +485,9 @@ PROVIDER_DEFINITIONS: tuple[ProviderDefinition, ...] = (
         category="multi",
         kind=KIND_KIE,
         base_url="https://api.kie.ai",
-        modalities=("image", "video", "chat"),
+        modalities=("image", "video", "chat", "music"),
         discovery=DISCOVERY_STATIC,
-        description="Image and video aggregator. Model list is curated: Kie publishes no catalogue endpoint.",
+        description="Image, video and music aggregator. Model list is curated: Kie publishes no catalogue endpoint.",
         docs_url="https://docs.kie.ai",
         credential_fields=(_api_key("KIE_AI_API_KEY"),),
         static_models=(
@@ -521,15 +521,22 @@ PROVIDER_DEFINITIONS: tuple[ProviderDefinition, ...] = (
             {"id": "bytedance/seedance-2-mini", "display_name": "Seedance 2.0 Mini", "modality": "video"},
             {"id": "grok-imagine-video-1-5-preview", "display_name": "Grok Imagine Video 1.5", "modality": "video"},
             {"id": "gemini-omni-video", "display_name": "Gemini Omni Video", "modality": "video"},
-            # **No music row.** Kie's music models are the Suno family, which rides
-            # its own documented API (`/api/v1/generate*`), not the Market
-            # `jobs/createTask` contract this adapter speaks — so a curated Suno row
-            # could be published and could only fail on use. The `music` modality is
-            # gone from this definition and from `KIND_KIE` for the same reason.
-            #
-            # ponytail: capability dropped, not faked. Ceiling — Kie music is not
-            # offered. Upgrade path — implement the Suno path (flat body, its own
-            # record-info poll) and measure it with a real key before publishing.
+            # **Music is back, and it is the route this adapter already speaks.**
+            # Kie moved its Suno family off the dedicated `/api/v1/generate*` API and
+            # onto the unified Market `POST /api/v1/jobs/createTask`, where the
+            # top-level api-model is the constant `ai-music-api/generate` and the
+            # **tier** travels in `input.model`. Verified live 2026-09-20: such a
+            # body queued a task, `recordInfo` reported `state: "success"` with a
+            # `data` array of tracks carrying `audio_url`, and the run cost 12
+            # credits. Kie's own page now strikes V4/V4_5/V5_5 through and lists
+            # **V6, V6_MINI, V6_WILD** as the live tiers, so those are the three
+            # offered here — a deprecated tier is the "offered, then fails" shape.
+            # `KieBackend` sends the constant at the top level and the id below in
+            # `input.model`; the ids here are therefore the tiers, which is also
+            # what the picker should show.
+            {"id": "V6", "display_name": "Suno V6", "modality": "music"},
+            {"id": "V6_MINI", "display_name": "Suno V6 Mini", "modality": "music"},
+            {"id": "V6_WILD", "display_name": "Suno V6 Wild", "modality": "music"},
         ),
         notes="Kie publishes no model catalogue endpoint. This list is curated from Kie's documented model ids; add new ones here or via Add model manually.",
     ),

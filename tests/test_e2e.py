@@ -249,6 +249,25 @@ def main() -> int:
                 "discovery": "static",
                 "description": "Test provider.",
             },
+            {
+                # Kie's unified task route. Images, videos and **music** all land
+                # on `POST /api/v1/jobs/createTask`; music differs only in the
+                # top-level api-model name (`ai-music-api/generate`) and the
+                # `resultJson` shape (a `data` array of tracks). This provider is
+                # how that shape is exercised without spending the owner's
+                # credits — the real route was measured by hand once.
+                "id": "mock-kie",
+                "display_name": "Mock Kie",
+                "category": "multi",
+                "kind": "kie",
+                "base_url": f"http://127.0.0.1:{MOCK_PORT}",
+                "modalities": ["music"],
+                "discovery": "static",
+                "description": "Test provider.",
+                "static_models": [
+                    {"id": "V6", "display_name": "Mock Suno V6", "modality": "music"},
+                ],
+            },
         ]
     }))
 
@@ -355,8 +374,8 @@ def main() -> int:
             # provider is a legitimate change, and a literal here fails for a
             # reason that has nothing to do with what the check is about.
             from gateway.providers.definitions import PROVIDER_DEFINITIONS as _SHIPPED
-            expected_providers = len(_SHIPPED) + 6  # + the six custom ones above
-            check(f"{len(_SHIPPED)} built-in providers + 6 custom",
+            expected_providers = len(_SHIPPED) + 7  # + the seven custom ones above
+            check(f"{len(_SHIPPED)} built-in providers + 7 custom",
                   health["providers"]["total"] == expected_providers,
                   f"got {health['providers']['total']}, expected {expected_providers}")
             # A kind having an adapter is not the same claim as that adapter
@@ -368,11 +387,10 @@ def main() -> int:
             check("a provider declaring an unservable lane is reported as having one",
                   _google is not None and _google["unserved_modalities"] == ["video"],
                   f"{_google and _google.get('unserved_modalities')}")
-            # The other half of that: a lane we *removed* rather than left
-            # declared. Kie's music row was withdrawn because its Suno API is a
-            # different contract, so `chat` is now the only lane it declares and
-            # cannot serve — and music must not appear here, because appearing here
-            # would mean a row exists that can never run.
+            # Kie declares four modalities and its adapter serves three: `chat` is
+            # the lane with no curated model and no handler, so it is the one the
+            # console must report — and *music* must not be among them, because a
+            # lane listed here is a lane a row could be added to that can never run.
             _kie = next((p for p in _providers if p["id"] == "kie-ai-images"), None)
             check("Kie reports chat as its only unserved lane, not music",
                   _kie is not None and _kie["unserved_modalities"] == ["chat"],
@@ -443,8 +461,16 @@ def main() -> int:
             listed = httpx.get(
                 f"{BASE}/admin/api/models", headers=AUTH, params={"q": "mock", "limit": 50}
             ).json()
+            # Scoped to *this* provider rather than comparing the total, which grows
+            # every time the fixture gains another mock provider — a check that fails
+            # for a reason unrelated to what it is about. What it is about: the
+            # search reaches a provider's models by id, name and provider, and finds
+            # all of them.
+            _from_remote = [m for m in listed["models"] if m["provider_id"] == "mock-remote"]
             check("model browser search finds them across providers",
-                  listed["matched"] == len(found), f"matched {listed['matched']}")
+                  len(_from_remote) == len(found)
+                  and len({m["provider_id"] for m in listed["models"]}) > 1,
+                  f"matched {listed['matched']}, mock-remote {len(_from_remote)} of {len(found)}")
 
             print("\n\033[1m3. Story Studio catalogue contract\033[0m")
             cat = req(client, "GET", "/v1/chat/models").json()
@@ -1704,32 +1730,40 @@ def main() -> int:
             check("OpenRouter cannot serve music, so its Lyria rows stay withheld",
                   not _serves2(_P["openrouter-main"], "music"),
                   "its API publishes no music path at all")
-            # Kie's music models are the **Suno** family, which Kie documents as a
-            # dedicated API (`/api/v1/generate*`, a flat body) — not the Market
-            # `jobs/createTask` contract this adapter speaks. The curated Suno row
-            # therefore could only fail on use, so music is gone from the kind, the
-            # definition and the row, and the adapter refuses it rather than posting
-            # the wrong shape. Asserted on the code path, not just the list: a row
-            # that a hand-edit re-adds must still not become offerable.
+            # **Kie's music is back, because it moved onto the route this adapter
+            # already speaks.** Kie took its Suno family off the old dedicated
+            # `/api/v1/generate*` API; it now rides the unified Market
+            # `jobs/createTask` route under the api-model `ai-music-api/generate`,
+            # with the Suno tier in `input.model`. Measured live 2026-09-20 (12
+            # credits): the body queues, `recordInfo` reports success, and
+            # `resultJson.data[]` carries the track urls. The earlier reading — that
+            # music was a different API family this adapter could not speak — was
+            # true of the *old* docs and is now out of date.
             kie = _P["kie-ai-images"]
-            check("Kie declares no music, and its adapter would serve none",
-                  "music" not in kie.modalities and not _serves2(kie, "music"),
+            check("Kie declares music, and its adapter serves it",
+                  "music" in kie.modalities and _serves2(kie, "music"),
                   f"{kie.modalities}")
-            check("and the curated Suno row is gone with it",
-                  not any(m.get("modality") == "music"
-                          for m in kie.static_models),
+            check("and the current Suno tiers are the curated rows",
+                  {m["id"] for m in kie.static_models if m.get("modality") == "music"}
+                  == {"V6", "V6_MINI", "V6_WILD"},
                   f"{[m['id'] for m in kie.static_models if m.get('modality') == 'music']}")
-            from gateway.adapters.kie import KieBackend as _KieBackend
+            from gateway.adapters.kie import _input_for as _kie_input
             from gateway.adapters.base import BackendRequest as _BackendRequest
-            try:
-                _KieBackend().generate(_BackendRequest(
+
+            def _kie_music_req(**params):
+                return _BackendRequest(
                     provider_id="kie-ai-images", model_id="V6", modality="music",
-                    params={"prompt": "x"}, base_url="https://api.kie.ai", values={}))
-                _kie_refused = False
-            except Exception as exc:  # noqa: BLE001 - the code is what is asserted
-                _kie_refused = getattr(exc, "code", "") == "MODEL_MODALITY_MISMATCH"
-            check("the Kie adapter refuses a music request outright",
-                  _kie_refused, "it used to post a createTask body Suno cannot accept")
+                    params=params, base_url="https://api.kie.ai", values={})
+
+            check("the Kie adapter builds the Suno input for a music request",
+                  _kie_input(_kie_music_req(lyrics="verse", style="Jazz",
+                                            title="T", instrumental=False))
+                  == {"model": "V6", "prompt": "verse", "instrumental": False,
+                      "style": "Jazz", "title": "T", "custom_mode": True},
+                  f"{_kie_input(_kie_music_req(lyrics='verse'))}")
+            check("and a prompt-only request is Suno's non-custom mode",
+                  _kie_input(_kie_music_req(prompt="calm piano")).get("custom_mode") is False,
+                  f"{_kie_input(_kie_music_req(prompt='calm piano'))}")
 
             print("\n\033[1m10g. Saving a library voice by its id\033[0m")
             # The library *search* can only find what the provider will search
@@ -2020,14 +2054,16 @@ def main() -> int:
             check("manual model reaches the Story catalogue",
                   any("mock-brand-new" in m["id"] for m in fresh["models"]))
 
-            print("\n\033[1m12. BFL and MiniMax adapters\033[0m")
+            print("\n\033[1m12. BFL, MiniMax and Kie adapters\033[0m")
             # These providers have no keys on this machine, so their real API
             # shapes are exercised against the mock: BFL's async submit/poll/
-            # download with its own state names, and MiniMax's four dissimilar
-            # endpoints including the hex-encoded speech response.
+            # download with its own state names, MiniMax's four dissimilar
+            # endpoints including the hex-encoded speech response, and Kie's
+            # unified task route in both its image and its music shape.
             wanted = {
                 "mock-bfl": ["flux-pro-1.1"],
                 "mock-minimax": ["image-01", "video-01", "music-01", "speech-2.8-turbo"],
+                "mock-kie": ["V6"],
             }
             # A model is only reachable when its provider is configured AND
             # enabled AND the model is enabled — all three. Setting the key
@@ -2051,7 +2087,8 @@ def main() -> int:
                 headers=AUTH,
                 json={"items": enable_items, "enabled": True},
             )
-            check("BFL + MiniMax models enabled", enabled.status_code == 200, enabled.text[:120])
+            check("BFL + MiniMax + Kie models enabled", enabled.status_code == 200,
+                  enabled.text[:120])
 
             def run_generation(label, submit_path, poll_path, body, artifact_path, signature=None):
                 key = f"e2e-{label}-{int(time.time())}"
@@ -2103,6 +2140,34 @@ def main() -> int:
                 {"model_id": "mock-minimax::music-01", "prompt": "calm ambient"},
                 "/v1/music/jobs/{id}/outputs/0", None,
             )
+            # **Kie's music lane is the same route as its images, under a different
+            # api-model name.** The body is the only thing that says which lane a
+            # request is on: the top-level `model` is `ai-music-api/generate` and
+            # the Suno tier rides in `input.model`. Asserted on the **wire** because
+            # that is exactly what an earlier version got wrong — it sent the tier
+            # as the top-level model, which the provider answers with *"The model
+            # name you specified is not supported"* (measured live 2026-09-20).
+            run_generation(
+                "kie-music",
+                "/v1/music/generations", "/v1/music/jobs/{id}",
+                {"model_id": "mock-kie::V6", "lyrics": "a calm piano piece",
+                 "style": "Classical", "title": "Peaceful", "instrumental": False},
+                "/v1/music/jobs/{id}/outputs/0", None,
+            )
+            kie_tasks = httpx.get(
+                f"http://127.0.0.1:{MOCK_PORT}/__test__/kie-tasks").json()["tasks"]
+            kie_music = [t for t in kie_tasks
+                         if t.get("model") == "ai-music-api/generate"]
+            check("Kie music submits the music api-model, not the Suno tier",
+                  len(kie_music) == 1 and kie_music[0]["input"].get("model") == "V6",
+                  f"{kie_tasks}")
+            check("and the Suno input carries the caller's lyrics, style and mode",
+                  bool(kie_music)
+                  and kie_music[0]["input"].get("prompt") == "a calm piano piece"
+                  and kie_music[0]["input"].get("style") == "Classical"
+                  and kie_music[0]["input"].get("title") == "Peaceful"
+                  and kie_music[0]["input"].get("custom_mode") is True,
+                  f"{kie_music[:1]}")
             # **A voice is named, because omitting one is now refused.** It used to
             # become `English_expressive_narrator` — a specific named English
             # speaker, chosen silently — so the narration came back in a voice the
