@@ -127,7 +127,12 @@ final class CreateWorkspace: NSView {
     private var modelPopup: NSPopUpButton?
     private var models: [[String: Any]] = []
     private var pollTimer: Timer?
+    private var pollInFlight = false
     private var currentJobID: String?
+    private var pendingJobID: String?
+    private var submissionInFlight = false
+    private var hasLoadedModels = false
+    private var modelRefreshRequest = 0
     private var fileButton: NSButton?
     private var fileURL: URL?
 
@@ -278,7 +283,7 @@ final class CreateWorkspace: NSView {
         resultBox.widthAnchor.constraint(equalTo: outputColumn.widthAnchor).isActive = true
         resultBox.addArrangedSubview(
             PageKit.empty("Nothing generated yet",
-                          "Fill in the form and press Generate. Anything you make here is kept only if you say so.",
+                          "Fill in the form and press Generate. Anything you make here is temporary until you save it or keep it.",
                           symbol: lane.symbol)
         )
         return outputColumn
@@ -287,29 +292,63 @@ final class CreateWorkspace: NSView {
     // MARK: data
 
     @objc func refreshModels() {
-        statusLabel.stringValue = "loading models…"
+        modelRefreshRequest += 1
+        let requestID = modelRefreshRequest
+        if currentJobID == nil && !submissionInFlight {
+            statusLabel.stringValue = "loading models…"
+        }
         GatewayAPI.get("/admin/api/create/models") { [weak self] result in
             guard let self else { return }
+            guard self.modelRefreshRequest == requestID else { return }
             switch result {
             case .failure(let error):
-                self.statusLabel.stringValue = error.localizedDescription
+                if self.currentJobID == nil && !self.submissionInFlight {
+                    self.statusLabel.stringValue = error.localizedDescription
+                }
             case .success(let payload):
                 let byModality = payload["by_modality"] as? [String: Any] ?? [:]
                 let rows = byModality[self.lane.modality] as? [[String: Any]] ?? []
+                let previousModelID = self.selectedModelID()
                 self.models = rows
                 self.modelPopup?.removeAllItems()
                 if rows.isEmpty {
                     self.modelPopup?.addItem(withTitle: "No model switched on")
-                    self.statusLabel.stringValue =
-                        "No model is switched on for this lane. Enable one on the Providers page and it appears here."
+                    self.modelPopup?.lastItem?.isEnabled = false
+                    if self.currentJobID == nil && !self.submissionInFlight {
+                        self.statusLabel.stringValue =
+                            "No model is switched on for this lane. Enable one on the Providers page and it appears here."
+                    }
                 } else {
                     for row in rows {
                         let provider = row["provider_name"] as? String ?? ""
                         let name = row["display_name"] as? String ?? ""
                         let free = (row["free_lane"] as? Bool == true) ? "  ·  free" : ""
                         self.modelPopup?.addItem(withTitle: "\(provider) — \(name)\(free)")
+                        self.modelPopup?.lastItem?.representedObject = row["id"] as? String
                     }
-                    self.statusLabel.stringValue = "\(rows.count) model\(rows.count == 1 ? "" : "s") available"
+
+                    var selectionLost = false
+                    var needsSelection = false
+                    if let previousModelID,
+                       let index = rows.firstIndex(where: { $0["id"] as? String == previousModelID }) {
+                        self.modelPopup?.selectItem(at: index)
+                    } else if !self.hasLoadedModels && previousModelID == nil {
+                        self.modelPopup?.selectItem(at: 0)
+                    } else {
+                        selectionLost = previousModelID != nil
+                        needsSelection = true
+                        self.modelPopup?.insertItem(withTitle: "Select a model", at: 0)
+                        self.modelPopup?.item(at: 0)?.isEnabled = false
+                        self.modelPopup?.selectItem(at: 0)
+                    }
+                    if self.currentJobID == nil && !self.submissionInFlight {
+                        self.statusLabel.stringValue = selectionLost
+                            ? "Your selected model is no longer available. Select a model to continue."
+                            : needsSelection
+                            ? "Select a model to continue."
+                            : "\(rows.count) model\(rows.count == 1 ? "" : "s") available"
+                    }
+                    self.hasLoadedModels = true
                 }
                 self.modelPopup?.isEnabled = !rows.isEmpty
                 self.updateGenerateEnabled()
@@ -320,13 +359,13 @@ final class CreateWorkspace: NSView {
     @objc private func modelChanged() { updateGenerateEnabled() }
 
     private func updateGenerateEnabled() {
-        generateButton.isEnabled = !models.isEmpty
+        generateButton.isEnabled = selectedModelID() != nil
+            && !submissionInFlight
+            && pendingJobID == nil
     }
 
     private func selectedModelID() -> String? {
-        guard let popup = modelPopup, popup.indexOfSelectedItem >= 0,
-              popup.indexOfSelectedItem < models.count else { return nil }
-        return models[popup.indexOfSelectedItem]["id"] as? String
+        modelPopup?.selectedItem?.representedObject as? String
     }
 
     @objc private func pickFile() {
@@ -353,18 +392,21 @@ final class CreateWorkspace: NSView {
     // MARK: generate
 
     @objc private func generate() {
+        guard !submissionInFlight, pendingJobID == nil else { return }
         guard let modelID = selectedModelID() else {
-            statusLabel.stringValue = "No model is switched on for this lane."
+            statusLabel.stringValue = "Select a model before generating."
             return
         }
-        generateButton.isEnabled = false
+        submissionInFlight = true
+        updateGenerateEnabled()
         statusLabel.stringValue = "submitting…"
         let key = UUID().uuidString
 
         if lane.isUpload {
             guard let url = fileURL, let data = try? Data(contentsOf: url) else {
                 statusLabel.stringValue = "Choose a recording first."
-                generateButton.isEnabled = true
+                submissionInFlight = false
+                updateGenerateEnabled()
                 return
             }
             GatewayAPI.upload(
@@ -391,33 +433,68 @@ final class CreateWorkspace: NSView {
     }
 
     private func handleSubmit(_ result: Result<[String: Any], Error>) {
+        // A refresh started before this result must not overwrite its message.
+        modelRefreshRequest += 1
         switch result {
         case .failure(let error):
+            submissionInFlight = false
             statusLabel.stringValue = error.localizedDescription
-            generateButton.isEnabled = true
+            updateGenerateEnabled()
         case .success(let job):
             guard let id = job["id"] as? String else {
+                submissionInFlight = false
                 statusLabel.stringValue = GatewayAPI.detail(from: nil)
-                generateButton.isEnabled = true
+                updateGenerateEnabled()
                 return
             }
+            submissionInFlight = false
             currentJobID = id
+            let state = job["state"] as? String ?? ""
+            let terminal = ["succeeded", "failed", "cancelled"].contains(state)
+            pendingJobID = terminal ? nil : id
             render(job)
-            startPolling(id)
+            if terminal {
+                updateGenerateEnabled()
+            } else {
+                startPolling(id)
+            }
         }
     }
 
     private func startPolling(_ id: String) {
         pollTimer?.invalidate()
-        pollTimer = Timer.scheduledTimer(withTimeInterval: 1.5, repeats: true) { [weak self] timer in
-            guard let self else { timer.invalidate(); return }
-            GatewayAPI.get("/admin/api/create/status/\(id)") { result in
-                guard case .success(let job) = result else { return }
+        pollInFlight = false
+        schedulePoll(id)
+    }
+
+    private func schedulePoll(_ id: String) {
+        guard pendingJobID == id else { return }
+        pollTimer?.invalidate()
+        pollTimer = Timer.scheduledTimer(withTimeInterval: 1.5, repeats: false) { [weak self] _ in
+            self?.pollTimer = nil
+            self?.poll(id)
+        }
+    }
+
+    private func poll(_ id: String) {
+        guard pendingJobID == id, !pollInFlight else { return }
+        pollInFlight = true
+        GatewayAPI.get("/admin/api/create/status/\(id)") { [weak self] result in
+            guard let self, self.currentJobID == id, self.pendingJobID == id else { return }
+            self.pollInFlight = false
+            switch result {
+            case .failure(let error):
+                self.statusLabel.stringValue =
+                    "Cannot check this job — \(error.localizedDescription). Retrying; do not submit again."
+                self.schedulePoll(id)
+            case .success(let job):
                 self.render(job)
                 let state = job["state"] as? String ?? ""
                 if ["succeeded", "failed", "cancelled"].contains(state) {
-                    timer.invalidate()
-                    self.generateButton.isEnabled = !self.models.isEmpty
+                    self.pendingJobID = nil
+                    self.updateGenerateEnabled()
+                } else {
+                    self.schedulePoll(id)
                 }
             }
         }
@@ -439,6 +516,12 @@ final class CreateWorkspace: NSView {
             resultBox.addArrangedSubview(PageKit.label(
                 job["failure_reason"] as? String ?? "the generation failed",
                 size: 13, colour: .systemRed, wrapping: true))
+            return
+        }
+        if state == "cancelled" {
+            resultBox.addArrangedSubview(PageKit.label(
+                "The generation was cancelled.", size: 13, colour: .secondaryLabelColor,
+                wrapping: true))
             return
         }
         if state != "succeeded" {

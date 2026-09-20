@@ -1,5 +1,37 @@
 # Audit backlog — recurring bug shapes, and every instance found
 
+## Product audit and first repairs — 2026-09-20
+
+The broader product audit is in [docs/2026-09-20-product-audit.md](docs/2026-09-20-product-audit.md).
+Its new findings remain open except for the scoped repairs below. Older “all
+closed” statements in this file refer to the earlier six audits only.
+
+[MEASURED] This repair batch changes:
+
+- API guards reject keyless access when the configured bind is beyond loopback.
+- The worker atomically claims only still-accepted jobs, so a queued cancellation
+  is respected even when the worker already fetched its pending list.
+- Chat models ending in `:batch` on the OpenRouter host are withheld from the
+  synchronous catalogue, including custom providers using that host.
+- Create preserves the selected model across refreshes, requires a new selection
+  if it disappears, prevents duplicate pending submissions, reports polling
+  failures without resubmitting, and renders cancellation as terminal.
+
+[MEASURED] Verification: the isolated end-to-end suite passed **521 checks** before
+and after the repairs; `tests/test_audit_regressions.py` passed **6 tests**;
+`tests/test_job_claim.py` passed **2 tests**. The offscreen native check in
+`tests/test_create_workspace.swift` passed selection, delayed refresh, pending
+submission, polling-failure and cancellation cases. `uv pip check --python
+.venv/bin/python` found all **23 installed packages compatible**; this is dependency
+consistency, not a vulnerability audit.
+
+The full installed-app UI suite and real-Hub fleet suite were not run in this
+pass. The native check validates state, not rendered layout. Paid generations,
+Content Pack installation and restart reconciliation remain unverified. The
+running app has not been restarted to activate this batch.
+
+---
+
 Written 2026-09-20 after the owner asked: *"can you see any patterns of bug we
 encounter across our sessions that has a shape and check to see if it's still
 lingering across other locations too? then fix it once and for all?"*

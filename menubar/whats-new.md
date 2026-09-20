@@ -4,6 +4,20 @@ Newest first. This is the same list the **What's New** button in the app shows.
 
 ---
 
+## More predictable Create and queued jobs
+
+Refreshing models keeps your selection. If that model disappears, Create asks
+you to choose again. Generate stays disabled while the current request is pending;
+a temporary status-check failure is shown and retried without submitting again.
+Cancelled jobs no longer show an endless spinner.
+
+Cancelling a queued job now prevents dispatch even when the worker has already
+read its queue. This does not stop work already accepted by an upstream provider.
+OpenRouter's batch-only models are withheld from ordinary chat, and network
+access requires a configured gateway key.
+
+---
+
 ## Your voices now work on every model that can clone
 
 Only **one** of your eight local voice models offered any voices. Every voice you

@@ -267,9 +267,8 @@ def write_secret(path: Path, text: str) -> None:
 def gateway_api_key() -> str:
     """The bearer token Story Studio presents.
 
-    A gateway with no configured key accepts any token, which is fine for a
-    loopback-only dev box and dangerous the moment the bind address changes --
-    so `bind_host()` below stays loopback unless explicitly overridden.
+    Keyless development accepts any nonempty token on loopback only. Both API
+    guards refuse keyless access when the configured bind is beyond loopback.
     """
     return get("GATEWAY_API_KEY", "").strip()
 

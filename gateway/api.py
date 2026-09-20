@@ -165,6 +165,11 @@ def require_auth(authorization: str | None = Header(default=None)) -> None:
     # rotation that appears to have happened and has not is worse than one that
     # clearly failed.
     configured = gateway_api_key()
+    if not configured and not is_loopback():
+        raise GatewayError(
+            503, "Set GATEWAY_API_KEY before using the gateway beyond loopback.",
+            "API_KEY_NOT_CONFIGURED",
+        )
     if configured and token != configured:
         raise GatewayError(403, "Invalid API key.", "FORBIDDEN")
 
