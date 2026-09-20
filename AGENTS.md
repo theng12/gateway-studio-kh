@@ -224,9 +224,36 @@ Two limits, whichever is reached first, both editable in Settings or over the AP
 **Nothing younger than an hour is ever removed**, whatever the limits say. A
 freshly-written artifact is about to be fetched and a staged upload is being read
 by a running job, so the newest files are safe by construction rather than by luck.
-The settings live in `DATA_DIR/retention.json`, not `.env`: the menu bar app
-rewrites `.env` wholesale when it saves the key and the gateway reads that file once
-at import, so a setting there would be dropped or ignored until a restart.
+The settings live in `DATA_DIR/retention.json`, not `.env`: the menu bar app owns
+`.env` (it read-modify-writes the keys it owns), so a gateway setting stored there
+would be fighting the app for the file. (`.env` *is* re-read when it changes now —
+see the section above — but the retention settings still belong to the gateway's own
+file.)
+
+## `.env` is read live, and the key is checked per request
+
+`.env` is the documented no-UI way to give the gateway a key, so an edit to it has
+to take effect. It did not: `config.get()` returned a module-level snapshot taken
+at import, `providers/credentials.py` kept a **second** copy refreshed only by an
+explicit `reload_env()`, and `api.require_auth` compared against its own import-time
+`API_KEY` constant — so `GATEWAY_API_KEY` was frozen for the process's life. **The
+failure that matters is a rotation**: change the key, restart nothing, and the old
+key still opens the door. A rotation that appears to have happened and has not is
+worse than one that visibly failed.
+
+`get()` now re-stats `ENV_PATH` and re-reads on a change, the credential store reads
+through it (no second copy, no `reload_env` to forget to call), and `require_auth`
+reads `gateway_api_key()` per request. `admin.require_admin` already did. Note the
+pass in `tests/test_e2e.py`: the suite's key lives in the temp `.env` rather than
+the spawned environment, because `get()` prefers `os.environ` and a key passed there
+would shadow the file and make the rotation untestable — and it asserts a *wrong*
+key is refused first, since a `.env` that failed to load leaves a keyless gateway
+that accepts anything.
+
+**`/admin/api/*` is deliberately open from loopback** (`require_admin` trusts
+loopback and demands the token only when bound elsewhere), which is why a `curl`
+against `/admin/api/status` returns 200 with no header. Measure auth against the
+Story surface (`/v1/...`), which always requires the key.
 
 ## Ports
 
@@ -385,9 +412,33 @@ success.
   per-voice folders (the old library layout) and a folder of loose audio files. The
   old importer read only the first, so a clip dropped in by hand was silently
   skipped — which is exactly what "I copied it in and nothing happened" was.
-- **Re-importing the same name updates that voice, never duplicates it**, and
-  segments are dropped only when the audio itself changed, since otherwise they
-  would describe audio that is no longer there.
+- **The clip's bytes are a voice's identity, never its name.** The id is
+  `voice-<sha256[:12]>`, and an import matches an existing voice by **digest first**,
+  so the same recording arriving under any name updates the voice it already is
+  (verified against a copy of the real library: ten clips re-imported under ten
+  unseen names → ten voices, every id unchanged). Deriving the id from a file name
+  meant the same clip under a new name became a second voice, and two names that
+  slugged alike (`Morgan`, `morgan!`) silently replaced one another — the on-disk
+  path *was* the id, so the second overwrote the first's folder.
+  - **A different recording claiming a name that is already taken becomes a second
+    voice, and the import says so** (`notes`, rendered in the Voices window).
+    Overwriting would destroy a take the owner may have no other copy of; silence
+    would leave two rows called "Morgan" with no explanation. The name is a label the
+    last import owns — the identity does not move, and neither does the older
+    recording.
+  - Segments are dropped whenever the digest differs **or the older row has none**.
+    The guard used to read `previous.get("audio_sha256") and ...`, which skipped
+    exactly the rows that could not be vouched for. One unnecessary
+    re-transcription is the price of never publishing timings for a recording
+    nobody can match them to.
+  - A voice's catalogue id and its id on the wire are the same bytes: this 12 hex is
+    what `shared_voice_id` sends the receiver, which will take nothing else.
+- **A provider's voice list is merged, not concatenated.** `voices()` used to
+  append the discovered list and the owner's own list, so a voice that appeared in
+  both was listed **twice** — and `find()` takes the first match, so the preview and
+  tier you saw depended on which list happened to hold the row. They are one list
+  seen twice; the owner's entry wins, keyed on the id both sides build with
+  `make_id`.
 - **`_local_voices` prefers the writable catalogue at read time.** `VOICES_PATH` is
   resolved once at process start, so on a fresh install it points at the shipped
   default and keeps pointing there — an added voice would not appear until a
@@ -581,7 +632,7 @@ model name.
 ## Verification
 
 ```bash
-.venv/bin/python tests/test_e2e.py              # 386 checks, isolated mock upstream
+.venv/bin/python tests/test_e2e.py              # 403 checks, isolated mock upstream
 .venv/bin/python tests/test_fleet_standalone.py # 45 checks, real Hub(s) as locations
 .venv/bin/python tests/test_ui.py               # 109 checks, drives the real app
 ```

@@ -153,13 +153,8 @@ instances across the console and the menu bar.
 1. **FIXED this session — see the Fixed list above** (the operator token, 5.1).
 2. **FIXED this session — see the Fixed list above** (voice share/permission
    namespace).
-3. **MED-HIGH — a local voice's identity is derived from the source file name.**
-   `voice_import.py:574,587` mints `voice-<slug(entry.name)>`, which is the catalogue
-   key *and* the on-disk path. So the same clip re-imported under a different name
-   becomes a second voice, two clips whose names slug alike silently replace each
-   other, and the stale-segment guard at `:659` is skipped for the legacy entries
-   that have no `audio_sha256`. The bytes are the real identity. *Fix: dedupe and
-   update on `audio_sha256`, reusing the existing id.*
+3. **FIXED this session — see the Shape 6 Fixed list** (a voice's id is now its
+   clip's bytes; the stale-segment guard for pre-digest rows went with it).
 4. **MED — the reserved location namespace is claimable.** `definitions.py:562`
    only rejects ids already built in, so `providers.local.json` may define
    `studio-hub` or `studio-hub-*` — and `fleet.py:56,79` then treat that prefix as
@@ -419,6 +414,53 @@ instead.***
   never appeared.
 - The app adopted a stale gateway through four rebuilds → build stamp on `/health`
   plus Check Gateway / Restart Gateway.
+- **6.2 — `.env` was a snapshot taken at import, in two places.** FIXED, and the
+  second copy deleted. `config.get()` now re-stats `ENV_PATH` (mtime + size) and
+  re-reads on a change, `providers/credentials.py` reads through it instead of
+  keeping its own `load_env_file()` copy, and `api.require_auth` compares against
+  `gateway_api_key()` per request rather than an import-time `API_KEY` constant.
+  `CredentialStore.reload_env()` / `Registry.reload_env()` are gone — there is no
+  snapshot left to invalidate, so a control whose only job was to invalidate one
+  is a control that does nothing.
+  **The failure that matters is a rotation**: edit `GATEWAY_API_KEY` in `.env`,
+  restart nothing, and the old key kept opening the door — a rotation that appears
+  to have happened and has not. Proven three ways: the e2e suite writes a new key
+  into the temp `.env` (it no longer passes the key through the environment, or
+  `os.environ` would shadow the file and there would be nothing to test), with a
+  *wrong* key refused first so a keyless gateway cannot make the check vacuous —
+  and against the **live** gateway, where the old key answered 403 and the new one
+  200 with no restart. Restoring the frozen snapshot fails exactly those two checks.
+- **6.3 — a voice placement outlived the recording it was made for.** FIXED: the
+  cache key is `(voice_id, location, clip digest)` and the digest is computed
+  *before* the cache is consulted. A re-import keeps the voice's id and changes its
+  audio, so the controller kept using the **old recording** for up to six hours and
+  nothing said so. Entries that have expired are now dropped as new ones are
+  written, because a key carrying the clip revision means every re-import adds a
+  key whose predecessors are never asked for again.
+- **6.5 — the same voice was listed twice.** FIXED: `voices()` merges the discovered
+  and custom lists by id, the owner's own entry winning. They are one list seen
+  twice, and `find()` takes the first match, so the preview and tier you saw
+  depended on which list happened to hold the row.
+- **5.3 — a local voice's identity was derived from a file name.** FIXED: the id is
+  `voice-<sha256[:12]>` of the clip's bytes, and an import matches an existing voice
+  by **digest first** — so the same recording under any name is that voice, and a
+  re-import of the owner's library lands on the ten voices he already has. Two
+  consequences worth naming:
+  - a *different* recording claiming a name that is already used becomes a **second
+    voice** rather than overwriting the first, and the import says so in `notes`
+    (rendered in the Voices window). Overwriting would destroy a take the owner may
+    have no other copy of; silence would leave two rows called "Morgan" with no
+    explanation. The name is a label the last import owns — the identity does not
+    move.
+  - the stale-segment guard now compares the digest **including** the case where the
+    older row has none. `previous.get("audio_sha256") and ...` skipped exactly the
+    rows that could not be vouched for, which is the case that most needs the guard;
+    the cost of the fix is one unnecessary re-transcription.
+  Verified on a **copy** of the real library: ten reference clips re-imported under
+  ten names the catalogue had never seen → ten voices before, ten after, every id
+  unchanged, no notes. The id scheme also now shares its 12 hex with the id the Hub
+  receiver demands (`shared_voice_id`), so a voice's catalogue id and its id on the
+  wire are the same bytes.
 
 ### Open
 1. **`menubar/main.swift:172-186` — saving the API key rewrote `.env` wholesale**,
@@ -426,17 +468,9 @@ instead.***
    way to add one) and silently resetting a deliberate `GATEWAY_HOST` LAN bind to
    loopback. **FIXED this session**: read-modify-write, only the keys the app owns,
    an owner-set `GATEWAY_HOST` preserved.
-2. **`gateway/config.py:203-210` + `api.py:52` — `.env` is a module-level snapshot,
-   and the only invalidator fixes half the file.** `get()` never re-reads, so
-   `gateway_api_key()`, `bind_host()`, `bind_port()` and hub's `STUDIOHUB_*`
-   overrides are frozen for the process's life; `providers/credentials.py` holds a
-   **second** copy with a real `reload_env()`. Editing `.env` by hand silently does
-   nothing for the gateway key — and after rotating it, the old key still works.
-   *Fix: re-stat `ENV_PATH` in `get()` and reload on mtime change.*
-3. **`gateway/adapters/studio_hub.py:128-129,193-212` — voice placement cached 6 h,
-   keyed `(voice_id, base)` with no invalidator.** A re-import keeps the id and
-   changes the audio, so the controller's **old recording** is used for six hours.
-   *Fix: add the clip digest to the cache key.*
+2. **FIXED this session — see the Fixed list above** (`.env` was a frozen snapshot).
+3. **FIXED this session — see the Fixed list above** (voice placement outlived the
+   recording it was made for).
 4. **`gateway/catalog.py:731-738` — the 30-minute `freshness.stale` gate is
    unreachable.** `freshness()` calls `rebuild()` first, which resets `_built_at`,
    so the reported `ageMs` is always under the 20 s rebuild TTL. `rebuild()` runs no
@@ -446,10 +480,7 @@ instead.***
    inventory age (and let the gate fire — which would disable every model on a
    stale inventory, possibly a big visible outage) or keep `stale` as-is and add a
    separate, honest `inventory_age`. *Do not change this one silently.*
-5. **`gateway/voices.py:574-596` — the same voice is listed twice.** `voices()`
-   concatenates the persisted `_from_cached` list and the never-expiring `_custom`
-   list with no de-duplication, and `find()` takes the first, so preview and tier
-   can differ per row. *Fix: merge by id, custom winning.*
+5. **FIXED this session — see the Fixed list above** (the same voice listed twice).
 6. **`gateway/providers/models.py:89-119` + `menubar/FleetSection.swift:269-290` —
    discovery is manual and the Fleet page's "Refresh" does not discover.** It hits
    `/admin/api/fleet`, i.e. the reachability probe, so a location whose models were

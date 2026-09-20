@@ -201,12 +201,46 @@ def load_env_file(path: Path = ENV_PATH) -> dict[str, str]:
 
 
 _ENV_FILE = load_env_file()
+#: `(mtime, size)` of `.env` the loaded copy came from. `None` means "never
+#: loaded", which the first `get()` treats as a change and reads the file.
+#:
+#: `.env` is the documented no-UI way to give the gateway a key, so editing it by
+#: hand has to work. It did not: `get()` returned a module-level snapshot taken at
+#: import, so `GATEWAY_API_KEY` was frozen for the life of the process — and after
+#: rotating the key the **old one still worked**, which is the failure mode that
+#: matters, because it is a rotation that appears to have happened and has not.
+#:
+#: `ponytail:` mtime+size is a change *detector*, not a content hash — a same-second
+#: edit that leaves the size identical is missed. Cheap (one `stat` per read) and
+#: enough for a file a person edits; the upgrade path is a content digest, or the
+#: revision counter `providers/registry.py` uses for its own cache.
+_ENV_STAMP: tuple[float, int] | None = None
+
+
+def _refresh_env() -> None:
+    """Re-read `.env` when it has changed on disk."""
+    global _ENV_FILE, _ENV_STAMP
+    try:
+        info = ENV_PATH.stat()
+        stamp: tuple[float, int] | None = (info.st_mtime, info.st_size)
+    except OSError:
+        stamp = None
+    if stamp == _ENV_STAMP:
+        return
+    _ENV_FILE = load_env_file()
+    _ENV_STAMP = stamp
 
 
 def get(key: str, default: str = "") -> str:
-    """Environment first, then `.env`, then the default."""
+    """Environment first, then `.env`, then the default.
+
+    `.env` is re-read whenever it changes, so a hand edit is picked up without a
+    restart — including a **rotation** of `GATEWAY_API_KEY`, where the old key
+    otherwise keeps working until the process is restarted.
+    """
     if key in os.environ:
         return os.environ[key]
+    _refresh_env()
     return _ENV_FILE.get(key, default)
 
 

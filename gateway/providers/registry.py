@@ -183,10 +183,6 @@ class ProviderRegistry:
     def refresh(self, provider_id: str) -> DiscoveryResult:
         return self.models.refresh(provider_id)
 
-    def reload_env(self) -> None:
-        """Pick up `.env` edits without a restart."""
-        self.credentials.reload_env()
-
     # -- dependency -------------------------------------------------------
     def resolver(self, modality: str, model_id: str):
         """Find the (provider, model) pair that should serve a request.

@@ -565,6 +565,26 @@ class VoiceRegistry:
             )
         return out
 
+    def _merged(self, provider_id: str) -> list[Voice]:
+        """One row per voice id. The owner's own entry wins.
+
+        `_from_cached` and `_custom` are the same list seen twice: discovery stores
+        what the provider's API returned, and "Add to my account" stores the voice
+        the owner just imported. A voice that appeared in both was listed **twice** —
+        and since `find()` takes the first match, which row you got (and with it the
+        preview and the tier shown) depended on which list happened to hold it. Two
+        rows for one voice is also two chances to disagree with itself.
+
+        Keyed on the id, which both sides build with `make_id`, so the two lists
+        really are talking about the same voice and not merely the same name.
+        """
+        merged: dict[str, Voice] = {}
+        for voice in self._from_cached(provider_id):
+            merged[voice.id] = voice
+        for voice in self._custom(provider_id):
+            merged[voice.id] = voice
+        return list(merged.values())
+
     def _custom(self, provider_id: str) -> list[Voice]:
         out: list[Voice] = []
         for item in self._data["custom"].get(provider_id) or []:
@@ -611,8 +631,7 @@ class VoiceRegistry:
                 continue
             if not registry.credentials.is_configured(definition.id):
                 continue
-            out.extend(self._from_cached(definition.id))
-            out.extend(self._custom(definition.id))
+            out.extend(self._merged(definition.id))
         if not include_disabled:
             out = [v for v in out if self.is_enabled(v)]
         return sorted(out, key=lambda v: (v.provider_id, v.display_name.lower()))

@@ -273,6 +273,7 @@ final class VoicesSection: NSObject, AppSection, NSTableViewDataSource, NSTableV
                 let imported = payload["imported"] as? [[String: Any]] ?? []
                 let skipped = payload["skipped"] as? [[String: Any]] ?? []
                 self.reportAdded(imported: imported, skipped: skipped,
+                                 notes: payload["notes"] as? [String] ?? [],
                                  annotation: payload["annotation"] as? [String: Any])
             }
         }
@@ -280,7 +281,8 @@ final class VoicesSection: NSObject, AppSection, NSTableViewDataSource, NSTableV
 
     /// Say what was added, then follow the transcription that makes them usable.
     private func reportAdded(
-        imported: [[String: Any]], skipped: [[String: Any]], annotation: [String: Any]?
+        imported: [[String: Any]], skipped: [[String: Any]], notes: [String],
+        annotation: [String: Any]?
     ) {
         reload()
         let names = imported.compactMap { $0["display_name"] as? String }
@@ -293,8 +295,26 @@ final class VoicesSection: NSObject, AppSection, NSTableViewDataSource, NSTableV
             line += " · skipped " + skipped.compactMap { $0["name"] as? String }
                 .prefix(3).joined(separator: ", ")
         }
+        if !notes.isEmpty {
+            line += " · " + (notes.count == 1 ? "one note" : "\(notes.count) notes")
+        }
         summaryLabel.textColor = .secondaryLabelColor
         summaryLabel.stringValue = line
+
+        // Not a failure, and not silence either: the common one is "that name is
+        // already here with different audio, so this was added as a second voice
+        // rather than replacing it". The owner has to choose which to keep, and he
+        // cannot choose what he is not told.
+        if !notes.isEmpty {
+            let alert = NSAlert()
+            alert.messageText = notes.count == 1
+                ? "One thing to know about that import"
+                : "\(notes.count) things to know about that import"
+            alert.informativeText = notes.joined(separator: "\n\n")
+            alert.alertStyle = .informational
+            alert.addButton(withTitle: "OK")
+            alert.runModal()
+        }
 
         guard let annotation else { return }
         if let error = annotation["error"] as? String, !error.isEmpty {

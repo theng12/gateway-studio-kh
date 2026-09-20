@@ -157,7 +157,9 @@ def set_credentials(provider_id: str, payload: dict[str, Any]) -> Any:
     if not isinstance(values, dict):
         return _error(422, "expected {'values': {field: value}}")
     registry.set_credentials(provider_id, {str(k): str(v) for k, v in values.items()})
-    registry.reload_env()
+    # No `reload_env()` here any more: `.env` is read live by `config.get`, so
+    # there is no snapshot to invalidate and no way for the two readers of one
+    # file to disagree about whether an edit had landed.
     described = registry.describe(provider_id)
     # Discovering immediately is what makes "paste key -> models appear" work
     # without a second click.

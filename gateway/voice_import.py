@@ -521,6 +521,32 @@ def _slug(name: str) -> str:
     return cleaned or "voice"
 
 
+def clip_digest(path: Path) -> str:
+    """The sha256 of a clip's bytes — the one thing that identifies it.
+
+    Shared with `shared_voice_id`, which sends the first 12 hex to a controller,
+    so "the same recording" means the same digest on both sides of the wire.
+    """
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def voice_id_for_digest(digest: str) -> str:
+    """The id a clip is stored under: its own bytes.
+
+    `voice-<sha256[:12]>` — twelve lowercase hex, the same shape as the ids the
+    VoiceStudio migration brought in, so nothing downstream can tell the two
+    schemes apart.
+
+    **A name is not an identity.** Deriving the id from the folder or file name
+    meant the same recording re-imported under another name became a second
+    voice, and two clips whose names slugged alike (`Morgan`, `morgan!`) silently
+    replaced one another. Bytes decide: the same clip is one voice, and a
+    different clip claiming a used name is paired with the existing row by
+    `_existing_id_for` rather than overwriting it.
+    """
+    return f"voice-{digest[:12]}"
+
+
 def _audio_in(directory: Path) -> Path | None:
     """The reference clip inside a voice folder.
 
@@ -597,49 +623,96 @@ def discover(folder: Path) -> tuple[list[dict], list[dict]]:
                 continue
             metadata = _metadata(entry)
             full_name = str(metadata.get("name") or entry.name)
-            found.append({
-                "id": f"voice-{_slug(entry.name)}",
+            item = {
+                # The clip's bytes, not the folder's name — see `voice_id_for_digest`.
+                "slug_id": f"voice-{_slug(entry.name)}",
                 "display_name": _short_name(full_name) or entry.name,
                 "full_name": full_name,
                 "language": str(metadata.get("language") or "en"),
                 "gender": metadata.get("gender"),
                 "audio": audio,
                 "transcript": _text(entry / "transcript.txt"),
-            })
+            }
         elif entry.suffix.lower() in AUDIO_EXTENSIONS:
             # A loose file is a voice: one clip, one entry. Any sidecar transcript
             # beside it is used if it is there.
             full_name = entry.stem
-            found.append({
-                "id": f"voice-{_slug(entry.stem)}",
+            item = {
+                "slug_id": f"voice-{_slug(entry.stem)}",
                 "display_name": _short_name(full_name) or entry.stem,
                 "full_name": full_name,
                 "language": "en",
                 "gender": None,
                 "audio": entry,
                 "transcript": _text(entry.with_suffix(".txt")),
-            })
+            }
         else:
             # Other files are just other files. Reporting them would bury the one
             # skip that matters — a folder with no audio in it — under a list of
             # transcripts and `.DS_Store`.
             continue
+
+        try:
+            item["digest"] = clip_digest(item["audio"])
+        except OSError as exc:
+            # An unreadable clip has no identity, so it cannot be stored as one.
+            skipped.append({"name": item["display_name"], "reason": f"Could not read it: {exc}"})
+            continue
+        item["id"] = voice_id_for_digest(item["digest"])
+        found.append(item)
     return found, skipped
+
+
+def _existing_id_for(by_id: dict[str, dict], item: dict, digest: str) -> str | None:
+    """The voice this clip already *is*, if the catalogue holds one.
+
+    Bytes first, and bytes alone where they can speak:
+
+    * **the same digest, under any name** — the same recording, so it is the same
+      voice and its row is updated rather than a second one created. This is what
+      makes a re-import of the owner's existing library land on the ten voices he
+      already has (all ten store a digest that matches their clip on disk).
+    * **a name-minted id with no digest** — a row this gateway created before
+      bytes were recorded, which it therefore cannot vouch for. The name is the
+      only evidence such a row has, so a re-import of it updates in place.
+    * **already stored under the byte id** — defensive; the digest match above
+      should have found it.
+
+    A *different* clip claiming a name that is already taken is deliberately **not**
+    matched: the existing row's recording is not overwritten, and the caller says
+    so out loud.
+    """
+    for entry in by_id.values():
+        if entry.get("audio_sha256") == digest:
+            return str(entry.get("id") or "") or None
+    slug_id = str(item.get("slug_id") or "")
+    legacy = by_id.get(slug_id)
+    if legacy is not None and not legacy.get("audio_sha256"):
+        return slug_id
+    if item["id"] in by_id:
+        return str(item["id"])
+    return None
 
 
 def import_folder(folder: Path) -> dict:
     """Copy every voice found into the library and add it to the catalogue.
 
-    Re-importing the same name updates that voice rather than creating a second
-    one, because the id is derived from the name.
+    **The clip's bytes are the identity.** A re-import of the same recording
+    updates the voice it already is — whatever it is now called — instead of
+    adding a second one. A recording the catalogue has not seen becomes a voice
+    of its own, even if another voice already uses that name: replacing the older
+    recording would destroy it, and the caller is told what happened rather than
+    left with two rows and no explanation.
     """
     found, skipped = discover(folder)
     payload = _read_catalog()
     by_id = {str(v.get("id")): v for v in payload.get("voices") or [] if v.get("id")}
 
     imported: list[dict] = []
+    notes: list[str] = []
     for item in found:
-        voice_id = item["id"]
+        digest = str(item["digest"])
+        voice_id = _existing_id_for(by_id, item, digest) or str(item["id"])
         target_dir = LIBRARY_DIR / voice_id
         target_dir.mkdir(parents=True, exist_ok=True)
         target = target_dir / f"reference{item['audio'].suffix.lower()}"
@@ -649,7 +722,6 @@ def import_folder(folder: Path) -> dict:
             skipped.append({"name": item["display_name"], "reason": f"Could not copy: {exc}"})
             continue
 
-        digest = hashlib.sha256(target.read_bytes()).hexdigest()
         entry = {
             **{k: v for k, v in (by_id.get(voice_id) or {}).items()
                if k in {"reference_segments", "preview_available", "duration_seconds"}},
@@ -682,11 +754,34 @@ def import_folder(folder: Path) -> dict:
         }
         # A re-import of changed audio invalidates segments measured against the
         # old clip; keeping them would describe audio that is no longer there.
+        # The comparison **includes the case where the old row has no digest** —
+        # `previous.get(...) and ...` skipped exactly the rows that could not be
+        # vouched for, which is the case that most needs the guard. The cost is
+        # one unnecessary re-transcription for a pre-digest row; the alternative
+        # is publishing timings for a recording nobody can match to them.
         previous = by_id.get(voice_id) or {}
-        if previous.get("audio_sha256") and previous["audio_sha256"] != digest:
+        if previous.get("audio_sha256") != digest:
             entry.pop("reference_segments", None)
         if not entry.get("reference_segments"):
             entry.setdefault("reference_segments", None)
+
+        # A used name with different bytes: the new clip gets a voice of its own,
+        # so the older recording is not destroyed. Silence here would leave two
+        # rows with one name and no explanation of where the second came from.
+        if voice_id == item["id"]:
+            clash = next(
+                (v for v in by_id.values()
+                 if v.get("display_name") == entry["display_name"]
+                 and v.get("audio_sha256") != digest),
+                None,
+            )
+            if clash:
+                notes.append(
+                    f"\u201c{entry['display_name']}\u201d is already here with different "
+                    f"audio, so this recording was added as a second voice "
+                    f"({voice_id}) rather than replacing it. Delete whichever you "
+                    f"do not want."
+                )
 
         by_id[voice_id] = entry
         # The folder, not just the catalogue row: clip plus transcript plus
@@ -705,6 +800,9 @@ def import_folder(folder: Path) -> dict:
     return {
         "imported": imported,
         "skipped": skipped,
+        # Things that happened and are not a failure: said out loud rather than
+        # left for the owner to notice in the table.
+        "notes": notes,
         "catalog": str(catalog_path()),
         "library": str(LIBRARY_DIR),
     }

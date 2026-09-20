@@ -20,7 +20,7 @@ import time
 from pathlib import Path
 from typing import Any, Callable
 
-from ..config import CREDENTIALS_PATH, ENV_PATH, load_env_file, write_secret
+from ..config import CREDENTIALS_PATH, get, write_secret
 from .definitions import PROVIDERS_BY_ID, ProviderDefinition
 
 
@@ -40,7 +40,6 @@ class CredentialStore:
         definition_lookup: "Callable[[str], Any] | None" = None,
     ) -> None:
         self.path = Path(path or CREDENTIALS_PATH)
-        self._env = load_env_file(ENV_PATH)
         self._data: dict[str, Any] = {"providers": {}}
         # How a provider id is resolved to its definition. Set by the registry,
         # because definitions are not only the built-ins: a location the owner
@@ -73,10 +72,6 @@ class CredentialStore:
     def _save(self) -> None:
         write_secret(self.path, json.dumps(self._data, indent=2) + "\n")
 
-    def reload_env(self) -> None:
-        """Re-read `.env` without restarting the process."""
-        self._env = load_env_file(ENV_PATH)
-
     # -- reads ------------------------------------------------------------
     def stored(self, provider_id: str) -> dict[str, str]:
         entry = self._data["providers"].get(provider_id) or {}
@@ -93,7 +88,11 @@ class CredentialStore:
             return ""
         for credential_field in definition.credential_fields:
             if credential_field.key == field_key:
-                return str(self._env.get(credential_field.env_var, "") or "")
+                # Through `config.get`, which re-reads `.env` when it changes.
+                # This store used to keep a **second** copy read at construction,
+                # refreshed only by an explicit `reload_env()` — so the two readers
+                # of one file disagreed about when an edit had happened.
+                return str(get(credential_field.env_var, "") or "")
         return ""
 
     def resolved(self, provider_id: str) -> dict[str, str]:
@@ -136,7 +135,7 @@ class CredentialStore:
         definition = self._definition(provider_id)
         if definition:
             for credential_field in definition.credential_fields:
-                if credential_field.key == field_key and self._env.get(credential_field.env_var):
+                if credential_field.key == field_key and get(credential_field.env_var):
                     return "env"
         return "none"
 

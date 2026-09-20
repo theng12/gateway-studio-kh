@@ -49,7 +49,6 @@ from .activity import is_story_path, record
 from .runtime import store, worker
 from .voices import story_row, voice_registry, voices_for_model
 
-API_KEY = gateway_api_key()
 
 # Uploaded audio for transcription quotes, held between the quote and its
 # confirm. In memory on purpose: it is a single-process gateway and the payload
@@ -159,7 +158,13 @@ def require_auth(authorization: str | None = Header(default=None)) -> None:
     token = authorization[7:].strip()
     if not token:
         raise GatewayError(401, "Empty bearer token.", "UNAUTHORIZED")
-    if API_KEY and token != API_KEY:
+    # Read per request, not from a module-level snapshot. It *was* snapshotted at
+    # import, so editing `GATEWAY_API_KEY` in `.env` changed nothing and — the part
+    # that matters — **after rotating the key the old one still worked**. A
+    # rotation that appears to have happened and has not is worse than one that
+    # clearly failed.
+    configured = gateway_api_key()
+    if configured and token != configured:
         raise GatewayError(403, "Invalid API key.", "FORBIDDEN")
 
 

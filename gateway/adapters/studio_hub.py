@@ -135,16 +135,51 @@ def _artifact_url(base: str, batch_id: str, item_index: int, kind: str) -> str:
 #: voice, and that location had never seen the asset. Invisible with a single
 #: location, which is why it survived; with several it fails the moment a second
 #: controller reuses a cached voice.
-_REFERENCE_CACHE: dict[tuple[str, str], tuple[str, str, float]] = {}
+_REFERENCE_CACHE: dict[tuple[str, str, str], tuple[str, str, float]] = {}
 _REFERENCE_TTL_S = 6 * 3600.0
 
 
-def _reference_cache_key(voice_id: str, base: str) -> tuple[str, str]:
-    """Cache identity for a voice placement: the voice *and* the location."""
-    return (voice_id, base.rstrip("/"))
+def _remember_reference(key: tuple[str, str, str], kind: str, value: str) -> None:
+    """Store a placement and drop the ones that have expired.
+
+    The key carries the clip's digest, so every re-import of a voice adds a key
+    whose predecessors are never asked for again. Without this they would sit in
+    the dict for the process's life.
+
+    `ponytail:` a full sweep per write, which is a handful of entries per voice per
+    location. Above a few thousand voices this wants a heap or an ordered dict.
+    """
+    now = time.time()
+    for stale in [k for k, v in _REFERENCE_CACHE.items() if (now - v[2]) >= _REFERENCE_TTL_S]:
+        _REFERENCE_CACHE.pop(stale, None)
+    _REFERENCE_CACHE[key] = (kind, value, now)
+
+
+def _reference_cache_key(voice_id: str, base: str, digest: str) -> tuple[str, str, str]:
+    """Cache identity for a voice placement: the voice, the location, **and the bytes**.
+
+    The digest is the third part because a re-import keeps the voice's id and
+    changes its audio. Keyed on `(voice_id, base)` — which is what this was — the
+    controller's **old recording** kept being used for up to six hours, and nothing
+    said so: the placement asked for that voice and got a confident answer about a
+    clip that no longer exists. It is the stale build stamp again, one layer down.
+
+    The digest is already the thing the library match is made on, so a placement
+    cached for one recording must not answer for another.
+    """
+    return (voice_id, base.rstrip("/"), digest)
 
 
 def _clip_digest(path: Path) -> str:
+    """The sha256 of a clip's bytes.
+
+    The same notion as `voice_import.clip_digest` and `shared_voice_id`, and
+    deliberately not imported from there: an adapter depends on its definition and
+    its base, not on the voice domain. Three one-line readers of the same fact is
+    the price of that direction; what must not diverge is the *definition*, and
+    "sha256 of the file, lowercase hex" is not a thing that can be interpreted
+    two ways.
+    """
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
@@ -200,25 +235,30 @@ def _voice_placement(
     job. On this Mac all ten reference clips already match, so every one of those
     uploads was avoidable.
     """
-    key = _reference_cache_key(voice_id, base)
-    cached = _REFERENCE_CACHE.get(key)
-    if cached and (time.time() - cached[2]) < _REFERENCE_TTL_S:
-        return cached[0], cached[1]
-
     path = Path(str(reference.get("path") or ""))
     if not path.exists():
         raise BackendError(
             f"voice reference audio is missing for '{voice_id}'",
             code="VOICE_PROVIDER_RESULT_INVALID",
         )
+    # Read before the cache, not after it: which recording this is *is* part of the
+    # question the cache answers. Hashing a reference clip per job is a few
+    # hundred kilobytes of I/O, and the alternative is answering about the wrong
+    # audio for six hours.
+    digest = _clip_digest(path)
 
-    node_voice_id = _library_voice_for(client, base, headers, _clip_digest(path))
+    key = _reference_cache_key(voice_id, base, digest)
+    cached = _REFERENCE_CACHE.get(key)
+    if cached and (time.time() - cached[2]) < _REFERENCE_TTL_S:
+        return cached[0], cached[1]
+
+    node_voice_id = _library_voice_for(client, base, headers, digest)
     if node_voice_id:
-        _REFERENCE_CACHE[key] = ("library", node_voice_id, time.time())
+        _remember_reference(key, "library", node_voice_id)
         return "library", node_voice_id
 
     asset_id = _stage_voice_reference(client, base, headers, voice_id, path, reference)
-    _REFERENCE_CACHE[key] = ("asset", asset_id, time.time())
+    _remember_reference(key, "asset", asset_id)
     return "asset", asset_id
 
 

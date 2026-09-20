@@ -242,7 +242,15 @@ def main() -> int:
         **os.environ,
         "GATEWAY_DATA": str(tmp),
         "GATEWAY_APP_SUPPORT": str(tmp),
-        "GATEWAY_API_KEY": GW_KEY,
+        # **The key lives in `.env`, not in the process environment.**
+        #
+        # `get()` prefers `os.environ`, so a key passed here would shadow `.env`
+        # completely and the rotation check in section 13b could not exist. `.env`
+        # is also how the owner really supplies one — the documented no-UI way —
+        # so it is the path worth exercising. The cost is that a `.env` that fails
+        # to load leaves a *keyless* gateway, which accepts any token: section 13b
+        # asserts a wrong key is refused, which is what makes that loud rather
+        # than silent.
         "GATEWAY_PORT": str(GW_PORT),
         # A known build stamp, which is also how the app passes its own: the menu
         # bar app sets GATEWAY_BUILD when it spawns the gateway, and Check Gateway
@@ -281,6 +289,14 @@ def main() -> int:
     # The suite's own process does the unit-level checks, and `config.get` reads
     # `os.environ` live, so it needs the same sentinel the gateway was given.
     os.environ["STUDIOHUB_HUB_TOKEN"] = OPERATOR_TOKEN
+
+    # The gateway's key, where the gateway actually looks for it. Written before
+    # the process starts, because `require_auth` reads it per request from whatever
+    # `.env` says at that moment — that is the behaviour section 13b pins.
+    (tmp / ".env").write_text(
+        "# Written by tests/test_e2e.py; the key lives here so rotation is testable.\n"
+        f"GATEWAY_API_KEY={GW_KEY}\n"
+    )
 
     mock_log = tmp / "mock.log"
     gw_log = tmp / "gateway.log"
@@ -433,15 +449,24 @@ def main() -> int:
             # Keyed by voice alone, a reference staged on one location would be
             # handed to another that had never seen the asset — invisible with one
             # location, broken with several.
+            #
+            # And it belongs to the *recording* that was staged. A re-import keeps
+            # the voice's id and changes its audio, so a placement cached for the
+            # old clip answered for the new one for up to six hours: the controller
+            # used a recording that no longer exists, and nothing said so.
             from gateway.adapters.studio_hub import _reference_cache_key
             check("a staged reference is cached per location, not per voice",
-                  _reference_cache_key("v1", "http://a:1")
-                  != _reference_cache_key("v1", "http://b:1"),
+                  _reference_cache_key("v1", "http://a:1", "sha-old")
+                  != _reference_cache_key("v1", "http://b:1", "sha-old"),
                   "same key for two controllers")
             check("the same location reuses its own staged reference",
-                  _reference_cache_key("v1", "http://a:1")
-                  == _reference_cache_key("v1", "http://a:1/"),
+                  _reference_cache_key("v1", "http://a:1", "sha-old")
+                  == _reference_cache_key("v1", "http://a:1/", "sha-old"),
                   "trailing slash changed the key")
+            check("but not for a different recording of the same voice",
+                  _reference_cache_key("v1", "http://a:1", "sha-old")
+                  != _reference_cache_key("v1", "http://a:1", "sha-new"),
+                  "the placement outlived the audio it was made for")
 
             # The curated-limits file fills a provider's silence and never
             # overrides live data. Tested directly against the module, because a
@@ -1614,6 +1639,43 @@ def main() -> int:
             check("overview publishes credit_balance",
                   isinstance(overview.get("credit_balance"), int))
 
+            print("\n\033[1m13b. A key edited into .env takes effect without a restart\033[0m")
+            # `.env` is the documented no-UI way to give the gateway a key, so an
+            # edit to it has to work — and it did not. `get()` returned a
+            # module-level snapshot taken at import and `require_auth` compared
+            # against its own import-time copy, so `GATEWAY_API_KEY` was frozen for
+            # the life of the process. The failure that matters is a **rotation**:
+            # change the key, restart nothing, and the old key still opens the door.
+            # A rotation that appears to have happened and has not is worse than one
+            # that visibly failed.
+            #
+            # The positive half first. Without it, a `.env` that failed to load
+            # would leave a keyless gateway — which accepts *any* token — and every
+            # assertion below would pass for the wrong reason.
+            env_file = tmp / ".env"
+            check("a wrong key is refused, so the key really is in force",
+                  httpx.get(f"{BASE}/v1/chat/models",
+                            headers={"Authorization": "Bearer not-the-key"}).status_code == 403,
+                  "a keyless gateway would accept this and make the rotation vacuous")
+
+            rotated = "rotated-key-b7f2"
+            env_file.write_text(f"GATEWAY_API_KEY={rotated}\n")
+            check("the new key is accepted once written to .env",
+                  httpx.get(f"{BASE}/v1/chat/models",
+                            headers={"Authorization": f"Bearer {rotated}"}).status_code == 200)
+            check("and the key it replaced stops working at once",
+                  httpx.get(f"{BASE}/v1/chat/models",
+                            headers={"Authorization": f"Bearer {GW_KEY}"}).status_code == 403,
+                  "the old key still worked, which is a rotation that did not happen")
+
+            # Put it back, or every later section authenticates with a dead key.
+            env_file.write_text(f"GATEWAY_API_KEY={GW_KEY}\n")
+            check("restoring the key in .env restores access",
+                  httpx.get(f"{BASE}/v1/chat/models", headers=AUTH).status_code == 200)
+            check("and the withdrawn key is refused again",
+                  httpx.get(f"{BASE}/v1/chat/models",
+                            headers={"Authorization": f"Bearer {rotated}"}).status_code == 403)
+
             print("\n\033[1m14. Streamed WAV header repair\033[0m")
             # Fish streams WAV responses with sentinel chunk sizes. A 327KB file
             # declared a 4GB RIFF size and a 4GB data chunk; Python's `wave`
@@ -1748,13 +1810,20 @@ def main() -> int:
                     handle.writeframes(struct.pack("<h", 0) * int(16000 * seconds))
 
             picked = tmp / "picked"
+            # **Two different recordings, deliberately.** `write_wav` with the same
+            # duration twice produces byte-identical files, and byte-identical means
+            # *one* voice under the identity rule below — which quietly turned this
+            # fixture into a two-imports-one-voice case and made three later
+            # assertions mean something else. Different lengths keep them two.
+            picked_parent_clip = picked / "Morgan.wav"   # the loose-file shape
+            blue_clip = picked / "Blue Room" / "reference.wav"
             (picked / "Blue Room").mkdir(parents=True)
-            write_wav(picked / "Blue Room" / "reference.wav")
+            write_wav(blue_clip, seconds=0.25)
             (picked / "Blue Room" / "metadata.json").write_text(
                 json.dumps({"name": "Blue - Calm and Deep", "language": "en", "gender": "m"})
             )
             (picked / "Blue Room" / "transcript.txt").write_text("a blue reference")
-            write_wav(picked / "Morgan.wav")
+            write_wav(picked_parent_clip, seconds=0.2)
             (picked / "Morgan.txt").write_text("a morgan reference")
             (picked / "notes.md").write_text("not audio")
             (picked / "empty folder").mkdir()
@@ -1773,27 +1842,44 @@ def main() -> int:
                   all(v["needs_segments"] for v in added["imported"]))
 
             library = Path(added["library"])
+            catalog = json.loads(Path(added["catalog"]).read_text())
+            imported_ids = {v["id"] for v in added["imported"]}
+            ours = [v for v in catalog["voices"] if v["id"] in imported_ids]
+            check("both shapes are imported as two voices",
+                  len(added["imported"]) == 2 and len(ours) == 2,
+                  f"{[(v['display_name'], v['id']) for v in added['imported']]}")
             copied = sorted(p.name for p in library.iterdir())
             check("the clips are copied into the gateway's own library",
-                  copied == ["voice-blue-room", "voice-morgan"], f"{copied}")
+                  copied == sorted(imported_ids), f"{copied} vs {sorted(imported_ids)}")
 
-            catalog = json.loads(Path(added["catalog"]).read_text())
-            ours = [v for v in catalog["voices"] if v["id"] in {"voice-blue-room", "voice-morgan"}]
+            # **The id is the clip's own bytes, not its name.** Deriving it from the
+            # folder or file name meant the same recording re-imported under another
+            # name became a second voice, and two clips whose names slugged alike
+            # (`Morgan`, `morgan!`) silently replaced one another — the on-disk path
+            # is the id, so the second overwrote the first's folder.
+            stored = next(v for v in ours if v["display_name"] == "Morgan")
+            # Sections 17 and 18 act on this voice by id, and the id is no longer
+            # the name it came in under — it is the clip's own bytes.
+            morgan_id = stored["id"]
+            morgan_dir = library / morgan_id
+            check("a voice's id is derived from its bytes, not the name it arrived under",
+                  stored["id"] == "voice-" + str(stored["audio_sha256"])[:12],
+                  f"id={stored['id']} sha={str(stored.get('audio_sha256'))[:12]}")
+            check("so the folder names the audio, and nothing human-types it",
+                  "morgan" not in stored["id"], stored["id"])
             check("the copy is where the catalogue says it is",
-                  len(ours) == 2 and all(Path(v["reference_path"]).parent.parent == library
-                                         for v in ours),
+                  all(Path(v["reference_path"]).parent.parent == library for v in ours),
                   f"{[v.get('reference_path') for v in ours]}")
             ids = [v["id"] for v in catalog["voices"]]
             check("the catalogue keeps what was already there",
                   len(ids) > len(added["imported"]), f"{len(ids)} total")
             check("and has no duplicate ids", len(ids) == len(set(ids)), f"{ids}")
-            stored = next(v for v in catalog["voices"] if v["id"] == "voice-morgan")
             check("the clip's own hash is stored for location matching",
                   len(str(stored.get("audio_sha256") or "")) == 64)
             # "Processed properly" means one self-contained folder — clip,
             # transcript, derived metadata — not a clip here and its meaning in a
             # catalogue somewhere else.
-            files = {f.name for f in (library / "voice-morgan").iterdir()}
+            files = {f.name for f in morgan_dir.iterdir()}
             check("a voice is a self-contained folder, not just a clip",
                   {"reference.wav", "metadata.json", "transcript.txt"} <= files, f"{sorted(files)}")
 
@@ -1805,6 +1891,57 @@ def main() -> int:
                   f"{len(catalog['voices'])} -> {len(after['voices'])}")
             check("and reports what it saw again", len(again["imported"]) == 2)
 
+            # The same recording, arriving under a name the catalogue has never
+            # seen. Bytes are the identity, so this is that voice and not a second
+            # one — the whole point of the change. The Blue clip, so the Morgan
+            # voice the rest of this section reasons about is left alone.
+            blue = next(v for v in ours if v["display_name"] == "Blue")
+            elsewhere = tmp / "picked-renamed"
+            elsewhere.mkdir()
+            shutil.copy2(blue_clip, elsewhere / "Renamed Blue.wav")
+            renamed = req(client, "POST", "/admin/api/voices/add",
+                          json={"folder": str(elsewhere), "annotate": False}).json()
+            after_rename = json.loads(Path(added["catalog"]).read_text())
+            check("the same clip under a different name is the same voice",
+                  [v["id"] for v in renamed["imported"]] == [blue["id"]],
+                  f"{[v['id'] for v in renamed['imported']]} vs {blue['id']}")
+            check("and it does not add a row",
+                  len(after_rename["voices"]) == len(catalog["voices"]),
+                  f"{len(catalog['voices'])} -> {len(after_rename['voices'])}")
+            # The name is a label the last import owns; the identity did not move.
+            # Worth pinning, because "the id is the bytes" is only half the rule —
+            # the other half is that a rename is a rename and not a new voice.
+            check("a renamed clip takes the new label on the voice it already was",
+                  next(v for v in after_rename["voices"] if v["id"] == blue["id"])
+                  ["display_name"] == "Renamed Blue",
+                  f"{[v['display_name'] for v in after_rename['voices'] if v['id'] == blue['id']]}")
+
+            # A *different* recording claiming a name that is already taken. The
+            # older take is not destroyed, and the owner is told rather than left
+            # with two rows called Morgan and no explanation.
+            clash_dir = tmp / "picked-clash"
+            clash_dir.mkdir()
+            write_wav(clash_dir / "Morgan.wav", seconds=0.4)  # different bytes
+            clashed = req(client, "POST", "/admin/api/voices/add",
+                          json={"folder": str(clash_dir), "annotate": False}).json()
+            after_clash = json.loads(Path(added["catalog"]).read_text())
+            same_name = [v for v in after_clash["voices"] if v["display_name"] == "Morgan"]
+            check("a different recording under a used name becomes its own voice",
+                  len(same_name) == 2, f"{[v['id'] for v in same_name]}")
+            check("the recording it was imported over is still there",
+                  stored["id"] in {v["id"] for v in same_name},
+                  f"{[v['id'] for v in same_name]}")
+            check("and the owner is told, rather than left to notice",
+                  len(clashed.get("notes") or []) == 1
+                  and "different" in clashed["notes"][0],
+                  f"{clashed.get('notes')}")
+
+            # Put the catalogue back to the two voices the rest of this section
+            # reasons about; the clash above is evidence, not state to keep.
+            for extra in [v["id"] for v in same_name if v["id"] != stored["id"]]:
+                req(client, "DELETE", f"/admin/api/voices/{extra}")
+            catalog = json.loads(Path(added["catalog"]).read_text())
+
             # The folder that was picked is one the owner will empty later — a
             # Downloads folder, a temporary copy. The voice must not depend on it.
             kept = Path(stored["reference_path"])
@@ -1812,8 +1949,37 @@ def main() -> int:
             check("deleting the folder it came from leaves the voice intact",
                   kept.exists() and "voice-library" in str(kept), str(kept))
             check("and the catalogue still lists it",
-                  any(v["id"] == "voice-morgan" for v in after["voices"]),
-                  f"{len(after['voices'])} entries")
+                  any(v["id"] == morgan_id for v in catalog["voices"]),
+                  f"{len(catalog['voices'])} entries")
+
+            # One voice, listed once. `voices()` concatenated what discovery had
+            # cached with what the owner had saved and never de-duplicated, so a
+            # voice known to both was listed **twice** — and `find()` takes the
+            # first, so the preview and the tier you saw depended on which list
+            # happened to hold it. A store built here, because no mock lane in this
+            # suite both discovers a voice and saves one, so the overlap cannot be
+            # staged through the API.
+            from gateway.voices import VoiceRegistry
+
+            overlapping = VoiceRegistry(tmp / "voices-overlap.json")
+            overlapping._data["discovered"] = {"mock-remote": {
+                "fetched_at": 1.0,
+                "voices": [{
+                    "id": "mock-remote::v1", "provider_voice_id": "v1",
+                    "display_name": "From discovery", "language": "en",
+                    "preview_url": "http://127.0.0.1:9/preview.mp3", "raw": {},
+                }],
+            }}
+            overlapping._data["custom"] = {"mock-remote": [{
+                "id": "mock-remote::v1", "provider_voice_id": "v1",
+                "display_name": "Saved by the owner",
+            }]}
+            merged = overlapping._merged("mock-remote")
+            check("a voice both discovered and saved is listed once, not twice",
+                  len(merged) == 1, f"{[v.id for v in merged]}")
+            check("and the owner's own entry is the one that survives",
+                  merged and merged[0].display_name == "Saved by the owner",
+                  f"{[v.display_name for v in merged]}")
 
             # Segments come from Studio Hub's transcription, so with no Hub there is
             # nothing to transcribe with. Saying that is the whole point: silently
@@ -1842,9 +2008,9 @@ def main() -> int:
             # field rather than a voice — useless across a hundred-node push. These
             # are the gateway answering "which voice, and why" before sending.
             unacknowledged = {
-                "id": "voice-morgan", "display_name": "Morgan", "language": "en",
+                "id": morgan_id, "display_name": "Morgan", "language": "en",
                 "gender": "f", "audio_sha256": "c" * 64,
-                "reference_path": str(library / "voice-morgan" / "reference.wav"),
+                "reference_path": str(morgan_dir / "reference.wav"),
             }
             ready = voice_import.shared_readiness(unacknowledged)
             check("a voice with no acknowledgement is not ready to share",
@@ -1855,21 +2021,22 @@ def main() -> int:
                   any("segments" in p for p in ready["problems"]), f"{ready['problems']}")
 
             # The receiver enforces `voice_id must be exactly 12 lowercase hex
-            # characters` (measured: 400 otherwise), so a gateway id like
-            # `voice-morgan` cannot be pushed at all.
+            # characters` (measured: 400 otherwise). A gateway id always carries a
+            # `voice-` prefix, so it can never be pushed as-is; what makes it
+            # pushable is the clip's digest, which is where the 12 hex comes from.
             shared_id = voice_import.shared_voice_id(
-                {"id": "voice-morgan", "audio_sha256": "a" * 64}
+                {"id": morgan_id, "audio_sha256": "a" * 64}
             )
             check("the shared id is the 12 hex the receiver demands",
                   shared_id == "a" * 12, shared_id)
             check("an unhashed voice has no shareable id rather than a wrong one",
-                  voice_import.shared_voice_id({"id": "voice-morgan"}) == "")
+                  voice_import.shared_voice_id({"id": morgan_id}) == "")
 
             fields = voice_import.push_fields({
-                "id": "voice-morgan", "display_name": "Morgan", "language": "en",
+                "id": morgan_id, "display_name": "Morgan", "language": "en",
                 "gender": "f", "audio_sha256": "b" * 64, "license": "self-owned",
                 "permission_acknowledged": True, "reference_transcript": "hi",
-                "reference_path": str(library / "voice-morgan" / "reference.wav"),
+                "reference_path": str(morgan_dir / "reference.wav"),
             })
             check("the push carries exactly what the receiver declares",
                   {"voice_id", "audio_sha256", "name", "language", "gender", "license",
@@ -1899,7 +2066,7 @@ def main() -> int:
                 "audio_sha256": "d" * 64, "license": "self-owned",
                 "permission_acknowledged": True, "reference_transcript": "hi",
                 "reference_segments": [{"start": 0.0, "end": 1.0, "text": "hi"}],
-                "reference_path": str(library / "voice-morgan" / "reference.wav"),
+                "reference_path": str(morgan_dir / "reference.wav"),
             })
             check("the push sends the timings as JSON in the route's own key",
                   json.loads(pushed["transcript_segments"])[0]["start_seconds"] == 0.0,
@@ -1916,7 +2083,7 @@ def main() -> int:
             # permission, and withdrawing must be as easy as granting.
             added_entry = next(
                 (v for v in json.loads(Path(added["catalog"]).read_text())["voices"]
-                 if v["id"] == "voice-morgan"), {}
+                 if v["id"] == morgan_id), {}
             )
             check("a newly added voice is private until the owner says otherwise",
                   added_entry.get("permission_acknowledged") is False
@@ -1926,31 +2093,31 @@ def main() -> int:
                   not voice_import.shared_readiness(added_entry)["ready"])
 
             granted = req(client, "POST", "/admin/api/voices/shared",
-                          json={"items": ["voice-morgan"], "acknowledged": True}).json()
+                          json={"items": [morgan_id], "acknowledged": True}).json()
             check("permission can be granted for one voice",
                   granted.get("changed") == 1, f"{granted}")
             after_grant = next(
                 v for v in json.loads(Path(added["catalog"]).read_text())["voices"]
-                if v["id"] == "voice-morgan"
+                if v["id"] == morgan_id
             )
             check("granting records a license, which the Hub requires",
                   after_grant.get("license") == "self-owned"
                   and after_grant.get("permission_acknowledged") is True,
                   f"license={after_grant.get('license')}")
             # The folder carries it too, so the permission travels with the voice.
-            meta = json.loads((library / "voice-morgan" / "metadata.json").read_text())
+            meta = json.loads((library / morgan_id / "metadata.json").read_text())
             check("the permission is written into the voice's own folder",
                   meta.get("permission_acknowledged") is True and meta.get("license") == "self-owned",
                   f"{meta}")
             check("and the gateway can list what is shareable",
                   [v["id"] for v in
-                   req(client, "GET", "/admin/api/voices/shared").json()["voices"]] == ["voice-morgan"])
+                   req(client, "GET", "/admin/api/voices/shared").json()["voices"]] == [morgan_id])
 
             revoked = req(client, "POST", "/admin/api/voices/shared",
-                          json={"items": ["voice-morgan"], "acknowledged": False}).json()
+                          json={"items": [morgan_id], "acknowledged": False}).json()
             after_revoke = next(
                 v for v in json.loads(Path(added["catalog"]).read_text())["voices"]
-                if v["id"] == "voice-morgan"
+                if v["id"] == morgan_id
             )
             check("permission can be withdrawn again",
                   revoked.get("changed") == 1
@@ -1963,7 +2130,7 @@ def main() -> int:
             # The permission is the owner's to grant. Share must not be a way round
             # it — asking for a voice that was never allowed is refused, not queued.
             refused = req(client, "POST", "/admin/api/voices/share",
-                          json={"items": ["voice-morgan"]})
+                          json={"items": [morgan_id]})
             check("a voice without permission cannot be shared, even when asked for",
                   refused.status_code == 403 and "not been allowed" in refused.text,
                   f"HTTP {refused.status_code} {refused.text[:140]}")
@@ -1977,7 +2144,7 @@ def main() -> int:
             # rendered "Private" for ever, even after the owner granted it. A field a
             # reader needs is part of the contract, not an implementation detail.
             rows = req(client, "GET", "/admin/api/voices").json()["voices"]
-            morgan_row = next(r for r in rows if r["provider_voice_id"] == "voice-morgan")
+            morgan_row = next(r for r in rows if r["provider_voice_id"] == morgan_id)
             check("a voice row carries no `raw` at all, so nothing may read it",
                   "raw" not in morgan_row, f"{sorted(morgan_row)}")
             check("permission, owner and licence are published where a reader can see them",
@@ -1988,29 +2155,29 @@ def main() -> int:
                   repr(morgan_row["permission_acknowledged"]))
 
             req(client, "POST", "/admin/api/voices/shared",
-                json={"items": ["voice-morgan"], "acknowledged": True})
+                json={"items": [morgan_id], "acknowledged": True})
             regranted = next(r for r in req(client, "GET", "/admin/api/voices").json()["voices"]
-                             if r["provider_voice_id"] == "voice-morgan")
+                             if r["provider_voice_id"] == morgan_id)
             check("a grant is visible in the row the app renders",
                   regranted["permission_acknowledged"] is True
                   and regranted["license"] == "self-owned",
                   f"{regranted['permission_acknowledged']} {regranted['license']}")
 
-            # The app sends the **published** id (`studio-hub-local::voice-morgan`);
+            # The app sends the **published** id (`studio-hub-local::<catalogue id>`);
             # the catalogue stores the bare one. The routes matched the stored form
             # exactly, so the app's grant reported `changed: 0` — success at nothing
             # — and its Share walked straight past the 403 below.
             published = regranted["id"]
             check("the published id is namespaced by the maker",
-                  published.endswith("::voice-morgan"), published)
+                  published.endswith("::" + morgan_id), published)
             by_namespace = req(client, "POST", "/admin/api/voices/shared",
                                json={"items": [published], "acknowledged": False}).json()
             check("withdrawing by the published id reaches the same voice",
                   by_namespace.get("changed") == 1, f"{by_namespace}")
             check("and the bare id and the namespaced id name one voice",
                   voice_import.catalogue_id(published)
-                  == voice_import.catalogue_id("voice-morgan")
-                  == "voice-morgan")
+                  == voice_import.catalogue_id(morgan_id)
+                  == morgan_id)
             bypass = req(client, "POST", "/admin/api/voices/share",
                          json={"items": [published]})
             check("so a namespaced id cannot spell its way past the permission",
@@ -2063,16 +2230,16 @@ def main() -> int:
             catalog_path = Path(added["catalog"])
             payload = json.loads(catalog_path.read_text())
             for row in payload["voices"]:
-                if row["id"] == "voice-morgan":
+                if row["id"] == morgan_id:
                     row["reference_transcript"] = "a morgan reference"
                     row["reference_segments"] = [
                         {"start": 0.0, "end": 1.0, "text": "a morgan reference"}
                     ]
             catalog_path.write_text(json.dumps(payload, indent=2) + "\n")
             req(client, "POST", "/admin/api/voices/shared",
-                json={"items": ["voice-morgan"], "acknowledged": True})
+                json={"items": [morgan_id], "acknowledged": True})
             shareable = json.loads(catalog_path.read_text())
-            morgan = next(v for v in shareable["voices"] if v["id"] == "voice-morgan")
+            morgan = next(v for v in shareable["voices"] if v["id"] == morgan_id)
             check("the voice is now ready to share",
                   not voice_import.shared_readiness(morgan)["problems"],
                   f"{voice_import.shared_readiness(morgan)['problems']}")
@@ -2084,7 +2251,7 @@ def main() -> int:
             ghost_id = ghost["id"]
 
             first = req(client, "POST", "/admin/api/voices/share",
-                        json={"items": ["voice-morgan"]}).json()
+                        json={"items": [morgan_id]}).json()
             row = next((r for r in first["results"] if r["location"] == "Mock Hub"), {})
             check("a location with no Hub token is skipped, and the reason names why",
                   row.get("ok") is False
@@ -2102,7 +2269,7 @@ def main() -> int:
             check("a Hub token can be stored for a location",
                   stored_hub.status_code == 200, stored_hub.text[:140])
             second = req(client, "POST", "/admin/api/voices/share",
-                         json={"items": ["voice-morgan"]}).json()
+                         json={"items": [morgan_id]}).json()
             row = next((r for r in second["results"] if r["location"] == "Mock Hub"), {})
             check("the controller is pushed to", row.get("ok") is True, f"{row}")
             recorded = httpx.get(f"{mock}/__test__/shared-voices").json()
