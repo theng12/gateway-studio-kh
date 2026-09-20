@@ -306,15 +306,37 @@ def main() -> int:
                     json={"model_ids": stt_models, "enabled": True})
 
         # A *second* location offering the same models, so the merge path is
-        # genuinely exercised. It is the same Hub reached by another address: an
-        # isolated gateway has no local Hub of its own, so without this only one
-        # location would ever contribute and every check below would pass
-        # vacuously while proving nothing about merging.
+        # genuinely exercised. It is the same Hub reached by another address —
+        # which the API is now **right to refuse as a duplicate**, because a
+        # controller is identified by the Hub's own stable `site_id`, not by where
+        # it happens to answer. A hand-written roster row is a supported input
+        # (the file is documented), so the second location is written directly:
+        # two rows the roster cannot tell apart by identity, which is exactly the
+        # merge case. The alias POST is checked separately, below.
         alias_url = hub_url.replace("127.0.0.1", "localhost")
-        second = client.post(f"{base}/admin/api/fleet/controllers", json={
-            "label": "Site B", "url": alias_url, "token": hub_token,
+        second_id = "siteb00000001"
+        roster_path = tmp / "data" / "fleet.json"
+        roster = json.loads(roster_path.read_text())
+        roster.setdefault("controllers", []).append({
+            "id": second_id, "label": "Site B", "url": alias_url,
+            "added_at": time.time(),
         })
-        check("a second location can be added", second.status_code == 200, second.text[:200])
+        roster_path.write_text(json.dumps(roster, indent=2))
+        os.chmod(roster_path, 0o600)
+        # The roster carries no secrets, so its credential goes in through the API
+        # — which also proves the by-id route works for a row it did not create.
+        # `/credential` is the *dispatch* credential (`hub_token`); `/hub-token` is
+        # the operator token used only for shared voices, and reaching for it here
+        # is what made this location answer 401 "Hub token required for remote
+        # access" while the refresh still reported HTTP 200.
+        credited = client.put(
+            f"{base}/admin/api/fleet/controllers/{second_id}/credential",
+            json={"token": hub_token})
+        check("a location written straight into the roster can be given a credential",
+              credited.status_code == 200, f"{credited.status_code} {credited.text[:160]}")
+        second_provider = f"studio-hub-{second_id}"
+        check("the second location is a distinct provider, not the same one",
+              second_provider != provider_id)
         # Every location row publishes the provider its models are managed under,
         # derived from the controller id — so a client never has to build it from
         # the label, and the Fleet page's Refresh can act on the right thing.
@@ -326,12 +348,24 @@ def main() -> int:
         check("and that is never the location id itself",
               all(r.get("provider_id") != r.get("id") for r in _rows),
               f"{[(r.get('id'), r.get('provider_id')) for r in _rows]}")
-        second_provider = f"studio-hub-{second.json()['controller']['id']}"
-        check("the second location is a distinct provider, not the same one",
-              second_provider != provider_id)
-        client.post(f"{base}/admin/api/providers/{second_provider}/refresh")
-        client.post(f"{base}/admin/api/providers/{second_provider}/models/enabled",
-                    json={"model_ids": stt_models, "enabled": True})
+        refreshed = client.post(f"{base}/admin/api/providers/{second_provider}/refresh")
+        enabled_second = client.post(
+            f"{base}/admin/api/providers/{second_provider}/models/enabled",
+            json={"model_ids": stt_models, "enabled": True})
+        second_models = client.get(
+            f"{base}/admin/api/providers/{second_provider}/models").json()
+        # **A second location that contributes nothing makes every merge check
+        # below vacuous.** This is asserted rather than assumed: the roster row was
+        # written outside the API, so the gateway has to have picked it up, its
+        # credential has to resolve, and its models have to have been discovered —
+        # `set_many` reports the count it was *given*, not the count it wrote.
+        check("the second location's models really are discovered and enabled",
+              refreshed.status_code == 200
+              and enabled_second.status_code == 200
+              and bool(second_models.get("models")),
+              f"refresh {refreshed.status_code} {refreshed.text[:120]} "
+              f"models={len(second_models.get('models') or [])} "
+              f"error={second_models.get('last_error') or second_models.get('error')}")
         catalogue = client.get(f"{base}/v1/models").json()["models"]
 
         print("\n\033[1m3. Locations publish one row per model, under the maker\033[0m")
@@ -445,7 +479,23 @@ def main() -> int:
                 check("the artifact comes back through the gateway", False, "no job succeeded")
 
         print("\n\033[1m5. Nothing was gated on the role\033[0m")
-        # Both locations are local-scope providers because they are machines, not
+        # **A controller is identified by the controller, not by its address.** The
+        # Hub states a stable `site_id`, so re-adding Site A at its `localhost`
+        # alias must land on the existing row. Matching the address alone minted a
+        # second location — orphaning the first one's credential and every
+        # per-model enable decision with it — which is exactly what the roster row
+        # above had to be written by hand to simulate.
+        alias = client.post(f"{base}/admin/api/fleet/controllers", json={
+            "label": "Angkor Hub (alias)", "url": alias_url, "token": hub_token,
+        })
+        check("re-adding the same controller at another address is the same location",
+              alias.status_code == 200
+              and alias.json()["controller"]["id"] == controller_id
+              and alias.json()["controller"].get("site_id"),
+              f"{alias.status_code} {alias.text[:200]}")
+        check("and no third location was minted for the alias",
+              len(client.get(f"{base}/admin/api/fleet/controllers").json()["controllers"]) == 2,
+              f"{[c['id'] for c in client.get(f'{base}/admin/api/fleet/controllers').json()['controllers']]}")        # Both locations are local-scope providers because they are machines, not
         # cloud APIs. Asserting the property rather than a count: the count moves
         # whenever a location is added, and a hardcoded one fails for the wrong
         # reason.

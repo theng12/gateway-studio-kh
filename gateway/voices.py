@@ -36,14 +36,55 @@ from .config import (
     WRITABLE_VOICES_PATH,
     write_secret,
 )
+from .constants import zero_pricing
 from .providers import registry
 from .providers.definitions import (
     KIND_ELEVENLABS,
     KIND_FAL,
     KIND_FISH,
+    KIND_GOOGLE,
+    KIND_MINIMAX,
+    KIND_OPENAI_COMPATIBLE,
     KIND_STUDIO_HUB,
     ProviderDefinition,
 )
+
+#: The container each kind's TTS lane actually returns, read from the adapter's
+#: own media type: ElevenLabs, fal's ElevenLabs routes and MiniMax answer MPEG
+#: audio; Fish asks for WAV; a Studio Hub location and the OpenAI-compatible shim
+#: (which Google's TTS delegates to) answer WAV.
+#:
+#: This used to be guessed from the provider id —
+#: `"mp3" if provider_id.startswith("elevenlabs") else "wav"` — so a fal
+#: ElevenLabs voice published `wav` while `adapters/fal.py` downloaded
+#: `audio/mpeg`, and one fal lane's voice list contained rows claiming both. A
+#: kind with no TTS lane gets no answer rather than a default.
+#:
+#: ponytail: a per-kind table, not a per-model measurement. Ceiling — a lane that
+#: changes container for one model is described wrongly. Upgrade path — the
+#: adapter's `BackendResult.media_type` for the model, which is the value the job
+#: actually produced.
+_TTS_CONTAINER_BY_KIND: dict[str, str] = {
+    KIND_ELEVENLABS: "mp3",
+    KIND_FAL: "mp3",
+    KIND_MINIMAX: "mp3",
+    KIND_FISH: "wav",
+    KIND_STUDIO_HUB: "wav",
+    KIND_OPENAI_COMPATIBLE: "wav",
+    KIND_GOOGLE: "wav",
+}
+
+
+def tts_output_container(provider_id: str) -> str | None:
+    """The audio container a provider's TTS lane returns, or `None` if unstated.
+
+    One read, used by both the voice row and the TTS quote, so the two cannot
+    describe the same model differently — which is exactly what they did.
+    """
+    definition = registry.definition(provider_id)
+    if definition is None:
+        return None
+    return _TTS_CONTAINER_BY_KIND.get(definition.kind)
 
 STATE_PATH = DATA_DIR / "voices_state.json"
 DISCOVERY_TTL_S = 900.0
@@ -56,6 +97,14 @@ ID_SEPARATOR = "::"
 SOURCE_LOCAL = "local"        # this Mac's own reference clips
 SOURCE_ACCOUNT = "account"    # the owner's own entry at the provider
 SOURCE_LIBRARY = "library"    # the provider's public library, not yet owned
+#: A name that appears only in a provider's **documentation** — fal's twenty-one
+#: `examples` for its ElevenLabs TTS routes, which fal never returns as account
+#: entries. It is neither the owner's stock nor something the provider will list:
+#: it is a documented example this gateway curates so the lane has a voice to
+#: name. Published as its own source so the row cannot be read as the owner's own
+#: account voice (`voice_tier: "custom"`, a `custom_voice_id`) purely because the
+#: call succeeded. See `ownership` in `story_row`.
+SOURCE_EXAMPLE = "example"
 
 
 def make_id(provider_id: str, provider_voice_id: str) -> str:
@@ -203,6 +252,12 @@ def _fal_tts_voices(definition: ProviderDefinition, values: dict[str, str]) -> l
     ponytail: a hand-copied list of fal's own examples. Ceiling — a voice fal
     accepts but does not `example` cannot be picked here. Upgrade path — read the
     list from fal if it ever publishes one, or let the owner add names by hand.
+
+    **They are `SOURCE_EXAMPLE`, not `SOURCE_ACCOUNT`, and not owned.** fal never
+    returned them as account entries; they are documentation examples. Publishing
+    them as the owner's own voices gave every one `voice_tier: "custom"` and a
+    `custom_voice_id`, which claims an account relationship that does not exist —
+    and would make a fleet push look authorised for a voice the owner never added.
     """
     return [
         Voice(
@@ -210,10 +265,10 @@ def _fal_tts_voices(definition: ProviderDefinition, values: dict[str, str]) -> l
             provider_id=definition.id,
             provider_voice_id=name,
             display_name=name,
-            source=SOURCE_ACCOUNT,
+            source=SOURCE_EXAMPLE,
             language="",
-            description="ElevenLabs voice, served through fal",
-            owned=True,
+            description="ElevenLabs voice, served through fal (fal's own example)",
+            owned=False,
             raw={"engine_name": "ElevenLabs (via fal)", "catalog_status": "published"},
         )
         for name in FAL_TTS_VOICE_NAMES
@@ -779,9 +834,17 @@ class VoiceRegistry:
     def _preview_model(definition: ProviderDefinition) -> str:
         """The model id to synthesise a preview with.
 
-        Provider voices are not tied to one model, so the definition's first
-        catalogued TTS model is used.
+        Provider voices are not tied to one model, so something has to be named.
+        **An enabled discovered row is preferred over the curated list**, because a
+        discovered model is one the provider currently offers and the curated list
+        is a static fallback — ElevenLabs publishes *no* `static_models`, so this
+        returned `""` and every preview for a discovered voice was synthesised
+        against an empty model id, which the provider answers 404 for. A preview
+        that always fails is a control that does nothing.
         """
+        for model in registry.models.models_for(definition.id, include_disabled=False):
+            if model.get("modality") == "tts" and model.get("enabled"):
+                return str(model["model_id"])
         for model in definition.static_models:
             if model.get("modality") == "tts":
                 return str(model["id"])
@@ -818,13 +881,14 @@ def story_row(voice: Voice) -> dict[str, Any]:
 
     The price fields ride along for the same reason the catalogue rows carry
     them: the parser drops entries whose price fields are missing. This docstring
-    said that while the row published only `credits_per_1000_characters`, so the
-    other three of the model catalogue's zero-constants were absent — and the same
-    omission was in a **second** voice encoder in `catalog.py` that nothing
-    called. That duplicate is gone now; this is the one encoder, and it carries
-    the full balanced set. `chargeable` especially: the TTS quote route already
-    publishes it explicitly because the parser tests `=== true`, and an absent
-    field renders a claim the gateway never made.
+    said that while the row hand-listed only `credits_per_1000_characters`,
+    `minimum_credits`, `price_version` and `chargeable` — so `cost_tier` and
+    `standard_credits` were absent, which is a **second copy of a shape that is
+    defined once** in `constants.zero_pricing`. It is merged from there now, the
+    same way every catalogue row gets its prices, so the two cannot drift again.
+    `chargeable` especially: the TTS quote route already publishes it explicitly
+    because the parser tests `=== true`, and an absent field renders a claim the
+    gateway never made.
     """
     definition = registry.definition(voice.provider_id)
     engine = str((voice.raw or {}).get("engine_name") or "")
@@ -847,17 +911,28 @@ def story_row(voice: Voice) -> dict[str, Any]:
         "engine_id": voice.provider_id,
         "model_family": voice.source,
         "model_revision_id": None,
-        "voice_tier": "custom" if voice.source != SOURCE_LIBRARY else "library",
+        # **Ownership decides the tier, in one place.** This was
+        # `"custom" if source != SOURCE_LIBRARY else "library"`, which made any
+        # new source "custom" by default — including fal's documentation examples,
+        # once they stopped claiming to be account entries. `owned` is the actual
+        # question ("is this the owner's own entry?"), and both this row and the
+        # TTS quote read it, so the same voice cannot be described two ways.
+        "voice_tier": "custom" if voice.owned else "library",
         "voice_revision": 1,
         "custom_voice_id": voice.provider_voice_id if voice.owned else None,
         "public_voice_id": None if voice.owned else voice.provider_voice_id,
-        "credits_per_1000_characters": 0,
-        "minimum_credits": 0,
-        "price_version": "flat",
-        "chargeable": True,
-        # ElevenLabs returns mp3 and Fish can return either; both are accepted
-        # by Story Studio, which transcodes locally.
-        "output_format": "mp3" if voice.provider_id.startswith("elevenlabs") else "wav",
+        # **One definition of the zero-price shape**, merged rather than retyped.
+        # This row used to hand-list three of the five keys and was already
+        # missing `cost_tier` and `standard_credits` — the drift `zero_pricing`
+        # exists to stop, and a drift that is invisible because an absent price
+        # field makes Story Studio's parser drop the row.
+        **zero_pricing("tts"),
+        # **The adapter's real container, never a guess from the provider id.**
+        # This said `"mp3" if provider_id.startswith("elevenlabs") else "wav"`, so
+        # a fal ElevenLabs voice published `wav` while `adapters/fal.py` downloaded
+        # `audio/mpeg`. `None` when the kind has no TTS lane at all — an absent
+        # answer rather than a default.
+        "output_format": tts_output_container(voice.provider_id),
         # MUST be exactly 'published': Story Studio treats any other value as a
         # generation gate and silently hides the voice.
         "catalog_status": "published",
@@ -923,11 +998,27 @@ def _model_record(provider_id: str, model_id: str) -> dict[str, Any] | None:
     if provider_id == FLEET_PROVIDER_ID:
         candidates = [d.id for d in registry.definitions()
                       if publish_id(d.id) == FLEET_PROVIDER_ID] or [provider_id]
+    found: list[dict[str, Any]] = []
     for candidate in candidates:
         for model in registry.models.models_for(candidate, include_disabled=True):
             if str(model.get("model_id")) == model_id:
-                return model
-    return None
+                found.append(model)
+    if not found:
+        return None
+    # **A location that can publish it answers first.** Every location's copy of a
+    # model carries its own Hub's contract, and returning the first one meant the
+    # voice picker and the reference report could describe a site the Hub says
+    # cannot run this model at all (`catalogued: false`, or too big for its
+    # machine). The merged row is offered because *some* site can serve it, so the
+    # record that describes it should be one of those.
+    for model in found:
+        raw = model.get("raw") or {}
+        if raw.get("catalogued") is False or raw.get("memory_eligible") is False:
+            continue
+        return model
+    # Every copy is withheld. Returning one is still better than `None`: `None`
+    # means *unverified*, which offers the voice, and the row already exists.
+    return found[0]
 
 
 def reference_contract(provider_id: str, model_id: str) -> dict[str, Any]:
@@ -953,6 +1044,19 @@ def reference_contract(provider_id: str, model_id: str) -> dict[str, Any]:
     return dict(block) if isinstance(block, dict) else {}
 
 
+#: The kinds whose TTS models clone even when the provider states nothing per
+#: model. Today that is a **provider** fact for fish and ElevenLabs (their whole
+#: TTS line takes a reference) and for a Studio Hub location, whose catalogue is
+#: read per model but may be older than the gateway.
+#:
+#: ponytail: a hand-listed set. Ceiling — a cloning-capable provider outside
+#: these three is under-described and its rows publish `supports_voice_cloning:
+#: false` until it states the fact per model. Upgrade path — delete this set the
+#: day every provider answers `reference_support`/`reference_audio`, which is
+#: already how the local lane works.
+CLONING_KINDS = frozenset({KIND_STUDIO_HUB, KIND_FISH, KIND_ELEVENLABS})
+
+
 def reference_support(provider_id: str, model_id: str) -> bool | None:
     """Does this model take a reference clip? `True`, `False`, or `None` if unstated.
 
@@ -975,6 +1079,28 @@ def reference_support(provider_id: str, model_id: str) -> bool | None:
     if isinstance(capabilities, list) and capabilities:
         return "voice-cloning" in capabilities
     return None
+
+
+def supports_cloning(provider_id: str, model_id: str) -> bool:
+    """The two-valued answer the catalogue must publish, from the same read.
+
+    The catalogue's `supports_voice_cloning` has to be a bool, because Story
+    Studio renders it as a fact about the model. `reference_support` has three
+    answers, because that is what the evidence supports. This is the one bridge
+    between them: an unstated model falls back to its kind's default, and nothing
+    else is allowed to decide.
+
+    It exists because the rule was written **twice** — `catalog._supports_cloning`
+    read the model's own `raw` and this module read the registry — so the
+    published flag and the voice picker could disagree, and a row claiming
+    `supports_voice_cloning: true` could sit beside an empty picker with no error
+    anywhere. One read, two shapes, in one place.
+    """
+    support = reference_support(provider_id, model_id)
+    if support is not None:
+        return support
+    definition = registry.definition(provider_id)
+    return definition is not None and definition.kind in CLONING_KINDS
 
 
 def voices_for_model(compound_model_id: str) -> list[dict[str, Any]]:

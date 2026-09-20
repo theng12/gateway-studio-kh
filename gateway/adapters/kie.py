@@ -80,7 +80,18 @@ def _urls_from_result_json(raw: Any) -> list[str]:
 
 class KieBackend:
     def generate(self, request: BackendRequest) -> BackendResult:
-        if request.modality not in {"image", "video", "music"}:
+        if request.modality not in {"image", "video"}:
+            # Music is deliberately absent. Kie's music models are its **Suno**
+            # family, which the provider documents as its own API
+            # (`/api/v1/generate*`, a flat body) — not the Market
+            # `jobs/createTask` contract this adapter speaks. Posting a
+            # `{model, input}` body there can only fail, so the lane is refused
+            # here as well as withheld from the catalogue.
+            #
+            # ponytail: not implemented rather than implemented blind. Ceiling —
+            # Kie music is unavailable through the gateway. Upgrade path — a
+            # dedicated Suno path (flat body, `/api/v1/generate`, its own
+            # record-info poll), measured with a real key before it is published.
             raise BackendError(
                 f"Kie does not serve '{request.modality}'", code="MODEL_MODALITY_MISMATCH"
             )
@@ -183,7 +194,6 @@ class KieBackend:
             media_type = {
                 "image": "image/png",
                 "video": "video/mp4",
-                "music": "audio/mpeg",
             }.get(request.modality, "application/octet-stream")
 
         return BackendResult(

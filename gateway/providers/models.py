@@ -25,8 +25,10 @@ from ..config import MODEL_CACHE_PATH, write_secret
 from .credentials import CredentialStore
 from .definitions import (
     DISCOVERY_STATIC,
+    IMAGE_REFERENCE_CAPABLE_KINDS,
     PROVIDERS_BY_ID,
     ProviderDefinition,
+    image_reference_state,
     music_can_serve,
     transcription_can_serve,
 )
@@ -220,6 +222,18 @@ class ModelInventory:
             return False
         if modality == "music" and not music_can_serve(model_id):
             return False
+        # An image endpoint whose own classification requires a reference image,
+        # on a kind whose image body cannot send one. fal's queue accepts the
+        # body and validates at the worker, so this reads as a job that
+        # `COMPLETED` and then failed on download — the `:batch` shape again.
+        # Withheld rather than offered; the gateway's own image bodies send a
+        # prompt and nothing else for every kind outside
+        # `IMAGE_REFERENCE_CAPABLE_KINDS`.
+        if modality == "image":
+            if (image_reference_state(definition.kind, model_id, model.get("raw") or {})
+                    is True
+                    and definition.kind not in IMAGE_REFERENCE_CAPABLE_KINDS):
+                return False
 
         # Two things a location's package list cannot tell you, which the Hub's
         # own catalogue can — both **read**, and only when it states them, so an
@@ -282,6 +296,14 @@ class ModelInventory:
         self._save()
 
     def set_many(self, provider_id: str, model_ids: list[str], enabled: bool) -> int:
+        # Resolved through `_definition`, exactly like `set_model_enabled` above
+        # and `add_user_model` below — and for the *other* direction of the same
+        # hazard. That map does not hold derived locations, while the **published**
+        # namespace (`studio-hub`) is an id that is not a provider at all: a caller
+        # sending it wrote enable state under a key `forget_provider` never sweeps,
+        # so those decisions outlived the locations they were made for.
+        if self._definition(provider_id) is None:
+            raise KeyError(provider_id)
         bucket = self._data["enabled"].setdefault(provider_id, {})
         for model_id in model_ids:
             bucket[model_id] = bool(enabled)

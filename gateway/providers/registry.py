@@ -10,7 +10,6 @@ from __future__ import annotations
 import os
 from typing import Any
 
-from ..config import DATA_DIR
 from .credentials import CredentialStore
 from .definitions import (
     DISCOVERY_STUDIO_HUB,
@@ -22,22 +21,30 @@ from .definitions import (
 from .discovery import DiscoveryResult
 from .models import ModelInventory
 
-FLEET_PATH = DATA_DIR / "fleet.json"
-
 
 #: Locations are derived from the roster rather than loaded at import, so adding
 #: one on the Fleet page takes effect without restarting the gateway. The cache
 #: is keyed on the roster file's mtime, so the common path is one stat.
+#:
+#: The roster path itself comes from `fleet.FLEET_PATH` (it honours
+#: `GATEWAY_FLEET`); this module no longer keeps a copy.
 _fleet_cache: dict = {"key": None, "by_id": {}}
 
 
 def _fleet_definitions_by_id() -> dict[str, ProviderDefinition]:
-    from ..fleet import PROVIDER_PREFIX, revision, roster
+    from ..fleet import FLEET_PATH, PROVIDER_PREFIX, revision, roster
 
     # Keyed on the writer's own revision counter *and* the file's mtime: the
     # counter catches our writes deterministically (an mtime can repeat within
     # one second on a coarse filesystem, which would silently drop a change),
     # and the mtime still catches an edit made outside this process.
+    #
+    # `FLEET_PATH` comes from `fleet`, which honours `GATEWAY_FLEET`. This module
+    # used to hold its own `DATA_DIR / "fleet.json"` — so on a deployment that
+    # pointed the roster elsewhere, the cache watched a file nothing wrote: a
+    # location added through the app never invalidated the derived providers, and
+    # the gateway kept serving the roster it had read at first use. One path, from
+    # the module that owns the file.
     try:
         key = (revision(), os.path.getmtime(FLEET_PATH))
     except OSError:

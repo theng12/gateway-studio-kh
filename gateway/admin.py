@@ -343,7 +343,13 @@ def search_models(
         "models": matched[:limit],
         "matched": len(matched),
         "returned": min(len(matched), limit),
-        "total": len(everything),
+        # **Not `total`.** `/health` publishes `total_models`, which is a different
+        # question — models belonging to providers that are switched on, publishable
+        # or not — and one word answering two questions is how a reader ends up
+        # comparing two numbers that were never about the same set. This one is
+        # exactly what the browser can list: every model whose provider and adapter
+        # could actually serve it, whether or not it is ticked.
+        "listable_total": len(everything),
         "enabled_total": sum(1 for r in everything if r["enabled"]),
         "modalities": sorted({r["modality"] for r in everything}),
         "providers": sorted(
@@ -360,6 +366,13 @@ def _apply(
         by_provider.setdefault(row["provider_id"], []).append(row["model_id"])
     changed = 0
     for provider_id, model_ids in by_provider.items():
+        # A row can only reach here from `_flat_models`, whose ids are concrete.
+        # This guard is for the *other* route into `_apply` — the explicit-items
+        # endpoint, which a client can hand any string. `studio-hub` is the
+        # published namespace Story Studio reads; it is not a provider, and
+        # enablement written under it would never be swept.
+        if registry.definition(provider_id) is None:
+            continue
         changed += registry.models.set_many(provider_id, model_ids, enabled)
     return changed
 
@@ -840,8 +853,18 @@ def import_voice(payload: dict[str, Any]) -> Any:
             return _error(502, f"could not reach ElevenLabs: {exc}")
         if response.status_code >= 400:
             return _error(502, f"ElevenLabs rejected the import: {response.text[:200]}")
-        payload_body = response.json() if response.content else {}
-        added_id = str((payload_body or {}).get("voice_id") or provider_voice_id)
+        # A 200 whose body is not JSON used to raise `json.JSONDecodeError` straight
+        # out of the route — a 500 with no sentence, *after* the voice had already
+        # been added upstream, which is the worst moment to lose the answer. The id
+        # asked for is what the route names and what the provider echoes, so an
+        # unreadable body falls back to it rather than dropping the import.
+        try:
+            payload_body = response.json() if response.content else {}
+        except ValueError:
+            payload_body = {}
+        added_id = provider_voice_id
+        if isinstance(payload_body, dict) and payload_body.get("voice_id"):
+            added_id = str(payload_body["voice_id"])
         voice = voice_registry().add_custom(
             provider_id, added_id, name, description="Imported from the voice library.",
             raw={"owner_id": owner_id},

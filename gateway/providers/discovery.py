@@ -94,11 +94,54 @@ _MODALITY_RULES: tuple[tuple[str, str], ...] = (
 )
 
 
+#: fal categories that name an **understanding** endpoint — it consumes media and
+#: answers with text (`vision`, a captioner, a video describer). Read as chat so
+#: the provider's own words decide, rather than the id: `...-video-understanding`
+#: contains "video" and was classified as a video *generator*, which is the one
+#: thing it cannot be. fal serves no chat lane, so its own filter then drops the
+#: row instead of publishing a model that fails on use.
+_UNDERSTANDING_CATEGORIES = frozenset(
+    {"vision", "video-to-text", "image-to-text", "audio-to-text", "text-to-text"}
+)
+
+
+def _modality_from_architecture(stated: str) -> str:
+    """Read OpenRouter's `architecture.modality` — `text+image->text`, and so on.
+
+    The **output** side decides, and only when it is unambiguous:
+
+      * `->text` is a chat model;
+      * `->image` and `->video` are generation models;
+      * a *mixed* output (`text+image`, `text+audio`) decides nothing. Measured:
+        `openrouter/auto` produces `text+image` because it can route to an image
+        model, and both `google/lyria-3-*` rows produce `text+audio` because the
+        preview also returns lyrics — reading either as a definite modality would
+        have published the router as an image model and a **music** model as chat.
+        They keep their id-based classification instead.
+
+    Returns `""` when the statement does not decide, leaving the id rules to
+    speak — this is a statement to read, not a replacement for every signal.
+    """
+    if "->" not in stated:
+        return ""
+    _inputs, _, outputs = stated.partition("->")
+    produced = {part.strip() for part in outputs.split("+") if part.strip()}
+    if produced == {"text"}:
+        return "chat"
+    if produced == {"image"}:
+        return "image"
+    if produced == {"video"}:
+        return "video"
+    return ""
+
+
 def infer_modality(model_id: str, definition: ProviderDefinition, hint: str = "") -> str:
     """Best-effort modality for a discovered model id.
 
-    `hint` is a provider-supplied category (fal publishes one). It wins when it
-    is a modality we actually serve.
+    `hint` is a provider-supplied statement: fal publishes a `category`, and
+    OpenRouter publishes `architecture.modality`. Either wins when it names a
+    modality we actually serve, because a provider's own words beat a guess made
+    from the model's name.
     """
     lowered_hint = (hint or "").strip().lower()
     if lowered_hint in {"text-to-image", "image", "text-to-image-to-image"}:
@@ -113,6 +156,12 @@ def infer_modality(model_id: str, definition: ProviderDefinition, hint: str = ""
         return "music"
     if lowered_hint in {"llm", "text", "chat"}:
         return "chat"
+    if lowered_hint in _UNDERSTANDING_CATEGORIES:
+        return "chat"
+    if "->" in lowered_hint:
+        stated = _modality_from_architecture(lowered_hint)
+        if stated:
+            return stated
 
     lowered = model_id.lower()
     for needle, modality in _MODALITY_RULES:
@@ -120,7 +169,8 @@ def infer_modality(model_id: str, definition: ProviderDefinition, hint: str = ""
             return modality
 
     # Fall back to the provider's declared scope. A single-modality provider
-    # (every language provider) is unambiguous here.
+    # (every language provider) is unambiguous here; for a provider that declares
+    # several, this is the ordering the definition deliberately puts first.
     return definition.modalities[0] if definition.modalities else "chat"
 
 
@@ -160,7 +210,16 @@ def _openai_models(definition: ProviderDefinition, values: dict[str, str]) -> Di
         model_id = str(entry.get("id") or entry.get("name") or "").strip()
         if not model_id:
             continue
-        modality = infer_modality(model_id, definition)
+        # **The provider's own classification, when it states one.** OpenRouter
+        # publishes `architecture.modality` (`text+image->text`, `video->text`)
+        # and it was fetched, stored, and never read — so `router/video`, a video
+        # *describer*, was classified as a video generator by the word in its id.
+        # fal's `category` arrives through its own strategy; this is the same read.
+        architecture = entry.get("architecture")
+        hint = ""
+        if isinstance(architecture, dict):
+            hint = str(architecture.get("modality") or "")
+        modality = infer_modality(model_id, definition, hint)
         if modality == "skip":
             continue
         models.append(
@@ -376,15 +435,17 @@ def _elevenlabs_models(definition: ProviderDefinition, values: dict[str, str]) -
             raw={
                 "model_id": e.get("model_id"),
                 "languages": e.get("languages"),
-                # ElevenLabs states the real per-request text limit and whether
-                # the model supports speed control at all — eleven_v3 does not.
-                # Both were being discarded while the catalogue published one
-                # invented number and `supports_speed: true` for every model.
+                # **Only the character limit is stated here.** This comment used to
+                # claim ElevenLabs also publishes per-model *speed* support; its
+                # documented model object has no such field, and `can_use_style`
+                # was read, stored and never consumed. What decides
+                # `supports_speed` is the curated `catalog._TTS_NO_SPEED`, so the
+                # comment was the only place the false claim lived — removed
+                # rather than left for the next reader to believe.
                 "maximum_text_length_per_request": e.get("maximum_text_length_per_request"),
                 "max_characters_request_subscribed_user": e.get(
                     "max_characters_request_subscribed_user"
                 ),
-                "can_use_style": e.get("can_use_style"),
             },
         )
         for e in entries

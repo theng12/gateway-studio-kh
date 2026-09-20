@@ -78,7 +78,10 @@ changed, not just its value.
 **One value must stay invented:** TTS `maximum_input_characters` — Story Studio
 calls `.toLocaleString()` on it unconditionally, so `null` would crash the page
 rather than degrade it. Per model where the provider states one (ElevenLabs
-publishes it), 25,000 otherwise.
+publishes it), otherwise **15,000** on a Studio Hub location and 25,000 on a cloud
+lane — and every one of them carries `maximum_input_characters_source`
+(`provider` / `curated` / `gateway`), because "we chose this" has to be readable
+next to the number.
 
 **The local lane presents one number, and chunking is Studio Hub's job.** Every
 Studio Hub location publishes **15,000** (`catalog._TTS_CHARACTERS_LOCAL`), whatever
@@ -651,11 +654,14 @@ clips belong to another build". The match is now the **model's own statement**.
   treating that as non-cloning would hide all ten voices again. The report says
   "limits unverified" instead of leaving a blank.
 
-`catalog._supports_cloning` applies the same read to the published
-`supports_voice_cloning`. It used to be per **kind** (`studio_hub`, `fish`,
-`elevenlabs`), which claimed cloning for a preset-speaker row and so offered Story
-Studio a picker with nothing in it. **No currently-published row changed**: all
-eight local rows declare `true`, and fish/elevenlabs keep the per-kind default.
+`voices.supports_cloning` applies the same read to the published
+`supports_voice_cloning` — it is the one bridge from the three-valued
+`reference_support` to the bool Story Studio needs, with `voices.CLONING_KINDS` as
+the single per-kind default. It used to be implemented **twice**, here and in
+`catalog._supports_cloning`, with different fallbacks, so a row could publish
+`supports_voice_cloning: true` beside an empty picker. **No currently-published row
+changed** when the two became one: all eight local rows declare `true`, and
+fish/elevenlabs keep the per-kind default.
 
 **A location's package list cannot tell a codec from a model, and `can_publish` now
 asks the catalogue.** `/api/hub/model-packages` lists the companions a model loads
@@ -745,11 +751,26 @@ floor, a required transcript is missing, or there are no aligned segments. The
 Voices window's **Reference…** button shows it. Nothing in it is computed from a
 model name.
 
+## Batch 4 — the remaining audit items (2026-09-20)
+
+**Nothing in the six audits is still open.** `AUDIT-BACKLOG.md` holds the full
+outcome record — each fix, how it was measured, and what was deliberately left.
+Four lessons worth carrying forward: read a provider's own classification rather
+than guessing from a name (but keep `modalities[0]` for a provider that states
+nothing — requiring one would have dropped 265 live chat models); a merged
+location row answers for every site offering it (`_merge_capabilities` unions
+cloning, takes the smallest character budget and the intersection of the speed
+range); a controller is identified by its Hub's stable `site_id`, never its
+address (when that fix invalidated the fleet suite's way of making a second
+location, the setup was relying on the bug); and one table with two readers is
+the only way to stop them drifting — image geometry, the TTS price shape, the
+cloning rule and the voice container each now have exactly one implementation.
+
 ## Verification
 
 ```bash
-.venv/bin/python tests/test_e2e.py              # 444 checks, isolated mock upstream
-.venv/bin/python tests/test_fleet_standalone.py # 47 checks, real Hub(s) as locations
+.venv/bin/python tests/test_e2e.py              # 478 checks, isolated mock upstream
+.venv/bin/python tests/test_fleet_standalone.py # 50 checks, real Hub(s) as locations
 .venv/bin/python tests/test_ui.py               # 109 checks, drives the real app
 ```
 

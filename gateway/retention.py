@@ -133,6 +133,17 @@ def prune(now: float | None = None) -> dict:
     trusting that it does.
     """
     moment = time.time() if now is None else now
+    # **The transcription quote table is swept here too.** It holds raw audio in
+    # memory between a quote and its confirm, and it was pruned only when a *new*
+    # quote arrived — so a session that uploaded and never confirmed kept its
+    # bytes for the life of the process, up to 25 MB each. Lazy import: `api`
+    # imports this module, so the edge has to point the other way only at call
+    # time, and a failure to sweep must never stop the files being pruned.
+    try:
+        from .api import _prune_uploads
+        _prune_uploads(moment)
+    except Exception:  # noqa: BLE001 - a sweeper must not raise
+        pass
     limits = settings()
     entries = _files()
     removable = [(p, m, s) for p, m, s in entries if (moment - m) > PROTECTED_AGE_S]

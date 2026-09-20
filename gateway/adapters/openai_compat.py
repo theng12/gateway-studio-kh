@@ -124,24 +124,19 @@ def _messages(params: dict[str, Any]) -> list[dict[str, Any]]:
 def _size_for(params: dict[str, Any]) -> str:
     """Map requested geometry onto a size the image APIs actually accept.
 
-    Arbitrary width/height is rejected by OpenAI-family endpoints, so this
-    snaps to the nearest supported size rather than forwarding the raw numbers.
+    The mapping lives in `providers.definitions.IMAGE_SIZE_BY_RATIO`, which the
+    catalogue also reads to publish each model's `output_options` — so the size
+    Story Studio is shown is the size the provider is sent. It used to be a local
+    DALL·E-3-era table here (`1792x1024`, `1024x1792`) that disagreed with the
+    catalogue *and* is refused by `gpt-image-1`.
     """
-    width = params.get("width")
-    height = params.get("height")
-    if not (isinstance(width, int) and isinstance(height, int) and width > 0 and height > 0):
-        ratio = str(params.get("aspect_ratio") or "16:9")
-        if ratio in {"9:16", "3:4", "2:3"}:
-            width, height = 1024, 1536
-        elif ratio in {"1:1"}:
-            width, height = 1024, 1024
-        else:
-            width, height = 1536, 1024
-    if width > height:
-        return "1536x1024" if min(width, height) >= 1000 else "1792x1024"
-    if width < height:
-        return "1024x1536" if min(width, height) >= 1000 else "1024x1792"
-    return "1024x1024"
+    from ..providers.definitions import image_size_for
+
+    return image_size_for(
+        str(params.get("aspect_ratio") or "16:9"),
+        params.get("width"),
+        params.get("height"),
+    )
 
 
 def _chat(request: BackendRequest) -> BackendResult:

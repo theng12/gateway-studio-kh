@@ -30,9 +30,18 @@ from datetime import datetime, timezone
 from typing import Any
 
 from . import limits
+from . import voices
 from .constants import PRICE_VERSION, zero_pricing
 from .providers import registry
-from .providers.definitions import ProviderDefinition
+from .providers.definitions import (
+    IMAGE_SIZE_BY_RATIO,
+    KIND_ANTHROPIC,
+    KIND_KIE,
+    KIND_MINIMAX,
+    KIND_XAI,
+    ProviderDefinition,
+    image_reference_state,
+)
 
 ID_SEPARATOR = "::"
 REBUILD_TTL_S = 20.0
@@ -84,13 +93,82 @@ def decode_model_id(compound: str) -> tuple[str, str]:
 
 
 def _geometry(ratio: str) -> dict[str, int]:
-    return {
-        "16:9": {"width": 1344, "height": 768},
-        "9:16": {"width": 768, "height": 1344},
-        "1:1": {"width": 1024, "height": 1024},
-        "4:3": {"width": 1152, "height": 864},
-        "3:4": {"width": 864, "height": 1152},
-    }.get(ratio, {"width": 1344, "height": 768})
+    """The published width/height for a ratio, from the **one** size table.
+
+    `providers.definitions.IMAGE_SIZE_BY_RATIO` is what the OpenAI-compatible
+    image body sends; publishing a different geometry here meant Story Studio was
+    shown 1344x768 for 16:9 while 1792x1024 was sent — a size `gpt-image-1`
+    rejects. What is offered is what is sent.
+    """
+    width, height = IMAGE_SIZE_BY_RATIO.get(ratio) or IMAGE_SIZE_BY_RATIO["16:9"]
+    return {"width": width, "height": height}
+
+
+#: The mode words a provider may state in `category`/`output_type` or in the
+#: model id itself. Longest phrases first so `image-to-video` is not read as
+#: `video-to-video`, and the short forms are matched as whole hyphen-separated
+#: tokens.
+_VIDEO_MODE_PHRASES: tuple[tuple[str, str], ...] = (
+    ("text-to-video", "text-to-video"),
+    ("image-to-video", "image-to-video"),
+    ("video-to-video", "video-to-video"),
+    ("extend-video", "video-to-video"),
+    ("t2v", "text-to-video"),
+    ("i2v", "image-to-video"),
+)
+
+
+def _video_modes_stated(model_id: str, raw: dict[str, Any]) -> list[str]:
+    """The video operations something the *provider* states, in a stable order.
+
+    Read from `raw`'s own classification first — fal publishes `category`
+    (`text-to-video`, `image-to-video`, `video-to-text`, `vision`) per endpoint
+    and discovery stores it verbatim — and then from the model id, which is the
+    provider's own name for the endpoint (`happyhorse-1-1/text-to-video`).
+
+    Empty means **nobody stated a mode**. That is deliberately not the same answer
+    as "image-to-video", which is what this used to publish for every video model:
+    a text-only endpoint was offered an image control it cannot honour, and a
+    model that takes text was not offered the control it needs.
+    """
+    haystack = " ".join(
+        str(value)
+        for value in (
+            (raw or {}).get("category"),
+            (raw or {}).get("output_type"),
+            (raw or {}).get("mode"),
+            model_id,
+        )
+        if value
+    ).lower()
+    tokens = set(haystack.replace("/", "-").replace("_", "-").split("-"))
+    stated: list[str] = []
+    for phrase, mode in _VIDEO_MODE_PHRASES:
+        found = phrase in tokens if "-" not in phrase else phrase in haystack
+        if found and mode not in stated:
+            stated.append(mode)
+    return stated
+
+
+#: The video operations a kind's adapter implements for a model that states
+#: nothing itself. This is **our** claim about our own code, never a provider's,
+#: so a row that falls back to it publishes `modes_source: "gateway"`.
+#:
+#:   * `xai` genuinely serves both: `adapters/xai.py` sends a prompt-only body
+#:     when there is no image, which is its documented text-to-video path;
+#:   * `minimax` likewise: `first_frame_image` is optional in
+#:     `adapters/minimax.py`, so a prompt alone is the text-to-video request;
+#:   * `kie` posts whatever the caller supplied down one `createTask` route, and
+#:     its curated video ids name no mode — image-to-video is what the previous
+#:     default was, kept and labelled rather than silently asserted;
+#:   * `fal` names the mode in `category` and in the endpoint id, so it needs no
+#:     fallback; a fal row that stated neither publishes nothing rather than a
+#:     guess.
+_VIDEO_MODES_BY_KIND: dict[str, tuple[str, ...]] = {
+    KIND_XAI: ("text-to-video", "image-to-video"),
+    KIND_MINIMAX: ("text-to-video", "image-to-video"),
+    KIND_KIE: ("image-to-video",),
+}
 
 
 def _image_row(model_id: str, definition: ProviderDefinition, model: dict[str, Any]) -> dict[str, Any]:
@@ -114,17 +192,33 @@ def _image_row(model_id: str, definition: ProviderDefinition, model: dict[str, A
     max_prompt_characters, max_prompt_source = _limit_with_source(
         "max_prompt_characters", None, 4000, definition.id, model_id
     )
+    raw = model.get("raw") or {}
+    # **Three answers, read from the model's own statement.** This used to be a
+    # definite `True` for `studio_hub` and a definite `False` for everything
+    # else, while `operations` claimed `image-to-image` on every row — so a
+    # location whose Hub says `capabilities: ["txt2img"]` advertised references it
+    # does not take, and a fal `text-to-image` endpoint advertised an
+    # image-to-image operation it does not serve. The contradiction was the tell.
+    reference_state = image_reference_state(definition.kind, model_id, raw)
+    if reference_state is True:
+        operations = ["text-to-image", "image-to-image"]
+        minimum_references, maximum_references = 1, 4
+    else:
+        # Every image adapter here can send a *prompt*, so text-to-image stands
+        # whatever else is unstated; image-to-image is claimed only when the model
+        # says it takes one.
+        operations = ["text-to-image"]
+        minimum_references, maximum_references = (
+            (0, 0) if reference_state is False else (None, None)
+        )
     return {
         "execution_label": "Local" if definition.kind == "studio_hub" else "Remote",
         "aspect_ratios": _IMAGE_RATIOS,
         "default_aspect_ratio": "16:9",
         "default_resolution": "1K",
         "output_options": options,
-        # Reference-image support is advertised so the UI offers it; a provider
-        # that cannot do it will reject the request, which is recoverable,
-        # whereas a hidden control is not.
-        "supports_reference_images": definition.kind == "studio_hub",
-        "supports_image_to_image": definition.kind == "studio_hub",
+        "supports_reference_images": reference_state,
+        "supports_image_to_image": reference_state,
         # ponytail: `true` for every image model. Ceiling — a model with no seed
         # parameter is offered a control it rejects. It is `true` because both
         # lanes we serve *do* accept one: the studio_hub adapter passes `seed`
@@ -133,9 +227,12 @@ def _image_row(model_id: str, definition: ProviderDefinition, model: dict[str, A
         # invented figure. Upgrade path — read it per model where a provider
         # states it.
         "supports_seed": True,
-        "min_reference_images": 1 if definition.kind == "studio_hub" else 0,
-        "max_reference_images": 4 if definition.kind == "studio_hub" else 0,
-        "reference_image_max_dimension": 2048,
+        "min_reference_images": minimum_references,
+        "max_reference_images": maximum_references,
+        # ponytail: one maximum dimension for every reference image, ours. Ceiling
+        # — no provider here publishes one, and a model with a tighter bound is
+        # over-described. Upgrade path — read it from the model's own schema.
+        "reference_image_max_dimension": 2048 if reference_state is True else None,
         # ponytail: flat prompt cap and ratio list for every image model. Ceiling
         # — the previous GenStudio published 4,000 on some models and 4,800 on
         # others, and its ratio lists varied; a flat 4,000 is deliberately the
@@ -143,11 +240,24 @@ def _image_row(model_id: str, definition: ProviderDefinition, model: dict[str, A
         # at the provider, which is the violation Story Studio's own notes record
         # as "a 4,000-character cap overruling a published 4,800"). Upgrade path
         # — per-model values once a provider publishes them.
-        "reference_strength_mode": "none",
-        "supported_reference_strengths": [],
+        #
+        # Reference *strength* is a claim only a model that takes references can
+        # make, so it is read from the model's own block and is otherwise `none`
+        # (a model that does not take one) or `null` (unstated) — never `none`
+        # for a location row that does use them.
+        "reference_strength_mode": (
+            (raw.get("reference_strength_mode") or None) if reference_state is True
+            else ("none" if reference_state is False else None)
+        ),
+        "supported_reference_strengths": (
+            (raw.get("supported_reference_strengths")
+             if isinstance(raw.get("supported_reference_strengths"), list) else [])
+            if reference_state is True
+            else ([] if reference_state is False else None)
+        ),
         "max_prompt_characters": max_prompt_characters,
         "max_prompt_characters_source": max_prompt_source,
-        "operations": ["text-to-image", "image-to-image"],
+        "operations": operations,
         "requires_admission_permit": False,
         "availability_note": None,
     }
@@ -179,12 +289,27 @@ def _video_row(model_id: str, definition: ProviderDefinition, model: dict[str, A
     #     Veo 3 generates audio. Story Studio reads a definite false as "do not
     #     offer this", so the honest answer for a silent provider is `null`.
     raw_id = str(model.get("model_id") or model_id or "").lower()
-    text_capable = "text-to-video" in raw_id or "t2v" in raw_id
-    modes = ["text-to-video", "image-to-video"] if text_capable else ["image-to-video"]
     raw = model.get("raw") or {}
+    # **Read what the provider states, then our own adapter's knowledge, and
+    # label which it was.** The id heuristic alone was the defect: fal's
+    # `category` — which discovery stores — was never read, so `veo3.1`,
+    # `ltx-video` and `gemini-omni-flash` (all `category: "text-to-video"`)
+    # published image-to-video only, and a text-only endpoint was offered an
+    # image control it cannot honour.
+    stated_modes = _video_modes_stated(raw_id, raw)
+    if stated_modes:
+        modes, modes_source = stated_modes, "provider"
+    else:
+        fallback = list(_VIDEO_MODES_BY_KIND.get(definition.kind, ()))
+        modes, modes_source = fallback, ("gateway" if fallback else None)
     stated_audio = raw.get("generates_audio") if isinstance(raw, dict) else None
     return {
         "modes": modes,
+        # Whose answer that list is, in the same discipline every other
+        # gateway-chosen value follows: `provider` when the model or its id said
+        # so, `gateway` when it is our adapter's capability, `null` when nobody
+        # stated one and the list is therefore empty.
+        "modes_source": modes_source,
         "aspect_ratios": ["16:9", "9:16", "1:1"],
         "generates_audio": stated_audio if isinstance(stated_audio, bool) else None,
         "variants": [
@@ -209,6 +334,25 @@ def _video_row(model_id: str, definition: ProviderDefinition, model: dict[str, A
 #:   curated  — the owner's `model-limits.local.json` filled a silence.
 #:   gateway  — our own documented default or recorded table.
 LIMIT_SOURCES = ("provider", "curated", "gateway")
+
+
+def _output_default(definition: ProviderDefinition) -> int | None:
+    """A limit the gateway *must* supply because the provider requires the field.
+
+    Only Anthropic's Messages API makes `max_tokens` mandatory (`400` without it).
+    Every other chat lane treats it as optional, so an absent value stays `null`
+    and no number is invented. Anthropic's adapter has to send one, so the number
+    it will send is **published as ours** (`max_output_tokens_source: "gateway"`)
+    instead of the row saying `null` while the request carries 4096 — the same rule
+    the TTS character limit follows.
+
+    One copy: the adapter imports this constant too.
+    """
+    if definition.kind == KIND_ANTHROPIC:
+        from .adapters.anthropic import DEFAULT_MAX_TOKENS
+
+        return DEFAULT_MAX_TOKENS
+    return None
 
 
 def _limit_with_source(
@@ -448,24 +592,6 @@ _TTS_SPEED_RANGES: dict[str, tuple[float, float]] = {
 }
 
 
-def _supports_cloning(definition: ProviderDefinition, raw: dict[str, Any]) -> bool:
-    """Whether a model clones, as the provider states it.
-
-    Read from the model's own `reference_audio` block when it has one. An
-    explicit `declared: false` or `supported: false` is the only thing that
-    withholds the claim — a model that says *nothing* keeps the per-kind default,
-    because "unstated" must not silently become "cannot", which is how ten
-    working voices disappear from a picker with no error to explain it.
-    """
-    reference = raw.get("reference_audio")
-    if isinstance(reference, dict) and reference:
-        if reference.get("declared") is False or reference.get("supported") is False:
-            return False
-        if reference.get("declared") is True or reference.get("supported") is True:
-            return True
-    return definition.kind in {"studio_hub", "fish", "elevenlabs"}
-
-
 def _tts_row(model_id: str, definition: ProviderDefinition, model: dict[str, Any]) -> dict[str, Any]:
     raw = model.get("raw") or {}
     supports_speed = model_id not in _TTS_NO_SPEED
@@ -506,16 +632,22 @@ def _tts_row(model_id: str, definition: ProviderDefinition, model: dict[str, Any
         # them, which tells Story Studio to offer a voice picker with nothing in
         # it: the same "control that does nothing" the rest of this file removes.
         #
-        # ponytail: the per-kind default still stands behind it for kinds that
-        # publish nothing per model (fish, elevenlabs) — their cloning is a
-        # provider fact today. Ceiling — a cloning-capable provider outside these
-        # three is under-described. Upgrade path — the same read, once they state
-        # it, which is how `maximum_input_characters` already works.
-        "supports_voice_cloning": _supports_cloning(definition, raw),
+        # **One read of the rule.** The value comes from `voices.supports_cloning`
+        # — the same function the voice picker's `reference_support` is built on —
+        # because a second implementation here had different fallbacks, so a row
+        # could claim cloning while its picker was empty. `voices.CLONING_KINDS`
+        # is the per-kind default that stands behind an unstated model (fish,
+        # elevenlabs), and it lives there so there is exactly one copy.
+        "supports_voice_cloning": voices.supports_cloning(definition.id, model_id),
         "preview_policy": "none",
         "generation_enabled": True,
         "queue_class": "direct",
-        "supported_languages": languages[:40],
+        # The provider's own list, whole. This was `languages[:40]` — a silent
+        # truncation of a stated fact, invisible today only because ElevenLabs
+        # publishes 32. A provider that states 60 languages is describing 60
+        # languages; a cap here would make the catalogue quietly wrong about the
+        # rest, which is the "our number in their field" shape with no label.
+        "supported_languages": languages,
         # ponytail: a conservative concurrency of 1 for every TTS lane. Ceiling —
         # a provider that accepts several submissions at once is under-used.
         # Deliberately the safe direction: over-scheduling is what makes a provider
@@ -666,6 +798,21 @@ def _chat_row(model_id: str, definition: ProviderDefinition, model: dict[str, An
         controls = [c for c in controls if c == "max_output_tokens" or c in parameters]
 
     structured = _supports("structured_outputs", "response_format")
+    # **The mode comes from the parameter that states it.** This published a flat
+    # `"json_object"` for every model whose provider listed *either* parameter, so
+    # a model offering only `json_schema` (OpenRouter states that as
+    # `structured_outputs`) was described as the weaker mode — a claim the provider
+    # never made. `response_format` is JSON-object mode; `structured_outputs` is
+    # JSON-schema mode. When both are stated, `json_object` is still true and is
+    # the value this field has always carried, so it stays.
+    if parameters is None or not structured:
+        structured_mode = None
+    elif "response_format" in parameters:
+        structured_mode = "json_object"
+    elif "structured_outputs" in parameters:
+        structured_mode = "json_schema"
+    else:
+        structured_mode = None
     # Where the provider published nothing, the owner's curated file may know.
     # Gap-filling only: a live provider value always wins, because a file goes
     # stale and a provider does not.
@@ -673,7 +820,8 @@ def _chat_row(model_id: str, definition: ProviderDefinition, model: dict[str, An
         "context_window_tokens", _stated(context), None, definition.id, model_id
     )
     max_output, output_source = _limit_with_source(
-        "max_output_tokens", _stated(completion), None, definition.id, model_id
+        "max_output_tokens", _stated(completion), _output_default(definition),
+        definition.id, model_id,
     )
     return {
         "queue_class": "direct",
@@ -685,7 +833,7 @@ def _chat_row(model_id: str, definition: ProviderDefinition, model: dict[str, An
         "input_modalities": inputs,
         "supports_vision": ("image" in inputs) if inputs else None,
         "supports_structured_output": structured,
-        "structured_output_mode": "json_object" if structured else None,
+        "structured_output_mode": structured_mode,
         "supports_web_search": _supports("web_search", "web_search_options"),
         # Neither of these is stated by any provider here, and a definite `false`
         # is not the same statement as "unknown": Story Studio reads
@@ -723,6 +871,12 @@ def _music_row(model_id: str, definition: ProviderDefinition, model: dict[str, A
         # advertised `max_prompt_characters` and nothing consulted it).
         "max_prompt_characters": max_prompt_characters,
         "max_prompt_characters_source": max_prompt_source,
+        # ponytail: flat metadata caps for every music model, ours, at the
+        # conservative end — the same trade the image lane records at
+        # `max_prompt_characters`. Ceiling — a model that accepts longer lyrics or
+        # a longer title is described narrowly, and one that accepts less is
+        # over-described. Upgrade path — per-model values from the provider, or the
+        # owner's curated file, once a provider states either field.
         "max_lyrics_characters": 4000,
         "max_title_characters": 200,
         "supports_instrumental": instrumental if isinstance(instrumental, bool) else None,
@@ -738,6 +892,49 @@ _ROW_BUILDERS = {
     "chat": _chat_row,
     "music": _music_row,
 }
+
+
+def _merge_capabilities(existing: dict[str, Any], row: dict[str, Any], modality: str) -> None:
+    """Fold a second location's capability facts into the row already published.
+
+    A location is a provider internally, but its models are published once per
+    **maker** — so the merged row answers for every site that offers it, and each
+    field needs a direction rather than "whichever site came first":
+
+      * **`supports_voice_cloning`** — the union. A voice picker is offered when
+        *any* site can use a reference clip; a location that cannot simply never
+        receives that work.
+      * **`maximum_input_characters`** — the **smallest**. The caller is told what
+        it may submit, and it does not choose the site, so the number that is safe
+        everywhere is the only honest one (the local lane's 15,000 is per-location
+        because sectioning is the Hub's own decision). Its `_source` follows the
+        value it came with, or the two would describe different numbers.
+      * **speed range** — the **intersection** (`max` of the minimums, `min` of the
+        maximums, and `supports_speed` only if every site has it), for the same
+        reason: a caller picks one speed and may land anywhere.
+
+    Only TTS rows carry these. Everything else about a merged row is already a
+    fact about the model, not about a site.
+    """
+    if modality != "tts":
+        return
+    if row.get("supports_voice_cloning"):
+        existing["supports_voice_cloning"] = True
+    for value_key, source_key in (
+        ("maximum_input_characters", "maximum_input_characters_source"),
+    ):
+        current = existing.get(value_key)
+        incoming = row.get(value_key)
+        if isinstance(incoming, int) and (not isinstance(current, int) or incoming < current):
+            existing[value_key] = incoming
+            existing[source_key] = row.get(source_key)
+    if not row.get("supports_speed"):
+        existing["supports_speed"] = False
+    for key, pick in (("minimum_speed", max), ("maximum_speed", min)):
+        current = existing.get(key)
+        incoming = row.get(key)
+        if isinstance(current, (int, float)) and isinstance(incoming, (int, float)):
+            existing[key] = pick(current, incoming)
 
 
 class Catalog:
@@ -811,6 +1008,14 @@ class Catalog:
                 existing["legacy_ids"] = list(
                     dict.fromkeys([*existing["legacy_ids"], *row["legacy_ids"]])
                 )
+                # **The merged row is one model with N possible sites, so its
+                # capability facts have to answer for all of them.** Only `locked`
+                # used to merge; everything else kept the *first* location's answer,
+                # so a model two Hubs describe differently was published as whichever
+                # site happened to be iterated first — a `supports_voice_cloning`
+                # beside an empty picker, or a character budget only one site
+                # honours. Merged in one place, with a stated direction per field.
+                _merge_capabilities(existing, row, modality)
             rows[modality] = list(merged.values())
 
         self._rows = rows

@@ -24,6 +24,201 @@ instances across the console and the menu bar.
 
 ---
 
+## Batch 4 — every remaining item, and what closed it (2026-09-20)
+
+The `### Open (as written — every item below is closed; see Batch 4 at the top)` lists below are kept as the audit wrote them, for the reasoning and
+the line numbers. **Every item in them is now closed** except where a note says
+otherwise; this section is the outcome, with the evidence, so the lists are not
+misread as a to-do.
+
+All three suites were re-run after this batch: **e2e 478/478**, **fleet 50/50**,
+**UI 109/109**. The e2e count went 444 → 465 → 478 as checks were added; the fleet
+count 47 → 50.
+
+### Shape 4 — a control that does nothing, or one rule computed twice
+
+- **4.5, Kie music** — withdrawn. Kie's music models are the **Suno** family, which
+  Kie documents as its own API (`/api/v1/generate*`, a flat body) and not the
+  Market `jobs/createTask` contract this adapter speaks, so the curated `V6` row
+  could only fail on use. Music is gone from `KIND_KIE`, the definition and the
+  row; `KieBackend` refuses it by name; `_MODALITIES_BY_KIND` no longer claims it.
+  A `ponytail:` names the upgrade path (implement the Suno route and measure it).
+  The provider's docs structure — a separate "Music Generation" section — is the
+  evidence; no key was spent.
+- **4.6, `summary()` and `is_configured`** — **was already fixed** by deriving
+  `publishable_models`/`by_modality` from `enabled_models()`, which applies the
+  gate. Verified by reading; nothing to change.
+- **4.7, "Browse in Models tab"** — `openInBrowserFilter` set `filtersPopulated =
+  true` before the select was populated, so on a Providers-first launch the filter
+  silently became `""`. It now awaits `loadModels()` first.
+- **4.8, the two console toggle paths** — `setModel` had no try/catch (the promise
+  rejected into the console, the checkbox kept the clicked state and nothing said
+  so) and `toggleModel` re-rendered a locally mutated row. Both now re-read the
+  server's answer and alert on refusal.
+- **4.3's remainder, rendering `unserved_modalities`** — the console renders the
+  lanes a provider declares but its adapter cannot serve, as a badge with the
+  reason. Asserted at the level available without a browser: the served console
+  source references the field.
+- **4.9, `admin.py`'s unguarded `response.json()`** — a 200 with a non-JSON body
+  raised `JSONDecodeError` out of the route, a 500 *after* the voice had been added
+  upstream. The id that was asked for is the answer, so an unreadable body falls
+  back to it. Proven with a mock route that answers 200 `text/html`.
+- **4.11, cloning computed twice** — `catalog._supports_cloning` and
+  `voices.reference_support` were two implementations with different fallbacks. One
+  read now: `voices.supports_cloning` bridges the three-valued `reference_support`
+  to the bool the catalogue must publish, with `CLONING_KINDS` as the single
+  per-kind default. Asserted three ways, including a new mock model whose only
+  statement (`capabilities`) omits cloning — the old code published `true` for it
+  while the picker was empty. Measured: **no currently-published row changed**.
+- **4.12, the TTS price shape defined twice** — `voices.story_row` hand-listed four
+  of the six keys and was missing `cost_tier` and `standard_credits`. It is merged
+  from `constants.zero_pricing("tts")` now, and the e2e check reads the key set from
+  that function rather than listing it again.
+
+### Shape 5 — identity from a label, or two namespaces for one thing
+
+- **5.4, the reserved location namespace** — the bare `studio-hub` id (the
+  published namespace every location collapses into) is refused, and so is any
+  other kind wearing the `studio-hub-*` prefix. A `studio_hub`-kind entry under it
+  still loads, because that is the shape the Fleet page itself writes — the first
+  version of this check rejected the test suite's own mock location, which is how
+  that distinction was found.
+- **5.5, kind judged by id prefix** — the remaining `provider_id.startswith(
+  "elevenlabs")` is gone with 2.7: the container comes from the provider's kind.
+- **5.6, `set_many` writing non-provider ids** — it resolves through `_definition`
+  like `set_model_enabled` always has, and the console's row path skips ids that do
+  not resolve. Asserted: enablement sent for `studio-hub` writes nothing.
+- **5.7, curated limits keyed by the concrete id only** — `for_model` tries the
+  concrete id then `publish_id(provider_id)`, so an entry written the documented
+  `studio-hub::<model>` way is read. The concrete id still wins.
+- **5.8, `_preview_model` reading only `static_models`** — ElevenLabs publishes
+  none, so every preview for a discovered voice named `model_id=""` and 404'd. An
+  enabled discovered row is preferred now.
+- **5.9, `add_controller` deduping on the address** — the Hub's stable `site_id`
+  (already read by `_probe`) decides identity, with the address as the fallback.
+  `site_id` is published on the roster row. Proven in the fleet suite: the same Hub
+  re-added at its `localhost` alias is the same location, and no third row is
+  minted. The suite's own second location had to be written straight into the roster
+  (a supported input) because the API is now right to refuse it.
+- **5.10 / 1.5, a merged row keeping the first location's facts** — `locked` was the
+  only field that merged. `catalog._merge_capabilities` now folds in the rest with a
+  stated direction per field: cloning is the **union**, `maximum_input_characters`
+  the **smallest** (with its source), the speed range the **intersection**. And
+  `voices._model_record` prefers a location's record that can actually publish the
+  model rather than the first in iteration order.
+- **5.11, `SettingsSection` silently rebinding to 8000** — a mistyped or empty port
+  is refused, the real value is put back, and the label says nothing was saved.
+
+### Shape 1 — one value answering two different questions
+
+- **1.4, machine online counting** — a missing state was coerced to `unknown` and
+  counted **online**, and the headline total came from a different list than the
+  table. Both now derive from `machines_flat`, an unknown state counts as neither,
+  and `machines_unknown` is published and shown ("N with no state reported").
+- **1.6, one word for two totals** — `/admin/api/models` publishes
+  `listable_total` (what the browser can list) instead of `total`, because
+  `/health`'s `total_models` answers a different question (models on providers that
+  are switched on). The console reads the new key.
+- **1.9, modality falling back to `modalities[0]`** — the fallback is load-bearing
+  for single-modality providers and for providers that state nothing (measured: a
+  strict "must be stated" rule would have dropped **265** live chat models). What
+  was actually wrong is narrower and is fixed: a provider's own classification is
+  now read first — fal's `category` via its strategy, and OpenRouter's
+  `architecture.modality`, which was fetched, stored and never read. Measured
+  effect on the live cache: **14 reclassifications**, all corrections (5
+  `thinkingmachines/inkling` rows video→chat; 9 fal understanding endpoints
+  image/video→chat, which fal's own filter then drops). None was enabled.
+  `_modality_from_architecture` reads only an unambiguous output side, because
+  `openrouter/auto` produces `text+image` and `google/lyria-3-*` produce
+  `text+audio` — reading either as definite would have published a router as an
+  image model and a music model as chat.
+
+### Shape 2 — an unknown collapsing into a definite value
+
+- **2.1, video `modes`** — read from `raw["category"]` and the model id, with
+  `modes_source` (`provider` / `gateway` / `null`). A model that states nothing
+  publishes `[]` and no variants rather than a definite image-to-video. Measured
+  live: the fal `text-to-video` rows stop claiming image-to-video, and xAI
+  genuinely gains text-to-video (its adapter sends a prompt-only body).
+- **2.3 / 2.4, image reference capability** — three answers from the model's own
+  statement (the Hub's `capabilities`, fal's `category`, the id), never a definite
+  `False` for everything that is not a location while `operations` claims
+  `image-to-image`. Measured: the live Studio Hub FLUX2 row says `capabilities:
+  ["txt2img"]` and now publishes `supports_reference_images: false` with
+  `operations: ["text-to-image"]`, where it previously claimed both. And a stated
+  `image-to-image` endpoint on a kind whose image body cannot send a reference (fal,
+  the shim, xAI, MiniMax) is **withheld**: measured **116** fal image rows, none
+  enabled, so nothing the owner could pick changed.
+- **2.6, `structured_output_mode`** — `response_format` is JSON-object mode and
+  `structured_outputs` is JSON-schema mode; the field was a flat `"json_object"`
+  for either. Measured: 15 rows `json_object`, 1 `json_schema` (previously
+  `json_object`), 46 `null`.
+- **2.7 / 2.8, `output_format` guessed from an id prefix** — one function
+  (`voices.tts_output_container`) reads the kind's container from the adapter's real
+  media type, and both the voice row and the TTS quote use it. A fal ElevenLabs
+  voice published `wav` while `adapters/fal.py` downloaded `audio/mpeg`.
+
+### Shape 3 — a value we invented, read as the provider's
+
+- **3.3, the 21 curated fal example names** — `SOURCE_EXAMPLE`, `owned=False`:
+  they are fal's documentation examples, not the owner's account entries. The tier
+  now follows `owned` (one rule, used by the voice row and the quote), so they
+  publish `library` with a public id and no `custom_voice_id` — and a fleet push
+  cannot look authorised for a voice the owner never added.
+- **3.4, `estimated_duration_ms`** — kept (the field is an estimate by name and the
+  UI wants it) but now carries `estimated_duration_ms_source: "gateway"` and a
+  `ponytail:` naming the flat 14 chars/second as ours and the upgrade path.
+- **3.5, `anthropic.DEFAULT_MAX_TOKENS`** — the Messages API requires the field, so
+  a number is inevitable; the number the gateway will send is now **published on
+  the Anthropic rows** with `max_output_tokens_source: "gateway"`, from the same
+  constant the adapter reads. The row and the request cannot disagree again.
+- **3.6, image geometry** — one table (`IMAGE_SIZE_BY_RATIO`) is read by both the
+  catalogue and the OpenAI-compatible body, so what is offered is what is sent. The
+  catalogue advertised 1344x768 for 16:9 while the adapter sent 1792x1024, a
+  DALL·E-3-only size `gpt-image-1` answers 400 for. `reference_image_max_dimension`
+  is published only where references are supported, and the counts carry a
+  `ponytail:`.
+- **3.7, music lyrics/title caps** — the existing `ponytail:` now names all three
+  invented caps and the upgrade path, instead of describing a different key.
+- **3.8, the DALL·E-3 size table** — replaced by the shared three-size table (see
+  3.6). The `alloy` default voice was already removed in an earlier batch.
+- **3.10, OpenRouter's `output_modalities`** — answered under 1.9.
+- **3.11, a comment asserting a field ElevenLabs does not publish** — corrected, and
+  the dead `can_use_style` read removed.
+- **3.12, `supported_languages[:40]`** — the truncation is gone; a provider's stated
+  list is published whole.
+
+### Shape 6 — state that changes but cannot be seen
+
+- **6.8, quoted uploads pruned lazily** — the retention timer sweeps the in-memory
+  quote table as well as the artifacts. Deliberately **not** popped on confirm: a
+  retry of the same idempotency key is only idempotent while the entry is readable,
+  and dropping it would turn a legitimate retry into a 410.
+- **6.9, `limits.py` keyed on mtime only** — mtime **and size**, the pair
+  `registry.py` documents for this hazard.
+- **6.10, two fleet paths** — `providers/registry.py` imports `fleet.FLEET_PATH`
+  (which honours `GATEWAY_FLEET`) instead of keeping its own `DATA_DIR/fleet.json`,
+  which meant the cache watched a file nothing wrote.
+
+### Not closed, and why
+
+- **`voxtral-tts`'s 15,000** is still a presentation decision with nothing behind
+  it on the Hub's side (no section budget, no cliff, no audited contract). It is the
+  Hub session's to close; flagged in the handoff.
+- **`freshness.stale`** is deliberately left unable to fire (see Shape 6.4): making
+  it fire would disable every model on a stale inventory, an outage dressed as a
+  fix. The honest number, `inventoryAgeMs`, is published beside it.
+- **fal's image-to-image lane** is withheld rather than implemented, because the
+  reference field's name and arity differ per endpoint and fal validates at the
+  worker. The `ponytail:` names reading the per-endpoint OpenAPI schema as the
+  upgrade path.
+- **The ten voices imported before the language fix still say `"en"`.** The old
+  import wrote it either way, so the original is unrecoverable and clearing them
+  would be a second guess. The owner's call.
+
+---
+
+
 ## Shape 4 — a control that does nothing, or one rule computed twice
 
 ### Fixed (this session)
@@ -72,7 +267,7 @@ instances across the console and the menu bar.
   the same defect as a control that does nothing** — the audit's own 4.3 is exactly
   that — so it was rendered in the same commit rather than left computed and unread.
 
-### Open
+### Open (as written — every item below is closed; see Batch 4 at the top)
 1. **FIXED this session — see the list above** (voice share/permission namespaces).
 2. **FIXED this session — see the list above** (`row["raw"]`, and the swallowed
    import error).
@@ -155,7 +350,7 @@ instances across the console and the menu bar.
   fixed, including why the trailing-`::` fix this file originally suggested was
   itself a shape-5 mistake).
 
-### Open
+### Open (as written — every item below is closed; see Batch 4 at the top)
 1. **FIXED this session — see the Fixed list above** (the operator token, 5.1).
 2. **FIXED this session — see the Fixed list above** (voice share/permission
    namespace).
@@ -257,7 +452,7 @@ verified".
   identical to `models_for` and only one is in `enabled_models`: a `models_for`-based
   reader returns both and **fails**, which was verified by restoring the old body.
 
-### Open
+### Open (as written — every item below is closed; see Batch 4 at the top)
 1. **FIXED this session — see the Fixed list above** (`routing_candidates` ×
    `can_publish`, 1.1).
 2. **FIXED this session — see the Fixed list above** (`hub_status` running).
@@ -308,7 +503,7 @@ verified".
 The project's rule: never let "the answer is none" and "I could not work out the
 answer" produce the same value.
 
-### Open
+### Open (as written — every item below is closed; see Batch 4 at the top)
 1. **`gateway/catalog.py:179-199` — video `modes` / `variants[].operation`.** An
    unknown mode still becomes the definite `["image-to-video"]`: `text_capable` only
    looks for the literal `text-to-video`/`t2v` in the model id, while `raw["category"]`
@@ -511,7 +706,7 @@ no audited contract**, so nothing backs the 15,000 the gateway publishes for
   receiver demands (`shared_voice_id`), so a voice's catalogue id and its id on the
   wire are the same bytes.
 
-### Open
+### Open (as written — every item below is closed; see Batch 4 at the top)
 1. **`menubar/main.swift:172-186` — saving the API key rewrote `.env` wholesale**,
    deleting every provider API key the owner had put there (the documented no-UI
    way to add one) and silently resetting a deliberate `GATEWAY_HOST` LAN bind to
@@ -571,27 +766,24 @@ no audited contract**, so nothing backs the 15,000 the gateway publishes for
 
 ## What to do next, in order
 
-Every HIGH, MED-HIGH **and the three open decisions** are now closed. What is left
-is MED and below:
+**Nothing from these six audits is still open.** Batch 4 closed the last of them —
+see the section at the top of this file for what each fix was and how it was
+measured. What follows is the record of how the work was sequenced, kept because
+the ordering reasoning is still the right way to approach a new finding.
 
-1. **Shape 1.2 and 6.6 — `/health` says "running" from a URL in a file, and the
-   Fleet page's Refresh does not discover models.** Both are the same defect as the
-   counts that read "enabled" as "offered": the page that exists to say what is
-   available is not measuring it. This is the largest remaining cluster and the
-   cheapest to feel — a stopped Hub that answers health.
-2. **Shape 2.1, 2.2 — video modes and voice language are published wrong**, with a
-   stated source that could be read instead. Same rule as Orpheus: read, never
-   derive.
-3. **Shape 4.4 — a disabled model still runs if it was disabled after submit**, and
-   a Hub refresh that flips `catalogued` mid-queue does not stop the job.
-4. **The rest of Shape 3 — values we invented sitting in a provider's own field.**
-   The `*_source` convention is now settled and in use, so these are mechanical:
-   video `duration_seconds`, the 21 curated fal example voices,
-   `estimated_duration_ms`, `anthropic.DEFAULT_MAX_TOKENS`, music's lyrics and
-   title caps, and the modality inference in `discovery.py`.
-5. Shape 5.4 — the reserved `studio-hub` namespace is claimable by a custom
-   provider, and "is a location" is defined two ways (`catalog.py` by kind,
-   `fleet.py` by id prefix).
+Every HIGH, MED-HIGH **and the three open decisions** were closed first. Batch 4
+then closed the MED-and-below remainder:
+
+1. **Shape 1.2 and 6.6** — closed earlier (the `/health` "running" measurement and
+   the Fleet page's Refresh).
+2. **Shape 2.1, 2.2** — closed (video modes read from the provider's category and
+   labelled; voice language stated or absent).
+3. **Shape 4.4** — closed (the worker re-asks `enabled_models` and fails
+   `MODEL_NOT_OFFERABLE`).
+4. **The rest of Shape 3** — closed; the `*_source` convention is in use for every
+   one of them.
+5. **Shape 5.4** — closed (the reserved namespace is refused with a reason, and
+   "is a location" is one predicate, `fleet.is_location_provider`).
 
 Done in this batch: 3.1 (the `*_source` fields), Shape 3's Orpheus cap, 6.4 (the
 honest inventory age — decision taken: report it, do not make `stale` trip).
@@ -600,3 +792,4 @@ Done in Batch 3: 6.2 (`.env` read live), 6.3 (placement cache keyed on the clip)
 Done in Batch 2: 5.1 (the operator token), 1.1 (routing × `can_publish`), 4.10 /
 1.10 (`_VALID_KINDS`).
 Done in Batch 1: 4.1, 4.2, 5.2, and Shape 5.5's app half.
+Done in Batch 4: everything else — see the top of this file.

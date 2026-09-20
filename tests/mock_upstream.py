@@ -196,7 +196,7 @@ class Handler(BaseHTTPRequestHandler):
         # matching, the per-model reference report and the no-invented-numbers
         # rule can be asserted without a real Hub.
         #
-        # Three deliberate shapes:
+        # Five deliberate shapes:
         #   mock-hub/clone-model        catalogued, audited contract (3/8/15s)
         #   mock-hub/preset-model       catalogued, `declared: false` — no reference
         #   mock-hub/uncatalogued-model installed but absent from the catalogue
@@ -204,6 +204,14 @@ class Handler(BaseHTTPRequestHandler):
         #                                 model at all as far as publication goes
         #   mock-hub/toobig-model       catalogued, but the Hub says it does not fit
         #                               this machine (`memory_eligible: false`)
+        #   mock-hub/capability-only-model
+        #                               catalogued, **no `reference_audio` block**
+        #                               and no `voice-cloning` in `capabilities` —
+        #                               the only statement available is the
+        #                               capability list, so it does not clone. The
+        #                               catalogue's published flag and the voice
+        #                               picker must give the same answer; they used
+        #                               to be two implementations of one rule.
         if path == "/api/hub/model-packages":
             self._json(200, {"models": [
                 {"package_id": "clone-model", "model_id": "mock-hub/clone-model",
@@ -218,6 +226,9 @@ class Handler(BaseHTTPRequestHandler):
                 {"package_id": "toobig-model", "model_id": "mock-hub/toobig-model",
                  "engine": "voice-mlx", "files_state": "files_verified",
                  "dispatch_state": "eligible", "revision": "d" * 40},
+                {"package_id": "capability-only-model", "model_id": "mock-hub/capability-only-model",
+                 "engine": "voice-mlx", "files_state": "files_verified",
+                 "dispatch_state": "eligible", "revision": "e" * 40},
             ]})
             return
         if path == "/api/hub/catalog":
@@ -247,6 +258,11 @@ class Handler(BaseHTTPRequestHandler):
                  "reference_audio": {"declared": True, "supported": True,
                                      "profile_audited": False,
                                      "profile_source": "unverified"}},
+                # No `reference_audio` key at all. `capabilities` is the only
+                # statement, and it does not name cloning.
+                {"repo": "mock-hub/capability-only-model", "family": "mock-caps",
+                 "capabilities": ["tts", "multilingual"],
+                 "min_unified_memory_gb": 8, "memory_eligible": True},
             ]})
             return
 
@@ -418,6 +434,15 @@ class Handler(BaseHTTPRequestHandler):
                     "usage": {"prompt_tokens": 5, "completion_tokens": 7, "total_tokens": 12},
                 },
             )
+            return
+
+        # ElevenLabs' voice-import route. Deliberately answers **200 with a body
+        # that is not JSON**: a proxy in front of a provider can do that, and the
+        # gateway used to raise `JSONDecodeError` straight out of the handler — a
+        # 500 with no sentence, after the voice had already been added upstream.
+        # The id that was asked for is the answer, so the import must stand.
+        if path.startswith("/v1/voices/add/"):
+            self._bytes(200, b"<html><body>ok</body></html>", "text/html")
             return
 
         if path.endswith("/images/generations"):

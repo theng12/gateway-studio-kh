@@ -235,6 +235,20 @@ def main() -> int:
                      "required": False},
                 ],
             },
+            {
+                # ElevenLabs' import route copies a library voice into the owner's
+                # account and answers JSON. This provider exists so the route can
+                # be pointed at a 200 that is *not* JSON, which used to raise out
+                # of the handler after the voice had already been added upstream.
+                "id": "mock-eleven",
+                "display_name": "Mock ElevenLabs",
+                "category": "voice",
+                "kind": "elevenlabs",
+                "base_url": f"http://127.0.0.1:{MOCK_PORT}",
+                "modalities": ["tts"],
+                "discovery": "static",
+                "description": "Test provider.",
+            },
         ]
     }))
 
@@ -341,8 +355,8 @@ def main() -> int:
             # provider is a legitimate change, and a literal here fails for a
             # reason that has nothing to do with what the check is about.
             from gateway.providers.definitions import PROVIDER_DEFINITIONS as _SHIPPED
-            expected_providers = len(_SHIPPED) + 5  # + the five custom ones above
-            check(f"{len(_SHIPPED)} built-in providers + 5 custom",
+            expected_providers = len(_SHIPPED) + 6  # + the six custom ones above
+            check(f"{len(_SHIPPED)} built-in providers + 6 custom",
                   health["providers"]["total"] == expected_providers,
                   f"got {health['providers']['total']}, expected {expected_providers}")
             # A kind having an adapter is not the same claim as that adapter
@@ -354,6 +368,27 @@ def main() -> int:
             check("a provider declaring an unservable lane is reported as having one",
                   _google is not None and _google["unserved_modalities"] == ["video"],
                   f"{_google and _google.get('unserved_modalities')}")
+            # The other half of that: a lane we *removed* rather than left
+            # declared. Kie's music row was withdrawn because its Suno API is a
+            # different contract, so `chat` is now the only lane it declares and
+            # cannot serve — and music must not appear here, because appearing here
+            # would mean a row exists that can never run.
+            _kie = next((p for p in _providers if p["id"] == "kie-ai-images"), None)
+            check("Kie reports chat as its only unserved lane, not music",
+                  _kie is not None and _kie["unserved_modalities"] == ["chat"],
+                  f"{_kie and _kie.get('unserved_modalities')}")
+            # **A field nothing draws is the same defect as a control that does
+            # nothing.** `unserved_modalities` is computed for the console, so the
+            # console's own source has to reference it; this is the level at which
+            # a served SPA can be checked without a browser, and it is deliberately
+            # a source assertion rather than a claim about rendering.
+            _ui = httpx.get(f"{BASE}/admin/").text
+            check("the console actually renders the unserved lanes it is told about",
+                  "unserved_modalities" in _ui,
+                  "the field is computed and never drawn")
+            check("and the console's toggle paths re-read instead of trusting the click",
+                  "await loadModels();" in _ui and "state.models[id] = await api" in _ui,
+                  "a toggle must draw the server's answer, not the click")
             check("every provider has a working adapter",
                   all(p["generation_supported"] for p in
                       httpx.get(f"{BASE}/admin/api/providers", headers=AUTH).json()["providers"]))
@@ -653,6 +688,55 @@ def main() -> int:
                   and all(k in irow["output_options"][0]
                           for k in ("resolution", "aspect_ratio", "width", "height",
                                     "credits_per_image", "price_version")))
+            # **Three answers, read from the model's own statement.** This used to
+            # be a definite `True` for a location and a definite `False` for every
+            # cloud kind, while *every* row's `operations` claimed
+            # `image-to-image` — so a Hub whose capabilities say `txt2img` was
+            # advertised as taking references, and a `text-to-image` endpoint was
+            # advertised as serving an image-to-image operation. The contradiction
+            # was the tell; the rule is now one read with three answers.
+            from gateway.providers.definitions import image_reference_state as _ref_state
+            from gateway.catalog import _image_row as _image_row_for
+            from gateway.providers.definitions import PROVIDERS_BY_ID as _P_img
+            _txt = _image_row_for(
+                "openai/gpt-image-2.5/flare/text-to-image", _P_img["fal-ai"],
+                {"model_id": "openai/gpt-image-2.5/flare/text-to-image",
+                 "raw": {"category": "text-to-image"}})
+            check("a stated text-to-image model does not claim references or an edit operation",
+                  _txt["supports_reference_images"] is False
+                  and _txt["operations"] == ["text-to-image"]
+                  and _txt["max_reference_images"] == 0,
+                  f"{_txt['supports_reference_images']} {_txt['operations']}")
+            _unstated_img = _image_row_for(
+                "mystery-image", _P_img["kie-ai-images"],
+                {"model_id": "mystery-image", "raw": {}})
+            check("an image model that states nothing publishes null, not a definite no",
+                  _unstated_img["supports_reference_images"] is None
+                  and _unstated_img["max_reference_images"] is None
+                  and _unstated_img["operations"] == ["text-to-image"],
+                  f"{_unstated_img['supports_reference_images']}")
+            check("the Hub's own capabilities are what a location row is described by",
+                  _ref_state("studio_hub", "x", {"capabilities": ["txt2img"]}) is False
+                  and _ref_state("studio_hub", "x", {"capabilities": ["img2img"]}) is True
+                  and _ref_state("studio_hub", "x", {}) is None,
+                  "capabilities drive the answer, and absence means unstated")
+            # And a stated image-to-image endpoint on a lane that cannot send an
+            # image is withheld, because fal's queue accepts the body and only
+            # fails at the worker — the `:batch` shape.
+            from gateway.providers.models import ModelInventory as _Inventory
+            def _can_publish(provider_id: str, model_id: str) -> bool:
+                # `can_publish` reads nothing off `self` — it is a pure rule over
+                # (definition, model) — so the isolated test can ask it directly.
+                return _Inventory.can_publish(
+                    None, _P_img[provider_id],
+                    {"model_id": model_id, "modality": "image", "raw": {}})
+
+            check("an image-to-image row on a lane that cannot send an image is not offered",
+                  not _can_publish("fal-ai", "fal-ai/flux/dev/image-to-image"),
+                  "the fal image body sends no reference image")
+            check("but the same classification on a lane that can is not withheld",
+                  _can_publish("kie-ai-images", "anything/edit"),
+                  "Kie forwards image_url, so its edit rows can still publish")
 
             print("\n\033[1m4. Chat generation end to end\033[0m")
             model_id = row["id"]
@@ -981,7 +1065,7 @@ def main() -> int:
             # refusal *and* that the refusal changed nothing, because a guard
             # that still writes would be worse than no guard.
             before = req(client, "GET", "/admin/api/models?limit=1000").json()
-            total = before["total"]
+            listable_total = before["listable_total"]
             enabled_before = before["enabled_total"]
             refused = httpx.post(f"{BASE}/admin/api/models/bulk", headers=AUTH, json={})
             check("a bulk action that names nothing is refused",
@@ -993,7 +1077,8 @@ def main() -> int:
                   after["enabled_total"] == enabled_before,
                   f"{enabled_before} -> {after['enabled_total']}")
             check("the whole catalogue is still there after the refusal",
-                  after["total"] == total, f"{total} -> {after['total']}")
+                  after["listable_total"] == listable_total,
+                  f"{listable_total} -> {after['listable_total']}")
 
             described = req(client, "GET",
                             "/admin/api/models?provider_id=mock-remote").json()["matched"]
@@ -1024,7 +1109,7 @@ def main() -> int:
             everything = httpx.post(f"{BASE}/admin/api/models/bulk", headers=AUTH,
                                     json={"scope": "all", "enabled": True})
             check("'all of them' is accepted when it is said in a word of its own",
-                  everything.status_code == 200 and everything.json()["matched"] == total,
+                  everything.status_code == 200 and everything.json()["matched"] == listable_total,
                   everything.text[:160])
 
             # The console has to send that word, or the deliberate path is
@@ -1033,6 +1118,88 @@ def main() -> int:
             page = req(client, "GET", "/admin/").text
             check("the console says 'all' out loud when no filter is set",
                   "body.scope = 'all'" in page)
+
+            # **An id that is not a provider cannot be written.** The published
+            # namespace `studio-hub` is what Story Studio reads for every location,
+            # and enable state written under it was never swept — it outlived the
+            # locations it was about. `set_many` resolves through `_definition`
+            # exactly like `set_model_enabled` always has, and the console row path
+            # skips what does not resolve.
+            bogus = req(client, "POST", "/admin/api/models/enabled",
+                        json={"items": [{"provider_id": "studio-hub",
+                                         "model_id": "some-model"}],
+                              "enabled": True})
+            check("enablement is not written under the published location namespace",
+                  bogus.status_code == 200 and bogus.json()["changed"] == 0,
+                  f"{bogus.status_code} {bogus.text[:120]}")
+
+            # **The curated file is read in both namespaces.** The README documents
+            # the key as the *visible* `studio-hub::<model>`, while a location's
+            # rows are stored under `studio-hub-<controller>` — so an entry written
+            # the documented way was silently ignored for every location.
+            from gateway import limits as _limits
+            _saved_all = _limits._all
+            _limits._all = lambda: {
+                "studio-hub::published-only": {"context_window_tokens": 111},
+                "studio-hub::both-forms": {"context_window_tokens": 111},
+                "studio-hub-local::both-forms": {"context_window_tokens": 222},
+            }
+            try:
+                check("a curated entry keyed by the published location id is read",
+                      _limits.for_model("studio-hub-local", "published-only")
+                      .get("context_window_tokens") == 111,
+                      f"{_limits.for_model('studio-hub-local', 'published-only')}")
+                check("and the concrete id still wins when both are present",
+                      _limits.for_model("studio-hub-local", "both-forms")
+                      .get("context_window_tokens") == 222,
+                      f"{_limits.for_model('studio-hub-local', 'both-forms')}")
+            finally:
+                _limits._all = _saved_all
+
+            # A preview must name a model the provider currently offers. ElevenLabs
+            # publishes **no** `static_models`, so `_preview_model` returned `""`
+            # and every preview for a discovered voice was synthesised against an
+            # empty model id — a control that always fails.
+            from unittest import mock as _mock
+            from gateway import voices as _voices_module
+            from gateway.providers.definitions import PROVIDERS_BY_ID as _P_prev
+
+            class _OnlyDiscovered:
+                def models_for(self, provider_id, include_disabled=False):
+                    return [{"model_id": "discovered-tts", "modality": "tts",
+                             "enabled": True}]
+
+            with _mock.patch.object(_voices_module.registry, "models", _OnlyDiscovered()):
+                _preview = _voices_module.VoiceRegistry._preview_model(
+                    _P_prev["elevenlabs-direct"])
+            check("a voice preview names a discovered model, not an empty id",
+                  _preview == "discovered-tts", f"{_preview!r}")
+
+            # Video modes are read from what the provider states and **labelled**;
+            # an image model that states nothing publishes `null`, not a definite
+            # "cannot"; and the machine headline can account for every machine.
+            from gateway.fleet import _summarise as _summarise
+            _machine_rows = [{
+                "id": "x", "label": "X", "local": False, "reachable": True,
+                "machines": [{"machine": "a"}, {"machine": "b"}, {"machine": "c"}],
+                "activity": {"pulse": {}, "machines": [
+                    {"machine": "a", "state": "ready"},
+                    {"machine": "b", "state": "offline"},
+                    {"machine": "c"},
+                ]},
+                "probe_machines_hidden": 0, "running_jobs": [], "capacity": {},
+            }]
+            _summary = _summarise(_machine_rows)
+            check("a machine with no state is neither online nor offline, and is published",
+                  _summary["machines_online"] == 1
+                  and _summary["machines_offline"] == 1
+                  and _summary["machines_unknown"] == 1
+                  and _summary["machines"] == 3,
+                  f"{_summary['machines_online']}/{_summary['machines_offline']}"
+                  f"/{_summary['machines_unknown']} of {_summary['machines']}")
+            check("and the headline and the table agree on how many machines there are",
+                  _summary["machines"] == len(_machine_rows[0]["machines"]),
+                  f"{_summary['machines']}")
 
             print("\n\033[1m10c. Bad input is a 4xx, and a lane with nothing behind it is not offered\033[0m")
             # Every one of these was a 500, or a wrong answer, found by audit.
@@ -1067,6 +1234,35 @@ def main() -> int:
                   any("gemini-2.5-pro" in i for i in chat_ids), f"{sorted(chat_ids)[:8]}")
             check("a lane the adapter cannot serve is withheld, not offered then refused",
                   not any("veo-3" in i for i in video_ids), f"{sorted(video_ids)}")
+
+            # **Video modes are read, then labelled.** The id heuristic alone
+            # published every model as image-to-video, so fal's own
+            # `category: "text-to-video"` endpoints (`veo3.1`, `ltx-video`,
+            # `gemini-omni-flash`) were offered an image control they cannot
+            # honour — and a model that states nothing got a definite mode anyway.
+            from gateway.catalog import _video_row as _video_row_for
+            from gateway.providers.definitions import PROVIDERS_BY_ID as _P_video
+            _stated = _video_row_for(
+                "fal-ai/veo3.1", _P_video["fal-ai"],
+                {"model_id": "fal-ai/veo3.1", "raw": {"category": "text-to-video"}})
+            check("a provider's stated video mode is read, not inferred from the id",
+                  _stated["modes"] == ["text-to-video"]
+                  and _stated["modes_source"] == "provider",
+                  f"{_stated['modes']} {_stated['modes_source']}")
+            _unstated = _video_row_for(
+                "fal-ai/mystery-video", _P_video["fal-ai"],
+                {"model_id": "fal-ai/mystery-video", "raw": {}})
+            check("and a video model that states no mode asserts none, with no variants",
+                  _unstated["modes"] == [] and _unstated["modes_source"] is None
+                  and _unstated["variants"] == [],
+                  f"{_unstated['modes']} {_unstated['modes_source']}")
+            _ours = _video_row_for(
+                "grok-imagine-video", _P_video["xai-direct"],
+                {"model_id": "grok-imagine-video", "raw": {}})
+            check("a mode only our adapter can vouch for is labelled as ours",
+                  _ours["modes"] == ["text-to-video", "image-to-video"]
+                  and _ours["modes_source"] == "gateway",
+                  f"{_ours['modes']} {_ours['modes_source']}")
 
             # An idempotency key identifies one request; a request has a modality.
             chat_id = next((i for i in sorted(chat_ids) if "mock-chat-1" in i), "")
@@ -1508,6 +1704,32 @@ def main() -> int:
             check("OpenRouter cannot serve music, so its Lyria rows stay withheld",
                   not _serves2(_P["openrouter-main"], "music"),
                   "its API publishes no music path at all")
+            # Kie's music models are the **Suno** family, which Kie documents as a
+            # dedicated API (`/api/v1/generate*`, a flat body) — not the Market
+            # `jobs/createTask` contract this adapter speaks. The curated Suno row
+            # therefore could only fail on use, so music is gone from the kind, the
+            # definition and the row, and the adapter refuses it rather than posting
+            # the wrong shape. Asserted on the code path, not just the list: a row
+            # that a hand-edit re-adds must still not become offerable.
+            kie = _P["kie-ai-images"]
+            check("Kie declares no music, and its adapter would serve none",
+                  "music" not in kie.modalities and not _serves2(kie, "music"),
+                  f"{kie.modalities}")
+            check("and the curated Suno row is gone with it",
+                  not any(m.get("modality") == "music"
+                          for m in kie.static_models),
+                  f"{[m['id'] for m in kie.static_models if m.get('modality') == 'music']}")
+            from gateway.adapters.kie import KieBackend as _KieBackend
+            from gateway.adapters.base import BackendRequest as _BackendRequest
+            try:
+                _KieBackend().generate(_BackendRequest(
+                    provider_id="kie-ai-images", model_id="V6", modality="music",
+                    params={"prompt": "x"}, base_url="https://api.kie.ai", values={}))
+                _kie_refused = False
+            except Exception as exc:  # noqa: BLE001 - the code is what is asserted
+                _kie_refused = getattr(exc, "code", "") == "MODEL_MODALITY_MISMATCH"
+            check("the Kie adapter refuses a music request outright",
+                  _kie_refused, "it used to post a createTask body Suno cannot accept")
 
             print("\n\033[1m10g. Saving a library voice by its id\033[0m")
             # The library *search* can only find what the provider will search
@@ -1527,6 +1749,20 @@ def main() -> int:
             check("ElevenLabs asks for the owner id instead of 422-ing obscurely",
                   owner.status_code == 422 and "owner_id" in owner.text,
                   f"{owner.status_code} {owner.text[:120]}")
+            # Its import route answers JSON, but a 200 whose body is not JSON (a
+            # proxy, an HTML page served as 200) used to raise `JSONDecodeError`
+            # out of the handler: a 500 with no sentence, *after* the voice had
+            # already been added upstream — the worst moment to lose the answer.
+            added_nonjson = req(client, "POST", "/admin/api/voices/import",
+                                json={"provider_id": "mock-eleven",
+                                      "provider_voice_id": "voice-added",
+                                      "owner_id": "owner-1",
+                                      "display_name": "Added Anyway"})
+            check("a non-JSON 200 from the voice provider does not 500 the import",
+                  added_nonjson.status_code == 200
+                  and (added_nonjson.json().get("voice") or {})
+                  .get("provider_voice_id") == "voice-added",
+                  f"{added_nonjson.status_code} {added_nonjson.text[:160]}")
             added_by_id = req(client, "POST", "/admin/api/voices/import",
                               json={"provider_id": "mock-remote", "provider_voice_id": "voice-by-id",
                                     "display_name": "Saved By Id"})
@@ -1583,6 +1819,20 @@ def main() -> int:
                  "base_url": "http://127.0.0.1:9"},
                 {"id": "openai-direct", "kind": _defs.KIND_OPENAI_COMPATIBLE,
                  "base_url": "http://127.0.0.1:9"},
+                # The bare published namespace, and a cloud provider wearing the
+                # location prefix: both are refused *with a reason*. A
+                # `studio_hub`-kind entry under the same prefix is a location by
+                # every measure the code uses (the Fleet page writes exactly that
+                # shape), so it must still load — a fix that rejected the prefix
+                # outright would have broken the test location this suite uses.
+                {"id": "studio-hub", "kind": _defs.KIND_STUDIO_HUB,
+                 "base_url": "http://127.0.0.1:9", "modalities": ["tts"],
+                 "discovery": "static", "static_models": []},
+                {"id": "studio-hub-squat", "kind": _defs.KIND_OPENAI_COMPATIBLE,
+                 "base_url": "http://127.0.0.1:9"},
+                {"id": "studio-hub-location", "kind": _defs.KIND_STUDIO_HUB,
+                 "base_url": "http://127.0.0.1:9", "modalities": ["tts"],
+                 "discovery": "static", "static_models": []},
                 "not an object",
                 {"kind": _defs.KIND_OPENAI_COMPATIBLE, "base_url": "http://127.0.0.1:9"},
             ]}))
@@ -1595,17 +1845,21 @@ def main() -> int:
                 _defs.CUSTOM_PROVIDERS_PATH = _real_path
                 _defs._SKIPPED_CUSTOM[:] = _saved_skips
             check("a provider of a kind that has an adapter does load",
-                  _loaded == {"xai-probe"}, f"{sorted(_loaded)}")
+                  _loaded == {"xai-probe", "studio-hub-location"}, f"{sorted(_loaded)}")
             check("a kind nothing can run is refused, and the reason names the kind",
                   "not-a-real-kind" in _skips.get("mystery-probe", ""), f"{_skips}")
             check("a built-in id cannot be redefined from the file, and says so",
                   "built-in" in _skips.get("openai-direct", ""), f"{_skips}")
             check("and an entry with no id is reported, not dropped in silence",
                   "no 'id'" in _skips.get("?", ""), f"{_skips}")
-            # Four refusals, listed — not three keys: two entries share the
+            check("the published location namespace cannot be claimed as a provider",
+                  "reserved" in _skips.get("studio-hub", ""), f"{_skips}")
+            check("and a non-location kind cannot wear the location prefix",
+                  "prefix" in _skips.get("studio-hub-squat", ""), f"{_skips}")
+            # Six refusals, listed — not five keys: two entries share the
             # placeholder id `?`, and a dict would silently hide one of them.
             check("every refusal is listed, and each says why",
-                  len(_records) == 4 and all(r["reason"] for r in _records),
+                  len(_records) == 6 and all(r["reason"] for r in _records),
                   f"{_records}")
 
             print("\n\033[1m10h. What can be offered is what can be routed\033[0m")
@@ -1655,6 +1909,48 @@ def main() -> int:
             check("so a route is never chosen that resolution would then reject",
                   all(c["provider_id"] in {"studio-hub-good"} for c in _cands),
                   f"{[c['provider_id'] for c in _cands]}")
+
+            # **A merged location row answers for every site that offers it.** Only
+            # `locked` used to merge, so a model two Hubs described differently was
+            # published as whichever site was iterated first: a cloning claim beside
+            # an empty picker, or a character budget only one site honours. Each
+            # field needs a direction, not a first-writer-wins.
+            from gateway.catalog import _merge_capabilities as _merge_caps
+            _first = {"supports_voice_cloning": False, "maximum_input_characters": 15000,
+                      "maximum_input_characters_source": "provider", "supports_speed": True,
+                      "minimum_speed": 0.5, "maximum_speed": 2.0}
+            _second = {"supports_voice_cloning": True, "maximum_input_characters": 170,
+                       "maximum_input_characters_source": "gateway", "supports_speed": True,
+                       "minimum_speed": 0.7, "maximum_speed": 1.2}
+            _merge_caps(_first, _second, "tts")
+            check("a merged row unions cloning, and intersects what the caller picks",
+                  _first["supports_voice_cloning"] is True
+                  and _first["maximum_input_characters"] == 170
+                  and _first["maximum_input_characters_source"] == "gateway"
+                  and _first["minimum_speed"] == 0.7 and _first["maximum_speed"] == 1.2,
+                  f"{_first}")
+            _no_speed = {"supports_voice_cloning": True, "supports_speed": False,
+                         "maximum_input_characters": 15000,
+                         "maximum_input_characters_source": "provider"}
+            _merge_caps(_no_speed, _second, "tts")
+            check("and a site without speed removes the control from the merged row",
+                  _no_speed["supports_speed"] is False, f"{_no_speed}")
+            # And the record the voice picker reads is one a location can actually
+            # publish, not the first copy in iteration order.
+            from gateway import voices as _voices_mod
+
+            _location_records = [
+                {"model_id": "hub/m", "raw": {"catalogued": False}},
+                {"model_id": "hub/m", "raw": {"catalogued": True, "reference_audio":
+                                              {"declared": True, "supported": True}}},
+            ]
+            with _mock.patch.object(_voices_mod.registry.models, "models_for",
+                                    lambda pid, include_disabled=True:
+                                    [dict(r) for r in _location_records]):
+                _picked = _voices_mod._model_record("studio-hub-local", "hub/m")
+            check("the location record chosen for a merged model is one that can publish it",
+                  ((_picked or {}).get("raw") or {}).get("catalogued") is True,
+                  f"{_picked}")
 
             print("\n\033[1m10i. A voice the caller did not choose is not invented\033[0m")
             # **A missing voice used to become a specific named speaker** —
@@ -2047,22 +2343,45 @@ def main() -> int:
                   len(story) == len(local) - 1, f"got {len(story)} of {len(local)}")
             check("every Story voice publishes catalog_status=published",
                   all(v["catalog_status"] == "published" for v in story))
-            # The full balanced zero set, not just one field. The encoder's own
-            # docstring claimed "the price fields ride along" while publishing only
-            # `credits_per_1000_characters` — and a second, dead voice encoder in
-            # `catalog.py` had the same gap, so fixing one would not have fixed the
-            # other. There is one encoder now; this pins what it must carry.
+            # The full balanced zero set, not just one field — and the set is
+            # *read from `constants.zero_pricing`*, because a hand-typed copy here
+            # is exactly the drift this asserts against: the row carried four of
+            # the six keys and was missing `cost_tier` and `standard_credits`.
+            from gateway.constants import zero_pricing as _zero_pricing
+
+            shape = _zero_pricing("tts")
             check("every Story voice publishes the full price shape",
                   bool(story) and all(
-                      v["credits_per_1000_characters"] == 0
-                      and v["minimum_credits"] == 0
-                      and v["price_version"] == "flat"
-                      and v["chargeable"] is True
+                      all(v.get(k) == value for k, value in shape.items())
                       for v in story),
-                  f"{[{k: v.get(k) for k in ('credits_per_1000_characters', 'minimum_credits', 'price_version', 'chargeable')} for v in story[:2]]}")
+                  f"{shape} vs {[{k: v.get(k) for k in shape} for v in story[:2]]}")
             check("and no voice is published that Story Studio's parser would drop",
                   all(v["catalog_status"] == "published" and v["quote_enabled"]
                       and v["generation_enabled"] for v in story))
+
+            # **A documented example is not the owner's account voice**, and a
+            # container is the adapter's, not a guess from the provider id.
+            from gateway.voices import (_fal_tts_voices as _fal_voices,
+                                        story_row as _story_row,
+                                        tts_output_container as _container)
+            from gateway.providers.definitions import PROVIDERS_BY_ID as _P_voice
+            _examples = _fal_voices(_P_voice["fal-ai"], {})
+            check("fal's documented examples are not published as the owner's own voices",
+                  bool(_examples) and all((not v.owned) and v.source == "example"
+                                          for v in _examples),
+                  f"{_examples[0].source if _examples else None} "
+                  f"owned={_examples[0].owned if _examples else None}")
+            _example_row = _story_row(_examples[0]) if _examples else {}
+            check("so they are library voices, with a public id and no custom one",
+                  _example_row.get("voice_tier") == "library"
+                  and _example_row.get("custom_voice_id") is None
+                  and _example_row.get("public_voice_id") == _examples[0].provider_voice_id,
+                  f"{_example_row.get('voice_tier')}")
+            check("and the container is the adapter's, not guessed from an id prefix",
+                  _example_row.get("output_format") == "mp3"
+                  and _container("elevenlabs-direct") == "mp3"
+                  and _container("groq-main") == "wav",
+                  f"fal={_example_row.get('output_format')}")
 
             httpx.post(f"{BASE}/admin/api/voices/enabled", headers=AUTH,
                        json={"items": [victim["id"]], "enabled": True})
@@ -2654,6 +2973,22 @@ def main() -> int:
             check("so the fan-out pushed to exactly one controller",
                   len([r for r in second["results"] if r["ok"]]) == 1,
                   f"{[(r['location'], r['ok']) for r in second['results']]}")
+            # **A controller is identified by the controller, not by the address.**
+            # `localhost` and `127.0.0.1` are the same mock answering with the same
+            # `site_id`, so this must land on the existing row. Matching the
+            # address alone minted a *second* location — orphaning the first one's
+            # credential and every per-model enable decision with it.
+            same_site = req(client, "POST", "/admin/api/fleet/controllers",
+                            json={"label": "Mock Hub Moved",
+                                  "url": mock.replace("127.0.0.1", "localhost"),
+                                  "token": "mock-fleet-token"}).json()["controller"]
+            check("a controller re-added at another address is the same location",
+                  same_site["id"] == ghost_id and same_site.get("site_id") == "mock-site",
+                  f"{same_site} vs {ghost_id}")
+            check("and no second location was minted for it",
+                  len(req(client, "GET", "/admin/api/fleet/controllers")
+                      .json()["controllers"]) == 1,
+                  f"{req(client, 'GET', '/admin/api/fleet/controllers').json()['controllers']}")
             req(client, "DELETE", f"/admin/api/fleet/controllers/{ghost_id}")
             check("the test location is removed again",
                   req(client, "GET", "/admin/api/fleet/controllers").json()["controllers"] == [])
@@ -2886,7 +3221,7 @@ def main() -> int:
             # check is what catches that: a location pointed at the mock must find
             # the mock's models, and this run has no local Hub at all.
             check("a location discovers its own Hub's models, not the local one",
-                  len(installed) == 4,
+                  len(installed) == 5,
                   f"{sorted(installed)} error="
                   f"{hub_payload.get('error') or hub_payload.get('discovery_error')}")
             check("a catalogued model carries the reference contract the Hub stated",
@@ -2946,12 +3281,20 @@ def main() -> int:
             cloned = voices_for("studio-hub::mock-hub/clone-model")
             preset = voices_for("studio-hub::mock-hub/preset-model")
             unknown = voices_for("studio-hub::mock-hub/uncatalogued-model")
+            caps_only = voices_for("studio-hub::mock-hub/capability-only-model")
             check("a voice is offered for a model that declares cloning",
                   len(cloned) == 1, f"{len(cloned)}")
             check("and is withheld from a model that declares it takes no reference",
                   len(preset) == 0, f"{len(preset)}: {[v.get('id') for v in preset]}")
             check("a model the catalogue does not describe is unverified, not excluded",
                   len(unknown) == 1, f"{len(unknown)}")
+            # A model the Hub catalogues with **no `reference_audio` block** states
+            # its capabilities and does not name cloning there. The catalogue used
+            # to answer `true` for it anyway (the per-kind default for a location)
+            # while the picker answered `false`, so Story Studio offered a voice
+            # picker with nothing in it. One read of the rule now answers both.
+            check("a model whose only statement omits cloning is withheld",
+                  len(caps_only) == 0, f"{len(caps_only)}: {[v.get('id') for v in caps_only]}")
             # Two different questions, deliberately answered differently. *Voices*
             # ask "does this clone?" and an uncatalogued model is unverified, so
             # its voices stay offered. *Publication* asks "is this a model at
@@ -2967,6 +3310,23 @@ def main() -> int:
                   and published.get("studio-hub::mock-hub/preset-model", {})
                   .get("supports_voice_cloning") is False,
                   f"{[(k, v.get('supports_voice_cloning')) for k, v in published.items() if 'mock-hub' in k]}")
+            check("and the same thing for a model that only lists its capabilities",
+                  published.get("studio-hub::mock-hub/capability-only-model", {})
+                  .get("supports_voice_cloning") is False,
+                  f"{[(k, v.get('supports_voice_cloning')) for k, v in published.items() if 'mock-hub' in k]}")
+            # **One rule, two readers, and they must agree.** This is the shape the
+            # duplicate implementation broke: the flag said "clones" and the picker
+            # said nothing was there. Checked on the wire, for every location row.
+            disagreements = []
+            for row_id, row in published.items():
+                if "mock-hub" not in row_id:
+                    continue
+                offered = len(voices_for(row_id))
+                claims = row.get("supports_voice_cloning") is True
+                if claims != (offered > 0):
+                    disagreements.append((row_id, claims, offered))
+            check("every location row's cloning claim matches its voice picker",
+                  not disagreements, f"{disagreements}")
             check("a package the catalogue does not describe as a model is not published",
                   "studio-hub::mock-hub/uncatalogued-model" not in published,
                   f"{[k for k in published if 'mock-hub' in k]}")

@@ -336,6 +336,10 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
         let total = summary["locations"] as? Int ?? locationRows.count
         let online = summary["machines_online"] as? Int ?? 0
         let offline = summary["machines_offline"] as? Int ?? 0
+        // Neither online nor offline: the Hub reported no state for that machine.
+        // Shown rather than dropped, so the sentence accounts for every machine in
+        // the table below it instead of leaving an unexplained gap.
+        let unknown = summary["machines_unknown"] as? Int ?? 0
         let completed = summary["jobs_completed"] as? Int ?? 0
         let failed = summary["jobs_failed"] as? Int ?? 0
         let running = summary["running_jobs"] as? Int ?? 0
@@ -343,6 +347,7 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
         var line = "\(up) of \(total) location\(total == 1 ? "" : "s") reachable"
         line += " · \(online) machine\(online == 1 ? "" : "s") online"
         if offline > 0 { line += ", \(offline) offline" }
+        if unknown > 0 { line += ", \(unknown) with no state reported" }
         line += " · \(completed) job\(completed == 1 ? "" : "s") completed"
         if failed > 0 { line += ", \(failed) failed" }
         if running > 0 { line += " · \(running) running now" }

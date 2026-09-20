@@ -24,6 +24,7 @@ import json
 import logging
 from collections.abc import Iterable
 from dataclasses import dataclass, field
+from typing import Any
 
 from ..config import CUSTOM_PROVIDERS_PATH
 
@@ -121,6 +122,113 @@ MUSIC_UNSERVABLE: frozenset[str] = frozenset({"lyria-realtime-exp"})
 def music_can_serve(model_id: str) -> bool:
     """Whether this music model can answer a normal, single-shot request."""
     return model_id not in MUSIC_UNSERVABLE
+
+
+#: The kinds whose **image** lane can actually put the caller's reference image
+#: on the wire. `studio_hub` stages references; `kie` sends whatever it is given
+#: down one `createTask` route, and `image_url` is one of the fields it forwards.
+#: Every other image body here (`fal`, the OpenAI-compatible shim behind
+#: `google`, `xai`, `minimax`, `bfl`) sends a prompt and nothing else — so an
+#: endpoint those providers classify as `image-to-image` would be dispatched
+#: without its required input. fal's queue accepts the body and validates at the
+#: worker, which is how that mistake reads as a job that `COMPLETED` and then
+#: failed on download.
+#:
+#: Measured live on 2026-09-20: fal classifies **116** of its image rows
+#: `image-to-image` (upscalers, background removers, inpainters, `*/edit`
+#: endpoints) and every one of them is unpublishable under this rule. None is
+#: enabled, so nothing the owner could pick changed.
+#:
+#: ponytail: the lane is withheld rather than implemented blind. Ceiling — fal's
+#: and the shim's image-to-image models are unavailable through the gateway.
+#: Upgrade path — read the per-endpoint OpenAPI schema (the same source the body
+#: schemas already come from) for the reference field's real name and arity
+#: (`image_url` on some endpoints, `image_urls` on others), send it, and drop the
+#: kind from this gate.
+IMAGE_REFERENCE_CAPABLE_KINDS: frozenset[str] = frozenset({KIND_STUDIO_HUB, KIND_KIE})
+
+#: The pixel geometry each aspect ratio is **sent as**, shared by the two things
+#: that have to agree about it: the catalogue, which publishes it as the model's
+#: `output_options`, and the OpenAI-compatible image body, which must send a size
+#: the endpoint accepts. They were two different answers — the catalogue
+#: advertised 1344x768 for 16:9 while `_size_for` sent 1792x1024, a DALL·E-3-era
+#: size that `gpt-image-1` answers `400` for — so what was offered was not what
+#: was requested.
+#:
+#: Only the three sizes the current OpenAI image APIs document are used; `4:3` and
+#: `3:4` snap to the nearest of them rather than to a size nothing accepts.
+#:
+#: ponytail: two ratios share one geometry. Ceiling — a 4:3 request is actually
+#: sent as 3:2. Upgrade path — a per-model size table read from the provider,
+#: which is also what would let a lane that accepts more ratios offer them.
+IMAGE_SIZE_BY_RATIO: dict[str, tuple[int, int]] = {
+    "16:9": (1536, 1024),
+    "4:3": (1536, 1024),
+    "1:1": (1024, 1024),
+    "3:4": (1024, 1536),
+    "9:16": (1024, 1536),
+}
+
+
+def image_size_for(aspect_ratio: str, width: object = None, height: object = None) -> str:
+    """The `size` string to send, given a ratio and optional explicit geometry.
+
+    An explicit width/height is honoured only in *orientation* — the exact numbers
+    a caller sends are not forwardable, because OpenAI-family endpoints reject
+    arbitrary sizes — and the result always comes from `IMAGE_SIZE_BY_RATIO`, so
+    the request cannot disagree with the geometry the catalogue published.
+    """
+    ratio = str(aspect_ratio or "16:9")
+    if not (isinstance(width, int) and isinstance(height, int) and width > 0 and height > 0):
+        chosen = IMAGE_SIZE_BY_RATIO.get(ratio) or IMAGE_SIZE_BY_RATIO["16:9"]
+    elif width > height:
+        chosen = IMAGE_SIZE_BY_RATIO["16:9"]
+    elif width < height:
+        chosen = IMAGE_SIZE_BY_RATIO["9:16"]
+    else:
+        chosen = IMAGE_SIZE_BY_RATIO["1:1"]
+    return f"{chosen[0]}x{chosen[1]}"
+
+#: The words providers use for "this endpoint takes a reference image" and for
+#: "this one takes text only". Read from the model's own statement — the Hub's
+#: `capabilities` list (`["txt2img"]`, `["img2img"]`), fal's `category`
+#: (`text-to-image`, `image-to-image`), or the endpoint id.
+_IMAGE_REFERENCE_WORDS = ("img2img", "image-to-image", "reference-to-image", "edit")
+_IMAGE_TEXT_WORDS = ("txt2img", "text-to-image")
+
+
+def image_reference_state(kind: str, model_id: str, raw: dict[str, Any]) -> bool | None:
+    """Does this image model take a reference image? `True`, `False`, or `None`.
+
+    Three answers, for the same reason every other capability here has three: a
+    model that *states* it takes text only must not be offered a reference
+    control, a model that states it takes an image must not be offered as
+    text-only, and a model that says nothing must not be turned into a definite
+    `False` — which is what this used to publish for every kind except
+    `studio_hub`, while the same row's `operations` still claimed
+    `image-to-image`.
+
+    `None` means **unstated**. It is not a claim that the answer is no.
+    """
+    raw = raw or {}
+    capabilities = raw.get("capabilities")
+    haystack = ""
+    if isinstance(capabilities, list) and capabilities:
+        haystack = " ".join(str(item) for item in capabilities)
+    if not haystack.strip():
+        haystack = " ".join(
+            str(raw.get(key) or "")
+            for key in ("category", "output_type", "mode")
+        )
+        haystack = haystack + " " + str(model_id or "")
+    haystack = haystack.lower()
+    if not haystack.strip():
+        return None
+    if any(word in haystack for word in _IMAGE_REFERENCE_WORDS):
+        return True
+    if any(word in haystack for word in _IMAGE_TEXT_WORDS):
+        return False
+    return None
 
 
 def transcription_can_serve(model_id: str) -> bool:
@@ -377,9 +485,9 @@ PROVIDER_DEFINITIONS: tuple[ProviderDefinition, ...] = (
         category="multi",
         kind=KIND_KIE,
         base_url="https://api.kie.ai",
-        modalities=("image", "video", "chat", "music"),
+        modalities=("image", "video", "chat"),
         discovery=DISCOVERY_STATIC,
-        description="Image, video and music aggregator. Model list is curated: Kie publishes no catalogue endpoint.",
+        description="Image and video aggregator. Model list is curated: Kie publishes no catalogue endpoint.",
         docs_url="https://docs.kie.ai",
         credential_fields=(_api_key("KIE_AI_API_KEY"),),
         static_models=(
@@ -413,8 +521,15 @@ PROVIDER_DEFINITIONS: tuple[ProviderDefinition, ...] = (
             {"id": "bytedance/seedance-2-mini", "display_name": "Seedance 2.0 Mini", "modality": "video"},
             {"id": "grok-imagine-video-1-5-preview", "display_name": "Grok Imagine Video 1.5", "modality": "video"},
             {"id": "gemini-omni-video", "display_name": "Gemini Omni Video", "modality": "video"},
-            # Music
-            {"id": "V6", "display_name": "Suno V6", "modality": "music"},
+            # **No music row.** Kie's music models are the Suno family, which rides
+            # its own documented API (`/api/v1/generate*`), not the Market
+            # `jobs/createTask` contract this adapter speaks — so a curated Suno row
+            # could be published and could only fail on use. The `music` modality is
+            # gone from this definition and from `KIND_KIE` for the same reason.
+            #
+            # ponytail: capability dropped, not faked. Ceiling — Kie music is not
+            # offered. Upgrade path — implement the Suno path (flat body, its own
+            # record-info poll) and measure it with a real key before publishing.
         ),
         notes="Kie publishes no model catalogue endpoint. This list is curated from Kie's documented model ids; add new ones here or via Add model manually.",
     ),
@@ -566,6 +681,11 @@ def skipped_custom_providers() -> tuple[dict[str, str], ...]:
 
 
 def _load_custom_providers() -> tuple[ProviderDefinition, ...]:
+    # Lazy, and only for the two namespace constants: `fleet` owns them, and a
+    # module-level edge would be a second copy waiting to drift (which is exactly
+    # how `_VALID_KINDS` fell behind `IMPLEMENTED_KINDS`).
+    from ..fleet import FLEET_PROVIDER_ID, PROVIDER_PREFIX
+
     if not CUSTOM_PROVIDERS_PATH.exists():
         return ()
     try:
@@ -598,6 +718,31 @@ def _load_custom_providers() -> tuple[ProviderDefinition, ...]:
             # entry that says nothing simply never appears — which reads as "my
             # file did not load" rather than "that kind cannot run".
             _skip_custom(provider_id, f"unknown kind '{kind}' — nothing can run it")
+            continue
+        if provider_id == FLEET_PROVIDER_ID:
+            # The bare `studio-hub` id is the **published** namespace every
+            # location's models collapse into (`fleet.publish_id`). A provider
+            # claiming it would be both the maker and a site, and Story Studio
+            # would read one id for two different things.
+            _skip_custom(
+                provider_id,
+                "that id is reserved: it is the published namespace every Studio "
+                "Hub location's models are collapsed into",
+            )
+            continue
+        if provider_id.startswith(PROVIDER_PREFIX) and kind != KIND_STUDIO_HUB:
+            # A **cloud** provider squatting the location prefix. `fleet` decides
+            # "is this a location" from the id prefix, so this would be given a
+            # site's treatment — a controller id parsed out of its name, a place in
+            # `fleet.json`'s world — while having no controller behind it. A
+            # `studio_hub`-kind entry is a location by every measure the code uses
+            # (that is the shape the Fleet page itself writes), so it is allowed;
+            # the prefix is not free for anything else.
+            _skip_custom(
+                provider_id,
+                f"that id uses the reserved Studio Hub location prefix "
+                f"('{PROVIDER_PREFIX}*') but its kind is '{kind}', not 'studio_hub'",
+            )
             continue
         fields = tuple(
             CredentialField(

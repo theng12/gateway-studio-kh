@@ -151,9 +151,17 @@ assert set(_BY_KIND) == set(IMPLEMENTED_KINDS), (
 #:     `veo*` row (mapped to video) or `lyria*` row (music) published to Story
 #:     Studio and then failed on use — the exact state this codebase calls the
 #:     worst one, because the picker offers it and the provider refuses it;
-#:   * `kie-ai-images` declares `chat` while `KieBackend` serves image, video and
-#:     music only. No curated chat model exists for it, so it bit only a
+#:   * `kie-ai-images` declares `chat` while `KieBackend` serves image and video
+#:     only. No curated chat model exists for it, so it bit only a
 #:     hand-added row — which is precisely what "add a model by hand" does.
+#:     **Music was the other half of that, and it was worse**: a curated Suno
+#:     `V6` row went out, and `KieBackend` posted it down the generic
+#:     `jobs/createTask` route — but Kie's Suno API is a *dedicated* family
+#:     (`/api/v1/generate*`, a flat `{model, prompt, customMode, instrumental,
+#:     callBackUrl}` body), and its own docs separate it from the Market
+#:     `createTask` models entirely. A `createTask` body is not that shape, so the
+#:     row could only fail. Music is gone from this kind, the definition and the
+#:     row; the adapter refuses it by name.
 #:
 #: `studio_hub` is accurate both ways, so locations are unaffected.
 _MODALITIES_BY_KIND: dict[str, frozenset[str]] = {
@@ -166,7 +174,7 @@ _MODALITIES_BY_KIND: dict[str, frozenset[str]] = {
     # Music (Lyria) is native; the rest is the OpenAI-compatible shim.
     KIND_GOOGLE: frozenset({"chat", "image", "tts", "music"}),
     KIND_FAL: frozenset({"image", "video", "tts"}),
-    KIND_KIE: frozenset({"image", "video", "music"}),
+    KIND_KIE: frozenset({"image", "video"}),
     KIND_FISH: frozenset({"tts"}),
     KIND_BFL: frozenset({"image"}),
     KIND_MINIMAX: frozenset({"image", "video", "music", "tts"}),

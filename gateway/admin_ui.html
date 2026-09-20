@@ -263,8 +263,8 @@ function populateFilters(data) {
 
 function renderModels() {
   const rows = state.modelRows;
-  const { matched, total, enabled_total, returned } = state.meta;
-  const shown = `showing ${returned} of ${matched} matching · <b>${enabled_total}</b> of ${total} enabled overall`;
+  const { matched, listable_total, enabled_total, returned } = state.meta;
+  const shown = `showing ${returned} of ${matched} matching · <b>${enabled_total}</b> of ${listable_total} enabled overall`;
   document.getElementById('m-count').innerHTML = shown;
   document.getElementById('m-enable-all').textContent = `Enable all ${matched} matching`;
   document.getElementById('m-disable-all').textContent = `Disable all ${matched} matching`;
@@ -291,12 +291,15 @@ async function toggleModel(providerId, modelId, enabled) {
       method: 'POST', headers: {'Content-Type':'application/json'},
       body: JSON.stringify({ items: [{ provider_id: providerId, model_id: modelId }], enabled })
     });
-    const row = state.modelRows.find(r => r.provider_id === providerId && r.model_id === modelId);
-    if (row) row.enabled = enabled;
-    state.meta.enabled_total += enabled ? 1 : -1;
-    renderModels();
-    loadStatus();
-  } catch (e) { alert(e.message); }
+  } catch (e) {
+    alert(e.message);
+  }
+  // Re-read rather than patch the row in place. The local mutation showed the
+  // *click*, not the server's state, so a rejected change left the checkbox
+  // displaying something that was never applied — and an accepted one could
+  // still differ once the catalogue's gates had their say.
+  await loadModels();
+  loadStatus();
 }
 
 async function bulk(enabled) {
@@ -394,6 +397,14 @@ function providerCard(p) {
   const open = state.open[p.id];
   const badges = [`<span class="badge">${esc(p.category)}</span>`];
   if (!p.generation_supported) badges.push(`<span class="badge warn" title="${esc(p.unsupported_reason)}">list-only</span>`);
+  // **A lane the provider declares but its adapter cannot serve.** The catalogue
+  // withholds those rows, so without this badge the owner's only way to learn it
+  // is to enable a model that then never appears — the difference between "the
+  // form refused me" and "I can see why before trying".
+  if (p.unserved_modalities && p.unserved_modalities.length) {
+    const lanes = p.unserved_modalities.join(', ');
+    badges.push(`<span class="badge warn" title="This provider declares ${esc(lanes)}, but nothing on the gateway can run it. Models in that lane are never offered to Story Studio.">${esc(lanes)} unserved</span>`);
+  }
   badges.push(p.configured ? '<span class="badge ok">key set</span>' : '<span class="badge bad">no key</span>');
   if (p.last_error) badges.push(`<span class="badge bad" title="${esc(p.last_error)}">discovery error</span>`);
   badges.push(`<span class="badge">${p.publishable_model_count}/${p.model_count} offered</span>`);
@@ -473,11 +484,18 @@ function providerModelList(p, models) {
     </div>`).join('') + '</div>';
 }
 
-function openInBrowserFilter(providerId) {
+async function openInBrowserFilter(providerId) {
   setView('models');
-  filtersPopulated = true; // keep existing options
-  document.getElementById('m-provider').value = providerId;
-  loadModels();
+  // **Populate before selecting.** On a Providers-first launch the Models tab has
+  // never loaded, so `m-provider` still holds only its placeholder; setting
+  // `.value = providerId` on a select with no such option silently leaves it at
+  // "" and the filter looks like it did nothing. `filtersPopulated = true` here
+  // used to *cause* that, by telling the populator to skip the very load that
+  // would fill the options.
+  const prov = document.getElementById('m-provider');
+  if (!filtersPopulated) await loadModels();
+  prov.value = providerId;
+  await loadModels();
 }
 
 function toast(id, text, ok = true) {
@@ -539,10 +557,22 @@ async function clearCreds(id, btn) {
 }
 
 async function setModel(id, modelId, enabled) {
-  await api('/models/enabled', {
-    method: 'POST', headers: {'Content-Type':'application/json'},
-    body: JSON.stringify({ items: [{ provider_id: id, model_id: modelId }], enabled })
-  });
+  try {
+    await api('/models/enabled', {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ items: [{ provider_id: id, model_id: modelId }], enabled })
+    });
+  } catch (e) {
+    // Without this the promise rejected into the console: the checkbox kept the
+    // clicked state and nothing on screen said the server had refused it.
+    alert(e.message);
+  }
+  // Either way, re-read the provider's list. The checkbox is a view of the
+  // server's answer, and the only place that answer lives is the server.
+  try {
+    state.models[id] = await api(`/providers/${encodeURIComponent(id)}/models`);
+    renderProviders();
+  } catch (e) { /* the list was already stale; nothing better to draw */ }
   await loadStatus();
 }
 

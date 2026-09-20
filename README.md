@@ -523,9 +523,13 @@ several passes:
 | TTS `["{'language_id': 'en', …}"]` | stringified Python dicts in a `string[]` field | 32 real codes |
 | TTS/Voices `["en"]` when unknown | claims English-only | `[]` / `"multilingual"` |
 
-**And one value that must stay invented:** `maximum_input_characters` (40,000). No provider states
-it, but Story Studio calls `.toLocaleString()` on it unconditionally, so `null` would crash the
-page rather than degrade it.
+**And one value that must stay invented:** `maximum_input_characters`. No provider states it for
+every lane, but Story Studio calls `.toLocaleString()` on it unconditionally, so `null` would crash
+the page rather than degrade it. Whose number it is now travels with it in
+`maximum_input_characters_source`: `provider` where the model states one, and otherwise the local
+lane's single **15,000** (`catalog._TTS_CHARACTERS_LOCAL` — chunking is Studio Hub's job) or the
+cloud lanes' 25,000. This paragraph said 40,000 for a while after the catalogue had stopped
+publishing it, which is the drift the companion field exists to make impossible.
 
 ### Curated limits, where a provider publishes none
 

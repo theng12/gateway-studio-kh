@@ -47,7 +47,7 @@ from . import fleet
 from . import retention
 from .activity import is_story_path, record
 from .runtime import store, worker
-from .voices import story_row, voice_registry, voices_for_model
+from .voices import story_row, tts_output_container, voice_registry, voices_for_model
 
 
 # Uploaded audio for transcription quotes, held between the quote and its
@@ -731,7 +731,10 @@ def _voice_tier(voice_id: Any) -> str:
     found = voices_module.voice_registry().find(str(voice_id))
     if found is None:
         return "standard"
-    return "custom" if found.source != voices_module.SOURCE_LIBRARY else "library"
+    # **The same rule the voice row uses**: ownership, not "some source that is
+    # not the library". They were two spellings of one question, so a voice could
+    # be `custom` in the catalogue and `library` in its own quote.
+    return "custom" if found.owned else "library"
 
 
 @app.post("/v1/tts/quotes", dependencies=[Depends(require_auth)])
@@ -761,7 +764,13 @@ def tts_quote(payload: dict[str, Any]) -> dict[str, Any]:
         "voice_tier": _voice_tier(payload.get("voice_id")),
         "billable_characters": len(text),
         "speed": payload.get("speed", 1.0),
+        # ponytail: a flat 14 characters/second, **ours**, and labelled as ours by
+        # the companion field below. Ceiling — speech rate varies several-fold
+        # across languages and voices, so this is rough for anything that is not
+        # English prose. Upgrade path — measure it per model and voice from a
+        # produced artifact, the way a reference clip's contract is measured.
         "estimated_duration_ms": int(max(len(text) / 14.0, 0.5) * 1000),
+        "estimated_duration_ms_source": "gateway",
         "maximum_input_characters": limit,
         # Same value, same decision, and the same label as the model row carries:
         # a quote that disagreed with the row it came from is what put the old flat
@@ -772,7 +781,11 @@ def tts_quote(payload: dict[str, Any]) -> dict[str, Any]:
         "maximum_credits": 0,
         "credits_per_1000_characters": 0,
         "price_version": "flat",
-        "output_format": "wav",
+        # **The container this lane actually returns**, from the one function the
+        # voice row uses. This was a flat `"wav"` for every model, so an
+        # ElevenLabs quote promised WAV while the adapter downloaded
+        # `mp3_44100_128`. `None` where the kind has no TTS lane.
+        "output_format": tts_output_container(definition.id),
         # Published EXPLICITLY: the parser does `payload?.chargeable === true`,
         # so an absent field renders a claim the gateway never made.
         "chargeable": True,
@@ -1018,6 +1031,11 @@ async def confirm_transcription(
     if created:
         response.status_code = 202
         response.headers["Location"] = f"/v1/transcriptions/{job['id']}"
+    # Deliberately **not** popped here. A retry of the same confirm (the caller
+    # never saw the 202) is idempotent only while the quote's entry is still
+    # readable, and dropping it would turn a legitimate retry into a 410 that
+    # forces a re-upload. The bytes are already on disk, so the entry is small;
+    # the sweep that removes it is the retention timer, not this request.
     return _job_envelope(job)
 
 

@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Any
 
 from .config import DATA_DIR
+from .fleet import publish_id
 
 #: Where the owner's curated values live. Matches the `*.local.json` convention of
 #: the provider file: user-owned, never shipped, and outside the bundle so it
@@ -67,12 +68,21 @@ def _read() -> dict[str, dict[str, Any]]:
 
 
 def _all() -> dict[str, dict[str, Any]]:
-    """Loaded once per file change. One `stat` on the common path."""
+    """Loaded once per file change. One `stat` on the common path.
+
+    The key carries **mtime and size**, the same pair `providers/registry.py`
+    documents for this exact hazard: an edit that preserves the mtime (a
+    restore-from-backup, a copy that sets times) changes the size, and keying on
+    mtime alone would keep serving the old numbers as though the file had not
+    moved. `registry.py` guards this with a revision counter; here the file is
+    read directly, so its own size is the second half of the key.
+    """
     path = LIMITS_PATH if LIMITS_PATH.exists() else LEGACY_LIMITS_PATH
     try:
-        key = (str(path), os.path.getmtime(path))
+        stat_result = os.stat(path)
+        key = (str(path), stat_result.st_mtime, stat_result.st_size)
     except OSError:
-        key = (str(path), None)
+        key = (str(path), None, None)
     if _cache["key"] != key:
         _cache["key"] = key
         _cache["limits"] = _read()
@@ -80,11 +90,20 @@ def _all() -> dict[str, dict[str, Any]]:
 
 
 def for_model(provider_id: str, model_id: str) -> dict[str, Any]:
-    """Curated values for one model, or `{}` when the owner has said nothing."""
+    """Curated values for one model, or `{}` when the owner has said nothing.
+
+    **Both namespaces are tried.** The README documents the key as the *visible*
+    `studio-hub::<model>` — the id Story Studio reads — while a location's models
+    are stored under their concrete provider (`studio-hub-<controller>`), so an
+    entry written the documented way was silently ignored for every location.
+    The concrete id is tried first because it is the more specific fact; the
+    published maker id is the fallback the owner can actually see.
+    """
     limits = _all()
-    exact = limits.get(f"{provider_id}::{model_id}")
-    if exact:
-        return exact
+    for key_provider in (provider_id, publish_id(provider_id)):
+        exact = limits.get(f"{key_provider}::{model_id}")
+        if exact:
+            return exact
     return limits.get(model_id, {})
 
 

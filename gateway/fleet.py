@@ -377,6 +377,10 @@ def _masked(row: dict) -> dict:
         "id": row.get("id"),
         "label": row.get("label") or row.get("url"),
         "url": row.get("url"),
+        # The controller's own stable identity, when it has been probed. Published
+        # so two rows that are really one controller can be told apart by
+        # something other than the address they happen to answer on.
+        "site_id": row.get("site_id"),
         "token_set": bool(token),
         "token_hint": (token[:4] + "…" + token[-4:]) if len(token) > 12 else ("set" if token else ""),
         "added_at": row.get("added_at"),
@@ -413,12 +417,40 @@ def _validate_address(url: str) -> str:
 
 
 def add_controller(label: str, url: str, token: str) -> dict:
-    """Remember a location controller. Re-adding the same address updates it."""
+    """Remember a location controller. Re-adding the same *controller* updates it.
+
+    **A location is identified by the controller, not by where it answers.** This
+    matched on the address alone, so a controller that moved (a new DHCP lease, a
+    different Tailscale name, a rebuilt machine) minted a *second* location and
+    orphaned the first one's credential and every per-model enable decision with
+    it. The Hub states a stable `site_id` on `/api/hub/capabilities`, which
+    `_probe` already reads, so the probe is asked first and the address is only the
+    fallback — for an unreachable controller, or a first add with no token yet.
+    """
     url = _validate_address(url)
+    clean_token = (token or "").strip()
     rows = _read()
-    existing = next((row for row in rows if row.get("url") == url), None)
+    existing = None
+    # Best-effort: a probe failure is a normal state (the controller is switched
+    # off, or the token was not pasted), never an error for the add itself.
+    stable_id = ""
+    if clean_token:
+        try:
+            probed = _probe(url, clean_token)
+        except Exception:  # noqa: BLE001 - the address is still a usable answer
+            probed = {}
+        stable_id = str(probed.get("site_id") or probed.get("controller_id") or "")
+    if stable_id:
+        existing = next(
+            (row for row in rows if str(row.get("site_id") or "") == stable_id), None
+        )
+    if existing is None:
+        existing = next((row for row in rows if row.get("url") == url), None)
     if existing:
         existing["label"] = (label or existing.get("label") or url).strip()
+        existing["url"] = url
+        if stable_id:
+            existing["site_id"] = stable_id
         controller_id = str(existing.get("id"))
         # A pre-existing roster may still carry the token; move it out rather
         # than leaving a second copy behind.
@@ -431,9 +463,11 @@ def add_controller(label: str, url: str, token: str) -> dict:
             "url": url,
             "added_at": time.time(),
         }
+        if stable_id:
+            existing["site_id"] = stable_id
         rows.append(existing)
         legacy = ""
-    secret = (token or "").strip() or legacy or _token_for(controller_id)
+    secret = clean_token or legacy or _token_for(controller_id)
     # The roster is written **first**: the provider definition that carries this
     # location's `hub_token` credential field is derived from the roster, and the
     # credential store refuses a field for a provider it has never heard of. So
@@ -869,37 +903,46 @@ def invalidate() -> None:
 
 
 def _summarise(rows: list[dict]) -> dict:
-    # Machine counts come from the Hub's own pulse, which is the only place that
-    # distinguishes "ready" from "long idle" from "offline". `fleet/overview`
-    # only knows reachable/unreachable, so it is the fallback, not the source.
-    pulse: dict[str, int] = {}
+    # Machine counts come from the Hub's own per-machine states, which are the only
+    # place that distinguishes "ready" from "long idle" from "offline".
+    # `fleet/overview` only knows reachable/unreachable, so it is the fallback.
+    #
+    # **Both headline numbers come from the table the page draws.** They used to be
+    # counted separately: `online` was "every pulse state except `offline`" — which
+    # counted `unknown` (a *missing* state, coerced) as reachable and therefore
+    # overstated the fleet — while `machines` came from the activity list, which is
+    # not the union of overview + activity that the table shows. So a machine with
+    # no state read as online, and the two numbers could disagree about how many
+    # machines there are at all.
+    #
+    # Now: an unknown state is counted as **neither** online nor offline, and is
+    # published as its own number rather than being dropped — a page that hides
+    # rows without saying so is the same failure as one that invents them.
+    flat = machines_flat(rows)
+    states = [str(row.get("state") or "unknown").lower() for row in flat]
+
+    # The published `pulse` is derived from the same filtered list, never taken
+    # straight from the Hub's aggregate: that aggregate carries no machine
+    # identity, so a probe counted in it could not be taken back out — which is
+    # exactly how two phantom machines reached the headline once.
+    derived_pulse: dict[str, int] = {}
+    for state in states:
+        derived_pulse[state] = derived_pulse.get(state, 0) + 1
+    hub_pulse: dict[str, int] = {}
     for row in rows:
         for state, count in (row["activity"]["pulse"] or {}).items():
-            pulse[state] = pulse.get(state, 0) + int(count or 0)
+            hub_pulse[state] = hub_pulse.get(state, 0) + int(count or 0)
+    pulse = derived_pulse or hub_pulse
 
-    machines = sum(len(row["machines"]) for row in rows)
-    machines_up = sum(
-        1 for row in rows for machine in row["machines"] if machine.get("reachable")
-    )
-    # Counted **per machine** from the already-filtered activity list, not from the
-    # Hub's aggregate `pulse`. The aggregate carries no machine identity, so a
-    # probe counted as `offline` in it could not be taken back out — which is
-    # exactly how two phantom machines reached the headline. Deriving the pulse
-    # here means the probes cannot re-enter the numbers by another route. Falls
-    # back to the Hub's own aggregate for a Hub that reports no per-machine state.
-    derived: dict[str, int] = {}
-    for row in rows:
-        for machine in row["activity"]["machines"]:
-            state = str(machine.get("state") or "unknown")
-            derived[state] = derived.get(state, 0) + 1
-    pulse = derived or pulse
-    if pulse:
-        # Every state except `offline` means the Hub can reach the machine.
-        online = sum(count for state, count in pulse.items() if state != "offline")
-        offline = int(pulse.get("offline") or 0)
-        machines_total = online + offline
+    if states:
+        online = sum(1 for state in states if state not in {"offline", "unknown"})
+        offline = sum(1 for state in states if state == "offline")
+        machines_unknown = sum(1 for state in states if state == "unknown")
+        machines_total = len(states)
     else:
-        online, offline, machines_total = machines_up, machines - machines_up, machines
+        # No per-machine report at all: nothing is claimed to be online.
+        online, offline = 0, 0
+        machines_total = machines_unknown = sum(len(row["machines"]) for row in rows)
 
     completed = failed = 0
     for row in rows:
@@ -913,6 +956,10 @@ def _summarise(rows: list[dict]) -> dict:
         "machines": machines_total,
         "machines_online": online,
         "machines_offline": offline,
+        # Neither online nor offline: the Hub reported no state for it (or the
+        # overview omitted it). Published so the headline can account for every
+        # machine in the table instead of quietly leaving a gap.
+        "machines_unknown": machines_unknown,
         "pulse": pulse,
         # Said out loud rather than silently dropped: a page that hides rows
         # without saying so is the same failure as one that invents them.

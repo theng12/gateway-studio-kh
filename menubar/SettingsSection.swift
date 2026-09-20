@@ -327,7 +327,17 @@ final class SettingsSection: NSObject, AppSection {
     }
 
     @objc private func save() {
-        let port = Int(portField.stringValue.trimmingCharacters(in: .whitespaces)) ?? 8000
+        let typed = portField.stringValue.trimmingCharacters(in: .whitespaces)
+        // **A mistyped port is refused, not replaced with 8000.** `?? 8000` meant an
+        // empty or unparseable field silently rebound the gateway to 8000 while the
+        // page still said "Saved. Restarting…" — so Story Studio, pointed at the
+        // port the owner had actually chosen, went dark with nothing on screen to
+        // explain why. Put the real value back and say what was wrong.
+        guard let port = Int(typed), (1...65535).contains(port) else {
+            portField.stringValue = String(ConfigStore.shared.config.port)
+            statusLabel.stringValue = "Port must be a whole number from 1 to 65535 — nothing was saved."
+            return
+        }
         let key = keyField.stringValue.trimmingCharacters(in: .whitespaces)
 
         ConfigStore.shared.update { $0.port = port }

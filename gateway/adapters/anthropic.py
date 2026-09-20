@@ -18,6 +18,16 @@ import httpx
 from .base import BackendError, BackendRequest, BackendResult
 from .openai_compat import ANTHROPIC_STOP_MAP, CHAT_TIMEOUT
 
+#: `max_tokens` is **required** by the Messages API, so a number has to be sent
+#: whether or not the caller supplied one. The value is **published as ours**:
+#: `catalog._chat_row` reads this constant and puts it on the Anthropic rows with
+#: `max_output_tokens_source: "gateway"`, so the row and the request cannot
+#: describe different allowances — which they did, as `null` beside a silent 4096.
+#:
+#: ponytail: one number for every Anthropic model, ours. Ceiling — a model whose
+#: real ceiling is lower is over-described and a longer answer is truncated at
+#: 4096 with no signal. Upgrade path — the owner's `model-limits.local.json`
+#: already flows through `_limit_with_source` ahead of this fallback, per model.
 DEFAULT_MAX_TOKENS = 4096
 ANTHROPIC_VERSION = "2023-06-01"
 
