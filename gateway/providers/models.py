@@ -220,6 +220,25 @@ class ModelInventory:
             return False
         if modality == "music" and not music_can_serve(model_id):
             return False
+
+        # Two things a location's package list cannot tell you, which the Hub's
+        # own catalogue can — both **read**, and only when it states them, so an
+        # absent key keeps meaning "unverified" rather than "withhold".
+        #
+        # 1. A location's packages include the codecs and tokenizers its models
+        #    load, indistinguishable from a runnable model there. Publishing a
+        #    tokenizer as a clone-capable voice model is the "control that does
+        #    nothing" this rule exists to prevent, and it happened for real the
+        #    moment the migrated packages were enabled: five companions and an
+        #    uncatalogued variant reached Story Studio's picker that way.
+        # 2. The Hub already decides whether a model fits the machine it runs on.
+        #    A model that cannot run here must not be offered; its `memory_eligible`
+        #    is that location's verdict, so a bigger site's copy stays publishable.
+        raw = model.get("raw") or {}
+        if raw.get("catalogued") is False:
+            return False
+        if raw.get("memory_eligible") is False:
+            return False
         return True
 
     def enabled_models(self, modality: str) -> list[tuple[ProviderDefinition, dict[str, Any]]]:

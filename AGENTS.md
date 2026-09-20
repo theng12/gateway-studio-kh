@@ -451,6 +451,33 @@ clips belong to another build". The match is now the **model's own statement**.
 Studio a picker with nothing in it. **No currently-published row changed**: all
 eight local rows declare `true`, and fish/elevenlabs keep the per-kind default.
 
+**A location's package list cannot tell a codec from a model, and `can_publish` now
+asks the catalogue.** `/api/hub/model-packages` lists the companions a model loads
+beside the models themselves, and there is **nothing in a row to separate them** —
+`snac_24khz`, `S3TokenizerV2`, `umt5-base`, `fish-s1-dac-min`,
+`MOSS-Audio-Tokenizer-Nano` and a real model all read `engine=voice-mlx,
+worker=voice, state=files_verified, runtime_state=ready`. The Hub's catalogue is
+what distinguishes them: it lists models and omits the companions. So
+`can_publish` withholds a package whose `raw["catalogued"]` is **False**, and one
+whose `raw["memory_eligible"]` is **False** — the Hub's own verdict for the
+machine it runs on, which keeps a bigger location's copy publishable where this
+Mac cannot run it. Both are **read, and only when stated**: an absent key still
+means *unverified*, never *withhold*.
+
+**This is not theoretical — the migration reintroduced exactly the failure this file
+exists to prevent.** Enabling the 34 migrated packages published **nine bad rows**:
+five companions (a *tokenizer* offered as a clone-capable voice model), an
+uncatalogued variant, and the three models the Hub says do not fit this 16 GB Mac
+(`echo-tts-base` 24 GB, `fish-audio-s2-pro` 8-bit 24 GB and bf16 32 GB). The local
+lane's `auto_enable_discovered` is why they went straight out. 27 local TTS rows
+became 18 with the gate in place. **`available: true` on `/api/hub/models` is not a
+promise that a job will run** — the Hub's submission gate refuses anything not in
+its packaged catalogue with `MODEL_NOT_PACKAGED` ("model is not in the packaged
+catalog", `components/hub/standalone.py`), which is why discovery must keep reading
+`model-packages` and must **never** be "fixed" to publish cache-only models. The
+Studio Hub session measured that gate; it is the reason the tempting change is
+wrong.
+
 **Nothing in the gateway truncates a reference; the Hub does the cutting.**
 `studio_hub._stage_voice_reference` uploads `path.read_bytes()` verbatim, and
 `reference_audio.prepare()` on the Hub side trims silence, then — only if the clip
@@ -480,7 +507,7 @@ model name.
 ## Verification
 
 ```bash
-.venv/bin/python tests/test_e2e.py              # 344 checks, isolated mock upstream
+.venv/bin/python tests/test_e2e.py              # 349 checks, isolated mock upstream
 .venv/bin/python tests/test_fleet_standalone.py # 45 checks, real Hub(s) as locations
 .venv/bin/python tests/test_ui.py               # 107 checks, drives the real app
 ```

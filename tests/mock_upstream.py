@@ -186,7 +186,10 @@ class Handler(BaseHTTPRequestHandler):
         #   mock-hub/clone-model        catalogued, audited contract (3/8/15s)
         #   mock-hub/preset-model       catalogued, `declared: false` — no reference
         #   mock-hub/uncatalogued-model installed but absent from the catalogue
-        #                               → *unverified*, which must still be offered
+        #                               → *unverified* for its voices, and not a
+        #                                 model at all as far as publication goes
+        #   mock-hub/toobig-model       catalogued, but the Hub says it does not fit
+        #                               this machine (`memory_eligible: false`)
         if path == "/api/hub/model-packages":
             self._json(200, {"models": [
                 {"package_id": "clone-model", "model_id": "mock-hub/clone-model",
@@ -198,12 +201,16 @@ class Handler(BaseHTTPRequestHandler):
                 {"package_id": "uncatalogued-model", "model_id": "mock-hub/uncatalogued-model",
                  "engine": "voice-mlx", "files_state": "files_verified",
                  "dispatch_state": "eligible", "revision": "c" * 40},
+                {"package_id": "toobig-model", "model_id": "mock-hub/toobig-model",
+                 "engine": "voice-mlx", "files_state": "files_verified",
+                 "dispatch_state": "eligible", "revision": "d" * 40},
             ]})
             return
         if path == "/api/hub/catalog":
             self._json(200, {"models": [
                 {"repo": "mock-hub/clone-model", "family": "mock-clone",
                  "capabilities": ["tts", "voice-cloning", "multilingual"],
+                 "min_unified_memory_gb": 8, "memory_eligible": True,
                  "reference_audio": {
                      "declared": True, "supported": True, "profile_audited": True,
                      "profile_source": "audit",
@@ -216,7 +223,14 @@ class Handler(BaseHTTPRequestHandler):
                  }},
                 {"repo": "mock-hub/preset-model", "family": "mock-preset",
                  "capabilities": ["tts", "expressive"],
+                 "min_unified_memory_gb": 8, "memory_eligible": True,
                  "reference_audio": {"declared": False, "supported": False,
+                                     "profile_audited": False,
+                                     "profile_source": "unverified"}},
+                {"repo": "mock-hub/toobig-model", "family": "mock-toobig",
+                 "capabilities": ["tts", "voice-cloning", "multilingual"],
+                 "min_unified_memory_gb": 64, "memory_eligible": False,
+                 "reference_audio": {"declared": True, "supported": True,
                                      "profile_audited": False,
                                      "profile_source": "unverified"}},
             ]})

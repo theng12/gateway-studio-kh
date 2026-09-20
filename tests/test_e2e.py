@@ -2060,7 +2060,7 @@ def main() -> int:
             # check is what catches that: a location pointed at the mock must find
             # the mock's models, and this run has no local Hub at all.
             check("a location discovers its own Hub's models, not the local one",
-                  len(installed) == 3,
+                  len(installed) == 4,
                   f"{sorted(installed)} error="
                   f"{hub_payload.get('error') or hub_payload.get('discovery_error')}")
             check("a catalogued model carries the reference contract the Hub stated",
@@ -2071,6 +2071,11 @@ def main() -> int:
                   "reference_audio" not in
                   ((installed.get("mock-hub/uncatalogued-model") or {}).get("raw") or {}),
                   f"{(installed.get('mock-hub/uncatalogued-model') or {}).get('raw')}")
+            check("membership and the machine verdict are recorded when the catalogue answers",
+                  ((installed.get("mock-hub/clone-model") or {}).get("raw") or {}).get("catalogued") is True
+                  and ((installed.get("mock-hub/uncatalogued-model") or {}).get("raw") or {}).get("catalogued") is False
+                  and ((installed.get("mock-hub/toobig-model") or {}).get("raw") or {}).get("memory_eligible") is False,
+                  f"{[(k, (v.get('raw') or {}).get('catalogued'), (v.get('raw') or {}).get('memory_eligible')) for k, v in installed.items()]}")
 
             httpx.post(f"{BASE}/admin/api/models/enabled", headers=AUTH, json={
                 "items": [{"provider_id": "studio-hub-mock", "model_id": mid}
@@ -2120,6 +2125,11 @@ def main() -> int:
                   len(preset) == 0, f"{len(preset)}: {[v.get('id') for v in preset]}")
             check("a model the catalogue does not describe is unverified, not excluded",
                   len(unknown) == 1, f"{len(unknown)}")
+            # Two different questions, deliberately answered differently. *Voices*
+            # ask "does this clone?" and an uncatalogued model is unverified, so
+            # its voices stay offered. *Publication* asks "is this a model at
+            # all?" — and the answer there comes from the same catalogue, because
+            # a location's package list cannot tell a codec from a model.
 
             # The publication follows the same statement, because a row claiming
             # cloning for a preset-speaker model offers a picker with nothing in it.
@@ -2130,6 +2140,15 @@ def main() -> int:
                   and published.get("studio-hub::mock-hub/preset-model", {})
                   .get("supports_voice_cloning") is False,
                   f"{[(k, v.get('supports_voice_cloning')) for k, v in published.items() if 'mock-hub' in k]}")
+            check("a package the catalogue does not describe as a model is not published",
+                  "studio-hub::mock-hub/uncatalogued-model" not in published,
+                  f"{[k for k in published if 'mock-hub' in k]}")
+            check("and a model the Hub says does not fit this machine is not published",
+                  "studio-hub::mock-hub/toobig-model" not in published,
+                  f"{[k for k in published if 'mock-hub' in k]}")
+            check("a preset-voice model is still published — not cloning is not the same as not being a model",
+                  "studio-hub::mock-hub/preset-model" in published,
+                  f"{[k for k in published if 'mock-hub' in k]}")
 
             report = req(client, "GET",
                          "/admin/api/voices/studio-hub-local::voice-mock/reference").json()
@@ -2145,11 +2164,18 @@ def main() -> int:
                   "takes no reference" in str(by_model.get(
                       "studio-hub::mock-hub/preset-model", {}).get("verdict")),
                   f"{by_model.get('studio-hub::mock-hub/preset-model')}")
-            unverified = by_model.get("studio-hub::mock-hub/uncatalogued-model") or {}
-            check("and says unverified where the Hub stated nothing, inventing no maximum",
-                  "unverified" in str(unverified.get("verdict"))
-                  and not (unverified.get("contract") or {}).get("maximum_duration_seconds"),
-                  f"{unverified.get('verdict')} / {unverified.get('contract')}")
+            # The report covers what Story Studio can actually pick, so the two
+            # packages the new gate withholds are absent from it. The "unverified"
+            # verdict below still exists for a catalogued model that states no
+            # contract at all — but such a model cannot reach the picker, so this
+            # fixture no longer contains one.
+            check("the report covers published models only",
+                  "studio-hub::mock-hub/uncatalogued-model" not in by_model
+                  and "studio-hub::mock-hub/toobig-model" not in by_model,
+                  f"{sorted(by_model)}")
+            stated_verdict = str((by_model.get("studio-hub::mock-hub/clone-model") or {}).get("verdict"))
+            check("a stated maximum is reported as the Hub's own number",
+                  "15" in stated_verdict, stated_verdict)
             check("it reports the clip's own measurements",
                   report["clip"]["duration_seconds"] == 11.0
                   and report["clip"]["segments"] == 2

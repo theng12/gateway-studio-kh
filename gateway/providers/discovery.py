@@ -523,10 +523,26 @@ def _studio_hub(definition: ProviderDefinition, values: dict[str, str]) -> Disco
         # either from the engine name: Qwen3's Base tiers clone and its
         # CustomVoice tiers do not, and they share an engine.
         facts = catalog.get(model_id) or {}
+        if catalog:
+            # Whether the Hub's catalogue describes this as a **model** at all.
+            # A location's package list also holds the codecs and tokenizers that
+            # other models load, and there is nothing in it to tell them apart —
+            # every row reads `engine=voice-mlx, state=files_verified,
+            # *_state=ready`. The catalogue lists models and omits the
+            # companions, so it is the only thing that separates them. Recorded
+            # only when the catalogue actually answered: a read that failed must
+            # not come out as "no models here".
+            raw["catalogued"] = bool(facts)
         if facts:
             raw["capabilities"] = facts.get("capabilities") or []
             raw["reference_audio"] = facts.get("reference_audio") or {}
             raw["family"] = facts.get("family")
+            # The floor *and* the Hub's own verdict for the machine it runs on,
+            # so "too big for this location" is read rather than computed here —
+            # and it is that location's verdict, not this Mac's, which matters
+            # when the same model is offered by several sites.
+            raw["min_unified_memory_gb"] = facts.get("min_unified_memory_gb")
+            raw["memory_eligible"] = facts.get("memory_eligible")
         models.append(
             DiscoveredModel(
                 model_id=model_id,
