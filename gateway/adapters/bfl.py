@@ -120,6 +120,9 @@ def generate(request: BackendRequest) -> BackendResult:
         polling_url = str(payload.get("polling_url") or "")
         if not polling_url:
             raise BackendError("bfl returned no polling_url", code="PROVIDER_FAILED")
+        upstream_id = str(payload.get("id") or "")
+        if upstream_id and request.checkpoint is not None:
+            request.checkpoint(upstream_id)
 
         deadline = time.monotonic() + JOB_DEADLINE_S
         artifact_url = ""

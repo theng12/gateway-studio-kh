@@ -12,6 +12,11 @@ enum GatewayAPIError: LocalizedError {
     case unauthorized
     case http(Int)
     case malformed
+    case emptyResponse
+    case invalidResponse
+    case transport(String)
+    case unsafeRedirect
+    case missingResource
 
     /// A refused request, carrying what the gateway actually said.
     ///
@@ -29,6 +34,12 @@ enum GatewayAPIError: LocalizedError {
         case .badURL: return "Bad gateway URL."
         case .unauthorized: return "The gateway rejected the API key."
         case .http(let code): return "The gateway returned HTTP \(code)."
+        case .emptyResponse: return "The gateway returned an empty response."
+        case .invalidResponse: return "The gateway returned an invalid response."
+        case .transport(let detail):
+            return detail.isEmpty ? "Could not reach the gateway." : "Could not reach the gateway: \(detail)"
+        case .unsafeRedirect: return "The gateway tried to redirect the request to another origin."
+        case .missingResource: return "The requested file is no longer available."
         case .refused(let code, let detail):
             return detail.isEmpty ? "The gateway returned HTTP \(code)." : detail
         case .malformed: return "The gateway returned an unexpected response."
@@ -38,7 +49,21 @@ enum GatewayAPIError: LocalizedError {
 
 enum GatewayAPI {
     static func url(_ path: String) -> URL? {
-        URL(string: "http://127.0.0.1:\(GatewayController.shared.port)\(path)")
+        guard path.hasPrefix("/"), !path.hasPrefix("//") else { return nil }
+        let port = GatewayController.shared.port
+        guard let target = URL(string: "http://127.0.0.1:\(port)\(path)"),
+              let components = URLComponents(
+                url: target,
+                resolvingAgainstBaseURL: false
+              ),
+              components.scheme == "http",
+              components.host == "127.0.0.1",
+              components.port == port,
+              components.user == nil,
+              components.password == nil else {
+            return nil
+        }
+        return target
     }
 
     static func get(
@@ -77,6 +102,73 @@ enum GatewayAPI {
         completion: ((Result<[String: Any], Error>) -> Void)? = nil
     ) {
         request("DELETE", path, completion: completion ?? { _ in })
+    }
+
+    /// Download authenticated bytes without letting a redirect send the key to
+    /// another origin. Every completion is delivered on the main queue.
+    static func download(
+        _ path: String,
+        completion: @escaping (Result<Data, GatewayAPIError>) -> Void
+    ) {
+        guard GatewayController.shared.isRunning else {
+            DispatchQueue.main.async { completion(.failure(.notRunning)) }
+            return
+        }
+        guard let target = url(path) else {
+            DispatchQueue.main.async { completion(.failure(.badURL)) }
+            return
+        }
+
+        let key = EnvFile.apiKey()
+        guard let (session, redirectDelegate) = authenticatedSession(for: target, key: key) else {
+            DispatchQueue.main.async { completion(.failure(.badURL)) }
+            return
+        }
+        var request = URLRequest(url: target)
+        request.httpMethod = "GET"
+        request.timeoutInterval = 60
+        if !key.isEmpty {
+            request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
+        }
+
+        session.dataTask(with: request) { data, response, error in
+            let finish: (Result<Data, GatewayAPIError>) -> Void = { result in
+                DispatchQueue.main.async {
+                    completion(result)
+                    session.invalidateAndCancel()
+                }
+            }
+
+            if redirectDelegate.rejectedCrossOrigin {
+                finish(.failure(.unsafeRedirect))
+                return
+            }
+            if let error {
+                finish(.failure(
+                    .transport(error.localizedDescription)
+                ))
+                return
+            }
+            guard let response = response as? HTTPURLResponse else {
+                finish(.failure(.invalidResponse))
+                return
+            }
+            guard (200...299).contains(response.statusCode) else {
+                if response.statusCode == 401 {
+                    finish(.failure(.unauthorized))
+                } else if response.statusCode == 404 || response.statusCode == 410 {
+                    finish(.failure(.missingResource))
+                } else {
+                    finish(.failure(.refused(response.statusCode, detail(from: data))))
+                }
+                return
+            }
+            guard let data, !data.isEmpty else {
+                finish(.failure(.emptyResponse))
+                return
+            }
+            finish(.success(data))
+        }.resume()
     }
 
     /// A multipart POST, for the one route that carries a file.
@@ -127,30 +219,46 @@ enum GatewayAPI {
         }
         req.httpBody = body
 
-        URLSession.shared.dataTask(with: req) { data, response, error in
-            if let error {
-                DispatchQueue.main.async { completion(.failure(error)) }
+        guard let (session, redirectDelegate) = authenticatedSession(for: target, key: key) else {
+            DispatchQueue.main.async { completion(.failure(GatewayAPIError.badURL)) }
+            return
+        }
+        let finish: (Result<[String: Any], Error>) -> Void = { result in
+            DispatchQueue.main.async {
+                completion(result)
+                session.invalidateAndCancel()
+            }
+        }
+        session.dataTask(with: req) { data, response, error in
+            if redirectDelegate.rejectedCrossOrigin {
+                finish(.failure(GatewayAPIError.unsafeRedirect))
                 return
             }
-            let code = (response as? HTTPURLResponse)?.statusCode ?? 0
+            if let error {
+                finish(.failure(error))
+                return
+            }
+            guard let response = response as? HTTPURLResponse else {
+                finish(.failure(GatewayAPIError.invalidResponse))
+                return
+            }
+            let code = response.statusCode
             if code == 401 {
-                DispatchQueue.main.async { completion(.failure(GatewayAPIError.unauthorized)) }
+                finish(.failure(GatewayAPIError.unauthorized))
                 return
             }
             guard code == 200 || code == 202 else {
                 let detail = GatewayAPI.detail(from: data)
-                DispatchQueue.main.async {
-                    completion(.failure(GatewayAPIError.refused(code, detail)))
-                }
+                finish(.failure(GatewayAPIError.refused(code, detail)))
                 return
             }
             guard let data, !data.isEmpty,
                   let parsed = try? JSONSerialization.jsonObject(with: data),
                   let json = parsed as? [String: Any] else {
-                DispatchQueue.main.async { completion(.failure(GatewayAPIError.malformed)) }
+                finish(.failure(GatewayAPIError.malformed))
                 return
             }
-            DispatchQueue.main.async { completion(.success(json)) }
+            finish(.success(json))
         }.resume()
     }
 
@@ -173,6 +281,10 @@ enum GatewayAPI {
         req.httpMethod = method
         req.timeoutInterval = 15
         let key = EnvFile.apiKey()
+        guard let (session, redirectDelegate) = authenticatedSession(for: target, key: key) else {
+            DispatchQueue.main.async { completion(.failure(GatewayAPIError.badURL)) }
+            return
+        }
         if !key.isEmpty {
             req.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
         }
@@ -181,14 +293,28 @@ enum GatewayAPI {
             req.httpBody = try? JSONSerialization.data(withJSONObject: body)
         }
 
-        URLSession.shared.dataTask(with: req) { data, response, error in
-            if let error {
-                DispatchQueue.main.async { completion(.failure(error)) }
+        let finish: (Result<[String: Any], Error>) -> Void = { result in
+            DispatchQueue.main.async {
+                completion(result)
+                session.invalidateAndCancel()
+            }
+        }
+        session.dataTask(with: req) { data, response, error in
+            if redirectDelegate.rejectedCrossOrigin {
+                finish(.failure(GatewayAPIError.unsafeRedirect))
                 return
             }
-            let code = (response as? HTTPURLResponse)?.statusCode ?? 0
+            if let error {
+                finish(.failure(error))
+                return
+            }
+            guard let response = response as? HTTPURLResponse else {
+                finish(.failure(GatewayAPIError.invalidResponse))
+                return
+            }
+            let code = response.statusCode
             if code == 401 {
-                DispatchQueue.main.async { completion(.failure(GatewayAPIError.unauthorized)) }
+                finish(.failure(GatewayAPIError.unauthorized))
                 return
             }
             guard code == 200 else {
@@ -200,7 +326,7 @@ enum GatewayAPI {
                 let failure: GatewayAPIError = code == 403
                     ? .refused(code, detail.isEmpty ? "The gateway refused this action." : detail)
                     : .refused(code, detail)
-                DispatchQueue.main.async { completion(.failure(failure)) }
+                finish(.failure(failure))
                 return
             }
             // A 200 is not automatically a payload. A proxy page, a renamed
@@ -210,15 +336,15 @@ enum GatewayAPI {
             // something. "I could not read the answer" must not look like "the
             // answer is nothing."
             guard let data, !data.isEmpty else {
-                DispatchQueue.main.async { completion(.success([:])) }
+                finish(.failure(GatewayAPIError.emptyResponse))
                 return
             }
             guard let parsed = try? JSONSerialization.jsonObject(with: data),
                   let json = parsed as? [String: Any] else {
-                DispatchQueue.main.async { completion(.failure(GatewayAPIError.malformed)) }
+                finish(.failure(GatewayAPIError.malformed))
                 return
             }
-            DispatchQueue.main.async { completion(.success(json)) }
+            finish(.success(json))
         }.resume()
     }
 
@@ -235,6 +361,66 @@ enum GatewayAPI {
         }
         if let text = object["message"] as? String { return text }
         return ""
+    }
+
+    private static func authenticatedSession(
+        for target: URL,
+        key: String
+    ) -> (URLSession, AuthenticatedRedirectDelegate)? {
+        guard let origin = RequestOrigin(url: target) else { return nil }
+        let delegate = AuthenticatedRedirectDelegate(origin: origin, key: key)
+        let session = URLSession(
+            configuration: .ephemeral,
+            delegate: delegate,
+            delegateQueue: nil
+        )
+        return (session, delegate)
+    }
+
+    private struct RequestOrigin: Equatable {
+        let scheme: String
+        let host: String
+        let port: Int?
+
+        init?(url: URL) {
+            guard let scheme = url.scheme?.lowercased(),
+                  let host = url.host?.lowercased() else { return nil }
+            self.scheme = scheme
+            self.host = host
+            self.port = url.port ?? (scheme == "http" ? 80 : (scheme == "https" ? 443 : nil))
+        }
+    }
+
+    private final class AuthenticatedRedirectDelegate: NSObject, URLSessionTaskDelegate {
+        let origin: RequestOrigin
+        let key: String
+        private(set) var rejectedCrossOrigin = false
+
+        init(origin: RequestOrigin, key: String) {
+            self.origin = origin
+            self.key = key
+        }
+
+        func urlSession(
+            _ session: URLSession,
+            task: URLSessionTask,
+            willPerformHTTPRedirection response: HTTPURLResponse,
+            newRequest request: URLRequest,
+            completionHandler: @escaping (URLRequest?) -> Void
+        ) {
+            guard let redirectedURL = request.url,
+                  let redirectedOrigin = RequestOrigin(url: redirectedURL),
+                  redirectedOrigin == origin else {
+                rejectedCrossOrigin = true
+                completionHandler(nil)
+                return
+            }
+            var authorized = request
+            if !key.isEmpty {
+                authorized.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
+            }
+            completionHandler(authorized)
+        }
     }
 
     // MARK: Formatting helpers shared by the windows

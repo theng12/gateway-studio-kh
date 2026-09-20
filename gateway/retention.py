@@ -16,11 +16,10 @@ is not going to be. The size limit is the backstop for a burst: a few long video
 can exceed ten gigabytes inside a day, and when that happens the oldest go first so
 the newest stay fetchable.
 
-Settings live in their own file rather than `.env`, because the menu bar app
-rewrites `.env` wholesale when it saves the API key and the gateway reads that file
-once at import. A previous run's leftover `GATEWAY_*` line would be silently
-dropped, and a changed one would not be picked up until a restart. This is read
-fresh at every prune, so an edit takes effect on the next pass.
+Settings live in their own file rather than `.env`, which the menu bar app owns
+and rewrites when saving connection settings. Retention settings are read fresh
+at every prune, so an edit takes effect on the next pass. Credential/configuration
+reads are live too; key rotation does not require a service restart.
 
 **A pin outranks both limits.** An asset the owner creates here *directly* has no
 Story Studio project holding the copy that matters, so the gateway's file is the
@@ -205,6 +204,24 @@ def _files() -> list[tuple[Path, float, int]]:
     return out
 
 
+def _protected_input_paths(store: object | None = None) -> set[Path] | None:
+    """Read staged inputs from live and recovery-held job rows."""
+    if store is None:
+        try:
+            from .runtime import store as runtime_store
+
+            store = runtime_store
+        except Exception:  # noqa: BLE001 - unknown protection must fail closed
+            return None
+    reader = getattr(store, "protected_input_paths", None)
+    if reader is None:
+        return None
+    try:
+        return {Path(str(path)).resolve() for path in reader() if path}
+    except Exception:  # noqa: BLE001 - unreadable is not the same as no inputs
+        return None
+
+
 def usage() -> dict:
     entries = _files()
     pins = kept()
@@ -223,7 +240,7 @@ def usage() -> dict:
     }
 
 
-def prune(now: float | None = None) -> dict:
+def prune(now: float | None = None, store: object | None = None) -> dict:
     """Delete by age, then by size, oldest first. Never raises.
 
     Returns what happened, so a person can see the policy working rather than
@@ -244,6 +261,10 @@ def prune(now: float | None = None) -> dict:
     limits = settings()
     entries = _files()
     pinned = {p["path"] for p in kept() if p["present"]}
+    protected_inputs = _protected_input_paths(store)
+    if protected_inputs is None:
+        return {"deleted": 0, "freed_bytes": 0, "limits": limits,
+                "blocked_reason": "Cannot read job input protection; no artifacts were pruned. Retry after the job database is readable."}
     # A pinned artifact is not a candidate at all, whatever its age or the size
     # pressure. The young-file protection is counted separately from the pins so
     # neither can be read as the other.
@@ -251,7 +272,9 @@ def prune(now: float | None = None) -> dict:
     removable = [
         (p, m, s)
         for p, m, s in entries
-        if (moment - m) > PROTECTED_AGE_S and str(p) not in pinned
+        if (moment - m) > PROTECTED_AGE_S
+        and str(p) not in pinned
+        and p.resolve() not in protected_inputs
     ]
 
     doomed: dict[str, Path] = {}
@@ -307,6 +330,7 @@ def prune(now: float | None = None) -> dict:
         "limits": limits,
         "protected_files": len(young),
         "pinned_files": len(pinned),
+        "protected_inputs": len(protected_inputs),
     }
 
 

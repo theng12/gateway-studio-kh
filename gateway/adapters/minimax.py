@@ -271,6 +271,8 @@ def _video(request: BackendRequest) -> BackendResult:
     task_id = str(_unwrap(submitted).get("task_id") or "")
     if not task_id:
         raise BackendError("minimax returned no task_id", code="PROVIDER_FAILED")
+    if request.checkpoint is not None:
+        request.checkpoint(task_id)
 
     deadline = time.monotonic() + VIDEO_DEADLINE_S
     url = ""

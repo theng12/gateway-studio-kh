@@ -223,6 +223,9 @@ class FalBackend:
             response_url = payload.get("response_url")
             if not status_url or not response_url:
                 raise BackendError("fal returned no status/response url", code="PROVIDER_FAILED")
+            request_id = str(payload.get("request_id") or "")
+            if request_id and request.checkpoint is not None:
+                request.checkpoint(request_id)
 
             deadline = time.monotonic() + JOB_DEADLINE_S
             while time.monotonic() < deadline:

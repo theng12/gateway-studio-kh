@@ -24,6 +24,7 @@ file would be the worst failure mode in the codebase.
 from __future__ import annotations
 
 import os
+import ipaddress
 import shutil
 import stat
 from pathlib import Path
@@ -268,7 +269,8 @@ def gateway_api_key() -> str:
     """The bearer token Story Studio presents.
 
     Keyless development accepts any nonempty token on loopback only. Both API
-    guards refuse keyless access when the configured bind is beyond loopback.
+    guards refuse keyless access when the configured bind or actual peer is
+    beyond loopback, or the request carries proxy forwarding headers.
     """
     return get("GATEWAY_API_KEY", "").strip()
 
@@ -286,3 +288,22 @@ def bind_port() -> int:
 
 def is_loopback() -> bool:
     return bind_host() in {"127.0.0.1", "localhost", "::1"}
+
+
+def request_is_loopback(request) -> bool:
+    """Trust only a direct loopback peer, never proxy-supplied identity.
+
+    Proxied admin traffic must authenticate even when its last hop is local.
+    Supported headless deployments should also pass --no-proxy-headers.
+    """
+    if request is None or request.client is None:
+        return False
+    if any(name in request.headers for name in ("forwarded", "x-forwarded-for", "x-forwarded-host", "x-forwarded-proto")):
+        return False
+    try:
+        address = ipaddress.ip_address(request.client.host)
+        if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped:
+            address = address.ipv4_mapped
+        return address.is_loopback
+    except ValueError:
+        return False

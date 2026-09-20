@@ -20,6 +20,7 @@ return a result or raise `BackendError`.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
 
@@ -91,11 +92,15 @@ class BackendError(Exception):
         code: str = "PROVIDER_ERROR",
         status: int | None = None,
         retryable: bool = False,
+        upstream_accepted: bool | None = None,
     ) -> None:
         super().__init__(message)
         self.code = code
         self.status = status
         self.retryable = retryable
+        # `None` means the adapter did not establish whether the remote accepted
+        # work; the worker must not infer that a retry is safe from `retryable`.
+        self.upstream_accepted = upstream_accepted
 
 
 @dataclass(slots=True)
@@ -109,6 +114,9 @@ class BackendRequest:
     values: dict[str, str]        # resolved credentials
     base_url: str
     display_name: str = ""
+    # Async adapters can call this immediately after receiving a durable remote
+    # id. Existing adapters that do not checkpoint remain conservatively manual.
+    checkpoint: Callable[[str], None] | None = None
 
 
 @runtime_checkable

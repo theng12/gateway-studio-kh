@@ -30,8 +30,15 @@ import WebKit
 /// makes the bundle movable: the `.app` can be copied anywhere while the data —
 /// credentials, database, voices — stays put.
 enum AppPaths {
+    private static func explicitAppSupport() -> URL? {
+        guard let value = ProcessInfo.processInfo.environment["GATEWAY_APP_SUPPORT"]?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+              !value.isEmpty else { return nil }
+        return URL(fileURLWithPath: value, isDirectory: true)
+    }
+
     static let appSupport: URL = {
-        let base = FileManager.default
+        let base = explicitAppSupport() ?? FileManager.default
             .urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("gateway-kh", isDirectory: true)
         try? FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
@@ -47,6 +54,13 @@ enum AppPaths {
     static var stateFile: URL { appSupport.appendingPathComponent("menubar-state.json") }
     static var configFile: URL { appSupport.appendingPathComponent("menubar.json") }
     static var logFile: URL {
+        if let override = explicitAppSupport() {
+            try? FileManager.default.createDirectory(
+                at: override,
+                withIntermediateDirectories: true
+            )
+            return override.appendingPathComponent("gateway-kh.log")
+        }
         let logs = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/Logs", isDirectory: true)
         try? FileManager.default.createDirectory(at: logs, withIntermediateDirectories: true)
@@ -97,8 +111,12 @@ struct AppConfig: Codable {
 
     static func makeDefault() -> AppConfig {
         let home = FileManager.default.homeDirectoryForCurrentUser.path
+        let container = "\(home)/Developer/gateway-kh"
+        let repository = "\(container)/repository"
+        let gatewayDir = FileManager.default.fileExists(atPath: repository)
+            ? repository : container
         return AppConfig(
-            gatewayDir: "\(home)/Developer/gateway-kh",
+            gatewayDir: gatewayDir,
             port: 8000,
             autoStartGateway: true,
             keepGatewayRunning: false
@@ -208,7 +226,7 @@ enum EnvFile {
         ]
 
         let existing = (try? String(contentsOf: url, encoding: .utf8)) ?? ""
-        var lines = existing.isEmpty
+        let lines = existing.isEmpty
             ? []
             : existing.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
 
@@ -416,8 +434,8 @@ final class GatewayController {
         }
 
         // Adopt a gateway that is already serving our port rather than fighting
-        // it for the bind. This is the normal state after quitting the app while
-        // leaving the gateway running -- which is deliberate -- and without this
+        // it for the bind. This is the normal state when Settings allows the
+        // gateway to outlive the app, and without this
         // check the new app would report a failure it had caused itself.
         isStarting = true
         probeExisting { [weak self] alive in
@@ -471,8 +489,8 @@ final class GatewayController {
             }
             DispatchQueue.main.async {
                 // Remember whose service this is. The app may adopt a gateway
-                // it did not spawn (quitting leaves the service running by
-                // design), and without the pid "Stop Gateway" could only
+                // it did not spawn (when Settings leaves it running), and without
+                // the pid "Stop Gateway" could only
                 // pretend to stop it.
                 self?.adoptedPid = code == 200 ? found : nil
                 completion(code == 200)
@@ -484,13 +502,15 @@ final class GatewayController {
         let task = Process()
         task.executableURL = executable
         task.arguments = [
-            "-m", "uvicorn", "gateway.api:app",
+            // Python caches inside the signed bundle would invalidate its seal.
+            "-B", "-m", "uvicorn", "gateway.api:app",
             // Read, not hard-coded. This used to pass `127.0.0.1` unconditionally,
             // so a `GATEWAY_HOST` in `.env` was written by this app, shown to the
             // owner as a setting, and then quietly overridden here — the endpoint
             // could never be reached from another device, which is the whole point
             // of setting it.
             "--host", EnvFile.host(), "--port", String(port),
+            "--no-proxy-headers",
             "--log-level", "warning",
         ]
         task.currentDirectoryURL = workingDirectory
@@ -499,6 +519,7 @@ final class GatewayController {
         environment["PYTHONUNBUFFERED"] = "1"
         // The app and the gateway must agree on where state lives, so the paths
         // are passed explicitly rather than left for the gateway to infer.
+        environment["GATEWAY_APP_SUPPORT"] = AppPaths.appSupport.path
         environment["GATEWAY_DATA"] = AppPaths.data.path
         environment["GATEWAY_ENV_FILE"] = AppPaths.env.path
         // Run the source in place; no install step required.
@@ -1085,8 +1106,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
-        // Leave the gateway running: it is a service, and quitting a menu bar
-        // helper should not silently take the API away from Story Studio.
+        // applicationShouldTerminate already applied the Keep running setting and
+        // stopped the child when needed. There is no second lifecycle action here.
     }
 
     // MARK: Menu

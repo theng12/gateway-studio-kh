@@ -409,6 +409,8 @@ def _generate_image_or_voice(request: BackendRequest) -> BackendResult:
         batch_id = str(submitted.get("batch_id") or "")
         if not batch_id:
             raise BackendError("hub returned no batch_id", code="PROVIDER_FAILED")
+        if request.checkpoint is not None:
+            request.checkpoint(batch_id)
 
         outcome = _poll_batch(client, base, headers, batch_id, 0)
 
@@ -491,6 +493,8 @@ def _generate_transcription(request: BackendRequest) -> BackendResult:
         batch_id = str(submitted.get("batch_id") or "")
         if not batch_id:
             raise BackendError("hub returned no batch_id", code="PROVIDER_FAILED")
+        if request.checkpoint is not None:
+            request.checkpoint(batch_id)
 
         outcome = _poll_batch(
             client, base, headers, batch_id, 0, jobs_path="/api/hub/transcription/jobs"

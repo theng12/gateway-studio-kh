@@ -18,6 +18,24 @@ final class FlippedView: NSView {
 }
 
 enum PageKit {
+    /// Artifact endpoints have no filename extension; use the stated media type.
+    static func artifactExtension(_ mediaType: String) -> String {
+        switch mediaType.lowercased().split(separator: ";").first?.trimmingCharacters(in: .whitespaces) {
+        case "audio/mpeg": return "mp3"
+        case "audio/wav", "audio/x-wav": return "wav"
+        case "audio/ogg": return "ogg"
+        case "image/png": return "png"
+        case "image/jpeg": return "jpg"
+        case "image/webp": return "webp"
+        case "video/mp4": return "mp4"
+        case "text/plain": return "txt"
+        case "text/vtt": return "vtt"
+        case "application/x-subrip": return "srt"
+        case "application/json": return "json"
+        default: return "bin"
+        }
+    }
+
     /// Studio Hub pads every page body by 28. The pages here previously used
     /// 18/20 and 14/16, which made switching sections look like switching apps.
     static let pagePadding: CGFloat = 28
@@ -111,24 +129,16 @@ enum PageKit {
     /// same x no matter how long its label is.
     static let formLabelWidth: CGFloat = 150
 
-    /// A form row: label in a fixed left column, control in a second column.
-    ///
-    /// Studio Hub lays its Settings out as a `Form` of `Section`s with
-    /// `LabeledContent` rows — label and value on one line. This page originally
-    /// stacked a small caption *above* each control, which left every label and
-    /// every control at a different x and read as unaligned. Two fixed columns
-    /// are what make a form look deliberate.
+    /// A compact top-label form row. Top labels keep long captions and controls
+    /// usable when the native window is narrowed; the page scrolls instead of
+    /// asking AppKit to grow the window past its minimum.
     static func formRow(_ caption: String, _ control: NSView) -> NSView {
         formRow(caption, [control])
     }
 
     static func formRow(_ caption: String, _ controls: [NSView]) -> NSView {
         let label = self.label(caption, size: 12, colour: .secondaryLabelColor)
-        label.alignment = .right
-        label.widthAnchor.constraint(equalToConstant: formLabelWidth).isActive = true
-        // Labels stay on the first line when a control is taller than one row
-        // (a wrapping path, or a field with buttons under it).
-        label.setContentHuggingPriority(.required, for: .vertical)
+        label.alignment = .left
 
         let column = NSStackView(views: controls)
         column.orientation = .vertical
@@ -136,9 +146,9 @@ enum PageKit {
         column.spacing = 6
 
         let row = NSStackView(views: [label, column])
-        row.orientation = .horizontal
-        row.alignment = .top
-        row.spacing = 12
+        row.orientation = .vertical
+        row.alignment = .leading
+        row.spacing = 5
         row.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         return row
     }

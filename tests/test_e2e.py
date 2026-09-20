@@ -110,6 +110,28 @@ def main() -> int:
     tmp = Path(tempfile.mkdtemp(prefix="gateway-e2e-"))
     processes: list[subprocess.Popen] = []
 
+    # A clean app ships no private recordings. Seed this suite's own two voices
+    # instead of depending on source-Mac metadata that used to ship accidentally.
+    import hashlib as _fixture_hashlib
+    import wave as _fixture_wave
+    fixture_voices = []
+    for index in range(2):
+        reference = tmp / f"fixture-voice-{index}.wav"
+        with _fixture_wave.open(str(reference), "wb") as audio:
+            audio.setnchannels(1)
+            audio.setsampwidth(2)
+            audio.setframerate(16000)
+            audio.writeframes(b"\x00\x00" * (1600 + index * 160))
+        digest = _fixture_hashlib.sha256(reference.read_bytes()).hexdigest()
+        fixture_voices.append({
+            "id": f"voice-{digest[:12]}", "display_name": f"Fixture {index}",
+            "language": "en", "engine_id": "qwen3-tts", "engine_name": "Qwen3 TTS",
+            "tts_model_id": "Qwen3-TTS-12Hz-0.6B-Base-4bit", "reference_path": str(reference),
+            "reference_transcript": "fixture voice", "audio_sha256": digest,
+            "permission_acknowledged": False, "license": "",
+        })
+    (tmp / "voices.json").write_text(json.dumps({"voices": fixture_voices}))
+
     # The owner's curated limits, for lanes that publish none. Placed before the
     # gateway starts, because the file is read at catalogue build.
     #
@@ -1455,37 +1477,17 @@ def main() -> int:
                              "/v1/account/credit-activity?page_size=99999999999999999999999")
                   .status_code < 500,
                   "an unbounded page_size is how the jobs route used to 500")
-            account = req(client, "GET", "/v1/content/account").json()
-            check("the content account publishes balance and empty collections",
-                  isinstance(account.get("credit_balance"), int)
-                  and account.get("entitlements") == [] and account.get("purchases") == [],
-                  f"{account}")
-            quote = req(client, "POST", "/v1/content/quotes",
-                        json={"product_id": "mock-product"}).json()
-            check("a content quote is zero-priced and explicit about ownership",
-                  quote.get("credits") == 0 and quote.get("price_version") == "flat"
-                  and quote.get("sufficient_credits") is True,
-                  f"{quote}")
-            purchase = req(client, "POST", "/v1/content/purchases",
-                           json={"product_id": "mock-product"}).json()
-            # The names are the contract's, not guessed: Story Studio refuses a
-            # purchase payload missing any of `ZERO_PURCHASE`, and the credit
-            # fields must be strict integers.
-            required = ("credits_charged", "discount_credits", "balance_before",
-                        "balance_after", "sufficient_credits", "discount", "receipt")
-            check("a content purchase settles with every field the parser needs",
-                  all(k in purchase for k in required)
-                  and purchase["credits_charged"] == 0
-                  and purchase["discount_credits"] == 0
-                  and purchase["balance_before"] == 0
-                  and purchase["balance_after"] == 0
-                  and isinstance(purchase["credits_charged"], int)
-                  and purchase["sufficient_credits"] is True
-                  and purchase["state"] == "completed"
-                  and purchase["product_id"] == "mock-product",
-                  f"{purchase}")
-            check("and receipts come back as an empty paginated list",
-                  req(client, "GET", "/v1/content/receipts").json().get("total") == 0)
+            # Archive possession is not commerce ownership. Until a real trusted
+            # Store is connected, no route can claim a purchase or receipt exists.
+            for method, route in (("GET", "account"), ("POST", "quotes"),
+                                  ("POST", "purchases"), ("GET", "receipts")):
+                response = req(client, method, f"/v1/content/{route}",
+                               **({"json": {"product_id": "mock-product"}} if method == "POST" else {}))
+                check(f"content {route} refuses fabricated ownership/settlement",
+                      response.status_code == 503
+                      and response.json().get("code") == "CONTENT_STORE_NOT_CONNECTED"
+                      and response.json().get("state") != "completed"
+                      and "receipt" not in response.json(), str(response.json()))
 
             # The admission permit is what bounds image concurrency on the Story
             # Studio side. Nothing here rations — every lane is pre-owned — but the

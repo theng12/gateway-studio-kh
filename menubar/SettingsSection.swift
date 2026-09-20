@@ -304,8 +304,10 @@ final class SettingsSection: NSObject, AppSection {
     @objc private func regenerateKey() {
         let key = EnvFile.generateKey()
         EnvFile.writeApiKey(key)
+        ConsoleSection.refreshCredentials()
         keyField.stringValue = key
-        statusLabel.stringValue = "New key written. Restart the gateway to apply it."
+        statusLabel.stringValue =
+            "New key written. New requests use it immediately; update Story Studio if it has the old key."
     }
 
     @objc private func toggleLogin() {
@@ -343,6 +345,7 @@ final class SettingsSection: NSObject, AppSection {
         ConfigStore.shared.update { $0.port = port }
         if !key.isEmpty {
             EnvFile.writeApiKey(key)
+            ConsoleSection.refreshCredentials()
         }
         statusLabel.stringValue = "Saved. Restarting the gateway…"
         GatewayController.shared.restart()

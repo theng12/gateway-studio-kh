@@ -2,6 +2,8 @@
 
 **Moving to another computer or starting implementation?** Read the current [new-computer handoff](_handoffs/2026-09-20-new-computer-handoff.md) and [open-issue ledger](_handoffs/2026-09-20-open-issues.md). They distinguish verified defects, proposed features, committed code and live state.
 
+The [handoff completion plan](docs/superpowers/plans/2026-09-20-handoff-completion.md) preserves the intended implementation and acceptance checks. The [current execution record](_handoffs/2026-09-20-local-completion.md) records what passed, what is installed and what remains blocked.
+
 For voices, settings and Content Packs, see the [asset transfer inventory](_handoffs/2026-09-20-asset-transfer.md). Owner-private transfer files are separate from the source repository.
 
 The owner is keeping the source Mac available for content work while developing on the new Mac. Read the [fixed production-build notes](_handoffs/2026-09-20-this-mac-production.md) before replacing the source Mac's app or runtime data.
@@ -247,10 +249,15 @@ updated. That file is also how the build is verified without a GUI.
 ```bash
 uv venv --python 3.11
 uv pip install --python .venv/bin/python -r requirements.txt
-GATEWAY_API_KEY=your-key .venv/bin/python -m uvicorn gateway.api:app --host 127.0.0.1 --port 8000
+GATEWAY_API_KEY=your-key .venv/bin/python -m uvicorn gateway.api:app --host 127.0.0.1 --port 8000 --no-proxy-headers
 ```
 
 Then open **http://127.0.0.1:8000/admin** for the provider console.
+
+For a network bind, set `GATEWAY_HOST` to the same address as `--host` and configure
+`GATEWAY_API_KEY`. Admin requests from a non-loopback peer require that key even
+if `GATEWAY_HOST` was mistakenly left at its default. Proxied requests also
+require authentication; forwarded headers never grant the loopback bypass.
 
 ### The flow
 
@@ -414,9 +421,42 @@ other session in `~/Developer/_handoffs/2026-09-18-gateway-kh-fleet-contract-to-
 
 ```bash
 .venv/bin/python tests/test_e2e.py            # isolated mock upstream
-.venv/bin/python tests/test_fleet_standalone.py  # deliberately uses a real Hub
 .venv/bin/python tests/test_ui.py             # drives the installed app
 ```
+
+The real-Hub fleet suite is **not** an offline smoke test. Only after explicitly
+authorizing real generation, run
+`GATEWAY_ALLOW_LIVE_GENERATION=1 .venv/bin/python tests/test_fleet_standalone.py`.
+Without that opt-in it skips before contacting the Hub.
+
+### Recovery, outputs and private pack archives
+
+Interrupted running work is marked with an explicit unknown-outcome recovery
+state, with the upstream job ID when an asynchronous provider returned one.
+It is never automatically resubmitted. Check the provider before creating new
+work; provider-specific reconciliation is not implemented. Queued cancellation
+is confirmed locally; already-dispatched work can only receive a cancellation
+request, and a late output remains visible in Jobs.
+
+Create retains drafts, selected jobs and ambiguous submission identities across
+restarts. Retrying an ambiguous submission uses its original payload and key;
+changed or missing upload bytes cannot silently become that original request.
+Jobs lists all output variations, with authenticated local-file downloads and
+pin/unpin controls. Retention protects inputs referenced by unfinished or
+recovery-held jobs and refuses pruning if their protection cannot be read.
+
+Pack Library preserves validated, content-addressed `.sspack` archives under
+private Application Support. Its checks establish archive safety and integrity,
+**not ownership, signature trust, compatibility or installation**. It does not
+make transferred packs usable in Gateway or bypass Story Studio's installer.
+The commerce routes explicitly return `CONTENT_STORE_NOT_CONNECTED` until a
+real store authority is connected; they never invent successful purchases.
+Legacy bundle-only transfer archives may be rejected by this conservative
+standalone archive importer; keep their original transfer copies.
+
+`scripts/relocate_profile.py --help` documents a dry-run-first migration for
+copied profiles. Do not replay archived job history or replace a live profile
+wholesale. Keep voice recordings and pack libraries outside Git.
 
 The end-to-end suite uses a **real HTTP upstream** (a local mock provider), exercising the admin API,
 credential storage, live discovery, modality inference, the Story catalogue contract, chat/image/TTS
@@ -582,8 +622,9 @@ nothing here can make the catalogue less honest. Set `GATEWAY_MODEL_LIMITS` to p
 
 - API keys live in `data/credentials.json` (mode `0600`, gitignored) or `.env` (gitignored).
   Secrets are never returned to the browser in full — the admin API returns a masked form.
-- The server binds `127.0.0.1` by default. Admin routes are open from loopback and require the
-  bearer token otherwise, so changing `GATEWAY_HOST` does not silently expose a control plane.
+- The server binds `127.0.0.1` by default. Admin routes are open only for direct loopback
+  requests while the configured bind is loopback. Other peers and proxy-marked requests
+  require a bearer token, including when the actual socket bind differs from configuration.
 - `.env` and the credential file are created `0600` up front rather than chmod-ed afterwards, so
   there is no world-readable window.
 

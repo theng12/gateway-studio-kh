@@ -169,6 +169,8 @@ def _generate_video(request: BackendRequest) -> BackendResult:
         request_id = str((submitted.json() or {}).get("request_id") or "")
         if not request_id:
             raise BackendError("xAI returned no request_id", code="PROVIDER_FAILED")
+        if request.checkpoint is not None:
+            request.checkpoint(request_id)
 
         deadline = time.monotonic() + JOB_DEADLINE_S
         payload: dict[str, Any] = {}

@@ -9,7 +9,9 @@ adds the **local standalone Hub** as a location ("Site A"), discovers its models
 through the fleet provider path, enables one, and transcribes a real clip end to
 end. Nothing is stubbed: the Hub does the work.
 
-Run: .venv/bin/python tests/test_fleet_standalone.py
+This is NOT an offline smoke test. It may run real generation on the owner's Hub.
+Run only with explicit generation authorization:
+GATEWAY_ALLOW_LIVE_GENERATION=1 .venv/bin/python tests/test_fleet_standalone.py
 """
 
 from __future__ import annotations
@@ -82,6 +84,9 @@ def free_port() -> int:
 
 
 def main() -> int:
+    if os.environ.get("GATEWAY_ALLOW_LIVE_GENERATION") != "1":
+        print("SKIP: live Hub generation requires explicit GATEWAY_ALLOW_LIVE_GENERATION=1 opt-in.")
+        return 0
     if not READY.exists():
         print("Studio Hub is not running; this test needs it.")
         return 1

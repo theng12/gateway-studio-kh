@@ -99,7 +99,7 @@ class AuditRegressions(unittest.TestCase):
 
     def _auth_helpers(self):
         return (
-            ("story", lambda value: self.api.require_auth(value)),
+            ("story", lambda value: self.api.require_auth(self._request(), value)),
             ("admin", lambda value: self.admin.require_admin(self._request(), value)),
         )
 
