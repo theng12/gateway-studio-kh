@@ -159,6 +159,7 @@
          the models it offers.</p>
     </div>
     <div id="local-note" class="hint" style="margin:10px 0 0"></div>
+    <div id="skipped-note" class="hint" style="margin:10px 0 0"></div>
     <div class="row" style="margin:14px 0">
       <div class="stat" id="hubline"></div>
       <div class="spacer"></div>
@@ -357,13 +358,25 @@ async function loadProviders() {
   // not keys with model lists, and they are managed on the app's Fleet page.
   // `scope` is decided by the gateway from the provider's kind, so a second Hub
   // is classified correctly the moment it is added.
-  const { providers, scopes } = await api('/providers?scope=cloud');
+  const { providers, scopes, skipped_custom_providers } = await api('/providers?scope=cloud');
   state.providers = providers;
   const note = document.getElementById('local-note');
   if (note) {
     note.textContent = scopes && scopes.local
       ? `${scopes.local} local runner${scopes.local === 1 ? '' : 's'} (Studio Hub) ${scopes.local === 1 ? 'is' : 'are'} managed on the app's Fleet page, not here.`
       : '';
+  }
+  // `providers.local.json` is written by hand, so an entry the gateway refused is
+  // otherwise indistinguishable from the file not loading at all: the provider is
+  // simply absent. Say which ones were skipped and why.
+  const skipped = document.getElementById('skipped-note');
+  if (skipped) {
+    const rows = skipped_custom_providers || [];
+    skipped.textContent = rows.length
+      ? `Skipped ${rows.length} ${rows.length === 1 ? 'entry' : 'entries'} in providers.local.json — ` +
+        rows.map(r => `${r.id}: ${r.reason}`).join('; ')
+      : '';
+    skipped.style.color = rows.length ? 'var(--warn)' : '';
   }
   renderProviders();
 }

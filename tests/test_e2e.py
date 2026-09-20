@@ -55,6 +55,11 @@ GW_KEY = "e2e-test-key"
 BASE = f"http://127.0.0.1:{GW_PORT}"
 AUTH = {"Authorization": f"Bearer {GW_KEY}"}
 
+#: The value this run pretends is this Mac's Hub operator token. Deliberately
+#: unmistakable: it must never appear on the mock's wire, and if it ever does,
+#: the assertion should be readable rather than a comparison of empty strings.
+OPERATOR_TOKEN = "OPERATOR-TOKEN-MUST-NOT-LEAVE-THIS-MAC"
+
 failures: list[str] = []
 checks = 0
 statuses: set[int] = set()
@@ -259,9 +264,23 @@ def main() -> int:
         # only reason nothing else broke is that no other section selects the
         # local lane; that was luck, not isolation.
         "STUDIOHUB_READY_FILE": str(tmp / "no-such-hub-ready.json"),
+        # **A known operator token, so "was it sent to a remote?" is answerable.**
+        #
+        # `hub_headers` used to be `token or hub_token()`, so a controller with no
+        # credential of its own was handed this Mac's *operator* token and it was
+        # sent to the address the owner had typed into the Fleet page. With no
+        # local Hub in this run, `hub_token()` would otherwise be `""` and the
+        # leak would be invisible: a test that passes both before and after the
+        # fix is not a test. The value is unmistakable so any appearance of it on
+        # the mock's wire is unambiguous.
+        "STUDIOHUB_HUB_TOKEN": OPERATOR_TOKEN,
         "PYTHONPATH": str(ROOT),
         "PYTHONUNBUFFERED": "1",
     }
+
+    # The suite's own process does the unit-level checks, and `config.get` reads
+    # `os.environ` live, so it needs the same sentinel the gateway was given.
+    os.environ["STUDIOHUB_HUB_TOKEN"] = OPERATOR_TOKEN
 
     mock_log = tmp / "mock.log"
     gw_log = tmp / "gateway.log"
@@ -1376,6 +1395,104 @@ def main() -> int:
             check("and no SRT-incapable transcription model is listed either",
                   not bad_stt, f"{bad_stt}")
 
+            # A hand-written `providers.local.json` is the one provider list the
+            # owner edits himself, so it is the one where a silent skip is
+            # unrecoverable: the provider simply never appears, and there is
+            # nothing to tell "my file did not load" from "nothing can run that
+            # kind". Two things were wrong. The kind allow-list was a *second*
+            # copy of `IMPLEMENTED_KINDS` and had already fallen behind — `xai`
+            # was missing — so `"kind": "xai"` was dropped without a word; and
+            # every other refusal was silent too.
+            from gateway.providers import definitions as _defs
+
+            check("the loadable kinds are the implemented kinds, not a stale copy",
+                  _defs._VALID_KINDS is _defs.IMPLEMENTED_KINDS
+                  and _defs.KIND_XAI in _defs._VALID_KINDS,
+                  f"xai in allow-list: {_defs.KIND_XAI in _defs._VALID_KINDS}")
+
+            _real_path = _defs.CUSTOM_PROVIDERS_PATH
+            _saved_skips = list(_defs._SKIPPED_CUSTOM)
+            _probe = tmp / "providers-probe.json"
+            _probe.write_text(json.dumps({"providers": [
+                {"id": "xai-probe", "kind": _defs.KIND_XAI, "base_url": "http://127.0.0.1:9",
+                 "modalities": ["chat"], "discovery": "static", "static_models": []},
+                {"id": "mystery-probe", "kind": "not-a-real-kind",
+                 "base_url": "http://127.0.0.1:9"},
+                {"id": "openai-direct", "kind": _defs.KIND_OPENAI_COMPATIBLE,
+                 "base_url": "http://127.0.0.1:9"},
+                "not an object",
+                {"kind": _defs.KIND_OPENAI_COMPATIBLE, "base_url": "http://127.0.0.1:9"},
+            ]}))
+            _defs.CUSTOM_PROVIDERS_PATH = _probe
+            try:
+                _loaded = {d.id for d in _defs._load_custom_providers()}
+                _records = list(_defs.skipped_custom_providers())
+                _skips = {s["id"]: s["reason"] for s in _records}
+            finally:
+                _defs.CUSTOM_PROVIDERS_PATH = _real_path
+                _defs._SKIPPED_CUSTOM[:] = _saved_skips
+            check("a provider of a kind that has an adapter does load",
+                  _loaded == {"xai-probe"}, f"{sorted(_loaded)}")
+            check("a kind nothing can run is refused, and the reason names the kind",
+                  "not-a-real-kind" in _skips.get("mystery-probe", ""), f"{_skips}")
+            check("a built-in id cannot be redefined from the file, and says so",
+                  "built-in" in _skips.get("openai-direct", ""), f"{_skips}")
+            check("and an entry with no id is reported, not dropped in silence",
+                  "no 'id'" in _skips.get("?", ""), f"{_skips}")
+            # Four refusals, listed — not three keys: two entries share the
+            # placeholder id `?`, and a dict would silently hide one of them.
+            check("every refusal is listed, and each says why",
+                  len(_records) == 4 and all(r["reason"] for r in _records),
+                  f"{_records}")
+
+            print("\n\033[1m10h. What can be offered is what can be routed\033[0m")
+            # "Enabled" is not "offerable", and the second consequence is the one a
+            # *caller* feels. `routing_candidates` tested `is_enabled` plus a row
+            # match while `enabled_models` -- the set the catalogue is built from --
+            # also applies `is_configured` and `can_publish`. So `route` chose a
+            # location on the weaker test and `catalog.resolve` then rejected that
+            # pair on the stronger one: the request answered **MODEL_NOT_FOUND**
+            # with a perfectly good copy of the same model enabled elsewhere, never
+            # tried. Two reads of one rule, drifted apart.
+            #
+            # A controlled registry, because this process does not hold the temp
+            # providers — the gateway subprocess loads them — and this must not
+            # write to the owner's real model cache. Two locations look identical to
+            # `models_for` and only one is in `enabled_models`, which is exactly the
+            # asymmetry that produced the 404: a `models_for`-based reader returns
+            # **both**, so this check fails for the old implementation and passes
+            # for the new one.
+            from unittest import mock as _mock
+            from gateway import fleet as _fleet
+            from gateway.providers import registry as _reg
+
+            _good = _mock.Mock(id="studio-hub-good", kind="studio_hub")
+            _bad = _mock.Mock(id="studio-hub-bad", kind="studio_hub")
+            _one_model = {"model_id": "hub/model", "modality": "tts", "enabled": True, "raw": {}}
+
+            def _both_reachable(allow_stale: bool = False) -> dict:
+                return {"locations": [
+                    {"id": loc, "label": loc.title(), "reachable": True,
+                     "capacity": {"eligible_physical_machine_slots_total": 1,
+                                  "queue_depth": 0}, "running_jobs": []}
+                    for loc in ("good", "bad")
+                ]}
+
+            with _mock.patch.object(_fleet, "snapshot", _both_reachable), \
+                 _mock.patch.object(_reg, "definitions", lambda: [_good, _bad]), \
+                 _mock.patch.object(_reg.credentials, "is_enabled", lambda pid: True), \
+                 _mock.patch.object(_reg.models, "models_for",
+                                    lambda pid, include_disabled=True: [dict(_one_model)]), \
+                 _mock.patch.object(_reg.models, "enabled_models",
+                                    lambda modality: [(_good, dict(_one_model))]):
+                _cands = _fleet.routing_candidates("hub/model", "tts")
+            check("only a location the catalogue would offer can be routed to",
+                  [c["location_id"] for c in _cands] == ["good"],
+                  f"{[c['location_id'] for c in _cands]}")
+            check("so a route is never chosen that resolution would then reject",
+                  all(c["provider_id"] in {"studio-hub-good"} for c in _cands),
+                  f"{[c['provider_id'] for c in _cands]}")
+
             print("\n\033[1m11. Manual model add (provider shipped an unlisted model)\033[0m")
             r = httpx.post(f"{BASE}/admin/api/providers/mock-remote/models", headers=AUTH,
                            json={"model_id": "mock-brand-new", "display_name": "Brand New",
@@ -2126,6 +2243,93 @@ def main() -> int:
                       json={"max_age_days": 7, "max_bytes": 10 * 1024**3}).json()["max_age_days"] == 7)
 
             # ------------------------------------------------------------------
+            print("\n\033[1m20a. A location never borrows this Mac's operator token\033[0m")
+            # `hub_headers` was `token or hub_token()`. A controller whose credential
+            # was absent — added with no token, or its token since forgotten — was
+            # therefore handed **this Mac's operator token**, which was sent in
+            # `X-Hub-Token` to the address the owner had typed into the Fleet page.
+            # That token is full operator scope on this Mac's Hub: it can change its
+            # settings and identity, reach its storage and shut it down.
+            #
+            # Nothing catches this from the outside. A Hub that accepts the token
+            # just works, and the owner never learns his own Hub's operator token is
+            # being broadcast to a site he added months ago.
+            from gateway.hub import hub_headers, local_hub_headers
+
+            check("a location's own credential is what its header carries",
+                  hub_headers("controller-fleet-token") ==
+                  {"X-Hub-Token": "controller-fleet-token"})
+            check("an absent credential stays absent, rather than becoming this Mac's",
+                  hub_headers("") == {} and hub_headers(None) == {},
+                  f"{hub_headers('')} {hub_headers(None)}")
+            check("and this Mac's own Hub still gets the operator token",
+                  local_hub_headers() == {"X-Hub-Token": OPERATOR_TOKEN},
+                  f"{local_hub_headers()}")
+
+            # The adapter is a **second** call site with its own idea of which
+            # provider it is calling, so it is asserted separately: fixing only the
+            # discovery path would leave every dispatched job leaking.
+            from gateway.adapters.base import BackendRequest as _HubRequest
+            from gateway.adapters.studio_hub import _headers as _hub_headers_for
+
+            def _hub_head(provider_id: str, token: str) -> dict:
+                return _hub_headers_for(_HubRequest(
+                    provider_id=provider_id, model_id="m", modality="image",
+                    params={}, values={"hub_token": token} if token else {},
+                    base_url="http://127.0.0.1:9",
+                ))
+
+            check("a dispatched job to a location sends that location's credential",
+                  _hub_head("studio-hub-abc123", "loc-token")
+                  == {"X-Hub-Token": "loc-token"})
+            check("and a location with no credential sends none, not this Mac's",
+                  _hub_head("studio-hub-abc123", "") == {}
+                  and _hub_head("studio-hub-abc123", "") != local_hub_headers(),
+                  f"{_hub_head('studio-hub-abc123', '')}")
+            check("while a job for this Mac's own Hub still carries the operator token",
+                  _hub_head("studio-hub-local", "") == {"X-Hub-Token": OPERATOR_TOKEN},
+                  f"{_hub_head('studio-hub-local', '')}")
+
+            # And on the wire. The helper could be right while a caller passes the
+            # wrong flag, so this is the assertion that holds however the header was
+            # built: a location with no credential, refreshed for real, must put
+            # nothing — and above all not that sentinel — on the mock's socket.
+            httpx.post(f"{mock}/__test__/reset")
+            bare = httpx.post(f"{BASE}/admin/api/fleet/controllers",
+                              headers=AUTH,
+                              json={"label": "No-token Location", "url": mock})  # no token
+            bare_id = bare.json().get("controller", {}).get("id") or ""
+            check("a location can be added with no credential at all",
+                  bare.status_code == 200 and bool(bare_id), bare.text[:140])
+            httpx.post(f"{BASE}/admin/api/providers/studio-hub-{bare_id}/refresh",
+                       headers=AUTH)
+            seen = httpx.get(f"{mock}/__test__/hub-tokens").json()["tokens"]
+            check("refreshing that location really reached the mock",
+                  any(t["path"].startswith("/api/hub/") for t in seen),
+                  f"{[t['path'] for t in seen]}")
+            check("no request to it carried this Mac's operator token",
+                  all(t["token"] != OPERATOR_TOKEN for t in seen),
+                  f"{[t for t in seen if t['token'] == OPERATOR_TOKEN]}")
+            check("and none carried a credential at all, because it has none",
+                  all(t["token"] == "" for t in seen), f"{seen}")
+
+            # The other half, and not a formality: "sends nothing" must not be the
+            # only thing this code can do. Give the location a token and the mock
+            # has to see exactly that.
+            httpx.put(f"{BASE}/admin/api/fleet/controllers/{bare_id}/credential",
+                      headers=AUTH, json={"token": "location-fleet-token"})
+            httpx.post(f"{mock}/__test__/reset")
+            httpx.post(f"{BASE}/admin/api/providers/studio-hub-{bare_id}/refresh",
+                       headers=AUTH)
+            seen = httpx.get(f"{mock}/__test__/hub-tokens").json()["tokens"]
+            check("once it holds a credential, that is what the location is sent",
+                  bool(seen) and all(t["token"] == "location-fleet-token" for t in seen),
+                  f"{seen}")
+            httpx.delete(f"{BASE}/admin/api/fleet/controllers/{bare_id}", headers=AUTH)
+            check("and the test location is removed again",
+                  httpx.get(f"{BASE}/admin/api/fleet/controllers",
+                            headers=AUTH).json()["controllers"] == [])
+
             print("\n\033[1m20. A local voice belongs to whichever models clone\033[0m")
             # The local lane is the one place a recording is the *input*, so
             # "may this voice be used with this model?" is the model's own
@@ -2175,6 +2379,7 @@ def main() -> int:
                           for mid in installed],
                 "enabled": True,
             })
+
 
             # One local voice, written where the catalogue is read from. A short
             # silent wav is enough: nothing here decodes it, the *facts* are what

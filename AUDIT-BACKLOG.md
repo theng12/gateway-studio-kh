@@ -59,6 +59,18 @@ instances across the console and the menu bar.
 - One thing found while fixing 4.2: writing the refusals into the one-line
   `summaryLabel` would have been clipped (so the reason is unreadable — the same
   bug) or grown the window's required height. They go in a dialog instead.
+- **4.10 — `_VALID_KINDS` was a second copy of `IMPLEMENTED_KINDS`, and it had
+  already fallen behind.** FIXED, and it is now *the same object* rather than an
+  equal set: `kind: "xai"` in a hand-written `providers.local.json` was dropped
+  without a word, because `KIND_XAI` was missing from the copy while every adapter
+  and the catalogue both had it. "May this be loaded?" and "can anything run it?"
+  are one question — a kind with no adapter can only publish models that fail on
+  use — so they must have one answer.
+  The silent half is fixed too: every refusal is recorded with a reason, logged, and
+  published as `skipped_custom_providers` on `/admin/api/providers`, which the
+  console renders above the provider list. **A field the console does not render is
+  the same defect as a control that does nothing** — the audit's own 4.3 is exactly
+  that — so it was rendered in the same commit rather than left computed and unread.
 
 ### Open
 1. **FIXED this session — see the list above** (voice share/permission namespaces).
@@ -93,10 +105,8 @@ instances across the console and the menu bar.
    *Fix: try/catch + alert + re-read.*
 9. **LOW — `admin.py:836` has an unguarded `response.json()`** in the ElevenLabs
    import path, which 500s on a non-JSON 200.
-10. **MED-LOW — `definitions.py:604-615` `_VALID_KINDS` is a second copy of
-    `IMPLEMENTED_KINDS` that omits `KIND_XAI`**, and a custom provider with an
-    unknown kind is skipped silently. *Fix: `_VALID_KINDS = frozenset(IMPLEMENTED_KINDS)`
-    and report skipped entries.* (Same finding as Shape 1.10 — one fix closes both.)
+10. **FIXED this session — see the Fixed list above** (`_VALID_KINDS`, 4.10,
+    same finding as Shape 1.10).
 11. **MED — `catalog._supports_cloning` and `voices.reference_support` are two
     implementations of one rule with different fallbacks**, so a published
     `supports_voice_cloning: true` can sit beside an empty voice picker. *Fix: have
@@ -110,6 +120,27 @@ instances across the console and the menu bar.
 ## Shape 5 — identity from a label, or two namespaces for one thing
 
 ### Fixed (this session)
+- **5.1 — this Mac's Hub operator token was sent to a remote location.** FIXED.
+  `hub_headers(token)` was `token or hub_token()` *unconditionally*, so a controller
+  whose credential was absent — added on the Fleet page with no token, or its token
+  since forgotten — had **this Mac's operator token** put in `X-Hub-Token` and sent
+  to the owner-supplied address. That token is full operator scope on this Mac's
+  Hub: it can change its settings and identity, reach its storage and shut it down.
+  It is the same mistake `fleet.credential_scope` exists to prevent the owner making
+  by hand, made by the code instead.
+  `token` is now a required argument and the fallback is reachable **only** through
+  `local=True`, which the callers derive from the provider id
+  (`definition.id == provider_id_for(LOCAL_ID)`) — never from the address, because
+  the address is the one thing an owner types. The three provider-facing call sites
+  (`adapters/studio_hub._headers`, `discovery._studio_hub`, `discovery._hub_catalog`)
+  pass their own credential; the one inherently-local path
+  (`voice_import._run_annotation`) calls the named `local_hub_headers()`.
+  **Proven, not asserted**: the mock records every `X-Hub-Token` it is sent, and
+  with the old line restored the new checks fail with the sentinel on the wire —
+  `/api/hub/model-packages` and `/api/hub/catalog`, twice each. A test that passes
+  both before and after a fix is not a test.
+  Verified live after restart: the local Hub still discovers **34 models** through
+  the operator token, so the local half is not merely *silent* now, it is correct.
 - **The app's half of 5.2/5.5 — "is this voice ours" asked as an id prefix.** FIXED:
   `VoicesWindow.swift` now reads the row's `provider_id` against one named
   `VoicesSection.localProviderId`, at all four sites. A prefix test on a composed
@@ -119,15 +150,7 @@ instances across the console and the menu bar.
   itself a shape-5 mistake).
 
 ### Open
-1. **HIGH — this Mac's Hub operator token is sent to a remote location.**
-   `hub.py:139` is `token or hub_token()`, and a controller may legitimately have an
-   empty `hub_token` (added with no token, then refreshed). `hub_headers("")` then
-   falls back to **this Mac's** operator token and sends it in `X-Hub-Token` to the
-   owner-supplied remote address. Called from `adapters/studio_hub.py:60` and
-   `providers/discovery.py:481,430`. Same fallback shape as the already-fixed
-   `_studio_hub` base-url bug; the header path kept it. *Fix: never fall back for a
-   non-local provider — resolve the definition and pass the credential verbatim,
-   even empty.*
+1. **FIXED this session — see the Fixed list above** (the operator token, 5.1).
 2. **FIXED this session — see the Fixed list above** (voice share/permission
    namespace).
 3. **MED-HIGH — a local voice's identity is derived from the source file name.**
@@ -197,17 +220,24 @@ verified".
   Every local voice now publishes `null` there — the honest answer, since a local
   voice serves every model that declares cloning. Verified live: 10 of 10 voices
   now survive Story Studio's boundary filter, up from 0.
+- **1.1 — `routing_candidates` and the catalogue used two different tests for "can
+  this run".** FIXED. It selected locations on `is_enabled` plus a row match, while
+  `enabled_models` — the set the catalogue is built from — also applies
+  `is_configured` and `can_publish`. Worse than an extra candidate: `route` chose a
+  location on the weaker test and `catalog.resolve` then rejected that pair on the
+  stronger one, so the request answered **`MODEL_NOT_FOUND`** with a perfectly good
+  copy of the same model enabled on another site, never tried.
+  The fix is **not** what this file first suggested ("filter candidates through
+  `can_publish`") — that would have made a *third* reader of the same rule, which is
+  the shape this audit exists to remove. `routing_candidates` now iterates
+  `registry.models.enabled_models(modality)`, so there is one rule with two readers
+  still. The new check drives a controlled registry in which both locations look
+  identical to `models_for` and only one is in `enabled_models`: a `models_for`-based
+  reader returns both and **fails**, which was verified by restoring the old body.
 
 ### Open
-1. **`gateway/fleet.py:1106` — `routing_candidates` never calls `can_publish`.** It
-   selects a location from `models_for(..., include_disabled=False)`, i.e. "the
-   toggle is on", where the job needs "the model will run". With two locations, a
-   model withheld at A but publishable at B can route to A, then `catalog.resolve`
-   re-filters through `can_publish`, finds nothing, and answers **404
-   MODEL_NOT_FOUND** — a model another location could have served. Worse when the
-   request names a voice, which pins the location. *Fix: filter candidates through
-   `registry.models.can_publish(definition, model)`, the same predicate the
-   catalogue uses.* **Latent today (one location); real the moment a second is added.**
+1. **FIXED this session — see the Fixed list above** (`routing_candidates` ×
+   `can_publish`, 1.1).
 2. **`gateway/hub.py:148` and `:143-152` — `"running": bool(base)`.** A URL in
    `hub-ready.json` is reported as "Studio Hub is running" on the Overview page and
    in the console, while the menu bar probes `/api/health` and fleet `_probe`
@@ -249,11 +279,9 @@ verified".
    and `openrouter/router/video` (category `video-to-text`) are classified as video
    *generation* rows. *Fix: withhold/flag when neither the id nor a provider hint
    states a served modality.*
-10. **`gateway/providers/definitions.py:565,604-615` — `_VALID_KINDS` omits
-    `KIND_XAI`** although `IMPLEMENTED_KINDS` has it, and `_load_custom_providers`
-    silently `continue`s on an unknown kind: a `providers.local.json` entry with
-    `kind: "xai"` vanishes with no provider, no error and no diagnostic. *Fix:
-    derive `_VALID_KINDS` from `IMPLEMENTED_KINDS`, and report skipped entries.*
+10. **FIXED this session — see Shape 4.10 above.** (`_VALID_KINDS` was a second
+    copy of `IMPLEMENTED_KINDS` and had already fallen behind; it is now the same
+    object, and every refusal is recorded, logged and published.)
 
 ---
 
@@ -466,9 +494,11 @@ instead.***
    with a stated source available to read instead.
 2. Shape 3.1 (curated limits in the model's own field) — the `8192` bug's sibling,
    and the same `limit_source` fix already exists in the codebase.
-3. Shape 1.1 (`routing_candidates` × `can_publish`) — latent, but it becomes a 404
-   the day a second location is added.
-4. Shape 6.2 and 6.3 — a hand-edited `.env` that does nothing, and a re-imported
+3. Shape 6.2 and 6.3 — a hand-edited `.env` that does nothing, and a re-imported
    voice that keeps playing the old take.
-5. Shape 3 "the one that is now actually wrong" — Orpheus's 170-character cap:
+4. Shape 3 "the one that is now actually wrong" — Orpheus's 170-character cap:
    needs the owner's decision.
+
+Done in Batch 2: 5.1 (the operator token), 1.1 (routing × `can_publish`), 4.10 /
+1.10 (`_VALID_KINDS`).
+Done in Batch 1: 4.1, 4.2, 5.2, and Shape 5.5's app half.

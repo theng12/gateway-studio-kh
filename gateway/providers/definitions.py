@@ -21,10 +21,13 @@ Design rules:
 from __future__ import annotations
 
 import json
+import logging
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 
 from ..config import CUSTOM_PROVIDERS_PATH
+
+log = logging.getLogger("gateway.providers")
 
 # ---------------------------------------------------------------------------
 # Adapter kinds
@@ -542,6 +545,26 @@ PROVIDERS_BY_ID: dict[str, ProviderDefinition] = {p.id: p for p in PROVIDER_DEFI
 # trade-off: provider definitions are structural (they select an adapter), not
 # runtime state, and keeping them static means the catalogue cannot change shape
 # underneath an in-flight job.
+
+#: Custom-provider entries that were **not** loaded, and why.
+#:
+#: `providers.local.json` is hand-written, so being skipped is silent by default:
+#: the provider simply never appears, which reads as "my file did not load"
+#: rather than "nothing can run that kind". Recorded and published instead — a
+#: page that omits a row must say that it did.
+_SKIPPED_CUSTOM: list[dict[str, str]] = []
+
+
+def _skip_custom(provider_id: str, reason: str) -> None:
+    _SKIPPED_CUSTOM.append({"id": provider_id, "reason": reason})
+    log.warning("providers.local.json: skipped '%s' — %s", provider_id, reason)
+
+
+def skipped_custom_providers() -> tuple[dict[str, str], ...]:
+    """Entries in `providers.local.json` that were not loaded, with the reason."""
+    return tuple(_SKIPPED_CUSTOM)
+
+
 def _load_custom_providers() -> tuple[ProviderDefinition, ...]:
     if not CUSTOM_PROVIDERS_PATH.exists():
         return ()
@@ -553,16 +576,28 @@ def _load_custom_providers() -> tuple[ProviderDefinition, ...]:
     if not isinstance(entries, list):
         return ()
 
+    # Rebuilt from scratch: this is called once at import, but a second call
+    # (a reload in a long-lived process) must not double every reason.
+    del _SKIPPED_CUSTOM[:]
     loaded: list[ProviderDefinition] = []
     for entry in entries:
         if not isinstance(entry, dict):
+            _skip_custom("?", "the entry is not an object")
             continue
         provider_id = str(entry.get("id") or "").strip()
         kind = str(entry.get("kind") or "").strip()
-        if not provider_id or provider_id in PROVIDERS_BY_ID:
+        if not provider_id:
+            _skip_custom("?", "it has no 'id'")
+            continue
+        if provider_id in PROVIDERS_BY_ID:
             # Never let a local file silently redefine a built-in provider.
+            _skip_custom(provider_id, "that id is already a built-in provider")
             continue
         if kind not in _VALID_KINDS:
+            # Named, and *why*: the owner edits this file by hand, so a skipped
+            # entry that says nothing simply never appears — which reads as "my
+            # file did not load" rather than "that kind cannot run".
+            _skip_custom(provider_id, f"unknown kind '{kind}' — nothing can run it")
             continue
         fields = tuple(
             CredentialField(
@@ -601,18 +636,15 @@ def _load_custom_providers() -> tuple[ProviderDefinition, ...]:
     return tuple(loaded)
 
 
-_VALID_KINDS = {
-    KIND_OPENAI_COMPATIBLE,
-    KIND_ANTHROPIC,
-    KIND_GOOGLE,
-    KIND_FAL,
-    KIND_KIE,
-    KIND_BFL,
-    KIND_MINIMAX,
-    KIND_ELEVENLABS,
-    KIND_FISH,
-    KIND_STUDIO_HUB,
-}
+#: Kinds a `providers.local.json` entry may declare.
+#:
+#: **The same set as `IMPLEMENTED_KINDS`, not a second copy of it.** It was a
+#: second copy, and it had already fallen behind — `KIND_XAI` was missing — so
+#: `"kind": "xai"` in a local file was dropped without a word and the provider
+#: never appeared anywhere. "May this be loaded?" and "can anything run it?" are
+#: one question, because a provider whose kind has no adapter can only ever
+#: publish models that fail on use, and it must have one answer.
+_VALID_KINDS = IMPLEMENTED_KINDS
 
 for _custom in _load_custom_providers():
     PROVIDERS_BY_ID[_custom.id] = _custom

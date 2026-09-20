@@ -55,9 +55,19 @@ def _resolve_base(request: BackendRequest) -> str:
 
 
 def _headers(request: BackendRequest) -> dict[str, str]:
+    from ..fleet import LOCAL_ID, provider_id_for
     from ..hub import hub_headers
 
-    return hub_headers(request.values.get("hub_token", ""))
+    # `X-Hub-Token` carries the *called provider's* credential. Only this Mac's
+    # own Hub has none stored — its operator token is its credential — so only
+    # there is the local fallback correct. A remote location's absent credential
+    # must stay absent: `hub_headers` used to fall back unconditionally, which
+    # put this Mac's operator token in this header and sent it to the address the
+    # owner had typed into the Fleet page.
+    return hub_headers(
+        request.values.get("hub_token", ""),
+        local=request.provider_id == provider_id_for(LOCAL_ID),
+    )
 
 
 def _poll_batch(

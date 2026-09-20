@@ -320,6 +320,34 @@ credential is replaced, and on every connection test, and reports an operator to
 in orange with what it can do. `PUT /api/fleet/controllers/{id}/credential`
 replaces a token without touching the name, address or models.
 
+**An absent credential stays absent — the operator token belongs to *this Mac's*
+Hub and to no other address.** `hub_headers(token)` was `token or hub_token()`,
+unconditionally, so a controller with no stored credential (added with no token, or
+its token since forgotten) had **this Mac's operator token** put in `X-Hub-Token`
+and sent to whatever address the owner had typed on the Fleet page. That token is
+full operator scope here: it can change this Hub's settings and identity, reach its
+storage and shut it down. It is the mistake `credential_scope` exists to stop the
+owner making by hand, made by the code instead — and it is silent, because a remote
+Hub that accepts it simply works.
+
+`token` is now a **required** argument and the fallback is reachable only through
+`local=True`, which callers derive from the **provider id**
+(`definition.id == provider_id_for(LOCAL_ID)`) and never from the address, since
+the address is the one part an owner supplies. Local-only paths call
+`local_hub_headers()`. A future call site therefore cannot inherit a credential by
+omission: it fails with the wrong or absent token rather than with this Mac's.
+`tests/mock_upstream.py` records every `X-Hub-Token` it receives, so the assertion
+is about the **wire**, not about a helper's return value — restoring the old line
+makes the new checks fail with the sentinel visible on requests to the mock.
+
+**A custom provider's kind is checked against `IMPLEMENTED_KINDS` itself, not a
+copy.** `_VALID_KINDS` was a second hand-written set and had already fallen behind
+(`KIND_XAI` was missing), so `"kind": "xai"` in a hand-written
+`providers.local.json` was dropped without a word. Being skipped is recorded with a
+reason, logged, and published as `skipped_custom_providers` on
+`/admin/api/providers`, **which the console renders** — a field nothing draws is
+the same defect as a control that does nothing.
+
 **A location's name is a label, never an identity, and renaming must stay safe at
 any time.** `fleet.rename_controller` changes only the label — the controller id,
 its address, its token and its enabled state are untouched — so renaming can never
@@ -540,7 +568,7 @@ model name.
 ## Verification
 
 ```bash
-.venv/bin/python tests/test_e2e.py              # 366 checks, isolated mock upstream
+.venv/bin/python tests/test_e2e.py              # 386 checks, isolated mock upstream
 .venv/bin/python tests/test_fleet_standalone.py # 45 checks, real Hub(s) as locations
 .venv/bin/python tests/test_ui.py               # 109 checks, drives the real app
 ```

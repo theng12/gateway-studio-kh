@@ -34,7 +34,7 @@ from typing import Any
 import httpx
 
 from .config import DATA_DIR, VOICES_PATH, WRITABLE_VOICES_PATH
-from .hub import hub_base_url, hub_headers
+from .hub import hub_base_url, local_hub_headers
 
 #: Where imported clips are copied. A subdirectory per voice, so a voice is one
 #: thing on disk and deleting it removes exactly that voice's audio.
@@ -875,7 +875,8 @@ def annotation_state() -> dict:
 
 def _run_annotation(pending: list[dict], model: str) -> None:
     base = hub_base_url()
-    headers = hub_headers()
+    # Annotation is inherently local: it reads this Mac's own Hub base URL above.
+    headers = local_hub_headers()
     results: list[dict] = []
     try:
         with httpx.Client(timeout=httpx.Timeout(180.0, connect=10.0)) as client:

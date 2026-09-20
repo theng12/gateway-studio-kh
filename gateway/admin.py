@@ -26,7 +26,7 @@ from .catalog import catalog
 from . import fleet
 from .config import is_loopback
 from .hub import hub_status
-from .providers import registry
+from .providers import definitions, registry
 from .runtime import STARTED_AT, store, worker
 from .voices import search_library, voice_registry
 
@@ -138,6 +138,10 @@ def list_providers(scope: str | None = None) -> dict[str, Any]:
     items.sort(key=lambda p: (not p["enabled"], not p["configured"], p["display_name"].lower()))
     return {
         "providers": items,
+        # An entry in `providers.local.json` that was not loaded. The file is
+        # hand-written, so a skip is otherwise indistinguishable from "my file did
+        # not load": the provider is simply not in the list, and nothing says why.
+        "skipped_custom_providers": list(definitions.skipped_custom_providers()),
         "scopes": {
             "cloud": sum(1 for p in registry.describe_all() if p.get("scope") == "cloud"),
             "local": sum(1 for p in registry.describe_all() if p.get("scope") == "local"),

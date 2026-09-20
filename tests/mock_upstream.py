@@ -37,6 +37,16 @@ ONE_PIXEL_PNG = base64.b64decode(
 SHARED_VOICES: list[dict] = []
 SHARED_TOKENS: list[str] = []
 
+#: Every `X-Hub-Token` this mock was sent, per Hub-shaped path.
+#:
+#: The operator-token leak is a **wire** fact. A controller may legitimately hold
+#: no credential, and the bug was that the gateway then put *this Mac's own
+#: operator token* in `X-Hub-Token` and sent it to the remote address the owner
+#: had typed. Asserting the helper's return value only proves the helper is
+#: right; asserting here proves nothing on the wire carried it, however the header
+#: was built. Reset by `POST /__test__/reset`.
+HUB_TOKENS: list[dict] = []
+
 MODELS = [
     # The mock states the fields the catalogue's "publish what is known, and
     # nothing else" checks actually inspect, in the spellings a real provider
@@ -140,6 +150,7 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:  # noqa: N802
         path = self.path.split("?")[0].rstrip("/")
         port = self.server.server_address[1]
+        self._record_hub_token(path)
 
         # ---- the shared-voice fan-out, as a controller's Hub serves it.
         #
@@ -149,6 +160,9 @@ class Handler(BaseHTTPRequestHandler):
         # on his live Hub is a side effect a test has no business causing.
         if path == "/__test__/shared-voices":
             self._json(200, {"voices": SHARED_VOICES, "tokens": SHARED_TOKENS})
+            return
+        if path == "/__test__/hub-tokens":
+            self._json(200, {"tokens": HUB_TOKENS})
             return
         if path == "/api/hub/shared-voices":
             self._json(200, {"voices": SHARED_VOICES})
@@ -275,6 +289,14 @@ class Handler(BaseHTTPRequestHandler):
             return
         self._json(404, {"error": {"message": "not found"}})
 
+    def _record_hub_token(self, path: str) -> None:
+        """Remember the credential this request carried, if it was aimed at a Hub."""
+        if path.startswith("/api/hub"):
+            HUB_TOKENS.append({
+                "path": path,
+                "token": str(self.headers.get("X-Hub-Token") or ""),
+            })
+
     def _form(self) -> dict:
         """Request fields, for a multipart upload or a JSON body.
 
@@ -310,6 +332,7 @@ class Handler(BaseHTTPRequestHandler):
         # could never hand a later request the previous body.
         self.__dict__.pop("_raw_cache", None)
         path = self.path.split("?")[0].rstrip("/")
+        self._record_hub_token(path)
         body = self._body()
         model = str(body.get("model") or "")
         port = self.server.server_address[1]
@@ -318,6 +341,7 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/__test__/reset":
             SHARED_VOICES.clear()
             SHARED_TOKENS.clear()
+            HUB_TOKENS.clear()
             self._json(200, {"ok": True})
             return
         if path == "/api/hub/shared-voices":

@@ -1078,9 +1078,18 @@ def routing_candidates(
 ) -> list[dict]:
     """Every location that can run this model right now, with its pressure.
 
-    A candidate must have the model *enabled* (so a toggle is honoured on the
-    generation path, not just in the catalogue), be answering, and -- when the
-    request names a voice -- be the location that owns that voice.
+    A candidate must be a model the catalogue would **offer**, be answering, and
+    -- when the request names a voice -- be the location that owns that voice.
+
+    "Enabled" is not that question. This used to test `is_enabled` plus a row
+    match, while `enabled_models` -- the set the catalogue is built from -- also
+    applies `is_configured` and `can_publish`. The two answers drifted, and the
+    failure was worse than an extra candidate: `route` chose a location on the
+    weaker test and `catalog.resolve` then rejected that pair on the stronger
+    one, so a request answered **`MODEL_NOT_FOUND`** — with a perfectly good copy
+    of the same model enabled on another site, never tried. The candidate set is
+    therefore read from `enabled_models`, not re-derived; asking "can this be
+    offered?" in two places is how the two answers came apart.
     """
     from .providers import registry
 
@@ -1095,16 +1104,13 @@ def routing_candidates(
         for row in (snapshot(allow_stale=True).get("locations") or [])
     }
     candidates: list[dict] = []
-    for definition in registry.definitions():
+    for definition, model in registry.models.enabled_models(modality):
         location_id = controller_id_from(definition.id)
         if location_id is None:
             continue
+        if model["model_id"] != model_id:
+            continue
         if only_location is not None and location_id != only_location:
-            continue
-        if not registry.credentials.is_enabled(definition.id):
-            continue
-        models = registry.models.models_for(definition.id, include_disabled=False)
-        if not any(m["model_id"] == model_id and m["modality"] == modality for m in models):
             continue
         row = rows.get(location_id) or {}
         if not row.get("reachable"):

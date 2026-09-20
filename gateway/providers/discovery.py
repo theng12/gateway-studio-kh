@@ -400,7 +400,7 @@ _HUB_ENGINE_MODALITY = {
 }
 
 
-def _hub_catalog(base: str, token: str) -> dict[str, dict[str, Any]]:
+def _hub_catalog(base: str, token: str, *, local: bool = False) -> dict[str, dict[str, Any]]:
     """Per-model capabilities and reference contracts, from the Hub's catalogue.
 
     `/api/hub/model-packages` answers *what is installed*; `/api/hub/catalog`
@@ -427,7 +427,7 @@ def _hub_catalog(base: str, token: str) -> dict[str, dict[str, Any]]:
     try:
         response = httpx.get(
             f"{base.rstrip('/')}/api/hub/catalog",
-            headers=hub_headers(token),
+            headers=hub_headers(token, local=local),
             timeout=TIMEOUT,
         )
     except httpx.HTTPError:
@@ -458,6 +458,7 @@ def _studio_hub(definition: ProviderDefinition, values: dict[str, str]) -> Disco
     authoritative sources are `/api/hub/model-packages` (readiness) and
     `/api/hub/catalog` (capabilities and reference contracts).
     """
+    from ..fleet import LOCAL_ID, provider_id_for
     from ..hub import hub_base_url, hub_headers  # local import: avoids a cycle
 
     # `definition.base_url` before the local Hub, like every other strategy in
@@ -475,10 +476,17 @@ def _studio_hub(definition: ProviderDefinition, values: dict[str, str]) -> Disco
     if not base:
         return DiscoveryResult(error="Studio Hub is not running (no hub-ready.json found)")
 
+    # Which credential is this provider's. Only this Mac's own Hub has none
+    # stored, so only there may the operator token stand in — see `hub_headers`.
+    # Resolved from the **provider id**, never from the address: the address of a
+    # remote location is whatever the owner typed on the Fleet page, and that is
+    # exactly the thing this must not trust with this Mac's operator token.
+    local = definition.id == provider_id_for(LOCAL_ID)
+
     try:
         response = httpx.get(
             f"{base.rstrip('/')}/api/hub/model-packages",
-            headers=hub_headers(values.get("hub_token", "")),
+            headers=hub_headers(values.get("hub_token", ""), local=local),
             timeout=TIMEOUT,
         )
     except httpx.HTTPError as exc:
@@ -495,7 +503,7 @@ def _studio_hub(definition: ProviderDefinition, values: dict[str, str]) -> Disco
     # What each model *is*, as opposed to whether it is installed. Best effort:
     # an empty map leaves every model's reference facts absent, which readers
     # report as unverified rather than as "this model cannot clone".
-    catalog = _hub_catalog(base, values.get("hub_token", ""))
+    catalog = _hub_catalog(base, values.get("hub_token", ""), local=local)
 
     models: list[DiscoveredModel] = []
     for package in packages:
