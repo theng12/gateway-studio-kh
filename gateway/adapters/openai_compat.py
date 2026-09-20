@@ -240,10 +240,22 @@ def _image(request: BackendRequest) -> BackendResult:
 
 
 def _tts(request: BackendRequest) -> BackendResult:
+    # `/v1/audio/speech` requires a voice, so something has to be sent — but
+    # `alloy` was *our* choice presented as the caller's, and a narration in an
+    # unchosen voice is silent in both directions: the caller sees the audio it did
+    # not ask for, and nothing tells it why. Refuse and name the field.
+    voice = str(request.params.get("voice_id") or request.params.get("voice") or "").strip()
+    if not voice:
+        raise BackendError(
+            "this model needs a voice: send 'voice_id' (or 'voice') naming one of the "
+            "voices the catalogue lists for it",
+            code="INVALID_REQUEST",
+            status=422,
+        )
     body: dict[str, Any] = {
         "model": request.model_id,
         "input": str(request.params.get("text") or ""),
-        "voice": str(request.params.get("voice_id") or request.params.get("voice") or "alloy"),
+        "voice": voice,
         "response_format": "wav",
     }
     if request.params.get("speed") is not None:

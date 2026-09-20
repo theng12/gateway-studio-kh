@@ -190,11 +190,20 @@ def _music(request: BackendRequest) -> BackendResult:
 # Speech
 # ---------------------------------------------------------------------------
 def _speech(request: BackendRequest) -> BackendResult:
-    voice = str(
-        request.params.get("voice_id")
-        or request.params.get("reference_id")
-        or "English_expressive_narrator"
-    )
+    # **A missing voice used to become `English_expressive_narrator`** — a
+    # specific named English speaker, chosen silently, so the narration came back
+    # in a voice the caller never asked for and nothing said so. Refusing names the
+    # missing field instead. (fal's `Rachel` and ElevenLabs' account-first-voice are
+    # documented deliberate exceptions: those providers genuinely default, and the
+    # gateway's own catalogue offers that default as a voice.)
+    voice = str(request.params.get("voice_id") or request.params.get("reference_id") or "").strip()
+    if not voice:
+        raise BackendError(
+            "this model needs a voice: send 'voice_id' (or 'reference_id') naming one "
+            "of the voices the catalogue lists for it",
+            code="INVALID_REQUEST",
+            status=422,
+        )
     body: dict[str, Any] = {
         "model": request.model_id,
         "text": str(request.params.get("text") or ""),

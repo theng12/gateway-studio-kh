@@ -272,16 +272,20 @@ verified".
    only models on enabled providers and includes non-publishable ones**, yet
    `OverviewWindow.swift:416` labels it "discovered"; `admin.py:316-338` uses a
    different definition under the same word. *Fix: one definition, or two names.*
-7. **`gateway/adapters/minimax.py:193-197`, `openai_compat.py:246` — a missing TTS
-   voice becomes a specific English speaker** (`English_expressive_narrator`,
-   `alloy`). The narration runs in a voice the caller never chose, silently. *Fix:
-   refuse, naming the missing voice.* (fal's `"Rachel"` and ElevenLabs'
-   account-first-voice are documented deliberate.)
-8. **`gateway/adapters/fal.py:86` vs `catalog.py:323-324`** — fal publishes
-   `minimum_speed 0.5 / maximum_speed 2.0` while the adapter silently drops any
-   speed outside `0.7–1.2`. A caller picks a speed Story Studio was told is valid
-   and gets normal speed, with no signal. *Fix: publish fal's stated range (its
-   per-endpoint OpenAPI schema is never fetched), or refuse out-of-range.*
+7. **FIXED this session.** Both refuse, naming the field: "this model needs a
+   voice: send 'voice_id' …". `alloy` and `English_expressive_narrator` were *our*
+   choices presented as the caller's, and the failure was silent in both directions —
+   the caller hears a voice it did not pick and has nothing to act on. fal's `Rachel`
+   and ElevenLabs' account-first-voice stay, because those providers genuinely
+   default and the catalogue offers that default *as a voice*. Caught by the suite
+   immediately: an existing `minimax-speech` lane check had been relying on the
+   silent default, and now names a voice explicitly.
+8. **FIXED this session, both halves.** The adapter **refuses** an out-of-range
+   speed instead of dropping it, and the catalogue publishes fal's real range
+   (`_TTS_SPEED_RANGES`, 0.7–1.2) so what is offered is what is accepted. fal
+   publishes the range per endpoint in its OpenAPI schema, which is still not
+   fetched — the `ponytail:` names that as the upgrade path, the same source the body
+   schemas already come from.
 9. **`gateway/providers/discovery.py:124` — modality falls back to
    `definition.modalities[0]`.** `fal-ai/…-video-understanding` (category `vision`)
    and `openrouter/router/video` (category `video-to-text`) are classified as video

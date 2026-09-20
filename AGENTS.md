@@ -229,6 +229,17 @@ one flat number because no provider *publishes* its limit over its API —
 `ponytail:` in `api.py` names the upgrade path (read it per model, the way TTS
 limits come from `maximum_text_length_per_request`). **413, never 402.**
 
+**A voice the caller did not choose is never invented.** A missing `voice_id` used
+to become a specific named speaker — `English_expressive_narrator` on MiniMax,
+`alloy` on the OpenAI-compatible shim — so a narration came back in a voice nobody
+picked and nothing said so. Both refuse now, naming the field. fal's `Rachel` and
+ElevenLabs' account-first-voice stay, because those providers genuinely default and
+the catalogue offers that default *as a voice*. The same rule covers **speed**: fal's
+routes accept 0.7–1.2 while the catalogue published 0.5–2.0, and the adapter *dropped*
+anything outside its range — a caller picked a speed it had been told was valid and
+got normal speed. It refuses now, and `catalog._TTS_SPEED_RANGES` publishes the
+accepted range, so what is offered is what is sent.
+
 **A model that is enabled but cannot serve is the worst state, and OpenRouter's
 `:batch` variants are exactly that.** They are the providers' Batch APIs — half
 price, turnaround in hours — and a normal `/chat/completions` request answers
@@ -708,7 +719,7 @@ model name.
 ## Verification
 
 ```bash
-.venv/bin/python tests/test_e2e.py              # 429 checks, isolated mock upstream
+.venv/bin/python tests/test_e2e.py              # 436 checks, isolated mock upstream
 .venv/bin/python tests/test_fleet_standalone.py # 47 checks, real Hub(s) as locations
 .venv/bin/python tests/test_ui.py               # 109 checks, drives the real app
 ```

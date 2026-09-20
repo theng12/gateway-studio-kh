@@ -430,6 +430,23 @@ def _tts_characters(
 #: API; read per-model speed capability from whichever provider states it.
 _TTS_NO_SPEED = {"eleven_v3"}
 
+#: Speed ranges a lane accepts but does not publish, so what a caller is *offered*
+#: is what the adapter will actually send.
+#:
+#: The generic range is 0.5–2.0. fal's ElevenLabs routes take **0.7–1.2**, and
+#: `adapters/fal.py` used to *drop* anything outside it — so a caller picked a speed
+#: this catalogue had told it was valid and got normal speed, with no signal in
+#: either direction. The adapter refuses out-of-range now; this makes the published
+#: range the accepted one.
+#:
+#: ponytail: keyed by model id, hand-recorded from what the adapter already
+#: enforced. Ceiling — a route with a different range is still over-promised.
+#: Upgrade path — fal publishes the range per endpoint in its OpenAPI schema
+#: (`?endpoint_id=<id>`), which is the same source the body schemas are read from.
+_TTS_SPEED_RANGES: dict[str, tuple[float, float]] = {
+    "fal-ai/elevenlabs/tts/turbo-v2.5": (0.7, 1.2),
+}
+
 
 def _supports_cloning(definition: ProviderDefinition, raw: dict[str, Any]) -> bool:
     """Whether a model clones, as the provider states it.
@@ -452,8 +469,10 @@ def _supports_cloning(definition: ProviderDefinition, raw: dict[str, Any]) -> bo
 def _tts_row(model_id: str, definition: ProviderDefinition, model: dict[str, Any]) -> dict[str, Any]:
     raw = model.get("raw") or {}
     supports_speed = model_id not in _TTS_NO_SPEED
-    minimum_speed = 0.5 if supports_speed else 1.0
-    maximum_speed = 2.0 if supports_speed else 1.0
+    if supports_speed:
+        minimum_speed, maximum_speed = _TTS_SPEED_RANGES.get(model_id, (0.5, 2.0))
+    else:
+        minimum_speed, maximum_speed = 1.0, 1.0
     # Empty when the provider states none. It used to fall back to `["en"]`,
     # which claims a specific language — false for engines like Qwen3 and
     # VoxCPM2 that are not English-only. Story Studio renders this list only

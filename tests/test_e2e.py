@@ -1387,6 +1387,39 @@ def main() -> int:
                   tts.get("text") == "hello" and tts.get("voice") == "Rachel", f"{tts}")
             check("and it does not invent fields the endpoint does not declare",
                   "output_format" not in tts and "sync_mode" not in tts, f"{sorted(tts)}")
+            # **A speed the gateway published must be a speed the adapter sends.**
+            # The catalogue said 0.5–2.0 and this silently discarded anything
+            # outside 0.7–1.2, so a caller picked a valid-looking speed and got
+            # normal speed with no signal in either direction.
+            check("a speed inside fal's range is sent",
+                  _fal_input(fal_req("fal-ai/elevenlabs/tts/turbo-v2.5", "tts",
+                                     text="hi", speed=1.2)).get("speed") == 1.2)
+            try:
+                _fal_input(fal_req("fal-ai/elevenlabs/tts/turbo-v2.5", "tts",
+                                   text="hi", speed=2.0))
+                _fal_refused = None
+            except Exception as exc:  # noqa: BLE001 - the refusal is the assertion
+                _fal_refused = str(exc)
+            check("and one outside it is refused, naming the range",
+                  _fal_refused is not None and "0.7" in _fal_refused and "1.2" in _fal_refused,
+                  f"{_fal_refused}")
+            # Asked of the row builder, not of the live catalogue: whether fal is
+            # enabled in *this* run is the environment's business, and a check that
+            # skips itself when a provider is off is a check that can silently not
+            # run — which is how the first version of this asserted nothing.
+            from gateway.catalog import _tts_row as _tts_row_for
+            from gateway.providers.definitions import PROVIDERS_BY_ID as _DEFS2
+            _fal_row = _tts_row_for("fal-ai/elevenlabs/tts/turbo-v2.5", _DEFS2["fal-ai"], {
+                "model_id": "fal-ai/elevenlabs/tts/turbo-v2.5", "display_name": "x",
+                "modality": "tts", "raw": {},
+            })
+            check("so the published range is the accepted one",
+                  (_fal_row["minimum_speed"], _fal_row["maximum_speed"]) == (0.7, 1.2),
+                  f"{_fal_row['minimum_speed']}-{_fal_row['maximum_speed']}")
+            check("and a lane with no such exception keeps the generic range",
+                  (_tts_row_for("eleven_flash_v2_5", _DEFS2["elevenlabs-direct"], {
+                      "model_id": "eleven_flash_v2_5", "display_name": "x",
+                      "modality": "tts", "raw": {}})["minimum_speed"]) == 0.5)
             check("an unnamed voice falls back to fal's own default",
                   _fal_input(fal_req("fal-ai/elevenlabs/tts/turbo-v2.5", "tts",
                                      text="hi")).get("voice") == "Rachel")
@@ -1623,6 +1656,40 @@ def main() -> int:
                   all(c["provider_id"] in {"studio-hub-good"} for c in _cands),
                   f"{[c['provider_id'] for c in _cands]}")
 
+            print("\n\033[1m10i. A voice the caller did not choose is not invented\033[0m")
+            # **A missing voice used to become a specific named speaker** —
+            # `English_expressive_narrator` on MiniMax, `alloy` on the
+            # OpenAI-compatible shim — so the narration came back in a voice nobody
+            # asked for and nothing said so. Silent in both directions: the caller
+            # sees audio it did not choose, and has nothing to act on.
+            from gateway.adapters.base import BackendRequest as _TTSReq
+            from gateway.adapters.minimax import _speech as _mm_speech
+            from gateway.adapters.openai_compat import _tts as _oa_tts
+
+            def _tts_req(**params):
+                return _TTSReq(provider_id="p", model_id="m", modality="tts",
+                               params=params, values={}, base_url="http://127.0.0.1:9")
+
+            for _label, _fn in (("minimax", _mm_speech), ("openai-compatible", _oa_tts)):
+                try:
+                    _fn(_tts_req(text="hello"))
+                    _missing = None
+                except Exception as exc:  # noqa: BLE001 - the refusal is the assertion
+                    _missing = str(exc)
+                check(f"a {_label} TTS request with no voice is refused, not narrated anyway",
+                      _missing is not None and "needs a voice" in _missing,
+                      f"{_missing}")
+            # And the guard does not over-refuse: a named voice gets *past* it. The
+            # request then fails on the network, which is expected here — nothing
+            # listens on port 9 — so what is asserted is which error came back.
+            try:
+                _mm_speech(_tts_req(text="hello", voice_id="mm-voice-1"))
+                _named = "no error"
+            except Exception as exc:  # noqa: BLE001
+                _named = str(exc)
+            check("and a named voice is not refused by the guard",
+                  "needs a voice" not in _named, f"{_named}")
+
             print("\n\033[1m11. Manual model add (provider shipped an unlisted model)\033[0m")
             r = httpx.post(f"{BASE}/admin/api/providers/mock-remote/models", headers=AUTH,
                            json={"model_id": "mock-brand-new", "display_name": "Brand New",
@@ -1718,10 +1785,16 @@ def main() -> int:
                 {"model_id": "mock-minimax::music-01", "prompt": "calm ambient"},
                 "/v1/music/jobs/{id}/outputs/0", None,
             )
+            # **A voice is named, because omitting one is now refused.** It used to
+            # become `English_expressive_narrator` — a specific named English
+            # speaker, chosen silently — so the narration came back in a voice the
+            # caller never picked. The refusal itself is asserted in section 10i;
+            # this lane check is about the job running when a voice *is* chosen.
             run_generation(
                 "minimax-speech",
                 "/v1/audio/jobs", "/v1/jobs/{id}",
-                {"model_id": "mock-minimax::speech-2.8-turbo", "text": "hello"},
+                {"model_id": "mock-minimax::speech-2.8-turbo", "text": "hello",
+                 "voice_id": "English_expressive_narrator"},
                 "/v1/jobs/{id}/audio", is_wav,
             )
 

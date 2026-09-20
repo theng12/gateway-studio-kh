@@ -83,7 +83,20 @@ def _input_for(request: BackendRequest) -> dict[str, Any]:
         # the same resolver every other TTS lane uses.
         payload["voice"] = _fal_voice(request.params.get("voice_id")) or _FAL_DEFAULT_VOICE
         speed = request.params.get("speed")
-        if isinstance(speed, (int, float)) and 0.7 <= float(speed) <= 1.2:
+        if isinstance(speed, (int, float)):
+            # **Refused, not dropped.** fal's endpoints take a narrower speed range
+            # than the catalogue used to publish (0.5–2.0), and this silently
+            # discarded anything outside 0.7–1.2 — so a caller picked a speed the
+            # gateway had told it was valid and got normal speed, with no signal in
+            # either direction. The catalogue now publishes this lane's real range,
+            # so reaching here means the caller ignored it.
+            if not (_FAL_MIN_SPEED <= float(speed) <= _FAL_MAX_SPEED):
+                raise BackendError(
+                    f"fal's TTS routes accept speed between {_FAL_MIN_SPEED} and "
+                    f"{_FAL_MAX_SPEED}; {float(speed)} was asked for",
+                    code="INVALID_REQUEST",
+                    status=422,
+                )
             payload["speed"] = float(speed)
         controls = request.params.get("controls")
         if isinstance(controls, dict):
@@ -117,6 +130,17 @@ _REQUIRES_PROMPT_EXPANSION: frozenset[str] = frozenset(
 
 #: fal's own documented default voice for its ElevenLabs endpoints.
 _FAL_DEFAULT_VOICE = "Rachel"
+
+#: The speed range fal's ElevenLabs routes accept. The catalogue publishes it, so
+#: what a caller is offered is what this adapter will send.
+#:
+#: ponytail: one range for every fal TTS route, hand-recorded. Ceiling — the range
+#: is per *endpoint* and fal publishes it in each endpoint's OpenAPI schema, which is
+#: never fetched here, so a route with a different range is over- or under-promised.
+#: Upgrade path — read `https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=<id>`
+#: at discovery time, the way the body schemas already are.
+_FAL_MIN_SPEED = 0.7
+_FAL_MAX_SPEED = 1.2
 
 
 def _fal_voice(voice_id: Any) -> str:
