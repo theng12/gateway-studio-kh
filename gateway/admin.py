@@ -465,6 +465,88 @@ def prune_artifacts() -> dict[str, Any]:
     return {**retention.prune(), "usage": retention.usage()}
 
 
+@router.get("/api/artifacts/kept", dependencies=[Depends(require_admin)])
+def list_kept_artifacts() -> dict[str, Any]:
+    """Every pinned artifact, each saying whether its file is still on disk."""
+    from . import retention
+
+    return {"artifacts": retention.kept(), "usage": retention.usage()}
+
+
+@router.post("/api/artifacts/keep", dependencies=[Depends(require_admin)])
+def set_artifact_kept(payload: dict[str, Any]) -> Any:
+    """Pin or release one artifact of one job.
+
+    Addressed by **job and asset id**, not by path: a path is an implementation
+    detail, and the asset id is exactly the one the job envelope publishes, so the
+    control names the thing the owner can see rather than something they cannot.
+    """
+    from . import retention
+    from .runtime import store
+    from .store import artifacts_of
+
+    job_id = str(payload.get("job_id") or "")
+    asset_id = str(payload.get("asset_id", "0"))
+    job = store.get(job_id)
+    if job is None:
+        return _error(404, f"no job '{job_id}'")
+    rows = artifacts_of(job)
+    chosen = next((r for r in rows if str(r.get("asset_id")) == asset_id), None)
+    if chosen is None:
+        return _error(
+            404, f"job '{job_id}' has no artifact '{asset_id}'; it has {len(rows)}"
+        )
+    result = (
+        retention.keep(chosen["path"], job_id=job_id, asset_id=asset_id)
+        if bool(payload.get("keep", True))
+        else retention.unkeep(chosen["path"])
+    )
+    return {**result, "artifacts": retention.kept(), "usage": retention.usage()}
+
+
+@router.get(
+    "/api/artifacts/{job_id}/outputs/{asset_id}",
+    dependencies=[Depends(require_admin)],
+)
+def download_artifact(
+    job_id: str, asset_id: str, download: bool = Query(default=False)
+) -> Any:
+    """Serve one artifact's bytes to the console, so preview and Save both work.
+
+    The customer route (`/v1/jobs/…/outputs/…`) wants the Story Studio API key,
+    which a browser page does not hold — this is the same bytes behind the door the
+    console already authenticates against. `download=1` adds an attachment
+    disposition for Save; without it the bytes stay inline, because an attachment
+    disposition makes `<img>` and `<audio>` fetch nothing.
+    """
+    from pathlib import Path
+
+    from .runtime import store
+    from .store import artifacts_of
+
+    job = store.get(job_id)
+    if job is None:
+        return _error(404, f"no job '{job_id}'")
+    rows = artifacts_of(job)
+    chosen = next((r for r in rows if str(r.get("asset_id")) == asset_id), None)
+    if chosen is None:
+        return _error(
+            404, f"job '{job_id}' has no artifact '{asset_id}'; it has {len(rows)}"
+        )
+    path = Path(str(chosen["path"]))
+    if not path.exists():
+        return _error(410, "the artifact file is gone — it was pruned or removed")
+    headers: dict[str, str] = {}
+    if download:
+        stem = f"{job.get('modality') or 'artifact'}-{str(job_id)[:8]}-{asset_id}"
+        headers["Content-Disposition"] = f'attachment; filename="{stem}{path.suffix}"'
+    return Response(
+        content=path.read_bytes(),
+        media_type=str(chosen.get("media_type") or "application/octet-stream"),
+        headers=headers,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Voices
 #

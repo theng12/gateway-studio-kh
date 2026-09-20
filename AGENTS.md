@@ -319,8 +319,9 @@ downloads it and serves it to Story Studio, and **Story Studio keeps the copy th
 matters**. Nothing removed them at all before `gateway/retention.py`, so
 `data/artifacts/` grew without bound.
 
-Two limits, whichever is reached first, both editable in Settings or over the API
-(`/api/settings/retention`, `/api/artifacts/prune`) — default **7 days or 10 GB**:
+Two limits, whichever is reached first, both editable over the API
+(`/admin/api/settings/retention`, `/admin/api/artifacts/prune`) — **7 days or
+10 GB**. A **pin** (`/admin/api/artifacts/keep`) outranks both:
 
 - **Age** is the normal one. An artifact Story Studio has not fetched in a week is
   not going to be.
@@ -332,9 +333,7 @@ freshly-written artifact is about to be fetched and a staged upload is being rea
 by a running job, so the newest files are safe by construction rather than by luck.
 The settings live in `DATA_DIR/retention.json`, not `.env`: the menu bar app owns
 `.env` (it read-modify-writes the keys it owns), so a gateway setting stored there
-would be fighting the app for the file. (`.env` *is* re-read when it changes now —
-see the section above — but the retention settings still belong to the gateway's own
-file.)
+would be fighting the app for the file.
 
 ## `.env` is read live, and the key is checked per request
 

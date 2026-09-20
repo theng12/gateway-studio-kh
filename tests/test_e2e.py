@@ -2252,6 +2252,66 @@ def main() -> int:
                       False, "the music lane did not succeed")
                 check("and the modality-agnostic outputs route reaches the second track too",
                       False, "the music lane did not succeed")
+            # **A kept artifact outranks the retention policy.** An asset created
+            # here *directly* has no Story Studio project holding the copy that
+            # matters, so the gateway's file is the only copy there is — and the
+            # ordinary policy would delete it after a week. Proving that needs the
+            # file to be old enough that the sweep must take it, and an unpinned file
+            # of the same age to go, so the check cannot pass on a broken sweep.
+            if kie_music_envelope:
+                artifact_dir = Path(
+                    req(client, "GET", "/admin/api/settings/retention")
+                    .json()["usage"]["path"]
+                )
+                unpinned = artifact_dir / "e2e-unpinned-old.bin"
+                unpinned.write_bytes(b"z" * 64)
+                os.utime(unpinned, (0, 0))
+                pin_job = kie_music_envelope["id"]
+                kept_reply = req(client, "POST", "/admin/api/artifacts/keep",
+                                 json={"job_id": pin_job, "asset_id": "1", "keep": True})
+                pinned_path = next(
+                    (a["path"] for a in kept_reply.json().get("artifacts") or []
+                     if a["job_id"] == pin_job and a["asset_id"] == "1"), "")
+                check("an artifact can be kept, addressed by the id the envelope published",
+                      kept_reply.status_code == 200 and bool(pinned_path),
+                      kept_reply.text[:160])
+                if pinned_path:
+                    os.utime(pinned_path, (0, 0))
+                pruned = req(client, "POST", "/admin/api/artifacts/prune").json()
+                check("a kept artifact survives a prune old enough to have taken it",
+                      bool(pinned_path) and Path(pinned_path).exists()
+                      and pruned.get("pinned_files") == 1,
+                      f"pinned={bool(pinned_path)} exists={Path(pinned_path).exists() if pinned_path else None} "
+                      f"pinned_files={pruned.get('pinned_files')}")
+                check("while an unkept artifact of the same age was taken, so the sweep did run",
+                      not unpinned.exists() and pruned.get("deleted", 0) >= 1,
+                      f"deleted={pruned.get('deleted')} unpinned_exists={unpinned.exists()}")
+                released = req(client, "POST", "/admin/api/artifacts/keep",
+                               json={"job_id": pin_job, "asset_id": "1", "keep": False})
+                after_release = req(client, "POST", "/admin/api/artifacts/prune").json()
+                check("and releasing the pin lets the policy take the file again",
+                      released.status_code == 200
+                      and released.json().get("removed") == 1
+                      and after_release.get("deleted", 0) >= 1
+                      and not Path(pinned_path).exists(),
+                      f"removed={released.json().get('removed')} "
+                      f"exists={Path(pinned_path).exists() if pinned_path else None}")
+                # The console's own door to the bytes: `download=1` for Save, inline
+                # otherwise, because an attachment disposition makes <img> and
+                # <audio> fetch nothing.
+                inline = req(client, "GET", f"/admin/api/artifacts/{pin_job}/outputs/0")
+                forced = req(client, "GET",
+                             f"/admin/api/artifacts/{pin_job}/outputs/0?download=1")
+                check("the console can preview an artifact inline and force a download",
+                      inline.status_code == 200
+                      and "attachment" not in (inline.headers.get("content-disposition") or "")
+                      and "attachment" in (forced.headers.get("content-disposition") or ""),
+                      f"{inline.status_code} {inline.headers.get('content-disposition')!r} / "
+                      f"{forced.headers.get('content-disposition')!r}")
+                gone = req(client, "GET", f"/admin/api/artifacts/{pin_job}/outputs/9")
+                check("and the console is told which indices exist rather than getting a blank file",
+                      gone.status_code == 404 and "it has" in gone.text,
+                      f"{gone.status_code} {gone.text[:120]}")
             kie_tasks = httpx.get(
                 f"http://127.0.0.1:{MOCK_PORT}/__test__/kie-tasks").json()["tasks"]
             kie_music = [t for t in kie_tasks

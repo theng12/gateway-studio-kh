@@ -21,6 +21,14 @@ rewrites `.env` wholesale when it saves the API key and the gateway reads that f
 once at import. A previous run's leftover `GATEWAY_*` line would be silently
 dropped, and a changed one would not be picked up until a restart. This is read
 fresh at every prune, so an edit takes effect on the next pass.
+
+**A pin outranks both limits.** An asset the owner creates here *directly* has no
+Story Studio project holding the copy that matters, so the gateway's file is the
+only copy there is — and under the ordinary policy it would be deleted after a
+week. `keep()` pins one artifact against both limits until `unkeep()` releases it.
+A pin is answered separately from the age protection, never folded into it: "too
+new to touch" and "the owner told me to keep it" are different questions and a
+single count would let one masquerade as the other.
 """
 
 from __future__ import annotations
@@ -33,6 +41,12 @@ from pathlib import Path
 from .config import ARTIFACT_DIR, DATA_DIR
 
 SETTINGS_PATH = Path(str(DATA_DIR)) / "retention.json"
+
+#: Where the pins live. Its own file rather than a key inside `retention.json`,
+#: because `save()` rewrites that file from a merge, so a pin list stored there
+#: would be one clamp bug away from being silently lost — and losing a pin loses
+#: the asset.
+KEPT_PATH = Path(str(DATA_DIR)) / "kept.json"
 
 DEFAULT_MAX_AGE_DAYS = 7.0
 DEFAULT_MAX_BYTES = 10 * 1024**3  # 10 GB
@@ -102,6 +116,80 @@ def save(*, max_age_days: object = None, max_bytes: object = None) -> dict:
     return updated
 
 
+def _kept_entries() -> list[dict]:
+    """Every stored pin, read fresh. Missing or unreadable means none, not an error."""
+    try:
+        raw: object = json.loads(KEPT_PATH.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    entries = raw.get("kept") if isinstance(raw, dict) else None
+    if not isinstance(entries, list):
+        return []
+    return [e for e in entries if isinstance(e, dict) and e.get("path")]
+
+
+def _write_kept(entries: list[dict]) -> None:
+    KEPT_PATH.parent.mkdir(parents=True, exist_ok=True)
+    KEPT_PATH.write_text(json.dumps({"kept": entries}, indent=2) + "\n", encoding="utf-8")
+
+
+def kept() -> list[dict]:
+    """The pins, each saying whether the file it names is still there.
+
+    A pin whose file is gone is **reported** rather than quietly dropped: the owner
+    asked for that artifact, so its absence is a fact about their asset, not an
+    untidy list entry to tidy away. `present: false` is also the only way to tell a
+    missing file from a pin that was never written.
+    """
+    out: list[dict] = []
+    for entry in _kept_entries():
+        path = Path(str(entry["path"]))
+        try:
+            size: int | None = path.stat().st_size
+        except OSError:
+            size = None
+        out.append(
+            {
+                "path": str(path),
+                "job_id": str(entry.get("job_id") or ""),
+                "asset_id": str(entry.get("asset_id") or ""),
+                "kept_at": entry.get("kept_at"),
+                "present": size is not None,
+                "bytes": size,
+            }
+        )
+    return out
+
+
+def keep(path: str | Path, *, job_id: str = "", asset_id: str = "") -> dict:
+    """Pin one artifact so neither limit removes it. Keeping twice is not an error."""
+    resolved = str(Path(path))
+    with _state_lock:
+        entries = [e for e in _kept_entries() if str(e.get("path")) != resolved]
+        entries.append(
+            {
+                "path": resolved,
+                "job_id": str(job_id),
+                "asset_id": str(asset_id),
+                "kept_at": time.time(),
+            }
+        )
+        _write_kept(entries)
+    return {"path": resolved, "pinned": True}
+
+
+def unkeep(path: str | Path) -> dict:
+    """Release a pin. The file is left alone — the next prune may take it, or not."""
+    resolved = str(Path(path))
+    with _state_lock:
+        entries = _kept_entries()
+        remaining = [e for e in entries if str(e.get("path")) != resolved]
+        removed = len(entries) - len(remaining)
+        if removed:
+            _write_kept(remaining)
+    return {"path": resolved, "pinned": False, "removed": removed}
+
+
 def _files() -> list[tuple[Path, float, int]]:
     """Every file we manage: (path, mtime, size). Missing directory is not an error."""
     out: list[tuple[Path, float, int]] = []
@@ -119,10 +207,19 @@ def _files() -> list[tuple[Path, float, int]]:
 
 def usage() -> dict:
     entries = _files()
+    pins = kept()
+    present = [p for p in pins if p["present"]]
     return {
         "files": len(entries),
         "bytes": sum(size for _, _, size in entries),
         "path": str(ARTIFACT_DIR),
+        # **Two questions, two numbers.** `protected_files` is "too new to touch";
+        # `pinned_files` is "the owner asked me to keep this". One count answering
+        # both would let a pin look like the hour-long grace window, and would hide
+        # a pin that had stopped protecting anything because its file was gone.
+        "pinned_files": len(present),
+        "pinned_bytes": sum(int(p["bytes"] or 0) for p in present),
+        "pinned_missing": len(pins) - len(present),
     }
 
 
@@ -146,7 +243,16 @@ def prune(now: float | None = None) -> dict:
         pass
     limits = settings()
     entries = _files()
-    removable = [(p, m, s) for p, m, s in entries if (moment - m) > PROTECTED_AGE_S]
+    pinned = {p["path"] for p in kept() if p["present"]}
+    # A pinned artifact is not a candidate at all, whatever its age or the size
+    # pressure. The young-file protection is counted separately from the pins so
+    # neither can be read as the other.
+    young = [(p, m, s) for p, m, s in entries if (moment - m) <= PROTECTED_AGE_S]
+    removable = [
+        (p, m, s)
+        for p, m, s in entries
+        if (moment - m) > PROTECTED_AGE_S and str(p) not in pinned
+    ]
 
     doomed: dict[str, Path] = {}
     by_age = 0
@@ -199,7 +305,8 @@ def prune(now: float | None = None) -> dict:
         "kept_files": len(entries) - deleted,
         "kept_bytes": max(kept_bytes, 0),
         "limits": limits,
-        "protected_files": len(entries) - len(removable),
+        "protected_files": len(young),
+        "pinned_files": len(pinned),
     }
 
 
