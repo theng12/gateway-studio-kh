@@ -258,6 +258,17 @@ anything outside its range — a caller picked a speed it had been told was vali
 got normal speed. It refuses now, and `catalog._TTS_SPEED_RANGES` publishes the
 accepted range, so what is offered is what is sent.
 
+**A toggle has to still be a toggle when the job runs.** The worker re-checked
+*provider* enablement only, so a model switched off after submit still ran, a Hub
+refresh that flipped `catalogued`/`memory_eligible` mid-queue did not stop the job,
+and a modality the adapter cannot serve was still dispatched. It now asks
+`enabled_models(modality)` — the one function the catalogue is built from — and fails
+`MODEL_NOT_OFFERABLE` naming the model, provider and modality. **The same rule is
+enforced at the door:** `add_user_model` refuses a modality nothing serves, because
+`can_publish` requires `serves()` and the form only asked whether the provider
+*declared* it (Google declares six, serves four) — so it could create a row that was
+enabled, counted in the header, and never published.
+
 **A model that is enabled but cannot serve is the worst state, and OpenRouter's
 `:batch` variants are exactly that.** They are the providers' Batch APIs — half
 price, turnaround in hours — and a normal `/chat/completions` request answers
@@ -737,7 +748,7 @@ model name.
 ## Verification
 
 ```bash
-.venv/bin/python tests/test_e2e.py              # 439 checks, isolated mock upstream
+.venv/bin/python tests/test_e2e.py              # 444 checks, isolated mock upstream
 .venv/bin/python tests/test_fleet_standalone.py # 47 checks, real Hub(s) as locations
 .venv/bin/python tests/test_ui.py               # 109 checks, drives the real app
 ```

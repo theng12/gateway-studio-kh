@@ -76,18 +76,24 @@ instances across the console and the menu bar.
 1. **FIXED this session — see the list above** (voice share/permission namespaces).
 2. **FIXED this session — see the list above** (`row["raw"]`, and the swallowed
    import error).
-3. **MED — `providers/models.py:308-311` (`add_user_model`) accepts any *declared*
-   modality; `can_publish` also requires `serves()`.** The "Add model manually"
-   form therefore accepts a modality the adapter cannot serve (Google declares six,
-   serves four), the row is enabled and counted, and it never publishes.
-   `admin.py:128-135` even computes `unserved_modalities` "so the console can say
-   which ones" and nothing renders it. *Fix: reject in `add_user_model` when
-   `not serves(...)`, and render the field.*
-4. **MED — `worker.py:62-68` re-checks only the provider at execution time.** A
-   model disabled after submit still runs; a Hub refresh flipping
-   `catalogued`/`memory_eligible` mid-queue does not stop the job; and
-   `adapter_for` never consults `serves()`. *Fix: re-resolve the model and fail
-   `MODEL_DISABLED` / `MODEL_NOT_OFFERABLE`.*
+3. **FIXED this session (the gate).** `add_user_model` now refuses a modality
+   nothing serves, naming it — so "Add model manually" cannot create a row that is
+   enabled, counted in the header and never published. Proven by toggling the gate
+   off: the unserved modality is accepted with HTTP 200 and both checks fail.
+   **Still open: `admin.py:128-135` computes `unserved_modalities` and nothing
+   renders it** — the console does not yet show which declared modalities a provider
+   cannot serve, which is the difference between "the form refused me" and "I can see
+   why before trying".
+4. **FIXED this session.** The worker re-checked **provider** enablement only, so
+   three states could change between submit and run and the job was dispatched
+   anyway: the model switched off (the toggle was a control that did nothing here), a
+   Hub refresh flipping `catalogued`/`memory_eligible` (exactly the "cannot serve"
+   state `can_publish` withholds), and a modality the adapter does not serve. It now
+   asks `enabled_models(modality)` — the one function the catalogue is built from —
+   and fails **`MODEL_NOT_OFFERABLE`**, naming the model, provider and modality. The
+   `PROVIDER_DISABLED` check stays above it because that code names the cause more
+   precisely. Proven by toggling the gate off: the job reached the adapter, which is
+   what the check asserts it must not.
 5. **MED — Kie music publishes with no music handler.** `KIND_KIE` includes
    `music`, the Suno `V6` row is curated, and `adapters/kie.py:83-90` posts every
    modality down the same `createTask` image/video route. *Fix: drop `music` from

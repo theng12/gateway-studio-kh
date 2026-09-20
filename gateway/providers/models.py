@@ -309,6 +309,22 @@ class ModelInventory:
             raise ValueError(
                 f"'{modality}' is not a modality of provider '{provider_id}'"
             )
+        # **A declared modality is not a served one.** Google declares six and its
+        # adapter serves four, so this form accepted rows that `can_publish` then
+        # withholds for ever: enabled, counted in the header, never published — a
+        # control that does nothing, which is the failure the owner asked to stop.
+        # Checked here rather than only in the console, because the console is not
+        # the only caller and a rule enforced in the UI is not enforced.
+        #
+        # Local import: `adapters` imports `providers.definitions`, not this module,
+        # and a module-level edge between them invites a cycle for one predicate.
+        from ..adapters import serves
+
+        if not serves(definition, modality):
+            raise ValueError(
+                f"nothing on the gateway can serve '{modality}' for provider "
+                f"'{provider_id}', so a model added here could never run"
+            )
         bucket = self._data["user"].setdefault(provider_id, [])
         bucket = [m for m in bucket if m.get("model_id") != model_id]
         bucket.append(

@@ -1690,6 +1690,28 @@ def main() -> int:
             check("and a named voice is not refused by the guard",
                   "needs a voice" not in _named, f"{_named}")
 
+            # **A declared modality is not a served one.** "Add model manually"
+            # accepted anything the provider *declares*, while `can_publish` also
+            # requires the adapter to serve it — so a row could be added, enabled,
+            # counted in the header, and never publish. A control that does nothing,
+            # enforced in the console only is not enforced.
+            _unserved = req(client, "POST", "/admin/api/providers/mock-google/models",
+                            json={"model_id": "veo-probe", "display_name": "Veo Probe",
+                                  "modality": "video"})
+            check("a modality nothing can serve is refused, and says so",
+                  _unserved.status_code == 422 and "could never run" in _unserved.text,
+                  f"HTTP {_unserved.status_code} {_unserved.text[:140]}")
+            check("and the row is not added",
+                  not any(m["model_id"] == "veo-probe"
+                          for m in req(client, "GET",
+                                       "/admin/api/providers/mock-google/models").json()["models"]))
+            _served = req(client, "POST", "/admin/api/providers/mock-google/models",
+                          json={"model_id": "chat-probe", "display_name": "Chat Probe",
+                                "modality": "chat"})
+            check("while a modality it does serve still works",
+                  _served.status_code == 200, _served.text[:140])
+            req(client, "DELETE", "/admin/api/providers/mock-google/models/chat-probe")
+
             print("\n\033[1m11. Manual model add (provider shipped an unlisted model)\033[0m")
             r = httpx.post(f"{BASE}/admin/api/providers/mock-remote/models", headers=AUTH,
                            json={"model_id": "mock-brand-new", "display_name": "Brand New",
@@ -1805,6 +1827,64 @@ def main() -> int:
                             headers={"Idempotency-Key": f"e2e-music-shape-{int(time.time())}"})
             check("music submit returns 202", music_job.status_code == 202,
                   f"got {music_job.status_code}")
+
+            print("\n\033[1m12b. The offerability rule is re-asked at execution\033[0m")
+            # The worker re-checked **provider** enablement only. So a model switched
+            # off after submit still ran, a Hub refresh that flipped `catalogued` or
+            # `memory_eligible` mid-queue did not stop the job, and a modality the
+            # adapter cannot serve was still dispatched. The catalogue's rule is one
+            # function, so the worker asks it instead of re-implementing its gates.
+            from gateway import worker as _worker
+
+            class _Capture:
+                def __init__(self):
+                    self.failed: list[tuple[str, str, str]] = []
+                    self.ran = False
+
+                def fail(self, job_id, *, code="", detail=""):
+                    self.failed.append((job_id, code, detail))
+
+                def succeed(self, *a, **kw):
+                    raise AssertionError("a job that should not run reached succeed()")
+
+                def mark_running(self, *a, **kw):
+                    pass
+
+            _provider = "openrouter-main"   # a built-in, so this process knows it
+            _offerable = [(_provider, {"model_id": "yes/model", "modality": "tts"})]
+            _real_enabled = _reg.models.enabled_models
+            _real_is_enabled = _reg.credentials.is_enabled
+            _real_adapter = _worker.adapter_for
+
+            class _StubAdapter:
+                def generate(self, request):
+                    raise AssertionError("a model the catalogue cannot offer was dispatched")
+
+            def _job(model_id):
+                return {"id": "job-x", "provider_id": _provider, "model_id": model_id,
+                        "modality": "tts", "params": "{}"}
+
+            _reg.models.enabled_models = lambda modality: [
+                (_reg.definition(_provider), m) for _d, m in _offerable
+            ]
+            _reg.credentials.is_enabled = lambda _pid: True
+            _worker.adapter_for = lambda _definition: _StubAdapter()
+            try:
+                _store = _Capture()
+                _worker.execute_job(_job("no/model"), _store)
+            finally:
+                _reg.models.enabled_models = _real_enabled
+                _reg.credentials.is_enabled = _real_is_enabled
+                _worker.adapter_for = _real_adapter
+            check("a model the catalogue can no longer offer is refused, not dispatched",
+                  len(_store.failed) == 1
+                  and _store.failed[0][1] == "MODEL_NOT_OFFERABLE"
+                  and "no longer offered" in _store.failed[0][2],
+                  f"{_store.failed}")
+            check("and the refusal names the model, the provider and the modality",
+                  all(part in _store.failed[0][2]
+                      for part in ("no/model", _provider, "tts")),
+                  _store.failed[0][2])
 
             print("\n\033[1m13. Invariants\033[0m")
             check("no response in the whole run was 402", 402 not in statuses,

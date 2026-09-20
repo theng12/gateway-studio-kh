@@ -74,6 +74,30 @@ def execute_job(job: dict[str, Any], store: JobStore) -> None:
         store.fail(job_id, code="PROVIDER_FAILED", detail="unreadable job params")
         return
 
+    # **The whole rule, not just the provider.** Provider enablement was re-checked
+    # here and nothing else, so three states could change between submit and run and
+    # the job would still be dispatched:
+    #   * the *model* switched off — the toggle is a control, and it did nothing here;
+    #   * a Hub refresh flipping `catalogued` or `memory_eligible`, which is exactly
+    #     the "the model cannot serve" state `can_publish` exists to withhold;
+    #   * a modality the adapter does not serve.
+    # The catalogue's rule is one function — `enabled_models` — so this asks it
+    # instead of re-implementing its gates. (The provider check above stays because
+    # `PROVIDER_DISABLED` names the cause more precisely than "not offerable".)
+    if not any(
+        d.id == provider_id and m["model_id"] == model_id
+        for d, m in registry.models.enabled_models(modality)
+    ):
+        store.fail(
+            job_id,
+            code="MODEL_NOT_OFFERABLE",
+            detail=(
+                f"'{model_id}' is no longer offered by '{provider_id}' for {modality} "
+                "— disabled, unconfigured, or withheld since this job was queued"
+            ),
+        )
+        return
+
     params["_job_id"] = job_id
     request = BackendRequest(
         provider_id=provider_id,
