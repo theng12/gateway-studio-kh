@@ -1,5 +1,29 @@
 # gateway-kh
 
+## New-Mac handoff repairs
+
+The current acceptance record is `_handoffs/2026-09-20-local-completion.md`;
+the historical open-issue ledger is a baseline, not current runtime status.
+Global Ponytail/Graphify and conditional Impeccable/Superpowers instructions
+apply here and to delegated workers.
+
+- Unknown upstream outcomes are durable recovery holds, never automatic retries.
+  Async adapters checkpoint safe upstream IDs before polling; never store a
+  credential-bearing polling URL as an identity. Cancellation after dispatch
+  is a request, not proof the provider stopped. Keep late outputs inspectable.
+- Pruning must fail closed if referenced-input protection cannot be read.
+- Create retries retain the exact original payload/key. Native multiline draft
+  observers include nested editors, and callbacks must not unlock newer jobs.
+  Native tests use unique disposable UserDefaults domains, never production.
+- Admin artifact URLs are extensionless: local files use stated media types,
+  with authenticated same-origin downloads. Do not derive file types from URLs.
+- Pack Library is an archive shelf, not ownership, commerce or installation.
+  Preserve Story Studio receipt/signature/Keychain checks. Unconnected commerce
+  returns `CONTENT_STORE_NOT_CONNECTED`, never invented fulfilled purchases.
+- The real-Hub fleet suite requires explicit `GATEWAY_ALLOW_LIVE_GENERATION=1`;
+  do not include it in offline smoke testing. Keep GitHub Actions disabled.
+
+
 One API in front of every local Studio Hub location and 18 cloud providers, so
 **Story Studio KH points at a single URL** (`http://127.0.0.1:8000`) and its model
 pickers fill. Story Studio's architecture contract requires it to call exactly one

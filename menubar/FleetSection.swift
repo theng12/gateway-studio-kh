@@ -36,6 +36,8 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
     private var urlField = NSTextField(string: "")
     private var tokenField = NSSecureTextField(string: "")
     private var addStatus = NSTextField(labelWithString: "")
+    private var retryFailedButton: NSButton!
+    private var failedRefreshProviderIDs: [String] = []
     private var adding = false
 
     lazy var view: NSView = buildContent()
@@ -56,13 +58,26 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
 
         summaryLabel.font = .systemFont(ofSize: 12)
         summaryLabel.textColor = .secondaryLabelColor
+        summaryLabel.lineBreakMode = .byWordWrapping
+        summaryLabel.maximumNumberOfLines = 3
         // Refresh means **refresh**: reachability *and* models. See
         // `refreshEverything`.
         let refresh = NSButton(title: "Refresh", target: self,
                                action: #selector(refreshEverything))
         refresh.bezelStyle = .rounded
         refresh.controlSize = .small
-        let bar = PageKit.row([summaryLabel, NSView(), refresh], spacing: 8)
+        retryFailedButton = NSButton(
+            title: "Retry failed",
+            target: self,
+            action: #selector(retryFailedRefresh)
+        )
+        retryFailedButton.bezelStyle = .rounded
+        retryFailedButton.controlSize = .small
+        retryFailedButton.isHidden = true
+        let bar = PageKit.row(
+            [summaryLabel, NSView(), retryFailedButton, refresh],
+            spacing: 8
+        )
         root.addArrangedSubview(bar)
         bar.widthAnchor.constraint(equalTo: root.widthAnchor, constant: -56).isActive = true
 
@@ -285,27 +300,21 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
         // The provider id, not the location id: a row carries both and they are
         // different strings (`local` versus `studio-hub-local`). The gateway
         // publishes it precisely so no client has to derive it.
-        let providerIds = locations.compactMap { $0["provider_id"] as? String }
-            .filter { !$0.isEmpty }
+        let providerIds = uniqueProviderIDs(from: locations)
         guard !providerIds.isEmpty else {
+            failedRefreshProviderIDs = []
+            retryFailedButton?.isHidden = true
             reload()
             return
         }
-        summaryLabel.stringValue =
-            "Refreshing \(providerIds.count) location\(providerIds.count == 1 ? "" : "s")…"
-        var finished = 0
-        for providerId in providerIds {
-            let encoded = providerId.addingPercentEncoding(
-                withAllowedCharacters: .alphanumerics) ?? providerId
-            GatewayAPI.post("/admin/api/providers/\(encoded)/refresh") { [weak self] _ in
-                guard let self else { return }
-                finished += 1
-                if finished == providerIds.count { self.reload() }
-            }
-        }
+        refreshProviders(providerIds)
     }
 
     @objc func reload() {
+        reload(completion: nil)
+    }
+
+    private func reload(completion: (() -> Void)?) {
         GatewayAPI.get("/admin/api/fleet") { [weak self] result in
             guard let self else { return }
             switch result {
@@ -325,7 +334,86 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
             case .success(let payload):
                 self.render(payload)
             }
+            completion?()
         }
+    }
+
+    @objc private func retryFailedRefresh() {
+        let providerIDs = failedRefreshProviderIDs
+        guard !providerIDs.isEmpty else { return }
+        refreshProviders(providerIDs)
+    }
+
+    private func uniqueProviderIDs(from rows: [[String: Any]]) -> [String] {
+        var seen = Set<String>()
+        return rows.compactMap { $0["provider_id"] as? String }
+            .filter { !$0.isEmpty && seen.insert($0).inserted }
+    }
+
+    private func refreshProviders(_ providerIDs: [String]) {
+        let providerIDs = providerIDs.filter { !$0.isEmpty }
+        guard !providerIDs.isEmpty else { return }
+        retryFailedButton?.isHidden = true
+        summaryLabel.textColor = .secondaryLabelColor
+        summaryLabel.stringValue =
+            "Refreshing \(providerIDs.count) location\(providerIDs.count == 1 ? "" : "s")…"
+
+        let labels = Dictionary(
+            uniqueKeysWithValues: locations.compactMap { row -> (String, String)? in
+                guard let providerID = row["provider_id"] as? String,
+                      !providerID.isEmpty else { return nil }
+                return (providerID, row["label"] as? String ?? providerID)
+            }
+        )
+        var finished = 0
+        var failures: [(providerID: String, detail: String)] = []
+
+        for providerID in providerIDs {
+            let encoded = providerID.addingPercentEncoding(
+                withAllowedCharacters: .alphanumerics) ?? providerID
+            GatewayAPI.post("/admin/api/providers/\(encoded)/refresh") { [weak self] result in
+                guard let self else { return }
+                switch result {
+                case .failure(let error):
+                    failures.append((providerID, error.localizedDescription))
+                case .success(let payload):
+                    if let error = payload["error"] as? String, !error.isEmpty {
+                        failures.append((providerID, error))
+                    }
+                }
+                finished += 1
+                guard finished == providerIDs.count else { return }
+                self.reload { [weak self] in
+                    self?.reportRefresh(
+                        total: providerIDs.count,
+                        failures: failures,
+                        labels: labels
+                    )
+                }
+            }
+        }
+    }
+
+    private func reportRefresh(
+        total: Int,
+        failures: [(providerID: String, detail: String)],
+        labels: [String: String]
+    ) {
+        failedRefreshProviderIDs = failures.map { $0.providerID }
+        retryFailedButton?.isHidden = failures.isEmpty
+        summaryLabel.textColor = failures.isEmpty ? .secondaryLabelColor : .systemOrange
+        let succeeded = total - failures.count
+        guard !failures.isEmpty else {
+            summaryLabel.stringValue =
+                "Refreshed \(total) location\(total == 1 ? "" : "s")."
+            return
+        }
+        let details = failures.map {
+            "\(labels[$0.providerID] ?? $0.providerID): \($0.detail)"
+        }.joined(separator: "; ")
+        summaryLabel.stringValue =
+            "Refreshed \(succeeded); Could not discover at \(failures.count) " +
+            "location\(failures.count == 1 ? "" : "s") — \(details)"
     }
 
     private func render(_ payload: [String: Any]) {

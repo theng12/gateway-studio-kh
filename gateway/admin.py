@@ -7,7 +7,7 @@ will be offered.
 Authentication posture: the server binds loopback by default, so admin routes
 are open from loopback and require the bearer token otherwise. That keeps the
 browser experience click-free without leaving an unauthenticated control plane
-on the LAN if someone changes `GATEWAY_HOST`. `is_loopback()` is the switch.
+on the LAN. Both the configured bind and actual request peer are checked.
 """
 
 from __future__ import annotations
@@ -35,7 +35,7 @@ from .activity import story_activity
 from .adapters import serves, support_status
 from .catalog import catalog
 from . import fleet
-from .config import is_loopback
+from .config import is_loopback, request_is_loopback
 from .hub import hub_status
 from .providers import definitions, registry
 from .runtime import STARTED_AT, store, worker
@@ -56,7 +56,7 @@ def require_admin(
     request: Request, authorization: str | None = Header(default=None)
 ) -> None:
     """Loopback is trusted; anything else must present the gateway key."""
-    if is_loopback():
+    if is_loopback() and request_is_loopback(request):
         return
     if not authorization or not authorization.lower().startswith("bearer "):
         raise AdminError(401, "Admin API requires a bearer token when not bound to loopback.")
@@ -524,7 +524,10 @@ def prune_artifacts() -> dict[str, Any]:
     """Run the policy now, and report what it did rather than that it ran."""
     from . import retention
 
-    return {**retention.prune(), "usage": retention.usage()}
+    result = retention.prune()
+    if result.get("blocked_reason"):
+        return _error(503, result["blocked_reason"], "RETENTION_PROTECTION_UNAVAILABLE")
+    return {**result, "usage": retention.usage()}
 
 
 @router.get("/api/artifacts/kept", dependencies=[Depends(require_admin)])
@@ -596,14 +599,16 @@ def download_artifact(
             404, f"job '{job_id}' has no artifact '{asset_id}'; it has {len(rows)}"
         )
     path = Path(str(chosen["path"]))
-    if not path.exists():
-        return _error(410, "the artifact file is gone — it was pruned or removed")
+    try:
+        content = path.read_bytes()
+    except FileNotFoundError:
+        return _error(410, "the artifact file is gone — it was pruned or removed", "ARTIFACT_GONE")
     headers: dict[str, str] = {}
     if download:
         stem = f"{job.get('modality') or 'artifact'}-{str(job_id)[:8]}-{asset_id}"
         headers["Content-Disposition"] = f'attachment; filename="{stem}{path.suffix}"'
     return Response(
-        content=path.read_bytes(),
+        content=content,
         media_type=str(chosen.get("media_type") or "application/octet-stream"),
         headers=headers,
     )
@@ -630,31 +635,24 @@ CREATE_MODALITIES = ("chat", "image", "video", "music", "tts")
 def create_models() -> dict[str, Any]:
     """What Create may pick, per modality — the offered, switched-on catalogue.
 
-    Built from `_flat_models()`, which already asks `can_publish`, and then filtered
-    to what is *enabled*, because that is exactly what `_submit` resolves against. A
-    picker built from anything else would offer rows the submit would refuse — the
-    "a row you can tick that will never run" defect, in a new place.
+    Reuses the published catalogue and its configured/enabled eligibility rule.
+    Keep the merged fleet identity and capabilities instead of listing each site.
     """
     wanted = set(CREATE_MODALITIES) | {"transcription"}
     by_modality: dict[str, list[dict[str, Any]]] = {m: [] for m in wanted}
-    for row in _flat_models():
-        if not row["enabled"] or not row["provider_enabled"]:
-            continue
-        if row["modality"] not in wanted:
-            continue
-        by_modality[row["modality"]].append(
-            {
-                # The same compound id the customer catalogue publishes, so the id
-                # the owner picks is the id Story Studio would send.
-                "id": f"{row['provider_id']}::{row['model_id']}",
-                "model_id": row["model_id"],
-                "provider_id": row["provider_id"],
-                "provider_name": row["provider_name"],
-                "display_name": row["display_name"] or row["model_id"],
-                "free_lane": row["free_lane"],
-                "data_use": row["data_use"],
+    for modality in wanted:
+        metadata = {}
+        for definition, model in registry.models.enabled_models(modality):
+            provider_id = fleet.publish_id(definition.id)
+            compound = f"{provider_id}::{model['model_id']}"
+            metadata[compound] = {
+                "model_id": model["model_id"], "provider_id": provider_id,
+                "provider_name": fleet.FLEET_DISPLAY_NAME if fleet.is_location_provider(definition.id) else definition.display_name,
+                "free_lane": _is_free_lane(definition, model["model_id"]), "data_use": definition.data_use,
             }
-        )
+        for row in catalog.rows(modality):
+            if row["id"] in metadata:
+                by_modality[modality].append({**row, **metadata[row["id"]]})
     for rows in by_modality.values():
         rows.sort(key=lambda m: (m["provider_name"].lower(), m["model_id"]))
     return {
@@ -751,7 +749,7 @@ def create_status(job_id: str) -> Any:
     job = store.get(job_id)
     if job is None:
         return _error(404, f"no job '{job_id}'")
-    return _job_envelope(job)
+    return {**_job_envelope(job), "outputs": _admin_outputs(job)}
 
 
 @router.post("/api/create/status/{job_id}/cancel", dependencies=[Depends(require_admin)])
@@ -1212,6 +1210,21 @@ def catalog_preview(modality: str | None = None) -> dict[str, Any]:
     }
 
 
+def _admin_outputs(job: dict[str, Any], pinned: set[str] | None = None) -> list[dict[str, Any]]:
+    """Retained outputs remain inspectable even after an interrupted settlement."""
+    from . import retention
+    from .store import artifacts_of
+
+    if pinned is None:
+        pinned = {str(row["path"]) for row in retention.kept()}
+    return [{
+        "asset_id": str(row.get("asset_id", index)),
+        "url": f"/admin/api/artifacts/{job['id']}/outputs/{row.get('asset_id', index)}",
+        "media_type": row.get("media_type"), "bytes": row.get("bytes"),
+        "present": Path(row["path"]).is_file(), "kept": str(row["path"]) in pinned,
+    } for index, row in enumerate(artifacts_of(job))]
+
+
 @router.get("/api/jobs", dependencies=[Depends(require_admin)])
 def list_jobs(
     limit: int = Query(50, ge=1, le=500),
@@ -1232,6 +1245,10 @@ def list_jobs(
     that is SQLite's "no limit", so the Jobs window could be handed every job
     ever recorded. The app asks for 200, so 500 is headroom rather than a wall.
     """
+    from . import retention
+    from .api import _lifecycle_fields
+
+    pinned = {str(row["path"]) for row in retention.kept()}
     labels: dict[tuple[str, str], str] = {}
     for definition in registry.definitions():
         for model in registry.models.models_for(definition.id, include_disabled=True):
@@ -1266,10 +1283,46 @@ def list_jobs(
                 "has_artifact": bool(job.get("asset_path")),
                 "error_code": job.get("error_code"),
                 "error_detail": job.get("error_detail"),
+                **_lifecycle_fields(job),
+                "outputs": _admin_outputs(job, pinned),
             }
         )
 
     return {"jobs": rows, "stats": store.stats()}
+
+
+@router.get("/api/content-library", dependencies=[Depends(require_admin)])
+def content_library() -> dict[str, Any]:
+    from . import content_packs
+    return {"archives": content_packs.inventory(), "store_connected": False,
+            "notice": "Archive integrity is not ownership or installation approval. Story Studio must verify receipts/signatures and compatibility."}
+
+
+@router.post("/api/content-library/import", dependencies=[Depends(require_admin)])
+async def import_content_archive(request: Request) -> Any:
+    from . import content_packs
+    data = bytearray()
+    async for chunk in request.stream():
+        if len(data) + len(chunk) > content_packs.MAX_ARCHIVE:
+            return _error(413, "Content Packs are limited to 50 MiB.")
+        data.extend(chunk)
+    try:
+        return content_packs.import_archive(bytes(data))
+    except content_packs.PackError as exc:
+        return _error(422, str(exc), "CONTENT_ARCHIVE_INVALID")
+
+
+@router.get("/api/content-library/{digest}/archive", dependencies=[Depends(require_admin)])
+def export_content_archive(digest: str) -> Any:
+    from . import content_packs
+    try:
+        data = content_packs.read_archive(digest)
+    except content_packs.PackError as exc:
+        return _error(410, str(exc), "CONTENT_ARCHIVE_UNAVAILABLE")
+    return Response(data, media_type="application/octet-stream", headers={
+        "Content-Disposition": f'attachment; filename="{digest}.sspack"',
+        "X-Content-Type-Options": "nosniff",
+    })
 
 
 # --------------------------------------------------------------------------

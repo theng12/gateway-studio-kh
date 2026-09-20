@@ -1,5 +1,8 @@
 # Gateway KH — open-issue ledger and proposed fixes
 
+Current execution status: [Apple Silicon completion record](2026-09-20-local-completion.md).
+The evidence below is the inherited audit baseline, preserved for traceability.
+
 Source baseline: `fcfde43` (2026-09-20). Read [the new-computer handoff](2026-09-20-new-computer-handoff.md) first.
 
 Labels: `[MEASURED]` = primary agent checked source or directly observed the named probe/UI; `[REPORTED]` = worker evidence not independently confirmed; `[ASSUMED]` = planning assumption. “Source” does not mean runtime reproduction. P1 prioritizes security, data integrity and broken core workflows; P2 covers other correctness/usability; P3 covers polish/documentation. These are audit judgements, not measured incident rates.

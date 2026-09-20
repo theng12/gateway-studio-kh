@@ -253,6 +253,7 @@
       <input type="text" id="filter" placeholder="Filter providers…" style="max-width:260px">
       <button class="sm" onclick="refreshAll(this)">Refresh all models</button>
     </div>
+    <div id="providers-msg" class="msg" role="alert" aria-live="polite"></div>
     <div id="providers"></div>
   </section>
   <!-- CREATE -->
@@ -275,6 +276,24 @@
         <div class="recent" id="create-recent"></div>
       </div>
     </div>
+  </section>
+  <!-- PRIVATE ARCHIVE LIBRARY: never an ownership or installation claim. -->
+  <section id="view-packs" style="display:none">
+    <div class="heading"><h1>Pack Library</h1>
+      <p>Private copies of Content Pack archives. Import checks archive safety and file hashes;
+      it does not install a pack or grant ownership.</p></div>
+    <div class="card"><div class="body">
+      <p>Story Studio must verify the original Store receipts or publisher signature,
+        trusted keys and compatibility before installation. Generation provider keys do not replace that evidence.</p>
+      <label for="pack-file">Archive (.sspack, up to 50 MiB)</label>
+      <input id="pack-file" type="file" accept=".sspack">
+      <div class="row" style="margin-top:12px">
+        <button id="pack-import" class="primary" onclick="importPack(this)">Validate and preserve archive</button>
+        <button onclick="loadPacks()">Refresh library</button>
+      </div>
+      <div id="pack-message" class="msg" role="status" aria-live="polite"></div>
+    </div></div>
+    <div id="pack-library"></div>
   </section>
 </main>
 
@@ -335,13 +354,26 @@ function saveToken() {
 async function api(path, opts) {
   const options = Object.assign({}, opts || {});
   options.headers = adminHeaders(options.headers);
-  const res = await fetch('/admin/api' + path, options);
-  const text = await res.text();
+  let res;
+  try {
+    res = await fetch('/admin/api' + path, options);
+  } catch (e) {
+    const error = e instanceof Error ? e : new Error(String(e));
+    error.ambiguous = String(options.method || 'GET').toUpperCase() !== 'GET';
+    throw error;
+  }
+  let text;
+  try { text = await res.text(); }
+  catch (error) { error.ambiguous = String(options.method || 'GET').toUpperCase() !== 'GET'; throw error; }
   let body = {}; try { body = text ? JSON.parse(text) : {}; } catch { body = { detail: text }; }
   // A refusal to identify is the one failure worth explaining rather than throwing:
   // "HTTP 401" sends nobody anywhere.
   if (res.status === 401 || res.status === 403) showTokenPrompt(body.detail || '');
-  if (!res.ok) throw new Error(body.detail || `HTTP ${res.status}`);
+  if (!res.ok) {
+    const error = new Error(body.detail || `HTTP ${res.status}`);
+    error.ambiguous = String(options.method || 'GET').toUpperCase() !== 'GET' && (res.status >= 500 || res.status === 408);
+    throw error;
+  }
   return body;
 }
 
@@ -381,9 +413,63 @@ function setView(view) {
   document.getElementById('view-models').style.display = view === 'models' ? '' : 'none';
   document.getElementById('view-providers').style.display = view === 'providers' ? '' : 'none';
   document.getElementById('view-create').style.display = view === 'create' ? '' : 'none';
+  document.getElementById('view-packs').style.display = view === 'packs' ? '' : 'none';
   if (view === 'models') loadModels();
   else if (view === 'providers') loadProviders();
+  else if (view === 'packs') loadPacks();
   else loadCreate();
+}
+
+async function loadPacks() {
+  const message = document.getElementById('pack-message');
+  try {
+    const result = await api('/content-library');
+    const rows = result.archives || [];
+    if (message.dataset.loadError === 'true') { message.textContent = ''; message.className = 'msg'; delete message.dataset.loadError; }
+    document.getElementById('pack-library').innerHTML = rows.length ? rows.map(row => `
+      <article class="card"><div class="body">
+        <h2>${esc(row.pack_id || 'Unreadable archive')} <span class="badge">${esc(row.version || '')}</span></h2>
+        <p>${esc((row.item_kinds || []).join(' · '))}</p>
+        <p>Integrity: ${esc(row.integrity)} · Ownership: unverified · Not installed</p>
+        <p class="hint">${esc(row.integrity_detail || '')}</p>
+        <p class="hint">${esc(row.trust_requirement || 'Re-import the original archive to validate it.')}</p>
+        <p class="hint">${esc(row.compatibility || '')}</p>
+        <details><summary>Archive identity</summary><code style="overflow-wrap:anywhere">${esc(row.archive_sha256)}</code></details>
+        ${/^[a-f0-9]{64}$/.test(row.archive_sha256) ? `<button class="sm" style="margin-top:10px" ${row.integrity !== 'verified' ? 'disabled' : ''} onclick="savePack('${row.archive_sha256}',this)">Save original archive…</button>` : ''}
+      </div></article>`).join('') : '<div class="empty">No archives preserved here yet. Your transfer and authoring sources remain separate and untouched.</div>';
+  } catch (error) {
+    message.dataset.loadError = 'true';
+    message.className = 'msg bad'; message.textContent = `Cannot read library: ${error.message}. Use Refresh library to retry.`;
+  }
+}
+
+async function importPack(button) {
+  const file = document.getElementById('pack-file').files[0];
+  const message = document.getElementById('pack-message');
+  if (!file || file.size > 50 * 1024 * 1024) {
+    message.className = 'msg bad'; message.textContent = 'Choose a .sspack archive no larger than 50 MiB.'; return;
+  }
+  button.disabled = true;
+  try {
+    const row = await api('/content-library/import', {method:'POST', headers:{'Content-Type':'application/octet-stream'}, body:file});
+    message.className = 'msg'; message.textContent = `Preserved ${row.pack_id} ${row.version}. Integrity checked; ownership and installation remain unverified.`;
+    await loadPacks();
+  } catch (error) {
+    message.className = 'msg bad'; message.textContent = `Archive not imported: ${error.message}`;
+  } finally { button.disabled = false; }
+}
+
+async function savePack(digest, button) {
+  const message = document.getElementById('pack-message');
+  button.disabled = true;
+  try {
+    const blob = await apiBlob(`/content-library/${digest}/archive`);
+    const url = URL.createObjectURL(blob);
+    downloadBlob(url, `${digest}.sspack`);
+    setTimeout(() => URL.revokeObjectURL(url), 60000);
+  } catch (error) {
+    message.className = 'msg bad'; message.textContent = `Cannot save archive: ${error.message}`;
+  } finally { button.disabled = false; }
 }
 
 async function loadStatus() {
@@ -560,41 +646,78 @@ document.getElementById('m-only-enabled').addEventListener('change', loadModels)
 
 /* -------------------------------- providers -------------------------------- */
 
+function captureProviderDrafts() {
+  const drafts = {};
+  document.querySelectorAll('#providers input[data-provider][data-field]').forEach(input => {
+    const provider = input.dataset.provider;
+    if (!drafts[provider]) drafts[provider] = {};
+    drafts[provider][input.dataset.field] = input.value;
+  });
+  return drafts;
+}
+
+function restoreProviderDrafts(drafts) {
+  document.querySelectorAll('#providers input[data-provider][data-field]').forEach(input => {
+    const value = drafts[input.dataset.provider]?.[input.dataset.field];
+    if (value !== undefined) input.value = value;
+  });
+}
+
 async function loadProviders() {
   // Cloud APIs only. Local runners are machines with studios and running work,
   // not keys with model lists, and they are managed on the app's Fleet page.
   // `scope` is decided by the gateway from the provider's kind, so a second Hub
   // is classified correctly the moment it is added.
-  const { providers, scopes, skipped_custom_providers } = await api('/providers?scope=cloud');
-  state.providers = providers;
-  const note = document.getElementById('local-note');
-  if (note) {
-    note.textContent = scopes && scopes.local
-      ? `${scopes.local} local runner${scopes.local === 1 ? '' : 's'} (Studio Hub) ${scopes.local === 1 ? 'is' : 'are'} managed on the app's Fleet page, not here.`
-      : '';
+  try {
+    const { providers, scopes, skipped_custom_providers } = await api('/providers?scope=cloud');
+    const drafts = captureProviderDrafts();
+    state.providers = providers;
+    const note = document.getElementById('local-note');
+    if (note) {
+      note.textContent = scopes && scopes.local
+        ? `${scopes.local} local runner${scopes.local === 1 ? '' : 's'} (Studio Hub) ${scopes.local === 1 ? 'is' : 'are'} managed on the app's Fleet page, not here.`
+        : '';
+    }
+    // `providers.local.json` is written by hand, so an entry the gateway refused is
+    // otherwise indistinguishable from the file not loading at all: the provider is
+    // simply absent. Say which ones were skipped and why.
+    const skipped = document.getElementById('skipped-note');
+    if (skipped) {
+      const rows = skipped_custom_providers || [];
+      skipped.textContent = rows.length
+        ? `Skipped ${rows.length} ${rows.length === 1 ? 'entry' : 'entries'} in providers.local.json — ` +
+          rows.map(r => `${r.id}: ${r.reason}`).join('; ')
+        : '';
+      skipped.style.color = rows.length ? 'var(--warn)' : '';
+    }
+    renderProviders(drafts);
+    const message = document.getElementById('providers-msg');
+    if (message) {
+      message.textContent = '';
+      message.innerHTML = '';
+      message.className = 'msg';
+    }
+  } catch (e) {
+    const message = document.getElementById('providers-msg');
+    if (message) {
+      message.className = 'msg bad';
+      message.innerHTML = `${esc(e.message || 'could not load providers')} <button class="sm" type="button" onclick="loadProviders()">Retry</button>`;
+    }
   }
-  // `providers.local.json` is written by hand, so an entry the gateway refused is
-  // otherwise indistinguishable from the file not loading at all: the provider is
-  // simply absent. Say which ones were skipped and why.
-  const skipped = document.getElementById('skipped-note');
-  if (skipped) {
-    const rows = skipped_custom_providers || [];
-    skipped.textContent = rows.length
-      ? `Skipped ${rows.length} ${rows.length === 1 ? 'entry' : 'entries'} in providers.local.json — ` +
-        rows.map(r => `${r.id}: ${r.reason}`).join('; ')
-      : '';
-    skipped.style.color = rows.length ? 'var(--warn)' : '';
-  }
-  renderProviders();
 }
 
-function renderProviders() {
+function renderProviders(drafts = captureProviderDrafts()) {
   const filter = document.getElementById('filter').value.trim().toLowerCase();
   const list = state.providers.filter(p =>
     !filter || p.display_name.toLowerCase().includes(filter) || p.id.includes(filter) || p.category.includes(filter));
   const root = document.getElementById('providers');
-  if (!list.length) { root.innerHTML = '<div class="empty">No providers match.</div>'; return; }
+  if (!list.length) {
+    root.innerHTML = '<div class="empty">No providers match.</div>';
+    restoreProviderDrafts(drafts);
+    return;
+  }
   root.innerHTML = list.map(providerCard).join('');
+  restoreProviderDrafts(drafts);
 }
 
 function providerCard(p) {
@@ -611,7 +734,7 @@ function providerCard(p) {
   }
   badges.push(p.configured ? '<span class="badge ok">key set</span>' : '<span class="badge bad">no key</span>');
   if (p.last_error) badges.push(`<span class="badge bad" title="${esc(p.last_error)}">discovery error</span>`);
-  badges.push(`<span class="badge">${p.publishable_model_count}/${p.model_count} offered</span>`);
+  badges.push(`<span class="badge">${p.publishable_model_count}/${p.model_count} supported</span>`);
   badges.push(privacyBadge(p.data_use, p.free_tier));
 
   const fields = p.configured_fields.map(f => `
@@ -819,6 +942,7 @@ function viewFromHash() {
   const hash = (location.hash || '').replace(/^#/, '');
   if (hash.startsWith('providers')) return 'providers';
   if (hash.startsWith('create')) return 'create';
+  if (hash.startsWith('packs')) return 'packs';
   return 'models';
 }
 
@@ -879,8 +1003,22 @@ let createTab = 'image';
 let createCatalogue = null;
 let createVoices = [];
 const createTimers = {};
+let activeCreateJobId = null;
+let pendingCreateAttempt = null;
 
 function currentTab() { return CREATE_TABS.find(t => t.key === createTab) || CREATE_TABS[2]; }
+
+function stopCreatePoll(id) {
+  const poll = createTimers[id];
+  if (!poll) return;
+  poll.cancelled = true;
+  if (poll.timer != null) clearTimeout(poll.timer);
+  delete createTimers[id];
+}
+
+function stopAllCreatePolls() {
+  Object.keys(createTimers).forEach(stopCreatePoll);
+}
 
 function renderCreateTabs() {
   document.getElementById('create-tabs').innerHTML = CREATE_TABS.map(t =>
@@ -889,6 +1027,8 @@ function renderCreateTabs() {
 }
 
 function selectCreateTab(key) {
+  stopAllCreatePolls();
+  activeCreateJobId = null;
   createTab = key;
   renderCreateTabs();
   renderCreateForm();
@@ -966,13 +1106,22 @@ function cfValue(k) { const el = document.getElementById('cf-' + k); return el ?
 async function submitCreate(btn) {
   const t = currentTab();
   const msg = document.getElementById('cf-msg');
-  const key = (crypto.randomUUID ? crypto.randomUUID() : String(Date.now() + Math.random()));
+  if (btn.disabled) return;
+  if (pendingCreateAttempt && pendingCreateAttempt.tab !== t.key) {
+    msg.className = 'msg bad';
+    msg.textContent = `Return to ${pendingCreateAttempt.tab} and retry its uncertain request before submitting another.`;
+    return;
+  }
+  const attempt = pendingCreateAttempt || {
+    key: crypto.randomUUID ? crypto.randomUUID() : String(Date.now() + Math.random()),
+    tab: t.key,
+  };
+  const key = attempt.key;
   btn.disabled = true;
   msg.className = 'msg';
   msg.textContent = 'submitting…';
   try {
-    let res;
-    if (t.modality === 'transcription') {
+    if (!attempt.path && t.modality === 'transcription') {
       const fileEl = document.getElementById('cf-file');
       if (!fileEl || !fileEl.files.length) throw new Error('choose a recording first');
       const modelEl = document.getElementById('cf-model');
@@ -982,8 +1131,9 @@ async function submitCreate(btn) {
       fd.append('file', fileEl.files[0]);
       fd.append('language', cfValue('language'));
       fd.append('idempotency_key', key);
-      res = await api('/create/transcription', { method: 'POST', body: fd });
-    } else {
+      attempt.path = '/create/transcription';
+      attempt.options = { method: 'POST', body: fd };
+    } else if (!attempt.path) {
       const modelEl = document.getElementById('cf-model');
       if (!modelEl) throw new Error('no model is switched on for this lane');
       const params = {};
@@ -994,45 +1144,76 @@ async function submitCreate(btn) {
         else params[f.k] = v;
       });
       if (t.modality === 'chat') params.messages = [{ role: 'user', content: params.prompt || '' }];
-      res = await api('/create', {
+      attempt.path = '/create';
+      attempt.options = {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ modality: t.modality, model_id: modelEl.value, params, idempotency_key: key }),
-      });
+      };
     }
-    const job = await res.json();
-    if (!res.ok) throw new Error(job.detail || ('HTTP ' + res.status));
+    pendingCreateAttempt = attempt;
+    const job = await api(attempt.path, attempt.options);
+    if (!job || !job.id) {
+      const error = new Error('the gateway did not return a job');
+      error.ambiguous = true;
+      throw error;
+    }
+    pendingCreateAttempt = null;
+    if (typeof stopAllCreatePolls === 'function') stopAllCreatePolls();
+    activeCreateJobId = job.id;
     msg.className = 'msg ok';
     msg.textContent = 'queued';
+    btn.textContent = 'Generate';
     renderCreateResult(job);
     pollCreate(job.id);
   } catch (e) {
     msg.className = 'msg bad';
-    msg.textContent = e.message;
+    msg.textContent = e.ambiguous
+      ? `${e.message} Response status is unknown; retry uses the original model, fields and file to check the same job.`
+      : e.message;
+    if (e.ambiguous) btn.textContent = 'Retry same request';
+    else pendingCreateAttempt = null;
   } finally {
     btn.disabled = false;
   }
 }
 
 function pollCreate(id) {
-  if (createTimers[id]) clearInterval(createTimers[id]);
-  let ticks = 0;
-  createTimers[id] = setInterval(async () => {
-    ticks += 1;
+  stopAllCreatePolls();
+  activeCreateJobId = id;
+  const poll = { timer: null, ticks: 0, cancelled: false };
+  createTimers[id] = poll;
+  const tick = async () => {
+    if (poll.cancelled || createTimers[id] !== poll || activeCreateJobId !== id) return;
+    poll.ticks += 1;
     try {
       const job = await api('/create/status/' + encodeURIComponent(id));
+      if (poll.cancelled || createTimers[id] !== poll || activeCreateJobId !== id) return;
       if (job.detail) throw new Error(job.detail);
       renderCreateResult(job);
       if (job.state === 'succeeded' || job.state === 'failed' || job.state === 'cancelled') {
-        clearInterval(createTimers[id]);
-        delete createTimers[id];
+        stopCreatePoll(id);
         renderCreateRecent();
+      } else if (poll.ticks <= 400) {
+        poll.timer = setTimeout(tick, 1500);
+      } else {
+        stopCreatePoll(id);
       }
     } catch (e) {
-      clearInterval(createTimers[id]);
-      delete createTimers[id];
+      if (poll.cancelled || createTimers[id] !== poll || activeCreateJobId !== id) return;
+      renderCreatePollError(id, e);
+      if (poll.ticks <= 400) poll.timer = setTimeout(tick, 3000);
+      else stopCreatePoll(id);
     }
-    if (ticks > 400) { clearInterval(createTimers[id]); delete createTimers[id]; }
-  }, 1500);
+  };
+  poll.timer = setTimeout(tick, 1500);
+}
+
+function renderCreatePollError(id, error) {
+  if (activeCreateJobId !== id) return;
+  const box = document.getElementById('create-result');
+  if (!box) return;
+  box.innerHTML = `<div class="msg bad">Could not read job status: ${esc(error.message || 'temporary error')}
+    <button class="sm" type="button" onclick="pollCreate('${esc(id)}')">Retry status</button></div>`;
 }
 
 function artifactsHtml(modality, outs, jobId) {
@@ -1083,11 +1264,11 @@ async function keepArtifact(jobId, assetId, btn) {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ job_id: jobId, asset_id: assetId, keep: true }),
     });
-    const d = await r.json();
-    if (!r.ok) throw new Error(d.detail || ('HTTP ' + r.status));
-    note.className = 'hint ok';
-    note.textContent = 'kept — the 7-day prune will not take it';
-    btn.textContent = 'Kept';
+    const pinned = r.pinned === true;
+    note.className = pinned ? 'hint ok' : 'hint bad';
+    note.textContent = pinned ? 'kept — the 7-day prune will not take it' : 'the gateway did not confirm that artifact was kept';
+    btn.textContent = pinned ? 'Kept' : 'Keep';
+    btn.disabled = pinned;
   } catch (e) {
     note.className = 'hint bad';
     note.textContent = e.message;
@@ -1096,11 +1277,17 @@ async function keepArtifact(jobId, assetId, btn) {
 }
 
 function renderCreateResult(job) {
+  if (activeCreateJobId && job.id && job.id !== activeCreateJobId) return;
   const box = document.getElementById('create-result');
   const modality = job.modality || currentTab().modality;
   const outs = job.outputs || [];
   if (job.state === 'failed') {
     box.innerHTML = `<div class="msg bad">${esc(job.failure_reason || 'the generation failed')}
+      ${job.failure_code ? ` <span class="mid">${esc(job.failure_code)}</span>` : ''}</div>`;
+    return;
+  }
+  if (job.state === 'cancelled') {
+    box.innerHTML = `<div class="msg">${esc(job.failure_reason || 'the generation was cancelled')}
       ${job.failure_code ? ` <span class="mid">${esc(job.failure_code)}</span>` : ''}</div>`;
     return;
   }
@@ -1151,10 +1338,16 @@ async function renderCreateRecent() {
 }
 
 async function openCreateJob(id) {
-  const job = await api('/create/status/' + encodeURIComponent(id));
-  if (job.detail) return;
-  renderCreateResult(job);
-  if (job.state !== 'succeeded' && job.state !== 'failed' && job.state !== 'cancelled') pollCreate(id);
+  stopAllCreatePolls();
+  activeCreateJobId = id;
+  try {
+    const job = await api('/create/status/' + encodeURIComponent(id));
+    if (activeCreateJobId !== id || job.detail) return;
+    renderCreateResult(job);
+    if (job.state !== 'succeeded' && job.state !== 'failed' && job.state !== 'cancelled') pollCreate(id);
+  } catch (e) {
+    renderCreatePollError(id, e);
+  }
 }
 
 

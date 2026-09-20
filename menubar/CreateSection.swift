@@ -1,4 +1,5 @@
 import AppKit
+import CryptoKit
 
 // MARK: - The lanes
 
@@ -16,6 +17,80 @@ struct CreateField {
     var placeholder: String = ""
     var initial: String = ""
     var hint: String = ""
+}
+
+private struct CreateDraft: Codable {
+    var modelID: String?
+    var values: [String: String]
+    var filePath: String?
+}
+
+private struct CreateAttempt: Codable {
+    var key: String
+    var modelID: String
+    var modality: String
+    var body: Data?
+    var uploadPath: String?
+    var uploadName: String?
+    var uploadType: String?
+    var uploadBytes: Int?
+    var uploadDigest: String?
+}
+
+private struct CreateWorkspaceState: Codable {
+    var draft: CreateDraft
+    var currentJobID: String?
+    var attempt: CreateAttempt?
+    var unresolvedAttempts: [CreateAttempt]
+
+    private enum CodingKeys: String, CodingKey { case draft, currentJobID, attempt, unresolvedAttempts }
+
+    init(
+        draft: CreateDraft, currentJobID: String?, attempt: CreateAttempt?,
+        unresolvedAttempts: [CreateAttempt] = []
+    ) {
+        self.draft = draft
+        self.currentJobID = currentJobID
+        self.attempt = attempt
+        self.unresolvedAttempts = unresolvedAttempts
+    }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        draft = try values.decode(CreateDraft.self, forKey: .draft)
+        currentJobID = try values.decodeIfPresent(String.self, forKey: .currentJobID)
+        attempt = try values.decodeIfPresent(CreateAttempt.self, forKey: .attempt)
+        unresolvedAttempts = try values.decodeIfPresent([CreateAttempt].self, forKey: .unresolvedAttempts) ?? []
+    }
+
+    static let empty = CreateWorkspaceState(
+        draft: CreateDraft(modelID: nil, values: [:], filePath: nil),
+        currentJobID: nil,
+        attempt: nil,
+        unresolvedAttempts: []
+    )
+}
+
+private enum CreateStateStore {
+    private static let prefix = "gateway.create.state."
+
+    private static var defaults: UserDefaults {
+        let name = ProcessInfo.processInfo.environment["GATEWAY_NATIVE_DEFAULTS_SUITE"]
+            ?? "kh.gateway.create"
+        return UserDefaults(suiteName: name) ?? .standard
+    }
+
+    static func load(lane: String) -> CreateWorkspaceState {
+        guard let data = defaults.data(forKey: prefix + lane),
+              let state = try? JSONDecoder().decode(CreateWorkspaceState.self, from: data)
+        else { return .empty }
+        return state
+    }
+
+    static func save(_ state: CreateWorkspaceState, lane: String) {
+        guard let data = try? JSONEncoder().encode(state) else { return }
+        defaults.set(data, forKey: prefix + lane)
+    }
 }
 
 /// A Create lane: Studio Hub's page names and order, wired to cloud models.
@@ -118,23 +193,66 @@ final class CreateSection: NSObject, AppSection {
 
 // MARK: - Workspace
 
+private final class CreateArtifactButton: NSButton {
+    let jobID: String
+    let assetID: String
+    let path: String
+    let mediaType: String
+    var kept: Bool
+
+    init(
+        title: String, jobID: String, assetID: String, path: String, mediaType: String,
+        kept: Bool = false, target: AnyObject?, action: Selector
+    ) {
+        self.jobID = jobID
+        self.assetID = assetID
+        self.path = path
+        self.mediaType = mediaType
+        self.kept = kept
+        super.init(frame: .zero)
+        self.title = title
+        self.target = target
+        self.action = action
+        bezelStyle = .rounded
+    }
+
+    required init?(coder: NSCoder) { fatalError("not used") }
+}
+
 /// Studio Hub's Create house frame: a heading, then the form on the left and the
 /// result on the right, with the output area holding its empty state until there
 /// is something to show.
 final class CreateWorkspace: NSView {
     private let lane: CreateLane
+    private var state: CreateWorkspaceState
     private var fields: [String: NSView] = [:]
     private var modelPopup: NSPopUpButton?
+    private var voiceComboBox: NSComboBox?
+    private var advancedVoiceField: NSTextField?
+    private var voiceChoices: [String] = []
     private var models: [[String: Any]] = []
+    private var selectedModelIDHint: String?
     private var pollTimer: Timer?
     private var pollInFlight = false
     private var currentJobID: String?
     private var pendingJobID: String?
     private var submissionInFlight = false
+    private var activeAttempt: CreateAttempt?
+    private var ambiguousAttempt: CreateAttempt?
     private var hasLoadedModels = false
     private var modelRefreshRequest = 0
+    private var voiceRefreshRequest = 0
+    private var jobRequestGeneration = 0
+    private var draftObservers: [NSObjectProtocol] = []
+    private var localArtifactURLs: [String: URL] = [:]
     private var fileButton: NSButton?
+    private var fileHelp: NSTextField?
     private var fileURL: URL?
+    private var capabilityLabel: NSTextField?
+    private var cancelButton: NSButton?
+    private var retryAttemptButton: NSButton?
+    private var newDraftButton: NSButton?
+    private var loadJobButton: NSButton?
 
     private let resultBox = NSStackView()
     private let statusLabel = PageKit.label("", size: 12, colour: .secondaryLabelColor, wrapping: true)
@@ -142,8 +260,21 @@ final class CreateWorkspace: NSView {
 
     init(lane: CreateLane) {
         self.lane = lane
+        self.state = CreateStateStore.load(lane: lane.key)
+        self.selectedModelIDHint = state.draft.modelID
+        self.currentJobID = state.currentJobID
+        self.ambiguousAttempt = state.attempt
         super.init(frame: .zero)
         build()
+        restoreDraft()
+        observeDraftChanges()
+        if ambiguousAttempt != nil {
+            setEditingEnabled(false)
+            showAttemptResolution()
+        } else if let currentJobID {
+            statusLabel.stringValue = "Job \(currentJobID.prefix(8)) is selected. Reload it to inspect the result."
+            loadJobButton?.isHidden = false
+        }
     }
 
     required init?(coder: NSCoder) { fatalError("not used") }
@@ -156,18 +287,23 @@ final class CreateWorkspace: NSView {
         page.addArrangedSubview(headerRow())
 
         let split = NSStackView(views: [formPane(), outputPane()])
-        split.orientation = .horizontal
-        split.alignment = .top
+        // Keep the form usable at the app's minimum width. The output is a
+        // second block below it, so controls never force the window wider or
+        // push the primary action outside the viewport.
+        split.orientation = .vertical
+        split.alignment = .leading
         split.spacing = 20
         split.distribution = .fill
-        // The form column keeps its width and the output column takes what is left,
-        // which is the same division HSplitView makes in Studio Hub.
         split.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         page.addArrangedSubview(split)
         split.widthAnchor.constraint(equalTo: page.widthAnchor, constant: -PageKit.pagePadding * 2)
             .isActive = true
-        formColumn.widthAnchor.constraint(equalToConstant: 390).isActive = true
-        outputColumn.widthAnchor.constraint(greaterThanOrEqualToConstant: 320).isActive = true
+        formColumn.widthAnchor.constraint(lessThanOrEqualToConstant: 390).isActive = true
+        for case let label as NSTextField in formColumn.arrangedSubviews {
+            label.preferredMaxLayoutWidth = 330
+            label.widthAnchor.constraint(equalToConstant: 330).isActive = true
+        }
+        outputColumn.widthAnchor.constraint(equalTo: split.widthAnchor).isActive = true
 
         // A form has a required height, so the page scrolls rather than growing the
         // window — the rule this app learned the hard way.
@@ -185,6 +321,7 @@ final class CreateWorkspace: NSView {
             page.leadingAnchor.constraint(equalTo: document.leadingAnchor),
             page.trailingAnchor.constraint(equalTo: document.trailingAnchor),
             page.bottomAnchor.constraint(equalTo: document.bottomAnchor),
+            document.widthAnchor.constraint(equalTo: scroll.contentView.widthAnchor),
             scroll.topAnchor.constraint(equalTo: topAnchor),
             scroll.leadingAnchor.constraint(equalTo: leadingAnchor),
             scroll.trailingAnchor.constraint(equalTo: trailingAnchor),
@@ -195,7 +332,10 @@ final class CreateWorkspace: NSView {
     private func headerRow() -> NSView {
         let refresh = NSButton(title: "Refresh models", target: self, action: #selector(refreshModels))
         refresh.bezelStyle = .rounded
-        return PageKit.row([statusLabel, NSView(), refresh])
+        loadJobButton = NSButton(title: "Reload selected job", target: self, action: #selector(loadSelectedJob))
+        loadJobButton?.bezelStyle = .rounded
+        loadJobButton?.isHidden = true
+        return PageKit.row([statusLabel, NSView(), loadJobButton!, refresh])
     }
 
     private let formColumn = NSStackView()
@@ -214,11 +354,15 @@ final class CreateWorkspace: NSView {
         formColumn.addArrangedSubview(PageKit.formRow("Model", picker))
         formColumn.addArrangedSubview(PageKit.help("Only models switched on for this lane appear here — the same set Story Studio picks from."))
 
+        capabilityLabel = PageKit.help("Capabilities: unknown")
+        formColumn.addArrangedSubview(capabilityLabel!)
+
         if lane.isUpload {
             let choose = NSButton(title: "Choose File…", target: self, action: #selector(pickFile))
             choose.bezelStyle = .rounded
             fileButton = choose
-            formColumn.addArrangedSubview(PageKit.formRow("Recording", [choose, PageKit.help("No file chosen")]))
+            fileHelp = PageKit.help("No file chosen")
+            formColumn.addArrangedSubview(PageKit.formRow("Recording", [choose, fileHelp!]))
         }
 
         for field in lane.fields {
@@ -234,7 +378,19 @@ final class CreateWorkspace: NSView {
         generateButton.action = #selector(generate)
         generateButton.bezelStyle = .rounded
         generateButton.keyEquivalent = "\r"
-        let row = PageKit.row([generateButton, PageKit.label("", size: 12, colour: .secondaryLabelColor)])
+        cancelButton = NSButton(title: "Cancel", target: self, action: #selector(cancel))
+        cancelButton?.bezelStyle = .rounded
+        cancelButton?.isHidden = true
+        retryAttemptButton = NSButton(title: "Retry same attempt", target: self, action: #selector(retryAttempt))
+        retryAttemptButton?.bezelStyle = .rounded
+        retryAttemptButton?.isHidden = true
+        newDraftButton = NSButton(title: "Start separate draft", target: self, action: #selector(startNewDraft))
+        newDraftButton?.bezelStyle = .rounded
+        newDraftButton?.isHidden = true
+        let row = PageKit.row([
+            generateButton, cancelButton!, retryAttemptButton!, newDraftButton!,
+            PageKit.label("", size: 12, colour: .secondaryLabelColor),
+        ])
         formColumn.addArrangedSubview(row)
         return formColumn
     }
@@ -257,12 +413,35 @@ final class CreateWorkspace: NSView {
             scroll.widthAnchor.constraint(equalToConstant: 330).isActive = true
             scroll.heightAnchor.constraint(equalToConstant: 120).isActive = true
             return scroll
-        case .number, .text, .voice:
+        case .number, .text:
             let entry = NSTextField(string: field.initial)
             entry.placeholderString = field.placeholder
             entry.font = .systemFont(ofSize: 13)
             entry.widthAnchor.constraint(equalToConstant: field.kind == .number ? 90 : 330).isActive = true
+            entry.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
             return entry
+        case .voice:
+            let combo = NSComboBox()
+            combo.isEditable = true
+            combo.completes = true
+            combo.font = .systemFont(ofSize: 13)
+            combo.placeholderString = "Search compatible voices"
+            combo.widthAnchor.constraint(equalToConstant: 330).isActive = true
+            combo.target = self
+            combo.action = #selector(voiceChanged)
+            voiceComboBox = combo
+
+            let advanced = NSTextField()
+            advanced.placeholderString = "Advanced provider voice ID (exact)"
+            advanced.font = .systemFont(ofSize: 13)
+            advanced.widthAnchor.constraint(equalToConstant: 330).isActive = true
+            advancedVoiceField = advanced
+
+            let stack = NSStackView(views: [combo, advanced])
+            stack.orientation = .vertical
+            stack.alignment = .leading
+            stack.spacing = 6
+            return stack
         }
     }
 
@@ -291,6 +470,97 @@ final class CreateWorkspace: NSView {
 
     // MARK: data
 
+    private func restoreDraft() {
+        let values = state.draft.values
+        for field in lane.fields {
+            guard let value = values[field.key] else { continue }
+            setValue(value, for: field.key)
+        }
+        if let advanced = values["voice_advanced_id"] {
+            advancedVoiceField?.stringValue = advanced
+        }
+        if let path = state.draft.filePath {
+            let url = URL(fileURLWithPath: path)
+            if FileManager.default.fileExists(atPath: url.path) {
+                fileURL = url
+                fileButton?.title = url.lastPathComponent
+                fileHelp?.stringValue = url.path
+            }
+        }
+        updateCapabilities()
+        updateGenerateEnabled()
+    }
+
+    private func observeDraftChanges() {
+        let center = NotificationCenter.default
+        draftObservers.append(center.addObserver(
+            forName: NSControl.textDidChangeNotification, object: nil, queue: .main
+        ) { [weak self] notification in
+            guard let self, self.ownsControl(notification.object) else { return }
+            self.persistState()
+        })
+        draftObservers.append(center.addObserver(
+            forName: NSText.didChangeNotification, object: nil, queue: .main
+        ) { [weak self] notification in
+            guard let self, self.ownsControl(notification.object) else { return }
+            self.persistState()
+        })
+    }
+
+    private func ownsControl(_ object: Any?) -> Bool {
+        guard let object = object as? NSView else { return false }
+        return fields.values.contains { contains(object, in: $0) }
+    }
+
+    private func contains(_ object: NSView, in view: NSView) -> Bool {
+        view === object || view.subviews.contains { contains(object, in: $0) }
+    }
+
+    private func persistState() {
+        var values: [String: String] = [:]
+        for field in lane.fields {
+            values[field.key] = rawValue(of: field.key)
+        }
+        if let advancedVoiceField, !advancedVoiceField.stringValue.isEmpty {
+            values["voice_advanced_id"] = advancedVoiceField.stringValue
+        }
+        state.draft = CreateDraft(
+            modelID: selectedModelIDHint ?? selectedModelID(),
+            values: values,
+            filePath: fileURL?.path
+        )
+        state.currentJobID = currentJobID
+        state.attempt = ambiguousAttempt ?? activeAttempt
+        CreateStateStore.save(state, lane: lane.key)
+    }
+
+    private func rawValue(of key: String) -> String {
+        if key == "voice_id" {
+            if let advancedVoiceField, !advancedVoiceField.stringValue.isEmpty {
+                return advancedVoiceField.stringValue
+            }
+            return selectedVoiceID()
+        }
+        if let scroll = fields[key] as? NSScrollView,
+           let text = scroll.documentView as? NSTextView {
+            return text.string
+        }
+        return (fields[key] as? NSTextField)?.stringValue ?? ""
+    }
+
+    private func setValue(_ value: String, for key: String) {
+        if key == "voice_id" {
+            voiceComboBox?.stringValue = value
+            return
+        }
+        if let scroll = fields[key] as? NSScrollView,
+           let text = scroll.documentView as? NSTextView {
+            text.string = value
+        } else if let entry = fields[key] as? NSTextField {
+            entry.stringValue = value
+        }
+    }
+
     @objc func refreshModels() {
         modelRefreshRequest += 1
         let requestID = modelRefreshRequest
@@ -312,6 +582,7 @@ final class CreateWorkspace: NSView {
                 self.models = rows
                 self.modelPopup?.removeAllItems()
                 if rows.isEmpty {
+                    self.selectedModelIDHint = nil
                     self.modelPopup?.addItem(withTitle: "No model switched on")
                     self.modelPopup?.lastItem?.isEnabled = false
                     if self.currentJobID == nil && !self.submissionInFlight {
@@ -331,10 +602,13 @@ final class CreateWorkspace: NSView {
                     var needsSelection = false
                     if let previousModelID,
                        let index = rows.firstIndex(where: { $0["id"] as? String == previousModelID }) {
+                        self.selectedModelIDHint = previousModelID
                         self.modelPopup?.selectItem(at: index)
                     } else if !self.hasLoadedModels && previousModelID == nil {
                         self.modelPopup?.selectItem(at: 0)
+                        self.selectedModelIDHint = rows[0]["id"] as? String
                     } else {
+                        self.selectedModelIDHint = nil
                         selectionLost = previousModelID != nil
                         needsSelection = true
                         self.modelPopup?.insertItem(withTitle: "Select a model", at: 0)
@@ -351,21 +625,125 @@ final class CreateWorkspace: NSView {
                     self.hasLoadedModels = true
                 }
                 self.modelPopup?.isEnabled = !rows.isEmpty
+                self.updateCapabilities()
+                if let modelID = self.selectedModelID(), self.lane.modality == "tts" {
+                    self.refreshVoices(modelID: modelID)
+                }
+                self.persistState()
                 self.updateGenerateEnabled()
             }
         }
     }
 
-    @objc private func modelChanged() { updateGenerateEnabled() }
+    @objc private func modelChanged() {
+        selectedModelIDHint = modelPopup?.selectedItem?.representedObject as? String
+        persistState()
+        updateCapabilities()
+        if let modelID = selectedModelID(), lane.modality == "tts" {
+            refreshVoices(modelID: modelID)
+        }
+        updateGenerateEnabled()
+    }
+
+    @objc private func voiceChanged() {
+        if let index = voiceComboBox?.indexOfSelectedItem,
+           index >= 0, index < voiceChoices.count {
+            voiceComboBox?.stringValue = voiceChoices[index]
+        }
+        persistState()
+    }
+
+    private func refreshVoices(modelID: String) {
+        guard lane.modality == "tts", let combo = voiceComboBox else { return }
+        voiceRefreshRequest += 1
+        let requestID = voiceRefreshRequest
+        let current = rawValue(of: "voice_id")
+        combo.isEnabled = false
+        GatewayAPI.get("/v1/voices?model_id=\(queryValue(modelID))") { [weak self] result in
+            guard let self, self.voiceRefreshRequest == requestID else { return }
+            switch result {
+            case .failure:
+                self.voiceChoices = []
+                combo.removeAllItems()
+                combo.stringValue = current
+                combo.isEnabled = true
+                self.capabilityLabel?.stringValue += "\nCompatible voices could not be loaded; enter an exact provider ID if needed."
+            case .success(let payload):
+                let rows = payload["voices"] as? [[String: Any]] ?? []
+                self.voiceChoices = rows.compactMap { $0["id"] as? String }
+                combo.removeAllItems()
+                for row in rows {
+                    let name = row["display_name"] as? String ?? row["id"] as? String ?? "Voice"
+                    let source = row["source"] as? String ?? "source unknown"
+                    combo.addItem(withObjectValue: "\(name) · \(source)")
+                }
+                combo.stringValue = current
+                combo.isEnabled = true
+                if let index = self.voiceChoices.firstIndex(of: current), index < combo.numberOfItems {
+                    combo.selectItem(at: index)
+                } else if !current.isEmpty {
+                    self.capabilityLabel?.stringValue += "\nVoice \(current) is retained; it is not in this model's compatible list."
+                }
+            }
+            self.setEditingEnabled(self.ambiguousAttempt == nil && !self.submissionInFlight && self.pendingJobID == nil)
+            self.persistState()
+        }
+    }
+
+    private func queryValue(_ value: String) -> String {
+        value.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? value
+    }
+
+    private func selectedModelRow() -> [String: Any]? {
+        guard let id = selectedModelID() else { return nil }
+        return models.first { ($0["id"] as? String) == id || ($0["model_id"] as? String) == id }
+    }
+
+    private func unknown(_ value: Any?) -> String {
+        guard let value, !(value is NSNull) else { return "unknown" }
+        if let int = value as? Int { return "\(int)" }
+        if let double = value as? Double { return "\(double)" }
+        if let bool = value as? Bool { return bool ? "supported" : "not supported" }
+        if let string = value as? String, !string.isEmpty { return string }
+        return "unknown"
+    }
+
+    private func source(_ row: [String: Any], _ key: String) -> String {
+        let value = unknown(row[key])
+        return value == "unknown" ? "source unknown" : value
+    }
+
+    private func updateCapabilities() {
+        guard let label = capabilityLabel else { return }
+        guard let row = selectedModelRow() else {
+            label.stringValue = "Capabilities: unknown"
+            return
+        }
+        var lines = ["Capabilities"]
+        if lane.modality == "tts" {
+            lines.append("Input characters: \(unknown(row["maximum_input_characters"])) (\(source(row, "maximum_input_characters_source")))")
+            let cloning = (row["supports_voice_cloning"] as? Bool).map { $0 ? "yes" : "no" } ?? "unknown"
+            lines.append("Voice cloning: \(cloning)")
+            lines.append("Speed: \(unknown(row["minimum_speed"]))–\(unknown(row["maximum_speed"]))")
+        } else if lane.modality == "chat" {
+            lines.append("Context window: \(unknown(row["context_window_tokens"])) tokens (\(source(row, "context_window_tokens_source")))")
+            lines.append("Output tokens: \(unknown(row["max_output_tokens"])) (\(source(row, "max_output_tokens_source")))")
+        } else {
+            lines.append("Prompt characters: \(unknown(row["max_prompt_characters"])) (\(source(row, "max_prompt_characters_source")))")
+        }
+        label.stringValue = lines.joined(separator: "\n")
+    }
 
     private func updateGenerateEnabled() {
         generateButton.isEnabled = selectedModelID() != nil
+            && modelPopup?.isEnabled == true
             && !submissionInFlight
             && pendingJobID == nil
+            && ambiguousAttempt == nil
     }
 
     private func selectedModelID() -> String? {
-        modelPopup?.selectedItem?.representedObject as? String
+        (modelPopup?.selectedItem?.representedObject as? String) ?? selectedModelIDHint
     }
 
     @objc private func pickFile() {
@@ -376,9 +754,17 @@ final class CreateWorkspace: NSView {
         guard panel.runModal() == .OK, let url = panel.url else { return }
         fileURL = url
         fileButton?.title = url.lastPathComponent
+        fileHelp?.stringValue = url.path
+        persistState()
     }
 
     private func value(of key: String) -> String {
+        if key == "voice_id" {
+            if let advancedVoiceField, !advancedVoiceField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                return advancedVoiceField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+            return selectedVoiceID().trimmingCharacters(in: .whitespacesAndNewlines)
+        }
         if let scroll = fields[key] as? NSScrollView,
            let text = scroll.documentView as? NSTextView {
             return text.string.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -389,32 +775,85 @@ final class CreateWorkspace: NSView {
         return ""
     }
 
+    private func selectedVoiceID() -> String {
+        if let index = voiceComboBox?.indexOfSelectedItem,
+           index >= 0, index < voiceChoices.count {
+            return voiceChoices[index]
+        }
+        return voiceComboBox?.stringValue ?? ""
+    }
+
     // MARK: generate
 
-    @objc private func generate() {
-        guard !submissionInFlight, pendingJobID == nil else { return }
-        guard let modelID = selectedModelID() else {
-            statusLabel.stringValue = "Select a model before generating."
-            return
+    private func setEditingEnabled(_ enabled: Bool) {
+        for view in fields.values {
+            setEditingEnabled(enabled, in: view)
         }
-        submissionInFlight = true
+        modelPopup?.isEnabled = enabled && !models.isEmpty
+        fileButton?.isEnabled = enabled
+        advancedVoiceField?.isEnabled = enabled
+        if enabled {
+            retryAttemptButton?.isHidden = true
+            newDraftButton?.isHidden = true
+        }
         updateGenerateEnabled()
-        statusLabel.stringValue = "submitting…"
-        let key = UUID().uuidString
+    }
 
+    private func setEditingEnabled(_ enabled: Bool, in view: NSView) {
+        if let control = view as? NSControl { control.isEnabled = enabled }
+        if let text = view as? NSTextView { text.isEditable = enabled }
+        for child in view.subviews { setEditingEnabled(enabled, in: child) }
+    }
+
+    private func showAttemptResolution(message: String? = nil) {
+        statusLabel.stringValue = message
+            ?? "Submission outcome is unknown. Retry the same attempt or start a new draft; do not submit another request."
+        retryAttemptButton?.isHidden = false
+        newDraftButton?.isHidden = false
+        cancelButton?.isHidden = true
+        loadJobButton?.isHidden = true
+        updateGenerateEnabled()
+    }
+
+    @objc private func startNewDraft() {
+        if let unresolved = ambiguousAttempt {
+            state.unresolvedAttempts.append(unresolved)
+        }
+        ambiguousAttempt = nil
+        activeAttempt = nil
+        state.attempt = nil
+        setEditingEnabled(true)
+        statusLabel.stringValue = "Separate draft started. The previous submission outcome remains unknown; check Jobs/provider before generating again."
+        persistState()
+    }
+
+    @objc private func retryAttempt() {
+        guard let attempt = ambiguousAttempt, !submissionInFlight else { return }
+        jobRequestGeneration += 1
+        activeAttempt = attempt
+        submissionInFlight = true
+        retryAttemptButton?.isHidden = true
+        newDraftButton?.isHidden = true
+        setEditingEnabled(false)
+        statusLabel.stringValue = "retrying the same attempt…"
+        persistState()
+        submit(attempt)
+    }
+
+    private func makeAttempt(modelID: String) -> CreateAttempt? {
+        let key = UUID().uuidString
         if lane.isUpload {
-            guard let url = fileURL, let data = try? Data(contentsOf: url) else {
+            guard let url = fileURL,
+                  let data = try? Data(contentsOf: url), !data.isEmpty else {
                 statusLabel.stringValue = "Choose a recording first."
-                submissionInFlight = false
-                updateGenerateEnabled()
-                return
+                return nil
             }
-            GatewayAPI.upload(
-                "/admin/api/create/transcription",
-                fileField: "file", filename: url.lastPathComponent, data: data,
-                fields: ["model_id": modelID, "idempotency_key": key]
-            ) { [weak self] result in self?.handleSubmit(result) }
-            return
+            return CreateAttempt(
+                key: key, modelID: modelID, modality: lane.modality, body: nil,
+                uploadPath: url.path, uploadName: url.lastPathComponent,
+                uploadType: "application/octet-stream", uploadBytes: data.count,
+                uploadDigest: digest(data)
+            )
         }
 
         var params: [String: Any] = [:]
@@ -426,37 +865,216 @@ final class CreateWorkspace: NSView {
         if lane.modality == "chat" {
             params["messages"] = [["role": "user", "content": params["prompt"] as? String ?? ""]]
         }
-        GatewayAPI.post("/admin/api/create", body: [
+        let body: [String: Any] = [
             "modality": lane.modality, "model_id": modelID,
             "params": params, "idempotency_key": key,
-        ]) { [weak self] result in self?.handleSubmit(result) }
+        ]
+        guard JSONSerialization.isValidJSONObject(body),
+              let data = try? JSONSerialization.data(withJSONObject: body) else {
+            statusLabel.stringValue = "The form could not be encoded for submission."
+            return nil
+        }
+        return CreateAttempt(
+            key: key, modelID: modelID, modality: lane.modality, body: data,
+            uploadPath: nil, uploadName: nil, uploadType: nil,
+            uploadBytes: nil, uploadDigest: nil
+        )
     }
 
-    private func handleSubmit(_ result: Result<[String: Any], Error>) {
+    private func digest(_ data: Data) -> String {
+        SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+    }
+
+    private func refuseChangedUpload(_ attempt: CreateAttempt, reason: String) {
+        submissionInFlight = false
+        activeAttempt = nil
+        ambiguousAttempt = attempt
+        setEditingEnabled(false)
+        showAttemptResolution(message: "Cannot retry this attempt — \(reason) The unresolved key was kept; start a separate draft only if you accept that outcome remains unknown.")
+        persistState()
+    }
+
+    private func submit(_ attempt: CreateAttempt) {
+        if let uploadPath = attempt.uploadPath, let name = attempt.uploadName {
+            guard let data = try? Data(contentsOf: URL(fileURLWithPath: uploadPath)) else {
+                refuseChangedUpload(attempt, reason: "The saved upload is missing.")
+                return
+            }
+            guard attempt.uploadBytes == data.count,
+                  attempt.uploadDigest == digest(data) else {
+                refuseChangedUpload(attempt, reason: "The saved upload changed since the attempt was recorded.")
+                return
+            }
+            GatewayAPI.upload(
+                "/admin/api/create/transcription",
+                fileField: "file", filename: name, data: data,
+                fields: ["model_id": attempt.modelID, "idempotency_key": attempt.key]
+            ) { [weak self] result in
+                self?.handleSubmit(result, attemptKey: attempt.key)
+            }
+            return
+        }
+        guard let body = attempt.body,
+              let object = try? JSONSerialization.jsonObject(with: body),
+              let payload = object as? [String: Any] else {
+            handleSubmit(.failure(GatewayAPIError.malformed), attemptKey: attempt.key)
+            return
+        }
+        GatewayAPI.post("/admin/api/create", body: payload) { [weak self] result in
+            self?.handleSubmit(result, attemptKey: attempt.key)
+        }
+    }
+
+    @objc private func generate() {
+        guard !submissionInFlight, pendingJobID == nil, ambiguousAttempt == nil else { return }
+        guard let modelID = selectedModelID() else {
+            statusLabel.stringValue = "Select a model before generating."
+            return
+        }
+        guard let attempt = makeAttempt(modelID: modelID) else { return }
+        jobRequestGeneration += 1
+        activeAttempt = attempt
+        submissionInFlight = true
+        setEditingEnabled(false)
+        updateGenerateEnabled()
+        statusLabel.stringValue = "submitting…"
+        persistState()
+        submit(attempt)
+    }
+
+    private func isAmbiguous(_ error: Error) -> Bool {
+        if error is URLError || (error as NSError).domain == NSURLErrorDomain {
+            return true
+        }
+        guard let error = error as? GatewayAPIError else { return false }
+        switch error {
+        case .transport, .invalidResponse, .emptyResponse, .malformed, .unsafeRedirect:
+            return true
+        case .refused(let code, _):
+            return code == 408 || code >= 500
+        default:
+            // Task4's current error contract uses `.refused`; keep the older
+            // `.http(code)` spelling safe too without adding a test-only enum
+            // case that the production transport does not expose.
+            let description = String(reflecting: error)
+            guard let open = description.firstIndex(of: "("),
+                  description[..<open].hasSuffix("http") else { return false }
+            let first = description.index(after: open)
+            let digits = description[first...].prefix { $0.isNumber }
+            guard let code = Int(digits) else { return false }
+            return code == 408 || code >= 500
+        }
+    }
+
+    private func handleSubmit(_ result: Result<[String: Any], Error>, attemptKey: String) {
         // A refresh started before this result must not overwrite its message.
         modelRefreshRequest += 1
+        guard activeAttempt?.key == attemptKey else { return }
         switch result {
         case .failure(let error):
             submissionInFlight = false
-            statusLabel.stringValue = error.localizedDescription
-            updateGenerateEnabled()
+            if isAmbiguous(error), let attempt = activeAttempt {
+                ambiguousAttempt = attempt
+                activeAttempt = nil
+                setEditingEnabled(false)
+                showAttemptResolution()
+            } else {
+                activeAttempt = nil
+                ambiguousAttempt = nil
+                state.attempt = nil
+                setEditingEnabled(true)
+                statusLabel.stringValue = error.localizedDescription
+                persistState()
+            }
         case .success(let job):
             guard let id = job["id"] as? String else {
                 submissionInFlight = false
-                statusLabel.stringValue = GatewayAPI.detail(from: nil)
-                updateGenerateEnabled()
+                if let attempt = activeAttempt {
+                    ambiguousAttempt = attempt
+                    activeAttempt = nil
+                    setEditingEnabled(false)
+                    showAttemptResolution()
+                }
                 return
             }
             submissionInFlight = false
+            activeAttempt = nil
+            ambiguousAttempt = nil
+            state.attempt = nil
             currentJobID = id
             let state = job["state"] as? String ?? ""
             let terminal = ["succeeded", "failed", "cancelled"].contains(state)
             pendingJobID = terminal ? nil : id
             render(job)
+            cancelButton?.isHidden = terminal
+            loadJobButton?.isHidden = false
+            persistState()
             if terminal {
+                setEditingEnabled(true)
                 updateGenerateEnabled()
             } else {
+                setEditingEnabled(false)
                 startPolling(id)
+            }
+        }
+    }
+
+    @objc private func loadSelectedJob() {
+        guard let id = currentJobID else { return }
+        jobRequestGeneration += 1
+        let requestGeneration = jobRequestGeneration
+        statusLabel.stringValue = "loading selected job…"
+        GatewayAPI.get("/admin/api/create/status/\(id)") { [weak self] result in
+            guard let self else { return }
+            guard self.jobRequestGeneration == requestGeneration,
+                  self.currentJobID == id else { return }
+            switch result {
+            case .failure(let error):
+                self.statusLabel.stringValue = "Cannot load this job — \(error.localizedDescription)"
+            case .success(let job):
+                guard (job["id"] as? String ?? id) == id else { return }
+                self.render(job)
+                let state = job["state"] as? String ?? ""
+                let terminal = ["succeeded", "failed", "cancelled"].contains(state)
+                self.pendingJobID = terminal ? nil : id
+                self.cancelButton?.isHidden = terminal
+                self.setEditingEnabled(terminal && self.ambiguousAttempt == nil)
+                self.persistState()
+                self.statusLabel.stringValue = terminal
+                    ? "Job reloaded; outputs were reattached from the gateway."
+                    : "Job \(id.prefix(8)) is still \(state)."
+            }
+        }
+    }
+
+    @objc private func cancel() {
+        guard let id = pendingJobID ?? currentJobID, !id.isEmpty else { return }
+        cancelButton?.isEnabled = false
+        statusLabel.stringValue = "requesting cancellation…"
+        GatewayAPI.post("/admin/api/create/status/\(id)/cancel") { [weak self] result in
+            guard let self else { return }
+            switch result {
+            case .failure(let error):
+                self.cancelButton?.isEnabled = true
+                self.statusLabel.stringValue = "Could not request cancellation — \(error.localizedDescription)"
+            case .success(let job):
+                self.render(job)
+                let state = job["state"] as? String ?? ""
+                let confirmed = state == "cancelled" || job["cancel_state"] as? String == "confirmed"
+                if confirmed {
+                    self.pendingJobID = nil
+                    self.cancelButton?.isHidden = true
+                    self.cancelButton?.isEnabled = true
+                    self.setEditingEnabled(true)
+                    self.persistState()
+                } else if job["cancel_requested"] as? Bool == true {
+                    self.statusLabel.stringValue = "Cancellation requested. It may still complete; any outputs will be kept."
+                    self.cancelButton?.isEnabled = false
+                    self.pendingJobID = id
+                    self.schedulePoll(id)
+                } else {
+                    self.cancelButton?.isEnabled = true
+                }
             }
         }
     }
@@ -492,8 +1110,12 @@ final class CreateWorkspace: NSView {
                 let state = job["state"] as? String ?? ""
                 if ["succeeded", "failed", "cancelled"].contains(state) {
                     self.pendingJobID = nil
+                    self.cancelButton?.isHidden = true
+                    self.setEditingEnabled(true)
+                    self.persistState()
                     self.updateGenerateEnabled()
                 } else {
+                    self.cancelButton?.isHidden = false
                     self.schedulePoll(id)
                 }
             }
@@ -508,20 +1130,23 @@ final class CreateWorkspace: NSView {
 
     private func render(_ job: [String: Any]) {
         let state = job["state"] as? String ?? ""
-        let jobID = job["id"] as? String ?? ""
-        statusLabel.stringValue = state
+        let jobID = job["id"] as? String ?? currentJobID ?? ""
+        let cancellationRequested = job["cancel_requested"] as? Bool == true
+        statusLabel.stringValue = cancellationRequested && state != "cancelled"
+            ? "Cancellation requested — this job may still complete."
+            : state
         clearResult()
 
         if state == "failed" {
             resultBox.addArrangedSubview(PageKit.label(
-                job["failure_reason"] as? String ?? "the generation failed",
+                job["failure_reason"] as? String ?? job["error_detail"] as? String ?? "the generation failed",
                 size: 13, colour: .systemRed, wrapping: true))
             return
         }
         if state == "cancelled" {
             resultBox.addArrangedSubview(PageKit.label(
-                "The generation was cancelled.", size: 13, colour: .secondaryLabelColor,
-                wrapping: true))
+                "The generation was cancelled. No automatic replay was made.",
+                size: 13, colour: .secondaryLabelColor, wrapping: true))
             return
         }
         if state != "succeeded" {
@@ -529,7 +1154,11 @@ final class CreateWorkspace: NSView {
             spin.style = .spinning
             spin.startAnimation(nil)
             resultBox.addArrangedSubview(PageKit.row([spin,
-                PageKit.label("\(state)…", size: 13, colour: .secondaryLabelColor)]))
+                PageKit.label(
+                    cancellationRequested
+                        ? "Cancellation requested; the provider may still finish."
+                        : "\(state)…",
+                    size: 13, colour: .secondaryLabelColor, wrapping: true)]))
             return
         }
 
@@ -543,17 +1172,13 @@ final class CreateWorkspace: NSView {
             scroll.hasVerticalScroller = true
             scroll.borderType = .bezelBorder
             scroll.translatesAutoresizingMaskIntoConstraints = false
-            scroll.widthAnchor.constraint(equalToConstant: 520).isActive = true
+            scroll.widthAnchor.constraint(lessThanOrEqualToConstant: 520).isActive = true
             scroll.heightAnchor.constraint(equalToConstant: 260).isActive = true
             resultBox.addArrangedSubview(scroll)
             return
         }
 
         let outputs = job["outputs"] as? [[String: Any]] ?? []
-        if lane.modality == "transcription" {
-            showTranscript(jobID: jobID, assetID: "0")
-            return
-        }
         if outputs.isEmpty {
             resultBox.addArrangedSubview(PageKit.empty(
                 "No result", "The job finished but produced no artifact.", symbol: lane.symbol))
@@ -565,100 +1190,192 @@ final class CreateWorkspace: NSView {
                 size: 11.5, colour: .secondaryLabelColor))
         }
         for output in outputs {
-            let assetID = output["asset_id"] as? String ?? "0"
-            resultBox.addArrangedSubview(artifactRow(jobID: jobID, assetID: assetID))
+            resultBox.addArrangedSubview(artifactRow(jobID: jobID, output: output))
         }
     }
 
-    private func artifactRow(jobID: String, assetID: String) -> NSView {
-        let path = "/admin/api/artifacts/\(jobID)/outputs/\(assetID)"
+    private func artifactRow(jobID: String, output: [String: Any]) -> NSView {
+        let assetID = output["asset_id"] as? String ?? "0"
+        let path = output["url"] as? String
+            ?? "/admin/api/artifacts/\(jobID)/outputs/\(assetID)"
+        let present = output["present"] as? Bool ?? true
+        let kept = output["kept"] as? Bool ?? false
         let stack = NSStackView()
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.spacing = 8
 
-        if lane.modality == "image", let url = GatewayAPI.url(path),
-           let image = NSImage(contentsOf: url) {
-            let view = NSImageView(image: image)
-            view.imageScaling = .scaleProportionallyDown
-            view.translatesAutoresizingMaskIntoConstraints = false
-            view.widthAnchor.constraint(lessThanOrEqualToConstant: 520).isActive = true
-            view.heightAnchor.constraint(lessThanOrEqualToConstant: 340).isActive = true
-            stack.addArrangedSubview(view)
-        } else {
-            // Audio and video get a real Open rather than an embedded player: the
-            // file plays in whatever the owner already uses, and nothing here has
-            // to reimplement transport controls to be useful.
-            let icon = NSImageView()
-            icon.image = NSImage(systemSymbolName: lane.symbol, accessibilityDescription: nil)
-            icon.contentTintColor = .secondaryLabelColor
-            let bits = ["\(lane.title) result", "asset \(assetID)"]
-            stack.addArrangedSubview(PageKit.row([icon, PageKit.label(bits.joined(separator: " · "),
-                                                                      size: 13, colour: .secondaryLabelColor)]))
+        let media = output["media_type"] as? String ?? "media type unknown"
+        let bytes = (output["bytes"] as? Int).map { "\($0) bytes" } ?? "size unknown"
+        let state = present ? (kept ? "Pinned" : "Available") : "Missing file"
+        stack.addArrangedSubview(PageKit.label(
+            "Asset \(assetID) · \(media) · \(bytes) · \(state)",
+            size: 13, colour: present ? .labelColor : .systemRed, wrapping: true))
+
+        if !present {
+            stack.addArrangedSubview(PageKit.help(
+                "The gateway no longer has this file. Reload the selected job after reattachment; no network request was made for the missing output."))
+            return stack
         }
 
-        let open = NSButton(title: "Open", target: self, action: #selector(openArtifact(_:)))
-        open.bezelStyle = .rounded
-        open.identifier = NSUserInterfaceItemIdentifier(path)
-        let save = NSButton(title: "Save…", target: self, action: #selector(saveArtifact(_:)))
-        save.bezelStyle = .rounded
-        save.identifier = NSUserInterfaceItemIdentifier(path)
-        let keep = NSButton(title: "Keep", target: self, action: #selector(keepArtifact(_:)))
-        keep.bezelStyle = .rounded
-        keep.identifier = NSUserInterfaceItemIdentifier("\(jobID)|\(assetID)")
-        stack.addArrangedSubview(PageKit.row([open, save, keep]))
-        return stack
-    }
+        let icon = NSImageView()
+        icon.image = NSImage(systemSymbolName: lane.symbol, accessibilityDescription: nil)
+        icon.contentTintColor = .secondaryLabelColor
+        stack.addArrangedSubview(PageKit.row([icon, PageKit.label(
+            "\(lane.title) result · asset \(assetID)", size: 13, colour: .secondaryLabelColor)]))
 
-    private func showTranscript(jobID: String, assetID: String) {
-        guard let url = GatewayAPI.url("/admin/api/artifacts/\(jobID)/outputs/\(assetID)") else { return }
-        let text = (try? String(contentsOf: url, encoding: .utf8)) ?? ""
-        let view = NSTextView()
-        view.isEditable = false
-        view.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
-        view.string = text.isEmpty ? "The transcript came back empty." : text
-        let scroll = NSScrollView()
-        scroll.documentView = view
-        scroll.hasVerticalScroller = true
-        scroll.borderType = .bezelBorder
-        scroll.translatesAutoresizingMaskIntoConstraints = false
-        scroll.widthAnchor.constraint(equalToConstant: 520).isActive = true
-        scroll.heightAnchor.constraint(equalToConstant: 260).isActive = true
-        resultBox.addArrangedSubview(scroll)
-        resultBox.addArrangedSubview(artifactRow(jobID: jobID, assetID: assetID))
+        let preview = CreateArtifactButton(
+            title: "Preview", jobID: jobID, assetID: assetID, path: path, mediaType: media,
+            kept: kept, target: self, action: #selector(previewArtifact(_:)))
+        let open = CreateArtifactButton(
+            title: "Open", jobID: jobID, assetID: assetID, path: path, mediaType: media,
+            kept: kept, target: self, action: #selector(openArtifact(_:)))
+        let save = CreateArtifactButton(
+            title: "Save…", jobID: jobID, assetID: assetID, path: path, mediaType: media,
+            kept: kept, target: self, action: #selector(saveArtifact(_:)))
+        let keep = CreateArtifactButton(
+            title: kept ? "Unpin" : "Pin", jobID: jobID, assetID: assetID, path: path, mediaType: media,
+            kept: kept, target: self, action: #selector(keepArtifact(_:)))
+        stack.addArrangedSubview(PageKit.row([preview, open, save, keep]))
+        return stack
     }
 
     // MARK: artifact actions
 
-    @objc private func openArtifact(_ sender: NSButton) {
-        guard let path = sender.identifier?.rawValue, let url = GatewayAPI.url(path) else { return }
-        NSWorkspace.shared.open(url)
+    private func artifactKey(_ sender: CreateArtifactButton) -> String {
+        "\(sender.jobID)/\(sender.assetID)"
     }
 
-    @objc private func saveArtifact(_ sender: NSButton) {
-        guard let path = sender.identifier?.rawValue, let url = GatewayAPI.url(path) else { return }
-        let panel = NSSavePanel()
-        panel.nameFieldStringValue = "\(lane.key)-\(currentJobID?.prefix(8) ?? "result")"
-        guard panel.runModal() == .OK, let destination = panel.url else { return }
-        if let data = try? Data(contentsOf: url) {
-            try? data.write(to: destination)
+    private func safeAdminPath(_ path: String) -> String? {
+        guard path.hasPrefix("/"), !path.hasPrefix("//"),
+              URL(string: path)?.scheme == nil else { return nil }
+        return path
+    }
+
+    private func downloadArtifact(
+        _ sender: CreateArtifactButton,
+        completion: @escaping (Data, URL) -> Void
+    ) {
+        let key = artifactKey(sender)
+        if let data = localArtifactData[key], let url = localArtifactURLs[key] {
+            completion(data, url)
+            return
+        }
+        guard let path = safeAdminPath(sender.path) else {
+            statusLabel.stringValue = "The gateway returned an invalid artifact path."
+            return
+        }
+        statusLabel.stringValue = "downloading asset \(sender.assetID)…"
+        let generation = jobRequestGeneration
+        GatewayAPI.download(path) { [weak self] result in
+            guard let self, self.currentJobID == sender.jobID,
+                  self.jobRequestGeneration == generation else { return }
+            switch result {
+            case .failure(let error):
+                self.statusLabel.stringValue = error.localizedDescription == "The requested file is no longer available."
+                    ? "Asset \(sender.assetID) is missing from the gateway."
+                    : "Could not download asset \(sender.assetID) — \(error.localizedDescription)"
+            case .success(let data):
+                let ext = PageKit.artifactExtension(sender.mediaType)
+                let url = FileManager.default.temporaryDirectory
+                    .appendingPathComponent("gateway-kh-\(sender.jobID)-\(sender.assetID).\(ext)")
+                DispatchQueue.global(qos: .userInitiated).async {
+                    guard (try? data.write(to: url, options: .atomic)) != nil else {
+                        DispatchQueue.main.async {
+                            self.statusLabel.stringValue = "Could not keep the downloaded asset locally."
+                        }
+                        return
+                    }
+                    DispatchQueue.main.async {
+                        self.localArtifactData[key] = data
+                        self.localArtifactURLs[key] = url
+                        guard self.currentJobID == sender.jobID,
+                              self.jobRequestGeneration == generation else { return }
+                        self.statusLabel.stringValue = "Downloaded locally: \(url.path)"
+                        completion(data, url)
+                    }
+                }
+            }
         }
     }
 
-    @objc private func keepArtifact(_ sender: NSButton) {
-        guard let raw = sender.identifier?.rawValue else { return }
-        let parts = raw.split(separator: "|").map(String.init)
-        guard parts.count == 2 else { return }
+    private var localArtifactData: [String: Data] = [:]
+
+    @objc private func previewArtifact(_ sender: CreateArtifactButton) {
+        downloadArtifact(sender) { [weak self] data, url in
+            guard let self else { return }
+            if self.lane.modality == "image", let image = NSImage(data: data) {
+                let view = NSImageView(image: image)
+                view.imageScaling = .scaleProportionallyDown
+                view.translatesAutoresizingMaskIntoConstraints = false
+                view.widthAnchor.constraint(lessThanOrEqualToConstant: 520).isActive = true
+                view.heightAnchor.constraint(lessThanOrEqualToConstant: 340).isActive = true
+                self.resultBox.addArrangedSubview(view)
+            } else if self.lane.modality == "transcription" {
+                self.showTextPreview(String(data: data, encoding: .utf8) ?? "The transcript came back empty.")
+            } else {
+                NSWorkspace.shared.open(url)
+            }
+        }
+    }
+
+    private func showTextPreview(_ value: String) {
+        let text = NSTextView()
+        text.isEditable = false
+        text.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
+        text.string = value.isEmpty ? "The transcript came back empty." : value
+        let scroll = NSScrollView()
+        scroll.documentView = text
+        scroll.hasVerticalScroller = true
+        scroll.borderType = .bezelBorder
+        scroll.translatesAutoresizingMaskIntoConstraints = false
+        scroll.widthAnchor.constraint(lessThanOrEqualToConstant: 520).isActive = true
+        scroll.heightAnchor.constraint(equalToConstant: 260).isActive = true
+        resultBox.addArrangedSubview(scroll)
+    }
+
+    @objc private func openArtifact(_ sender: CreateArtifactButton) {
+        downloadArtifact(sender) { _, url in NSWorkspace.shared.open(url) }
+    }
+
+    @objc private func saveArtifact(_ sender: CreateArtifactButton) {
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = "\(lane.key)-\(sender.jobID.prefix(8))-\(sender.assetID).\(PageKit.artifactExtension(sender.mediaType))"
+        guard panel.runModal() == .OK, let destination = panel.url else { return }
+        downloadArtifact(sender) { [weak self] data, _ in
+            guard let self else { return }
+            let statusLabel = self.statusLabel
+            let filename = destination.lastPathComponent
+            DispatchQueue.global(qos: .userInitiated).async {
+                let success = (try? data.write(to: destination, options: .atomic)) != nil
+                DispatchQueue.main.async {
+                    statusLabel.stringValue = success
+                        ? "Saved \(filename)."
+                        : "Could not save \(filename)."
+                }
+            }
+        }
+    }
+
+    @objc private func keepArtifact(_ sender: CreateArtifactButton) {
+        let keep = !sender.kept
         sender.isEnabled = false
-        GatewayAPI.post("/admin/api/artifacts/keep",
-                        body: ["job_id": parts[0], "asset_id": parts[1], "keep": true]) { [weak self] result in
+        GatewayAPI.post(
+            "/admin/api/artifacts/keep",
+            body: ["job_id": sender.jobID, "asset_id": sender.assetID, "keep": keep]
+        ) { [weak self] result in
+            guard let self else { return }
             switch result {
             case .failure(let error):
-                self?.statusLabel.stringValue = error.localizedDescription
                 sender.isEnabled = true
+                self.statusLabel.stringValue = error.localizedDescription
             case .success:
-                sender.title = "Kept"
-                self?.statusLabel.stringValue = "kept — the 7-day prune will not take it"
+                sender.kept = keep
+                sender.title = keep ? "Unpin" : "Pin"
+                sender.isEnabled = true
+                self.statusLabel.stringValue = keep
+                    ? "Pinned — retention will protect this output."
+                    : "Unpinned — retention may remove this output."
             }
         }
     }

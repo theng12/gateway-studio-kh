@@ -30,6 +30,7 @@ import json
 import os
 import time
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -39,9 +40,9 @@ from fastapi.responses import JSONResponse
 from . import __version__
 from .build import build_id
 from .adapters import BackendError, BackendRequest, adapter_for
-from .catalog import MODALITIES, catalog
-from .config import ARTIFACT_DIR, gateway_api_key, is_loopback
-from .constants import ADMISSION, CREDIT_BALANCE, ZERO_PURCHASE, ZERO_SETTLEMENT
+from .catalog import MODALITIES, catalog, encode_model_id
+from .config import ARTIFACT_DIR, gateway_api_key, is_loopback, request_is_loopback
+from .constants import ADMISSION, CREDIT_BALANCE, ZERO_SETTLEMENT
 from .providers import registry
 from . import fleet
 from . import retention
@@ -153,7 +154,7 @@ async def _gateway_error_handler(_: Request, exc: GatewayError) -> JSONResponse:
 # Auth. Scopes are deliberately ignored: this is a single-owner gateway, not a
 # multi-tenant API, and Story Studio only uses scopes for user-facing hints.
 # ---------------------------------------------------------------------------
-def require_auth(authorization: str | None = Header(default=None)) -> None:
+def require_auth(request: Request, authorization: str | None = Header(default=None)) -> None:
     if not authorization or not authorization.lower().startswith("bearer "):
         raise GatewayError(401, "Missing bearer token.", "UNAUTHORIZED")
     token = authorization[7:].strip()
@@ -165,7 +166,7 @@ def require_auth(authorization: str | None = Header(default=None)) -> None:
     # rotation that appears to have happened and has not is worse than one that
     # clearly failed.
     configured = gateway_api_key()
-    if not configured and not is_loopback():
+    if not configured and not (is_loopback() and request_is_loopback(request)):
         raise GatewayError(
             503, "Set GATEWAY_API_KEY before using the gateway beyond loopback.",
             "API_KEY_NOT_CONFIGURED",
@@ -201,6 +202,16 @@ def _result_of(job: dict[str, Any]) -> dict[str, Any]:
     return parsed if isinstance(parsed, dict) else {}
 
 
+def _lifecycle_fields(job: dict[str, Any]) -> dict[str, Any]:
+    """Shared recovery facts for Story and the owner's job library."""
+    return {
+        **{key: bool(job.get(key)) for key in ("cancel_requested", "retryable", "recovery_required")},
+        **{key: job.get(key) for key in (
+            "cancel_state", "recovery_state", "recovery_detail", "upstream_job_id", "late_result_state",
+        )},
+    }
+
+
 def _job_envelope(job: dict[str, Any]) -> dict[str, Any]:
     modality = job["modality"]
     result = _result_of(job)
@@ -220,6 +231,7 @@ def _job_envelope(job: dict[str, Any]) -> dict[str, Any]:
         "retry_after_seconds": None,
         "retry_at": None,
         "poll_after_ms": 1000,
+        **_lifecycle_fields(job),
         **ZERO_SETTLEMENT,
     }
 
@@ -724,9 +736,11 @@ def _artifact_response(
             )
 
     path = Path(chosen["path"])
-    if not path.exists():
+    try:
+        content = path.read_bytes()
+    except FileNotFoundError:
         raise GatewayError(410, "Artifact is gone.", "ARTIFACT_GONE")
-    return Response(content=path.read_bytes(), media_type=chosen.get("media_type") or default_media)
+    return Response(content=content, media_type=chosen.get("media_type") or default_media)
 
 
 @app.get("/v1/images/{job_id}/file", dependencies=[Depends(require_auth)])
@@ -1020,7 +1034,7 @@ async def transcription_quote(
             "id": quote_id,
             "quoted_credit_cost": 0,
             "price_version": "flat",
-            "expires_at": None,
+            "expires_at": datetime.fromtimestamp(now + _UPLOAD_TTL_S, timezone.utc).isoformat(),
             "model": body_model,
         }
 
@@ -1051,7 +1065,7 @@ async def transcription_quote(
         "id": quote_id,
         "quoted_credit_cost": 0,
         "price_version": "flat",
-        "expires_at": None,
+        "expires_at": datetime.fromtimestamp(time.time() + _UPLOAD_TTL_S, timezone.utc).isoformat(),
         "model": body_model,
     }
 
@@ -1068,27 +1082,38 @@ async def confirm_transcription(
     model: str | None = Form(default=None),
 ) -> dict[str, Any]:
     key = _require_idempotency_key(idempotency_key)
+    # Read the requested identity before reattaching: replay must not make an
+    # explicit model change look accepted. Omitted model still reattaches after
+    # expiry/restart using only its durable idempotency key.
+    if model is None and request.headers.get("content-type", "").startswith("application/json"):
+        try:
+            body = await request.json()
+        except Exception:  # noqa: BLE001 - unreadable JSON supplies no override
+            body = None
+        if isinstance(body, dict) and body.get("model"):
+            model = str(body["model"])
+    existing = store.find_by_idempotency_key(key)
+    if existing is not None:
+        if existing["modality"] != "transcription":
+            raise GatewayError(409, "Idempotency key belongs to another modality.", "IDEMPOTENCY_KEY_CONFLICT")
+        # The same Hub model may have been submitted using its location ID or
+        # its published fleet ID. Accept only those two spellings of this job,
+        # not a different location or model.
+        identities = {catalog_encode(existing), encode_model_id(
+            existing.get("provider_id") or "", existing["model_id"])}
+        if model and model not in identities:
+            raise GatewayError(409, "Confirmation model differs from the confirmed model. Request a new quote to change models.", "TRANSCRIPTION_QUOTE_MODEL_MISMATCH")
+        return _job_envelope(existing)
+    _prune_uploads(time.time())
     upload = _UPLOADS.get(quote_id)
     # An expired quote is a typed terminal condition for Story Studio (410),
     # which forces it to re-quote rather than retry a job it cannot satisfy.
     if upload is None:
         raise GatewayError(
-            410, "transcription quote has expired", "TRANSCRIPTION_QUOTE_EXPIRED"
+            410, "Transcription quote expired or was lost on restart. Upload the audio again to obtain a new quote.", "TRANSCRIPTION_QUOTE_EXPIRED"
         )
 
     content, name, content_type, _, _quoted_model = upload
-    # The model may arrive as a form field or a JSON body. It has to be read from
-    # both: `model` is declared as a Form field, and Starlette returns an *empty*
-    # form for a non-form content type, so a JSON confirm silently fell through to
-    # the fallback and ran a model the caller never asked for.
-    if model is None and request.headers.get("content-type", "").startswith("application/json"):
-        try:
-            body = await request.json()
-        except Exception:  # noqa: BLE001 - an unreadable body just means "no model given"
-            body = None
-        if isinstance(body, dict) and body.get("model"):
-            model = str(body["model"])
-
     if content is None:
         raise GatewayError(
             400,
@@ -1128,11 +1153,9 @@ async def confirm_transcription(
     if created:
         response.status_code = 202
         response.headers["Location"] = f"/v1/transcriptions/{job['id']}"
-    # Deliberately **not** popped here. A retry of the same confirm (the caller
-    # never saw the 202) is idempotent only while the quote's entry is still
-    # readable, and dropping it would turn a legitimate retry into a 410 that
-    # forces a re-upload. The bytes are already on disk, so the entry is small;
-    # the sweep that removes it is the retention timer, not this request.
+    # Keep the quote until its TTL for compatibility with existing clients.
+    # A retry with the confirmed key reattaches from SQLite above, even after
+    # this in-memory upload expires or a restart discards it.
     return _job_envelope(job)
 
 
@@ -1145,10 +1168,12 @@ def _quote_model(quote_id: str, asked: str | None) -> str:
     which could be one the owner has switched off.
     """
     stored = _UPLOADS.get(quote_id)
+    if stored and stored[4]:
+        if asked and asked != stored[4]:
+            raise GatewayError(409, "Confirmation model differs from the quoted model. Request a new quote to change models.", "TRANSCRIPTION_QUOTE_MODEL_MISMATCH")
+        return stored[4]
     if asked:
         return asked
-    if stored and stored[4]:
-        return stored[4]
     rows = catalog.rows("transcription")
     return str(rows[0]["id"]) if rows else ""
 
@@ -1172,37 +1197,23 @@ def get_transcription_srt(job_id: str) -> Response:
 
 
 # ---------------------------------------------------------------------------
-# Content Store — commerce half answered with zero constants.
-#
-# Everything on this gateway is pre-owned and free, so a purchase is a no-op
-# reporting a successful zero-credit acquisition. The fields are strict integers
-# because Story Studio refuses a purchase payload missing any of them.
+# Content Store — unavailable until real account-bound trust is configured.
+# A private archive shelf is not proof of ownership. Never fabricate a receipt
+# or report a completed purchase merely because generation itself is free.
 # ---------------------------------------------------------------------------
 @app.get("/v1/content/account", dependencies=[Depends(require_auth)])
-def content_account() -> dict[str, Any]:
-    return {"credit_balance": CREDIT_BALANCE, "entitlements": [], "purchases": []}
-
-
-@app.post("/v1/content/quotes", dependencies=[Depends(require_auth)])
-def content_quote(payload: dict[str, Any]) -> dict[str, Any]:
-    return {
-        "product_id": payload.get("product_id"),
-        "credits": 0,
-        "discount_credits": 0,
-        "price_version": "flat",
-        "sufficient_credits": True,
-        "owned": True,
-    }
-
-
-@app.post("/v1/content/purchases", dependencies=[Depends(require_auth)])
-def content_purchase(payload: dict[str, Any]) -> dict[str, Any]:
-    return {**ZERO_PURCHASE, "product_id": payload.get("product_id"), "state": "completed"}
-
-
+@app.get("/v1/content/products", dependencies=[Depends(require_auth)])
+@app.get("/v1/content/shelves", dependencies=[Depends(require_auth)])
+@app.get("/v1/content/public-key", dependencies=[Depends(require_auth)])
 @app.get("/v1/content/receipts", dependencies=[Depends(require_auth)])
-def content_receipts() -> dict[str, Any]:
-    return {"items": [], "total": 0}
+@app.post("/v1/content/quotes", dependencies=[Depends(require_auth)])
+@app.post("/v1/content/purchases", dependencies=[Depends(require_auth)])
+@app.post("/v1/content/downloads", dependencies=[Depends(require_auth)])
+def content_store_unavailable() -> dict[str, Any]:
+    raise GatewayError(503,
+        "Content Store is not connected. The private Pack Library preserves archives, "
+        "but Story Studio requires verified account ownership, receipts and trusted signing keys before installation.",
+        "CONTENT_STORE_NOT_CONNECTED")
 
 
 # ---------------------------------------------------------------------------

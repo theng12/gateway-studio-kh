@@ -1,5 +1,12 @@
 # Audit backlog — recurring bug shapes, and every instance found
 
+## Current new-Mac execution record
+
+See [the local completion record](_handoffs/2026-09-20-local-completion.md)
+for current measured repairs, installation status and explicitly remaining
+limitations. Historical "open" and "closed" statements below describe their
+original passes, not the status of this new-Mac execution.
+
 ## Product audit and first repairs — 2026-09-20
 
 The broader product audit is in [docs/2026-09-20-product-audit.md](docs/2026-09-20-product-audit.md).

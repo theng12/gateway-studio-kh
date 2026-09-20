@@ -50,6 +50,17 @@ final class ConsoleSection: NSObject, AppSection, WKNavigationDelegate, WKUIDele
         self.viewName = viewName
     }
 
+    private var injectedKey = ""
+    private var hasBuiltView = false
+    private var loadOverlay: NSView!
+    private var loadStatusLabel: NSTextField!
+    private var retryButton: NSButton!
+
+    static func refreshCredentials() {
+        models.refreshCredentialIfLoaded()
+        providers.refreshCredentialIfLoaded()
+    }
+
     /// Lazy so the web view can be built by a closure on self.
     private lazy var webView: WKWebView = {
         // **The console is told the gateway key, because the app owns `.env` and the
@@ -62,12 +73,7 @@ final class ConsoleSection: NSObject, AppSection, WKNavigationDelegate, WKUIDele
         let config = WKWebViewConfiguration()
         let key = EnvFile.apiKey()
         if !key.isEmpty {
-            let script = WKUserScript(
-                source: "window.__GATEWAY_ADMIN_TOKEN__ = \(Self.jsString(key));",
-                injectionTime: .atDocumentStart,
-                forMainFrameOnly: true
-            )
-            config.userContentController.addUserScript(script)
+            config.userContentController.addUserScript(Self.credentialScript(key))
         }
         let web = WKWebView(frame: .zero, configuration: config)
         web.navigationDelegate = self
@@ -100,17 +106,110 @@ final class ConsoleSection: NSObject, AppSection, WKNavigationDelegate, WKUIDele
 
     private var loaded = false
     /// Set when a load fails, so the next activation tries the network again
-    /// instead of talking to WebKit's error page.
+    /// instead of talking to WebKit's error page. The overlay makes that state
+    /// visible and gives the owner a retry without rebuilding the web view.
     private var lastLoadFailed = false
 
-    lazy var view: NSView = webView
+    lazy var view: NSView = buildView()
 
     func activated() {
         reload()
     }
 
+    private func buildView() -> NSView {
+        hasBuiltView = true
+        let host = NSView()
+        webView.translatesAutoresizingMaskIntoConstraints = false
+        host.addSubview(webView)
+
+        let overlay = NSVisualEffectView()
+        overlay.material = .underWindowBackground
+        overlay.blendingMode = .withinWindow
+        overlay.state = .active
+        overlay.translatesAutoresizingMaskIntoConstraints = false
+        host.addSubview(overlay)
+        loadOverlay = overlay
+
+        loadStatusLabel = NSTextField(wrappingLabelWithString: "")
+        loadStatusLabel.font = .systemFont(ofSize: 13, weight: .semibold)
+        loadStatusLabel.alignment = .center
+        loadStatusLabel.maximumNumberOfLines = 3
+        loadStatusLabel.lineBreakMode = .byWordWrapping
+        loadStatusLabel.preferredMaxLayoutWidth = 420
+
+        retryButton = NSButton(title: "Retry", target: self, action: #selector(retryLoad))
+        retryButton.bezelStyle = .rounded
+        retryButton.controlSize = .small
+        retryButton.isHidden = true
+
+        let message = NSStackView(views: [loadStatusLabel, retryButton])
+        message.orientation = .vertical
+        message.alignment = .centerX
+        message.spacing = 12
+        message.translatesAutoresizingMaskIntoConstraints = false
+        overlay.addSubview(message)
+
+        NSLayoutConstraint.activate([
+            webView.topAnchor.constraint(equalTo: host.topAnchor),
+            webView.leadingAnchor.constraint(equalTo: host.leadingAnchor),
+            webView.trailingAnchor.constraint(equalTo: host.trailingAnchor),
+            webView.bottomAnchor.constraint(equalTo: host.bottomAnchor),
+            overlay.topAnchor.constraint(equalTo: host.topAnchor),
+            overlay.leadingAnchor.constraint(equalTo: host.leadingAnchor),
+            overlay.trailingAnchor.constraint(equalTo: host.trailingAnchor),
+            overlay.bottomAnchor.constraint(equalTo: host.bottomAnchor),
+            message.centerXAnchor.constraint(equalTo: overlay.centerXAnchor),
+            message.centerYAnchor.constraint(equalTo: overlay.centerYAnchor),
+            message.leadingAnchor.constraint(greaterThanOrEqualTo: overlay.leadingAnchor, constant: 24),
+            message.trailingAnchor.constraint(lessThanOrEqualTo: overlay.trailingAnchor, constant: -24),
+        ])
+        overlay.isHidden = true
+        return host
+    }
+
+    private static func credentialScript(_ key: String) -> WKUserScript {
+        WKUserScript(
+            source: "window.__GATEWAY_ADMIN_TOKEN__ = \(jsString(key));",
+            injectionTime: .atDocumentStart,
+            forMainFrameOnly: true
+        )
+    }
+
+    /// Update both future document loads and the currently loaded page. The page
+    /// reads this global for every request, so rotation does not reload forms or
+    /// discard healthy edits.
+    private func refreshCredentialIfLoaded() {
+        guard hasBuiltView else { return }
+        refreshCredential()
+    }
+
+    private func refreshCredential() {
+        let key = EnvFile.apiKey()
+        guard key != injectedKey else { return }
+        injectedKey = key
+        let controller = webView.configuration.userContentController
+        controller.removeAllUserScripts()
+        if !key.isEmpty {
+            controller.addUserScript(Self.credentialScript(key))
+        }
+        guard loaded else { return }
+        webView.evaluateJavaScript("window.__GATEWAY_ADMIN_TOKEN__ = \(Self.jsString(key));")
+    }
+
+    private func showLoading(_ message: String, retry: Bool) {
+        guard loadOverlay != nil else { return }
+        loadStatusLabel.stringValue = message
+        retryButton.isHidden = !retry
+        loadOverlay.isHidden = false
+    }
+
+    private func hideLoading() {
+        loadOverlay?.isHidden = true
+    }
+
     func reload() {
         guard let url = GatewayController.shared.consoleURL else { return }
+        refreshCredential()
         let target = URL(string: url.absoluteString + "#" + viewName) ?? url
         // Load once, then reload on later visits only if the gateway is up —
         // re-loading on every activation would discard half-finished edits in
@@ -134,9 +233,14 @@ final class ConsoleSection: NSObject, AppSection, WKNavigationDelegate, WKUIDele
         }
     }
 
+    @objc private func retryLoad() {
+        reload()
+    }
+
     /// The console could not be fetched. Say so, and make the next visit retry.
     func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
         lastLoadFailed = true
+        showLoading("Could not load the provider console.\n\(error.localizedDescription)", retry: true)
     }
 
     func webView(
@@ -145,15 +249,21 @@ final class ConsoleSection: NSObject, AppSection, WKNavigationDelegate, WKUIDele
         withError error: Error
     ) {
         lastLoadFailed = true
+        showLoading("Could not load the provider console.\n\(error.localizedDescription)", retry: true)
     }
 
     /// If the gateway is not listening yet, say so plainly instead of showing a
     /// raw connection error, and load for real once it should be up.
     private func load(_ url: URL, into web: WKWebView, attempt: Int = 0) {
         if GatewayController.shared.isRunning || attempt > 0 {
-            web.load(URLRequest(url: url))
+            showLoading("Loading the provider console…", retry: false)
+            var request = URLRequest(url: url)
+            // Keep a stalled document from leaving the loading overlay forever.
+            request.timeoutInterval = 60
+            web.load(request)
             return
         }
+        showLoading("Starting the gateway…", retry: false)
         web.loadHTMLString(Self.startingPage, baseURL: nil)
         GatewayController.shared.start()
         DispatchQueue.main.asyncAfter(deadline: .now() + 5.0) { [weak self, weak web] in
@@ -170,6 +280,8 @@ final class ConsoleSection: NSObject, AppSection, WKNavigationDelegate, WKUIDele
     /// otherwise leave Models and Providers showing the same thing, which is the
     /// bug this split exists to fix.
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        lastLoadFailed = false
+        if webView.url != nil { hideLoading() }
         webView.evaluateJavaScript("setView('\(viewName)');") { result, error in
         }
     }
@@ -256,7 +368,7 @@ final class MainWindow: NSObject, NSTableViewDataSource, NSTableViewDelegate {
     private static let order = [
         "overview",
         "audio", "subtitle", "image", "music", "video", "chat",
-        "jobs", "voices", "models", "providers", "fleet", "settings",
+        "jobs", "voices", "models", "providers", "fleet", "settings", "pack library",
     ]
 
     /// The View menu, in sidebar order: (title, key equivalent).
@@ -271,7 +383,7 @@ final class MainWindow: NSObject, NSTableViewDataSource, NSTableViewDelegate {
         ("Audio", ""), ("Subtitle", ""), ("Image", ""),
         ("Music", ""), ("Video", ""), ("Chat", ""),
         ("Jobs", "2"), ("Voices", "3"), ("Models", "4"),
-        ("Providers", "5"), ("Fleet", "6"),
+        ("Providers", "5"), ("Fleet", "6"), ("Pack Library", ""),
     ]
 
     /// A sidebar row is either a group header or a section.
@@ -303,6 +415,7 @@ final class MainWindow: NSObject, NSTableViewDataSource, NSTableViewDelegate {
         .section(10),
         .section(11),
         .section(12),
+        .section(13),
     ]
 
     private var rowForSection: [Int: Int] {
@@ -358,6 +471,7 @@ final class MainWindow: NSObject, NSTableViewDataSource, NSTableViewDelegate {
             ConsoleSection.providers,
             FleetSection.shared,
             SettingsSection.shared,
+            PackLibrarySection.shared,
         ]
 
         let window = NSWindow(
@@ -596,6 +710,10 @@ final class MainWindow: NSObject, NSTableViewDataSource, NSTableViewDelegate {
         updateStatusLine()
         let tick = Timer(timeInterval: 3, repeats: true) { [weak self] _ in
             self?.updateStatusLine()
+            // Keep an embedded console current after an external .env rotation.
+            // The helper touches only views that have already been built and
+            // updates the page global in place, so it does not reload edits.
+            ConsoleSection.refreshCredentials()
         }
         RunLoop.main.add(tick, forMode: .common)
         statusTimer = tick

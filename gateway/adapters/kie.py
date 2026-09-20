@@ -227,6 +227,8 @@ class KieBackend:
             task_id = str((payload.get("data") or {}).get("taskId") or "")
             if not task_id:
                 raise BackendError("kie returned no taskId", code="PROVIDER_FAILED")
+            if request.checkpoint is not None:
+                request.checkpoint(task_id)
 
             deadline = time.monotonic() + JOB_DEADLINE_S
             result_json: Any = None

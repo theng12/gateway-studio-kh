@@ -15,7 +15,6 @@ ROOT="$(dirname -- "$HERE")"
 BUILD="$HERE/build"
 APP_NAME="GatewayKH"
 APP="$BUILD/gateway-kh.app"
-PYTHON="$ROOT/.venv/bin/python"
 
 INSTALL=1
 [ "${1:-}" = "--no-install" ] && INSTALL=0
@@ -55,10 +54,11 @@ swiftc \
 # ships a self-contained interpreter that runs from wherever it is unpacked --
 # which is what makes the finished .app movable to another Mac.
 # ---------------------------------------------------------------------------
-PY_VERSION="3.11.16"
-PY_TAG="20260901"
-PY_ASSET="cpython-${PY_VERSION}+${PY_TAG}-aarch64-apple-darwin-install_only.tar.gz"
-PY_URL="https://github.com/astral-sh/python-build-standalone/releases/download/${PY_TAG}/${PY_ASSET}"
+PY_VERSION="${GATEWAY_PYTHON_VERSION:-3.11.16}"
+PY_TAG="${GATEWAY_PYTHON_TAG:-20260901}"
+PY_ARCH="${GATEWAY_PYTHON_ARCH:-aarch64}"
+PY_ASSET="${GATEWAY_PYTHON_ASSET:-cpython-${PY_VERSION}+${PY_TAG}-${PY_ARCH}-apple-darwin-install_only.tar.gz}"
+PY_URL="${GATEWAY_PYTHON_URL:-https://github.com/astral-sh/python-build-standalone/releases/download/${PY_TAG}/${PY_ASSET}}"
 
 VENDOR="$HERE/vendor"
 RUNTIME_CACHE="$VENDOR/runtime"
@@ -70,10 +70,32 @@ if [ ! -f "$VENDOR/$PY_ASSET" ]; then
   mv "$VENDOR/$PY_ASSET.part" "$VENDOR/$PY_ASSET"
 fi
 
-# Rebuild the cached runtime only when the dependency list actually changes, so
-# ordinary builds re-use it instead of re-running pip every time.
-REQS_HASH="$(shasum -a 256 "$ROOT/requirements.txt" | cut -c1-16)"
-STAMP="$RUNTIME_CACHE/.requirements-$REQS_HASH"
+# GitHub publishes this digest for the default release asset. Custom assets can
+# provide their published digest through GATEWAY_PYTHON_SHA256 instead.
+PYTHON_SHA256="${GATEWAY_PYTHON_SHA256:-}"
+case "$PYTHON_SHA256" in
+  sha256:*) PYTHON_SHA256="${PYTHON_SHA256#sha256:}" ;;
+esac
+if [ -z "$PYTHON_SHA256" ] \
+    && [ "$PY_URL" = "https://github.com/astral-sh/python-build-standalone/releases/download/20260901/cpython-3.11.16+20260901-aarch64-apple-darwin-install_only.tar.gz" ]; then
+  PYTHON_SHA256="50424fa409e8ae84b82a3052522f64695b47dff2158b70bb7358e0ebd6c085c9"
+fi
+PYTHON_ASSET_SHA256="$(shasum -a 256 "$VENDOR/$PY_ASSET" | cut -d ' ' -f1)"
+[ -z "$PYTHON_SHA256" ] || [ "$PYTHON_ASSET_SHA256" = "$PYTHON_SHA256" ] || {
+  echo "ERROR: downloaded Python archive checksum is $PYTHON_ASSET_SHA256, expected $PYTHON_SHA256" >&2
+  exit 1
+}
+
+# Rebuild the cached runtime when either the tested dependency input or the
+# selected Python asset changes. The lock is included because requirements.txt
+# points at it, and the asset/architecture are included because the same
+# dependency list can be installed into different runtimes.
+[ -f "$ROOT/requirements.lock" ] || {
+  echo "ERROR: missing dependency lock $ROOT/requirements.lock" >&2
+  exit 1
+}
+REQS_HASH="$({ cat "$ROOT/requirements.txt"; printf '\0'; cat "$ROOT/requirements.lock"; } | shasum -a 256 | cut -c1-16)"
+STAMP="$RUNTIME_CACHE/.runtime-${PY_ASSET}-${PYTHON_ASSET_SHA256}-${PY_ARCH}-${REQS_HASH}"
 
 if [ ! -x "$RUNTIME_CACHE/python/bin/python3" ] || [ ! -f "$STAMP" ]; then
   echo "==> preparing bundled Python runtime (once per dependency change)"
@@ -83,10 +105,29 @@ if [ ! -x "$RUNTIME_CACHE/python/bin/python3" ] || [ ! -f "$STAMP" ]; then
   "$RUNTIME_CACHE/python/bin/python3" -m pip install \
     --quiet --no-warn-script-location --disable-pip-version-check \
     -r "$ROOT/requirements.txt"
-  # Drop pip's caches and bytecode; they are large and rebuild identically.
+  # Drop pip's caches and bytecode; they are not part of the shipped runtime.
   find "$RUNTIME_CACHE/python" -name "__pycache__" -type d -prune -exec rm -rf {} + 2>/dev/null || true
   touch "$STAMP"
 fi
+
+RUNTIME_PYTHON="$RUNTIME_CACHE/python/bin/python3"
+RUNTIME_VERSION="$($RUNTIME_PYTHON --version 2>&1)"
+[ "$RUNTIME_VERSION" = "Python $PY_VERSION" ] || {
+  echo "ERROR: bundled runtime is $RUNTIME_VERSION, expected Python $PY_VERSION" >&2
+  exit 1
+}
+RUNTIME_MACHINE="$($RUNTIME_PYTHON -c 'import platform; print(platform.machine())')"
+case "$PY_ARCH" in
+  aarch64|arm64) EXPECTED_MACHINE="arm64" ;;
+  *) EXPECTED_MACHINE="$PY_ARCH" ;;
+esac
+[ "$RUNTIME_MACHINE" = "$EXPECTED_MACHINE" ] || {
+  echo "ERROR: bundled runtime architecture is $RUNTIME_MACHINE, expected $EXPECTED_MACHINE ($PY_ARCH)" >&2
+  exit 1
+}
+echo "    runtime $RUNTIME_VERSION (machine $RUNTIME_MACHINE; asset $PY_ARCH; $PY_ASSET)"
+echo "    archive sha256:$PYTHON_ASSET_SHA256"
+echo "    dependency input sha256:$REQS_HASH (requirements.txt + requirements.lock)"
 
 echo "==> bundling Python runtime"
 rm -rf "$APP/Contents/Resources/python"
@@ -97,6 +138,7 @@ rm -rf "$APP/Contents/Resources/gateway"
 mkdir -p "$APP/Contents/Resources/gateway/data"
 cp -R "$ROOT/gateway" "$APP/Contents/Resources/gateway/gateway"
 cp "$ROOT/requirements.txt" "$APP/Contents/Resources/gateway/"
+cp "$ROOT/requirements.lock" "$APP/Contents/Resources/gateway/"
 # Shipped read-only defaults. User data lives in Application Support.
 [ -f "$ROOT/data/voices.json" ] && cp "$ROOT/data/voices.json" "$APP/Contents/Resources/gateway/data/"
 
@@ -137,16 +179,17 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 PLIST
 
 echo "==> generating icon"
-if [ -x "$PYTHON" ]; then
-  "$PYTHON" "$HERE/make_icon.py" "$APP/Contents/Resources/AppIcon.icns" || echo "    (icon generation failed; continuing without one)"
-else
-  echo "    (no venv python found; skipping icon)"
-fi
+"$RUNTIME_PYTHON" "$HERE/make_icon.py" "$APP/Contents/Resources/AppIcon.icns"
+[ -s "$APP/Contents/Resources/AppIcon.icns" ] || {
+  echo "ERROR: icon generation produced no AppIcon.icns" >&2
+  exit 1
+}
 
 echo "==> ad-hoc signing"
 # Unsigned bundles are quarantined by Gatekeeper when copied around. An ad-hoc
 # signature is enough for local use and keeps the LaunchAgent happy.
-codesign --force --deep --sign - "$APP" 2>/dev/null || echo "    (codesign unavailable; continuing)"
+codesign --force --deep --sign - "$APP"
+codesign --verify --deep --strict --verbose=2 "$APP"
 
 if [ "$INSTALL" = "1" ]; then
   # Prefer the system /Applications folder. `~/Applications` is hidden by
@@ -165,6 +208,7 @@ if [ "$INSTALL" = "1" ]; then
   cp -R "$APP" "$DEST"
   # Drop any quarantine flag so first launch does not warn.
   xattr -dr com.apple.quarantine "$DEST" 2>/dev/null || true
+  codesign --verify --deep --strict --verbose=2 "$DEST"
 
   # If it was previously installed in the other location, remove that copy so
   # there is never more than one, and the login item points at the survivor.

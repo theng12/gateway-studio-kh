@@ -237,8 +237,27 @@ final class VoicesSection: NSObject, AppSection, NSTableViewDataSource, NSTableV
 
     @objc private func refreshVoices() {
         summaryLabel.stringValue = "Discovering voices…"
-        GatewayAPI.post("/admin/api/voices/refresh") { [weak self] _ in
-            self?.reload()
+        GatewayAPI.post("/admin/api/voices/refresh") { [weak self] result in
+            guard let self else { return }
+            switch result {
+            case .failure(let error):
+                self.summaryLabel.textColor = .systemOrange
+                self.summaryLabel.stringValue = "Could not refresh voices — \(error.localizedDescription)"
+            case .success(let payload):
+                let failures = (payload["outcomes"] as? [String: Any] ?? [:]).compactMap { provider, value -> String? in
+                    guard let outcome = value as? [String: Any],
+                          let error = outcome["error"] as? String,
+                          !error.isEmpty else { return nil }
+                    return "\(provider): \(error)"
+                }
+                if !failures.isEmpty {
+                    self.summaryLabel.textColor = .systemOrange
+                    self.summaryLabel.stringValue =
+                        "Could not discover voices — \(failures.joined(separator: "; "))"
+                } else {
+                    self.reload()
+                }
+            }
         }
     }
 
@@ -334,7 +353,18 @@ final class VoicesSection: NSObject, AppSection, NSTableViewDataSource, NSTableV
     /// Poll the transcription pass until it finishes, then say what happened.
     private func followAnnotation() {
         GatewayAPI.get("/admin/api/voices/add/status") { [weak self] result in
-            guard let self, case .success(let state) = result else { return }
+            guard let self else { return }
+            guard case .success(let state) = result else {
+                if case .failure(let error) = result {
+                    self.summaryLabel.textColor = .systemOrange
+                    self.summaryLabel.stringValue =
+                        "Could not check transcription progress — \(error.localizedDescription). Retrying…"
+                }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
+                    self?.followAnnotation()
+                }
+                return
+            }
             let done = state["done"] as? Int ?? 0
             let total = state["total"] as? Int ?? 0
             let current = state["current"] as? String ?? ""
@@ -344,7 +374,9 @@ final class VoicesSection: NSObject, AppSection, NSTableViewDataSource, NSTableV
                 self.summaryLabel.stringValue =
                     "Making them usable — transcribing \(done + 1) of \(total)"
                     + (current.isEmpty ? "…" : ": \(current)")
-                DispatchQueue.main.asyncAfter(deadline: .now() + 2) { self.followAnnotation() }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
+                    self?.followAnnotation()
+                }
                 return
             }
 
@@ -368,9 +400,18 @@ final class VoicesSection: NSObject, AppSection, NSTableViewDataSource, NSTableV
         }
     }
 
-    func reload() {
+    private func selectedVoiceIDs() -> Set<String> {
+        guard table != nil else { return [] }
+        return Set(table.selectedRowIndexes.compactMap {
+            $0 < rows.count ? rows[$0]["id"] as? String : nil
+        })
+    }
 
-
+    func reload(
+        preservingSelection selection: Set<String>? = nil,
+        completion: (() -> Void)? = nil
+    ) {
+        let preserved = selection ?? selectedVoiceIDs()
         let providerId = selectedProviderId()
         let library = libraryCheck.state == .on && supportsLibrary(providerId)
         libraryMode = library
@@ -399,6 +440,7 @@ final class VoicesSection: NSObject, AppSection, NSTableViewDataSource, NSTableV
             case .success(let payload):
                 self.rows = payload["voices"] as? [[String: Any]] ?? []
                 self.loadProviders(from: payload)
+                self.summaryLabel.textColor = .secondaryLabelColor
                 if self.libraryMode {
                     self.summaryLabel.stringValue =
                         "\(self.rows.count) voices in the public library"
@@ -412,10 +454,18 @@ final class VoicesSection: NSObject, AppSection, NSTableViewDataSource, NSTableV
                         + "voices enabled" + (parts.isEmpty ? "" : " · " + parts.joined(separator: ", "))
                 }
             case .failure(let error):
-                self.rows = []
-                self.summaryLabel.stringValue = error.localizedDescription
+                self.summaryLabel.textColor = .systemOrange
+                self.summaryLabel.stringValue = "Could not load voices — \(error.localizedDescription)"
             }
             self.table.reloadData()
+            var indexes = IndexSet()
+            for (index, row) in self.rows.enumerated() {
+                if let id = row["id"] as? String, preserved.contains(id) {
+                    indexes.insert(index)
+                }
+            }
+            self.table.selectRowIndexes(indexes, byExtendingSelection: false)
+            completion?()
         }
     }
 
@@ -456,8 +506,26 @@ final class VoicesSection: NSObject, AppSection, NSTableViewDataSource, NSTableV
     private func setEnabled(_ enabled: Bool) {
         let ids = selectedRows().compactMap { $0["id"] as? String }
         guard !ids.isEmpty else { return }
-        GatewayAPI.post("/admin/api/voices/enabled", body: ["items": ids, "enabled": enabled]) { [weak self] _ in
-            self?.reload()
+        let selection = Set(ids)
+        GatewayAPI.post("/admin/api/voices/enabled", body: ["items": ids, "enabled": enabled]) { [weak self] result in
+            guard let self else { return }
+            switch result {
+            case .failure(let error):
+                self.reload(preservingSelection: selection) {
+                    self.summaryLabel.textColor = .systemOrange
+                    self.summaryLabel.stringValue =
+                        "Could not change those voices — \(error.localizedDescription)"
+                }
+            case .success(let payload):
+                let changed = payload["changed"] as? Int ?? 0
+                self.reload(preservingSelection: selection) {
+                    if changed != ids.count {
+                        self.summaryLabel.textColor = .systemOrange
+                        self.summaryLabel.stringValue =
+                            "Changed \(changed) of \(ids.count) voices; the rest were not changed."
+                    }
+                }
+            }
         }
     }
 
@@ -821,33 +889,50 @@ final class VoicesSection: NSObject, AppSection, NSTableViewDataSource, NSTableV
     }
 
     private func preview(_ voiceId: String) {
-        guard let url = GatewayAPI.url(
-            "/admin/api/voices/\(voiceId.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? "")/preview"
-        ) else { return }
+        let path = "/admin/api/voices/\(voiceId.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? "")/preview"
+        guard GatewayAPI.url(path) != nil else {
+            summaryLabel.textColor = .systemOrange
+            summaryLabel.stringValue = "Bad preview URL."
+            return
+        }
 
-        var request = URLRequest(url: url)
-        request.timeoutInterval = 60
-        let key = EnvFile.apiKey()
-        if !key.isEmpty { request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization") }
-
+        summaryLabel.textColor = .secondaryLabelColor
         summaryLabel.stringValue = "Fetching preview…"
-        URLSession.shared.dataTask(with: request) { [weak self] data, response, _ in
-            DispatchQueue.main.async {
-                guard let self else { return }
-                let code = (response as? HTTPURLResponse)?.statusCode ?? 0
-                guard code == 200, let data, !data.isEmpty else {
-                    self.summaryLabel.stringValue = "No preview available for that voice."
+        GatewayAPI.download(path) { [weak self] result in
+            guard let self else { return }
+            switch result {
+            case .failure(let error):
+                self.summaryLabel.textColor = .systemOrange
+                switch error {
+                case .missingResource:
+                    self.summaryLabel.stringValue = "No preview is available for that voice."
+                case .unauthorized:
+                    self.summaryLabel.stringValue = "Preview unavailable — the gateway rejected the API key."
+                case .transport(let detail):
+                    self.summaryLabel.stringValue =
+                        detail.isEmpty ? "Could not fetch the preview." : "Could not fetch the preview — \(detail)"
+                case .emptyResponse:
+                    self.summaryLabel.stringValue = "The gateway returned an empty preview."
+                default:
+                    self.summaryLabel.stringValue = "Could not fetch the preview — \(error.localizedDescription)"
+                }
+            case .success(let data):
+                guard let sound = NSSound(data: data) else {
+                    self.summaryLabel.textColor = .systemOrange
+                    self.summaryLabel.stringValue = "The preview response was not valid audio."
                     return
                 }
                 self.sound?.stop()
-                self.sound = NSSound(data: data)
-                if self.sound?.play() == true {
+                self.sound = sound
+                if sound.play() {
+                    self.summaryLabel.textColor = .secondaryLabelColor
                     self.summaryLabel.stringValue = "Playing preview…"
                 } else {
+                    self.summaryLabel.textColor = .systemOrange
                     self.summaryLabel.stringValue = "The preview could not be played."
                 }
             }
-        }.resume()
+        }
     }
 
     // MARK: Table

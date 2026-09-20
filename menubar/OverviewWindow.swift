@@ -500,47 +500,68 @@ final class OverviewSection: NSObject, AppSection {
         GatewayAPI.get("/admin/api/jobs?limit=5") { [weak self] result in
             guard let self else { return }
             self.activityStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
-            guard case .success(let payload) = result,
-                  let rows = payload["jobs"] as? [[String: Any]], !rows.isEmpty else {
-                self.activityStack.addArrangedSubview(self.dim("No jobs yet."))
-                return
-            }
-            for job in rows {
-                let state = job["state"] as? String ?? "?"
-                let symbol: String
-                switch state {
-                case "succeeded": symbol = "✓"
-                case "failed": symbol = "✗"
-                case "running", "starting", "accepted": symbol = "•"
-                default: symbol = "–"
-                }
-                let colour: NSColor
-                switch state {
-                case "succeeded": colour = .systemGreen
-                case "failed": colour = .systemRed
-                default: colour = .secondaryLabelColor
-                }
-
-                let line = NSMutableAttributedString()
-                line.append(NSAttributedString(string: "\(symbol) ", attributes: [
-                    .foregroundColor: colour, .font: NSFont.systemFont(ofSize: 12, weight: .bold),
-                ]))
-                line.append(NSAttributedString(
-                    string: "\(job["model_name"] as? String ?? "?")  ",
-                    attributes: [.font: NSFont.systemFont(ofSize: 12)]
-                ))
-                let detail = "\(job["modality"] as? String ?? "") · \(state) · "
-                    + "\(GatewayAPI.duration(job["duration_s"] as? Double))"
-                line.append(NSAttributedString(string: detail, attributes: [
-                    .font: NSFont.systemFont(ofSize: 11), .foregroundColor: NSColor.tertiaryLabelColor,
-                ]))
-
-                let label = NSTextField(labelWithAttributedString: line)
-                label.lineBreakMode = .byTruncatingTail
-                label.translatesAutoresizingMaskIntoConstraints = false
-                label.widthAnchor.constraint(lessThanOrEqualToConstant: 580).isActive = true
+            switch result {
+            case .failure(let error):
+                let label = self.dim(
+                    "Could not load recent activity — \(error.localizedDescription). Use Refresh to try again."
+                )
+                label.textColor = .systemOrange
                 self.activityStack.addArrangedSubview(label)
+                return
+            case .success(let payload):
+                guard let rows = payload["jobs"] as? [[String: Any]] else {
+                    let label = self.dim(
+                        "Could not read recent activity — the gateway returned an unexpected response."
+                    )
+                    label.textColor = .systemOrange
+                    self.activityStack.addArrangedSubview(label)
+                    return
+                }
+                guard !rows.isEmpty else {
+                    self.activityStack.addArrangedSubview(self.dim("No jobs yet."))
+                    return
+                }
+                self.addActivityRows(rows)
             }
+        }
+    }
+
+    private func addActivityRows(_ rows: [[String: Any]]) {
+        for job in rows {
+            let state = job["state"] as? String ?? "?"
+            let symbol: String
+            switch state {
+            case "succeeded": symbol = "✓"
+            case "failed": symbol = "✗"
+            case "running", "starting", "accepted": symbol = "•"
+            default: symbol = "–"
+            }
+            let colour: NSColor
+            switch state {
+            case "succeeded": colour = .systemGreen
+            case "failed": colour = .systemRed
+            default: colour = .secondaryLabelColor
+            }
+
+            let line = NSMutableAttributedString()
+            line.append(NSAttributedString(string: "\(symbol) ", attributes: [
+                .foregroundColor: colour, .font: NSFont.systemFont(ofSize: 12, weight: .bold),
+            ]))
+            line.append(NSAttributedString(
+                string: "\(job["model_name"] as? String ?? "?")  ",
+                attributes: [.font: NSFont.systemFont(ofSize: 12)]
+            ))
+            let detail = "\(job["modality"] as? String ?? "") · \(state) · "
+                + "\(GatewayAPI.duration(job["duration_s"] as? Double))"
+            line.append(NSAttributedString(string: detail, attributes: [
+                .font: NSFont.systemFont(ofSize: 11), .foregroundColor: NSColor.tertiaryLabelColor,
+            ]))
+
+            let label = NSTextField(labelWithAttributedString: line)
+            label.lineBreakMode = .byTruncatingTail
+            label.translatesAutoresizingMaskIntoConstraints = false
+            label.widthAnchor.constraint(lessThanOrEqualToConstant: 580).isActive = true
+            activityStack.addArrangedSubview(label)
         }
     }
 

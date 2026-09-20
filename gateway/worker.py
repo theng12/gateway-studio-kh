@@ -24,7 +24,7 @@ from typing import Any
 from .adapters import BackendError, BackendRequest, adapter_for
 from .config import ARTIFACT_DIR
 from .providers import registry
-from .store import JobStore
+from .store import RECOVERY_UNKNOWN, JobStore
 
 log = logging.getLogger("gateway.worker")
 
@@ -45,6 +45,40 @@ def _ext_for(media_type: str | None) -> str:
     return _EXT_BY_MEDIA.get((media_type or "").split(";")[0].strip(), "bin")
 
 
+def _unknown_detail(detail: str) -> str:
+    suffix = (
+        " Upstream outcome is unknown; reconcile the provider request before retrying; "
+        "the gateway will not resubmit it automatically."
+    )
+    return f"{detail[: max(0, 500 - len(suffix))]}{suffix}"
+
+
+def _fail(
+    store: JobStore,
+    job_id: str,
+    *,
+    code: str,
+    detail: str,
+    retryable: bool = False,
+    recovery_state: str | None = None,
+    recovery_detail: str | None = None,
+) -> None:
+    """Settle a real store, while keeping the small legacy test double usable."""
+    try:
+        store.fail(
+            job_id,
+            code=code,
+            detail=detail,
+            retryable=retryable,
+            recovery_state=recovery_state,
+            recovery_detail=recovery_detail,
+        )
+    except TypeError as exc:
+        if "unexpected keyword" not in str(exc):
+            raise
+        store.fail(job_id, code=code, detail=detail)
+
+
 def execute_job(job: dict[str, Any], store: JobStore) -> None:
     """Run one job to a terminal state. Never raises."""
     job_id = job["id"]
@@ -52,16 +86,33 @@ def execute_job(job: dict[str, Any], store: JobStore) -> None:
     provider_id = job.get("provider_id") or ""
     model_id = job.get("model_id") or ""
 
+    current = store.get(job_id) if hasattr(store, "get") else job
+    if current is None:
+        return
+    state = current.get("state")
+    if state == "accepted":
+        marker = getattr(store, "mark_running", None)
+        if marker is not None and marker(job_id) is False:
+            return
+    elif state is not None and state != "running":
+        return
+
     definition = registry.definition(provider_id)
     if definition is None:
-        store.fail(job_id, code="PROVIDER_NOT_FOUND", detail=f"unknown provider '{provider_id}'")
+        _fail(
+            store,
+            job_id,
+            code="PROVIDER_NOT_FOUND",
+            detail=f"unknown provider '{provider_id}'",
+        )
         return
 
     # Re-check enablement at execution time. A provider can be switched off
     # between submit and run, and the catalogue and the generation path must
     # never disagree about what is available.
     if not registry.credentials.is_enabled(provider_id):
-        store.fail(
+        _fail(
+            store,
             job_id,
             code="PROVIDER_DISABLED",
             detail=f"provider '{provider_id}' is disabled",
@@ -71,7 +122,7 @@ def execute_job(job: dict[str, Any], store: JobStore) -> None:
     try:
         params = json.loads(job.get("params") or "{}")
     except json.JSONDecodeError:
-        store.fail(job_id, code="PROVIDER_FAILED", detail="unreadable job params")
+        _fail(store, job_id, code="PROVIDER_FAILED", detail="unreadable job params")
         return
 
     # **The whole rule, not just the provider.** Provider enablement was re-checked
@@ -88,7 +139,8 @@ def execute_job(job: dict[str, Any], store: JobStore) -> None:
         d.id == provider_id and m["model_id"] == model_id
         for d, m in registry.models.enabled_models(modality)
     ):
-        store.fail(
+        _fail(
+            store,
             job_id,
             code="MODEL_NOT_OFFERABLE",
             detail=(
@@ -98,7 +150,18 @@ def execute_job(job: dict[str, Any], store: JobStore) -> None:
         )
         return
 
+    # The final check sits immediately before the adapter call. A cancellation
+    # that wins here is confirmed locally; once this succeeds, the upstream
+    # outcome is no longer ours to assume.
+    begin_dispatch = getattr(store, "begin_dispatch", None)
+    if begin_dispatch is not None and not begin_dispatch(job_id):
+        confirm_cancel = getattr(store, "confirm_cancel", None)
+        if confirm_cancel is not None:
+            confirm_cancel(job_id)
+        return
+
     params["_job_id"] = job_id
+    record_acceptance = getattr(store, "record_upstream_acceptance", None)
     request = BackendRequest(
         provider_id=provider_id,
         model_id=model_id,
@@ -107,6 +170,11 @@ def execute_job(job: dict[str, Any], store: JobStore) -> None:
         values=registry.credentials.resolved(provider_id),
         base_url=definition.base_url,
         display_name=definition.display_name,
+        checkpoint=(
+            (lambda upstream_job_id: record_acceptance(job_id, upstream_job_id))
+            if record_acceptance is not None
+            else None
+        ),
     )
 
     adapter = adapter_for(definition)
@@ -114,14 +182,41 @@ def execute_job(job: dict[str, Any], store: JobStore) -> None:
         result = adapter.generate(request)
     except BackendError as exc:
         log.warning("job %s failed via %s: %s", job_id, provider_id, exc)
-        store.fail(job_id, code=exc.code, detail=str(exc)[:500])
+        current = store.get(job_id) if hasattr(store, "get") else job
+        current = current or {}
+        # Once dispatch began, an adapter that cannot prove pre-acceptance must
+        # be treated as ambiguous even when it calls the failure retryable.
+        unknown = bool(current.get("upstream_job_id")) or exc.upstream_accepted is True
+        unknown = unknown or (
+            current.get("dispatch_started_at") is not None
+            and exc.upstream_accepted is None
+        )
+        if exc.code == "PROVIDER_SUBMISSION_UNCERTAIN":
+            unknown = True
+        detail = _unknown_detail(str(exc)) if unknown else str(exc)[:500]
+        _fail(
+            store,
+            job_id,
+            code=exc.code,
+            detail=detail,
+            retryable=exc.retryable,
+            recovery_state=RECOVERY_UNKNOWN if unknown else None,
+            recovery_detail=detail if unknown else None,
+        )
         return
     except Exception as exc:  # noqa: BLE001 - a backend bug must not kill the worker
         log.exception("job %s raised unexpectedly", job_id)
-        store.fail(
+        getter = getattr(store, "get", None)
+        current = getter(job_id) if getter is not None else job
+        current = current or {}
+        detail = _unknown_detail(f"{type(exc).__name__}: {exc}")
+        _fail(
+            store,
             job_id,
             code="PROVIDER_FAILED",
-            detail=f"{type(exc).__name__}: {exc}"[:500],
+            detail=detail,
+            recovery_state=RECOVERY_UNKNOWN if current.get("dispatch_started_at") else None,
+            recovery_detail=detail if current.get("dispatch_started_at") else None,
         )
         return
 
@@ -144,6 +239,9 @@ def execute_job(job: dict[str, Any], store: JobStore) -> None:
                 "bytes": len(artifact.content),
             }
         )
+        record_artifacts = getattr(store, "record_artifacts", None)
+        if record_artifacts is not None:
+            record_artifacts(job_id, [stored[-1]])
 
     store.succeed(
         job_id,
@@ -199,8 +297,24 @@ class Worker:
                     self.processed += 1
                 except Exception:  # noqa: BLE001
                     log.exception("worker failed to execute %s", job.get("id"))
-                    self.store.fail(
-                        job["id"], code="PROVIDER_FAILED", detail="internal worker error"
+                    getter = getattr(self.store, "get", None)
+                    current = getter(job["id"]) if getter is not None else job
+                    current = current or {}
+                    unknown = bool(
+                        current.get("dispatch_started_at") or current.get("upstream_job_id")
+                    )
+                    detail = (
+                        _unknown_detail("internal worker error")
+                        if unknown
+                        else "internal worker error"
+                    )
+                    _fail(
+                        self.store,
+                        job["id"],
+                        code="PROVIDER_FAILED",
+                        detail=detail,
+                        recovery_state=RECOVERY_UNKNOWN if unknown else None,
+                        recovery_detail=detail if unknown else None,
                     )
                 time.sleep(0)  # yield between jobs
 
