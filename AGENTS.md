@@ -818,7 +818,8 @@ code needs the app restarted, which interrupts whatever the owner is doing — h
 asked for a pause on that once, and then lifted it. So: run it when the change is
 UI-specific or when a claim about the app needs proving, and prefer the two isolated
 suites plus a direct `curl` for everything else. Rebuilding is always safe;
-**restarting the app is the part that intrudes**. It also needs **Accessibility
+**restarting the app is the part that intrudes**. **Never run it for a change that
+touches no app file** — two runs against identical code gave two different failures. It also needs **Accessibility
 permission**, and it skips its Hub-dependent checks with a stated reason when Studio
 Hub is stopped, because a stopped Hub is an environment state, not a gateway defect.
 
