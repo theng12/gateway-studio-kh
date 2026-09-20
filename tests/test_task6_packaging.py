@@ -235,6 +235,11 @@ print(f"fresh=0 imported={voice.display_name} clip={clip}")
         for package in ("fastapi", "uvicorn", "httpx", "python-multipart"):
             self.assertRegex(lock.read_text(encoding="utf-8"), rf"(?m)^{package}==")
 
+    def test_native_launch_does_not_modify_signed_python_resources(self) -> None:
+        launcher = (ROOT / "menubar/main.swift").read_text()
+        arguments = launcher.split("private func spawn(", 1)[1].split("task.currentDirectoryURL", 1)[0]
+        self.assertIn('"-B", "-m", "uvicorn"', arguments)
+
     def test_runtime_cache_changes_for_lock_and_python_asset(self) -> None:
         with _BuildFixture() as fixture:
             first = fixture.run()

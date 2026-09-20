@@ -502,7 +502,8 @@ final class GatewayController {
         let task = Process()
         task.executableURL = executable
         task.arguments = [
-            "-m", "uvicorn", "gateway.api:app",
+            // Python caches inside the signed bundle would invalidate its seal.
+            "-B", "-m", "uvicorn", "gateway.api:app",
             // Read, not hard-coded. This used to pass `127.0.0.1` unconditionally,
             // so a `GATEWAY_HOST` in `.env` was written by this app, shown to the
             // owner as a setting, and then quietly overridden here — the endpoint

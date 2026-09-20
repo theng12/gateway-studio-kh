@@ -186,6 +186,9 @@ echo "==> generating icon"
 }
 
 echo "==> ad-hoc signing"
+# Development/import probes may have created bytecode before bundling. These
+# generated files are not shipped; the launcher uses -B to keep the seal intact.
+find "$APP/Contents/Resources" -type d -name "__pycache__" -prune -exec rm -rf {} +
 # Unsigned bundles are quarantined by Gatekeeper when copied around. An ad-hoc
 # signature is enough for local use and keeps the LaunchAgent happy.
 codesign --force --deep --sign - "$APP"
