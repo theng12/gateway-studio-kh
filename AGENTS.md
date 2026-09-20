@@ -239,6 +239,22 @@ had them switched off** — each had its working non-`:batch` sibling enabled, s
 nothing was lost and OpenRouter went from 23 enabled to 14. Do not re-enable them;
 the sibling without the suffix is the same model on a route that answers.
 
+**"Studio Hub is running" is a measurement, not a file.** `hub_status()` used to
+publish `running: bool(hub_base_url())` — the existence of a `hub-ready.json` — so
+the Overview page and the console said "running" while the menu bar's `/api/health`
+probe and `fleet._probe` both reported it unreachable: two readers of one fact
+disagreeing, and the page that exists to say what is available was the weaker one.
+`hub.hub_probe()` asks `/api/health` (the route the menu bar already used, no token
+needed) and distinguishes **three** states, never two: no ready-file, a ready-file
+with nothing behind it, and one that answers. `advertised` keeps the old meaning;
+the probe detail names which failure it is; the age is published and the answer
+cached 5 s so a poll does not stall exactly when the Hub is down. The same probe
+gates `start_annotation`, which had promised "refuses without a reachable Hub" while
+gating on URL presence — a stale file made every voice fail in turn instead of
+saying the one actionable sentence. Anything that acts on a location's *models*
+needs its **`provider_id`** (`studio-hub-<controller-id>`), which the fleet payload
+publishes per location on both branches, so no client derives it.
+
 **A Hub lists its own connectivity probes as machines, and they must not be
 counted as the owner's hardware.** Studio Hub reports `probe-fleet` and
 `probe-hub` — labelled "probe", permanently unreachable — beside the real machine.
@@ -679,8 +695,8 @@ model name.
 ## Verification
 
 ```bash
-.venv/bin/python tests/test_e2e.py              # 418 checks, isolated mock upstream
-.venv/bin/python tests/test_fleet_standalone.py # 45 checks, real Hub(s) as locations
+.venv/bin/python tests/test_e2e.py              # 425 checks, isolated mock upstream
+.venv/bin/python tests/test_fleet_standalone.py # 47 checks, real Hub(s) as locations
 .venv/bin/python tests/test_ui.py               # 109 checks, drives the real app
 ```
 

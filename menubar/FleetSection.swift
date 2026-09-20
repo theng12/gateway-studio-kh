@@ -56,7 +56,10 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
 
         summaryLabel.font = .systemFont(ofSize: 12)
         summaryLabel.textColor = .secondaryLabelColor
-        let refresh = NSButton(title: "Refresh", target: self, action: #selector(reload))
+        // Refresh means **refresh**: reachability *and* models. See
+        // `refreshEverything`.
+        let refresh = NSButton(title: "Refresh", target: self,
+                               action: #selector(refreshEverything))
         refresh.bezelStyle = .rounded
         refresh.controlSize = .small
         let bar = PageKit.row([summaryLabel, NSView(), refresh], spacing: 8)
@@ -265,6 +268,42 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
     }
 
     // MARK: Data
+
+    /// Refresh each location's reachability **and re-read its models**.
+    ///
+    /// The button used to call `reload()` alone — `/admin/api/fleet`, the
+    /// reachability probe — so a location whose models had never been read still
+    /// showed none afterwards, and pressing Refresh looked like it did nothing.
+    /// "No models" reads as "it has nothing" rather than "nobody has asked it
+    /// yet", which is exactly what this page exists to tell apart; the web console
+    /// has "Refresh all models" and this had only a button that said "Refresh".
+    ///
+    /// Deliberately the *locations* on this page, not `/refresh-all`: that would
+    /// also re-read every cloud provider, and the client's 15-second timeout is
+    /// shorter than that takes. A location's refresh is one Hub read.
+    @objc private func refreshEverything() {
+        // The provider id, not the location id: a row carries both and they are
+        // different strings (`local` versus `studio-hub-local`). The gateway
+        // publishes it precisely so no client has to derive it.
+        let providerIds = locations.compactMap { $0["provider_id"] as? String }
+            .filter { !$0.isEmpty }
+        guard !providerIds.isEmpty else {
+            reload()
+            return
+        }
+        summaryLabel.stringValue =
+            "Refreshing \(providerIds.count) location\(providerIds.count == 1 ? "" : "s")…"
+        var finished = 0
+        for providerId in providerIds {
+            let encoded = providerId.addingPercentEncoding(
+                withAllowedCharacters: .alphanumerics) ?? providerId
+            GatewayAPI.post("/admin/api/providers/\(encoded)/refresh") { [weak self] _ in
+                guard let self else { return }
+                finished += 1
+                if finished == providerIds.count { self.reload() }
+            }
+        }
+    }
 
     @objc func reload() {
         GatewayAPI.get("/admin/api/fleet") { [weak self] result in

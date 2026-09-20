@@ -34,7 +34,7 @@ from typing import Any
 import httpx
 
 from .config import DATA_DIR, VOICES_PATH, WRITABLE_VOICES_PATH
-from .hub import hub_base_url, local_hub_headers
+from .hub import hub_base_url, hub_probe, local_hub_headers
 
 #: Where imported clips are copied. A subdirectory per voice, so a voice is one
 #: thing on disk and deleting it removes exactly that voice's audio.
@@ -1028,10 +1028,16 @@ def start_annotation(model: str = "", *, force: bool = False) -> dict:
         if _state["running"]:
             return annotation_state()
 
-    if not hub_base_url():
+    # **Asked whether it answers, not whether a file exists.** This gated on
+    # `hub_base_url()` — a URL in `hub-ready.json` — while the docstring promised
+    # "refuses without a reachable Hub". With a stale ready-file the pass started
+    # and every voice failed one at a time with a network error, burying the one
+    # actionable sentence under N of them.
+    probe = hub_probe(base=hub_base_url())
+    if not probe["running"]:
         return {
             **annotation_state(),
-            "error": "Studio Hub is not running on this Mac, so there is nothing to transcribe with.",
+            "error": f"Studio Hub is not reachable, so there is nothing to transcribe with. {probe['detail']}.",
         }
 
     pending = [

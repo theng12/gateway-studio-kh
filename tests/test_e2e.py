@@ -1781,6 +1781,60 @@ def main() -> int:
                   httpx.get(f"{BASE}/v1/chat/models",
                             headers={"Authorization": f"Bearer {rotated}"}).status_code == 403)
 
+            print("\n\033[1m13c. 'Studio Hub is running' is a measurement, not a file\033[0m")
+            # `hub_status()` published `running: bool(hub_base_url())` — **file
+            # existence**. So the Overview page and the console said the Hub was
+            # running while the menu bar's own `/api/health` probe and `fleet._probe`
+            # both reported it unreachable: two readers of one fact disagreeing, and
+            # the one on the page that exists to say what is available was the weaker.
+            from gateway import hub as _hub
+
+            _real_base = _hub.hub_base_url
+            try:
+                # A ready-file with nothing behind it: the exact stale-file case.
+                _hub.hub_base_url = lambda: "http://127.0.0.1:9"
+                _hub._PROBE_CACHE["result"] = None
+                _dead = _hub.hub_probe(timeout=0.6, force=True)
+                check("a ready-file with nothing behind it is not 'running'",
+                      _dead["running"] is False and _dead["advertised"] is True,
+                      f"running={_dead['running']} advertised={_dead['advertised']}")
+                check("and the detail says which of the two failures it is",
+                      "advertises" in _dead["detail"] and "stale" in _dead["detail"],
+                      _dead["detail"])
+                _stale_status = _hub.hub_status()
+                check("so the status page stops claiming a Hub that is not there",
+                      _stale_status["running"] is False
+                      and _stale_status["advertised"] is True,
+                      f"{_stale_status}")
+                # Annotation promised "refuses without a reachable Hub" and gated on
+                # URL presence, so a stale file started the pass and every voice
+                # failed one at a time with a network error, burying the one
+                # actionable sentence under N of them. Imported here rather than
+                # reusing the module-level name, which this function binds much
+                # later — hence the `UnboundLocalError` this check first raised.
+                from gateway import voice_import as _vi
+                _refused = _vi.start_annotation()
+                check("and the annotation pass refuses once, with the actionable reason",
+                      _refused.get("running") is False
+                      and "not reachable" in str(_refused.get("error")),
+                      f"running={_refused.get('running')} error={_refused.get('error')}")
+            finally:
+                _hub.hub_base_url = _real_base
+                _hub._PROBE_CACHE["result"] = None
+
+            # And with nothing published at all, the detail says that instead.
+            try:
+                _hub.hub_base_url = lambda: ""
+                _hub._PROBE_CACHE["result"] = None
+                _nothing = _hub.hub_probe(timeout=0.6, force=True)
+                check("no ready-file at all reads as no ready-file, not as a dead one",
+                      _nothing["running"] is False and _nothing["advertised"] is False
+                      and "no hub-ready.json" in _nothing["detail"],
+                      f"{_nothing['detail']}")
+            finally:
+                _hub.hub_base_url = _real_base
+                _hub._PROBE_CACHE["result"] = None
+
             print("\n\033[1m14. Streamed WAV header repair\033[0m")
             # Fish streams WAV responses with sentinel chunk sizes. A 327KB file
             # declared a 4GB RIFF size and a 4GB data chunk; Python's `wave`
@@ -2093,11 +2147,15 @@ def main() -> int:
             # cannot be produced through the API here is "there is no Hub at all".
             real_base_url = voice_import.hub_base_url
             voice_import.hub_base_url = lambda: ""
+            from gateway import hub as _hub
+            _hub._PROBE_CACHE["result"] = None
             guard = voice_import.start_annotation()
             voice_import.hub_base_url = real_base_url
+            _hub._PROBE_CACHE["result"] = None
             check("with no Hub it refuses to pretend the voices are usable",
                   guard.get("running") is False
-                  and "Studio Hub is not running" in str(guard.get("error")),
+                  and "not reachable" in str(guard.get("error"))
+                  and "no hub-ready.json" in str(guard.get("error")),
                   f"running={guard.get('running')} error={guard.get('error')}")
 
             status = req(client, "GET", "/admin/api/voices/add/status").json()
@@ -2433,6 +2491,19 @@ def main() -> int:
             check("and none of them were added",
                   req(client, "GET", "/admin/api/fleet/controllers").json()["controllers"] == [],
                   f"{req(client, 'GET', '/admin/api/fleet/controllers').json()}")
+
+            # A location's row carries **two** identities and they are different
+            # strings: the location is `local`, the provider whose models it offers
+            # is `studio-hub-local`. Anything acting on a location's models needs
+            # the second, and deriving it by prefixing in the client is how a label
+            # becomes an identity. The Fleet page's Refresh does exactly this.
+            _fleet_rows = httpx.get(f"{BASE}/admin/api/fleet", headers=AUTH).json()["locations"]
+            check("a location publishes the provider its models are managed under",
+                  [r.get("provider_id") for r in _fleet_rows] == ["studio-hub-local"],
+                  f"{[(r.get('id'), r.get('provider_id')) for r in _fleet_rows]}")
+            check("and it is not the same string as the location id",
+                  all(r.get("provider_id") != r.get("id") for r in _fleet_rows),
+                  f"{[(r.get('id'), r.get('provider_id')) for r in _fleet_rows]}")
 
             # The gateway's voice list belongs to the gateway, not to each location.
             # A location used to contribute the *local* catalogue, so every added

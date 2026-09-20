@@ -201,6 +201,27 @@ where the reader needs "will it work", or "exists" where the reader needs "is it
 verified".
 
 ### Fixed (this session)
+- **1.2 — `hub_status()` published `running: bool(base)`, i.e. file existence.**
+  FIXED by `hub.hub_probe()`, which asks the Hub's own `/api/health` — the same
+  route the menu bar already used — so both readers answer the same question. Three
+  answers now, never two: no ready-file, a ready-file with nothing behind it, and one
+  that answers; `advertised` keeps the old meaning for anything that needs it, the
+  probe detail names which failure it is, and the age is published (cached 5 s, so a
+  poll does not stall exactly when the Hub is down). The Overview window now says
+  *"not answering"* with the reason rather than *"not running"* — sending the owner
+  to start a Hub that is already starting is the failure that distinction prevents.
+  Verified by restoring the old line: the check fails with `running: True` for a dead
+  address, which is the bug.
+- **1.3 — `start_annotation` gated on URL presence** while promising "refuses
+  without a reachable Hub". FIXED: it probes the base it is about to use, so a stale
+  ready-file gets the one actionable sentence instead of every voice failing in turn
+  with a network error. `hub_probe` takes that base explicitly, because resolving it
+  twice let the gate and the work disagree about which Hub they meant.
+- **6.7 — "Studio Hub running (local models available)" came from a bare
+  `/api/health` 200**, and this session measured a Hub answering health in 1.7 ms
+  with no model loaded. FIXED: the item now claims only "Studio Hub running"; the
+  stronger sentence needs `/api/hub/model-packages`, and the gateway's own status
+  route already answers it with real numbers.
 - `/health` `enabled_models` was displayed as "live" while nine of them could not
   be picked. Now three fields: `enabled_models`, `publishable_models`,
   `withheld_models`; `by_modality` counts the offered rows.
@@ -233,16 +254,8 @@ verified".
 ### Open
 1. **FIXED this session — see the Fixed list above** (`routing_candidates` ×
    `can_publish`, 1.1).
-2. **`gateway/hub.py:148` and `:143-152` — `"running": bool(base)`.** A URL in
-   `hub-ready.json` is reported as "Studio Hub is running" on the Overview page and
-   in the console, while the menu bar probes `/api/health` and fleet `_probe`
-   reports the local location unreachable. Two readers of one fact disagree, and
-   the one on the page that exists to say what is available is file-existence.
-   *Fix: probe `/api/health` before claiming running.*
-3. **`gateway/voice_import.py:905` — `start_annotation` gates on URL presence**,
-   while its docstring promises "Refuses without a reachable Hub". With a stale
-   ready-file the pass starts and every voice fails one at a time with a network
-   error instead of the one actionable sentence. *Fix: gate on a reachability probe.*
+2. **FIXED this session — see the Fixed list above** (`hub_status` running).
+3. **FIXED this session — see the Fixed list above** (`start_annotation` gate).
 4. **`gateway/fleet.py:876-883` — machine online counting.** A machine is online
    whenever its state `!= "offline"`, and a missing state is coerced to `"unknown"`,
    which is then counted online; `machines_total` comes from the activity list
@@ -501,15 +514,14 @@ no audited contract**, so nothing backs the 15,000 the gateway publishes for
    envelope hid, and the e2e suite asserts both halves — that `ageMs` cannot reach
    the gate, and that the inventory age is published next to it.
 5. **FIXED this session — see the Fixed list above** (the same voice listed twice).
-6. **`gateway/providers/models.py:89-119` + `menubar/FleetSection.swift:269-290` —
-   discovery is manual and the Fleet page's "Refresh" does not discover.** It hits
-   `/admin/api/fleet`, i.e. the reachability probe, so a location whose models were
-   never read still shows none afterwards. The web console has "Refresh all models";
-   the native button says nothing. *Fix: point it at refresh-all, or label it
-   "Refresh reachability".*
-7. **`menubar/main.swift:1232-1237` — "local models available" from a bare
-   `/api/health` 200.** This session measured a Hub answering health while loading
-   no model. *Fix: say only "Studio Hub running", or check `/api/hub/model-packages`.*
+6. **FIXED this session.** The Fleet page's Refresh now re-reads reachability **and**
+   each location's models, and each location row publishes `provider_id` — the
+   provider its models are managed under, derived from the controller id — so no
+   client has to build it. Both branches of the local row publish it, deliberately:
+   a page that can only name the provider of a location that is *up* cannot offer to
+   refresh the one that is down. Deliberately not `/refresh-all`, which would also
+   re-read every cloud provider and outlast the client's 15-second timeout.
+7. **FIXED this session — see Shape 1's Fixed list above** (the menu bar's claim).
 8. **`gateway/api.py:57,69,855-857` — quoted uploads are TTL'd but pruned lazily.**
    `_prune_uploads` runs only when a *new* quote arrives and `confirm_transcription`
    never pops, so expired quotes and their audio bytes stay in memory. *Fix: prune

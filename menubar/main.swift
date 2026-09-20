@@ -1273,8 +1273,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func updateStudioHubItems() {
+        // **Not "local models available".** That claim came from a bare
+        // `/api/health` 200, and this session measured a Hub answering health in
+        // 1.7 ms with no model loaded at all. A health check says the service is up;
+        // it says nothing about what it can run, so the menu bar now claims only
+        // what it measured. The stronger sentence needs `/api/hub/model-packages`,
+        // which takes the operator token — the gateway's own status route already
+        // answers that question with real numbers.
         studioHubItem?.title = studioHubRunning
-            ? "Studio Hub running (local models available)"
+            ? "Studio Hub running"
             : "Studio Hub not running"
         studioHubStartItem?.isHidden = studioHubRunning
     }

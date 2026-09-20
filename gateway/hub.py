@@ -18,6 +18,7 @@ advertises zero models. `/api/hub/model-packages` is the authoritative source.
 from __future__ import annotations
 
 import json
+import time
 import os
 from pathlib import Path
 
@@ -173,13 +174,111 @@ def local_hub_headers() -> dict[str, str]:
     return hub_headers("", local=True)
 
 
-def hub_status() -> dict:
-    """Small status projection for the admin UI."""
-    ready_path = find_ready_file()
-    base = hub_base_url()
-    return {
-        "running": bool(base),
+#: How long a probe answer stands. The status route is polled by the console, and
+#: a two-second timeout on every poll would make the page slow *exactly* when the
+#: Hub is down — which is when someone is looking at it.
+_PROBE_TTL_S = 5.0
+_PROBE_CACHE: dict = {"at": 0.0, "base": "", "result": None}
+
+
+def hub_probe(*, base: str | None = None, timeout: float = 2.0, force: bool = False) -> dict:
+    """Does the Hub actually **answer**, right now?
+
+    Three answers, never two, which is the whole reason this exists:
+      * no address — nothing published a `hub-ready.json`;
+      * an address that does not answer — a stale ready-file after a crash, a Hub
+        still starting, or a port now held by something else;
+      * an address that answers.
+
+    `hub_status()` used to publish `running: bool(base)`, i.e. **file existence**.
+    So the Overview page and the console said "Studio Hub is running" while the
+    menu bar's own `/api/health` probe and `fleet._probe` both reported it
+    unreachable. Two readers of one fact disagreeing, and the one on the page that
+    exists to say what is available was the weaker one.
+
+    Deliberately hits `/api/health`, the same route the menu bar uses, so both
+    readers are answering the same question. It needs no token (measured: 200 bare).
+
+    Cached for `_PROBE_TTL_S` and the age is published, so nobody has to guess how
+    old the answer is.
+
+    `base` is asked for explicitly by a caller that already resolved one — the
+    annotation pass, which then uses that same base to do the work. Resolving it
+    again here would mean the gate and the work could disagree about which Hub they
+    are talking about, and it made the gate un-influencable from outside.
+    """
+    import httpx
+
+    if base is None:
+        base = hub_base_url()
+    now = time.time()
+    cached = _PROBE_CACHE.get("result")
+    if (
+        not force
+        and cached is not None
+        and _PROBE_CACHE.get("base") == base
+        and (now - float(_PROBE_CACHE.get("at") or 0.0)) < _PROBE_TTL_S
+    ):
+        return dict(cached, age_ms=int((now - float(_PROBE_CACHE["at"])) * 1000))
+
+    result: dict = {
+        "running": False,
+        "advertised": bool(base),
         "base_url": base,
+        "status": None,
+        "latency_ms": None,
+        "detail": "",
+    }
+    if not base:
+        result["detail"] = "no hub-ready.json — nothing says a Hub is running"
+    else:
+        started = time.time()
+        try:
+            response = httpx.get(
+                f"{base.rstrip('/')}/api/health",
+                timeout=httpx.Timeout(timeout, connect=min(timeout, 1.5)),
+            )
+            result["status"] = response.status_code
+            result["latency_ms"] = int((time.time() - started) * 1000)
+            if response.status_code == 200:
+                result["running"] = True
+                result["detail"] = f"answered /api/health in {result['latency_ms']}ms"
+            else:
+                result["detail"] = (
+                    f"hub-ready.json advertises {base}, but /api/health answered "
+                    f"HTTP {response.status_code}"
+                )
+        except Exception as exc:  # noqa: BLE001 - a failure is the result, not a crash
+            result["latency_ms"] = int((time.time() - started) * 1000)
+            result["detail"] = (
+                f"hub-ready.json advertises {base}, but it did not answer "
+                f"({type(exc).__name__}) — the file is stale or the Hub is starting"
+            )
+
+    _PROBE_CACHE["at"] = time.time()
+    _PROBE_CACHE["base"] = base
+    _PROBE_CACHE["result"] = dict(result)
+    result["age_ms"] = int((time.time() - _PROBE_CACHE["at"]) * 1000)
+    return result
+
+
+def hub_status() -> dict:
+    """Small status projection for the admin UI.
+
+    `running` now means *it answered*, not *a file exists*. `advertised` keeps the
+    old meaning available for anything that needs to distinguish "no Hub" from
+    "a Hub that is not answering".
+    """
+    ready_path = find_ready_file()
+    probe = hub_probe()
+    return {
+        "running": probe["running"],
+        # What used to be called `running`: a URL exists on disk.
+        "advertised": probe["advertised"],
+        "base_url": probe["base_url"],
         "ready_file": str(ready_path) if ready_path else None,
         "token_present": bool(hub_token()),
+        "probe": probe["detail"],
+        "probe_status": probe["status"],
+        "probe_age_ms": probe.get("age_ms"),
     }

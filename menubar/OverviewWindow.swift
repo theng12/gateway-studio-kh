@@ -453,10 +453,21 @@ final class OverviewSection: NSObject, AppSection {
             }
 
             // hub
+            //
+            // `running` means the Hub **answered** `/api/health`, not that a
+            // `hub-ready.json` exists. The two ways it can be false are different
+            // problems with different fixes, and the gateway says which one it is:
+            // nothing published a ready-file at all, versus a ready-file pointing
+            // at something that did not answer (a crash, a restart, a stale file).
+            // Collapsing them into "not running" sends the owner to start a Hub
+            // that is already starting.
             let hub = payload["hub"] as? [String: Any] ?? [:]
             if hub["running"] as? Bool == true {
                 self.hubLabel.stringValue =
                     "Studio Hub is running — \(hub["base_url"] as? String ?? "")"
+            } else if hub["advertised"] as? Bool == true {
+                self.hubLabel.stringValue = "Studio Hub is not answering — "
+                    + (hub["probe"] as? String ?? "it published a ready-file but did not answer.")
             } else {
                 self.hubLabel.stringValue = "Studio Hub is not running — start it to use local models."
             }

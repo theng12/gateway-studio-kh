@@ -315,6 +315,17 @@ def main() -> int:
             "label": "Site B", "url": alias_url, "token": hub_token,
         })
         check("a second location can be added", second.status_code == 200, second.text[:200])
+        # Every location row publishes the provider its models are managed under,
+        # derived from the controller id — so a client never has to build it from
+        # the label, and the Fleet page's Refresh can act on the right thing.
+        _rows = client.get(f"{base}/admin/api/fleet").json()["locations"]
+        check("each location publishes the provider id derived from its controller id",
+              bool(_rows) and all(r.get("provider_id") == f"studio-hub-{r.get('id')}"
+                                  for r in _rows),
+              f"{[(r.get('id'), r.get('provider_id')) for r in _rows]}")
+        check("and that is never the location id itself",
+              all(r.get("provider_id") != r.get("id") for r in _rows),
+              f"{[(r.get('id'), r.get('provider_id')) for r in _rows]}")
         second_provider = f"studio-hub-{second.json()['controller']['id']}"
         check("the second location is a distinct provider, not the same one",
               second_provider != provider_id)

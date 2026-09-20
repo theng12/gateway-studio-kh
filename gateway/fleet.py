@@ -779,10 +779,24 @@ def locations() -> list[dict]:
 
     if local_base:
         local = _probe(local_base, local_token)
-        local.update({"id": LOCAL_ID, "label": local_label(), "url": local_base, "local": True})
+        local.update({
+            "id": LOCAL_ID, "label": local_label(), "url": local_base, "local": True,
+            # **The provider id this location is managed under.** A dashboard row
+            # carries both identities and they are not the same string: the
+            # location is `local`, and the provider whose models it offers is
+            # `studio-hub-local`. Anything that wants to act on a location's models
+            # — "Refresh" on the Fleet page, say — needs this, and deriving it from
+            # the label or by prefixing in the client is how a label becomes an
+            # identity.
+            "provider_id": provider_id_for(LOCAL_ID),
+        })
     else:
         local = {
             "id": LOCAL_ID, "label": local_label(), "url": "", "local": True,
+            # Published here too, and deliberately: the provider identity does not
+            # depend on the Hub answering. A page that can only name the provider of
+            # a location that is up cannot offer to refresh the one that is down.
+            "provider_id": provider_id_for(LOCAL_ID),
             "reachable": False,
             "error": local_error or "Studio Hub is not running on this Mac.",
             "role": None, "version": None, "machines": [], "machine_summary": None,
@@ -814,6 +828,9 @@ def locations() -> list[dict]:
             "label": row.get("label") or row["url"],
             "url": row["url"],
             "local": False,
+            # Read from the controller id, which is what the provider id is derived
+            # from — not from the label, which the owner may rename at any time.
+            "provider_id": provider_id_for(str(row.get("id") or "")),
         })
         rows.append(result)
     return rows
