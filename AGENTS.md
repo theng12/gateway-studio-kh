@@ -530,6 +530,19 @@ catalog", `components/hub/standalone.py`), which is why discovery must keep read
 Studio Hub session measured that gate; it is the reason the tempting change is
 wrong.
 
+**Those counts are a snapshot; the Hub moves underneath them, and only the gate's
+*behaviour* is stable.** Measured on 2026-09-20 at Hub 0.6.18 the local lane was 34
+packages with 9 withheld (five companions and `VoxCPM2-8bit` uncatalogued, three
+too big for this Mac); the Hub auto-updated to **0.6.23** mid-session and then to
+**0.6.29**, and by then it was **33 packages, 23 published, 10 withheld** — six
+uncatalogued and **four** the Hub says do not fit (`echo-tts-base`,
+`fish-audio-s2-pro` 8-bit and bf16, and `VoxCPM2-bf16`, which had not been flagged
+before). Readings went 121 enabled / 112 offered / 9 withheld → **120 / 110 / 10**
+with no gateway change. So do not read a count out of this file as a fact about the
+machine: ask `/admin/api/providers/studio-hub-local/models` for the current
+`publishable` rows and the `catalogued`/`memory_eligible` flags that decided them.
+A number in a comment is a measurement with a date, not a contract.
+
 **The header reports the offered count, not the enabled one.** `models.summary()`
 publishes `enabled_models`, **`publishable_models`** and **`withheld_models`**, and
 `by_modality` counts the *offered* rows — the same question the Overview chart's
