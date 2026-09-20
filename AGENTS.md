@@ -375,6 +375,30 @@ success.
   `license` too, or a later push would look authorised. The state is written into
   the voice's own folder metadata and shown per voice in the Voices window, so it
   travels with the voice rather than living only in a catalogue.
+- **A field a reader needs is published top-level, and `raw` is never one of them.**
+  `Voice.raw` is the *provider's* answer and `as_dict()` does not serialise it, but
+  the app read `row["raw"]["owner_id"]` and `row["raw"]["permission_acknowledged"]`
+  for months: the key never existed, so "Add to my account" sent no owner (every
+  ElevenLabs library import was refused 422 — and the app discarded the result, so
+  the table just refreshed and looked successful) and every local voice rendered
+  "Private" for ever, even after a grant that had in fact worked. `owner_id`,
+  `permission_acknowledged` and `license` are top-level now, and the import's
+  refusals are shown with the gateway's own sentence. **A discarded result is how a
+  refusal becomes indistinguishable from success** — that is the shape to look for,
+  not just this one endpoint. `permission_acknowledged` is `True`/`False` for this
+  Mac's own voices and **`None`** for a provider's, because a provider voice is not
+  the owner's to grant and `False` would render as a definite "Private".
+- **The voice admin routes take either spelling of an id, and strip only *this
+  Mac's* namespace.** The app sends what `/api/admin/voices` published
+  (`studio-hub-local::voice-x`); the catalogue stores `voice-x`. Matching the stored
+  form exactly made a grant report `changed: 0` — success at nothing — and let
+  "Share with fleet" walk past the 403 that refuses a voice the owner never allowed.
+  `voice_import.catalogue_id()` normalises both. **It strips `provider_id_for(LOCAL_ID)`
+  and nothing else**, deliberately: a general "take the part after `::`" would make
+  `elevenlabs-direct::voice-a` and `volc::voice-a` the same voice, which is the
+  identity-from-a-label mistake the fleet id rules exist to prevent. In the app, ask
+  a row's `provider_id` whether a voice is ours — never `id.hasPrefix(...)`, which is
+  right only by coincidence of how a composed id happens to be spelled.
 - **Across locations, a voice is staged per job.** The gateway uploads the clip to
   whichever location runs the work, so every location can use every gateway voice
   with nothing pre-copied; the `audio_sha256` match skips that upload where the
@@ -516,7 +540,7 @@ model name.
 ## Verification
 
 ```bash
-.venv/bin/python tests/test_e2e.py              # 351 checks, isolated mock upstream
+.venv/bin/python tests/test_e2e.py              # 366 checks, isolated mock upstream
 .venv/bin/python tests/test_fleet_standalone.py # 45 checks, real Hub(s) as locations
 .venv/bin/python tests/test_ui.py               # 109 checks, drives the real app
 ```

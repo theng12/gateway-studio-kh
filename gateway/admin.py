@@ -732,7 +732,8 @@ def share_voices(payload: dict[str, Any]) -> Any:
     unshared = [
         v.get("display_name")
         for v in voice_import.voices()
-        if str(v.get("id")) in {str(i) for i in items} and not v.get("permission_acknowledged")
+        if voice_import.catalogue_id(v.get("id")) in {voice_import.catalogue_id(i) for i in items}
+        and not v.get("permission_acknowledged")
     ]
     if unshared:
         # The permission is the owner's to grant, per voice, and this is the one

@@ -32,23 +32,38 @@ instances across the console and the menu bar.
   offered" (earlier: `can_publish` is now the single rule).
 - The console headline, per-provider badge, expanded list and menu-bar status all
   counted "enabled" as "live". They now read the offered count.
+- **4.1 — the voice permission routes and the app used two namespaces.** FIXED by
+  `voice_import.catalogue_id()`, which both spellings now go through
+  (`set_permission`, `share`, and `admin.py`'s 403 guard). **The backlog's own
+  suggested fix — "match on the trailing `::` segment" — was wrong**, and was not
+  used: stripping whatever precedes `::` makes `elevenlabs-direct::voice-a` and
+  `volc::voice-a` the same voice, which is shape 5 exactly. Only **this Mac's own**
+  namespace is stripped (`provider_id_for(LOCAL_ID)`), because the catalogue holds
+  this Mac's clips and nothing else, so `studio-hub-local` is the only prefix that
+  can be on an id it knows. Asserted both ways in section 18a.
+- **4.2 — the app read voice state out of `raw`, which is never serialised.**
+  FIXED. `as_dict()` now publishes `owner_id`, `permission_acknowledged` and
+  `license` top-level (verified live: 87 rows, `raw` absent, 10 local rows carrying
+  real bools, non-local rows `None`), and `VoicesWindow.swift` reads the fields
+  rather than a key that never existed. Two consequences had been invisible:
+  - "Add to my account" sent no `owner_id`, so **every ElevenLabs library import
+    was refused 422** — and `VoicesWindow.swift:725` discarded the result, so the
+    table simply refreshed and looked successful. The failure now names the voices
+    that were refused and quotes the gateway's own sentence.
+  - every local voice rendered **"Private" for ever**, and "N already allow it" was
+    always 0, so the grant looked like it had not worked.
+- **Shape 5.5, the app's half — local was decided by `id.hasPrefix(...)`.** FIXED:
+  all four sites read the row's `provider_id` against one named
+  `VoicesSection.localProviderId`. A prefix test on a *composed* id is right only
+  by coincidence of spelling; which provider a voice belongs to is a field.
+- One thing found while fixing 4.2: writing the refusals into the one-line
+  `summaryLabel` would have been clipped (so the reason is unreadable — the same
+  bug) or grown the window's required height. They go in a dialog instead.
 
 ### Open
-1. **HIGH — `menubar/VoicesWindow.swift:442,489,535` send the registry id
-   (`studio-hub-local::voice-x`) while `voice_import.py:200/238` and
-   `admin.py:732` match the bare catalogue id (`voice-x`).** So granting a
-   permission reports success with `changed: 0`, "Share with fleet" pushes nothing,
-   and the 403 "not been allowed" guard is bypassed. The tests only exercise these
-   routes with bare ids, so the app path is uncaught. *Fix: normalise in
-   `voice_import` — match on the trailing `::` segment.*
-2. **HIGH — `voices.py:86-115` (`as_dict`) never serialises `raw`, but
-   `menubar/VoicesWindow.swift:722,498,834` read `row["raw"]`.**
-   (a) "Add to my account" never sends `owner_id`, so every ElevenLabs library
-   import gets a 422 — and `VoicesWindow.swift:725` discards the error.
-   (b) The Fleet column and the grant dialog read
-   `raw["permission_acknowledged"]`, so every local voice renders "Private" forever
-   and "N already allow it" is always 0. *Fix: publish `owner_id` and
-   `permission_acknowledged` as top-level fields, and surface the POST failure.*
+1. **FIXED this session — see the list above** (voice share/permission namespaces).
+2. **FIXED this session — see the list above** (`row["raw"]`, and the swallowed
+   import error).
 3. **MED — `providers/models.py:308-311` (`add_user_model`) accepts any *declared*
    modality; `can_publish` also requires `serves()`.** The "Add model manually"
    form therefore accepts a modality the adapter cannot serve (Google declares six,
@@ -94,6 +109,15 @@ instances across the console and the menu bar.
 
 ## Shape 5 — identity from a label, or two namespaces for one thing
 
+### Fixed (this session)
+- **The app's half of 5.2/5.5 — "is this voice ours" asked as an id prefix.** FIXED:
+  `VoicesWindow.swift` now reads the row's `provider_id` against one named
+  `VoicesSection.localProviderId`, at all four sites. A prefix test on a composed
+  id gives the right answer only while ids happen to be spelled that way.
+- **5.2 — voice share/permission used the wrong namespace** (see Shape 4.1, now
+  fixed, including why the trailing-`::` fix this file originally suggested was
+  itself a shape-5 mistake).
+
 ### Open
 1. **HIGH — this Mac's Hub operator token is sent to a remote location.**
    `hub.py:139` is `token or hub_token()`, and a controller may legitimately have an
@@ -104,7 +128,8 @@ instances across the console and the menu bar.
    `_studio_hub` base-url bug; the header path kept it. *Fix: never fall back for a
    non-local provider — resolve the definition and pass the credential verbatim,
    even empty.*
-2. **HIGH — voice share/permission use the wrong namespace** (Shape 4.1 above).
+2. **FIXED this session — see the Fixed list above** (voice share/permission
+   namespace).
 3. **MED-HIGH — a local voice's identity is derived from the source file name.**
    `voice_import.py:574,587` mints `voice-<slug(entry.name)>`, which is the catalogue
    key *and* the on-disk path. So the same clip re-imported under a different name
@@ -119,9 +144,10 @@ instances across the console and the menu bar.
    location" is defined by *kind* in `catalog.py:115` and by *id prefix* in
    `fleet.py:92`. *Fix: reject the reserved ids, and use one predicate.*
 5. **MED-LOW — kind judged by id prefix.** `voices.py:823`
-   (`provider_id.startswith("elevenlabs")`) and the app's
-   `VoicesWindow.swift:489,536,833` (`hasPrefix("studio-hub-local")`) — the API
-   already publishes `kind` and `source`. *Fix: compare the kind / use `source`.*
+   (`provider_id.startswith("elevenlabs")`) is the remaining half: the app's
+   `VoicesWindow.swift` sites were fixed this session (they read `provider_id`,
+   not a prefix on the composed id). The API already publishes `kind` and
+   `source`. *Fix: compare the kind.*
 6. **MED-LOW — `models.py:284` (`set_many`) writes enable state for ids that are
    not providers**, unlike `set_model_enabled` at `:278`; the published
    `studio-hub` id can be written and is never swept (`fleet.py:481`). *Fix:

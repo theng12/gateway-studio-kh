@@ -15,6 +15,15 @@ final class VoicesSection: NSObject, AppSection, NSTableViewDataSource, NSTableV
                            NSSearchFieldDelegate {
     static let shared = VoicesSection()
 
+    /// The provider id this Mac's own reference clips are published under.
+    ///
+    /// Asked of a row's **`provider_id`**, never of its `id`. The published id is
+    /// *composed* from the provider id, so `id.hasPrefix("studio-hub-local")` gives
+    /// the right answer by coincidence of how ids are spelled — and would go wrong
+    /// the day a location or a cloud provider is named something that starts the
+    /// same way. Which provider a voice belongs to is a field; it is not a prefix.
+    private static let localProviderId = "studio-hub-local"
+
     let title = "Voices"
     let symbol = "waveform"
     // Browsing is interactive: a timed refresh would rebuild the table
@@ -439,8 +448,9 @@ final class VoicesSection: NSObject, AppSection, NSTableViewDataSource, NSTableV
     /// as a failure: calling it an error would send someone to a site that was
     /// never broken.
     @objc private func shareWithFleet() {
-        let ids = selectedRows().compactMap { $0["id"] as? String }
-            .filter { $0.hasPrefix("studio-hub-local") }
+        let ids = selectedRows()
+            .filter { ($0["provider_id"] as? String) == Self.localProviderId }
+            .compactMap { $0["id"] as? String }
         guard !ids.isEmpty else {
             summaryLabel.textColor = .systemOrange
             summaryLabel.stringValue = "Select the voices to share first."
@@ -486,7 +496,7 @@ final class VoicesSection: NSObject, AppSection, NSTableViewDataSource, NSTableV
     /// he has voices he does not want cloned or distributed — so it states exactly
     /// what is being granted, to how many voices, before anything is written.
     @objc private func allowSharing() {
-        let chosen = selectedRows().filter { ($0["id"] as? String)?.hasPrefix("studio-hub-local") == true }
+        let chosen = selectedRows().filter { ($0["provider_id"] as? String) == Self.localProviderId }
         let ids = chosen.compactMap { $0["id"] as? String }
         guard !ids.isEmpty else {
             summaryLabel.textColor = .systemOrange
@@ -494,8 +504,11 @@ final class VoicesSection: NSObject, AppSection, NSTableViewDataSource, NSTableV
                 "Select the voices to share first — only this Mac's own voices can be shared."
             return
         }
+        // The permission state is published at the top level of the row, from the
+        // voice's own folder metadata — not inside `raw`, which is the provider's
+        // answer and knows nothing about what the owner allowed.
         let already = chosen.filter {
-            (($0["raw"] as? [String: Any])?["permission_acknowledged"] as? Bool) == true
+            ($0["permission_acknowledged"] as? Bool) == true
         }.count
 
         let alert = NSAlert()
@@ -532,8 +545,9 @@ final class VoicesSection: NSObject, AppSection, NSTableViewDataSource, NSTableV
     /// Withdraw permission for the selected voices, in one act and with no dialog:
     /// making something private again is the safe direction.
     @objc private func makePrivate() {
-        let ids = selectedRows().compactMap { $0["id"] as? String }
-            .filter { $0.hasPrefix("studio-hub-local") }
+        let ids = selectedRows()
+            .filter { ($0["provider_id"] as? String) == Self.localProviderId }
+            .compactMap { $0["id"] as? String }
         guard !ids.isEmpty else { return }
         GatewayAPI.post("/admin/api/voices/shared",
                         body: ["items": ids, "acknowledged": false]) { [weak self] result in
@@ -710,20 +724,73 @@ final class VoicesSection: NSObject, AppSection, NSTableViewDataSource, NSTableV
     }
 
     @objc private func addSelected() {
-        for row in selectedRows() {
+        let rows = selectedRows()
+        guard !rows.isEmpty else {
+            report("Select a voice to add first.", ok: false)
+            return
+        }
+        // Build every body before sending, so a malformed row cannot leave the
+        // count below the number of requests actually in flight.
+        let bodies: [[String: Any]] = rows.compactMap { row in
             guard let providerId = row["provider_id"] as? String,
-                  let voiceId = row["provider_voice_id"] as? String else { continue }
+                  let voiceId = row["provider_voice_id"] as? String else { return nil }
             var body: [String: Any] = [
                 "provider_id": providerId,
                 "provider_voice_id": voiceId,
                 "display_name": row["display_name"] as? String ?? voiceId,
             ]
-            // ElevenLabs addresses a library voice by (owner, voice).
-            if let owner = (row["raw"] as? [String: Any])?["owner_id"] as? String, !owner.isEmpty {
+            // ElevenLabs addresses a library voice by (owner, voice). The owner id
+            // is published at the top level for every source — `raw` only carries
+            // it for lanes whose provider states one, and a library voice's owner
+            // is the thing that makes the import addressable at all.
+            if let owner = row["owner_id"] as? String, !owner.isEmpty {
                 body["owner_id"] = owner
             }
-            GatewayAPI.post("/admin/api/voices/import", body: body) { [weak self] _ in
-                self?.reload()
+            return body
+        }
+        guard !bodies.isEmpty else {
+            report("Those rows do not name a provider voice to import.", ok: false)
+            return
+        }
+
+        report("Adding \(bodies.count) voice\(bodies.count == 1 ? "" : "s")…", ok: true)
+        var failures: [String] = []
+        var finished = 0
+        for body in bodies {
+            let label = body["display_name"] as? String ?? "voice"
+            // The result used to be discarded (`{ _ in self?.reload() }`), so a
+            // refused import — 403 for a library voice that needs an owner id, 409
+            // for an id already holding different audio — looked exactly like a
+            // successful one: the table refreshed and nothing new was there. The
+            // gateway's own sentence is the only thing that says which it was, so
+            // it is carried back rather than dropped.
+            GatewayAPI.post("/admin/api/voices/import", body: body) { [weak self] result in
+                guard let self else { return }
+                if case .failure(let error) = result {
+                    failures.append("\(label) — \(error.localizedDescription)")
+                }
+                finished += 1
+                guard finished == bodies.count else { return }
+                if failures.isEmpty {
+                    self.report("Added \(finished) voice\(finished == 1 ? "" : "s").", ok: true)
+                } else {
+                    self.report("Added \(finished - failures.count) of \(finished) — "
+                                + "\(failures.count) refused.", ok: false)
+                    // The sentences go in a dialog, not the one-line label: three
+                    // refusals' worth of text in a label is either clipped (so the
+                    // reason is unreadable, which is the bug again) or grown into
+                    // the window's required height, which is how the Fleet page
+                    // once pushed its own bottom edge off-screen.
+                    let alert = NSAlert()
+                    alert.messageText = failures.count == 1
+                        ? "One voice could not be added"
+                        : "\(failures.count) voices could not be added"
+                    alert.informativeText = failures.joined(separator: "\n\n")
+                    alert.alertStyle = .warning
+                    alert.addButton(withTitle: "OK")
+                    alert.runModal()
+                }
+                self.reload()
             }
         }
     }
@@ -830,8 +897,8 @@ final class VoicesSection: NSObject, AppSection, NSTableViewDataSource, NSTableV
             // Only this Mac's own voices can be shared, and only once the owner has
             // allowed it. "Private" has to be visible, or he cannot tell which of
             // his voices would be copied to another machine.
-            let mine = (voice["id"] as? String)?.hasPrefix("studio-hub-local") == true
-            let allowed = (voice["raw"] as? [String: Any])?["permission_acknowledged"] as? Bool == true
+            let mine = (voice["provider_id"] as? String) == Self.localProviderId
+            let allowed = (voice["permission_acknowledged"] as? Bool) == true
             if !mine {
                 field.stringValue = "—"
                 field.textColor = .tertiaryLabelColor

@@ -108,6 +108,24 @@ class Voice:
             # rather than inferred: a voice whose duration was never recorded
             # says `None` instead of a plausible guess.
             "duration_seconds": (self.raw or {}).get("duration_seconds"),
+            # **These three used to live only in `raw`, which is never
+            # serialised.** The menu bar app read `row["raw"]["owner_id"]` and
+            # `row["raw"]["permission_acknowledged"]`, so it sent no owner for an
+            # ElevenLabs library voice (every import 422'd, and the error was
+            # swallowed) and every local voice rendered "Private" for ever, even
+            # after the grant succeeded. Published top-level now, because a field
+            # a reader needs is part of the contract, not an implementation detail.
+            "owner_id": (self.raw or {}).get("owner_id"),
+            # `None`, not `False`, for a voice whose permission does not apply:
+            # a provider voice is not ours to grant, and saying `False` would
+            # render it as "Private" — a definite claim about a question nobody
+            # asked. Three answers, as everywhere else in this file.
+            "permission_acknowledged": (
+                bool((self.raw or {}).get("permission_acknowledged"))
+                if self.source == SOURCE_LOCAL
+                else None
+            ),
+            "license": (self.raw or {}).get("license"),
         }
 
 

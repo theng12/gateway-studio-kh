@@ -176,6 +176,33 @@ def write_voice_files(entry: dict) -> None:
         return
 
 
+def catalogue_id(value: Any) -> str:
+    """The id a voice has **in this catalogue**, from any spelling of it.
+
+    A caller may name a voice the way the registry publishes it
+    (`studio-hub-local::voice-a9aedc5c6bd3`) or the way the catalogue stores it
+    (`voice-a9aedc5c6bd3`). These routes matched the stored form exactly, so the
+    menu bar app — which sends the published form, because that is what
+    `/admin/api/voices` returns — got `changed: 0` and reported success, pushed
+    nothing, and **bypassed the 403 that refuses to share a voice whose owner
+    never granted permission**. Both spellings are really sent, so both are
+    accepted.
+
+    **Only this Mac's own namespace is stripped.** The catalogue holds this Mac's
+    clips and nothing else, so `studio-hub-local` is the only prefix that can be
+    on an id it knows; stripping whatever precedes `::` would make
+    `elevenlabs-direct::voice-a` and `volc::voice-a` the same voice, which is
+    exactly the "identity derived from a label" mistake the fleet id rules exist
+    to prevent.
+    """
+    from .fleet import LOCAL_ID, provider_id_for  # local import: avoids a cycle
+    from .voices import ID_SEPARATOR
+
+    raw = str(value or "")
+    local_prefix = provider_id_for(LOCAL_ID) + ID_SEPARATOR
+    return raw[len(local_prefix):] if raw.startswith(local_prefix) else raw
+
+
 def set_permission(
     voice_ids: list[str], acknowledged: bool, *, license: str = ""
 ) -> dict:
@@ -190,7 +217,7 @@ def set_permission(
     Withdrawing is as important as granting: `acknowledged=False` puts a voice back
     to private, including one that was already pushed.
     """
-    wanted = {str(v) for v in voice_ids if v}
+    wanted = {catalogue_id(v) for v in voice_ids if v}
     if not wanted:
         return {"changed": 0, "acknowledged": acknowledged}
 
@@ -234,9 +261,9 @@ def share(voice_ids: list[str], *, wait: bool = True) -> dict:
     """
     from . import fleet
 
-    wanted = {str(v) for v in voice_ids if v}
-    entries = [v for v in voices() if str(v.get("id")) in wanted]
-    missing = sorted(wanted - {str(v.get("id")) for v in entries})
+    wanted = {catalogue_id(v) for v in voice_ids if v}
+    entries = [v for v in voices() if catalogue_id(v.get("id")) in wanted]
+    missing = sorted(wanted - {catalogue_id(v.get("id")) for v in entries})
 
     results: list[dict] = []
     for entry in entries:

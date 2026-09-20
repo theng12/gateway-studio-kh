@@ -1851,6 +1851,84 @@ def main() -> int:
                   refused.status_code == 403 and "not been allowed" in refused.text,
                   f"HTTP {refused.status_code} {refused.text[:140]}")
 
+            print("\n\033[1m18a. The row a reader actually gets, and both spellings of an id\033[0m")
+            # Two readers — the menu bar app and this suite — believed these fields
+            # lived in `raw`. `raw` is provider data and is **never serialised**, so
+            # both were reading a key that does not exist: the app sent no owner for
+            # an ElevenLabs library voice (every import 422'd, and it discarded the
+            # error, so it looked like nothing happened) and every local voice
+            # rendered "Private" for ever, even after the owner granted it. A field a
+            # reader needs is part of the contract, not an implementation detail.
+            rows = req(client, "GET", "/admin/api/voices").json()["voices"]
+            morgan_row = next(r for r in rows if r["provider_voice_id"] == "voice-morgan")
+            check("a voice row carries no `raw` at all, so nothing may read it",
+                  "raw" not in morgan_row, f"{sorted(morgan_row)}")
+            check("permission, owner and licence are published where a reader can see them",
+                  {"owner_id", "permission_acknowledged", "license"} <= set(morgan_row),
+                  f"{sorted(morgan_row)}")
+            check("and this Mac's own voice says `False` — a real answer, not `None`",
+                  morgan_row["permission_acknowledged"] is False,
+                  repr(morgan_row["permission_acknowledged"]))
+
+            req(client, "POST", "/admin/api/voices/shared",
+                json={"items": ["voice-morgan"], "acknowledged": True})
+            regranted = next(r for r in req(client, "GET", "/admin/api/voices").json()["voices"]
+                             if r["provider_voice_id"] == "voice-morgan")
+            check("a grant is visible in the row the app renders",
+                  regranted["permission_acknowledged"] is True
+                  and regranted["license"] == "self-owned",
+                  f"{regranted['permission_acknowledged']} {regranted['license']}")
+
+            # The app sends the **published** id (`studio-hub-local::voice-morgan`);
+            # the catalogue stores the bare one. The routes matched the stored form
+            # exactly, so the app's grant reported `changed: 0` — success at nothing
+            # — and its Share walked straight past the 403 below.
+            published = regranted["id"]
+            check("the published id is namespaced by the maker",
+                  published.endswith("::voice-morgan"), published)
+            by_namespace = req(client, "POST", "/admin/api/voices/shared",
+                               json={"items": [published], "acknowledged": False}).json()
+            check("withdrawing by the published id reaches the same voice",
+                  by_namespace.get("changed") == 1, f"{by_namespace}")
+            check("and the bare id and the namespaced id name one voice",
+                  voice_import.catalogue_id(published)
+                  == voice_import.catalogue_id("voice-morgan")
+                  == "voice-morgan")
+            bypass = req(client, "POST", "/admin/api/voices/share",
+                         json={"items": [published]})
+            check("so a namespaced id cannot spell its way past the permission",
+                  bypass.status_code == 403 and "not been allowed" in bypass.text,
+                  f"HTTP {bypass.status_code} {bypass.text[:140]}")
+            check("an id that is not there normalises to nothing, never to a match",
+                  voice_import.catalogue_id(None) == ""
+                  and voice_import.catalogue_id("") == "")
+            # Only this Mac's namespace is ours to strip. Stripping whatever
+            # precedes `::` would fold one provider's `voice-a` onto another's, and
+            # two different voices would answer to one id.
+            check("another provider's namespace is left alone, not folded onto ours",
+                  voice_import.catalogue_id("elevenlabs-direct::voice-a")
+                  == "elevenlabs-direct::voice-a",
+                  voice_import.catalogue_id("elevenlabs-direct::voice-a"))
+            check("so two providers' voices with the same tail stay two voices",
+                  voice_import.catalogue_id("elevenlabs-direct::voice-a")
+                  != voice_import.catalogue_id("volc::voice-a"))
+
+            # A provider voice is not the owner's to grant, so its answer is `None`
+            # — "this question does not apply to me" — and `False` would render it
+            # as "Private", a definite claim about a question nobody asked. Built
+            # directly because no mock lane serves a library voice.
+            from gateway.voices import SOURCE_ACCOUNT, Voice as _Voice
+            provider_row = _Voice(
+                id="elevenlabs-direct::abc", provider_id="elevenlabs-direct",
+                provider_voice_id="abc", display_name="A library voice",
+                source=SOURCE_ACCOUNT, raw={"owner_id": "owner-1"},
+            ).as_dict()
+            check("a provider voice says `None`, not `False`, about permission",
+                  provider_row["permission_acknowledged"] is None,
+                  repr(provider_row["permission_acknowledged"]))
+            check("and its owner id is published at the top level, where the app reads it",
+                  provider_row["owner_id"] == "owner-1", repr(provider_row["owner_id"]))
+
             print("\n\033[1m18b. Sharing a voice actually reaches a controller\033[0m")
             # The fan-out is the most heavily specified path in this codebase and
             # had NO endpoint-level test: only its pure helpers were covered, so the
