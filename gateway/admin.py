@@ -15,9 +15,20 @@ from __future__ import annotations
 import time
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 import httpx
-from fastapi import APIRouter, Depends, Header, Query, Request, Response
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    Form,
+    Header,
+    Query,
+    Request,
+    Response,
+    UploadFile,
+)
 from fastapi.responses import HTMLResponse, JSONResponse
 
 from .activity import story_activity
@@ -58,8 +69,18 @@ def require_admin(
 
 # FastAPI needs the exception registered on the app, so the router returns a
 # plain JSONResponse from handlers that can fail instead of raising a custom type.
-def _error(status: int, detail: str) -> JSONResponse:
-    return JSONResponse(status_code=status, content={"detail": detail})
+def _error(status: int, detail: str, code: str | None = None) -> JSONResponse:
+    """A refusal the console can act on.
+
+    `code` is carried through where there is one, because the console and Story
+    Studio must read the same vocabulary for the same refusal — a 404 that says
+    `MODEL_NOT_FOUND` on `/v1` and nothing on `/admin` is one fact spelled two ways,
+    and the caller that has to branch on it is the one that gets less.
+    """
+    body: dict[str, Any] = {"detail": detail}
+    if code:
+        body["code"] = code
+    return JSONResponse(status_code=status, content=body)
 
 
 # ---------------------------------------------------------------------------
@@ -584,6 +605,161 @@ def download_artifact(
         media_type=str(chosen.get("media_type") or "application/octet-stream"),
         headers=headers,
     )
+
+
+# ---------------------------------------------------------------------------
+# Create — the console's own door to generation.
+#
+# The customer routes under `/v1` need the Story Studio API key, which a browser
+# page does not hold, so the console cannot start work through them. These wrap
+# **the same `_submit`** the customer routes call rather than a second copy of the
+# rules, so resolution, the enablement gate, the idempotency-key cross-modality
+# refusal and the modality dispatch all stay in one place: a model the catalogue
+# offers is exactly a model this can run, and one it withholds cannot be started
+# here either.
+# ---------------------------------------------------------------------------
+
+#: The modalities the Create surface can start. Transcription is absent on purpose:
+#: it carries a file, so it has its own route rather than a JSON body.
+CREATE_MODALITIES = ("chat", "image", "video", "music", "tts")
+
+
+@router.get("/api/create/models", dependencies=[Depends(require_admin)])
+def create_models() -> dict[str, Any]:
+    """What Create may pick, per modality — the offered, switched-on catalogue.
+
+    Built from `_flat_models()`, which already asks `can_publish`, and then filtered
+    to what is *enabled*, because that is exactly what `_submit` resolves against. A
+    picker built from anything else would offer rows the submit would refuse — the
+    "a row you can tick that will never run" defect, in a new place.
+    """
+    wanted = set(CREATE_MODALITIES) | {"transcription"}
+    by_modality: dict[str, list[dict[str, Any]]] = {m: [] for m in wanted}
+    for row in _flat_models():
+        if not row["enabled"] or not row["provider_enabled"]:
+            continue
+        if row["modality"] not in wanted:
+            continue
+        by_modality[row["modality"]].append(
+            {
+                # The same compound id the customer catalogue publishes, so the id
+                # the owner picks is the id Story Studio would send.
+                "id": f"{row['provider_id']}::{row['model_id']}",
+                "model_id": row["model_id"],
+                "provider_id": row["provider_id"],
+                "provider_name": row["provider_name"],
+                "display_name": row["display_name"] or row["model_id"],
+                "free_lane": row["free_lane"],
+                "data_use": row["data_use"],
+            }
+        )
+    for rows in by_modality.values():
+        rows.sort(key=lambda m: (m["provider_name"].lower(), m["model_id"]))
+    return {
+        "by_modality": by_modality,
+        "counts": {k: len(v) for k, v in by_modality.items()},
+    }
+
+
+@router.post("/api/create", dependencies=[Depends(require_admin)])
+def create_submit(payload: dict[str, Any]) -> Any:
+    """Queue one generation. Returns the job envelope, which is also how it polls."""
+    from .api import GatewayError, _job_envelope, _submit
+
+    modality = str(payload.get("modality") or "")
+    if modality not in CREATE_MODALITIES:
+        return _error(
+            422, f"modality must be one of {', '.join(CREATE_MODALITIES)}"
+        )
+    model_id = str(payload.get("model_id") or "").strip()
+    if not model_id:
+        return _error(422, "model_id is required")
+    params = payload.get("params")
+    if not isinstance(params, dict):
+        params = {}
+    # The model id belongs in the params the adapter reads; the console sends the
+    # rest of the fields and never has to know which of them a lane wants.
+    params = {**params, "model_id": model_id}
+    # A key per attempt: the console sends one so a retry after a dropped response
+    # reattaches to the job it already made rather than making a second one.
+    key = str(payload.get("idempotency_key") or "").strip() or str(uuid4())
+    try:
+        job, created = _submit(modality, model_id, params, key)
+    except GatewayError as exc:
+        return _error(exc.status, exc.detail, exc.code)
+    return {"created": created, **_job_envelope(job)}
+
+
+@router.post("/api/create/transcription", dependencies=[Depends(require_admin)])
+async def create_transcription(
+    model_id: str = Form(...),
+    file: UploadFile = File(...),
+    language: str = Form(default=""),
+    idempotency_key: str = Form(default=""),
+) -> Any:
+    """Queue a transcription from an uploaded file.
+
+    The `/v1` lane stages the upload between a quote and a confirm; the console has
+    the bytes already, so it stages them once and queues. Both end in the same
+    `_submit("transcription", …)` with a `_upload_path`, which is why this is a
+    route and not a second implementation.
+    """
+    from .api import GatewayError, _job_envelope, _submit, _MAX_UPLOAD_BYTES
+    from .config import ARTIFACT_DIR
+    from pathlib import Path
+
+    content = await file.read()
+    if not content:
+        return _error(422, "the uploaded file is empty")
+    # **413, never 402**, and with the number in it: every cloud transcription API
+    # on this gateway caps one upload at 25 MB, so a bigger file is refused here
+    # rather than staged, queued, and failed after the bytes have travelled.
+    if len(content) > _MAX_UPLOAD_BYTES:
+        return _error(
+            413,
+            f"That file is {len(content) // (1024 * 1024)} MB; this gateway accepts "
+            f"{_MAX_UPLOAD_BYTES // (1024 * 1024)} MB per request.",
+        )
+    name = file.filename or "upload.bin"
+    upload_dir = Path(str(ARTIFACT_DIR)) / "uploads"
+    upload_dir.mkdir(parents=True, exist_ok=True)
+    staged = upload_dir / f"console-{uuid4().hex}{Path(name).suffix or '.bin'}"
+    staged.write_bytes(content)
+
+    key = idempotency_key.strip() or str(uuid4())
+    params: dict[str, Any] = {
+        "_upload_path": str(staged),
+        "_upload_name": name,
+        "_upload_type": file.content_type or "application/octet-stream",
+    }
+    if language.strip():
+        params["language"] = language.strip()
+    try:
+        job, created = _submit("transcription", model_id, params, key)
+    except GatewayError as exc:
+        return _error(exc.status, exc.detail, exc.code)
+    return {"created": created, **_job_envelope(job)}
+
+
+@router.get("/api/create/status/{job_id}", dependencies=[Depends(require_admin)])
+def create_status(job_id: str) -> Any:
+    """Poll any modality the console started, through one route."""
+    from .api import _job_envelope
+
+    job = store.get(job_id)
+    if job is None:
+        return _error(404, f"no job '{job_id}'")
+    return _job_envelope(job)
+
+
+@router.post("/api/create/status/{job_id}/cancel", dependencies=[Depends(require_admin)])
+def create_cancel(job_id: str) -> Any:
+    from .api import _job_envelope
+
+    job = store.get(job_id)
+    if job is None:
+        return _error(404, f"no job '{job_id}'")
+    return _job_envelope(store.cancel(job_id))
 
 
 # ---------------------------------------------------------------------------

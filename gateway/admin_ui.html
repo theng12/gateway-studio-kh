@@ -140,6 +140,47 @@
   @keyframes sp { to { transform: rotate(360deg); } }
   code { font-family: ui-monospace, monospace; background: var(--panel2); padding: 1px 5px; border-radius: 4px; }
   input[type=checkbox] { width: 15px; height: 15px; accent-color: var(--accent); cursor: pointer; }
+
+  /* ---- Create ------------------------------------------------------------
+     Studio Hub's Create workspaces are a form on the left and the result on the
+     right, with the output area holding the empty state until there is something
+     to show. Same shape here, because it is the one the owner asked to match —
+     the difference is that these lanes are cloud models, so the copy says so
+     rather than claiming "locally". */
+  .tabs { display: flex; gap: 6px; margin: 0 0 15px; flex-wrap: wrap; }
+  .tabs button { border-radius: 99px; padding: 5px 14px; font-size: 12.5px; }
+  .tabs button[aria-selected="true"] {
+    background: var(--accent); border-color: transparent; color: var(--on-accent);
+  }
+  .split { display: grid; grid-template-columns: minmax(300px, 400px) minmax(0, 1fr); gap: 18px; align-items: start; }
+  @media (max-width: 920px) { .split { grid-template-columns: minmax(0, 1fr); } }
+  .pane { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 15px; }
+  .pane h2 { font-size: 14px; margin: 0 0 12px; }
+  textarea {
+    background: color-mix(in srgb, CanvasText 4%, Canvas); color: var(--text);
+    border: 1px solid var(--line); border-radius: 8px; padding: 9px 10px;
+    font-size: 13px; width: 100%; resize: vertical; font-family: inherit;
+  }
+  textarea:focus { outline: none; border-color: var(--accent); }
+  .results {
+    min-height: 200px; background: var(--panel2); border: 1px solid var(--line);
+    border-radius: var(--radius); padding: 14px;
+  }
+  .artifact { margin-bottom: 14px; }
+  .artifact img, .artifact video { max-width: 100%; max-height: 340px; border-radius: 6px; display: block; }
+  .artifact audio { width: 100%; }
+  .artifact .row { margin-top: 8px; }
+  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  pre.out {
+    white-space: pre-wrap; word-break: break-word; font-size: 12.5px;
+    font-family: ui-monospace, monospace; margin: 0 0 10px; max-height: 340px; overflow: auto;
+  }
+  .recent { margin-top: 14px; }
+  .recent .item {
+    display: flex; gap: 8px; align-items: center; font-size: 12px;
+    padding: 5px 0; border-bottom: 1px solid var(--line);
+  }
+  .recent .item:last-child { border-bottom: 0; }
 </style>
 </head>
 <body>
@@ -198,6 +239,27 @@
     </div>
     <div id="providers"></div>
   </section>
+  <!-- CREATE -->
+  <section id="view-create" style="display:none">
+    <div class="heading">
+      <h1>Create</h1>
+      <p>Make an asset here and then use it anywhere — no Story Studio project needed.
+        These are the same cloud models Story Studio picks from, so what you make is
+        what it would have made. <b>Anything you keep is yours; anything you leave
+        gets pruned after 7 days</b>, because this gateway is a receiver and normally
+        the project holds the copy that matters.</p>
+    </div>
+    <div class="tabs" id="create-tabs"></div>
+    <div class="split">
+      <div class="pane" id="create-form"></div>
+      <div>
+        <div class="results" id="create-result">
+          <div class="empty">Nothing generated yet.</div>
+        </div>
+        <div class="recent" id="create-recent"></div>
+      </div>
+    </div>
+  </section>
 </main>
 
 <script>
@@ -229,8 +291,10 @@ function setView(view) {
   state.view = view;
   document.getElementById('view-models').style.display = view === 'models' ? '' : 'none';
   document.getElementById('view-providers').style.display = view === 'providers' ? '' : 'none';
+  document.getElementById('view-create').style.display = view === 'create' ? '' : 'none';
   if (view === 'models') loadModels();
-  else loadProviders();
+  else if (view === 'providers') loadProviders();
+  else loadCreate();
 }
 
 async function loadStatus() {
@@ -659,14 +723,328 @@ async function refreshAll(btn) {
 
 document.getElementById('filter').addEventListener('input', renderProviders);
 
-// The app now shows Models and Providers as two sidebar pages, so each one
-// opens this console already on its own view. Without the hash both pages would
-// land on Models and the Providers page would look wrong.
+// The app shows Models, Providers and Create as separate sidebar pages, so each
+// one opens this console already on its own view. Without the hash they would all
+// land on Models and two of the three would look wrong.
 function viewFromHash() {
-  return location.hash === '#providers' ? 'providers' : 'models';
+  const hash = (location.hash || '').replace(/^#/, '');
+  if (hash.startsWith('providers')) return 'providers';
+  if (hash.startsWith('create')) return 'create';
+  return 'models';
 }
 
 window.addEventListener('hashchange', () => setView(viewFromHash()));
+
+// ---------------------------------------------------------------------------
+// Create — generate an asset without Story Studio in the loop.
+//
+// The set, the order and the owner-facing names are Studio Hub's: Audio,
+// Subtitle, Image, Music, Video, Chat. Its workspaces are a form on the left and
+// the result on the right, so this is too. The one thing deliberately *not*
+// copied is its wording: those pages say "generate it locally" because their
+// engines are local, and these lanes are cloud models — so this says so.
+//
+// Everything a lane needs is data (`CREATE_FIELDS`), not six near-copies of the
+// same markup, so adding a field is one line and the six cannot drift apart.
+// ---------------------------------------------------------------------------
+const CREATE_TABS = [
+  { key: 'audio', modality: 'tts', title: 'Audio',
+    blurb: 'Write a script, choose a voice and generate spoken audio.' },
+  { key: 'subtitle', modality: 'transcription', title: 'Subtitle',
+    blurb: 'Import a recording and read its transcript.' },
+  { key: 'image', modality: 'image', title: 'Image',
+    blurb: 'Describe an image and generate it.' },
+  { key: 'music', modality: 'music', title: 'Music',
+    blurb: 'Describe the music you want.' },
+  { key: 'video', modality: 'video', title: 'Video',
+    blurb: 'Describe the shot and generate it.' },
+  { key: 'chat', modality: 'chat', title: 'Chat',
+    blurb: 'Ask a model directly.' },
+];
+
+const CREATE_FIELDS = {
+  audio: [
+    { k: 'text', label: 'Script', type: 'textarea', rows: 7, placeholder: 'Write what should be spoken…' },
+    { k: 'voice_id', label: 'Voice', type: 'voice' },
+  ],
+  subtitle: [],
+  image: [
+    { k: 'prompt', label: 'Prompt', type: 'textarea', rows: 6, placeholder: 'Describe the image…' },
+    { k: 'n', label: 'How many', type: 'number', value: 1, min: 1, max: 10,
+      hint: 'A provider that answers several variations returns all of them.' },
+  ],
+  music: [
+    { k: 'prompt', label: 'Describe the music', type: 'textarea', rows: 5, placeholder: 'calm piano, late night…' },
+    { k: 'style', label: 'Style', type: 'text', placeholder: 'Classical' },
+    { k: 'title', label: 'Title', type: 'text', placeholder: 'Peaceful' },
+  ],
+  video: [
+    { k: 'prompt', label: 'Prompt', type: 'textarea', rows: 5, placeholder: 'Describe the shot…' },
+  ],
+  chat: [
+    { k: 'prompt', label: 'Message', type: 'textarea', rows: 6, placeholder: 'Ask anything…' },
+  ],
+};
+
+let createTab = 'image';
+let createCatalogue = null;
+let createVoices = [];
+const createTimers = {};
+
+function currentTab() { return CREATE_TABS.find(t => t.key === createTab) || CREATE_TABS[2]; }
+
+function renderCreateTabs() {
+  document.getElementById('create-tabs').innerHTML = CREATE_TABS.map(t =>
+    `<button data-tab="${t.key}" aria-selected="${t.key === createTab}"
+             onclick="selectCreateTab('${t.key}')">${esc(t.title)}</button>`).join('');
+}
+
+function selectCreateTab(key) {
+  createTab = key;
+  renderCreateTabs();
+  renderCreateForm();
+  document.getElementById('create-result').innerHTML = '<div class="empty">Nothing generated yet.</div>';
+  renderCreateRecent();
+}
+
+async function loadCreate() {
+  renderCreateTabs();
+  if (!createCatalogue) {
+    try {
+      createCatalogue = await (await fetch('/admin/api/create/models')).json();
+    } catch (e) { createCatalogue = { by_modality: {}, counts: {} }; }
+  }
+  if (!createVoices.length) {
+    // Best effort: a voice is required by every TTS lane here (the gateway refuses
+    // to invent one), so offer what the library has and let it be typed otherwise.
+    try {
+      const v = await (await fetch('/admin/api/voices')).json();
+      createVoices = (v.voices || []).map(x => ({ id: x.id, name: x.name || x.id }));
+    } catch (e) { createVoices = []; }
+  }
+  renderCreateForm();
+  renderCreateRecent();
+}
+
+function renderCreateForm() {
+  const t = currentTab();
+  const rows = (createCatalogue && createCatalogue.by_modality[t.modality]) || [];
+  const fields = CREATE_FIELDS[t.key] || [];
+  const body = fields.map(f => {
+    if (f.type === 'textarea') {
+      return `<div style="margin-bottom:12px"><label>${esc(f.label)}</label>
+        <textarea id="cf-${f.k}" rows="${f.rows || 5}" placeholder="${esc(f.placeholder || '')}"></textarea></div>`;
+    }
+    if (f.type === 'voice') {
+      const opts = createVoices.map(v => `<option value="${esc(v.id)}">${esc(v.name)}</option>`).join('');
+      return `<div style="margin-bottom:12px"><label>${esc(f.label)}</label>
+        <input type="text" id="cf-${f.k}" list="cf-voices" placeholder="a voice id">
+        <datalist id="cf-voices">${opts}</datalist></div>`;
+    }
+    if (f.type === 'number') {
+      return `<div style="margin-bottom:12px"><label>${esc(f.label)}</label>
+        <input type="number" id="cf-${f.k}" value="${f.value}" min="${f.min}" max="${f.max}" style="width:110px">
+        ${f.hint ? `<div class="hint">${esc(f.hint)}</div>` : ''}</div>`;
+    }
+    return `<div style="margin-bottom:12px"><label>${esc(f.label)}</label>
+      <input type="text" id="cf-${f.k}" placeholder="${esc(f.placeholder || '')}"></div>`;
+  }).join('');
+
+  const upload = t.modality === 'transcription'
+    ? `<div style="margin-bottom:12px"><label>Recording</label>
+         <input type="file" id="cf-file" accept="audio/*,video/*"></div>
+       <div style="margin-bottom:12px"><label>Language</label>
+         <input type="text" id="cf-language" placeholder="leave blank to detect"></div>`
+    : '';
+
+  const picker = rows.length
+    ? `<div style="margin-bottom:12px"><label>Model</label>
+         <select id="cf-model">${rows.map(m =>
+           `<option value="${esc(m.id)}">${esc(m.provider_name)} — ${esc(m.display_name)}${m.free_lane ? ' · free' : ''}</option>`
+         ).join('')}</select></div>`
+    : `<div class="msg bad" style="margin-bottom:12px">No model is switched on for this lane.
+         Enable one on the Models page and it appears here.</div>`;
+
+  document.getElementById('create-form').innerHTML =
+    `<h2>${esc(t.title)}</h2><div class="hint" style="margin:-6px 0 14px">${esc(t.blurb)}</div>
+     ${picker}${upload}${body}
+     <div class="row"><button class="primary" id="cf-go" onclick="submitCreate(this)">Generate</button>
+       <span class="msg" id="cf-msg"></span></div>`;
+}
+
+function cfValue(k) { const el = document.getElementById('cf-' + k); return el ? el.value.trim() : ''; }
+
+async function submitCreate(btn) {
+  const t = currentTab();
+  const msg = document.getElementById('cf-msg');
+  const key = (crypto.randomUUID ? crypto.randomUUID() : String(Date.now() + Math.random()));
+  btn.disabled = true;
+  msg.className = 'msg';
+  msg.textContent = 'submitting…';
+  try {
+    let res;
+    if (t.modality === 'transcription') {
+      const fileEl = document.getElementById('cf-file');
+      if (!fileEl || !fileEl.files.length) throw new Error('choose a recording first');
+      const modelEl = document.getElementById('cf-model');
+      if (!modelEl) throw new Error('no transcription model is switched on');
+      const fd = new FormData();
+      fd.append('model_id', modelEl.value);
+      fd.append('file', fileEl.files[0]);
+      fd.append('language', cfValue('language'));
+      fd.append('idempotency_key', key);
+      res = await fetch('/admin/api/create/transcription', { method: 'POST', body: fd });
+    } else {
+      const modelEl = document.getElementById('cf-model');
+      if (!modelEl) throw new Error('no model is switched on for this lane');
+      const params = {};
+      (CREATE_FIELDS[t.key] || []).forEach(f => {
+        const v = cfValue(f.k);
+        if (v === '') return;
+        if (f.type === 'number') params[f.k] = parseInt(v, 10);
+        else params[f.k] = v;
+      });
+      if (t.modality === 'chat') params.messages = [{ role: 'user', content: params.prompt || '' }];
+      res = await fetch('/admin/api/create', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ modality: t.modality, model_id: modelEl.value, params, idempotency_key: key }),
+      });
+    }
+    const job = await res.json();
+    if (!res.ok) throw new Error(job.detail || ('HTTP ' + res.status));
+    msg.className = 'msg ok';
+    msg.textContent = 'queued';
+    renderCreateResult(job);
+    pollCreate(job.id);
+  } catch (e) {
+    msg.className = 'msg bad';
+    msg.textContent = e.message;
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+function pollCreate(id) {
+  if (createTimers[id]) clearInterval(createTimers[id]);
+  let ticks = 0;
+  createTimers[id] = setInterval(async () => {
+    ticks += 1;
+    try {
+      const job = await (await fetch('/admin/api/create/status/' + encodeURIComponent(id))).json();
+      if (job.detail) throw new Error(job.detail);
+      renderCreateResult(job);
+      if (job.state === 'succeeded' || job.state === 'failed' || job.state === 'cancelled') {
+        clearInterval(createTimers[id]);
+        delete createTimers[id];
+        renderCreateRecent();
+      }
+    } catch (e) {
+      clearInterval(createTimers[id]);
+      delete createTimers[id];
+    }
+    if (ticks > 400) { clearInterval(createTimers[id]); delete createTimers[id]; }
+  }, 1500);
+}
+
+function artifactsHtml(modality, outs, jobId) {
+  if (!outs.length) return '<div class="empty">This job produced no artifact.</div>';
+  const many = outs.length > 1
+    ? `<div class="hint" style="margin-bottom:10px">${outs.length} results — every one the model returned.</div>`
+    : '';
+  return many + outs.map(o => {
+    const url = '/admin/api/artifacts/' + jobId + '/outputs/' + o.asset_id;
+    let preview;
+    if (modality === 'image') preview = `<img src="${url}" alt="generated image">`;
+    else if (modality === 'video') preview = `<video controls src="${url}"></video>`;
+    else preview = `<audio controls src="${url}"></audio>`;
+    return `<div class="artifact" id="art-${jobId}-${o.asset_id}">${preview}
+      <div class="row">
+        <a href="${url}?download=1"><button class="sm">Save…</button></a>
+        <button class="sm" onclick="keepArtifact('${jobId}','${o.asset_id}',this)">Keep</button>
+        <span class="hint" id="keep-msg-${jobId}-${o.asset_id}"></span>
+      </div></div>`;
+  }).join('');
+}
+
+async function keepArtifact(jobId, assetId, btn) {
+  const note = document.getElementById('keep-msg-' + jobId + '-' + assetId);
+  btn.disabled = true;
+  try {
+    const r = await fetch('/admin/api/artifacts/keep', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ job_id: jobId, asset_id: assetId, keep: true }),
+    });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.detail || ('HTTP ' + r.status));
+    note.className = 'hint ok';
+    note.textContent = 'kept — the 7-day prune will not take it';
+    btn.textContent = 'Kept';
+  } catch (e) {
+    note.className = 'hint bad';
+    note.textContent = e.message;
+    btn.disabled = false;
+  }
+}
+
+function renderCreateResult(job) {
+  const box = document.getElementById('create-result');
+  const modality = job.modality || currentTab().modality;
+  const outs = job.outputs || [];
+  if (job.state === 'failed') {
+    box.innerHTML = `<div class="msg bad">${esc(job.failure_reason || 'the generation failed')}
+      ${job.failure_code ? ` <span class="mid">${esc(job.failure_code)}</span>` : ''}</div>`;
+    return;
+  }
+  if (job.state !== 'succeeded') {
+    box.innerHTML = `<div class="row"><span class="spin">◐</span>
+      <span>${esc(job.state)}…</span><span class="hint">${esc(job.id.slice(0, 8))}</span></div>`;
+    return;
+  }
+  if (modality === 'chat') {
+    box.innerHTML = `<pre class="out">${esc(job.output_text || '')}</pre>`;
+    return;
+  }
+  if (modality === 'transcription') {
+    // The SRT is an artifact, so read it back through the console's own door
+    // rather than the /v1 route, which wants the Story Studio key.
+    box.innerHTML = '<div class="empty">reading transcript…</div>';
+    fetch('/admin/api/artifacts/' + job.id + '/outputs/0')
+      .then(r => r.text())
+      .then(t => {
+        box.innerHTML = `<pre class="out">${esc(t)}</pre>
+          <div class="row"><a href="/admin/api/artifacts/${job.id}/outputs/0?download=1">
+            <button class="sm">Save .srt…</button></a></div>`;
+      })
+      .catch(() => { box.innerHTML = '<div class="msg bad">the transcript could not be read</div>'; });
+    return;
+  }
+  box.innerHTML = artifactsHtml(modality, outs, job.id);
+}
+
+async function renderCreateRecent() {
+  const box = document.getElementById('create-recent');
+  const modality = currentTab().modality;
+  try {
+    const d = await (await fetch('/admin/api/jobs?limit=200')).json();
+    const rows = (d.jobs || []).filter(j => j.modality === modality).slice(0, 6);
+    if (!rows.length) { box.innerHTML = ''; return; }
+    box.innerHTML = '<div class="hint" style="margin-bottom:6px">Recent ' + esc(currentTab().title) + '</div>' +
+      rows.map(j => `<div class="item">
+        <span class="mid">${esc(j.short_id || j.id.slice(0, 8))}</span>
+        <span class="badge ${j.state === 'succeeded' ? 'ok' : (j.state === 'failed' ? 'bad' : '')}">${esc(j.state)}</span>
+        <span class="hint">${esc(j.model_name || j.model_id || '')}</span>
+        <button class="sm" onclick="openCreateJob('${j.id}')">Open</button>
+      </div>`).join('');
+  } catch (e) { box.innerHTML = ''; }
+}
+
+async function openCreateJob(id) {
+  const job = await (await fetch('/admin/api/create/status/' + encodeURIComponent(id))).json();
+  if (job.detail) return;
+  renderCreateResult(job);
+  if (job.state !== 'succeeded' && job.state !== 'failed' && job.state !== 'cancelled') pollCreate(id);
+}
+
 
 (async function init() {
   await loadStatus();

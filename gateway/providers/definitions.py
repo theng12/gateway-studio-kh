@@ -253,7 +253,18 @@ def transcription_can_serve(model_id: str) -> bool:
     `whisper-1` and every local Studio Hub Whisper model can; see
     `TRANSCRIPTION_SRT_UNSUPPORTED` for the ones that cannot.
     """
-    return model_id not in TRANSCRIPTION_SRT_UNSUPPORTED
+    if model_id in TRANSCRIPTION_SRT_UNSUPPORTED:
+        return False
+    # **The family, not just the spellings.** OpenAI keeps minting `gpt-*-transcribe*`
+    # variants that accept `json`/`text` only, and each new one is publishable until
+    # someone runs it and finds out — which is exactly what happened next:
+    # `gpt-4o-mini-transcribe-api-ev3` failed with *"response_format 'srt' is not
+    # compatible with model 'gpt-4o-mini-transcribe-api-ev3'"* while its four
+    # siblings sat in the list above. A version suffix is not a new capability, so
+    # the rule matches the family and the list keeps the ids that are not simply
+    # `gpt-*transcribe*` (the diarising and streaming endpoints).
+    lowered = str(model_id or "").lower()
+    return not (lowered.startswith("gpt-") and "transcribe" in lowered)
 
 
 #: Model families a provider lists in the **same `/models` catalogue as its chat

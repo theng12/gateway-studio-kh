@@ -1575,6 +1575,16 @@ def main() -> int:
                   and not _stt_ok("whisper-large-v3-turbo")
                   and _stt_ok("mlx-community/whisper-large-v3-turbo"),
                   "the local lane's namespaced id must survive the rule")
+            # A version suffix is not a new capability. `gpt-4o-mini-transcribe-api-ev3`
+            # was published and failed with *"response_format 'srt' is not compatible
+            # with model …"* while four of its siblings were already listed — so the
+            # rule matches the family, and the check names a spelling nobody listed.
+            check("a new spelling of a family that cannot do SRT is withheld unlisted",
+                  not _stt_ok("gpt-4o-mini-transcribe-api-ev3")
+                  and not _stt_ok("gpt-5-transcribe-preview-2030")
+                  and _stt_ok("whisper-1")
+                  and _stt_ok("some-other-vendors-transcriber"),
+                  "the family rule must not swallow ids that only look similar")
             # The rule has to reach the catalogue, not just the helper.
             published_stt = {m["id"] for m in
                              req(client, "GET", "/v1/transcription/models").json()["models"]}
@@ -2429,6 +2439,59 @@ def main() -> int:
                 check("and the console is told which indices exist rather than getting a blank file",
                       gone.status_code == 404 and "it has" in gone.text,
                       f"{gone.status_code} {gone.text[:120]}")
+
+            print("\n\033[1m10h. The console can start a generation itself\033[0m")
+            # The `/v1` routes want the Story Studio key, which a browser page does not
+            # hold, so the console has its own door — wrapping **the same `_submit`**,
+            # so the enabled set it offers is exactly the set it can run.
+            cm = req(client, "GET", "/admin/api/create/models").json()
+            check("the Create picker is built from the offered catalogue",
+                  cm["counts"].get("chat", 0) > 0
+                  and all(m["id"] == f"{m['provider_id']}::{m['model_id']}"
+                          for m in cm["by_modality"]["chat"]),
+                  f"{cm['counts']}")
+            bad_modality = req(client, "POST", "/admin/api/create",
+                               json={"modality": "telepathy", "model_id": "x"})
+            check("and an unknown lane is refused, naming the ones that exist",
+                  bad_modality.status_code == 422
+                  and "modality must be one of" in bad_modality.text,
+                  f"{bad_modality.status_code} {bad_modality.text[:120]}")
+            not_offered = req(client, "POST", "/admin/api/create",
+                              json={"modality": "chat", "model_id": "nobody::nothing",
+                                    "params": {}})
+            check("and a model the catalogue withholds cannot be started here either",
+                  not_offered.status_code == 404 and "MODEL_NOT_FOUND" in not_offered.text,
+                  f"{not_offered.status_code} {not_offered.text[:120]}")
+            # The real thing: one generation all the way through the console's own
+            # door, then polled on its own route.
+            started = req(client, "POST", "/admin/api/create",
+                          json={"modality": "chat",
+                                "model_id": "mock-remote::mock-chat-1",
+                                "params": {"messages": [{"role": "user", "content": "hi"}]},
+                                "idempotency_key": f"e2e-console-{int(time.time())}"})
+            check("a generation started from the console is accepted",
+                  started.status_code == 200 and bool(started.json().get("id")),
+                  f"{started.status_code} {started.text[:140]}")
+            if started.status_code == 200:
+                settled = poll(client, f"/admin/api/create/status/{started.json()['id']}")
+                check("and it settles through the console's own poll route",
+                      settled.get("state") == "succeeded",
+                      f"{settled.get('state')} {(settled.get('failure_reason') or '')[:140]}")
+            else:
+                check("and it settles through the console's own poll route", False,
+                      "it was never accepted")
+            # The surface has to ship with the page, or the door exists with nothing
+            # behind it — a control that does nothing, from the other side.
+            create_html = req(client, "GET", "/admin/").text
+            check("and the page carries the Create view with Studio Hub's six lanes",
+                  'id="view-create"' in create_html
+                  and "CREATE_TABS" in create_html
+                  and all(f"key: '{k}'" in create_html for k in
+                          ("audio", "subtitle", "image", "music", "video", "chat")),
+                  "Create must be reachable at #create, not merely implemented")
+            check("and a lane with nothing switched on says so instead of offering a dead button",
+                  "No model is switched on for this lane" in create_html,
+                  "an empty picker must explain itself")
             kie_tasks = httpx.get(
                 f"http://127.0.0.1:{MOCK_PORT}/__test__/kie-tasks").json()["tasks"]
             kie_music = [t for t in kie_tasks
