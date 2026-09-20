@@ -52,7 +52,24 @@ final class ConsoleSection: NSObject, AppSection, WKNavigationDelegate, WKUIDele
 
     /// Lazy so the web view can be built by a closure on self.
     private lazy var webView: WKWebView = {
-        let web = WKWebView(frame: .zero, configuration: WKWebViewConfiguration())
+        // **The console is told the gateway key, because the app owns `.env` and the
+        // owner should not have to paste a secret into a web page to see his own
+        // data.** Once the gateway is bound beyond loopback — for Tailscale or the
+        // LAN — `/admin/*` demands the key even from this Mac, since the check is
+        // about the bind rather than the caller. Injected at document start, so it
+        // is in place before the page's first request; a browser on another device
+        // still pastes its own, and the console prefers the injected value.
+        let config = WKWebViewConfiguration()
+        let key = EnvFile.apiKey()
+        if !key.isEmpty {
+            let script = WKUserScript(
+                source: "window.__GATEWAY_ADMIN_TOKEN__ = \(Self.jsString(key));",
+                injectionTime: .atDocumentStart,
+                forMainFrameOnly: true
+            )
+            config.userContentController.addUserScript(script)
+        }
+        let web = WKWebView(frame: .zero, configuration: config)
         web.navigationDelegate = self
         // Without a UI delegate, `confirm()` and `alert()` in the page are **silent
         // no-ops**: `confirm` returns false, so a handler that asks first simply
@@ -71,6 +88,16 @@ final class ConsoleSection: NSObject, AppSection, WKNavigationDelegate, WKUIDele
         web.setContentCompressionResistancePriority(.defaultLow, for: .vertical)
         return web
     }()
+    /// A Swift string as a JavaScript literal. The key is a secret, so it is encoded
+    /// rather than pasted into the source of a script: a quote or a backslash in it
+    /// would otherwise end the literal and break the page.
+    private static func jsString(_ value: String) -> String {
+        let data = try? JSONSerialization.data(withJSONObject: [value])
+        guard let data, let text = String(data: data, encoding: .utf8),
+              text.count >= 2 else { return "\"\"" }
+        return String(text.dropFirst().dropLast())
+    }
+
     private var loaded = false
     /// Set when a load fails, so the next activation tries the network again
     /// instead of talking to WebKit's error page.

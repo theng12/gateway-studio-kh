@@ -185,6 +185,22 @@
 </head>
 <body>
 <main>
+  <!-- Shown only when the gateway refuses a request for want of a key. It appears
+       when the gateway is bound beyond loopback — for Tailscale or the LAN — where
+       `/admin/*` demands the key even from this Mac. -->
+  <div class="card" id="token-bar" style="display:none">
+    <div class="body">
+      <div class="msg bad" id="token-detail">This gateway requires its API key.</div>
+      <div class="hint" style="margin-top:6px">This gateway is reachable from other
+        devices, so its admin API asks for the gateway key — the one in the app under
+        Settings. Paste it once and this browser remembers it.</div>
+      <div class="row" style="margin-top:10px">
+        <input type="password" id="token-input" placeholder="Gateway API key" style="max-width:340px">
+        <button class="primary" onclick="saveToken()">Use this key</button>
+        <button onclick="document.getElementById('token-bar').style.display='none'">Dismiss</button>
+      </div>
+    </div>
+  </div>
   <!-- MODELS -->
   <section id="view-models">
     <div class="heading">
@@ -276,12 +292,85 @@ const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&
 const ago = (t) => { if (!t) return 'never'; const s = Date.now()/1000 - t;
   return s < 60 ? `${Math.floor(s)}s ago` : s < 3600 ? `${Math.floor(s/60)}m ago` : `${Math.floor(s/3600)}h ago`; };
 
+// **The console has to be able to prove who it is.**
+//
+// `/admin/*` is trusted from loopback and demands the gateway key from anywhere
+// else — and "anywhere else" includes this Mac the moment the gateway is bound
+// beyond loopback to be reachable over Tailscale, because the check is about the
+// bind, not the caller. So every admin request carries the key when there is one.
+//
+// The key comes from `window.__GATEWAY_ADMIN_TOKEN__` when the menu-bar app
+// injected it (the app owns `.env`, so pasting is unnecessary there) and from
+// `localStorage` otherwise, so a browser on another device pastes it once.
+function adminToken() {
+  const injected = window.__GATEWAY_ADMIN_TOKEN__;
+  const stored = localStorage.getItem('gatewayAdminToken') || '';
+  return String(injected || stored).trim();
+}
+
+function adminHeaders(extra) {
+  const headers = Object.assign({}, extra || {});
+  const token = adminToken();
+  if (token) headers['Authorization'] = 'Bearer ' + token;
+  return headers;
+}
+
+function showTokenPrompt(detail) {
+  const bar = document.getElementById('token-bar');
+  if (!bar) return;
+  bar.style.display = '';
+  const note = document.getElementById('token-detail');
+  if (note && detail) note.textContent = detail;
+}
+
+function saveToken() {
+  const field = document.getElementById('token-input');
+  const value = (field && field.value || '').trim();
+  if (value) localStorage.setItem('gatewayAdminToken', value);
+  else localStorage.removeItem('gatewayAdminToken');
+  document.getElementById('token-bar').style.display = 'none';
+  setView(state.view);
+}
+
 async function api(path, opts) {
-  const res = await fetch('/admin/api' + path, opts);
+  const options = Object.assign({}, opts || {});
+  options.headers = adminHeaders(options.headers);
+  const res = await fetch('/admin/api' + path, options);
   const text = await res.text();
   let body = {}; try { body = text ? JSON.parse(text) : {}; } catch { body = { detail: text }; }
+  // A refusal to identify is the one failure worth explaining rather than throwing:
+  // "HTTP 401" sends nobody anywhere.
+  if (res.status === 401 || res.status === 403) showTokenPrompt(body.detail || '');
   if (!res.ok) throw new Error(body.detail || `HTTP ${res.status}`);
   return body;
+}
+
+// Contents cannot go through `api()`: an `<img src>` or an `<a href>` sends no
+// headers, so a bare URL to an admin artifact would 401 and render as a broken
+// image or a failed download. Fetching the bytes and handing the element a blob
+// URL is the only way that works without putting the key in a URL, where it would
+// end up in logs and history.
+async function apiBlob(path) {
+  const res = await fetch('/admin/api' + path, { headers: adminHeaders() });
+  if (res.status === 401 || res.status === 403) {
+    showTokenPrompt('This gateway needs its API key to show artifacts.');
+    throw new Error('this gateway needs its API key');
+  }
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.blob();
+}
+
+function apiText(path) {
+  return apiBlob(path).then(blob => blob.text());
+}
+
+function downloadBlob(url, filename) {
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
 }
 
 function setView(view) {
@@ -811,14 +900,14 @@ async function loadCreate() {
   renderCreateTabs();
   if (!createCatalogue) {
     try {
-      createCatalogue = await (await fetch('/admin/api/create/models')).json();
+      createCatalogue = await api('/create/models');
     } catch (e) { createCatalogue = { by_modality: {}, counts: {} }; }
   }
   if (!createVoices.length) {
     // Best effort: a voice is required by every TTS lane here (the gateway refuses
     // to invent one), so offer what the library has and let it be typed otherwise.
     try {
-      const v = await (await fetch('/admin/api/voices')).json();
+      const v = await api('/voices');
       createVoices = (v.voices || []).map(x => ({ id: x.id, name: x.name || x.id }));
     } catch (e) { createVoices = []; }
   }
@@ -893,7 +982,7 @@ async function submitCreate(btn) {
       fd.append('file', fileEl.files[0]);
       fd.append('language', cfValue('language'));
       fd.append('idempotency_key', key);
-      res = await fetch('/admin/api/create/transcription', { method: 'POST', body: fd });
+      res = await api('/create/transcription', { method: 'POST', body: fd });
     } else {
       const modelEl = document.getElementById('cf-model');
       if (!modelEl) throw new Error('no model is switched on for this lane');
@@ -905,7 +994,7 @@ async function submitCreate(btn) {
         else params[f.k] = v;
       });
       if (t.modality === 'chat') params.messages = [{ role: 'user', content: params.prompt || '' }];
-      res = await fetch('/admin/api/create', {
+      res = await api('/create', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ modality: t.modality, model_id: modelEl.value, params, idempotency_key: key }),
       });
@@ -930,7 +1019,7 @@ function pollCreate(id) {
   createTimers[id] = setInterval(async () => {
     ticks += 1;
     try {
-      const job = await (await fetch('/admin/api/create/status/' + encodeURIComponent(id))).json();
+      const job = await api('/create/status/' + encodeURIComponent(id));
       if (job.detail) throw new Error(job.detail);
       renderCreateResult(job);
       if (job.state === 'succeeded' || job.state === 'failed' || job.state === 'cancelled') {
@@ -951,26 +1040,46 @@ function artifactsHtml(modality, outs, jobId) {
   const many = outs.length > 1
     ? `<div class="hint" style="margin-bottom:10px">${outs.length} results — every one the model returned.</div>`
     : '';
-  return many + outs.map(o => {
-    const url = '/admin/api/artifacts/' + jobId + '/outputs/' + o.asset_id;
+  const html = many + outs.map(o => {
     let preview;
-    if (modality === 'image') preview = `<img src="${url}" alt="generated image">`;
-    else if (modality === 'video') preview = `<video controls src="${url}"></video>`;
-    else preview = `<audio controls src="${url}"></audio>`;
+    if (modality === 'image') preview = '<img data-preview alt="generated image">';
+    else if (modality === 'video') preview = '<video data-preview controls></video>';
+    else preview = '<audio data-preview controls></audio>';
     return `<div class="artifact" id="art-${jobId}-${o.asset_id}">${preview}
       <div class="row">
-        <a href="${url}?download=1"><button class="sm">Save…</button></a>
+        <button class="sm" data-save>Save…</button>
         <button class="sm" onclick="keepArtifact('${jobId}','${o.asset_id}',this)">Keep</button>
         <span class="hint" id="keep-msg-${jobId}-${o.asset_id}"></span>
       </div></div>`;
   }).join('');
+  // The bytes arrive after the markup, because they need the key in a header.
+  outs.forEach(o => hydrateArtifact(modality, jobId, o.asset_id));
+  return html;
+}
+
+function hydrateArtifact(modality, jobId, assetId) {
+  apiBlob(`/artifacts/${jobId}/outputs/${assetId}`).then(blob => {
+    const url = URL.createObjectURL(blob);
+    const box = document.getElementById(`art-${jobId}-${assetId}`);
+    if (!box) return;
+    const media = box.querySelector('[data-preview]');
+    if (media) media.src = url;
+    const save = box.querySelector('[data-save]');
+    if (save) save.onclick = () => downloadBlob(url, `${modality}-${jobId.slice(0, 8)}-${assetId}`);
+  }).catch(e => {
+    const box = document.getElementById(`art-${jobId}-${assetId}`);
+    if (box) box.insertAdjacentHTML('afterbegin', `<div class="msg bad">${esc(e.message)}</div>`);
+    // Retry once the key has been supplied, rather than leaving a dead panel.
+    if (adminToken()) return;
+    setTimeout(() => { if (adminToken()) hydrateArtifact(modality, jobId, assetId); }, 4000);
+  });
 }
 
 async function keepArtifact(jobId, assetId, btn) {
   const note = document.getElementById('keep-msg-' + jobId + '-' + assetId);
   btn.disabled = true;
   try {
-    const r = await fetch('/admin/api/artifacts/keep', {
+    const r = await api('/artifacts/keep', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ job_id: jobId, asset_id: assetId, keep: true }),
     });
@@ -1008,14 +1117,17 @@ function renderCreateResult(job) {
     // The SRT is an artifact, so read it back through the console's own door
     // rather than the /v1 route, which wants the Story Studio key.
     box.innerHTML = '<div class="empty">reading transcript…</div>';
-    fetch('/admin/api/artifacts/' + job.id + '/outputs/0')
-      .then(r => r.text())
-      .then(t => {
+    apiBlob('/artifacts/' + job.id + '/outputs/0').then(blob => {
+      const url = URL.createObjectURL(blob);
+      return blob.text().then(t => {
         box.innerHTML = `<pre class="out">${esc(t)}</pre>
-          <div class="row"><a href="/admin/api/artifacts/${job.id}/outputs/0?download=1">
-            <button class="sm">Save .srt…</button></a></div>`;
-      })
-      .catch(() => { box.innerHTML = '<div class="msg bad">the transcript could not be read</div>'; });
+          <div class="row"><button class="sm" id="srt-save">Save .srt…</button></div>`;
+        const save = document.getElementById('srt-save');
+        if (save) save.onclick = () => downloadBlob(url, `subtitle-${job.id.slice(0, 8)}.srt`);
+      });
+    }).catch(e => {
+      box.innerHTML = `<div class="msg bad">${esc(e.message)}</div>`;
+    });
     return;
   }
   box.innerHTML = artifactsHtml(modality, outs, job.id);
@@ -1025,7 +1137,7 @@ async function renderCreateRecent() {
   const box = document.getElementById('create-recent');
   const modality = currentTab().modality;
   try {
-    const d = await (await fetch('/admin/api/jobs?limit=200')).json();
+    const d = await api('/jobs?limit=200');
     const rows = (d.jobs || []).filter(j => j.modality === modality).slice(0, 6);
     if (!rows.length) { box.innerHTML = ''; return; }
     box.innerHTML = '<div class="hint" style="margin-bottom:6px">Recent ' + esc(currentTab().title) + '</div>' +
@@ -1039,7 +1151,7 @@ async function renderCreateRecent() {
 }
 
 async function openCreateJob(id) {
-  const job = await (await fetch('/admin/api/create/status/' + encodeURIComponent(id))).json();
+  const job = await api('/create/status/' + encodeURIComponent(id));
   if (job.detail) return;
   renderCreateResult(job);
   if (job.state !== 'succeeded' && job.state !== 'failed' && job.state !== 'cancelled') pollCreate(id);

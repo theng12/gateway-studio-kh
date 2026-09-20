@@ -169,6 +169,24 @@ enum EnvFile {
 
     static func apiKey() -> String { read()["GATEWAY_API_KEY"] ?? "" }
 
+    /// The address the gateway binds, from `.env`.
+    ///
+    /// Loopback unless the owner says otherwise, and the default is what keeps the
+    /// endpoint private. Setting `GATEWAY_HOST=0.0.0.0` (or a Tailscale address) is
+    /// what makes it reachable from another device — and the app must honour it,
+    /// because it used to pass `--host 127.0.0.1` on the command line, which
+    /// overrode the file and made the setting a lie.
+    static func host() -> String {
+        let value = (read()["GATEWAY_HOST"] ?? "").trimmingCharacters(in: .whitespaces)
+        return value.isEmpty ? "127.0.0.1" : value
+    }
+
+    /// Whether the gateway is bound beyond loopback, which is what makes the admin
+    /// API ask for the key.
+    static func bindsBeyondLoopback() -> Bool {
+        !["127.0.0.1", "localhost", "::1"].contains(host())
+    }
+
     /// Update the keys this app owns, and **leave every other line untouched**.
     ///
     /// This used to write five hardcoded lines over the whole file. That deleted
@@ -467,7 +485,12 @@ final class GatewayController {
         task.executableURL = executable
         task.arguments = [
             "-m", "uvicorn", "gateway.api:app",
-            "--host", "127.0.0.1", "--port", String(port),
+            // Read, not hard-coded. This used to pass `127.0.0.1` unconditionally,
+            // so a `GATEWAY_HOST` in `.env` was written by this app, shown to the
+            // owner as a setting, and then quietly overridden here — the endpoint
+            // could never be reached from another device, which is the whole point
+            // of setting it.
+            "--host", EnvFile.host(), "--port", String(port),
             "--log-level", "warning",
         ]
         task.currentDirectoryURL = workingDirectory
@@ -483,6 +506,13 @@ final class GatewayController {
         // The gateway reports this at /health, so the app can tell whether the
         // process it is talking to is the one it just installed.
         environment["GATEWAY_BUILD"] = appBuild
+        // **The same host on both sides of the decision.** The gateway's admin auth
+        // asks itself "am I bound to loopback?" by reading `GATEWAY_HOST`, while
+        // uvicorn is bound by the `--host` argument above. Passed explicitly so the
+        // two cannot disagree: a process bound to 0.0.0.0 that still believed it was
+        // on loopback would leave the admin API — which can change providers and
+        // spend money — open to the whole network.
+        environment["GATEWAY_HOST"] = EnvFile.host()
         task.environment = environment
 
         if !FileManager.default.fileExists(atPath: logPath) {
