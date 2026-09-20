@@ -527,7 +527,8 @@ final class MainWindow: NSObject, NSTableViewDataSource, NSTableViewDelegate {
         sidebarVersion.textColor = .secondaryLabelColor
         sidebarVersion.lineBreakMode = .byWordWrapping
         sidebarVersion.maximumNumberOfLines = 0
-        sidebarVersion.preferredMaxLayoutWidth = 200
+        // Fixed 200pt sidebar minus its margins, status dot and gap.
+        sidebarVersion.preferredMaxLayoutWidth = 156
         sidebarVersion.isSelectable = true
         sidebarVersion.stringValue = "App version \(GatewayController.shared.appVersion)\nBuild \(GatewayController.shared.appBuild)"
 
@@ -536,6 +537,7 @@ final class MainWindow: NSObject, NSTableViewDataSource, NSTableViewDelegate {
         statusText.alignment = .leading
         statusText.spacing = 2
         statusText.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        sidebarVersion.widthAnchor.constraint(equalTo: statusText.widthAnchor).isActive = true
 
         let statusRow = NSStackView(views: [statusDot, statusText])
         statusRow.orientation = .horizontal
