@@ -24,6 +24,63 @@ instances across the console and the menu bar.
 
 ---
 
+## A second result from one request, and the index that was accepted and ignored (2026-09-20)
+
+The owner asked: *"for the cloud api providers. do we retain the generated assets
+also? i mean suno v6 returns 2 audio clips so we should be able to keep both."*
+
+**We kept the first and dropped the rest.** Shape 4 (a control that does nothing)
+and shape 6 (state that changes but cannot be seen), in three places:
+
+- `adapters/kie.py` parsed **every** entry of the music `data` array — the comment
+  beside it even said so — and then downloaded `urls[0]` only.
+- `adapters/openai_compat.py` took `entries[0]`, so a response carrying more than
+  one image dropped the rest; and `n` was hardcoded to `1`, so the multi-image case
+  was unreachable through the gateway at all.
+- `api.get_music_output(job_id, asset_id)` accepted `asset_id` and never read it, so
+  `/outputs/0`, `/outputs/1` and `/outputs/anything` all answered track 0 — the one
+  route that exists to reach a variation, pointing at the wrong one.
+
+This was structural rather than an oversight: `BackendResult.content` was a single
+`bytes`, so "one artifact per job" lived in the result *type*.
+
+**Fix.** `BackendResult.artifacts` is the ordered list (`content` remains the first,
+so every single-artifact lane and caller is unchanged); the worker writes each;
+`jobs.artifacts_json` stores them with `store.artifacts_of()` as the single reader,
+falling back to `asset_path` so a job written by an older build still answers; the
+envelope publishes `outputs: [{asset_id, url}]`; and a new modality-agnostic
+`GET /v1/jobs/{job_id}/outputs/{asset_id}` serves any of them. The music route
+honours the index it was always given, and an index the job does not have is refused
+404 naming what it does have. `n` is caller-settable 1..10 and a count outside that
+is refused naming the range rather than clamped — returning fewer than were asked for
+is the same defect as dropping the extras. A variation that will not download is
+counted in `variations_failed` instead of failing a call that did produce a usable
+result. Retention needed no change: `retention._files()` walks the whole artifact
+directory, so extra artifacts fall under the same 7-day / 10 GB policy.
+
+**Evidence.** e2e **495/495**, fleet **50/50**. Reverting both halves of the fix
+fails exactly **4 of 495** checks and nothing else — the two-track assertions, the
+404 for a missing index (it answered 200 instead), and the generic route. The mock
+now answers two byte-different tracks and per-index images, so the old hardcoded
+one-entry array cannot pass. Verified live against the real database on the pre-fix
+job `643ba467`: a legacy row carrying only `asset_path` still publishes one output
+and serves 744,608 bytes, while `outputs/5` answers
+`404 {"code": "ARTIFACT_NOT_FOUND", "detail": "This job has no artifact '5'; it has 1."}`.
+
+**Left deliberately.** Artifacts lost before this fix are not recoverable — the
+payload stored only `provider_url: urls[0]`, so the second track's url was never
+kept. Existing jobs hold one artifact and answer honestly about it.
+
+**A deploy note, not a gateway defect.** After `menubar/build.sh`, a *running* app
+respawns a gateway from the new bundle but stamps it with the app's own launch-time
+`GatewayBuild`, so a rebuilt bundle can serve new code under the old stamp. Measured:
+`openapi.json` carried the new route while `/health` said `fb45670-202609200900`. It
+errs safe — it reports stale when the code is current, never the reverse — and
+restarting the app makes the label agree. Anything that *acts* on a build stamp
+should read the route table or restart the app, not trust the label.
+
+---
+
 ## Batch 4 — every remaining item, and what closed it (2026-09-20)
 
 The `### Open (as written — every item below is closed; see Batch 4 at the top)` lists below are kept as the audit wrote them, for the reasoning and
