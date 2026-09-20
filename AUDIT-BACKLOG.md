@@ -136,6 +136,72 @@ Verified live, not assumed: a Groq chat completion returned a real answer.
 
 ---
 
+## Create — generating an asset without Story Studio in the loop (2026-09-20)
+
+The console could manage models and providers but could not make anything: the
+`/v1` routes want the Story Studio API key, which a browser page does not hold. So
+`#create` is a sixth console view with the same six lanes as Studio Hub's Create
+section — **Audio, Subtitle, Image, Music, Video, Chat** — in its order and with its
+owner-facing names (`Subtitle` is what it calls transcription), laid out the way its
+workspaces are: form on the left, result on the right, empty state until there is
+something to show. The one thing deliberately **not** copied is its wording: those
+pages say *"generate it locally"* because their engines are local, and these lanes
+are cloud models, so this says so, and warns that an unkept asset is pruned in 7 days.
+
+**`POST /admin/api/create` wraps the same `_submit` the customer routes call**, not
+a second copy of the rules — resolution, the enablement gate, the cross-modality
+idempotency refusal and the modality dispatch all stay in one place. The picker is
+built from `_flat_models()` filtered to what is *enabled*, because that is exactly
+what `_submit` resolves against, so it cannot offer a row the submit would refuse.
+Transcription has its own route (it carries a file) and stages the upload the way
+the quote/confirm lane does, so both end in the same `_submit("transcription", …)`.
+Every artifact carries Save and **Keep** — an asset made here directly has no
+project holding the copy that matters, so the prune would otherwise be its only copy.
+Music renders one player per variation, which is what the multi-artifact fix was for.
+
+**Two defects found while building it, both in existing code.**
+
+1. **`admin._error` dropped the machine-readable `code`.** The console's refusals
+   came back as `{"detail": …}` where `/v1` says `MODEL_NOT_FOUND`: one fact spelled
+   two ways, and the caller that has to branch on it got less. Caught by a new check
+   asserting the refusal names the code, which is why the check was written before
+   the fix existed to satisfy it.
+2. **The SRT withhold list was spelling-by-spelling.** A real job failed with
+   `gpt-4o-mini-transcribe-api-ev3: response_format 'srt' is not compatible` — an id
+   nobody had listed, while four of its siblings were. A version suffix is not a new
+   capability, so `transcription_can_serve` now matches the `gpt-*transcribe*`
+   family, and the check names a spelling that does not exist yet.
+
+**Evidence.** e2e **521/521** — eight new checks, including a generation started
+*and* polled through the console's own routes, and a check that the view actually
+ships with the page (`Create` must be reachable at `#create`, not merely
+implemented). A real Groq chat completion through `/admin/api/create` returned `ok`
+(free lane). The Create view and the button states were rendered headlessly and
+looked at. Live refusal now reads
+`404 {"detail": …, "code": "MODEL_NOT_FOUND"}`. Committed `a5ffa68`.
+
+### Not claimed green: the fleet suite's two Hub-transcription checks
+
+`test_fleet_standalone.py` failed **the same two checks on three consecutive runs**
+("a transcription ran on the location end to end" — job left `running`; "the
+artifact comes back through the gateway" — no job succeeded), so this is **not** the
+one-off transient `AGENTS.md` describes, and it is recorded here rather than
+re-run until it passes.
+
+What the diagnosis showed: the Hub answers `/api/health` in **1.7 ms**, and its voice
+runtime holds a worker at **38 MB RSS / 10 s old** — the exact signature this repo
+already records for "the worker is alive and answering but has loaded no model".
+The gateway dispatches the job, the Hub never completes it, and the gateway waits.
+Nothing in this batch touches the `studio_hub` transcription path (the family rule
+does not match `mlx-community/whisper-base-mlx`, and the job reaches `running`, so it
+was dispatched rather than withheld) — but that is reasoning, not proof, so it is
+left **open** and flagged. Worth checking next: whether this Mac's Hub has
+idle-release set to unload immediately (16 GB machine), which would make every
+transcription a cold load, and whether one cancelled mid-flight transcription
+earlier in the session left its worker wedged.
+
+
+
 ## Batch 4 — every remaining item, and what closed it (2026-09-20)
 
 The `### Open (as written — every item below is closed; see Batch 4 at the top)` lists below are kept as the audit wrote them, for the reasoning and
