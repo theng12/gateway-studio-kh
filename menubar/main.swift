@@ -169,17 +169,60 @@ enum EnvFile {
 
     static func apiKey() -> String { read()["GATEWAY_API_KEY"] ?? "" }
 
+    /// Update the keys this app owns, and **leave every other line untouched**.
+    ///
+    /// This used to write five hardcoded lines over the whole file. That deleted
+    /// every provider API key the owner had put there — `.env` is the documented
+    /// no-UI way to add one — and silently reset a deliberate `GATEWAY_HOST` LAN
+    /// bind back to loopback. Nothing said so: the only symptom was a provider
+    /// that quietly stopped working, or a key that "vanished".
+    ///
+    /// A `GATEWAY_HOST` the owner set by hand is left as it is; the app writes
+    /// loopback only when nothing states a host.
     static func writeApiKey(_ key: String) {
-        var lines = ["# Written by the gateway-kh menu bar app.", ""]
-        lines.append("GATEWAY_API_KEY=\(key)")
-        lines.append("GATEWAY_HOST=127.0.0.1")
-        lines.append("GATEWAY_PORT=\(ConfigStore.shared.config.port)")
-        // Point the gateway at the same data directory the app uses, so both
-        // halves agree without either having to guess.
-        lines.append("GATEWAY_DATA=\(AppPaths.data.path)")
-        lines.append("GATEWAY_ENV_FILE=\(AppPaths.env.path)")
+        var owned: [String: String] = [
+            "GATEWAY_API_KEY": key,
+            "GATEWAY_PORT": "\(ConfigStore.shared.config.port)",
+            // Point the gateway at the same data directory the app uses, so both
+            // halves agree without either having to guess.
+            "GATEWAY_DATA": AppPaths.data.path,
+            "GATEWAY_ENV_FILE": AppPaths.env.path,
+        ]
 
-        let text = lines.joined(separator: "\n") + "\n"
+        let existing = (try? String(contentsOf: url, encoding: .utf8)) ?? ""
+        var lines = existing.isEmpty
+            ? []
+            : existing.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+
+        /// The name on the left of a `KEY=value` line, ignoring comments.
+        func name(of line: String) -> String? {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            guard !trimmed.hasPrefix("#"), let eq = trimmed.firstIndex(of: "=") else { return nil }
+            return String(trimmed[..<eq])
+        }
+
+        if !lines.contains(where: { name(of: $0) == "GATEWAY_HOST" }) {
+            owned["GATEWAY_HOST"] = "127.0.0.1"
+        }
+
+        var written: Set<String> = []
+        var output: [String] = []
+        for line in lines {
+            if let name = name(of: line), let value = owned[name], !written.contains(name) {
+                output.append("\(name)=\(value)")
+                written.insert(name)
+            } else {
+                output.append(line)
+            }
+        }
+        for (name, value) in owned.sorted(by: { $0.key < $1.key }) where !written.contains(name) {
+            output.append("\(name)=\(value)")
+        }
+        if existing.isEmpty {
+            output.insert(contentsOf: ["# Written by the gateway-kh menu bar app.", ""], at: 0)
+        }
+
+        let text = output.joined(separator: "\n").trimmingCharacters(in: .newlines) + "\n"
         try? text.write(to: url, atomically: true, encoding: .utf8)
         // Owner-only: this file holds the key Story Studio presents.
         try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
@@ -674,7 +717,7 @@ final class GatewayController {
                 return
             }
             let providers = (payload["providers"] as? [String: Any])?["enabled"] as? Int ?? 0
-            let models = (payload["models"] as? [String: Any])?["enabled_models"] as? Int ?? 0
+            let models = (payload["models"] as? [String: Any])?["publishable_models"] as? Int ?? 0
             // Healthy again: clear the backoff so a later crash restarts fast.
             self.restartAttempts = 0
             self.publish(.running(providers: providers, models: models))

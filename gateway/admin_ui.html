@@ -208,7 +208,7 @@ async function loadStatus() {
     const m = s.models.by_modality || {};
     const parts = Object.entries(m).map(([k,v]) => `${v} ${k}`).join(' · ') || 'no models enabled';
     document.getElementById('stats').innerHTML =
-      `<b>${s.providers.enabled}</b>/${s.providers.total} providers on · <b>${s.models.enabled_models}</b> models live · ${esc(parts)}`;
+      `<b>${s.providers.enabled}</b>/${s.providers.total} providers on · <b>${s.models.publishable_models}</b> models offered${s.models.withheld_models ? ` · ${s.models.withheld_models} withheld` : ''} · ${esc(parts)}`;
     const h = s.hub;
     const el = document.getElementById('hubline');
     if (el) el.innerHTML = h.running
@@ -383,7 +383,7 @@ function providerCard(p) {
   if (!p.generation_supported) badges.push(`<span class="badge warn" title="${esc(p.unsupported_reason)}">list-only</span>`);
   badges.push(p.configured ? '<span class="badge ok">key set</span>' : '<span class="badge bad">no key</span>');
   if (p.last_error) badges.push(`<span class="badge bad" title="${esc(p.last_error)}">discovery error</span>`);
-  badges.push(`<span class="badge">${p.enabled_model_count}/${p.model_count} live</span>`);
+  badges.push(`<span class="badge">${p.publishable_model_count}/${p.model_count} offered</span>`);
 
   const fields = p.configured_fields.map(f => `
     <div>
@@ -425,7 +425,7 @@ function providerCard(p) {
       </div>
       <div class="actions" style="margin-top:14px">
         <b style="font-size:12.5px">Models</b>
-        <span class="stat">${models ? `${models.models.filter(m=>m.enabled).length} of ${models.models.length} live` : ''}</span>
+        <span class="stat">${models ? `${models.models.filter(m=>m.publishable).length} of ${models.models.length} offered` : ''}</span>
         <span class="stat">last refresh: ${ago(models && models.last_refresh)}</span>
         <div class="spacer"></div>
         <button class="sm" onclick="openInBrowserFilter('${esc(p.id)}')">Browse in Models tab</button>

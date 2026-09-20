@@ -97,9 +97,13 @@ class Voice:
             "age": self.age,
             "has_preview": bool(self.preview_url),
             "owned": self.owned,
-            # Which model a *local* voice belongs to. Empty for provider voices,
-            # which work with every TTS model that provider offers.
-            "tts_model_id": str((self.raw or {}).get("tts_model_id") or ""),
+            # **Not `tts_model_id`.** That name is a *serving* claim — Story
+            # Studio drops any voice whose `tts_model_id` is not the model being
+            # asked about — and a local voice serves every model that declares
+            # cloning. What this stamp actually records is the tier the clip was
+            # imported and annotated against, which decides nothing at render
+            # time, so it is published under a name that says so.
+            "minted_against_model": (self.raw or {}).get("tts_model_id"),
             # The clip's own length, when it was measured at import. Reported
             # rather than inferred: a voice whose duration was never recorded
             # says `None` instead of a plausible guess.
@@ -827,7 +831,23 @@ def story_row(voice: Voice) -> dict[str, Any]:
         "preview_text": None,
         "preview_notice": None,
         "is_saved": False,
-        "tts_model_id": str((voice.raw or {}).get("tts_model_id") or ""),
+        # **Never name a model here unless it is the one serving the request.**
+        #
+        # Story Studio reads `/v1/voices?model_id=X` as authoritative for scope,
+        # and keeps one defensive check on top: "a row explicitly naming a
+        # different model can never be offered for this one". A local voice used
+        # to publish the tier it was *minted against* — every one of the owner's
+        # said `Qwen3-TTS-12Hz-0.6B-Base-4bit` while the catalogue id is
+        # `studio-hub::mlx-community/Qwen3-TTS-12Hz-0.6B-Base-4bit`. Not equal,
+        # so Story Studio dropped all ten and the narration picker was empty for
+        # every local model — the gateway returning them was only half the fix.
+        #
+        # `null` is the honest answer to "which model serves this voice": a local
+        # voice serves every model that declares cloning, and Story Studio's own
+        # comment says a row that omits the field inherits the scoped endpoint's
+        # answer. The mint stamp is kept in `raw` for diagnostics, under no
+        # published name.
+        "tts_model_id": None,
         "tts_model_name": "",
     }
 

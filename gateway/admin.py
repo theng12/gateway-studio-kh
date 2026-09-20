@@ -202,9 +202,17 @@ def refresh_all() -> dict[str, Any]:
 def provider_models(provider_id: str) -> Any:
     if registry.definition(provider_id) is None:
         return _error(404, f"unknown provider '{provider_id}'")
+    definition = registry.definition(provider_id)
     cached = registry.models.cached(provider_id)
+    rows = registry.models.models_for(provider_id, include_disabled=True)
     return {
-        "models": registry.models.models_for(provider_id, include_disabled=True),
+        # Whether each row could ever reach Story Studio. Without it the console
+        # said "live" for models the catalogue silently drops — the same two
+        # readers of one rule that `can_publish` exists to keep from drifting.
+        "models": [
+            {**model, "publishable": registry.models.can_publish(definition, model)}
+            for model in rows
+        ],
         "last_refresh": cached.get("fetched_at"),
         "last_error": cached.get("error"),
     }

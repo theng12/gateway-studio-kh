@@ -143,6 +143,14 @@ class ProviderRegistry:
             models = self.models.models_for(definition.id, include_disabled=True)
             item["model_count"] = len(models)
             item["enabled_model_count"] = sum(1 for m in models if m["enabled"])
+            # What the console must show, because "ticked" and "can be picked" are
+            # different questions: `can_publish` withholds a model the Hub does not
+            # describe as a model, or one it says does not fit this machine. A badge
+            # counting the enabled ones read "9/40 live" for a provider whose only
+            # publishable row was one model.
+            item["publishable_model_count"] = sum(
+                1 for m in models if self.models.can_publish(definition, m)
+            )
             item["last_refresh"] = cached.get("fetched_at")
             item["last_error"] = cached.get("error")
             output.append(item)

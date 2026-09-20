@@ -1586,12 +1586,27 @@ def main() -> int:
             # local rows, because every one of them was stamped with the same
             # Qwen3 tier at import. A model that *states* it takes no reference is
             # still withheld, and section 20 proves that against a Hub that says so.
-            model_id = str(victim.get("tts_model_id") or "")
-            check("a local voice reports the model it was minted against", bool(model_id), model_id)
+            #
+            # The mint stamp is still reported, under a name that is not a serving
+            # claim: publishing it as `tts_model_id` made Story Studio drop every
+            # local voice, because its own boundary check refuses a row that names
+            # a different model than the one being asked about.
+            model_id = str(victim.get("minted_against_model") or "")
+            check("a local voice reports the tier it was minted against",
+                  bool(model_id), victim.get("minted_against_model"))
+            check("and does not publish that tier as the model serving it",
+                  not victim.get("tts_model_id"), f"tts_model_id={victim.get('tts_model_id')!r}")
             if model_id:
                 scoped = req(client, "GET", f"/v1/voices?model_id=studio-hub-local::{model_id}").json()
                 check("a local voice is returned for its own model",
                       len(scoped["voices"]) > 0, f"got {len(scoped['voices'])}")
+                # The story-facing row must name no model at all: Story Studio
+                # treats a row naming a different model as unusable for this one,
+                # so any value here that is not the exact model id silently empties
+                # the narration picker.
+                check("the story-facing row names no model, so the scoped endpoint decides",
+                      all(not row.get("tts_model_id") for row in scoped["voices"]),
+                      f"{[row.get('tts_model_id') for row in scoped['voices']][:3]}")
                 other = req(client, "GET",
                             "/v1/voices?model_id=studio-hub-local::some-other-model").json()
                 check("and, that model stating nothing, it is offered there too",
