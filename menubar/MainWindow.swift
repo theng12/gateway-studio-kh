@@ -362,6 +362,7 @@ final class MainWindow: NSObject, NSTableViewDataSource, NSTableViewDelegate {
     private var timer: Timer?
     private var statusDot = NSView()
     private let sidebarStatus = NSTextField(labelWithString: "…")
+    private let sidebarVersion = NSTextField(wrappingLabelWithString: "")
     private var statusTimer: Timer?
 
     /// Section names accepted by `--open` and the menu.
@@ -522,7 +523,21 @@ final class MainWindow: NSObject, NSTableViewDataSource, NSTableViewDelegate {
         sidebarStatus.lineBreakMode = .byWordWrapping
         sidebarStatus.preferredMaxLayoutWidth = 200
 
-        let statusRow = NSStackView(views: [statusDot, sidebarStatus])
+        sidebarVersion.font = .systemFont(ofSize: 10.5)
+        sidebarVersion.textColor = .secondaryLabelColor
+        sidebarVersion.lineBreakMode = .byWordWrapping
+        sidebarVersion.maximumNumberOfLines = 0
+        sidebarVersion.preferredMaxLayoutWidth = 200
+        sidebarVersion.isSelectable = true
+        sidebarVersion.stringValue = "App version \(GatewayController.shared.appVersion)\nBuild \(GatewayController.shared.appBuild)"
+
+        let statusText = NSStackView(views: [sidebarStatus, sidebarVersion])
+        statusText.orientation = .vertical
+        statusText.alignment = .leading
+        statusText.spacing = 2
+        statusText.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+
+        let statusRow = NSStackView(views: [statusDot, statusText])
         statusRow.orientation = .horizontal
         statusRow.alignment = .top
         statusRow.spacing = 8
