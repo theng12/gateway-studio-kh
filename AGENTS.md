@@ -657,6 +657,19 @@ machine: ask `/admin/api/providers/studio-hub-local/models` for the current
 `publishable` rows and the `catalogued`/`memory_eligible` flags that decided them.
 A number in a comment is a measurement with a date, not a contract.
 
+**Three counts, three questions, and only one is "discovered".** `summary()`
+publishes `discovered_models` (every model on every provider), `total_models`
+(models on providers that are switched on), `enabled_models` (ticked) and
+`publishable_models` (what can reach Story Studio). The Overview tile labels the
+offered number "of N enabled" because that is the set the withheld count comes
+from — offered + withheld = enabled, so the sentence adds up — and it *used* to
+label `total_models` "discovered", which made the discovered count fall when the
+owner switched a provider off. `publishable_models` and `by_modality` are **derived
+from `enabled_models()`**, the one function the catalogue is built from, rather than
+from a second walk with its own conditions: that walk was missing two gates, so a
+provider switched on with its key cleared inflated "offered" by rows nobody could
+pick.
+
 **The header reports the offered count, not the enabled one.** `models.summary()`
 publishes `enabled_models`, **`publishable_models`** and **`withheld_models`**, and
 `by_modality` counts the *offered* rows — the same question the Overview chart's
@@ -695,7 +708,7 @@ model name.
 ## Verification
 
 ```bash
-.venv/bin/python tests/test_e2e.py              # 425 checks, isolated mock upstream
+.venv/bin/python tests/test_e2e.py              # 429 checks, isolated mock upstream
 .venv/bin/python tests/test_fleet_standalone.py # 47 checks, real Hub(s) as locations
 .venv/bin/python tests/test_ui.py               # 109 checks, drives the real app
 ```

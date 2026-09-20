@@ -376,22 +376,57 @@ class ModelInventory:
         "121 live" while nine of them could not be picked. `by_modality` counts the
         **publishable** ones, because it is what the Overview chart labels
         "Offered to Story Studio".
+
+        **`publishable_models` and `by_modality` come from `enabled_models()`**, the
+        one function the catalogue is built from, rather than from a second walk with
+        its own conditions. That walk was missing two of the catalogue's gates — a
+        provider that is switched on with its key cleared has models and can offer
+        none of them — so "offered" was inflated by rows nobody could pick. Deriving
+        them means they cannot drift from the catalogue again.
+
+        **Three names, three questions, and only one of them is "discovered".**
+        `discovered_models` is every model on every provider, whatever its state;
+        `total_models` is the models belonging to providers that are switched on; and
+        `enabled_models` is the ones actually ticked. The Overview tile used to label
+        `total_models` as "discovered", which is why a provider the owner had turned
+        off made the discovered count fall.
         """
-        total = enabled = publishable = 0
-        offered: dict[str, int] = {}
+        total = enabled = discovered = 0
         for provider_id, definition in self._every_definition():
-            if not self.credentials.is_enabled(provider_id):
-                continue
+            live = self.credentials.is_enabled(provider_id)
+            # The same gate the catalogue applies. A provider switched on with its
+            # key cleared can publish nothing, and counting its rows as offered was
+            # the defect this docstring's first paragraph is about.
+            configured = self.credentials.is_configured(provider_id)
             for model in self.models_for(provider_id, include_disabled=True):
+                discovered += 1
+                if not live or not configured:
+                    continue
                 total += 1
-                if not model["enabled"]:
-                    continue
-                enabled += 1
-                if not self.can_publish(definition, model):
-                    continue
-                publishable += 1
-                offered[model["modality"]] = offered.get(model["modality"], 0) + 1
+                if model["enabled"]:
+                    enabled += 1
+
+        # The modalities are **derived from the providers**, not imported: the only
+        # constant lives in `catalog.py`, which imports this module, so importing it
+        # back would be a cycle — and a second copy of the tuple is the shape this
+        # file keeps being fixed for. Deriving also means a provider declaring a
+        # modality the catalogue's tuple does not know about still appears here.
+        modalities = sorted({
+            modality
+            for _provider_id, definition in self._every_definition()
+            for modality in (definition.modalities or ())
+        })
+        published = [
+            (definition, model)
+            for modality in modalities
+            for definition, model in self.enabled_models(modality)
+        ]
+        offered: dict[str, int] = {}
+        for _definition, model in published:
+            offered[model["modality"]] = offered.get(model["modality"], 0) + 1
+        publishable = len(published)
         return {
+            "discovered_models": discovered,
             "total_models": total,
             "enabled_models": enabled,
             "publishable_models": publishable,

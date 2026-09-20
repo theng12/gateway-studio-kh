@@ -2795,6 +2795,44 @@ def main() -> int:
             # for models the gate withholds. Two questions, two numbers, and the
             # withheld one is reported rather than dropped.
             header = httpx.get(f"{BASE}/health", timeout=30).json()["models"]
+            # **Three counts, three questions.** `total_models` was labelled
+            # "discovered" on the Overview tile while counting only models on
+            # providers that are switched on, so turning a provider off made
+            # "discovered" fall — the opposite of what the word means. And the walk
+            # behind `publishable_models` was missing two of the catalogue's gates,
+            # so a provider switched on with its key cleared inflated "offered".
+            _m = req(client, "GET", "/admin/api/status").json()["models"]
+            check("discovered is every model, not just the switched-on ones",
+                  _m["discovered_models"] >= _m["total_models"]
+                  and _m["total_models"] >= _m["enabled_models"] >= _m["publishable_models"],
+                  f"{ {k: v for k, v in _m.items() if k != 'by_modality'} }")
+            check("and offered plus withheld is exactly what is switched on",
+                  _m["publishable_models"] + _m["withheld_models"] == _m["enabled_models"],
+                  f"{_m['publishable_models']} + {_m['withheld_models']} != {_m['enabled_models']}")
+            # Derived from `enabled_models`, the one function the catalogue is built
+            # from, so the header and the catalogue cannot drift apart again.
+            # **The gate that was missing.** `summary()` counted a provider that is
+            # switched on with nothing configured: it has models, and it can offer
+            # none of them. Proven by making every provider unconfigured — the old
+            # walk never asked, so its counts stayed non-zero.
+            from gateway.providers.registry import registry as _reg
+            _real_configured = _reg.credentials.is_configured
+            _reg.credentials.is_configured = lambda _pid: False
+            try:
+                _none = _reg.models.summary()
+            finally:
+                _reg.credentials.is_configured = _real_configured
+            check("a provider that cannot serve contributes nothing to what is counted",
+                  _none["total_models"] == 0 and _none["enabled_models"] == 0
+                  and _none["publishable_models"] == 0
+                  and _none["discovered_models"] > 0,
+                  f"{ {k: v for k, v in _none.items() if k != 'by_modality'} }")
+
+            _catalogue_tts = len(httpx.get(f"{BASE}/v1/tts/models", headers=AUTH).json()["models"])
+            check("by_modality counts what the catalogue actually publishes",
+                  _m["by_modality"].get("tts", 0) == _catalogue_tts,
+                  f"header tts={_m['by_modality'].get('tts')} catalogue tts={_catalogue_tts}")
+
             check("the header separates offered from enabled and accounts for the difference",
                   header.get("publishable_models", -1) + header.get("withheld_models", -1)
                   == header.get("enabled_models")

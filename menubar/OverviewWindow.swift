@@ -412,13 +412,21 @@ final class OverviewSection: NSObject, AppSection {
             // The withheld count is shown rather than dropped: a model that is
             // switched on and silently absent from the picker is the one thing an
             // operator cannot diagnose from this page.
+            //
+            // **"of N enabled", not "of N discovered".** The denominator is the
+            // models that are switched on, because that is the set `withheld` is
+            // taken from — offered + withheld = enabled, so the sentence adds up.
+            // It used to read `total_models` under the word "discovered", and that
+            // number is a different question: discovered is *every* model on every
+            // provider, so switching a provider off made the "discovered" count
+            // fall, which is the opposite of what the word means.
             let withheld = models["withheld_models"] as? Int ?? 0
-            let discovered = models["total_models"] as? Int ?? 0
+            let switchedOn = models["enabled_models"] as? Int ?? 0
             self.tiles["models"]?.set(
                 value: "\(liveModels)",
                 title: withheld > 0
-                    ? "Offered of \(discovered) discovered · \(withheld) withheld"
-                    : "Offered of \(discovered) discovered"
+                    ? "Offered of \(switchedOn) enabled · \(withheld) withheld"
+                    : "Offered of \(switchedOn) enabled"
             )
             self.tiles["succeeded"]?.set(
                 value: "\(byState["succeeded"] as? Int ?? 0)", title: "Jobs succeeded"
