@@ -287,6 +287,32 @@ def _language_codes(languages: Any) -> list[str]:
 #: Hub's own per-model `TextGuidance` when it is served.
 _TTS_CHARACTERS_DEFAULT = 25000
 
+#: What every **Studio Hub location** publishes, whatever engine is behind it.
+#:
+#: The owner's rule, and it is a *presentation* decision rather than a measurement:
+#: *"we do internal chunking on studio hub for the voices generate picking a safe
+#: sentence end… i want the totality of it to be presenting 15000 as the max tts.
+#: this way we can allow for longer generations from the story studio. it doesn't
+#: need to know what we do backend."*
+#:
+#: So the gateway stops trying to mirror a per-engine limit and states one number
+#: for the whole local lane. The Hub is what makes that honest: it takes the
+#: complete script and renders sentence-safe sections, so a 15,000-character
+#: request is not 15,000 characters handed to any one engine. Story Studio is told
+#: what it may submit, not how the work is cut up.
+#:
+#: This replaces reading the Hub's own `execution_contract.text_max_characters`
+#: (which is audited per model and ranges 10,000–40,000 across the installed set).
+#: Mirroring it was correct in principle and wrong in effect: it made the picker's
+#: limit vary per engine for a difference the caller cannot act on and should never
+#: have to know about.
+#:
+#: ponytail: one flat number for every location. Ceiling — it is deliberately below
+#: what the audited engines can do (40,000), so a long script is refused here that
+#: the Hub could have sectioned. Upgrade path — raise it once the Hub's own
+#: long-form work has a measured ceiling for a 15,000-character script end to end.
+_TTS_CHARACTERS_LOCAL = 15000
+
 #: Engines the Hub declares as `chunking="hard-cap"`, with the character cliff its
 #: own catalogue records.
 #:
@@ -383,6 +409,10 @@ def _tts_characters(
         return cap, "gateway"
     if curated:
         return curated, "curated"
+    if definition.kind == "studio_hub":
+        # A location, and the Hub sections long scripts, so the whole lane states
+        # one number rather than an engine's own.
+        return _TTS_CHARACTERS_LOCAL, "gateway"
     return _TTS_CHARACTERS_DEFAULT, "gateway"
 
 

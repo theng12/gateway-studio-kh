@@ -744,22 +744,50 @@ def main() -> int:
             # one TTS model and the old check's `or len(...) == 1` escape hatch
             # made it pass by definition. A provider that states its own limit has
             # to win, and the local lane has to get the agreed 25,000.
-            from gateway.catalog import _tts_characters, _TTS_CHARACTERS_DEFAULT
+            from gateway.catalog import (
+                _tts_characters, _TTS_CHARACTERS_DEFAULT, _TTS_CHARACTERS_LOCAL,
+            )
             from gateway.providers.definitions import PROVIDERS_BY_ID as _DEFS
             import dataclasses as _dc
             _local = _DEFS["studio-hub-local"]
             # `mock-remote` is a user-defined provider, so it lives in the temp
             # `providers.local.json` the gateway subprocess reads — not in this
-            # process's static map. Only `.id` is read for the curated lookup, so a
-            # relabelled copy is the honest stand-in.
-            _mock = _dc.replace(_local, id="mock-remote")
+            # process's static map, so a relabelled copy stands in for it.
+            #
+            # **The kind has to be relabelled too.** It used to say that only `.id`
+            # is read, and that was true until `_tts_characters` started asking
+            # whether a provider is a Studio Hub *location* — at which point a copy
+            # of the local definition still carrying `kind="studio_hub"` was a
+            # location wearing another provider's id, and this suite caught it as a
+            # cloud row publishing the local lane's number.
+            _mock = _dc.replace(_local, id="mock-remote", kind="openai_compatible")
             check("a provider that states its own limit is published with it",
                   _tts_characters("m", {"raw": {"maximum_text_length_per_request": 5000}},
                                   _mock) == (5000, "provider"))
             # The limit and where it came from, from one function: they answer one
             # question, so they are decided once.
-            check("the local lane gets the agreed 25,000 default, marked as ours",
-                  _tts_characters("m", {"raw": {}}, _local) == (25000, "gateway")
+            # **The local lane presents one number, and the Hub is why.**
+            # Chunking is Studio Hub's job — it takes the complete script and
+            # renders sentence-safe sections — so the gateway states what may be
+            # submitted, not what any one engine can take. Mirroring the Hub's
+            # audited per-model contract (10,000–40,000 across the installed set)
+            # made the picker's limit vary for a difference the caller cannot act
+            # on and should never have to know about.
+            check("every local model presents the same number, whatever is behind it",
+                  _tts_characters("m", {"raw": {}}, _local) == (_TTS_CHARACTERS_LOCAL, "gateway")
+                  and _TTS_CHARACTERS_LOCAL == 15000,
+                  f"{_tts_characters('m', {'raw': {}}, _local)}")
+            check("and it holds across the families, not just the bare case",
+                  {_tts_characters("m", {"raw": {"family": f,
+                                                 "long_form_delivery": {"section_max_characters": n}}},
+                                   _local)[0]
+                   for f, n in (("qwen3-tts", 288), ("kokoro-mlx", 3000),
+                                ("chatterbox-mlx", 500), ("omnivoice", 288),
+                                ("voxcpm-mlx", 400), ("voxtral-tts", None))}
+                  == {15000},
+                  "a local model presented something other than the lane's number")
+            check("while a cloud lane that states nothing keeps the wider default",
+                  _tts_characters("m", {"raw": {}}, _mock) == (_TTS_CHARACTERS_DEFAULT, "gateway")
                   and _TTS_CHARACTERS_DEFAULT == 25000)
             check("a provider's stated limit wins over the curated file",
                   _tts_characters("mock-tts-1", {"raw": {"maximum_text_length_per_request": 5000}},
@@ -777,19 +805,22 @@ def main() -> int:
                   _tts_characters("m", {"raw": {"family": "orpheus"}}, _local) == (170, "gateway"))
             check("and Bark's cliff is recorded too",
                   _tts_characters("m", {"raw": {"family": "bark"}}, _local) == (150, "gateway"))
-            # The served half of the decision: `long_form_delivery` present means
-            # the Hub sections the script itself, so the cliff stops applying — the
-            # recorded numbers go stale, the rule does not.
+            # The served half of the decision, and it is what sequences the Hub
+            # work: `long_form_delivery` present means the Hub sections the script
+            # itself, so the cliff stops applying and the model joins the rest of
+            # the lane at 15,000 — **automatically**, the moment the Hub starts
+            # sectioning it. Until then Orpheus keeps its engine's 170, so nobody
+            # publishes 15,000 for an engine that would silence.
             check("a family the Hub long-form splits is not capped by a recorded cliff",
                   _tts_characters("m", {"raw": {"family": "orpheus",
                                                 "long_form_delivery": {"split_method": "sentence_safe"}}},
-                                  _local) == (25000, "gateway"))
+                                  _local) == (15000, "gateway"))
             # `spark-tts-mlx` is 750 in the Hub's table and `auto-split`: that is
             # where quality is best, not a limit on what may be sent. Publishing it
             # as a maximum would refuse text that works.
             check("an auto-split family's soft maximum is not published as a limit",
                   _tts_characters("m", {"raw": {"family": "spark-tts-mlx"}}, _local)
-                  == (25000, "gateway"))
+                  == (15000, "gateway"))
             check("a provider that states its own limit still beats the recorded cliff",
                   _tts_characters("m", {"raw": {"family": "orpheus",
                                                 "maximum_text_length_per_request": 90}},

@@ -405,11 +405,23 @@ Every deliberate simplification must carry a `ponytail:` comment naming the ceil
 - All price fields pinned to 0; `provider_submit_concurrency`/`available_workers`
   of 1; `_TTS_NO_SPEED`; retention's 7 days / 10 GB and its clamp bounds.
 
-### The one that was already wrong — FIXED
-Orpheus published 25,000 while its engine silences past 170; see Shape 3.1's second
-item above. The owner's call was **not to untick it**: the model works, only its
-advertised limit was wrong, and the Hub's own catalogue states the cliff — so it is
-curated (with its source and date) rather than removed from the picker.
+### The one that was already wrong — FIXED, then simplified by the owner's rule
+Orpheus published 25,000 while its engine silences past 170. The owner's call was
+**not to untick it**: the model works, only its advertised limit was wrong.
+
+The first fix mirrored the Hub's own guidance per model, and briefly its audited
+`execution_contract.text_max_characters`. **Both were withdrawn on 2026-09-20 in
+favour of a simpler rule the owner set**: the local lane presents **one** number
+(15,000) and **chunking is Studio Hub's job**, so the gateway never has to model a
+per-engine limit at all. An engine the Hub does not yet section keeps its cliff as a
+ceiling and joins the lane at 15,000 automatically once the Hub publishes
+`long_form_delivery` for it. See
+`_handoffs/2026-09-20-gateway-local-tts-limit-15000-and-chunking-ownership.md`.
+
+Still open on the Hub's side, and now the only row where the uniform limit is a
+claim rather than a consequence: **`voxtral-tts` has no section budget, no cliff and
+no audited contract**, so nothing backs the 15,000 the gateway publishes for
+`mlx-community/Voxtral-4B-TTS-2603-mlx-4bit`.
 
 ---
 

@@ -62,20 +62,35 @@ calls `.toLocaleString()` on it unconditionally, so `null` would crash the page
 rather than degrade it. Per model where the provider states one (ElevenLabs
 publishes it), 25,000 otherwise.
 
-**But "invented" is not "unbounded", and one lane proved it.** Orpheus was
-published at 25,000 while its engine silences past **170** — Story Studio
-validated a narration against a number that was never true, which is the one item
-in Shape 3 that was already wrong rather than latent. The Hub declares this in its
-own catalogue (`chunking="hard-cap"`, `soft_max_chars`) but does **not** serve it,
-so the cliff is recorded in `catalog._HARD_CAP_CHARACTERS` with its source and
-date. Two things keep that honest:
-  * the cap applies **only while the Hub does not long-form split that model** —
-    `long_form_delivery` is served, and when it is present the Hub sections the
-    script itself, so the recorded number stops applying by itself. The numbers
-    go stale; the rule does not;
-  * `spark-tts-mlx` is *deliberately absent* even though the Hub's table says 750:
-    it is `auto-split`, so 750 is where quality is best, not a limit on what may
-    be sent. Publishing it as a maximum would refuse text that works.
+**The local lane presents one number, and chunking is Studio Hub's job.** Every
+Studio Hub location publishes **15,000** (`catalog._TTS_CHARACTERS_LOCAL`), whatever
+engine is behind it, because the Hub takes the complete script and renders
+sentence-safe sections. The caller is told what it may submit; it is never told how
+the work is cut up. The owner's rule, and it is a *presentation* decision rather
+than a measurement — so the gateway does **not** mirror the Hub's audited
+`execution_contract.text_max_characters` (10,000–40,000 across the installed set),
+which was correct in principle and wrong in effect for a field the caller cannot
+act on. That mirroring was tried and withdrawn on 2026-09-20.
+
+**The one exception, and it sequences itself.** A model the Hub does not section
+gets the whole script, so an engine cliff applies as a ceiling instead:
+`catalog._HARD_CAP_CHARACTERS` (bark 150, orpheus 170, read from the Hub's own
+table) is consulted **only while `long_form_delivery` is absent** for that model.
+So Orpheus publishes 170 today and **becomes 15,000 automatically** the moment the
+Hub starts sectioning it — no gateway change, no coordination. Handoff:
+`_handoffs/2026-09-20-gateway-local-tts-limit-15000-and-chunking-ownership.md`.
+`spark-tts-mlx` is *deliberately absent* from that table even though the Hub's
+table says 750: it is `auto-split`, so 750 is where quality is best, not a limit on
+what may be sent.
+
+**A uniform section size is not ≤200, whatever it looks like.** The Hub's two
+hard-cap engines are Bark at **150** and Orpheus at **170**, so a 200-character
+section is past both and a 180-character one is still past Bark — the tightest
+engine sets the bound, not the typical one. Every other family already sections at
+280–3000, and a uniform 150 would mean 100 sections per 15,000-character request
+for engines that need 5, against the Hub's own measured coverage curve (99.4% at
+288, 83% at 600). Per-family budgets, which the Hub already has and justifies, are
+the right shape; the gap was only that two families had none.
 
 **Every limit now says whose number it is.** `context_window_tokens`,
 `max_output_tokens`, `max_prompt_characters` and `maximum_input_characters` each
@@ -664,7 +679,7 @@ model name.
 ## Verification
 
 ```bash
-.venv/bin/python tests/test_e2e.py              # 416 checks, isolated mock upstream
+.venv/bin/python tests/test_e2e.py              # 418 checks, isolated mock upstream
 .venv/bin/python tests/test_fleet_standalone.py # 45 checks, real Hub(s) as locations
 .venv/bin/python tests/test_ui.py               # 109 checks, drives the real app
 ```
