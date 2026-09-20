@@ -2150,6 +2150,21 @@ def main() -> int:
                   "studio-hub::mock-hub/preset-model" in published,
                   f"{[k for k in published if 'mock-hub' in k]}")
 
+            # The header count used to be the raw enabled count, so it read "live"
+            # for models the gate withholds. Two questions, two numbers, and the
+            # withheld one is reported rather than dropped.
+            header = httpx.get(f"{BASE}/health", timeout=30).json()["models"]
+            check("the header separates offered from enabled and accounts for the difference",
+                  header.get("publishable_models", -1) + header.get("withheld_models", -1)
+                  == header.get("enabled_models")
+                  and header.get("withheld_models", 0) >= 2,
+                  f"{ {k: header.get(k) for k in ('enabled_models', 'publishable_models', 'withheld_models')} }")
+            check("and by_modality counts what is offered, not what is switched on",
+                  sum(header["by_modality"].values()) == header.get("publishable_models")
+                  and sum(header["by_modality"].values()) != header.get("enabled_models"),
+                  f"{header['by_modality']} sums to {sum(header['by_modality'].values())}, "
+                  f"publishable={header.get('publishable_models')}, enabled={header.get('enabled_models')}")
+
             report = req(client, "GET",
                          "/admin/api/voices/studio-hub-local::voice-mock/reference").json()
             by_model = {m["model_id"]: m for m in report["models"]}

@@ -386,7 +386,11 @@ final class OverviewSection: NSObject, AppSection {
             // Onboarding: say what to do next, rather than showing zeros and
             // leaving a new owner to work it out.
             let configured = providers["configured"] as? Int ?? 0
-            let liveModels = models["enabled_models"] as? Int ?? 0
+            // `publishable`, not `enabled`: a model the gateway withholds — a
+            // package the Hub's catalogue does not describe as a model, or one it
+            // says does not fit this machine — is switched on but cannot be
+            // picked, so counting it here read "121 live" with nine unofferable.
+            let liveModels = models["publishable_models"] as? Int ?? 0
             if configured == 0 {
                 self.guidanceLabel.stringValue =
                     "Getting started — no provider keys yet. Open the Provider Console and paste "
@@ -405,9 +409,16 @@ final class OverviewSection: NSObject, AppSection {
                 value: "\(providers["enabled"] as? Int ?? 0)/\(providers["total"] as? Int ?? 0)",
                 title: "Providers on"
             )
+            // The withheld count is shown rather than dropped: a model that is
+            // switched on and silently absent from the picker is the one thing an
+            // operator cannot diagnose from this page.
+            let withheld = models["withheld_models"] as? Int ?? 0
+            let discovered = models["total_models"] as? Int ?? 0
             self.tiles["models"]?.set(
-                value: "\(models["enabled_models"] as? Int ?? 0)",
-                title: "Live of \(models["total_models"] as? Int ?? 0) discovered"
+                value: "\(liveModels)",
+                title: withheld > 0
+                    ? "Offered of \(discovered) discovered · \(withheld) withheld"
+                    : "Offered of \(discovered) discovered"
             )
             self.tiles["succeeded"]?.set(
                 value: "\(byState["succeeded"] as? Int ?? 0)", title: "Jobs succeeded"

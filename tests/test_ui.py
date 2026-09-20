@@ -787,9 +787,22 @@ def main() -> int:
     health_payload = json.loads(status)
     check("the health payload still carries an enabled-model count",
           "enabled_models" in (health_payload.get("models") or {}), status[:200])
-    enabled = (health_payload.get("models") or {}).get("enabled_models")
-    check(f"the model count on screen matches the API ({enabled})",
-          isinstance(enabled, int) and f"\n{enabled}\n" in f"\n{body}\n", body[:200])
+    # The screen shows what Story Studio can actually pick, so it is matched
+    # against `publishable_models`. It used to show `enabled_models`, which is a
+    # different question: a model the gateway withholds (a package the Hub does
+    # not describe as a model, or one that does not fit this machine) is enabled
+    # but unofferable, and reading "121 live" with nine of them unpickable is the
+    # inconsistency this pair of fields exists to keep apart.
+    models_block = health_payload.get("models") or {}
+    offered = models_block.get("publishable_models")
+    check("the health payload separates offered from enabled",
+          isinstance(offered, int) and isinstance(models_block.get("withheld_models"), int),
+          f"{ {k: models_block.get(k) for k in ('enabled_models', 'publishable_models', 'withheld_models')} }")
+    check(f"the model count on screen matches the API ({offered})",
+          isinstance(offered, int) and f"\n{offered}\n" in f"\n{body}\n", body[:200])
+    check("and the page says how many are withheld when any are",
+          (models_block.get("withheld_models") or 0) == 0 or "withheld" in body,
+          f"withheld={models_block.get('withheld_models')}")
 
     # Which build is running. A gateway outlives the app, so on launch this app
     # adopts whatever already answers /health — measured: a gateway from 21:47 was

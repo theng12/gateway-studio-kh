@@ -478,6 +478,15 @@ catalog", `components/hub/standalone.py`), which is why discovery must keep read
 Studio Hub session measured that gate; it is the reason the tempting change is
 wrong.
 
+**The header reports the offered count, not the enabled one.** `models.summary()`
+publishes `enabled_models`, **`publishable_models`** and **`withheld_models`**, and
+`by_modality` counts the *offered* rows — the same question the Overview chart's
+"Offered to Story Studio" label asks. The tile used to show `enabled_models`, so it
+read "121 live" while nine of those could not be picked; it now shows the offered
+number and says `· N withheld` when there are any, because a model that is switched
+on and silently absent from the picker is the one thing an operator cannot diagnose
+from that page. Two questions, two numbers — never one field answering both.
+
 **Nothing in the gateway truncates a reference; the Hub does the cutting.**
 `studio_hub._stage_voice_reference` uploads `path.read_bytes()` verbatim, and
 `reference_audio.prepare()` on the Hub side trims silence, then — only if the clip
@@ -507,9 +516,9 @@ model name.
 ## Verification
 
 ```bash
-.venv/bin/python tests/test_e2e.py              # 349 checks, isolated mock upstream
+.venv/bin/python tests/test_e2e.py              # 351 checks, isolated mock upstream
 .venv/bin/python tests/test_fleet_standalone.py # 45 checks, real Hub(s) as locations
-.venv/bin/python tests/test_ui.py               # 107 checks, drives the real app
+.venv/bin/python tests/test_ui.py               # 109 checks, drives the real app
 ```
 
 `test_e2e.py` is fully isolated (`GATEWAY_DATA`/`GATEWAY_APP_SUPPORT` to a temp

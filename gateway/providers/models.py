@@ -366,15 +366,35 @@ class ModelInventory:
 
     # -- projection -------------------------------------------------------
     def summary(self) -> dict[str, Any]:
-        """Counts for the admin UI header."""
-        total = enabled = 0
-        per_modality: dict[str, int] = {}
+        """Counts for the admin UI header.
+
+        **Two different questions, two different numbers.** `enabled_models` is what
+        the operator has switched on; `publishable_models` is how many of those can
+        actually reach Story Studio. They diverge whenever `can_publish` withholds
+        something — a package the Hub's catalogue does not describe as a model, or
+        one it says does not fit this machine — and reporting only the first said
+        "121 live" while nine of them could not be picked. `by_modality` counts the
+        **publishable** ones, because it is what the Overview chart labels
+        "Offered to Story Studio".
+        """
+        total = enabled = publishable = 0
+        offered: dict[str, int] = {}
         for provider_id, definition in self._every_definition():
             if not self.credentials.is_enabled(provider_id):
                 continue
             for model in self.models_for(provider_id, include_disabled=True):
                 total += 1
-                if model["enabled"]:
-                    enabled += 1
-                    per_modality[model["modality"]] = per_modality.get(model["modality"], 0) + 1
-        return {"total_models": total, "enabled_models": enabled, "by_modality": per_modality}
+                if not model["enabled"]:
+                    continue
+                enabled += 1
+                if not self.can_publish(definition, model):
+                    continue
+                publishable += 1
+                offered[model["modality"]] = offered.get(model["modality"], 0) + 1
+        return {
+            "total_models": total,
+            "enabled_models": enabled,
+            "publishable_models": publishable,
+            "withheld_models": enabled - publishable,
+            "by_modality": offered,
+        }
