@@ -237,6 +237,7 @@ All items below are open unless explicitly marked otherwise. Proposed fixes are 
 - Trigger/impact: Missing tools or failed generation/signing can still reach the Built/Installed message.
 - Proposed fix: Treat required distribution/build checks as failures, or clearly mark an intentionally unsigned development artifact and prohibit claiming it release-ready. Verify the produced signature/icon.
 - Acceptance check: Inject icon/signing failure; build exits nonzero or explicitly reports the reduced artifact status; normal bundle passes codesign verification.
+- Follow-up [MEASURED, source Mac 2026-09-20]: Strict verification later failed for both the installed and newer local builds; all reported resource differences were `.pyc` files (529 installed, 78 newer). Startup/import activity can invalidate a prior build-time seal. Extend the acceptance check to verify **after** isolated startup/imports and mock generation; prevent bytecode writes into the signed app and clean build-staging caches before signing. Details and limits: [production checkpoint](2026-09-20-this-mac-production.md). The production app was left untouched.
 - Boundary/counter-evidence: The previously built source-Mac bundle passed signature verification; this is a failure-path gap, not a claim it is unsigned.
 
 ### P04 — Private-data copies retain old absolute artifact/voice/pin paths (P1)
