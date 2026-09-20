@@ -330,6 +330,8 @@ final class CreateWorkspace: NSView {
     }
 
     private func headerRow() -> NSView {
+        statusLabel.preferredMaxLayoutWidth = 280
+        statusLabel.widthAnchor.constraint(equalToConstant: 280).isActive = true
         let refresh = NSButton(title: "Refresh models", target: self, action: #selector(refreshModels))
         refresh.bezelStyle = .rounded
         loadJobButton = NSButton(title: "Reload selected job", target: self, action: #selector(loadSelectedJob))
@@ -930,6 +932,21 @@ final class CreateWorkspace: NSView {
         guard let modelID = selectedModelID() else {
             statusLabel.stringValue = "Select a model before generating."
             return
+        }
+        if let row = selectedModelRow() {
+            let limitKey = lane.modality == "tts" ? "maximum_input_characters" : "max_prompt_characters"
+            let textKey = lane.modality == "tts" ? "text" : "prompt"
+            if let limit = row[limitKey] as? Int, limit >= 0,
+               value(of: textKey).unicodeScalars.count > limit {
+                statusLabel.stringValue = "This model accepts at most \(limit) characters (\(source(row, limitKey + "_source"))). Shorten the text or choose another model."
+                return
+            }
+        }
+        for field in lane.fields where field.kind == .number {
+            if Int(value(of: field.key)).map({ $0 > 0 }) != true {
+                statusLabel.stringValue = "\(field.label) must be a positive whole number."
+                return
+            }
         }
         guard let attempt = makeAttempt(modelID: modelID) else { return }
         jobRequestGeneration += 1

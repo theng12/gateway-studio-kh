@@ -299,6 +299,16 @@ struct CreateWorkspaceCheck {
         assert(preview != nil, "output preview action missing")
         preview?.performClick(nil)
         assertEventually({ GatewayAPI.downloadedPaths.contains("/admin/api/artifacts/mock-job/outputs/0") }, "preview did not use GatewayAPI.download")
+        defaults.removeObject(forKey: "gateway.create.state.audio")
+        GatewayAPI.rows = [["id": "a", "provider_name": "Mock", "display_name": "A",
+                            "maximum_input_characters": 1, "maximum_input_characters_source": "provider"]]
+        let limited = CreateWorkspace(lane: CreateLanes.all[0])
+        limited.refreshModels()
+        descendants(limited).compactMap { $0 as? NSTextView }.first!.string = "too long"
+        let beforeLimit = GatewayAPI.submitted
+        limited.perform(NSSelectorFromString("generate"))
+        assert(GatewayAPI.submitted == beforeLimit, "known character limit was not checked before submission")
+        assert(labels(limited).contains { $0.contains("1 characters") }, "missing known-limit guidance")
         print("PASS: Create persistence, model/voice safety, capabilities, ambiguous retry, cancellation and authenticated output preview")
     }
 }
