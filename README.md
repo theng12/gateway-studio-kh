@@ -4,6 +4,8 @@
 
 For voices, settings and Content Packs, see the [asset transfer inventory](_handoffs/2026-09-20-asset-transfer.md). Owner-private transfer files are separate from the source repository.
 
+The owner is keeping the source Mac available for content work while developing on the new Mac. Read the [fixed production-build notes](_handoffs/2026-09-20-this-mac-production.md) before replacing the source Mac's app or runtime data.
+
 A personal **model gateway**: one API in front of many backends, so Story Studio KH points at a
 single URL and its model pickers fill up — with no stocking step, no credits, no customers and no
 per-model setup.
