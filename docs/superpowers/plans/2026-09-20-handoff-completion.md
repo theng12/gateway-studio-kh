@@ -3,9 +3,9 @@
 Execution status is recorded in [`_handoffs/2026-09-20-local-completion.md`](../../../_handoffs/2026-09-20-local-completion.md).
 The checklist below preserves the original acceptance specification; do not
 mistake a planned item for a completed feature. Tasks 1–7 have implemented repairs
-and isolated evidence. Task 8 is an archive-only partial delivery: trusted
-installation has a trust/ownership blocker, while offline authoring/preview/export
-is separately unfinished. Tasks 9–10 record local integration and installation in
+and isolated evidence. Task 8 now includes the archive library and reviewed,
+installed offline Topic Pack authoring/preview/export; trusted delivery and
+installation still have a trust/ownership blocker. Tasks 9–10 record local integration and installation in
 the execution record.
 
 > **For agentic workers:** Use subagent-driven-development or executing-plans for each assigned task. Read the task brief, global rules and project contracts; do not commit or delegate. Only the orchestrator edits this plan and the handoff ledger.

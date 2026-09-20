@@ -35,7 +35,7 @@ means inherited or worker evidence not yet independently confirmed.
 | U02, U03, F01–F04 | Native drafts/recovery/voice choice/capabilities/scrolling form and Jobs outputs | `[MEASURED]` Native state regressions pass, including typed drafts, transport ambiguity and stale callbacks. Six-lane minimum-width geometry passes. Rendered native Image submits once, shows two mock outputs and previews authenticated bytes; Jobs pinning works. |
 | P01–P03, P05 | Honest empty bundled voice defaults, locked dependencies/runtime identity, required icon/signature validation | `[MEASURED]` 10 packaging tests pass; signed arm64 app installed and running. Signature reverified after startup. Reproducibility is dependency/runtime identity, not byte-identical bundle output. |
 | P04 | Dry-run-first copied-profile relocation with validated paths, backup and rollback | `[MEASURED]` 7 fixture tests pass, including unavailable old home. Optional live history remains archived. |
-| F05 | Private archive import/inspect/inventory/download; truthful unavailable commerce responses | `[MEASURED]` 9 backend + 2 browser checks pass. Trusted delivery/install is blocked on original Store account/receipt/key authority. Gateway authoring/preview/export is separately unfinished, not inherently blocked by Store credentials. No ownership/signature/Keychain bypass. |
+| F05 | Private archive library plus reviewed, installed offline Topic Pack drafts/preview/export; truthful unavailable commerce responses | `[MEASURED]` Archive backend 9; authoring Python 21, Node 12, HTTP 5, actual Story integration 1 and combined JavaScript 21 pass. Trusted delivery/install/reinstall still needs original Store account/receipt/key authority. Actual new authoring also needs a registry reservation. No ownership/signature/Keychain bypass. |
 
 ## Integrated evidence
 
@@ -93,7 +93,8 @@ original store authority or a supported publisher-signed export and Story Studio
   but model generation and weight readiness were not tested.
 
 The overall handoff is **not 100% closed**: F05 trusted delivery/install/reinstall
-and authoring/preview/export remain open. The transfer archives and authoring
+remains open. Offline authoring/preview/export is implemented and verified in the
+later installation record below. The transfer archives and authoring
 sources remain separate, private and untouched; the new archive shelf does not
 silently import or install them. Trusted restoration needs original Store
 account, receipt and signing-key authority (or a supported publisher-signed
@@ -178,3 +179,37 @@ still needs manual reconciliation; no provider-specific recovery poller is claim
   stale-export attempt stalled in browser automation at confirmation and is not
   claimed as a pass or application failure; automated state tests and real HTTP
   integration cover the corrected behavior. No independent visual signoff.
+
+## Current installation — authoring build
+
+- `[MEASURED]` Reviewed source commit `53dc4fd` built successfully with
+  `sh menubar/build.sh --no-install`: arm64, bundled Python 3.11.16, build
+  `53dc4fd-202609201808`. Strict/deep signature and bundled source comparisons pass.
+- `[MEASURED]` Before installation, the built backend passed an isolated actual
+  Story draft → preview → 985-byte candidate export → identical retry smoke;
+  zero jobs, no installed profile used. Signature remained valid afterward.
+- `[MEASURED]` The old native app was quit and port8000 was confirmed free.
+  Its installed bundle was moved recoverably into the fresh backup as
+  `replaced-installed.app`; the verified candidate was copied into
+  `/Applications/gateway-kh.app` and started. No profile was replaced.
+- `[MEASURED]` Live `/health` reports build `53dc4fd-202609201808`, new PID6752,
+  loopback8000 and zero processed jobs. The native **Check Gateway** action
+  confirms the same build. Post-start strict/deep signature passes; wrong-key
+  `/v1/models` returns403, database integrity is `ok` and stored job count is0.
+- `[MEASURED]` Ten recording digests and the six restored JSON catalogue/settings
+  files, `.env` and `menubar.json` remain identical to the fresh backup after
+  startup. Voice IDs, transcripts, segments, permission and license fields are
+  covered by exact writable-catalogue equality. No voice sharing or job replay.
+- `[MEASURED]` The installed authoring catalogue reads the actual Story checkout:
+  available=true, registry289, 70 templates, zero reservations and zero drafts.
+  No real product identity, draft or candidate was created during live checks.
+- `[MEASURED]` Native Overview, build check, Pack Library entry point and
+  Providers render. Providers is open for the owner's local credential entry.
+  Only local Studio Hub is configured at this checkpoint; cloud credentials and
+  real generation are not tested. User-entered credentials after this checkpoint
+  are legitimate newer work and must not be overwritten from the backup.
+
+The offline feature is usable once the authoring lead supplies an existing
+verified Topic Pack reservation. It does not grant Store ownership or make the
+transferred archive shelf installable. F05 trusted delivery/install/reinstall
+still requires the supported original authority/consumer workflow.
