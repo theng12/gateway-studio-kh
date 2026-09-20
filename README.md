@@ -1,5 +1,7 @@
 # gateway-kh
 
+**Moving to another computer or starting implementation?** Read the current [new-computer handoff](_handoffs/2026-09-20-new-computer-handoff.md) and [open-issue ledger](_handoffs/2026-09-20-open-issues.md). They distinguish verified defects, proposed features, committed code and live state.
+
 A personal **model gateway**: one API in front of many backends, so Story Studio KH points at a
 single URL and its model pickers fill up — with no stocking step, no credits, no customers and no
 per-model setup.
@@ -207,9 +209,10 @@ moved**, so the old directory remains as a fallback.
 Gatekeeper warns on first launch of a copied copy (right-click → Open).
 
 **First run** opens the main window on Overview, and the app generates an API key if none exists —
-the gateway treats an empty key as "accept any bearer token", which should never be the state you
-are left in without being told. Launching with `--background` (which is what the login item does)
-skips the window and leaves only the menu bar icon.
+keyless development accepts a nonempty bearer token only when configured for loopback. A
+non-loopback bind requires a configured key; keep Uvicorn's actual bind aligned with `GATEWAY_HOST`.
+Launching with `--background` (which is what the login item does) skips the window and leaves only
+the menu bar icon.
 
 **Settings** is where the gateway's own API key lives, with a **Copy** button — that is the value
 Story Studio needs. Paste it into **Story Studio → Settings → This Mac → GenStudio API key**, and set
@@ -221,8 +224,8 @@ ad-hoc signed. The agent is `KeepAlive` only on an unsuccessful exit, so quittin
 deliberately stays quit.
 
 The app **supervises** the gateway: if the process dies it restarts with exponential backoff, and
-the menu says so. It deliberately does *not* stop the gateway when the app quits — it is a service,
-and closing a menu bar helper should not silently take the API away from Story Studio.
+the menu says so. Quitting stops the gateway by default. Enable **Keep the gateway running after
+I quit** in Settings only when you want Story Studio to keep using that process after the app closes.
 
 ### Headless helpers
 
@@ -406,12 +409,12 @@ other session in `~/Developer/_handoffs/2026-09-18-gateway-kh-fleet-contract-to-
 ## Verification
 
 ```bash
-.venv/bin/python tests/test_e2e.py            # 337 checks, mock upstream
-.venv/bin/python tests/test_fleet_standalone.py  # 45 checks, a real Hub used as a location
-.venv/bin/python tests/test_ui.py             # 107 checks, drives the installed app
+.venv/bin/python tests/test_e2e.py            # isolated mock upstream
+.venv/bin/python tests/test_fleet_standalone.py  # deliberately uses a real Hub
+.venv/bin/python tests/test_ui.py             # drives the installed app
 ```
 
-325 checks against a **real HTTP upstream** (a local mock provider), exercising the admin API,
+The end-to-end suite uses a **real HTTP upstream** (a local mock provider), exercising the admin API,
 credential storage, live discovery, modality inference, the Story catalogue contract, chat/image/TTS
 generation, transcription upload, the worker, artifacts, idempotency, provider/model enable-disable
 on both the catalogue and the dispatch path, manual model addition, the voice registry, and the 402
@@ -428,7 +431,7 @@ refusal.
 .venv/bin/python tests/test_ui.py
 ```
 
-84 checks that drive the macOS **accessibility layer**: they open the window through the real menus,
+The UI checks drive the macOS **accessibility layer**: they open the window through the real menus,
 click sidebar rows, read what it renders, type into fields, tick checkboxes and press buttons — then
 verify the *gateway* changed, not merely that the widget repainted.
 
@@ -640,4 +643,4 @@ Credits, customers, pricing, tiers, entitlement checks, publishing, model qualif
 multi-tenancy, and API-key scopes. Scopes are ignored: this is a single-owner gateway, and Story
 Studio only uses them to produce user-facing hints.
 
-GenStudio KH is **not** modified by any of this and keeps running as-is.
+This project does not modify GenStudio KH. Manage its service status separately and check that it is not competing for the gateway port.

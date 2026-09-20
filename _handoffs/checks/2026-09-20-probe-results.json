@@ -1,0 +1,29 @@
+{
+  "source_commit": "fcfde43",
+  "method": "isolated offline probes, no upstream dispatch",
+  "observations": {
+    "restart": {
+      "state": "running",
+      "next_action_at": null,
+      "due_count": 0
+    },
+    "running_cancel": {
+      "before_late_completion": "cancelled",
+      "after_late_completion": "succeeded"
+    },
+    "queued_input_pruned": {
+      "state": "accepted",
+      "input_exists": false,
+      "deleted_by_size": 1
+    },
+    "quote_model": {
+      "quoted": "model-a",
+      "confirmed": "model-b",
+      "resolved": "model-b"
+    },
+    "artifact_delete_race": {
+      "exception": "FileNotFoundError",
+      "typed_gateway_error": false
+    }
+  }
+}

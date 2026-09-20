@@ -1,3 +1,5 @@
+> Historical handoff. For the current work and new-computer setup, start with [2026-09-20-new-computer-handoff.md](2026-09-20-new-computer-handoff.md).
+
 # Copy-paste prompt for a fresh session
 
 Paste the block below into a new session. It assumes nothing about the previous
