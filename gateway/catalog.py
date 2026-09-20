@@ -290,15 +290,27 @@ _TTS_CHARACTERS_DEFAULT = 25000
 #: Engines the Hub declares as `chunking="hard-cap"`, with the character cliff its
 #: own catalogue records.
 #:
-#: **Read from the Hub, not guessed, and not served over its API.** Measured
-#: against Hub 0.6.29: `/api/hub/catalog` carries `family`, `capabilities`,
-#: `reference_audio` and `long_form_delivery` (including a per-model
-#: `section_max_characters` for everything it *does* section) but **no**
-#: `text_guidance` — so `soft_max_chars` is the one fact that has to be recorded
-#: here. These two numbers are verbatim from the Hub's own table
-#: (`components/voice/app/backend/catalog.py`, read 2026-09-20): bark 150 and
-#: orpheus 170, both `hard-cap`, note *"past the cap, output degrades or
-#: silences"*.
+#: **Read from the Hub, not guessed, and not served over its API.** `/api/hub/catalog`
+#: carries `family`, `capabilities`, `reference_audio` and `long_form_delivery`
+#: (including a per-model `section_max_characters` for everything it *does*
+#: section) but **no** `text_guidance` — so `soft_max_chars` is the one fact that
+#: has to be recorded here.
+#:
+#: **Read the copy in the installed bundle, and check its version.** These two
+#: numbers come from
+#: `~/Applications/Studio Hub.app/Contents/Resources/voice/app/backend/catalog.py`
+#: at **0.6.31**, read 2026-09-20: bark 150, orpheus 170, both `chunking="hard-cap"`
+#: — the only two in the file (a direct count, not an impression). The bundle is
+#: the copy that matters; `~/Projects/studiohub-standalone` is a development
+#: checkout and can be **ahead of what is serving** (it was 0.6.31 while the running
+#: Hub still reported 0.6.29), so a fact read there is only verified once the
+#: bundle's own file agrees.
+#:
+#: The Hub's field comment states the intent plainly: *"`hard-cap` — fixed
+#: training-window past which output silences / hallucinates (Bark, Orpheus,
+#: XTTS). **UI should soft-block.**"* Publishing this as `maximum_input_characters`
+#: is that instruction carried out, not a number of ours. Its own wording is
+#: approximate ("~170"); it is used as a block threshold because the Hub says to.
 #:
 #: `spark-tts-mlx` is 750 there and deliberately **absent**: it is `auto-split`,
 #: so 750 is where quality is best, not a limit on what may be sent — publishing
@@ -306,9 +318,12 @@ _TTS_CHARACTERS_DEFAULT = 25000
 #:
 #: ponytail: two families, hand-listed, and only consulted while the Hub does not
 #: long-form split that model (see `_hard_cap_characters`). Ceiling — a third
-#: hard-cap family the Hub adds is over-promised until this list is extended.
-#: Upgrade path — the Hub serves `text_guidance.soft_max_chars`, at which point
-#: this table and its staleness both disappear.
+#: hard-cap family the Hub adds is over-promised until this list is extended. The
+#: Hub's own comment names **XTTS** as a third hard-cap engine, and it is absent
+#: here only because no shipped family for it exists yet; if one appears it lands
+#: in this table before it can be picked. Upgrade path — the Hub serves
+#: `text_guidance.soft_max_chars`, at which point this table and its staleness
+#: both disappear.
 _HARD_CAP_CHARACTERS = {"orpheus": 170, "bark": 150}
 
 

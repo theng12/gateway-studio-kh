@@ -838,7 +838,20 @@ environment's business, and the stale case was verified by hand).
   0.6.29: `/api/hub/catalog` carries `long_form_delivery`, with a per-model
   `section_max_characters` for everything it *does* section, but no
   `text_guidance`). The hard-capping families are therefore recorded in
-  `catalog._HARD_CAP_CHARACTERS` — bark 150, orpheus 170, read from the Hub's own
-  table — and the record is gated on `long_form_delivery` so the Hub can obsolete
-  it without anyone editing the gateway. **When the Hub serves `text_guidance`,
-  that table and its staleness both disappear.**
+  `catalog._HARD_CAP_CHARACTERS` — bark 150, orpheus 170 — and the record is gated
+  on `long_form_delivery` so the Hub can obsolete it without anyone editing the
+  gateway. **When the Hub serves `text_guidance`, that table and its staleness
+  both disappear.**
+- **When you read a fact out of the Hub's own source, read the copy in the
+  *installed bundle* and check its version against the Hub that is answering.**
+  `~/Applications/Studio Hub.app/Contents/Resources/voice/app/backend/catalog.py`
+  is what is serving. `~/Projects/studiohub-standalone` is a development checkout
+  and can be **ahead of it** — it was 0.6.31 while the running Hub still reported
+  0.6.29 — so a number read there is a claim until the bundle agrees. This is the
+  same rule as "read a control's title to know it was built": the file you can
+  find is not automatically the file that is running, and the Hub auto-updates
+  itself often enough (0.6.18 → 0.6.23 → 0.6.29 → 0.6.31 within one session) that
+  the difference is not hypothetical. Also worth knowing: the Hub's field comment
+  says `hard-cap` engines' UI *"should soft-block"*, which is why the cliff is
+  published as `maximum_input_characters` at all — it is the Hub's instruction
+  carried out, not a number of ours.
