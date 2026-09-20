@@ -29,6 +29,7 @@ def free_port() -> int:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--app", type=Path, help="Optional built GatewayKH executable to inspect")
+    parser.add_argument("--authoring", action="store_true", help="Add a synthetic reserved Topic Pack using Story's real tooling")
     args = parser.parse_args()
     processes = []
     with tempfile.TemporaryDirectory(prefix="gateway-ui-fixture-") as temporary:
@@ -62,6 +63,14 @@ def main() -> None:
             "GATEWAY_PORT": str(gateway_port), "GATEWAY_BUILD": "isolated-ui-fixture",
             "GATEWAY_NATIVE_DEFAULTS_SUITE": "kh.gateway.ui-fixture." + support.name,
         })
+        authoring = None
+        if args.authoring:
+            result = subprocess.run([
+                env.get("GATEWAY_AUTHORING_NODE", "/opt/homebrew/bin/node"),
+                "tests/prepare_authoring_fixture.mjs", str(support / "story-fixture"),
+            ], cwd=ROOT, check=True, capture_output=True, text=True)
+            authoring = json.loads(result.stdout)
+            env["GATEWAY_STORY_SOURCE"] = authoring["source"]
         log = (support / "fixture.log").open("w")
         try:
             for command in ([sys.executable, "tests/mock_upstream.py", "--port", str(mock_port)],
@@ -78,6 +87,11 @@ def main() -> None:
                     raise RuntimeError((support / "fixture.log").read_text())
                 response = client.post("/admin/api/providers/ui-fixture/credentials", json={"values": {"api_key": "mock-only"}})
                 response.raise_for_status()
+                if authoring:
+                    response = client.post("/admin/api/pack-authoring/drafts", json={
+                        "key": authoring["key"], "document_text": json.dumps(authoring["document"], indent=2),
+                    })
+                    response.raise_for_status()
                 response = client.post("/admin/api/providers/ui-fixture/refresh")
                 response.raise_for_status()
                 models = client.get("/admin/api/providers/ui-fixture/models").json()

@@ -30,6 +30,7 @@ from fastapi import (
     UploadFile,
 )
 from fastapi.responses import HTMLResponse, JSONResponse
+from starlette.concurrency import run_in_threadpool
 
 from .activity import story_activity
 from .adapters import serves, support_status
@@ -1321,6 +1322,98 @@ def export_content_archive(digest: str) -> Any:
         return _error(410, str(exc), "CONTENT_ARCHIVE_UNAVAILABLE")
     return Response(data, media_type="application/octet-stream", headers={
         "Content-Disposition": f'attachment; filename="{digest}.sspack"',
+        "X-Content-Type-Options": "nosniff",
+    })
+
+
+# --------------------------------------------------------------------------
+# Private authoring — Story's schema/registry/builder remain authoritative.
+
+
+async def _authoring_call(name: str, *args: Any) -> Any:
+    from . import pack_authoring
+    try:
+        return await run_in_threadpool(getattr(pack_authoring, name), *args)
+    except pack_authoring.AuthoringError as exc:
+        return _error(exc.status, str(exc), "PACK_AUTHORING_REFUSED")
+    except OSError:
+        return _error(503, "Authoring storage is unavailable; your saved draft was not replaced.", "PACK_AUTHORING_UNAVAILABLE")
+
+
+async def _authoring_body(request: Request, fields: dict[str, type]) -> Any:
+    from .content_packs import _json, PackError
+    # Loopback admin trust must not let a third-party site's simple POST mutate drafts.
+    if request.headers.get("content-type", "").split(";", 1)[0].strip().lower() != "application/json":
+        return _error(415, "Authoring requests require Content-Type: application/json.")
+    data = bytearray()
+    async for chunk in request.stream():
+        if len(data) + len(chunk) > 4 * 1024**2:
+            return _error(413, "Authoring requests are limited to 4 MiB.")
+        data.extend(chunk)
+    try:
+        body = _json(bytes(data))
+    except PackError:
+        return _error(422, "Send one unambiguous JSON object.")
+    if (not isinstance(body, dict) or set(body) != set(fields)
+            or any(type(body[key]) is not kind for key, kind in fields.items())):
+        return _error(422, "Required fields: " + ", ".join(fields) + ". Extra fields are not accepted.")
+    if "revision" in body and body["revision"] < 1:
+        return _error(422, "Revision must be a positive integer.")
+    return body
+
+
+@router.get("/api/pack-authoring", dependencies=[Depends(require_admin)])
+async def pack_authoring_catalogue() -> Any:
+    return await _authoring_call("catalogue")
+
+
+@router.post("/api/pack-authoring/template", dependencies=[Depends(require_admin)])
+async def pack_authoring_template(request: Request) -> Any:
+    body = await _authoring_body(request, {"key": str})
+    return body if isinstance(body, Response) else await _authoring_call("template", body["key"])
+
+
+@router.get("/api/pack-authoring/drafts", dependencies=[Depends(require_admin)])
+async def pack_authoring_drafts() -> Any:
+    result = await _authoring_call("list_drafts")
+    return result if isinstance(result, Response) else {"drafts": result}
+
+
+@router.post("/api/pack-authoring/drafts", dependencies=[Depends(require_admin)])
+async def pack_authoring_create(request: Request) -> Any:
+    body = await _authoring_body(request, {"key": str, "document_text": str})
+    return body if isinstance(body, Response) else await _authoring_call("create_draft", body["key"], body["document_text"])
+
+
+@router.get("/api/pack-authoring/drafts/{draft_id}", dependencies=[Depends(require_admin)])
+async def pack_authoring_read(draft_id: str) -> Any:
+    return await _authoring_call("read_draft", draft_id)
+
+
+@router.put("/api/pack-authoring/drafts/{draft_id}", dependencies=[Depends(require_admin)])
+async def pack_authoring_save(draft_id: str, request: Request) -> Any:
+    body = await _authoring_body(request, {"document_text": str, "revision": int})
+    return body if isinstance(body, Response) else await _authoring_call("save_draft", draft_id, body["document_text"], body["revision"])
+
+
+@router.post("/api/pack-authoring/drafts/{draft_id}/preview", dependencies=[Depends(require_admin)])
+async def pack_authoring_preview(draft_id: str, request: Request) -> Any:
+    body = await _authoring_body(request, {"revision": int})
+    return body if isinstance(body, Response) else await _authoring_call("preview_draft", draft_id, body["revision"])
+
+
+@router.post("/api/pack-authoring/drafts/{draft_id}/export", dependencies=[Depends(require_admin)])
+async def pack_authoring_export(draft_id: str, request: Request) -> Any:
+    body = await _authoring_body(request, {"revision": int})
+    if isinstance(body, Response):
+        return body
+    result = await _authoring_call("export_draft", draft_id, body["revision"])
+    if isinstance(result, Response):
+        return result
+    data, _metadata = result
+    # Do not interpolate user-authored names into response headers.
+    return Response(data, media_type="application/octet-stream", headers={
+        "Content-Disposition": 'attachment; filename="topic-pack-candidate.sspack"',
         "X-Content-Type-Options": "nosniff",
     })
 
