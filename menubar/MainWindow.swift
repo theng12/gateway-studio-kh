@@ -38,6 +38,13 @@ final class ConsoleSection: NSObject, AppSection, WKNavigationDelegate, WKUIDele
     static let providers = ConsoleSection(
         title: "Providers", symbol: "square.grid.2x2", viewName: "providers"
     )
+    /// Content Packs is the same page whether it is opened here or in a browser.
+    /// It used to be a native stub with an "Open in browser" button, so setting
+    /// up the shelf, reviewing an archive and adding it to the shelf all happened
+    /// somewhere else; the console already does all of it.
+    static let packs = ConsoleSection(
+        title: "Content Packs", symbol: "archivebox", viewName: "packs"
+    )
 
     let title: String
     let symbol: String
@@ -59,6 +66,7 @@ final class ConsoleSection: NSObject, AppSection, WKNavigationDelegate, WKUIDele
     static func refreshCredentials() {
         models.refreshCredentialIfLoaded()
         providers.refreshCredentialIfLoaded()
+        packs.refreshCredentialIfLoaded()
     }
 
     /// Lazy so the web view can be built by a closure on self.
@@ -480,7 +488,7 @@ final class MainWindow: NSObject, NSTableViewDataSource, NSTableViewDelegate {
             ConsoleSection.providers,
             FleetSection.shared,
             SettingsSection.shared,
-            PackLibrarySection.shared,
+            ConsoleSection.packs,
         ]
 
         let window = NSWindow(

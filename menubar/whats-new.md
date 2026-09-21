@@ -30,6 +30,11 @@ port, so there is never a question of which service answered.
 
 ## Smaller things
 
+- The **Content Packs** page is now in the app itself (no browser detour), and it
+  imports archives in bulk: choose one file, several, or a whole folder, and one
+  click preserves them all. Nothing is typed in — each archive carries its own
+  name, description and kind. The preserved list has search, sort and an
+  integrity filter.
 - **Jobs** now lists the **Provider** that ran each job, so you can tell DeepSeek
   from fal from your local Studio Hub without opening the row.
 - The sidebar is grouped by what each page is for now — **Create** (the six
