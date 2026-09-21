@@ -33,7 +33,14 @@ through Story Studio's real installer.
   container root, source `worktrees/handoff-completion`, port **8100**, isolated
   profile (`test-instance/support`, `test-instance/data`), no real credentials,
   no Studio Hub. Commands: `./run.sh`, `./status.sh`, `./stop.sh`; see
-  `test-instance/README.md`. Currently running (Content Packs work + P0 fix).
+  `test-instance/README.md`.
+- **Owner decision 2026-09-21:** the test instance stays **code-only** (no keys,
+  no Hub) so it can never spend money or touch the owner's Hub; it is for code
+  and UI verification only. The browser admin page is enough — no second Dock
+  app. The working instance is the only place real generation runs and it changes
+  **only when the owner explicitly says to promote**.
+- Story Studio talks to exactly one endpoint; switching it to 8100 is a
+  `genstudio_url` + API-key change and is documented in `test-instance/README.md`.
 - Promotion procedure and rollback: `test-instance/README.md`.
 - Remaining known issues and the ordered fix plan:
   `docs/superpowers/plans/2026-09-21-stabilization-plan.md`.
@@ -44,15 +51,17 @@ through Story Studio's real installer.
 - Normal checkout: `repository/` — branch `main`, HEAD `736d7b0`, clean except a
   preserved `.DS_Store` modification. Untouched.
 - **Working checkout: `worktrees/handoff-completion/`, branch
-  `codex/content-pack-delivery`, base SHA `b12550f`** (one commit behind `main`;
-  `main` only adds PR #7, an unrelated sidebar version footer).
+  `codex/content-pack-delivery`.** Fast-forwarded to `main` `736d7b0`, with the
+  Content Packs work committed on top; latest commit `665f38c`. Clean tree.
 - Story source dependency: `/build/Developer/story-studio-kh` at
   `6f3c4e3` (1.4.213), `node_modules` present. Installed
   `/Applications/Story Studio KH.app` 1.4.213.
-- Running gateway: build `b12550f-202609201849`, pid 52952 —
-  **older than this worktree's source. The new Content Packs code is NOT live.**
-  `[MEASURED]`
+- Running gateway (stable): build `97bb3a5-202609210714` on port 8000, regular
+  Dock app, 124 models offered, real jobs and provider keys in use. `[MEASURED]`
 - Worktree `.venv` Python 3.11.16; Node v26.8.2.
+- **Sections 3–7 below record the recovery baseline from earlier on 2026-09-21**
+  (what was found before any edit). They are historical; the current state is in
+  §1b and §11.
 
 ## 3. Inherited work preserved before any edit
 
