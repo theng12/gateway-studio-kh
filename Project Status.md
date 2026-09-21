@@ -772,10 +772,9 @@ Full record and the exact commands: `_handoffs/2026-09-22-hardening-owner-action
   `/admin/api/status` both answer **401**; over Tailscale, 401. Only `/health`
   answers keyless, and it publishes build/pid/counts, no secret. So hardening is
   defence in depth here rather than closing an open door.
-- **Tailscale key expiry looks already correct.** `tailscale status --json`
-  publishes no `KeyExpiry`/`Expiry` on `Self`, which is what a non-expiring node
-  key looks like; confirm once in the admin console rather than infer it from an
-  omitted field. Nothing to change if it is already off.
+- **Tailscale key expiry is confirmed by the owner: it no longer expires.** The
+  CLI publishes no `KeyExpiry`/`Expiry` on `Self`, which is what a non-expiring
+  node key looks like; nothing to do. This item is closed.
 - **Closing the LAN needs `pf`, which needs sudo this session cannot get**
   (approval prompts are disabled). The app firewall is the wrong tool — it is
   per-application and the gateway *is* the listener, so it would cut the tailnet

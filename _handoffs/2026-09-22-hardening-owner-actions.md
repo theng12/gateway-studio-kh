@@ -8,8 +8,8 @@
 | Fact | Measurement |
 |---|---|
 | Gateway listener | `python3.1` pid 60989, `TCP *:8787 (LISTEN)` — every interface |
-| Primary LAN address | `192.168.1.239` (en1) |
-| Tailscale address | `100.126.154.54` (`m2-max-32-512.tail4e72cf.ts.net`) |
+| Primary LAN address | `192.168.1.239` on **en1** |
+| Tailscale address | `100.126.154.54` on **utun1** (`m2-max-32-512.tail4e72cf.ts.net`) |
 | macOS application firewall | **disabled** (`State = 0`) |
 | Unauthenticated `/v1/models` over LAN | **401** |
 | Unauthenticated `/admin/api/status` over LAN | **401** |
@@ -21,17 +21,13 @@ already refuses a keyless caller from any interface; only `/health` answers, and
 carries build/pid/counts. Hardening here is defence in depth, not closing an open
 door.
 
-## Item 2 — Tailscale key expiry: already fine (confirm once)
+## Item 2 — Tailscale key expiry: **confirmed by the owner**
 
-`tailscale status --json` publishes **no** `KeyExpiry` and no `Expiry` on `Self`
-(the full key list was inspected). A node key with an expiry set carries that field
-as a timestamp, so its absence is what a non-expiring key looks like. **Worth one
-look** in the Tailscale admin console → Machines → this node → *Disable key
-expiry*, to be certain rather than to infer it from an omitted field. Nothing to
-change if it is already off.
-
-If it ever expires, only this Mac needs re-authentication; the video Mac has its
-own node key.
+The owner has confirmed the node's key **no longer expires**. Nothing to do; the
+note is kept only so the reasoning is not rediscovered: `tailscale status --json`
+publishes no `KeyExpiry`/`Expiry` on `Self`, which is what a non-expiring node key
+looks like. If it ever expires, only this Mac needs re-authentication — the video
+Mac has its own node key.
 
 ## Item 1 — keep the LAN out: **owner action, needs sudo**
 
@@ -44,12 +40,16 @@ disabled — so these are for the owner to run and test. **Read the whole block
 first; a wrong interface name can cut Tailscale access to this Mac.**
 
 ```bash
-# 1. Allow loopback and the tailnet (Tailscale's utun), then drop everything else
-#    on 8787. `quick` means first match wins, so order matters.
+# 1. Allow loopback, allow what is addressed to this Mac's tailnet IP, drop the
+#    rest on 8787. `quick` means first match wins, so order matters.
+#
+#    Match the tailnet by ADDRESS, not by interface name. Tailscale takes the next
+#    free utunN, so `on utun1` breaks the day it becomes utun3 — and `on utun`
+#    would quietly allow every other tunnel too, a corporate VPN included.
 sudo tee /etc/pf.anchors/gateway-kh >/dev/null <<'EOF'
-pass  in quick on lo0  proto tcp to any port 8787
-pass  in quick on utun proto tcp to any port 8787
-block drop in quick    proto tcp to any port 8787
+pass  in quick on lo0 proto tcp to any port 8787
+pass  in quick        proto tcp to 100.126.154.54 port 8787
+block drop in quick   proto tcp to any port 8787
 EOF
 
 # 2. Load the anchor from the main config (append once, if not already present).
@@ -59,6 +59,10 @@ grep -q 'gateway-kh' /etc/pf.conf || printf '\nanchor "gateway-kh"\nload anchor 
 sudo pfctl -e
 sudo pfctl -f /etc/pf.conf
 ```
+
+Two things to know before you run it: the gateway listens on **IPv4 only**
+(`TCP *:8787`), so no IPv6 line is needed today; and if this Mac's tailnet address
+ever changes, the second `pass` line has to change with it.
 
 Then prove both directions — the LAN must fail and the tailnet must still work:
 
