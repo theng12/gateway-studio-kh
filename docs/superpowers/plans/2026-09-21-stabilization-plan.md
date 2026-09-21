@@ -31,6 +31,10 @@ test instance on port 8100 running the same committed source. Full evidence:
 - S7 completed: code-only Graphify refresh (2692 nodes / 6795 edges).
 - S10 completed: identity backup script, its test suite, and a verified
   backup → damage → restore drill on an isolated profile.
+- S5 completed: two tiny real chat calls through the durable route, balanced
+  settlement and no 402. S6 completed: 47/47 on the real Studio Hub, including a
+  real transcription and artifact return. S4 re-run after those jobs: 131/131,
+  with the Jobs detail-pane check fixed and now exercised by real data.
 
 ## Packet index
 
@@ -40,8 +44,8 @@ test instance on port 8100 running the same committed source. Full evidence:
 | S2 | defect | medium | ~~Light-mode table hover is unreadable~~ — **done 2026-09-21** |
 | S3 | perf | watch | Content authority read twice per request — measured, not demonstrated |
 | S4 | verification | high | ~~Native UI (`test_ui.py`) on the promoted build~~ — **done 2026-09-21, 127/127** |
-| S5 | verification | medium | Real generation through the working instance |
-| S6 | verification | low | Real-Hub fleet suite, knowingly |
+| S5 | verification | medium | ~~Real generation through the working instance~~ — **done 2026-09-21** |
+| S6 | verification | low | ~~Real-Hub fleet suite, knowingly~~ — **done 2026-09-21, 47/47** |
 | S7 | verification | low | Code-only Graphify refresh |
 | S8 | decision | high | ~~Promote Content Packs build to working~~ — **done 2026-09-21 (`5f94b4a-202609210554`)** |
 | S9 | decision | medium | ~~Historical Store material~~ — **done 2026-09-21: moved to `_trash/`** |
@@ -176,6 +180,13 @@ routing, provider credentials and Hub dispatch are exercised only by mocks.
 
 **Acceptance.** One cloud and one local job complete end to end; no 402 anywhere.
 
+**Done 2026-09-21 (cloud half).** The owner authorized a cheap paid call. Two tiny
+calls on `deepseek-main::deepseek-flash` through the durable
+`POST /v1/chat/responses` route: both succeeded, balanced `0/0/0` settlement, no
+402, and the second returned `output_text: "ok"` with `finish_reason: stop`
+(71 tokens total across both). The local Hub half is covered by S6. Details in
+`Project Status.md` §10f.
+
 ## S6 — Real-Hub fleet suite (low)
 
 **Why.** `tests/test_fleet_standalone.py` (~50 checks) deliberately uses the
@@ -187,6 +198,16 @@ If the two transcription checks fail, restart Studio Hub before reporting a
 defect (documented transient).
 
 **Acceptance.** 50/50, or a Hub-restart-recovered run.
+
+**Done 2026-09-21.** The owner confirmed the Hub was free.
+`GATEWAY_ALLOW_LIVE_GENERATION=1 .venv/bin/python tests/test_fleet_standalone.py`
+reported **all 47 fleet checks passed**: a real transcription ran on the location
+through `studio-hub::mlx-community/whisper-base-mlx`, the artifact came back
+through the gateway, the id Story Studio sent was the id told back, and no
+response in the whole run was 402. The suite needs a real speech clip under
+`data/*.wav` (or an `.mp3` in the working profile's artifacts); the owner's
+artifacts had been pruned, so a synthetic clip was made with macOS `say`,
+used for the run, and removed afterwards — `data/` is unchanged.
 
 ## S7 — Code-only Graphify refresh (low)
 

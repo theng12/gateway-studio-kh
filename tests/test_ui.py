@@ -925,9 +925,13 @@ def main() -> int:
         osa(wrap(f"tell {MAIN_WINDOW} to tell splitter group 1 to select row 1 "
                  "of table 1 of scroll area 2"))
         time.sleep(1.5)
-        after = detail_texts()
-        check("selecting a job reveals its detail", " via " in after or "\nid " in after,
-              after[-200:])
+        # The Jobs detail is its own pane (scroll area 3), not the table's scroll
+        # area: reading the table back reports the row, not what selecting it did.
+        after = osa(wrap(f"tell {MAIN_WINDOW} to tell splitter group 1 to return "
+                         "(value of every static text of scroll area 3)"))
+        check("selecting a job reveals its detail",
+              "Job " in after and ("succeeded" in after or "failed" in after),
+              after[:200])
 
     # ------------------------------------------------------------------
     print("\n\033[1m4. Voices section, and its controls work\033[0m")

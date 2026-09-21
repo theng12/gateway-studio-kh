@@ -341,17 +341,19 @@ Deliberately not run, with reason:
 Accessibility was granted, and `tests/test_ui.py` ran against the installed
 build `97bb3a5-202609210714`:
 
-- **All 127 UI checks pass**, with 5 environment skips (no jobs processed yet,
-  and no fleet controllers configured).
+- **All 131 UI checks pass**, with 2 environment skips (no fleet controllers
+  configured). Re-run after two real chat jobs existed, so the previously
+  skipped Jobs checks now execute and pass: table populated, page heading, and
+  summary line.
 - The window-resize invariant holds: every section stayed at the forced 700 pt
   height. An earlier run showed 12 transient resize failures while the app was
-  still settling after launch; two later runs passed. The one-point
-  window-restore difference was AX integer rounding and now has a ±1 tolerance.
+  still settling after launch; later runs passed. The one-point window-restore
+  difference was AX integer rounding and now has a ±1 tolerance.
 - Test drift fixed (it could not run before Accessibility): `SIDEBAR` and
-  `SECTIONS` now include **Content Packs**, and the Jobs checks no longer
-  hardcode a heading string that does not exist in the app. The three Jobs data
-  checks now skip when the gateway has processed no jobs, instead of failing a
-  valid empty state; they remain **unverified with real job data**.
+  `SECTIONS` now include **Content Packs**; the Jobs heading string was stale;
+  the Jobs data checks skip on an empty gateway; and the "job detail" check was
+  reading the table's scroll area instead of the Jobs detail pane
+  (`scroll area 3`) with an out-of-date expected string.
 - Command: `.venv/bin/python tests/test_ui.py` (drives the real app; needs
   Accessibility for the host process).
 
@@ -368,6 +370,31 @@ build `97bb3a5-202609210714`:
 - Procedure documented in `docs/content-packs-authoring.md`. The identity is
   created only when the owner runs explicit shelf setup.
 
+## 10f. Real generation through the working instance (S5) — verified 2026-09-21
+
+Owner authorized one cheap paid call; two tiny calls were made and disclosed.
+
+- Route: `POST /v1/chat/responses` (the durable worker path Story Studio uses),
+  model `deepseek-main::deepseek-flash`, isolated idempotency keys.
+- Call 1: succeeded, no 402, settlement `0/0/0`, usage 45 tokens. Its visible text
+  was empty because `max_tokens: 8` was fully consumed by 8 reasoning tokens
+  (`finish_reason: length`) — a parameter choice, not a defect.
+- Call 2: succeeded, `finish_reason: stop`, settlement `0/0/0`, usage 71 tokens,
+  `output_text: "ok"`. Both jobs are recorded and visible in `/v1/account/jobs`.
+- Provider discovery is live for 16 of 17 cloud providers with no errors, and
+  `/v1/models` serves **124 models** to the Gateway key.
+
+## 10g. Real-Hub fleet suite (S6) — verified 2026-09-21
+
+The owner confirmed the Hub was free.
+`GATEWAY_ALLOW_LIVE_GENERATION=1 .venv/bin/python tests/test_fleet_standalone.py`
+reported **all 47 fleet checks passed**: a real transcription ran on the location
+via `studio-hub::mlx-community/whisper-base-mlx`, the artifact came back through
+the gateway, the id Story Studio sent was the id it was told back, and no
+response in the whole run was 402. The suite needs a real speech clip in
+`data/*.wav`; the owner's artifacts had been pruned, so a synthetic clip was made
+with macOS `say`, used for the run, then removed — `data/` is unchanged.
+
 ## 11. Exact next action / resumable handoff
 
 - Branch `codex/content-pack-delivery`: promoted app code at `97bb3a5`
@@ -376,15 +403,15 @@ build `97bb3a5-202609210714`:
 - Working instance promoted, healthy and verified (`type="Foreground"`, signature
   valid); test instance running on 8100.
 - Stabilization plan `docs/superpowers/plans/2026-09-21-stabilization-plan.md`:
-  **S1, S2, S4, S7, S8, S9, S10 done.** S3 is a documented watch item (measured,
-  not demonstrated). Remaining: S5, S6 (owner-mediated), S11 (Story release),
-  S12 (low).
+  **S1, S2, S4, S5, S6, S7, S8, S9, S10 done.** S3 is a documented watch item
+  (measured, not demonstrated). Remaining: S11 (needs a coordinated Story Studio
+  release) and S12 (optional keyboard-access pass on the admin page).
 - Cloud keys are in: 16 of 17 providers configured, all discovering without
   errors, **124 models offered** and `/v1/models` serves 124 to the gateway key.
+- Real work is verified both ways: a cloud chat job through the durable route
+  (`output_text: "ok"`, settled `0/0/0`) and a local Hub transcription with the
+  artifact returned.
 - Cleanup convention (owner, 2026-09-21): old material is **moved to `_trash/`**,
   never hard-deleted. Applies to all future cleanups.
-- **Needs the owner:** S5 one real generation (paid call; explicit authorization
-  required), S6 the real-Hub fleet suite (uses the owner's Studio Hub; needs a
-  quiet window), and the optional S12 keyboard-access pass on the admin page.
-- Unverified corners: the three Jobs UI checks with real job data (none processed
-  yet), and the legacy Store restore boundary (archive-only, by decision).
+- Unverified corners: none blocking. S11 is external; S12 is a nice-to-have; the
+  legacy Store restore boundary stays archive-only by decision.
