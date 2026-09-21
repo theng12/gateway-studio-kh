@@ -609,6 +609,51 @@ that metadata.
   `thumbnail-recipe` only. Fonts can be authored and preserved but not installed
   until Story exposes the kind.
 
+## 10o. The historical Store library re-homed as new `-v2` packs (2026-09-22)
+
+The owner's old channels depend on the Store library, and the private shelf
+refuses historical identities, so the content was re-authored as **new** packs
+with `-v2` identities. Nothing historical was reissued or re-signed.
+
+**Analysis** (`store-analysis/INVENTORY.md`, `analyze_store_archives.py`,
+read-only): 272 archives → 266 distinct bytes (6 exact duplicate copies) → **180
+packs** across 180 families, **0 identity conflicts**, one overlap (the
+Wars/Treaties pair, merged). The current Story registry agrees pack for pack and
+still holds 208 deliverable source directories, so sources were used, not the
+archives.
+
+- **141 deliverable packs**: series-formula 19, topic-pack 46, visual-style 40,
+  thumbnail-recipe 36. **39 not deliverable**: lettering-style (fonts) 20,
+  metadata-formula 8, channel-kit 11 — kinds Story 1.4.213's parser cannot serve.
+- **Text-only phase complete. 63 packs are shelved** — every series-formula and
+  topic-pack (minus the merged pair, plus the Gateway-authored pack already
+  shelved) — and both kinds were installed through Story's own installer
+  (`Backyard Creatures` topic, `How Did Ancient Humans…?` formula, both
+  `activated: true`). Shelf: 66 release rows / 64 current products.
+- **Pipeline, and its order trap:** sources must **not** exist when reserving
+  (`registered authored source does not exist` and `…is not registered` are the
+  two faces of the same check). Correct order: reserve → create sources →
+  transition to authored → build with `--delivery-profile
+  genstudio-store-receipt-v1 --min-app-version <release floor>` → import →
+  publish. Tooling: `store-analysis/reauthor/` (`reauthor.py` generates,
+  `finish_batch.py` finishes, `bump_corrected.py` bumps a version).
+- **Two defects found by building, not by reading:** a nested reference
+  (`production_kit.recommended_visual_style_id`) was missed by a field-list
+  remap — fixed by remapping recursively on exact id match; and the merged pack's
+  document id came out double-suffixed. `economics-businesses-v2` and
+  `natural-world-animals-v2` were republished as **1.0.1** (1.0.0 kept) so source
+  and archive agree.
+- **Known untidiness:** the merged Wars/Treaties record has pack id
+  `…historical-wars-treaties-world-order-v2` and item id
+  `…archival-ledger.wars-treaties-world-order-v2`. Both are new and valid, and
+  the mapping points both old ids at the item id; the slugs simply disagree.
+- Registry revisions: 291 and 294 (text-only batches), 356 and 358 (the two
+  1.0.1 bumps). Old→new mapping for every deliverable pack:
+  `store-analysis/reauthor/mapping.json`.
+- **Remaining: 76 asset packs** (40 visual-style, 36 thumbnail-recipe) need real
+  preview bytes, which per the skills come from Studio Hub production or the
+  owner's originals — this Mac must not generate them, and Studio Hub was quit.
+
 ## 11. Exact next action / resumable handoff
 
 - Branch `codex/content-pack-delivery`: promoted app code at `97bb3a5`
