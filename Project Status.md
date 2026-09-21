@@ -472,6 +472,38 @@ Two fixes while the owner connected Story Studio from another machine.
   addressing the previous endpoint. Verified the gateway serves Story's client
   correctly on loopback and over the Tailscale URL.
 
+## 10j. First real Content Pack end-to-end (2026-09-21) — ACCEPTED
+
+The owner approved a first real pack, and the whole path ran with real
+identities and Story's real consumer:
+
+1. **Reserved** in the real Story registry (revision **289 → 290**, receipt
+   `authoring:a42cafe7…`):
+   `com.storystudio.pack.topic.keeping-food-before-refrigeration@1.0.0`, family
+   `…family.topic.keeping-food-before-refrigeration`, kind `topic-pack`,
+   compatible with `formula.history-explained`. The registry was backed up first
+   to `backups/story-registry-before-content-pack-20260922-000106.json`.
+2. **Authored** as a Gateway draft, **previewed**, and **published** to the
+   private shelf through Story's own schema/receipt validation:
+   release `gateway.private.release.52c86781e484b629c24954c1`, 1210 bytes,
+   `current: true`, `available: true`.
+3. **Verified Story's wire**: `/v1/content/products` lists it (`topic_pack`,
+   `owned: true`, `compatible: true`), `/v1/content/account` owns it,
+   `/v1/content/entitlements/<family>/releases` reports it current and available,
+   and `/v1/content/downloads` issues a 900 s grant.
+4. **Installed with Story's real installer** on an isolated Story profile:
+   discovered `not_installed` → installed → `activated: true`, version `1.0.0`,
+   `installState: installed_current`, and Story's content-pack state holds the
+   pack. The owner's real Story data was not touched.
+5. **Backup gap closed**: `scripts/backup_content_authority.py` now copies the
+   referenced release archives as well as the identity, and refuses to run when
+   an archive is missing. `tests/test_content_authority_backup.py` 6/6. Fresh
+   complete backup: `backups/content-authority-20260921-170315/` (identity +
+   archive).
+
+Remaining for the owner: install it in Story Studio on the video Mac (Content
+Store → Download/Install) and confirm it appears there.
+
 ## 11. Exact next action / resumable handoff
 
 - Branch `codex/content-pack-delivery`: promoted app code at `97bb3a5`

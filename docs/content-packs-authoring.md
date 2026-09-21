@@ -105,13 +105,17 @@ cd /path/to/gateway-checkout
 .venv/bin/python scripts/backup_content_authority.py ~/Documents/gateway-authority-backup
 ```
 
-The script copies all three files with mode `0600`, verifies each copy by
-SHA-256, and refuses to overwrite an existing backup. Keep the result on local,
-encrypted storage: **never** a cloud-synced folder, Git, a transfer bundle, or a
-chat. It prints no secret material.
+The script copies all three files with mode `0600`, copies every released archive
+the authority references (from `content-library/<sha256>/`) with mode `0600`,
+verifies each copy by SHA-256, and refuses to overwrite an existing backup or to
+run when a referenced archive is missing — an identity-only copy cannot serve a
+release and is not a recovery point. Keep the result on local, encrypted storage:
+**never** a cloud-synced folder, Git, a transfer bundle, or a chat. It prints no
+secret material.
 
 Restore only after real damage: stop the gateway, copy the three files back into
-`content-delivery/` with mode `0600`, start the gateway, and confirm Content
-Packs reports the shelf as configured and available. The backup script's own
+`content-delivery/` with mode `0600`, copy each archive back to
+`content-library/<sha256>/archive.sspack`, start the gateway, and confirm Content
+Packs reports the shelf configured and lists the releases. The backup script's own
 test suite (`tests/test_content_authority_backup.py`) covers the copy rules, and
 the restore path is drilled end to end on an isolated profile.

@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
-"""Back up the private Content Pack authority identity and releases.
+"""Back up the private Content Pack authority: identity **and** releases.
 
 The signing identity under `DATA_DIR/content-delivery` is deliberately never
 regenerated: losing it means future private releases cannot be signed and Story
-Studio's trust binding for them breaks. Setup writes three files — a tombstone
-marker, the durable state, and the Ed25519 private key — and all three are
-needed to restore the authority.
+Studio's trust binding for them breaks. The released `.sspack` bytes live
+separately under `DATA_DIR/content-library/<sha256>/`, and the shelf cannot serve
+a release without them — so a backup that copies only the identity would look
+like a recovery point and not be one.
 
-This copies them to a destination directory, verifies the copies by SHA-256,
-and refuses to overwrite an existing backup. It prints no secret material.
+This copies the three authority files plus every archive the authority
+references, verifies each copy by SHA-256, and refuses to overwrite an existing
+backup. It prints no secret material.
 
 Usage:
     .venv/bin/python scripts/backup_content_authority.py <destination-dir> [--data-dir DIR]
@@ -16,15 +18,17 @@ Usage:
 Keep the destination on local, encrypted storage. Do not put it in a
 cloud-synced folder, Git, the transfer bundles, or a chat.
 
-Restore (only after real damage): stop the gateway, copy the three files back
-into `DATA_DIR/content-delivery/` with mode 0600, and confirm Content Packs
-reports configured. `tests/test_content_authority_backup.py` drills exactly
-that, on an isolated profile.
+Restore (only after real damage): stop the gateway, copy the three authority
+files back into `DATA_DIR/content-delivery/` with mode 0600, copy each archive
+back to `DATA_DIR/content-library/<sha256>/archive.sspack`, start the gateway,
+and confirm Content Packs reports the shelf configured and lists the releases.
+`tests/test_content_authority_backup.py` covers the copy rules.
 """
 from __future__ import annotations
 
 import argparse
 import hashlib
+import json
 import os
 from pathlib import Path
 import shutil
@@ -38,6 +42,8 @@ from gateway import config  # noqa: E402
 
 
 FILES = ("authority.json", "signing-key.pem", "initialized")
+ARCHIVE_DIR = "content-library"
+ARCHIVE_NAME = "archive.sspack"
 
 
 class BackupError(RuntimeError):
@@ -48,17 +54,38 @@ def digest(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def backup(source: Path, destination: Path) -> list[str]:
-    """Copy the authority files into a fresh destination directory.
+def referenced_archives(source: Path, data_root: Path) -> list[tuple[str, Path]]:
+    """Every released archive the authority references, as (sha256, path)."""
+    try:
+        state = json.loads((source / "authority.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise BackupError("Authority state could not be read for its releases.") from exc
+    archives: list[tuple[str, Path]] = []
+    seen: set[str] = set()
+    for release in state.get("releases") or []:
+        digest_value = release.get("archive_sha256") if isinstance(release, dict) else None
+        if not isinstance(digest_value, str) or digest_value in seen:
+            continue
+        seen.add(digest_value)
+        path = data_root / ARCHIVE_DIR / digest_value / ARCHIVE_NAME
+        if path.is_symlink() or not path.is_file():
+            raise BackupError(f"Released archive is missing from the library: {digest_value}")
+        archives.append((digest_value, path))
+    return archives
 
-    Returns the list of file names copied. Raises `BackupError` on anything
-    that would silently produce an unusable or partial backup.
+
+def backup(source: Path, destination: Path, data_root: Path | None = None) -> list[str]:
+    """Copy the authority and every released archive into a fresh directory.
+
+    Returns the list of relative file names copied. Raises `BackupError` on
+    anything that would silently produce an unusable or partial backup.
     """
     if not source.is_dir():
         raise BackupError(
             f"No private shelf authority at {source}. Run Content Packs setup first.")
     if destination.exists():
         raise BackupError(f"Refusing to overwrite an existing backup: {destination}")
+    data_root = data_root or source.parent
 
     expected: list[tuple[str, str]] = []
     for name in FILES:
@@ -72,6 +99,7 @@ def backup(source: Path, destination: Path) -> list[str]:
         if stat.S_IMODE(info.st_mode) != 0o600:
             raise BackupError(f"Authority file has unexpected permissions: {name}")
         expected.append((name, digest(path)))
+    archives = referenced_archives(source, data_root)
 
     try:
         destination.mkdir(parents=True, exist_ok=False, mode=0o700)
@@ -79,15 +107,30 @@ def backup(source: Path, destination: Path) -> list[str]:
     except OSError as exc:
         raise BackupError(f"Could not create the backup directory: {destination}") from exc
 
-    copied = []
-    for name, want in expected:
-        target = destination / name
-        shutil.copy2(source / name, target)
-        os.chmod(target, 0o600)
-        if digest(target) != want:
-            shutil.rmtree(destination, ignore_errors=True)
-            raise BackupError(f"Copy verification failed for {name}; backup removed.")
-        copied.append(name)
+    copied: list[str] = []
+    try:
+        for name, want in expected:
+            target = destination / name
+            shutil.copy2(source / name, target)
+            os.chmod(target, 0o600)
+            if digest(target) != want:
+                raise BackupError(f"Copy verification failed for {name}.")
+            copied.append(name)
+
+        if archives:
+            archive_root = destination / "archives"
+            archive_root.mkdir(mode=0o700)
+            os.chmod(archive_root, 0o700)
+            for digest_value, path in archives:
+                target = archive_root / f"{digest_value}.sspack"
+                shutil.copy2(path, target)
+                os.chmod(target, 0o600)
+                if digest(target) != digest_value:
+                    raise BackupError(f"Copy verification failed for archive {digest_value}.")
+                copied.append(f"archives/{digest_value}.sspack")
+    except BaseException:
+        shutil.rmtree(destination, ignore_errors=True)
+        raise
     return copied
 
 
@@ -103,11 +146,13 @@ def main() -> int:
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
     destination = args.destination / f"content-authority-{stamp}"
     try:
-        copied = backup(source, destination)
+        copied = backup(source, destination, data_dir)
     except BackupError as exc:
         print(f"Backup failed: {exc}", file=sys.stderr)
         return 1
-    print(f"Backed up {len(copied)} authority file(s) to {destination}")
+    archives = sum(1 for name in copied if name.startswith("archives/"))
+    print(f"Backed up {len(copied) - archives} authority file(s) and {archives} release archive(s) "
+          f"to {destination}")
     print("Keep this copy on local, encrypted storage — never a cloud folder or Git.")
     return 0
 
