@@ -22,24 +22,18 @@ carries build/pid/counts. Hardening here is defence in depth, not closing an ope
 door. **The owner's read is correct: without the API key there is no access**, so
 item 1 below is optional.
 
-## Item 0 — the one that actually matters: **FileVault is off**
+## Item 0 — FileVault: **owner decision, closed. Do not re-raise.**
 
-Discovered while checking whether the passphrase item was worth doing:
+The owner keeps FileVault **off on purpose, so autologin keeps working** — the two
+are mutually exclusive, because FileVault needs the password at the pre-boot login
+window before macOS can reach the account. The trade-off is understood and accepted:
+this disk is readable at rest, and that is his call to make. Recorded here only so a
+future session does not re-open it.
 
-| | |
-|---|---|
-| `fdesetup status` | **FileVault is Off** |
-| `tmutil destinationinfo` | **No Time Machine destinations** |
-
-The disk is not encrypted at rest, so anyone holding this Mac or its disk reads —
-with no password — the signing key, the gateway key in `.env`, and whatever the
-provider credential store holds. That is a far bigger exposure than the port, and
-the remedy is a switch, not a script: **System Settings → Privacy & Security →
-FileVault → Turn On** (`sudo fdesetup enable` does the same).
-
-Second, there are **no backups at all**. "The packs are free, just re-install" holds
-only while the Story sources survive; Time Machine is not configured, so nothing
-copies them.
+`tmutil destinationinfo` separately reports **no Time Machine destinations**, so
+nothing currently copies the Story sources anywhere. If that is ever wanted, an
+**encrypted** Time Machine backup protects the copies without touching autologin —
+noted once, not pressed.
 
 ## Item 2 — Tailscale key expiry: **closed, confirmed by the owner**
 

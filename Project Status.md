@@ -771,14 +771,13 @@ Full record and the exact commands: `_handoffs/2026-09-22-hardening-owner-action
   `/v1/models` and `/admin/api/status` both answer **401**; only `/health` answers,
   and it carries build/pid/counts. The `pf` anchor below is therefore **optional
   defence in depth**, not a fix.
-- **What actually matters, and I under-weighted it: FileVault is OFF**
-  (`fdesetup status`), and `tmutil destinationinfo` reports **no Time Machine
-  destinations**. The disk is readable at rest, so the signing key, the gateway key
-  and the provider credential store are exposed to anyone holding the machine — a
-  bigger exposure than the port, and the remedy is a switch
-  (System Settings → Privacy & Security → FileVault), not a script. There are also
-  **no backups at all**, so "the packs are free, re-install them" depends on the
-  Story sources surviving.
+- **FileVault stays off — owner decision, closed, do not re-raise.** He keeps it
+  off deliberately so autologin keeps working; FileVault needs the password at the
+  pre-boot window, so the two are mutually exclusive. The disk is therefore readable
+  at rest, and that is an understood trade-off. `tmutil` also reports no Time Machine
+  destinations, so nothing copies the Story sources; an encrypted backup is the
+  mitigation that would not touch autologin, should that ever be wanted. Not raised
+  again unless he asks.
 - **Tailscale key expiry is confirmed by the owner: it no longer expires.** This
   item is closed.
 - **The authority-backup passphrase is optional.** An earlier note called that
