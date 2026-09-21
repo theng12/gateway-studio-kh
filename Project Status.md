@@ -370,13 +370,21 @@ build `97bb3a5-202609210714`:
 
 ## 11. Exact next action / resumable handoff
 
-- Branch `codex/content-pack-delivery`: promoted code at `5f94b4a`, documentation
-  commit on top; worktree clean.
-- Working instance promoted, healthy and verified; test instance running on 8100.
+- Branch `codex/content-pack-delivery`: promoted app code at `97bb3a5`
+  (build `97bb3a5-202609210714`), later documentation/backup commits on top;
+  worktree clean.
+- Working instance promoted, healthy and verified (`type="Foreground"`, signature
+  valid); test instance running on 8100.
 - Stabilization plan `docs/superpowers/plans/2026-09-21-stabilization-plan.md`:
-  S1, S2 and S8 done. Next unblocked packet: S3 (authority read cost), then S12.
+  **S1, S2, S4, S7, S8, S9, S10 done.** S3 is a documented watch item (measured,
+  not demonstrated). Remaining: S5, S6 (owner-mediated), S11 (Story release),
+  S12 (low).
+- Cloud keys are in: 16 of 17 providers configured, all discovering without
+  errors, **124 models offered** and `/v1/models` serves 124 to the gateway key.
 - Cleanup convention (owner, 2026-09-21): old material is **moved to `_trash/`**,
   never hard-deleted. Applies to all future cleanups.
-- Verification gaps needing the owner or environment: S4 native UI suite on the
-  promoted build, S5 real cloud + local generation, S6 real-Hub fleet suite,
-  S7 code-only Graphify refresh, S12 keyboard-access pass.
+- **Needs the owner:** S5 one real generation (paid call; explicit authorization
+  required), S6 the real-Hub fleet suite (uses the owner's Studio Hub; needs a
+  quiet window), and the optional S12 keyboard-access pass on the admin page.
+- Unverified corners: the three Jobs UI checks with real job data (none processed
+  yet), and the legacy Store restore boundary (archive-only, by decision).
