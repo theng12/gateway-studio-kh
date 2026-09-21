@@ -123,9 +123,12 @@
 
   .card { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); margin-bottom: 12px; overflow: hidden; }
   .card.off { opacity: .62; }
-  .card-head { display: flex; align-items: center; gap: 10px; padding: 13px 15px; }
-  .name { font-weight: 620; }
-  .cat { color: var(--dim); font-size: 12px; }
+  /* Wrap instead of clipping: this console is a pane the owner resizes, and a
+     single fixed row pushed Configure/Disable off the right edge. */
+  .card-head { display: flex; align-items: center; gap: 10px; padding: 13px 15px; flex-wrap: wrap; }
+  .card-head > div:first-child { min-width: 0; flex: 1 1 240px; }
+  .name { font-weight: 620; overflow-wrap: anywhere; }
+  .cat { color: var(--dim); font-size: 12px; overflow-wrap: anywhere; }
   .badge {
     font-size: 11px; padding: 2px 8px; border-radius: 99px; border: 1px solid var(--line);
     color: var(--dim); white-space: nowrap;
@@ -135,7 +138,7 @@
   .badge.bad { color: var(--bad); border-color: color-mix(in srgb, var(--bad) 40%, transparent); background: color-mix(in srgb, var(--bad) 12%, transparent); }
   .desc { color: var(--dim); font-size: 12.5px; padding: 0 15px 10px; }
   .body { border-top: 1px solid var(--line); padding: 14px 15px; background: var(--panel2); }
-  .fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; }
+  .fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(260px, 100%), 1fr)); gap: 12px; }
   label { display: block; font-size: 12px; color: var(--dim); margin-bottom: 5px; }
   .hint { font-size: 11.5px; color: var(--dim); margin-top: 5px; }
   .actions { display: flex; gap: 8px; margin-top: 13px; flex-wrap: wrap; align-items: center; }
@@ -273,6 +276,12 @@
     <div class="row" style="margin:14px 0">
       <div class="stat" id="hubline"></div>
       <div class="spacer"></div>
+      <select id="key-filter" aria-label="Filter providers by key status" style="max-width:190px">
+        <option value="all">All providers</option>
+        <option value="set">Key set</option>
+        <option value="missing">No key</option>
+      </select>
+      <span class="stat" id="keyless-count"></span>
       <input type="text" id="filter" placeholder="Filter providers…" style="max-width:260px">
       <button class="sm" onclick="refreshAll(this)">Refresh all models</button>
     </div>
@@ -1182,11 +1191,24 @@ async function loadProviders() {
 
 function renderProviders(drafts = captureProviderDrafts()) {
   const filter = document.getElementById('filter').value.trim().toLowerCase();
-  const list = state.providers.filter(p =>
-    !filter || p.display_name.toLowerCase().includes(filter) || p.id.includes(filter) || p.category.includes(filter));
+  const keyNode = document.getElementById('key-filter');
+  const keyFilter = keyNode ? keyNode.value : 'all';
+  const list = state.providers.filter(p => {
+    if (keyFilter === 'set' && !p.configured) return false;
+    if (keyFilter === 'missing' && p.configured) return false;
+    return !filter || p.display_name.toLowerCase().includes(filter) || p.id.includes(filter) || p.category.includes(filter);
+  });
+  const counter = document.getElementById('keyless-count');
+  if (counter) {
+    const keyless = state.providers.filter(p => !p.configured).length;
+    counter.textContent = keyless ? `${keyless} without a key` : 'all keys set';
+  }
   const root = document.getElementById('providers');
   if (!list.length) {
-    root.innerHTML = '<div class="empty">No providers match.</div>';
+    root.innerHTML = `<div class="empty">${
+      keyFilter === 'missing' ? 'Every provider already has a key.'
+        : keyFilter === 'set' ? 'No provider has a key yet.'
+          : 'No providers match.'}</div>`;
     restoreProviderDrafts(drafts);
     return;
   }
@@ -1408,6 +1430,7 @@ async function refreshAll(btn) {
 }
 
 document.getElementById('filter').addEventListener('input', renderProviders);
+document.getElementById('key-filter').addEventListener('change', renderProviders);
 
 // The app shows Models, Providers and Create as separate sidebar pages, so each
 // one opens this console already on its own view. Without the hash they would all

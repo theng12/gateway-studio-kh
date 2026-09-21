@@ -137,6 +137,41 @@ final class VoicesSection: NSObject, AppSection, NSTableViewDataSource, NSTableV
         summaryLabel.textColor = .secondaryLabelColor
         root.addArrangedSubview(summaryLabel)
 
+        // Bulk controls belong above the table, not in a footer: the table is the
+        // part that scrolls, so a footer moved Enable/Disable off screen exactly
+        // when a long list made them most useful. Two rows keep every control
+        // inside the window at its 860pt minimum. "Select all shown" acts on the
+        // filtered rows the owner is looking at, which is the point of the search.
+        let selectRow = NSStackView()
+        selectRow.orientation = .horizontal
+        selectRow.spacing = 8
+        selectRow.addArrangedSubview(button("Select all shown", #selector(selectAllShown)))
+        selectRow.addArrangedSubview(button("Select none", #selector(selectNone)))
+        selectRow.addArrangedSubview(button("Enable selected", #selector(enableSelected)))
+        selectRow.addArrangedSubview(button("Disable selected", #selector(disableSelected)))
+        selectRow.addArrangedSubview(NSView())
+        root.addArrangedSubview(selectRow)
+        selectRow.widthAnchor.constraint(equalTo: root.widthAnchor, constant: -56).isActive = true
+
+        let fleetRow = NSStackView()
+        fleetRow.orientation = .horizontal
+        fleetRow.spacing = 8
+        // Permission to clone and distribute is granted deliberately, never by a
+        // stray click, and it is per voice because some voices are private.
+        fleetRow.addArrangedSubview(button("Allow fleet sharing…", #selector(allowSharing)))
+        fleetRow.addArrangedSubview(button("Make private", #selector(makePrivate)))
+        fleetRow.addArrangedSubview(button("Share with fleet", #selector(shareWithFleet)))
+        addButton = button("Add to my account", #selector(addSelected))
+        fleetRow.addArrangedSubview(addButton)
+        // Three different things can happen to a recording — used whole, cut to a
+        // shorter aligned window, or refused — and from the outside they look the
+        // same. This is where the app says which, per model.
+        fleetRow.addArrangedSubview(button("Reference…", #selector(checkReference)))
+        fleetRow.addArrangedSubview(button("Stop preview", #selector(stopPreview)))
+        fleetRow.addArrangedSubview(NSView())
+        root.addArrangedSubview(fleetRow)
+        fleetRow.widthAnchor.constraint(equalTo: root.widthAnchor, constant: -56).isActive = true
+
         table = NSTableView()
         table.dataSource = self
         table.delegate = self
@@ -175,25 +210,6 @@ final class VoicesSection: NSObject, AppSection, NSTableViewDataSource, NSTableV
             // space, so its floor is only there to stop it collapsing.
             scroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 140),
         ])
-
-        let actions = NSStackView()
-        actions.orientation = .horizontal
-        actions.spacing = 8
-        actions.addArrangedSubview(button("Enable selected", #selector(enableSelected)))
-        actions.addArrangedSubview(button("Disable selected", #selector(disableSelected)))
-        // Permission to clone and distribute is granted deliberately, never by a
-        // stray click, and it is per voice because some voices are private.
-        actions.addArrangedSubview(button("Allow fleet sharing…", #selector(allowSharing)))
-        actions.addArrangedSubview(button("Make private", #selector(makePrivate)))
-        actions.addArrangedSubview(button("Share with fleet", #selector(shareWithFleet)))
-        addButton = button("Add to my account", #selector(addSelected))
-        actions.addArrangedSubview(addButton)
-        // Three different things can happen to a recording — used whole, cut to a
-        // shorter aligned window, or refused — and from the outside they look the
-        // same. This is where the app says which, per model.
-        actions.addArrangedSubview(button("Reference…", #selector(checkReference)))
-        actions.addArrangedSubview(button("Stop preview", #selector(stopPreview)))
-        root.addArrangedSubview(actions)
 
         detailLabel = NSTextField(wrappingLabelWithString:
             "Local voices are yours and are on by default. Provider voices are opt-in — "
@@ -502,6 +518,18 @@ final class VoicesSection: NSObject, AppSection, NSTableViewDataSource, NSTableV
 
     @objc private func enableSelected() { setEnabled(true) }
     @objc private func disableSelected() { setEnabled(false) }
+
+    /// Select every row currently listed — which is the filtered set, not the whole
+    /// library. The owner searches or narrows by provider, then this plus Enable
+    /// selected is the bulk act the page was missing.
+    @objc private func selectAllShown() {
+        guard !rows.isEmpty else { return }
+        table.selectRowIndexes(IndexSet(0..<rows.count), byExtendingSelection: false)
+    }
+
+    @objc private func selectNone() {
+        table.deselectAll(nil)
+    }
 
     private func setEnabled(_ enabled: Bool) {
         let ids = selectedRows().compactMap { $0["id"] as? String }

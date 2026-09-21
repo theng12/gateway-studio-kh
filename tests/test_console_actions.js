@@ -87,6 +87,8 @@ function providerContext(responses) {
   });
   const nodes = new Map([
     ['filter', element()],
+    ['key-filter', element('all')],
+    ['keyless-count', element()],
     ['providers', providers],
     ['providers-msg', element()],
     ['local-note', element()],
@@ -264,6 +266,36 @@ test('provider support is labelled separately from configured availability', () 
   assert.doesNotMatch(html, /4\/4 offered/);
   assert.match(html, /no key/);
   assert.match(html, />Enable<\/button>/);
+});
+
+test('provider key filter separates keyed from keyless providers', () => {
+  const harness = providerContext([]);
+  const provider = (id, name, configured) => ({
+    id, display_name: name, category: 'language', kind: 'openai_compatible',
+    enabled: true, configured, configured_fields: [], modalities: ['language'],
+    generation_supported: true, model_count: 1, publishable_model_count: 1,
+  });
+  vm.runInContext(
+    `state.providers = ${JSON.stringify([provider('alpha', 'Alpha', true), provider('beta', 'Beta', false)])}`,
+    harness.context);
+
+  harness.nodes.get('key-filter').value = 'missing';
+  harness.context.renderProviders();
+  let html = harness.nodes.get('providers').innerHTML;
+  assert.match(html, /Beta/, 'the keyless provider must be visible');
+  assert.doesNotMatch(html, /Alpha/, 'a keyed provider must be filtered out');
+  assert.match(harness.nodes.get('keyless-count').textContent, /1 without a key/);
+
+  harness.nodes.get('key-filter').value = 'set';
+  harness.context.renderProviders();
+  html = harness.nodes.get('providers').innerHTML;
+  assert.match(html, /Alpha/);
+  assert.doesNotMatch(html, /Beta/);
+
+  // The filter is a view, not a one-shot: saving a key re-renders and the
+  // selection must persist so the owner keeps seeing what is left.
+  harness.context.renderProviders();
+  assert.equal(harness.nodes.get('key-filter').value, 'set');
 });
 
 test('provider 401, 500, and network failures render a retry state', async () => {
