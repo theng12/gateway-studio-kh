@@ -50,8 +50,8 @@ test instance on port 8100 running the same committed source. Full evidence:
 | S8 | decision | high | ~~Promote Content Packs build to working~~ — **done 2026-09-21 (`5f94b4a-202609210554`)** |
 | S9 | decision | medium | ~~Historical Store material~~ — **done 2026-09-21: moved to `_trash/`** |
 | S10 | decision | medium | ~~Back up the private shelf signing identity~~ — **done 2026-09-21** |
-| S11 | scope | low | Content kinds beyond the four standalone kinds |
-| S12 | scope | low | Keyboard-access pass on the admin page |
+| S11 | scope | low | Content kinds beyond the four standalone kinds — **handoff sent 2026-09-22** (`_handoffs/2026-09-22-wire-kind-parity-lettering-and-metadata-formula.md`) |
+| S12 | scope | low | ~~Keyboard-access pass on the admin page~~ — **done 2026-09-22** |
 
 "Defect" = reproducible defect; "verification" = unverified area; "decision" =
 owner product/operational decision; "scope" = deliberate limitation or
@@ -302,7 +302,7 @@ re-verify the wire shape against the updated Story source.
 
 **Acceptance.** Either left as documented scope, or green after the Story update.
 
-## S12 — Keyboard-access pass on the admin page (low)
+## S12 — Keyboard-access pass on the admin page (low) — **done 2026-09-22**
 
 **Why.** Rendered desktop/narrow screenshots and behavioral DOM tests exist, but
 keyboard focus order, focus visibility, and the acknowledgement controls were not
@@ -313,6 +313,34 @@ Refresh, Copy brief, draft controls, archive import. Check focus is visible and
 no control is unreachable. Fix any gaps with native focus styles.
 
 **Acceptance.** Every interactive control reachable and visibly focused.
+
+**Outcome.** Tabbing is now a test, not an exercise.
+`tests/check_admin_keyboard.mjs` drives **real Chrome over the DevTools protocol**
+using only Node built-ins (global `fetch`/`WebSocket` — no puppeteer to install),
+presses Tab, and fails if any control in the view is unreached or focused
+without a ring. Measured on the test instance: **12 controls, all reached, all
+ringed.**
+
+Three real gaps were found and fixed:
+
+- **Text fields removed the outline** (`input:focus, select:focus` and
+  `textarea:focus` set `outline: none`), leaving a 1px border-colour change as
+  the only focus cue — weaker than the 2px ring every button already had. They
+  now keep the accent border *and* draw the ring.
+- **A keyboard-focused control could scroll under the sticky table header**, so
+  focus landed somewhere invisible; focusable controls now carry
+  `scroll-margin-top`.
+- **The Create tabs used `aria-selected` with no `role="tab"`**, which announces
+  nothing, and the tablist pattern's roving tabindex would have made the
+  unselected tabs reachable only by arrow keys. They are now a labelled
+  `role="group"` of `aria-pressed` toggle buttons, so every tab stays in the Tab
+  order and its selection is announced.
+
+`tests/test_admin_accessibility.js` (4 checks) guards the same invariants
+statically — a handler on a non-focusable element, a bare `outline: none`, a lost
+scroll margin, or a tab strip that stops announcing selection all fail without a
+browser. Deliberate limit, marked here: the browser check is Chrome-only and is
+not wired into the routine suite, because it needs a gateway URL to point at.
 
 ---
 

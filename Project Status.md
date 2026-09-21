@@ -704,6 +704,35 @@ archives.
   validates, revision 448. Always pass the `-v2` slug to `bump_corrected.py`.
 - Build `ab44302-202609211835`, promoted; the guard is in the installed bundle.
 
+## 10q. S12 — the admin page is keyboard-accessible and tested (2026-09-22)
+
+Tabbing through `/admin#packs` is now a check rather than an exercise.
+`tests/check_admin_keyboard.mjs` drives real Chrome over the DevTools protocol
+with only Node built-ins — global `fetch`/`WebSocket`, no puppeteer to install and
+keep current — presses Tab, and fails if a control in the view is unreached or
+focused without a visible ring. Measured on the test instance: **12 controls, all
+reached, all ringed.**
+
+Three genuine gaps found and fixed in `gateway/admin_ui.html`:
+
+- **Text fields removed the outline** — `input:focus, select:focus` and
+  `textarea:focus` set `outline: none`, leaving a 1px border-colour change as the
+  only cue while every button had a 2px ring. They keep the accent border and now
+  draw the ring too.
+- **Focus could scroll under the sticky table header**, landing invisibly;
+  focusable controls carry `scroll-margin-top`.
+- **The Create tabs used `aria-selected` without `role="tab"`**, which announces
+  nothing to assistive tech, and the tablist pattern's roving tabindex would have
+  pushed the unselected tabs out of the Tab order. They are a labelled
+  `role="group"` of `aria-pressed` toggles now: every tab stays reachable and its
+  selection is announced.
+
+`tests/test_admin_accessibility.js` (4 checks) holds the same invariants
+statically, so a handler on a non-focusable element, a bare `outline: none`, a
+lost scroll margin, or a tab strip that stops announcing selection fails without
+a browser. Deliberate limit: the browser check is Chrome-only and not wired into
+the routine suite, because it needs a gateway URL.
+
 ## 11. Exact next action / resumable handoff
 
 - Branch `codex/content-pack-delivery`: promoted app code at `97bb3a5`

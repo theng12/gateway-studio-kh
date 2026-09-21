@@ -89,7 +89,17 @@
     border-radius: 8px; padding: 7px 10px; font-size: 13px; width: 100%;
     font-family: ui-monospace, "SF Mono", monospace;
   }
-  input:focus, select:focus { outline: none; border-color: var(--accent); }
+  /* The border change alone was the whole focus signal on a text field, which is
+     weaker than the 2px ring every button gets and easy to miss on a dark theme.
+     Keep the accent border *and* ring it, so a keyboard user sees the same cue
+     everywhere. */
+  input:focus, select:focus { border-color: var(--accent); }
+  input:focus-visible, select:focus-visible, textarea:focus-visible {
+    outline: 2px solid var(--accent); outline-offset: 2px;
+  }
+  /* A control focused by keyboard is scrolled into view; without this it can land
+     underneath a sticky table header, which is focus you cannot see. */
+  button, input, select, textarea, a[href], [tabindex] { scroll-margin-top: 44px; scroll-margin-bottom: 16px; }
   label.check { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--dim); white-space: nowrap; }
   .authoring { margin-top: 36px; border-top: 1px solid var(--line); padding-top: 24px; }
   .authoring h2 { margin: 0 0 8px; }
@@ -187,7 +197,7 @@
     border: 1px solid var(--line); border-radius: 8px; padding: 9px 10px;
     font-size: 13px; width: 100%; resize: vertical; font-family: inherit;
   }
-  textarea:focus { outline: none; border-color: var(--accent); }
+  textarea:focus { border-color: var(--accent); }
   .results {
     min-height: 200px; background: var(--panel2); border: 1px solid var(--line);
     border-radius: var(--radius); padding: 14px;
@@ -298,7 +308,7 @@
         gets pruned after 7 days</b>, because this gateway is a receiver and normally
         the project holds the copy that matters.</p>
     </div>
-    <div class="tabs" id="create-tabs"></div>
+    <div class="tabs" id="create-tabs" role="group" aria-label="Create modality"></div>
     <div class="split">
       <div class="pane" id="create-form"></div>
       <div>
@@ -1609,8 +1619,13 @@ function stopAllCreatePolls() {
 }
 
 function renderCreateTabs() {
+  // `aria-pressed` and not `aria-selected`: without `role="tab"` the selected
+  // attribute is meaningless to assistive tech, and a group of toggle buttons keeps
+  // every tab in the Tab order. Announcing selection matters more here than the
+  // tablist pattern's roving tabindex, which would make the other tabs reachable
+  // only by arrow keys.
   document.getElementById('create-tabs').innerHTML = CREATE_TABS.map(t =>
-    `<button data-tab="${t.key}" aria-selected="${t.key === createTab}"
+    `<button data-tab="${t.key}" aria-pressed="${t.key === createTab}"
              onclick="selectCreateTab('${t.key}')">${esc(t.title)}</button>`).join('');
 }
 
