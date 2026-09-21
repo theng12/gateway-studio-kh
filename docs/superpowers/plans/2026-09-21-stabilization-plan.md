@@ -14,9 +14,13 @@ test instance on port 8100 running the same committed source. Full evidence:
 - 2026-09-21: S1 committed (`5f94b4a`), S2 fixed (light-mode hover + guard),
   S8 promoted to the working instance and verified. Old app-version backups and
   build outputs consolidated to `backups/rollback-20260921/`.
-- S9: the owner asked to remove the old historical material entirely; the
-  586 MB `transfer-staging/` archives are irreplaceable, so deletion awaits an
-  explicit scope confirmation.
+- S9 resolved: historical material moved to `_trash/` under the owner's
+  recoverable-delete convention (never hard-deleted).
+- User-requested app change (`6ed4c44`): the app is now a regular Dock app
+  (Dock icon, ⌘-Tab, re-openable window) instead of a menu-bar-only agent;
+  promoted as `6ed4c44-202609210701`. This also removes the accessory-process
+  caveats that S4's `test_ui.py` runs relied on; its comments were updated, but
+  the suite still needs Accessibility to run.
 
 ## Packet index
 

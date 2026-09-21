@@ -25,10 +25,10 @@ through Story Studio's real installer.
 ## 1b. Two-instance workflow (owner-facing) — added 2026-09-21
 
 - **Working instance** — what Story Studio uses: `/Applications/gateway-kh.app`,
-  **promoted 2026-09-21 to build `5f94b4a-202609210554`**, port **8000**, real
-  profile `~/Library/Application Support/gateway-kh/`. Signature valid; profile
-  verified byte-identical across the promotion; rollback bundle at
-  `backups/rollback-20260921/`.
+  **promoted 2026-09-21 to build `6ed4c44-202609210701`** (regular Dock app; was
+  `5f94b4a-202609210554`), port **8000**, real profile
+  `~/Library/Application Support/gateway-kh/`. Signature valid; profile verified
+  byte-identical across promotion; rollback bundle at `backups/rollback-20260921/`.
 - **Test instance** — where new work is verified: `test-instance/` in the
   container root, source `worktrees/handoff-completion`, port **8100**, isolated
   profile (`test-instance/support`, `test-instance/data`), no real credentials,
@@ -302,6 +302,21 @@ Deliberately not run, with reason:
 - Historical transfer archives (586 MB) and other superseded material were moved
   to `_trash/` (container root) under the owner's recoverable-delete convention;
   see `_trash/README.md`. Nothing in `_trash` was hard-deleted.
+
+## 10b. User-requested app change — regular Dock app (done 2026-09-21)
+
+- Problem: the app was an agent (`LSUIElement=true`, `setActivationPolicy(.accessory)`),
+  so it had no Dock icon and never appeared in ⌘-Tab; the owner could only reach
+  it through the menu bar bolt.
+- Change: `LSUIElement` now `false`, activation policy `.regular`. Added
+  `applicationShouldHandleReopen` so clicking the Dock icon re-opens the window,
+  and `applicationShouldTerminateAfterLastWindowClosed` returns `false` so closing
+  the window keeps the app and gateway running. Menu-bar bolt unchanged. Stale
+  accessory-process comments in `test_ui.py` and `SettingsSection.swift` updated.
+- Commit `6ed4c44`; built `6ed4c44-202609210701`; promoted and verified:
+  `LSUIElement=false`, signature valid, `lsappinfo` reports
+  `type="Foreground"`, `/health` on the new build. The owner's 10 entered cloud
+  provider keys survived the app swap.
 
 ## 11. Exact next action / resumable handoff
 
