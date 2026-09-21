@@ -25,9 +25,9 @@ through Story Studio's real installer.
 ## 1b. Two-instance workflow (owner-facing) — added 2026-09-21
 
 - **Working instance** — what Story Studio uses: `/Applications/gateway-kh.app`,
-  **promoted 2026-09-21 to build `e14d19e-202609211633`** (regular Dock app;
-  earlier `97bb3a5-…`, `6ed4c44-…`, `5f94b4a-…`), port **8787** (was 8000),
-  bound `0.0.0.0`, real profile
+  **promoted 2026-09-21 to build `df2566c-202609211649`** (regular Dock app;
+  earlier `e14d19e-…`, `97bb3a5-…`, `6ed4c44-…`, `5f94b4a-…`), port **8787**
+  (was 8000), bound `0.0.0.0`, real profile
   `~/Library/Application Support/gateway-kh/`. Signature valid; profile verified
   byte-identical across promotion; single rollback at `backups/rollback-20260921/`.
 - **Test instance** — where new work is verified: `test-instance/` in the
@@ -442,6 +442,35 @@ gateway. Enabled the tailnet path on the working instance:
   of `127.0.0.1`.
 - Verified from the tailnet on 8787: `/health` 200, `/v1/models` with key 200
   (124 models), without key 401, admin without key 401; MagicDNS form also 200.
+
+## 10i. Remote Story compatibility + private shelf setup (2026-09-21)
+
+Two fixes while the owner connected Story Studio from another machine.
+
+- **Capability catalogue fields** (commit `df2566c`, build
+  `df2566c-202609211649`). Story's legacy capability catalogue reads
+  `GET /v1/models` and keeps a row only when `modality` and `operation` are in
+  fixed vocabularies; the endpoint published 124 rows without them, so the
+  "GenStudio Catalog" diagnostics showed every tile at 0/0 while the
+  per-modality pickers (their own routes) worked. `catalog._story_row` now
+  publishes `modality`, `operation` and `availability`. Verified with Story's
+  own client: **122 capability rows** (chat 80, image 9, video 9, voice.tts 21,
+  transcription 3; music has no operation in Story's vocabulary by design).
+- **Private Content Packs shelf enabled** on the working instance via explicit
+  setup: `configured: true`, `available: true`, account
+  `gateway.private.account.b190739b…`, baseline registry revision **289**, zero
+  releases. `GET /v1/content/account` now answers **200** (was the 503 Story
+  reported), on loopback and over Tailscale.
+- **Identity backed up** to
+  `backups/content-authority-20260921-165052/` (three files, mode `0600`, SHA-256
+  verified by `scripts/backup_content_authority.py`). This is a first copy on
+  this Mac; move it to encrypted local storage and keep it out of cloud folders
+  and Git.
+- Diagnosed but **not** a gateway problem: Story's per-modality fetches failed
+  because the new Base URL had not been saved in Story's settings (the field
+  showed it; the **Save URL** button had not been pressed), so it was still
+  addressing the previous endpoint. Verified the gateway serves Story's client
+  correctly on loopback and over the Tailscale URL.
 
 ## 11. Exact next action / resumable handoff
 
