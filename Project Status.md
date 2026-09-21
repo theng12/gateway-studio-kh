@@ -884,6 +884,58 @@ mismatched release hidden.
 - Re-review: **147** packs, 6 differences — the 4 tag trims plus the two formulas'
   corrected reference fields, all expected; **0 asset mismatches**.
 
+## 10w. Story answered the wire-kind handoff — verified, and we hold (2026-09-22)
+
+Story's reply: `_handoffs/2026-09-22_story-response-wire-kind-parity.md` (theirs);
+ours: `_handoffs/2026-09-22-gateway-response-to-story-wire-kind-parity.md`, also
+delivered into their `_handoffs/`.
+
+**Both asks accepted and implemented.** `font_pack` confirmed as the `lettering-style`
+wire kind; `metadata-formula` accepted by the owner and given the wire kind
+`metadata_formula`. Minimum accepting version for both: **1.4.216**, which is **not
+released** — no DMG for it exists (1.4.214 and 1.4.215 do), the installed app is
+**1.4.213**, and the changes are uncommitted in the Story tree.
+
+**Verified rather than accepted.** `PRODUCT_KINDS` and the union now carry
+`metadata_formula`; the two product-kind lists are one leaf module
+(`frontend/content-store/product-kinds.ts`) consumed by both the wire parser and
+`persisted-catalog.ts`; `letteringPhrase`/`letteringPhraseMaps`
+(`services/lettering-catalogue.ts:115,146`) are imported and called by
+`generators/image-prompts.ts`. **We ran their test** —
+`npx tsx --test electron/server/__tests__/lettering-pack-bridge.test.ts` →
+**7 pass / 0 fail** (note: `vitest` finds no suite; the repo runs `node:test` via
+tsx).
+
+**Our diagnosis was wrong and Story's correction is right.** Installation is
+kind-agnostic — `installContentPackLocked` verifies the signed manifest, which
+already declares `kind: lettering-style`, and `letteringCatalogue()` has listed
+installed pack styles since 1.4.57. The real gap was the **prompt** layer: a pack
+style id resolved against the hardcoded `FONT_STYLES`/`TEXT_STYLES` maps, so the
+owner would have seen the swatch he paid for while the model was told to draw the
+built-in serif. A silent wrong-output defect, which our handoff pointed at the wrong
+layer.
+
+**Criterion 4 on our side already agrees**: `/v1/content/products` publishes
+`topic_pack` 45, `series_formula` 19, `visual_style` 40, `thumbnail_recipe` 36 —
+exactly Story's spelling table.
+
+**A trap recorded for the enabling change.** `_wire_kind()` is
+`kind.replace("-", "_")`, which yields `metadata_formula` correctly but would yield
+**`lettering_style` for `lettering-style`** where Story requires `font_pack` — the
+one kind whose wire spelling is not mechanical. The exception goes in with the kind,
+not before.
+
+**Why holding is load-bearing, not polite.** The installed app is 1.4.213: an
+unknown `metadata_formula` product throws in `parseContentStoreCatalog` and takes the
+whole catalogue down — the exact outage class we already hit with 14 tags — and a
+`font_pack` would parse but the persisted-catalogue defect would discard the saved
+catalogue on every load.
+
+**When 1.4.216 ships**: add both kinds to `SUPPORTED_KINDS`, add the
+`lettering-style → font_pack` exception, re-author the 20 + 8 archives as `<slug>-v2`
+with `min_app_version: "1.4.216"`, shelve, and install both kinds through Story's
+installer; then re-test the saved/restored catalogue path.
+
 ## 11. Exact next action / resumable handoff
 
 - Branch `codex/content-pack-delivery`: promoted app code at `97bb3a5`
