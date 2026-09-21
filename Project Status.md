@@ -643,10 +643,9 @@ archives.
   document id came out double-suffixed. `economics-businesses-v2` and
   `natural-world-animals-v2` were republished as **1.0.1** (1.0.0 kept) so source
   and archive agree.
-- **Known untidiness:** the merged Wars/Treaties record has pack id
-  `…historical-wars-treaties-world-order-v2` and item id
-  `…archival-ledger.wars-treaties-world-order-v2`. Both are new and valid, and
-  the mapping points both old ids at the item id; the slugs simply disagree.
+- **Known untidiness — since resolved**, see §10v: the merged Wars/Treaties record
+  had pack id `…historical-wars-treaties-world-order-v2` and item id
+  `…archival-ledger.wars-treaties-world-order-v2`.
 - Registry revisions: 291 and 294 (text-only batches), 356 and 358 (the two
   1.0.1 bumps). Old→new mapping for every deliverable pack:
   `store-analysis/reauthor/mapping.json`.
@@ -843,6 +842,36 @@ deviations.**
 Full record: `_handoffs/2026-09-22-re-authored-pack-spot-review.md`. Tooling:
 `store-analysis/reauthor/` in the container, beside `mapping.json` and
 `INVENTORY.md`.
+
+## 10v. The merged Wars pack has one consistent identity now (2026-09-22)
+
+Owner-approved cascade. The merged pack carried a pack id from one original and an
+item id from the other's alias, and nothing can be renamed in place: the shelf
+freezes `identity_fields = (publisher_id, product_id, entitlement_family, item_id,
+kind)` for a pack and exposes no retract, and the registry requires unique item ids
+including retired records. So the content was re-published under one slug and the
+mismatched release hidden.
+
+- **New pack**: `com.storystudio.pack.topic.wars-treaties-world-order-v2` with item
+  id `com.storystudio.topic.wars-treaties-world-order-v2` — pack and item agree.
+- **The item id move had a cascade.** Two published formulas referenced the old
+  item id (`compatible_topic_pack_ids` / `default_topic_pack_ids`), so both were
+  corrected and republished as **1.0.1**: `formula.archival-ledger-v2` and
+  `formula.history-explained-v2`. Verified from the *published archives*, not the
+  sources — both now list `…wars-treaties-world-order-v2`.
+- **The mismatched release is hidden, not deleted.** Its archive was moved to
+  `backups/retired-wars-merge-20260922/<sha>/`, so availability reads false and the
+  old product leaves the catalogue; restoring the directory would bring it back, so
+  the duplicate stays suppressed only while it is absent. Its registry record is
+  `retired` (revision 453) and its source removed.
+- **Order trap, again.** A `retired` record's source **must not exist**, but an
+  `authored` one's source **must** — so delete-then-retire fails validation from
+  both sides. Correct order: restore the source if needed, retire, then delete it.
+- **Result**: catalogue still **140 products**, exactly **one** Wars/Treaties
+  product, both formulas current at 1.0.1, Story's parser `delivery_ready`, and
+  `mapping.json` points both original Wars item ids at the new one.
+- Re-review: **147** packs, 6 differences — the 4 tag trims plus the two formulas'
+  corrected reference fields, all expected; **0 asset mismatches**.
 
 ## 11. Exact next action / resumable handoff
 

@@ -1,9 +1,10 @@
 # Spot review of the re-authored packs
 
-**Date:** 2026-09-22
-**Verdict:** 145 rebuilt packs compared field by field against the originals.
-**Only 4 differ, every one of them the intentional tag trim** forced by Story's
-12-tag catalogue limit, and **no preview asset differs by a single byte**.
+**Date:** 2026-09-22 (re-run after the Wars/Treaties identity cascade)
+**Verdict:** 147 rebuilt packs compared field by field against the originals.
+**6 differ** — the 4 tag trims forced by Story's 12-tag catalogue limit, and the
+two formulas whose Wars/Treaties reference was repointed when that merged pack was
+re-published under matching slugs. **No preview asset differs by a byte.**
 
 Produced by `store-analysis/reauthor/review_rebuilds.py` in the container (the
 re-authoring tooling lives outside the Git worktree, beside `mapping.json` and
@@ -12,13 +13,27 @@ remapped reference — so any other difference is a finding, on every pack rathe
 than a sample. A `1.0.1` is compared against the `1.0.0` it corrects, and a pack
 whose source directory is gone is compared against its preserved archive.
 
-- Rebuilt packs reviewed: **145**
-- Packs with a content difference: **4**
-- Asset mismatches against the originals: **0**
-
 Every pack was compared field by field against its original, normalising only the item `id` and the remapped references. A difference is a finding, not a sample.
 
 ## Content differences
+
+### `com.storystudio.pack.formula.archival-ledger-v2@1.0.0`
+
+- `compatible_topic_pack_ids`
+  - was: `["com.storystudio.topic.archival-ledger.states-revolutions-collapse-v2", "com.storystudio.topic.archival-ledger.money-debt-financial-institutions-v2", "com.storystudio.topic.archival-ledger.empires-trade-extraction-v2", "com.storystudio.topic.archival-ledger.wars-treaties-world-order-v2", "com.story`
+  - now: `["com.storystudio.topic.archival-ledger.states-revolutions-collapse-v2", "com.storystudio.topic.archival-ledger.money-debt-financial-institutions-v2", "com.storystudio.topic.archival-ledger.empires-trade-extraction-v2", "com.storystudio.topic.wars-treaties-world-order-v2", "com.storystudio.topic.arc`
+- `default_topic_pack_ids`
+  - was: `["com.storystudio.topic.archival-ledger.states-revolutions-collapse-v2", "com.storystudio.topic.archival-ledger.money-debt-financial-institutions-v2", "com.storystudio.topic.archival-ledger.empires-trade-extraction-v2", "com.storystudio.topic.archival-ledger.wars-treaties-world-order-v2", "com.story`
+  - now: `["com.storystudio.topic.archival-ledger.states-revolutions-collapse-v2", "com.storystudio.topic.archival-ledger.money-debt-financial-institutions-v2", "com.storystudio.topic.archival-ledger.empires-trade-extraction-v2", "com.storystudio.topic.wars-treaties-world-order-v2", "com.storystudio.topic.arc`
+
+### `com.storystudio.pack.formula.history-explained-v2@1.0.0`
+
+- `compatible_topic_pack_ids`
+  - was: `["com.storystudio.topic.archival-ledger.wars-treaties-world-order-v2", "com.storystudio.topic.economics-ancient-civilizations-v2"]`
+  - now: `["com.storystudio.topic.wars-treaties-world-order-v2", "com.storystudio.topic.economics-ancient-civilizations-v2"]`
+- `default_topic_pack_ids`
+  - was: `["com.storystudio.topic.archival-ledger.wars-treaties-world-order-v2"]`
+  - now: `["com.storystudio.topic.wars-treaties-world-order-v2"]`
 
 ### `com.storystudio.pack.style.baroque-mythological-sky-v2@1.0.0`
 
