@@ -25,8 +25,9 @@ through Story Studio's real installer.
 ## 1b. Two-instance workflow (owner-facing) — added 2026-09-21
 
 - **Working instance** — what Story Studio uses: `/Applications/gateway-kh.app`,
-  **promoted 2026-09-21 to build `97bb3a5-202609210714`** (regular Dock app;
-  earlier `6ed4c44-…`, `5f94b4a-…`), port **8000**, real profile
+  **promoted 2026-09-21 to build `e14d19e-202609211633`** (regular Dock app;
+  earlier `97bb3a5-…`, `6ed4c44-…`, `5f94b4a-…`), port **8787** (was 8000),
+  bound `0.0.0.0`, real profile
   `~/Library/Application Support/gateway-kh/`. Signature valid; profile verified
   byte-identical across promotion; single rollback at `backups/rollback-20260921/`.
 - **Test instance** — where new work is verified: `test-instance/` in the
@@ -429,6 +430,18 @@ gateway. Enabled the tailnet path on the working instance:
 - Tailscale node keys expire by default; mark this Mac (and the client Mac)
   non-expiring so the link does not silently die
   (`docs/fleet-deployment-notes.md` §3).
+- **Port moved 8000 → 8787** (owner choice): 8000 is the most contested dev port
+  and is also Story Studio's default, which kept "is this pointed at the right
+  thing?" permanently ambiguous. Set `GATEWAY_PORT=8787` in `.env` and
+  `"port" : 8787` in `menubar.json`; port 8000 is now closed. Every Story Studio
+  client must update its Base URL to `http://…:8787`.
+- **Copyable Base URL** (commit `e14d19e`, build `e14d19e-202609211633`):
+  Settings has a Story Studio section showing the Base URL with a **Copy**
+  button — Tailscale address when bound beyond loopback, private LAN fallback,
+  loopback when local — and the sidebar connection line shows that host instead
+  of `127.0.0.1`.
+- Verified from the tailnet on 8787: `/health` 200, `/v1/models` with key 200
+  (124 models), without key 401, admin without key 401; MagicDNS form also 200.
 
 ## 11. Exact next action / resumable handoff
 

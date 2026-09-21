@@ -725,7 +725,8 @@ def main() -> int:
         f"tell {MAIN_WINDOW} to tell splitter group 1 to return (value of every static text)"
     ))
     check("a live status line is pinned in the sidebar",
-          "Running on 127.0.0.1" in summary and "providers" in summary, summary[:120])
+          "Running on " in summary and f":{gateway_port()}" in summary
+          and "providers" in summary, summary[:160])
 
     # Force the window small before visiting the pages, as AGENTS.md prescribes:
     # at the restored size a page with a too-tall required height simply fits, so
