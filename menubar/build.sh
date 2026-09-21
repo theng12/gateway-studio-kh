@@ -172,8 +172,9 @@ cat > "$APP/Contents/Info.plist" <<PLIST
     <key>CFBundleIconFile</key><string>AppIcon</string>
     <key>LSMinimumSystemVersion</key><string>13.0</string>
     <key>NSHighResolutionCapable</key><true/>
-    <!-- Background app: no Dock icon, no main window. -->
-    <key>LSUIElement</key><true/>
+    <!-- A regular app: Dock icon and Cmd-Tab, with the menu bar bolt still there
+         as a convenience. Closing the window keeps the app (and gateway) alive. -->
+    <key>LSUIElement</key><false/>
 </dict>
 </plist>
 PLIST

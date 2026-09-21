@@ -3,12 +3,14 @@ import AppKit
 /// Settings, as a page in the main window.
 ///
 /// This was its own window, on the reasoning that macOS puts Settings in the
-/// app menu. That reasoning fails for *this* app: it is an accessory
-/// (`LSUIElement`) process, so its app menu is never on screen, and the only
+/// app menu. That reasoning failed for *this* app while it was an accessory
+/// (`LSUIElement`) process: its app menu was never on screen, and the only
 /// routes in were `⌘,` and the bolt menu — the owner went looking and could not
-/// find Settings at all. Studio Hub KH, the sibling app this one is modelled
-/// on, lists Settings in the sidebar under "Library & app", and that is where
-/// people actually look.
+/// find Settings at all. The app is now a regular app with a Dock icon and an
+/// app menu, but Settings stays a sidebar page, because Studio Hub KH — the
+/// sibling app this one is modelled on — lists Settings in the sidebar under
+/// "Library & app", and that is where people actually look. The app menu's `⌘,`
+/// still reaches it.
 ///
 /// The controls are the same ones the window had; only the home changed.
 final class SettingsSection: NSObject, AppSection {

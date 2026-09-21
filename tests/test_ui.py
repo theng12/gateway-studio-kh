@@ -106,9 +106,8 @@ def osa(script: str, timeout: float = 90.0, attempts: int = 3) -> str:
 
     Retries the *transient* accessibility failures and nothing else.
 
-    This app is an accessory (`LSUIElement`) process, so it is never really
-    frontmost, and System Events intermittently fails to resolve a node in its
-    view tree — "Can't get splitter group 1 of window 1 ... Invalid index
+    The app is a regular process now, but System Events still intermittently
+    fails to resolve a node in its view tree — "Can't get splitter group 1 of window 1 ... Invalid index
     (-1719)". The tree is not actually changing: `window.contentView` is
     assigned exactly once, in `MainWindow.build()`. It is a snapshot race, and
     it killed the suite roughly one run in three.
@@ -589,9 +588,8 @@ def type_into(field: str, text: str, attempts: int = 4, expect_exact: bool = Tru
       * The window must be raised first, or a web view behind the field
         swallows the keys silently.
 
-    Even with all three, this app is an accessory (`LSUIElement`) process: it
-    is never *really* frontmost, so a keystroke is a request, not a guarantee.
-    Rather than sleep-and-hope, read the value back and retry — a flaky test
+    Even with all three, a keystroke is a request, not a guarantee — another
+    app can hold the keyboard. Rather than sleep-and-hope, read the value back and retry — a flaky test
     that fails half the time is worse than no test.
 
     `expect_exact=False` accepts any non-empty result, and exists because of the
@@ -607,8 +605,7 @@ def type_into(field: str, text: str, attempts: int = 4, expect_exact: bool = Tru
         #
         # Both halves are load-bearing and the two earlier versions each got one
         # of them wrong. Splitting focus and keystroke across two invocations loses
-        # focus when the first exits (the app is an accessory, so the terminal
-        # takes it back). Nesting the keystroke *inside* `tell process` — the
+        # focus when the first exits. Nesting the keystroke *inside* `tell process` — the
         # obvious way to keep it in one script — makes System Events resolve it
         # against the process and the key goes nowhere at all, which is the
         # failure this docstring has warned about all along.
@@ -1003,9 +1000,8 @@ def main() -> int:
         # value is not what was asked for.
         #
         # **A keystroke that never lands is an environment state, not an app
-        # defect.** This app is an accessory (`LSUIElement`) process, so it is
-        # never really frontmost and `keystroke` is a request; when another app
-        # holds the keyboard, all four attempts can miss and the field reads
+        # defect.** `keystroke` is a request; when another app holds the
+        # keyboard, all four attempts can miss and the field reads
         # empty. Measured: the same helpers type, filter and clear perfectly when
         # driven directly, and miss intermittently inside a long run. So an empty
         # field skips with the reason — but text that lands and does *not* filter
@@ -1015,8 +1011,7 @@ def main() -> int:
         filtered = detail_rows()
         if typed == "":
             skip("the search box receives typed text",
-                 "no keystroke reached the app — it is an accessory process and "
-                 "another app is holding the keyboard")
+                 "no keystroke reached the app — another app is holding the keyboard")
             skip("typing filters the table to a non-empty subset",
                  "no keystroke landed, so there is nothing to filter with")
             skip("clearing the search restores the full list",
@@ -1077,9 +1072,9 @@ def main() -> int:
 
     # ------------------------------------------------------------------
     print("\n\033[1m6. Settings is a page in this window, like Studio Hub's\033[0m")
-    # It used to be a separate window, by macOS convention. That convention
-    # assumes an app menu, and an accessory app never shows one, so the owner
-    # could not find Settings at all. It is now a sidebar row.
+    # It used to be a separate window, by macOS convention. When this app was an
+    # accessory process it had no on-screen app menu, so the owner could not find
+    # Settings at all; it stays a sidebar row, and the app menu's Cmd-, also reaches it.
     osa(wrap('click menu item "Settings…" of menu 1 of menu bar item "gateway-kh" of menu bar 1'))
     time.sleep(2.5)
     check("Settings stays in the one window", window_count() == 1, f"{window_count()} windows")

@@ -5,8 +5,10 @@
 //
 // Design notes:
 //
-//  * `LSUIElement` is set in Info.plist, so this has no Dock icon and no
-//    windows until asked — it is a background app that happens to have UI.
+//  * This is a regular app, not an `LSUIElement`: it has a Dock icon and appears
+//    in Cmd-Tab, and its window is the whole interface. The menu bar bolt stays
+//    as a convenience, and closing the window keeps the app supervising the
+//    gateway rather than quitting.
 //  * The gateway itself is a Python service. Rather than pretend otherwise,
 //    this supervises the venv that already exists in the gateway directory and
 //    surfaces its state. Bundling a Python runtime would make the app
@@ -1051,6 +1053,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return .terminateNow
     }
 
+    /// Clicking the Dock icon, or activating the app when its window is closed or
+    /// hidden, brings the window back. Without this a regular app's Dock icon
+    /// looks broken once the window has been closed.
+    func applicationShouldHandleReopen(
+        _ sender: NSApplication, hasVisibleWindows flag: Bool
+    ) -> Bool {
+        if !flag {
+            MainWindow.shared.show()
+        }
+        return true
+    }
+
+    /// Closing the window must not quit the app: the gateway keeps running and the
+    /// menu bar bolt still controls it. Quit is ⌘Q or the bolt menu.
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
+        false
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         if let button = statusItem.button {
@@ -1453,5 +1473,5 @@ if !duplicates.isEmpty {
 let application = NSApplication.shared
 let delegate = AppDelegate()
 application.delegate = delegate
-application.setActivationPolicy(.accessory)
+application.setActivationPolicy(.regular)
 application.run()
