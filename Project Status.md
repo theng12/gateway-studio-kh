@@ -582,6 +582,33 @@ handled correctly by the gateway:
   only tidy the enabled count.
 - `minimax-direct` has a key but zero models enabled — nothing to do.
 
+## 10n. Bulk, self-contained Content Pack import (2026-09-21)
+
+The owner asked for one button that imports 1/3/10/100 packs with nothing typed
+in, plus search/sort/filter, and asked whether the authoring skills must carry
+that metadata.
+
+- **Confirmed self-describing.** `story_pack_validation.mjs` derives `title`,
+  `description`, `tags` and `kind` from the pack's own documents, and
+  `import_archive` stores them. Import never needed manual fields; only the UI
+  was single-file.
+- **Built:** a multi-file picker plus a folder picker (`webkitdirectory`), one
+  **Validate and preserve** button that loops the same validated import over every
+  `.sspack`, reports progress while running, reports failures per file without
+  stopping the batch, and clears the picker afterwards.
+- **Built:** search (name, id, kind, tag), sort (name, name-desc, kind, numeric
+  version, integrity) and an integrity filter over the preserved-archive list,
+  rendering from the one fetched list rather than re-reading the Gateway.
+- Build `7aa0f35-202609211734`, promoted. `test_content_library_ui.js` 6/6
+  (retry, search/sort/filter including numeric version order, bulk batch with a
+  mid-batch failure, empty selection); all Node UI suites pass; `test_ui.py`
+  132/132.
+- **Kind boundary:** the authoring skills support nine kinds including
+  `lettering-style` (fonts), but Story 1.4.213's parser exposes only four, so
+  Gateway's shelf delivers `series-formula`, `topic-pack`, `visual-style`,
+  `thumbnail-recipe` only. Fonts can be authored and preserved but not installed
+  until Story exposes the kind.
+
 ## 11. Exact next action / resumable handoff
 
 - Branch `codex/content-pack-delivery`: promoted app code at `97bb3a5`
