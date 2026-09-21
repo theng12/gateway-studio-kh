@@ -33,8 +33,8 @@ test instance on port 8100 running the same committed source. Full evidence:
 |---|---|---|---|
 | S1 | defect | high | ~~Commit the verified work so it cannot be lost~~ — **done 2026-09-21 (`5f94b4a`)** |
 | S2 | defect | medium | ~~Light-mode table hover is unreadable~~ — **done 2026-09-21** |
-| S3 | perf | medium | Content authority is read twice per request |
-| S4 | verification | high | Native UI (`test_ui.py`) on the promoted build |
+| S3 | perf | watch | Content authority read twice per request — measured, not demonstrated |
+| S4 | verification | high | ~~Native UI (`test_ui.py`) on the promoted build~~ — **done 2026-09-21, 127/127** |
 | S5 | verification | medium | Real generation through the working instance |
 | S6 | verification | low | Real-Hub fleet suite, knowingly |
 | S7 | verification | low | Code-only Graphify refresh |
@@ -121,6 +121,15 @@ scale.
 P4); all content delivery tests, `test_handoff_api` and `test_e2e` green;
 damaged-key recovery still returns `CONTENT_AUTHORITY_DAMAGED`.
 
+**Disposition 2026-09-21 — watch, not scheduled.** The cost is measured but not
+demonstrated to matter: content routes are hit only when Story Studio opens its
+Content Packs page, the shelf is private and single-owner, and 113 ms is well
+inside any user-visible budget. Both repairs carry real risk (threading state
+through nine functions, or a cache that must stay fail-closed against a
+replaced key), so per the project rule against speculative work this stays open
+as a monitor item with the measured number and upgrade paths above. Revisit if a
+real shelf ever shows the latency.
+
 ## S4 — Native UI verification on the promoted build (high)
 
 **Why.** `tests/test_ui.py` drives the **installed** app. It has not run against
@@ -138,6 +147,14 @@ unverified in the real native shell.
 
 **Acceptance.** 128 checks pass (or every skip is explained as environment);
 no window growth; the Content Packs entry opens the page.
+
+**Done 2026-09-21.** Accessibility granted; `tests/test_ui.py` ran against the
+installed `97bb3a5-202609210714` and reported **all 127 checks passed** with 5
+environment skips (no jobs yet; no fleet controllers). The window-size invariant
+held on every section at the forced 700 pt height. Test drift found and fixed:
+`SIDEBAR`/`SECTIONS` now include Content Packs, the Jobs heading string was
+stale, and the Jobs data checks skip on an empty gateway. Details in
+`Project Status.md` §10d.
 
 ## S5 — Real generation through the working instance (medium)
 

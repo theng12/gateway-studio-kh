@@ -336,6 +336,25 @@ Deliberately not run, with reason:
   layout could not be machine-verified because Accessibility is still not granted
   (S4); it compiles and the build is installed.
 
+## 10d. Native UI suite on the promoted build (S4) — verified 2026-09-21
+
+Accessibility was granted, and `tests/test_ui.py` ran against the installed
+build `97bb3a5-202609210714`:
+
+- **All 127 UI checks pass**, with 5 environment skips (no jobs processed yet,
+  and no fleet controllers configured).
+- The window-resize invariant holds: every section stayed at the forced 700 pt
+  height. An earlier run showed 12 transient resize failures while the app was
+  still settling after launch; two later runs passed. The one-point
+  window-restore difference was AX integer rounding and now has a ±1 tolerance.
+- Test drift fixed (it could not run before Accessibility): `SIDEBAR` and
+  `SECTIONS` now include **Content Packs**, and the Jobs checks no longer
+  hardcode a heading string that does not exist in the app. The three Jobs data
+  checks now skip when the gateway has processed no jobs, instead of failing a
+  valid empty state; they remain **unverified with real job data**.
+- Command: `.venv/bin/python tests/test_ui.py` (drives the real app; needs
+  Accessibility for the host process).
+
 ## 11. Exact next action / resumable handoff
 
 - Branch `codex/content-pack-delivery`: promoted code at `5f94b4a`, documentation
