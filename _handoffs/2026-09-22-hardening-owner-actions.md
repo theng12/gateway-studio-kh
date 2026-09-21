@@ -1,4 +1,4 @@
-# Hardening: what was verified, and the two actions that need admin rights
+# Hardening: what was verified, and what is actually worth doing
 
 **Date:** 2026-09-22
 **Status:** one of three items is done; two need the owner (sudo / Tailscale console)
@@ -19,9 +19,29 @@
 **So the port is exposed but the door is locked.** Every content and admin route
 already refuses a keyless caller from any interface; only `/health` answers, and it
 carries build/pid/counts. Hardening here is defence in depth, not closing an open
-door.
+door. **The owner's read is correct: without the API key there is no access**, so
+item 1 below is optional.
 
-## Item 2 — Tailscale key expiry: **confirmed by the owner**
+## Item 0 — the one that actually matters: **FileVault is off**
+
+Discovered while checking whether the passphrase item was worth doing:
+
+| | |
+|---|---|
+| `fdesetup status` | **FileVault is Off** |
+| `tmutil destinationinfo` | **No Time Machine destinations** |
+
+The disk is not encrypted at rest, so anyone holding this Mac or its disk reads —
+with no password — the signing key, the gateway key in `.env`, and whatever the
+provider credential store holds. That is a far bigger exposure than the port, and
+the remedy is a switch, not a script: **System Settings → Privacy & Security →
+FileVault → Turn On** (`sudo fdesetup enable` does the same).
+
+Second, there are **no backups at all**. "The packs are free, just re-install" holds
+only while the Story sources survive; Time Machine is not configured, so nothing
+copies them.
+
+## Item 2 — Tailscale key expiry: **closed, confirmed by the owner**
 
 The owner has confirmed the node's key **no longer expires**. Nothing to do; the
 note is kept only so the reasoning is not rediscovered: `tailscale status --json`
@@ -29,7 +49,11 @@ publishes no `KeyExpiry`/`Expiry` on `Self`, which is what a non-expiring node k
 looks like. If it ever expires, only this Mac needs re-authentication — the video
 Mac has its own node key.
 
-## Item 1 — keep the LAN out: **owner action, needs sudo**
+## Item 1 — keep the LAN out: optional, needs sudo
+
+The owner has judged this unnecessary because the API key already refuses everyone,
+and the measurements above agree. Kept for the day a second device or a future bug
+makes defence in depth worth it.
 
 The application firewall is the wrong tool here: it is per-application, and the
 gateway *is* the listener, so blocking it blocks the tailnet too. The right rule is
@@ -78,12 +102,24 @@ If the tailnet call fails, `pfctl -d` disables pf again and the anchor line in
 user/devices may reach this node on 8787, so a mistakenly shared node cannot reach
 the shelf even though it is on the tailnet.
 
-## Item 3 — encrypt the authority backup: **done, run it once with your passphrase**
+## Item 3 — encrypt the authority backup: optional, and lower value than I first said
 
-`backups/content-authority-20260921-165052/` holds `authority.json`,
-`signing-key.pem` and the marker as plain files. That directory is the one thing
-whose loss cannot be undone — it is the signing identity every private release is
-signed with — and any copy of this home directory carries the key.
+`backups/content-authority-20260921-165052/` holds `authority.json`, `signing-key.pem`
+and the marker as plain files, plus **every archive the authority references** — that
+is what `scripts/backup_content_authority.py` collects.
+
+**An earlier draft of this note called it "the one thing whose loss cannot be
+undone", and that was wrong.** The pack content is recoverable: the sources are in
+the Story checkout and the re-authoring pipeline is scripted. What is actually lost
+is the shelf's **identity and state** — and re-founding it is not free, because a new
+authority snapshots the current registry as its baseline, so every existing `-v2`
+identity becomes historical and cannot be republished. Recovery would mean a
+**third** identity round (`-v3`) for ~140 packs, and the mapping the owner's channels
+use would move again. The real cost is a day of re-issuing, not lost content.
+
+So this is optional too, and its value is limited while the backup never leaves this
+Mac (no Time Machine is configured). It becomes worth doing the moment a copy does —
+which is the only reason to encrypt at all.
 
 `scripts/encrypt_content_authority_backup.sh` seals it into one AES-256 archive
 (openssl, `-pbkdf2 -iter 600000`). Verified: it round-trips to byte-identical

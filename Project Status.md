@@ -766,29 +766,41 @@ Story's parser returns 200, a visual style and a thumbnail recipe still install
 
 Full record and the exact commands: `_handoffs/2026-09-22-hardening-owner-actions.md`.
 
-- **The port is exposed but the door is locked.** The gateway binds `*:8787`, the
-  macOS application firewall is **disabled**, and the LAN address is
-  `192.168.1.239`. Measured from that address, unauthenticated `/v1/models` and
-  `/admin/api/status` both answer **401**; over Tailscale, 401. Only `/health`
-  answers keyless, and it publishes build/pid/counts, no secret. So hardening is
-  defence in depth here rather than closing an open door.
-- **Tailscale key expiry is confirmed by the owner: it no longer expires.** The
-  CLI publishes no `KeyExpiry`/`Expiry` on `Self`, which is what a non-expiring
-  node key looks like; nothing to do. This item is closed.
+- **The exposure is authenticated, and the owner's read is right: no key, no
+  access.** Measured from the LAN address and over Tailscale, keyless
+  `/v1/models` and `/admin/api/status` both answer **401**; only `/health` answers,
+  and it carries build/pid/counts. The `pf` anchor below is therefore **optional
+  defence in depth**, not a fix.
+- **What actually matters, and I under-weighted it: FileVault is OFF**
+  (`fdesetup status`), and `tmutil destinationinfo` reports **no Time Machine
+  destinations**. The disk is readable at rest, so the signing key, the gateway key
+  and the provider credential store are exposed to anyone holding the machine — a
+  bigger exposure than the port, and the remedy is a switch
+  (System Settings → Privacy & Security → FileVault), not a script. There are also
+  **no backups at all**, so "the packs are free, re-install them" depends on the
+  Story sources surviving.
+- **Tailscale key expiry is confirmed by the owner: it no longer expires.** This
+  item is closed.
+- **The authority-backup passphrase is optional.** An earlier note called that
+  backup unrecoverable; that was wrong. The pack content is recoverable (the
+  sources are in the Story checkout and the pipeline is scripted) — what is lost is
+  the shelf's **identity**, and re-founding it snapshots the current registry as a
+  baseline, so every `-v2` identity becomes historical and recovery costs a
+  **third** identity round (`-v3`) for ~140 packs, moving the channel mapping
+  again. A day of re-issuing, not lost content. Worth encrypting when a copy of the
+  backup leaves this Mac; it never does today.
 - **Closing the LAN needs `pf`, which needs sudo this session cannot get**
   (approval prompts are disabled). The app firewall is the wrong tool — it is
   per-application and the gateway *is* the listener, so it would cut the tailnet
-  too. The handoff carries a ready `pf` anchor (allow `lo0` + `utun`, drop the
-  rest) with the two curl checks that prove both directions, and a warning that a
-  wrong interface name cuts Tailscale.
-- **The authority backup can be encrypted now**:
+  too. The handoff carries a ready `pf` anchor that matches the tailnet by
+  **address** (`100.126.154.54`) rather than by `utunN`, which renumbers across
+  restarts, with the two curl checks that prove both directions.
+- **The authority backup can be encrypted when wanted**:
   `scripts/encrypt_content_authority_backup.sh` seals the whole backup directory
   into one AES-256 archive. Verified — it round-trips to byte-identical files,
   refuses a wrong passphrase, refuses to overwrite, verifies the written file
   decrypts to the same digest before reporting success, and leaves no plaintext in
-  the output. It prompts for the passphrase and never stores or echoes it, so the
-  owner runs it once in a terminal; the plaintext backup stays until he has
-  decrypted the archive and is satisfied.
+  the output. It prompts for the passphrase and never stores or echoes it.
 
 ## 10t. S7 — the graph is current again (2026-09-22)
 
