@@ -81,6 +81,74 @@ enum AppPaths {
 
 // MARK: - Configuration
 
+/// The addresses this Mac can be reached on, so the app can tell Story Studio
+/// where the gateway is when Story runs on another machine.
+///
+/// The app used to hardcode `127.0.0.1` in its status line, console link and
+/// About panel, which is correct only while Story Studio is on this Mac. Bound
+/// beyond loopback, the useful address is the Tailscale one (100.64.0.0/10);
+/// the private LAN address is the fallback.
+enum LocalAddresses {
+    static func ipv4() -> [String] {
+        var addresses: [String] = []
+        var head: UnsafeMutablePointer<ifaddrs>?
+        guard getifaddrs(&head) == 0, let first = head else { return addresses }
+        defer { freeifaddrs(head) }
+        var pointer: UnsafeMutablePointer<ifaddrs>? = first
+        while let interface = pointer {
+            pointer = interface.pointee.ifa_next
+            guard let socketAddress = interface.pointee.ifa_addr,
+                  socketAddress.pointee.sa_family == UInt8(AF_INET) else { continue }
+            var host = [CChar](repeating: 0, count: Int(NI_MAXHOST))
+            guard getnameinfo(socketAddress, socklen_t(socketAddress.pointee.sa_len),
+                              &host, socklen_t(host.count), nil, 0, NI_NUMERICHOST) == 0 else { continue }
+            let ip = String(cString: host)
+            if !ip.hasPrefix("127."), !ip.hasPrefix("169.254."), !addresses.contains(ip) {
+                addresses.append(ip)
+            }
+        }
+        return addresses
+    }
+
+    /// Tailscale hands out 100.64.0.0/10: first octet 100, second 64...127.
+    static func isTailscale(_ ip: String) -> Bool {
+        let parts = ip.split(separator: ".")
+        guard parts.count == 4, parts[0] == "100", let second = Int(parts[1]) else { return false }
+        return (64...127).contains(second)
+    }
+
+    static func tailscale() -> String? { ipv4().first(where: isTailscale) }
+
+    static func privateLAN() -> String? {
+        for ip in ipv4() {
+            if ip.hasPrefix("192.168.") || ip.hasPrefix("10.") { return ip }
+            let parts = ip.split(separator: ".")
+            if parts.count == 4, parts[0] == "172", let second = Int(parts[1]), (16...31).contains(second) {
+                return ip
+            }
+        }
+        return nil
+    }
+
+    /// What to paste into Story Studio's Base URL for the current bind. Loopback
+    /// is the honest answer only while the gateway is bound to loopback.
+    static func storyBaseURL(port: Int) -> String {
+        if EnvFile.bindsBeyondLoopback() {
+            if let address = tailscale() { return "http://\(address):\(port)" }
+            if let address = privateLAN() { return "http://\(address):\(port)" }
+        }
+        return "http://127.0.0.1:\(port)"
+    }
+
+    /// The host shown in the sidebar's connection line.
+    static func displayHost() -> String {
+        if EnvFile.bindsBeyondLoopback() {
+            return tailscale() ?? privateLAN() ?? EnvFile.host()
+        }
+        return "127.0.0.1"
+    }
+}
+
 struct AppConfig: Codable {
     var gatewayDir: String
     var port: Int
@@ -351,13 +419,14 @@ final class GatewayController {
     /// connection line. It answers "is it up, and what is on offer" without
     /// making the owner change pages to find out.
     var sidebarSummary: String {
+        let where_ = "\(LocalAddresses.displayHost()):\(port)"
         switch state {
         case .running(let providers, let models):
-            return "Running on 127.0.0.1:\(port)\n\(providers) providers · \(models) models live"
+            return "Running on \(where_)\n\(providers) providers · \(models) models live"
         case .starting:
-            return "Starting on 127.0.0.1:\(port)…"
+            return "Starting on \(where_)…"
         case .stopped:
-            return "Stopped\n127.0.0.1:\(port)"
+            return "Stopped\n\(where_)"
         case .failed(let reason):
             return "Failed: \(reason)"
         }

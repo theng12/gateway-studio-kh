@@ -25,6 +25,7 @@ final class SettingsSection: NSObject, AppSection {
     private var dataLabel: NSTextField!
     private var portField: NSTextField!
     private var keyField: NSTextField!
+    private var storyBaseField: NSTextField!
     private var retentionDaysField: NSTextField!
     private var retentionGBField: NSTextField!
     private var retentionUsageLabel: NSTextField!
@@ -88,6 +89,29 @@ final class SettingsSection: NSObject, AppSection {
             NSButton(title: "Regenerate", target: self, action: #selector(regenerateKey)),
         ], spacing: 8)
         root.addArrangedSubview(PageKit.formRow("Key", [keyField, keyButtons] as [NSView]))
+
+        // ---- where Story Studio should point
+        //
+        // This used to be nowhere: the status line, the console link and the About
+        // panel all hardcoded 127.0.0.1, which is right only while Story Studio is
+        // on this Mac. Bound beyond loopback the useful address is the Tailscale
+        // one, and the owner should not have to read it off a terminal to paste it
+        // into the other machine.
+        root.addArrangedSubview(PageKit.sectionTitle("Story Studio"))
+        storyBaseField = NSTextField(labelWithString:
+            LocalAddresses.storyBaseURL(port: ConfigStore.shared.config.port))
+        storyBaseField.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
+        storyBaseField.lineBreakMode = .byTruncatingMiddle
+        storyBaseField.widthAnchor.constraint(equalToConstant: 320).isActive = true
+        let baseButtons = PageKit.row([
+            NSButton(title: "Copy", target: self, action: #selector(copyBaseURL)),
+        ], spacing: 8)
+        root.addArrangedSubview(PageKit.formRow("Base URL", [storyBaseField, baseButtons] as [NSView]))
+        root.addArrangedSubview(PageKit.help(
+            EnvFile.bindsBeyondLoopback()
+                ? "Paste this and the key into Story Studio → Settings → This Mac on the other machine."
+                : "This Mac only. Set GATEWAY_HOST=0.0.0.0 in .env to reach it from another machine."
+        ))
 
         root.addArrangedSubview(divider())
 
@@ -217,6 +241,7 @@ final class SettingsSection: NSObject, AppSection {
         autoStartCheck?.state = ConfigStore.shared.config.autoStartGateway ? .on : .off
         keepRunningCheck?.state = ConfigStore.shared.config.keepGatewayRunning == true ? .on : .off
         keyField?.stringValue = EnvFile.apiKey()
+        storyBaseField?.stringValue = LocalAddresses.storyBaseURL(port: ConfigStore.shared.config.port)
         runtimeLabel?.stringValue = GatewayController.shared.runtimeDescription
         dataLabel?.stringValue = AppPaths.data.path
         statusLabel?.stringValue = "Config: \(ConfigStore.shared.configPath)"
@@ -301,6 +326,12 @@ final class SettingsSection: NSObject, AppSection {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(keyField.stringValue, forType: .string)
         statusLabel.stringValue = "API key copied to the clipboard."
+    }
+
+    @objc private func copyBaseURL() {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(storyBaseField.stringValue, forType: .string)
+        statusLabel.stringValue = "Story Studio Base URL copied to the clipboard."
     }
 
     @objc private func regenerateKey() {
