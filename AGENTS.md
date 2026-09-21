@@ -800,6 +800,21 @@ a specifier (-1700) and a title-only check passed for unwired buttons. The
 suite presses **Check Gateway** and asserts a named build.
 ## Working rules
 
+- **Test narrowly, and off the owner's screen. The full `tests/test_ui.py` is a
+  release gate, not a routine check.** It walks every section, forces the window
+  to 700 pt, selects sidebar rows and presses controls, so it takes over the
+  owner's app — running it after each change interrupts his work, and he has said
+  so. The default per change is the **smallest** check that proves it:
+  - console/HTML/JS change → the Node VM suites (`node --test tests/<file>`),
+    which never touch the app;
+  - gateway/Python change → the isolated suites (`tests/test_e2e.py`, or the one
+    focused file), which use their own profile;
+  - native Swift change → build, then a **named, read-only check** from
+    `tests/check_native.py` (it reads one element; it does not resize, walk
+    menus or front windows). Run it in the background.
+  Reserve the full `test_ui.py` for an explicit owner request or a promotion
+  gate, and run it in the background. **Other sessions testing Studio Hub or
+  Story Studio do not bother him; taking over this app's windows does.**
 - **Never hand another session a description of behaviour that is not deployed
   yet.** A handoff from a build while the running service is still on the
   previous one is a false claim to whoever measures it: a note promised
