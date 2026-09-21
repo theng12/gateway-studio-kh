@@ -538,6 +538,33 @@ app's own settings — with Content Packs stranded after Settings.
   titles cascaded; it reproduced clean manually and the next full run was green,
   so it was interference rather than a defect.
 
+## 10m. Jobs list shows the provider (2026-09-21)
+
+The owner asked why the Jobs tab did not name the provider. `/api/jobs` already
+publishes `provider_name` (the gateway resolves the display name); the native
+table simply never drew it.
+
+- Added a **Provider** column (`When · Type · Provider · Model · State ·
+  Outputs`) and set `.uniformColumnAutoresizingStyle` so the wider list truncates
+  cells instead of pushing them past the edge at the minimum window size.
+- Build `4081601-202609211720`, promoted. Verified live:
+  `25m ago | Chat | NVIDIA NIM | deepseek-ai/deepseek-v4-flash-0731 | failed | 0 files`.
+
+### Two real failures found while checking
+
+The owner's 7 jobs are 5 succeeded / 2 failed, both provider-side and both
+handled correctly by the gateway:
+
+- `PROVIDER_FAILED` — NVIDIA NIM `deepseek-ai/deepseek-v4-flash-0731` answered
+  **HTTP 410: reached its end of life on 2026-09-21**. The gateway surfaced the
+  provider's own message. **The model is still `enabled: true` and
+  `publishable: true`**, so Story Studio can pick a model that can only fail —
+  the "enabled but cannot serve" class the project warns about. Disabling it is a
+  configuration change for the owner.
+- `PROVIDER_UNAVAILABLE` — NVIDIA NIM `z-ai/glm-5.3-flash` read timed out. The
+  job is a durable unknown-outcome hold that is **not** resubmitted
+  automatically, which is the designed behaviour.
+
 ## 11. Exact next action / resumable handoff
 
 - Branch `codex/content-pack-delivery`: promoted app code at `97bb3a5`
