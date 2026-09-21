@@ -667,6 +667,43 @@ archives.
   (`genstudio-content-store.ts:45-53`): one unknown kind kills the whole
   catalogue parse, so Story must accept a kind before Gateway publishes one.
 
+## 10p. The whole deliverable library is live, and a catalogue guard (2026-09-22)
+
+**140 current products on the shelf — the entire deliverable historical library**
+— and Story's own installer activates all four kinds. Measured: 45 topic packs,
+19 series formulas, 40 visual styles, 36 thumbnail recipes; Story's real
+`parseContentStoreCatalog` returns 200 over the whole catalogue.
+
+- **No Studio Hub was needed after all.** The preview bytes the skills require
+  are the owner's own, already preserved: each visual-style archive/source holds
+  3 WebP (`face`/`hero`/`scene`) and each thumbnail recipe 3–4, and
+  owner-supplied originals are an accepted preview source. The generator copies
+  the whole source directory now, not just the JSON, so assets travel with the
+  pack.
+- **Two packs had no source directory** (`centered-hero-headline`,
+  `dreamscape-story-window`); `rebuild_from_archive.py` reconstructed them from
+  their preserved 1.0.1 archives. Both shelved.
+- **An outage I caused, and the guard that prevents it.** Four visual styles
+  carried **14 tags**; Story's `parseTags` caps at 12 and
+  `parseContentStoreCatalog` throws on the first bad row, so Story answered
+  **500 for the whole Content Store** — one pack emptied every product. Fixed by
+  trimming those four to 12 and republishing as 1.0.1.
+  **`content_delivery._validate_catalog_row` is the guard**: at publish it builds
+  the product row and runs it through Story's **real** `parseContentStoreCatalog`
+  via a new `validate-catalog-row` action in `story_pack_validation.mjs`, and
+  refuses with the parser's own words (`422 CONTENT_CATALOG_ROW_INVALID`). The
+  limits are called, not copied, so a kind or field Story learns later is covered
+  for free. Regression test:
+  `test_content_delivery.ContentDeliveryTest.test_catalog_row_guard_uses_storys_own_parser`.
+- **A mistake worth recording.** A version bump was invoked with slugs missing
+  their `-v2` suffix, so it targeted the **historical** pack ids: it created four
+  stray `originals@1.0.1` records and source copies. The shelf refused them (as
+  designed). Cleanup is not a delete — a retired record's source must **not**
+  exist, and a reserved record goes to **withdrawn**, not retired, so: remove the
+  source directory, then retire (authored) or withdraw (reserved). Registry still
+  validates, revision 448. Always pass the `-v2` slug to `bump_corrected.py`.
+- Build `ab44302-202609211835`, promoted; the guard is in the installed bundle.
+
 ## 11. Exact next action / resumable handoff
 
 - Branch `codex/content-pack-delivery`: promoted app code at `97bb3a5`

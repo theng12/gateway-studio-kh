@@ -144,8 +144,36 @@ async function validate(request, storyRoot, repositoryRoot) {
   }
 }
 
+async function catalogRow(request, storyRoot) {
+  // The parser is the authority on its own limits, so ask it rather than copy the
+  // numbers. `parseContentStoreCatalog` throws on the first invalid product and
+  // Story then answers 500 for the whole Content Store, so one 14-tag pack takes
+  // every product down — refuse it here instead of shipping it.
+  const requireFromStory = createRequire(pathToFileURL(join(storyRoot, 'package.json')))
+  const tsxApi = await import(pathToFileURL(requireFromStory.resolve('tsx/esm/api')).href)
+  const unregister = tsxApi.register()
+  try {
+    const store = await import(pathToFileURL(join(storyRoot, 'electron', 'server', 'lib', 'genstudio-content-store.ts')).href)
+    store.parseContentStoreCatalog({ products: [request.row] })
+    return { ok: true }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : ''
+    return { ok: false, reason: message && message.length <= 200 ? message : 'Story rejected the catalogue row' }
+  } finally {
+    await unregister()
+  }
+}
+
 async function run() {
   const request = await readInput()
+  if (request.action === 'validate-catalog-row') {
+    const keys = Object.keys(request).sort().join(',')
+    if (keys !== 'action,row,story_root' || typeof request.story_root !== 'string' || !request.story_root
+      || !request.row || typeof request.row !== 'object' || Array.isArray(request.row)) {
+      fail('unsupported validation request')
+    }
+    return catalogRow(request, await realDirectory(resolve(request.story_root), 'Story source checkout'))
+  }
   const expected = request.action === 'snapshot'
     ? ['action', 'registry_path', 'story_root']
     : request.action === 'validate'

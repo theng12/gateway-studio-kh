@@ -131,6 +131,41 @@ def _validate_archive(digest: str) -> dict[str, Any]:
     return result
 
 
+def _catalog_row(metadata: dict[str, Any]) -> dict[str, Any]:
+    """The product row Story will parse, built from the validated pack metadata."""
+    return {
+        "product_id": metadata["product_id"], "entitlement_family": metadata["entitlement_family"],
+        "kind": _wire_kind(metadata["kind"]), "title": metadata["title"],
+        "summary": metadata["description"], "description": metadata["description"],
+        "publisher_id": metadata["publisher_id"], "credit_price": 0, "free": True,
+        "owned": True, "retired": False, "successor_product_id": None, "current_release": None,
+        "compatible": True, "compatibility_reason": None, "bundle_components": [],
+        "owned_component_credit_value": 0, "showcase_videos": [], "cover": None, "hero": None,
+        "tags": metadata["tags"], "license": None, "discount": None,
+    }
+
+
+def _validate_catalog_row(metadata: dict[str, Any]) -> None:
+    """Refuse a pack whose product row Story's own catalogue parser rejects.
+
+    One bad row is not one bad product: `parseContentStoreCatalog` throws on the
+    first invalid entry and Story surfaces a 500 for the whole Content Store, so a
+    pack with 14 tags emptied the entire catalogue — measured, not hypothetical.
+    The parser is the authority on its own limits, so it is called rather than its
+    numbers copied, and a kind or field it learns later is covered for free.
+    """
+    story_root, _ = _story_paths()
+    result = _node_request(_BRIDGE, {
+        "action": "validate-catalog-row", "story_root": str(story_root), "row": _catalog_row(metadata),
+    })
+    if result.get("ok") is not True:
+        reason = result.get("reason")
+        if not isinstance(reason, str) or not reason or len(reason) > 200:
+            reason = "Story's catalogue parser rejected this pack's product row."
+        raise DeliveryError(f"Story would reject this pack's catalogue entry: {reason}", 422,
+                            "CONTENT_CATALOG_ROW_INVALID")
+
+
 def _signing(action: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
     request: dict[str, Any] = {"action": action, "private_key_path": str(_key_path())}
     if payload is not None:
@@ -472,6 +507,7 @@ def publish_archive(digest: str) -> dict[str, Any]:
         except content_packs.PackError as exc:
             raise DeliveryError(str(exc), 410, "CONTENT_ARCHIVE_UNAVAILABLE") from exc
         metadata = _validate_archive(digest)
+        _validate_catalog_row(metadata)
         if metadata["archive_bytes"] != len(data):
             raise DeliveryError("Validated archive byte count changed.", 409, "CONTENT_ARCHIVE_CHANGED")
         authority = state["authority"]

@@ -354,6 +354,31 @@ process.exit(verify(null,Buffer.from(canonical(row.payload),'utf8'),key,Buffer.f
             })
         self.assertLess(time.monotonic() - started, 1.0)
 
+    def test_catalog_row_guard_uses_storys_own_parser(self) -> None:
+        """A product row Story's catalogue parser rejects must not be publishable.
+
+        One invalid row throws in `parseContentStoreCatalog`, and Story then answers
+        500 for the whole Content Store, so a pack with 14 tags emptied every
+        product — measured, not hypothetical. The guard calls the real parser
+        rather than copying its limits, so a kind or field Story learns later is
+        covered without a Gateway change.
+        """
+        if not (STORY_SOURCE / "electron/server/lib/genstudio-content-store.ts").is_file():
+            self.skipTest("Story source is unavailable")
+        metadata = {
+            "product_id": "com.storystudio.sku.style.demo-v2",
+            "entitlement_family": "com.storystudio.family.style.demo-v2",
+            "kind": "visual-style", "title": "Demo style", "description": "A demo style.",
+            "publisher_id": "com.storystudio",
+            "tags": [f"tag{index}" for index in range(13)],
+        }
+        with patch.object(content_delivery, "_story_paths", return_value=(STORY_SOURCE, STORY_REGISTRY)):
+            with self.assertRaises(content_delivery.DeliveryError) as caught:
+                content_delivery._validate_catalog_row(metadata)
+            self.assertIn("at most 12", str(caught.exception))
+            metadata["tags"] = metadata["tags"][:12]
+            content_delivery._validate_catalog_row(metadata)
+
     def test_real_story_validation_restore_grant_and_exact_download(self) -> None:
         setup = self._setup()
         record = _record("private-ledger")
