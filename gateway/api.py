@@ -175,6 +175,38 @@ def require_auth(request: Request, authorization: str | None = Header(default=No
         raise GatewayError(403, "Invalid API key.", "FORBIDDEN")
 
 
+def require_content_auth(authorization: str | None = Header(default=None)) -> str:
+    """Content authority never inherits the loopback placeholder-key exception."""
+    configured = gateway_api_key()
+    if not configured:
+        raise GatewayError(503, "Content Store is not connected.", "CONTENT_STORE_NOT_CONNECTED")
+    if not authorization or not authorization.lower().startswith("bearer "):
+        raise GatewayError(401, "Missing bearer token.", "UNAUTHORIZED")
+    token = authorization[7:].strip()
+    if not token:
+        raise GatewayError(401, "Empty bearer token.", "UNAUTHORIZED")
+    if token != configured:
+        raise GatewayError(403, "Invalid API key.", "FORBIDDEN")
+    return configured
+
+
+def require_content_authority(api_key: str = Depends(require_content_auth)) -> str:
+    """Answer an unconfigured Store before any request-shape validation.
+
+    FastAPI raises a missing required query parameter or a malformed body as 422,
+    so a route that parses first reports an unconfigured Store as a bad request.
+    Dependencies run before that validation, and `AGENTS.md` requires unconfigured
+    delivery to stay `CONTENT_STORE_NOT_CONNECTED`; this keeps the two apart without
+    weakening validation once a shelf exists.
+    """
+    from . import content_delivery
+    try:
+        content_delivery.ensure_configured()
+    except content_delivery.DeliveryError as exc:
+        raise GatewayError(exc.status, str(exc), exc.code) from exc
+    return api_key
+
+
 def _require_idempotency_key(value: str | None) -> str:
     if not value:
         raise GatewayError(
@@ -1197,23 +1229,122 @@ def get_transcription_srt(job_id: str) -> Response:
 
 
 # ---------------------------------------------------------------------------
-# Content Store — unavailable until real account-bound trust is configured.
-# A private archive shelf is not proof of ownership. Never fabricate a receipt
-# or report a completed purchase merely because generation itself is free.
+# Content Store — private owner authority over explicitly qualified releases.
 # ---------------------------------------------------------------------------
-@app.get("/v1/content/account", dependencies=[Depends(require_auth)])
-@app.get("/v1/content/products", dependencies=[Depends(require_auth)])
-@app.get("/v1/content/shelves", dependencies=[Depends(require_auth)])
-@app.get("/v1/content/public-key", dependencies=[Depends(require_auth)])
-@app.get("/v1/content/receipts", dependencies=[Depends(require_auth)])
-@app.post("/v1/content/quotes", dependencies=[Depends(require_auth)])
-@app.post("/v1/content/purchases", dependencies=[Depends(require_auth)])
-@app.post("/v1/content/downloads", dependencies=[Depends(require_auth)])
-def content_store_unavailable() -> dict[str, Any]:
-    raise GatewayError(503,
-        "Content Store is not connected. The private Pack Library preserves archives, "
-        "but Story Studio requires verified account ownership, receipts and trusted signing keys before installation.",
-        "CONTENT_STORE_NOT_CONNECTED")
+def _content_result(call, *args):  # type: ignore[no-untyped-def]
+    from . import content_delivery
+    try:
+        return call(*args)
+    except content_delivery.DeliveryError as exc:
+        raise GatewayError(exc.status, str(exc), exc.code) from exc
+
+
+def _content_origin(request: Request) -> str:
+    """Use the accepted ASGI endpoint, never attacker-controlled Host input."""
+    scheme = request.scope.get("scheme")
+    server = request.scope.get("server")
+    if scheme not in ("http", "https") or not isinstance(server, (tuple, list)) or len(server) != 2:
+        raise GatewayError(503, "Trusted Gateway download origin is unavailable.", "CONTENT_DELIVERY_UNAVAILABLE")
+    host, port = server
+    if (not isinstance(host, str) or not host or any(character in host for character in "/?#@\r\n")
+            or type(port) is not int or not 1 <= port <= 65535):
+        raise GatewayError(503, "Trusted Gateway download origin is unavailable.", "CONTENT_DELIVERY_UNAVAILABLE")
+    rendered = f"[{host}]" if ":" in host and not host.startswith("[") else host
+    default = (scheme == "http" and port == 80) or (scheme == "https" and port == 443)
+    return f"{scheme}://{rendered}{'' if default else f':{port}'}"
+
+
+async def _content_body(
+    request: Request,
+    fields: dict[str, type] | tuple[dict[str, type], ...],
+) -> dict[str, Any]:
+    from .content_packs import PackError, _json
+    if request.headers.get("content-type", "").split(";", 1)[0].strip().lower() != "application/json":
+        raise GatewayError(415, "Content requests require Content-Type: application/json.", "CONTENT_REQUEST_INVALID")
+    data = bytearray()
+    async for chunk in request.stream():
+        if len(data) + len(chunk) > 64 * 1024:
+            raise GatewayError(413, "Content request exceeds 64 KiB.", "CONTENT_REQUEST_INVALID")
+        data.extend(chunk)
+    try:
+        body = _json(bytes(data))
+    except PackError as exc:
+        raise GatewayError(422, "Send one unambiguous JSON object.", "CONTENT_REQUEST_INVALID") from exc
+    alternatives = fields if isinstance(fields, tuple) else (fields,)
+    if (not isinstance(body, dict) or not any(
+            set(body) == set(option)
+            and all(type(body[key]) is kind for key, kind in option.items())
+            for option in alternatives)):
+        raise GatewayError(422, "Content request fields are invalid.", "CONTENT_REQUEST_INVALID")
+    return body
+
+
+@app.get("/v1/content/account")
+def content_account(_: str = Depends(require_content_authority)) -> dict[str, Any]:
+    from . import content_delivery
+    return _content_result(content_delivery.account)
+
+
+@app.get("/v1/content/products")
+def content_products(story_version: str = Query(...), _: str = Depends(require_content_authority)) -> dict[str, Any]:
+    from . import content_delivery
+    return _content_result(content_delivery.products, story_version)
+
+
+@app.get("/v1/content/shelves")
+def content_shelves(story_version: str = Query(...), _: str = Depends(require_content_authority)) -> dict[str, Any]:
+    from . import content_delivery
+    return _content_result(content_delivery.shelves, story_version)
+
+
+@app.get("/v1/content/public-key")
+def content_public_key(_: str = Depends(require_content_authority)) -> dict[str, Any]:
+    from . import content_delivery
+    return _content_result(content_delivery.public_key)
+
+
+@app.get("/v1/content/receipts")
+def content_receipts(_: str = Depends(require_content_authority)) -> dict[str, Any]:
+    from . import content_delivery
+    return _content_result(content_delivery.receipts)
+
+
+@app.get("/v1/content/entitlements/{family}/releases")
+def content_release_history(family: str, _: str = Depends(require_content_authority)) -> dict[str, Any]:
+    from . import content_delivery
+    return _content_result(content_delivery.release_history, family)
+
+
+@app.post("/v1/content/downloads")
+async def content_download(request: Request, api_key: str = Depends(require_content_authority)) -> dict[str, Any]:
+    from . import content_delivery
+    body = await _content_body(request, (
+        {"release_id": str},
+        {"entitlement_family": str, "version": str},
+    ))
+    release_id = (body["release_id"] if "release_id" in body else
+                  _content_result(content_delivery.resolve_release_id,
+                                  body["entitlement_family"], body["version"]))
+    return _content_result(content_delivery.issue_download, release_id, _content_origin(request), api_key)
+
+
+@app.get("/v1/content/archives/{release_id}")
+def content_archive(release_id: str, grant: str = Query(...)) -> Response:
+    from . import content_delivery
+    data = _content_result(content_delivery.download_archive, release_id, grant)
+    return Response(data, media_type="application/octet-stream", headers={
+        "Content-Disposition": 'attachment; filename="content-pack.sspack"',
+        "X-Content-Type-Options": "nosniff",
+    })
+
+
+@app.post("/v1/content/quotes")
+@app.post("/v1/content/purchases")
+def content_commerce_unavailable(_: str = Depends(require_content_authority)) -> dict[str, Any]:
+    from . import content_delivery
+    _content_result(content_delivery.ensure_configured)
+    raise GatewayError(503, "Private Content Packs are owner entitlements and cannot be purchased.",
+                       "CONTENT_COMMERCE_UNAVAILABLE")
 
 
 # ---------------------------------------------------------------------------

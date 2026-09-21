@@ -4,7 +4,7 @@ import {join, resolve} from 'node:path';
 import {pathToFileURL} from 'node:url';
 import {homedir} from 'node:os';
 
-export async function prepareAuthoringFixture(root, storySource) {
+export async function prepareAuthoringFixture(root, storySource, {reserve = true} = {}) {
   const source = resolve(storySource);
   const scripts = join(root, 'scripts/content-packs');
   await mkdir(scripts, {recursive:true});
@@ -25,11 +25,11 @@ export async function prepareAuthoringFixture(root, storySource) {
     stocking_proposal:{family:{id:'com.storystudio.family.topic.gateway-fixture',status:'proposed'},
       sku:{id:'com.storystudio.sku.topic.gateway-fixture',status:'proposed'}},
   };
-  await reserveAuthoringBatch({registryPath,repositoryRoot:root,request:{
+  if (reserve) await reserveAuthoringBatch({registryPath,repositoryRoot:root,request:{
     expected_revision:1,coordinator:{task:'Gateway isolated authoring verification',branch:'fixture-only'},
     proposal_ref:'Synthetic test fixture, not a product reservation',records:[record],
   }});
-  return {source:root,key:record.pack_id+'@'+record.version,document:{
+  return {source:root,registry_path:registryPath,key:reserve ? record.pack_id+'@'+record.version : null,document:{
     schema_version:1,kind:'topic-pack',id:record.item_id,name:'River journeys — synthetic fixture',
     description:'An isolated demonstration of a Topic Pack draft. Not an installed or purchased product.',
     compatible_formula_ids:['com.storystudio.formula.fixture'],
@@ -44,5 +44,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
   const root = process.argv[2];
   if (!root) throw Error('Pass an empty temporary fixture directory.');
   const source = process.argv[3] || process.env.GATEWAY_STORY_SOURCE || join(homedir(),'Developer/story-studio-kh');
-  console.log(JSON.stringify(await prepareAuthoringFixture(resolve(root),source)));
+  console.log(JSON.stringify(await prepareAuthoringFixture(resolve(root),source,{
+    reserve:process.argv[4] !== '--empty-registry',
+  })));
 }

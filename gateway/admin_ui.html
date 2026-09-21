@@ -102,6 +102,15 @@
   #author-preview, #author-identity, #author-drafts { overflow-wrap: anywhere; }
   #author-preview pre { white-space: pre-wrap; font: inherit; }
   #author-drafts { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+  #authoring-brief { white-space: pre-wrap; overflow-wrap: anywhere; margin: 12px 0 0; padding: 12px; background: var(--panel2); border-radius: var(--radius); font: 12px/1.55 ui-monospace, "SF Mono", monospace; }
+  .shelf-section { margin-top: 24px; }
+  .shelf-section h2 { margin: 0 0 8px; font-size: 18px; }
+  .shelf-section h3 { margin: 0 0 6px; font-size: 15px; }
+  .shelf-section .body > p:first-child { margin-top: 0; }
+  label.check.shelf-ack { margin-top: 14px; white-space: normal; align-items: flex-start; }
+  label.check.shelf-ack input { flex: 0 0 auto; margin-top: 2px; }
+  .shelf-meta { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  .shelf-release-meta { overflow-wrap: anywhere; }
   @media (max-width: 760px) { .author-workbench, .author-fields { grid-template-columns: minmax(0, 1fr); } }
 
   .filters {
@@ -142,7 +151,9 @@
   tbody td { padding: 6px 10px; border-bottom: 1px solid var(--line); vertical-align: middle; }
   /* Alternating rows, the way every native table in this window reads. */
   tbody tr:nth-child(even) { background: color-mix(in srgb, CanvasText 3%, Canvas); }
-  tbody tr:hover { background: #1a202b; }
+  /* A fixed dark literal here read as black-on-black in light appearance; every
+     surface token follows Canvas/CanvasText so both appearances stay legible. */
+  tbody tr:hover { background: color-mix(in srgb, CanvasText 9%, Canvas); }
   tbody tr.on { background: color-mix(in srgb, var(--ok) 14%, transparent); }
   .mid { font-family: ui-monospace, monospace; font-size: 11.5px; color: var(--dim); }
   .tablewrap { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; }
@@ -289,27 +300,41 @@
       </div>
     </div>
   </section>
-  <!-- PRIVATE ARCHIVE LIBRARY: never an ownership or installation claim. -->
+  <!-- PRIVATE CONTENT PACKS: setup, authoring, shelving, and archive preservation. -->
   <section id="view-packs" style="display:none">
-    <div class="heading"><h1>Pack Library</h1>
-      <p>Private copies of Content Pack archives. Import checks archive safety and file hashes;
-      it does not install a pack or grant ownership.</p></div>
-    <div class="card"><div class="body">
-      <p>Story Studio must verify the original Store receipts or publisher signature,
-        trusted keys and compatibility before installation. Generation provider keys do not replace that evidence.</p>
-      <label for="pack-file">Archive (.sspack, up to 50 MiB)</label>
-      <input id="pack-file" type="file" accept=".sspack">
-      <div class="row" style="margin-top:12px">
-        <button id="pack-import" class="primary" onclick="importPack(this)">Validate and preserve archive</button>
-        <button onclick="loadPacks()">Refresh library</button>
+    <div class="heading"><h1>Content Packs</h1>
+      <p>Private authoring drafts, shelved releases, and preserved archives. Set up the private shelf explicitly;
+      importing or authoring never installs a pack or invents ownership.</p></div>
+
+    <section class="card shelf-section" id="shelf-setup-section" aria-labelledby="shelf-setup-heading">
+      <div class="body">
+        <div class="shelf-meta"><h2 id="shelf-setup-heading">Set up private shelf</h2><span id="shelf-status" class="badge">Checking…</span></div>
+        <p id="shelf-detail" role="status" aria-live="polite">Checking Gateway key and Story authoring prerequisites…</p>
+        <p class="hint">Setup snapshots the current Story registry baseline and creates a new private owner identity. It never changes the original Store account, receipts, keys, or installed content.</p>
+        <label class="check shelf-ack"><input id="shelf-setup-ack" type="checkbox" onchange="updateShelfControls()"> I understand that setup creates a new private shelf authority and does not restore historical ownership.</label>
+        <div class="row" style="margin-top:12px">
+          <button id="shelf-setup" class="primary" onclick="setupContentShelf()" disabled>Set up private shelf</button>
+          <button id="shelf-refresh" onclick="refreshContentPacks()">Refresh Content Packs</button>
+        </div>
+        <div id="shelf-message" class="msg" role="status" aria-live="polite"></div>
       </div>
-      <div id="pack-message" class="msg" role="status" aria-live="polite"></div>
-    </div></div>
-    <div id="pack-library"></div>
-    <section class="authoring" aria-labelledby="author-heading">
-      <h2 id="author-heading">Author a Topic Pack</h2>
-      <p>Keep a private draft, preview it with Story Studio’s schema, then export a candidate archive.
-        Export freezes this reserved version. It does not publish, install or grant ownership.</p>
+    </section>
+
+    <section class="card shelf-section" aria-labelledby="shelf-brief-heading">
+      <div class="body">
+        <h2 id="shelf-brief-heading">Authoring handoff</h2>
+        <p>Copy this self-contained brief into a dedicated authoring session. It produces a ready package for review; it does not receive credentials or publish automatically.</p>
+        <div class="row">
+          <button id="copy-authoring-brief" class="primary" onclick="copyAuthoringBrief()">Copy authoring brief</button>
+          <span id="brief-message" class="msg" role="status" aria-live="polite"></span>
+        </div>
+        <details style="margin-top:12px"><summary>Show authoring brief</summary><pre id="authoring-brief"></pre></details>
+      </div>
+    </section>
+
+    <section class="authoring shelf-section" aria-labelledby="author-heading">
+      <h2 id="author-heading">Drafts</h2>
+      <p>Use the existing Topic Pack editor for unfinished work. Save, validate, and export as before; adding a saved draft to the shelf is a separate explicit action.</p>
       <p id="author-prerequisites" role="status">Checking local authoring tools…</p>
       <button onclick="loadAuthoring()">Refresh authoring tools and drafts</button>
       <div class="author-fields">
@@ -341,6 +366,31 @@
           </section>
         </div>
       </div>
+    </section>
+
+    <section class="card shelf-section" aria-labelledby="shelf-heading">
+      <div class="body">
+        <h2 id="shelf-heading">Shelved</h2>
+        <p>Private releases that Story Studio may discover through the configured Gateway. Discovery does not install anything; Story Studio’s existing Download/Install action remains explicit.</p>
+        <p id="shelf-supported" class="hint">Supported types: checking…</p>
+        <label class="check shelf-ack"><input id="shelf-authorship-ack" type="checkbox" onchange="updateShelfControls()"> I confirm I authored or have permission to distribute this new pack and accept responsibility for its provenance and license.</label>
+        <div id="shelf-releases" style="margin-top:14px"></div>
+      </div>
+    </section>
+
+    <section class="card shelf-section" aria-labelledby="archive-heading">
+      <div class="body">
+        <h2 id="archive-heading">Preserved archives</h2>
+        <p>Archive-only storage for `.sspack` inputs. Import validates safety and hashes, but does not create ownership, publish a release, or install a pack. Review an eligible archive here before adding it to the private shelf.</p>
+        <label for="pack-file">Archive (.sspack, up to 50 MiB)</label>
+        <input id="pack-file" type="file" accept=".sspack">
+        <div class="row" style="margin-top:12px">
+          <button id="pack-import" class="primary" onclick="importPack(this)">Validate and preserve archive</button>
+          <button onclick="loadPacks()">Refresh preserved archives</button>
+        </div>
+        <div id="pack-message" class="msg" role="status" aria-live="polite"></div>
+      </div>
+      <div id="pack-library"></div>
     </section>
   </section>
 </main>
@@ -464,8 +514,141 @@ function setView(view) {
   document.getElementById('view-packs').style.display = view === 'packs' ? '' : 'none';
   if (view === 'models') loadModels();
   else if (view === 'providers') loadProviders();
-  else if (view === 'packs') { loadPacks(); loadAuthoring(); }
+  else if (view === 'packs') { loadContentShelf(); loadPacks(); loadAuthoring(); }
   else loadCreate();
+}
+
+const CONTENT_PACK_AUTHORING_BRIEF = String.raw`Destination: local private Gateway shelf. Author one original, reusable Content Pack there.
+
+Start with setup. In Gateway Content Packs, explicitly set up the private shelf first. This creates a new owner-only authority and snapshots the current Story registry baseline. Do not use a historical Store identity, copied receipt, old reservation, or existing commercial ownership as a shortcut. After setup, obtain a fresh Story registry reservation issued after that baseline for a new pack and family; a later private version uses a newly reserved version under the existing private pack identity.
+
+Use the existing standalone Story Studio Content Pack skill, schema, registry, deterministic validator, and archive builder. Its commercial defaults are overridden for this private workflow: no marketplace, pricing, quotes, purchases, paid generation, external publication, or automatic installation. The authoring session receives no sensitive values; never ask for or include Gateway/provider secrets or private account data.
+
+The supported authored package inputs are exactly one of these four standalone wire kinds per pack: Series Formula, Topic Pack, Visual Style, or Thumbnail Recipe. The existing Gateway Topic Pack editor remains available for Topic Pack drafts. The other three kinds arrive as a ready authored package input for Gateway review. Do not make bundles, Kits, Channel Kits, or unsupported kinds; a coordinated Story app update is required for kinds outside this list.
+
+Make one original reusable product per pack. Preserve provenance, licenses, attribution, declared dependencies, and any package assets. Never invent permission or metadata. If a cover or marketing URL is present, it must be canonical HTTPS; never invent a localhost URL or promise a visual gallery in Story. Keep pack assets intact; Gateway review may show supported metadata only.
+
+Validate the manifest and schema, build the .sspack deterministically, and review the exact pack/version identity, files, hashes, kind, provenance, license, and validation result. Deliver the .sspack plus concise per-pack evidence of the reservation, validator/build result, archive digest and review notes to the local private destination: the Gateway shelf. A draft or imported archive is never auto-published: Gateway must preserve it, show the review result, and require a separate checked authorship/distribution acknowledgement before Add to shelf.`;
+
+const SHELF_KIND_LABELS = {
+  'series-formula': 'Series Formula',
+  'topic-pack': 'Topic Pack',
+  'visual-style': 'Visual Style',
+  'thumbnail-recipe': 'Thumbnail Recipe',
+};
+const shelfState = {data:null, archives:[], busy:false, setupPending:false, publishPending:new Set(), refresh:0};
+const shelfNode = id => document.getElementById('shelf-' + id);
+const shelfKindLabel = kind => SHELF_KIND_LABELS[kind] || kind || 'Unknown kind';
+function shelfReady() { const data = typeof shelfState !== 'undefined' ? shelfState.data : null; return !!(data?.configured && data?.available); }
+function shelfAcknowledged() { return !!document.getElementById('shelf-authorship-ack')?.checked; }
+function shelfSetupAcknowledged() { return !!document.getElementById('shelf-setup-ack')?.checked; }
+function shelfMessage(text, failed=false) {
+  const node = shelfNode('message');
+  if (!node) return;
+  node.textContent = text;
+  node.className = failed ? 'msg bad' : 'msg';
+}
+function updateShelfControls() {
+  const data = shelfState.data;
+  const setup = document.getElementById('shelf-setup');
+  if (setup) setup.disabled = shelfState.setupPending || !!data?.configured || !data?.available || !shelfSetupAcknowledged();
+  const buttons = document.querySelectorAll ? document.querySelectorAll('[data-shelf-publish]') : [];
+  buttons.forEach(button => {
+    const key = button.dataset.shelfPublish;
+    button.disabled = shelfState.publishPending.has(key) || !shelfReady() || !shelfAcknowledged() || button.dataset.shelfEligible !== 'true';
+  });
+}
+function renderShelfReleases(releases) {
+  const target = shelfNode('releases');
+  if (!target) return;
+  target.innerHTML = releases.length ? releases.map(row => `
+    <article class="card"><div class="body">
+      <h3>${esc(row.title || row.pack_id || 'Untitled pack')} <span class="badge">${esc(row.version || '')}</span></h3>
+      <p>${esc(shelfKindLabel(row.kind))} · ${esc(row.bytes == null ? '' : `${row.bytes} bytes`)} · ${row.current ? 'Current release' : 'Previous release'} · ${row.available ? 'Available' : 'Unavailable'}</p>
+      <p class="hint shelf-release-meta">Release ${esc(row.release_id || 'unknown')} · Private shelf only · Not installed here.</p>
+    </div></article>`).join('') : '<div class="empty">No shelved releases yet. Drafts and preserved archives remain separate until you explicitly add one.</div>';
+}
+function renderShelfStatus(data) {
+  const status = shelfNode('status');
+  if (status) {
+    status.textContent = data.configured ? (data.available ? 'Ready' : 'Unavailable') : 'Not set up';
+    status.className = `badge ${data.configured && data.available ? 'ok' : data.available ? 'warn' : 'bad'}`;
+  }
+  const detail = shelfNode('detail');
+  if (detail) detail.textContent = data.detail || (data.configured ? 'Private shelf status loaded.' : 'Set up the private shelf to publish new packs.');
+  const supported = shelfNode('supported');
+  if (supported) supported.textContent = `Supported types: ${(data.supported_kinds || Object.keys(SHELF_KIND_LABELS)).map(kind => `${shelfKindLabel(kind)} (${kind})`).join(' · ')}`;
+  const brief = document.getElementById('authoring-brief');
+  if (brief) brief.textContent = CONTENT_PACK_AUTHORING_BRIEF;
+  renderShelfReleases(Array.isArray(data.releases) ? data.releases : []);
+  updateShelfControls();
+}
+async function loadContentShelf() {
+  const refresh = ++shelfState.refresh;
+  try {
+    const data = await api('/content-shelf');
+    if (refresh !== shelfState.refresh) return;
+    shelfState.data = data;
+    renderShelfStatus(data);
+    shelfMessage('');
+  } catch (error) {
+    if (refresh !== shelfState.refresh) return;
+    shelfState.data = null;
+    renderShelfReleases([]);
+    const detail = shelfNode('detail');
+    if (detail) detail.textContent = `Cannot read private shelf: ${error.message}. Use Refresh Content Packs to retry.`;
+    const status = shelfNode('status');
+    if (status) { status.textContent = 'Read failed'; status.className = 'badge bad'; }
+    shelfMessage(`Shelf status unavailable: ${error.message}`, true);
+    if (typeof updateShelfControls === 'function') updateShelfControls();
+  }
+}
+async function refreshContentPacks() {
+  await Promise.all([loadContentShelf(), loadPacks(), loadAuthoring()]);
+}
+async function setupContentShelf() {
+  const data = shelfState.data;
+  if (shelfState.setupPending || data?.configured) return;
+  if (!data?.available) { shelfMessage(data?.detail || 'Private shelf prerequisites are unavailable. Resolve them and retry.', true); return; }
+  if (!shelfSetupAcknowledged()) { shelfMessage('Check the setup acknowledgement before creating the private shelf.', true); return; }
+  shelfState.setupPending = true;
+  const button = document.getElementById('shelf-setup');
+  if (button) button.textContent = 'Setting up…';
+  updateShelfControls();
+  try {
+    const result = await api('/content-shelf/setup', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({acknowledge:true})});
+    shelfState.data = result;
+    renderShelfStatus(result);
+    document.getElementById('shelf-setup-ack').checked = false;
+    shelfMessage('Private shelf is ready. Review and add packs explicitly; nothing was published or installed.');
+    await loadContentShelf();
+  } catch (error) {
+    shelfState.data = null;
+    renderShelfReleases([]);
+    const status = shelfNode('status');
+    if (status) { status.textContent = 'State unknown'; status.className = 'badge warn'; }
+    const detail = shelfNode('detail');
+    if (detail) detail.textContent = 'Setup did not complete. Refresh to inspect its state.';
+    shelfMessage('Setup did not complete. Refresh to inspect its state; nothing was published or installed.', true);
+  } finally {
+    shelfState.setupPending = false;
+    if (button) button.textContent = 'Set up private shelf';
+    updateShelfControls();
+  }
+}
+async function copyAuthoringBrief() {
+  const message = document.getElementById('brief-message');
+  try {
+    if (navigator.clipboard?.writeText) await navigator.clipboard.writeText(CONTENT_PACK_AUTHORING_BRIEF);
+    else {
+      const target = document.getElementById('authoring-brief');
+      target.focus(); target.select();
+      if (!document.execCommand('copy')) throw Error('clipboard is unavailable');
+    }
+    if (message) { message.className = 'msg ok'; message.textContent = 'Authoring brief copied.'; }
+  } catch (error) {
+    if (message) { message.className = 'msg bad'; message.textContent = `Could not copy authoring brief: ${error.message}`; }
+  }
 }
 
 async function loadPacks() {
@@ -473,18 +656,23 @@ async function loadPacks() {
   try {
     const result = await api('/content-library');
     const rows = result.archives || [];
+    if (typeof shelfState !== 'undefined') shelfState.archives = rows;
     if (message.dataset.loadError === 'true') { message.textContent = ''; message.className = 'msg'; delete message.dataset.loadError; }
     document.getElementById('pack-library').innerHTML = rows.length ? rows.map(row => `
       <article class="card"><div class="body">
-        <h2>${esc(row.pack_id || 'Unreadable archive')} <span class="badge">${esc(row.version || '')}</span></h2>
+        <h3>${esc(row.title || row.pack_id || 'Unreadable archive')} <span class="badge">${esc(row.version || '')}</span></h3>
         <p>${esc((row.item_kinds || []).join(' · '))}</p>
-        <p>Integrity: ${esc(row.integrity)} · Ownership: unverified · Not installed</p>
+        <p>Preserved archive · Integrity: ${esc(row.integrity)} · Ownership: unverified · Not installed</p>
         <p class="hint">${esc(row.integrity_detail || '')}</p>
         <p class="hint">${esc(row.trust_requirement || 'Re-import the original archive to validate it.')}</p>
         <p class="hint">${esc(row.compatibility || '')}</p>
         <details><summary>Archive identity</summary><code style="overflow-wrap:anywhere">${esc(row.archive_sha256)}</code></details>
-        ${/^[a-f0-9]{64}$/.test(row.archive_sha256) ? `<button class="sm" style="margin-top:10px" ${row.integrity !== 'verified' ? 'disabled' : ''} onclick="savePack('${row.archive_sha256}',this)">Save original archive…</button>` : ''}
-      </div></article>`).join('') : '<div class="empty">No archives preserved here yet. Your transfer and authoring sources remain separate and untouched.</div>';
+        ${/^[a-f0-9]{64}$/.test(row.archive_sha256) ? `<div class="row" style="margin-top:10px">
+          <button class="sm" ${row.integrity !== 'verified' ? 'disabled' : ''} onclick="savePack('${row.archive_sha256}',this)">Save preserved archive…</button>
+          <button class="sm" data-shelf-publish="archive:${row.archive_sha256}" data-shelf-eligible="${row.integrity === 'verified' ? 'true' : 'false'}" ${typeof shelfState === 'undefined' || !shelfReady() || !shelfAcknowledged() || row.integrity !== 'verified' ? 'disabled' : ''} onclick="publishPreservedArchive('${row.archive_sha256}',this)">Review and add to shelf</button>
+        </div>` : ''}
+      </div></article>`).join('') : '<div class="empty">No preserved archives yet. Imported archives stay archive-only until you explicitly review and add one to the private shelf.</div>';
+    if (typeof updateShelfControls === 'function') updateShelfControls();
   } catch (error) {
     message.dataset.loadError = 'true';
     message.className = 'msg bad'; message.textContent = `Cannot read library: ${error.message}. Use Refresh library to retry.`;
@@ -500,8 +688,9 @@ async function importPack(button) {
   button.disabled = true;
   try {
     const row = await api('/content-library/import', {method:'POST', headers:{'Content-Type':'application/octet-stream'}, body:file});
-    message.className = 'msg'; message.textContent = `Preserved ${row.pack_id} ${row.version}. Integrity checked; ownership and installation remain unverified.`;
+    message.className = 'msg'; message.textContent = `Preserved ${row.pack_id} ${row.version}. Integrity checked; archive-only until you review and add it to the private shelf.`;
     await loadPacks();
+    await loadContentShelf();
   } catch (error) {
     message.className = 'msg bad'; message.textContent = `Archive not imported: ${error.message}`;
   } finally { button.disabled = false; }
@@ -520,7 +709,31 @@ async function savePack(digest, button) {
   } finally { button.disabled = false; }
 }
 
-const authorState = {draft:null, savedText:'', dirty:false, busy:false, refreshRequired:false, generation:0, catalogue:null, refresh:0};
+async function publishPreservedArchive(digest, button) {
+  const key = `archive:${digest}`;
+  if (shelfState.publishPending.has(key) || button?.disabled) return;
+  if (!shelfReady()) { shelfMessage('Set up an available private shelf before adding an archive.', true); return; }
+  if (!shelfAcknowledged()) { shelfMessage('Check the authorship/distribution acknowledgement before adding a pack to the shelf.', true); return; }
+  shelfState.publishPending.add(key);
+  if (button) { button.disabled = true; button.textContent = 'Shelving…'; }
+  updateShelfControls();
+  try {
+    const result = await api('/content-shelf/publish', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({archive_sha256:digest, acknowledge_authorship:true}),
+    });
+    await Promise.all([loadContentShelf(), loadPacks()]);
+    shelfMessage(result.replayed ? 'This exact archive was already on the private shelf.' : 'Pack added to the private shelf. Story Studio may discover it; nothing was installed.');
+  } catch (error) {
+    shelfMessage(`Shelving refused: ${error.message}. The preserved archive remains unchanged.`, true);
+  } finally {
+    shelfState.publishPending.delete(key);
+    if (button) { button.disabled = false; button.textContent = 'Review and add to shelf'; }
+    updateShelfControls();
+  }
+}
+
+const authorState = {draft:null, savedText:'', dirty:false, busy:false, refreshRequired:false, generation:0, catalogue:null, refresh:0, draftListLoaded:false};
 const authorNode = id => document.getElementById('author-' + id);
 function authorMessage(text, failed=false) {
   authorNode('message').textContent = text;
@@ -551,11 +764,33 @@ function authorEdited() {
   authorMessage(authorState.dirty ? 'Unsaved changes. Save draft to preserve them, even if the JSON is unfinished.' : 'No unsaved changes.');
   authorControls();
 }
+function authorSyncDraftState(rows) {
+  const openDraft = authorState.draft;
+  if (!openDraft?.id) return null;
+  const authoritative = rows.find(draft => draft.id === openDraft.id);
+  if (!authoritative) return null;
+  const wasDirty = authorState.dirty;
+  const openText = authorNode('document').value;
+  const savedText = authorState.savedText;
+  authorState.draft = {...openDraft, ...authoritative};
+  if (wasDirty) {
+    authorState.savedText = savedText;
+    authorNode('document').value = openText;
+  } else {
+    authorState.savedText = authoritative.document_text;
+    authorNode('document').value = authoritative.document_text;
+  }
+  authorState.dirty = authorNode('document').value !== authorState.savedText;
+  authorControls();
+  return authoritative;
+}
 async function loadAuthoring() {
   const refresh = ++authorState.refresh;
+  authorState.draftListLoaded = false;
   const results = await Promise.allSettled([api('/pack-authoring'), api('/pack-authoring/drafts')]);
   if (refresh !== authorState.refresh) return;
   const [catalogue, drafts] = results;
+  authorState.draftListLoaded = drafts.status === 'fulfilled';
   authorState.catalogue = catalogue.status === 'fulfilled' ? catalogue.value : null;
   const c = authorState.catalogue;
   authorNode('prerequisites').textContent = !c ? `Cannot read authoring tools: ${catalogue.reason.message}. Refresh to retry.` :
@@ -570,9 +805,51 @@ async function loadAuthoring() {
   authorNode('template').innerHTML = '<option value="">Blank Topic Pack</option>' + (c?.templates || []).map(t=>`<option value="${esc(t.key)}">${esc(t.name)}</option>`).join('');
   if (c?.templates?.some(t=>t.key === template)) authorNode('template').value = template;
   authorNode('template').disabled = !c?.available;
+  const draftRows = drafts.status === 'fulfilled' ? (drafts.value.drafts || []) : [];
   authorNode('drafts').innerHTML = drafts.status === 'rejected' ? `<p>Cannot read saved drafts: ${esc(drafts.reason.message)}. Refresh to retry.</p>` :
-    (drafts.value.drafts || []).map(d => /^[a-f0-9]{64}$/.test(d.id) ? `<button onclick="openAuthorDraft('${d.id}')">${esc(d.pack_id)} · ${esc(d.version)} — ${d.sealed ? 'Candidate' : 'Draft'}</button>` : '').join('') || '<p>No private drafts yet.</p>';
+    draftRows.map(d => /^[a-f0-9]{64}$/.test(d.id) ? `<div class="row">
+      <button onclick="openAuthorDraft('${d.id}')">${esc(d.pack_id)} · ${esc(d.version)} — ${d.sealed ? 'Candidate' : 'Draft'}</button>
+      <button class="sm" data-shelf-publish="draft:${d.id}" data-shelf-eligible="true" ${typeof shelfState === 'undefined' || !shelfReady() || !shelfAcknowledged() ? 'disabled' : ''} onclick="publishAuthorDraft('${d.id}',${Number.isInteger(d.revision) ? d.revision : 0},this)">Add to shelf</button>
+    </div>` : '').join('') || '<p>No private drafts yet.</p>';
+  if (drafts.status === 'fulfilled') authorSyncDraftState(draftRows);
   authorControls();
+}
+async function publishAuthorDraft(id, revision, button) {
+  const key = `draft:${id}`;
+  if (shelfState.publishPending.has(key) || button?.disabled) return;
+  if (!shelfReady()) { authorMessage('Set up an available private shelf before adding a draft.', true); return; }
+  if (!shelfAcknowledged()) { authorMessage('Check the authorship/distribution acknowledgement before adding a draft to the shelf.', true); return; }
+  if (authorState.draft?.id === id && authorState.dirty) { authorMessage('Save the current draft before adding it to the shelf; the editor is unchanged.', true); return; }
+  shelfState.publishPending.add(key);
+  if (button) { button.disabled = true; button.textContent = 'Shelving…'; }
+  updateShelfControls();
+  try {
+    const result = await api(`/content-shelf/drafts/${encodeURIComponent(id)}/publish`, {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({revision, acknowledge_authorship:true}),
+    });
+    await Promise.all([loadContentShelf(), loadAuthoring()]);
+    authorMessage(result.replayed ? 'This exact draft candidate was already on the private shelf.' : 'Draft added to the private shelf. It was not installed.');
+  } catch (error) {
+    let refreshed = false;
+    try {
+      await loadAuthoring();
+      refreshed = authorState.draftListLoaded;
+    } catch (_) {}
+    const selected = refreshed && authorState.draft?.id === id ? authorState.draft : null;
+    const stateDetail = !refreshed ?
+      'Refresh the saved draft list to inspect its authoritative status; the open editor was not changed.' :
+      selected?.sealed ?
+      'The saved draft is now sealed; the open editor text was preserved and is not submitted.' :
+      selected ?
+      'The saved draft list was refreshed; the open editor text was preserved.' :
+      'The saved draft list was refreshed, but the selected draft was not returned; the open editor text was preserved.';
+    authorMessage(`Shelving refused: ${error.message}. Add to shelf creates an immutable export candidate even if qualification is refused. ${stateDetail}`, true);
+  } finally {
+    shelfState.publishPending.delete(key);
+    if (button) { button.disabled = false; button.textContent = 'Add to shelf'; }
+    updateShelfControls();
+  }
 }
 async function openAuthorDraft(id) {
   if (authorState.busy || (authorState.dirty && !confirm('Discard unsaved draft changes and open another draft?'))) return;

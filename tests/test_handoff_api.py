@@ -173,7 +173,11 @@ class HandoffAPI(unittest.TestCase):
             client.close()
 
     def test_content_compatibility_routes_never_invent_ownership(self):
+        # Unconfigured delivery must win over request-shape validation: a missing
+        # story_version or body must not turn into 422/415 instead of the
+        # documented CONTENT_STORE_NOT_CONNECTED.
         for method, route in (("GET", "account"), ("GET", "receipts"), ("GET", "products"),
+                              ("GET", "shelves"), ("GET", "public-key"),
                               ("POST", "quotes"), ("POST", "purchases"), ("POST", "downloads")):
             response = self.client.request(method, "/v1/content/" + route, headers=self.headers)
             self.assertEqual(response.status_code, 503)

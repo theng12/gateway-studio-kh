@@ -15,6 +15,8 @@ data/gateway.sqlite3
 data/gateway.sqlite3-*
 data/artifacts/
 data/content-library/
+data/content-authoring/
+data/content-delivery/
 data/voice-library/
 
 # Menu bar app build output

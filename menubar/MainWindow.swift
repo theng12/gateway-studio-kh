@@ -369,7 +369,7 @@ final class MainWindow: NSObject, NSTableViewDataSource, NSTableViewDelegate {
     private static let order = [
         "overview",
         "audio", "subtitle", "image", "music", "video", "chat",
-        "jobs", "voices", "models", "providers", "fleet", "settings", "pack library",
+        "jobs", "voices", "models", "providers", "fleet", "settings", "content packs",
     ]
 
     /// The View menu, in sidebar order: (title, key equivalent).
@@ -384,7 +384,7 @@ final class MainWindow: NSObject, NSTableViewDataSource, NSTableViewDelegate {
         ("Audio", ""), ("Subtitle", ""), ("Image", ""),
         ("Music", ""), ("Video", ""), ("Chat", ""),
         ("Jobs", "2"), ("Voices", "3"), ("Models", "4"),
-        ("Providers", "5"), ("Fleet", "6"), ("Pack Library", ""),
+        ("Providers", "5"), ("Fleet", "6"), ("Content Packs", ""),
     ]
 
     /// A sidebar row is either a group header or a section.
@@ -428,7 +428,7 @@ final class MainWindow: NSObject, NSTableViewDataSource, NSTableViewDelegate {
     }
 
     func sectionIndex(named name: String) -> Int? {
-        let needle = name.lowercased()
+        let needle = name.lowercased() == "pack library" ? "content packs" : name.lowercased()
         if let direct = Self.order.firstIndex(of: needle) { return direct }
         return sections.firstIndex { $0.title.lowercased() == needle }
     }

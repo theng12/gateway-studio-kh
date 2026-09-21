@@ -34,3 +34,12 @@ test('library retry clears its old read error and blocks unavailable downloads',
 test('the full console script remains valid JavaScript', () => {
   new vm.Script(source.match(/<script>([\s\S]*)<\/script>/)[1]);
 });
+
+test('table row hover follows the appearance instead of a fixed dark literal', () => {
+  // A hardcoded dark background outside the dark media query made light-appearance
+  // rows black-on-black. Every surface must come from a Canvas/CanvasText token.
+  const rule = source.match(/tbody tr:hover\s*\{([^}]*)\}/);
+  assert.ok(rule, 'the table hover rule must exist');
+  assert.doesNotMatch(rule[1], /#[0-9a-fA-F]{3,8}\b/, 'hover must not use a fixed hex colour');
+  assert.match(rule[1], /color-mix\(|var\(--/, 'hover must use a theme token');
+});

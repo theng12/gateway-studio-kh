@@ -17,9 +17,15 @@ apply here and to delegated workers.
   Native tests use unique disposable UserDefaults domains, never production.
 - Admin artifact URLs are extensionless: local files use stated media types,
   with authenticated same-origin downloads. Do not derive file types from URLs.
-- Pack Library is an archive shelf, not ownership, commerce or installation.
-  Preserve Story Studio receipt/signature/Keychain checks. Unconnected commerce
-  returns `CONTENT_STORE_NOT_CONNECTED`, never invented fulfilled purchases.
+- Preserved Content Pack archives are not ownership or installation. The private
+  Content Packs publisher is a separate, explicitly initialized authority for
+  newly reserved local identities only; never reissue historical Store packs.
+  Preserve Story Studio receipt/signature/Keychain checks. Unconfigured delivery
+  returns `CONTENT_STORE_NOT_CONNECTED`; quotes and purchases remain unavailable.
+  Private-owner entitlements have no purchase ID or fabricated purchase receipt.
+  Missing signing identity fails closed, never silently regenerates. Download
+  URLs are absolute same-Gateway-origin (the Content Store protocol exception
+  to relative generation-artifact URLs), with exact-release short-lived grants.
 - The real-Hub fleet suite requires explicit `GATEWAY_ALLOW_LIVE_GENERATION=1`;
   do not include it in offline smoke testing. Keep GitHub Actions disabled.
 
@@ -50,7 +56,9 @@ rediscover.
   would disable every model on a stale inventory); the honest number is
   `inventoryAgeMs`. See the freshness bullet in Working rules.
 - **`finish_reason` must be a clean stop** — `length` is refused as truncated.
-- **Artifact URLs stay on the API origin** (relative paths only).
+- **Generation artifact URLs stay on the API origin** (relative paths only).
+  Content Pack signed-download URLs use the absolute same-origin Store contract
+  described above; never derive their origin from untrusted Host headers.
 ## Publish what is known, and nothing else
 
 **Story Studio's notes:** *never let "the answer is none" and "I could not work

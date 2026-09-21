@@ -445,18 +445,48 @@ Jobs lists all output variations, with authenticated local-file downloads and
 pin/unpin controls. Retention protects inputs referenced by unfinished or
 recovery-held jobs and refuses pruning if their protection cannot be read.
 
-Pack Library preserves validated, content-addressed `.sspack` archives under
-private Application Support. Its checks establish archive safety and integrity,
-**not ownership, signature trust, compatibility or installation**. It does not
-make transferred packs usable in Gateway or bypass Story Studio's installer.
-The commerce routes explicitly return `CONTENT_STORE_NOT_CONNECTED` until a
-real store authority is connected; they never invent successful purchases.
-Legacy bundle-only transfer archives may be rejected by this conservative
-standalone archive importer; keep their original transfer copies.
+#### Content Packs: author, review, shelve, download
+
+Open **Content Packs** in the native app, then open its browser page. Gateway
+is the private workshop and shelf; Story Studio discovers shelved packs through
+its existing Gateway URL and downloads/installs only when you choose it. No
+second Store server or model-provider key is needed for content delivery.
+
+Enable the private shelf **before reserving new pack identities**, then use
+the page's authoring brief in a dedicated session. The
+[private authoring guide](docs/content-packs-authoring.md) describes that handoff.
+An imported `.sspack` is preserved first; **Add to shelf** is a separate,
+explicit action that verifies the real Story schema and registry receipt and
+requires acknowledgement of authorship/distribution rights. Draft export alone
+does not publish. Versions are immutable: retries preserve identical bytes,
+and changes require a new reserved version.
+
+This delivery version supports **Series Formula, Topic Pack, Visual Style and
+Thumbnail Recipe**. Other standalone kinds require a coordinated Story delivery
+update; Gateway refuses them rather than advertising an unusable pack.
+
+Setup creates a new private owner account and signing identity, with a snapshot
+of historical registry identities. Only newly reserved eligible identities may
+be shelved. Back up the private shelf identity together with its releases; a
+missing or damaged identity is a recovery error, not an invitation to generate
+a replacement. Story keeps its normal account/origin-bound signatures,
+OS-backed key anchors, compatibility checks and installer. There is no checkout:
+private-owner entitlements have no purchase ID and no invented purchase receipt.
+Quotes and purchases remain unavailable; an unconfigured shelf reports
+`CONTENT_STORE_NOT_CONNECTED`.
+
+**Preserved archives are separate from shelved releases.** Archive safety and
+SHA-256 checks alone do not establish ownership or make historical Store packs
+installable. Existing Store packs retain their original trust and licenses;
+the new private authority cannot restore, redownload or update them. Do not
+re-sign, rename or reissue transferred packs to bypass that boundary. Existing
+installed packs still require their original valid offline trust. Keep original
+transfer copies, including legacy bundle-only archives that the conservative
+standalone archive importer may reject.
 
 #### Private Topic Pack drafts and candidates
 
-The Pack Library's **Author a Topic Pack** section uses a local Story Studio
+The Content Packs page's **Drafts** section uses a local Story Studio
 source checkout's actual registry, schema and archive builder. It requires Node
 and that checkout's locked dependencies (`npm ci --ignore-scripts --no-audit
 --no-fund` in the Story checkout). Set `GATEWAY_STORY_SOURCE` in Gateway's local
@@ -483,6 +513,10 @@ succeeds. If either the saved hash metadata or its exact candidate bytes are
 missing or damaged, Gateway refuses recovery rather than rebuilding different
 bytes under that identity. Keep the private draft and use a new reservation/version;
 do not delete candidate metadata to force another export.
+
+Adding a draft to the shelf also exports an immutable candidate first. A later
+publication refusal does not undo that export or discard its bytes; inspect the
+refreshed draft/candidate state before deciding whether a new version is needed.
 
 Drafts and candidates live in private `DATA_DIR/content-authoring`, separate
 from the imported archive shelf and transfer sources. Saved drafts remain

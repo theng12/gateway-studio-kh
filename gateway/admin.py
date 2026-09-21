@@ -1299,6 +1299,56 @@ def content_library() -> dict[str, Any]:
             "notice": "Archive integrity is not ownership or installation approval. Story Studio must verify receipts/signatures and compatibility."}
 
 
+@router.get("/api/content-shelf", dependencies=[Depends(require_admin)])
+def content_shelf() -> dict[str, Any]:
+    from . import content_delivery
+    return content_delivery.status()
+
+
+@router.post("/api/content-shelf/setup", dependencies=[Depends(require_admin)])
+async def content_shelf_setup(request: Request) -> Any:
+    from . import content_delivery
+    body = await _authoring_body(request, {"acknowledge": bool})
+    if isinstance(body, Response):
+        return body
+    if body["acknowledge"] is not True:
+        return _error(422, "Explicit acknowledgement is required.", "CONTENT_AUTHORITY_ACKNOWLEDGEMENT_REQUIRED")
+    try:
+        return await run_in_threadpool(content_delivery.setup)
+    except content_delivery.DeliveryError as exc:
+        return _error(exc.status, str(exc), exc.code)
+
+
+@router.post("/api/content-shelf/publish", dependencies=[Depends(require_admin)])
+async def content_shelf_publish(request: Request) -> Any:
+    from . import content_delivery
+    body = await _authoring_body(request, {"archive_sha256": str, "acknowledge_authorship": bool})
+    if isinstance(body, Response):
+        return body
+    if body["acknowledge_authorship"] is not True:
+        return _error(422, "Explicit authorship and distribution acknowledgement is required.",
+                      "CONTENT_AUTHORSHIP_ACKNOWLEDGEMENT_REQUIRED")
+    try:
+        return await run_in_threadpool(content_delivery.publish_archive, body["archive_sha256"])
+    except content_delivery.DeliveryError as exc:
+        return _error(exc.status, str(exc), exc.code)
+
+
+@router.post("/api/content-shelf/drafts/{draft_id}/publish", dependencies=[Depends(require_admin)])
+async def content_shelf_publish_draft(draft_id: str, request: Request) -> Any:
+    from . import content_delivery
+    body = await _authoring_body(request, {"revision": int, "acknowledge_authorship": bool})
+    if isinstance(body, Response):
+        return body
+    if body["acknowledge_authorship"] is not True:
+        return _error(422, "Explicit authorship and distribution acknowledgement is required.",
+                      "CONTENT_AUTHORSHIP_ACKNOWLEDGEMENT_REQUIRED")
+    try:
+        return await run_in_threadpool(content_delivery.publish_draft, draft_id, body["revision"])
+    except content_delivery.DeliveryError as exc:
+        return _error(exc.status, str(exc), exc.code)
+
+
 @router.post("/api/content-library/import", dependencies=[Depends(require_admin)])
 async def import_content_archive(request: Request) -> Any:
     from . import content_packs
