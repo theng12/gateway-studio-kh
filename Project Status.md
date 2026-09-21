@@ -967,6 +967,31 @@ preserved archives, each rendered as its own card.
   library suite pass; and both tabs were checked as rendered screenshots against the
   live shelf. Build `e32b0de-202609211938`, promoted.
 
+## 10y. The preserved archives are load-bearing; the clutter was elsewhere (2026-09-22)
+
+The owner asked whether the "Preserved archives" could be cleaned out. **They
+cannot: they are the packs.** The shelf state holds metadata and a SHA-256; the
+bytes Story downloads live only in `data/content-library/`. Proof already on
+record — hiding the Wars archive (moving **one** file) made that product vanish from
+the catalogue. Deleting the library would empty all 140 products and fail every
+download.
+
+- Size and shape: **148 archives / 155 MB** — thumbnail-recipe 36 (111 MB, the
+  bulk), visual-style 45 (38 MB), topic-pack 47 (6.6 MB), series-formula 21 (0.1 MB).
+- **One genuinely dead entry was removed**: an orphan archive for the historical
+  `inked-crosshatch-storybook` identity, left by the mis-targeted bump whose publish
+  the shelf rightly refused. Nothing referenced it; the library is now **148
+  entries, 0 unreferenced**, with 140 products still live.
+- **The real clutter was `_trash/superseded-rollback-*.app`** — every promote
+  rotated the previous rollback there instead of deleting it, so 14 dead app builds
+  (92 MB each) had accumulated. Pruned to **one** fallback beyond the sanctioned
+  rollback in `backups/rollback-20260921/`: `_trash` went **1.8 GB → 678 MB**.
+  `_trash/transfer-staging/` (586 MB) is deliberately kept — it is the original
+  Store archive set and the recovery source for the whole re-authoring.
+
+Rollback labels were checked while pruning: each `.app` contains exactly the build
+its filename claims.
+
 ## 11. Exact next action / resumable handoff
 
 - Branch `codex/content-pack-delivery`: promoted app code at `97bb3a5`
