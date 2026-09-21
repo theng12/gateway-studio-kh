@@ -5,24 +5,32 @@ session that fixed the story content-route regression (P0) and stood up the
 two-instance workflow. Work through the packets in order; the owner promotes test
 work to the working instance explicitly.
 
-State this plan starts from: working instance `/Applications/gateway-kh.app`
-build `b12550f-202609201849` on port 8000 (real profile); test instance on port
-8100 running the worktree source (Content Packs work, all local plans/checks
-uncommitted). Full evidence: `Project Status.md`.
+State this plan starts from: working instance `/Applications/gateway-kh.app`,
+promoted 2026-09-21 to build `5f94b4a-202609210554` on port 8000 (real profile);
+test instance on port 8100 running the same committed source. Full evidence:
+`Project Status.md`.
+
+**Execution log.**
+- 2026-09-21: S1 committed (`5f94b4a`), S2 fixed (light-mode hover + guard),
+  S8 promoted to the working instance and verified. Old app-version backups and
+  build outputs consolidated to `backups/rollback-20260921/`.
+- S9: the owner asked to remove the old historical material entirely; the
+  586 MB `transfer-staging/` archives are irreplaceable, so deletion awaits an
+  explicit scope confirmation.
 
 ## Packet index
 
 | ID | Kind | Priority | Summary |
 |---|---|---|---|
-| S1 | defect | high | Commit the verified work so it cannot be lost |
+| S1 | defect | high | ~~Commit the verified work so it cannot be lost~~ — **done 2026-09-21 (`5f94b4a`)** |
 | S2 | defect | medium | ~~Light-mode table hover is unreadable~~ — **done 2026-09-21** |
 | S3 | perf | medium | Content authority is read twice per request |
 | S4 | verification | high | Native UI (`test_ui.py`) on the promoted build |
 | S5 | verification | medium | Real generation through the working instance |
 | S6 | verification | low | Real-Hub fleet suite, knowingly |
 | S7 | verification | low | Code-only Graphify refresh |
-| S8 | decision | high | Promote Content Packs build to working |
-| S9 | decision | medium | Legacy Store restore stays archive-only? |
+| S8 | decision | high | ~~Promote Content Packs build to working~~ — **done 2026-09-21 (`5f94b4a-202609210554`)** |
+| S9 | decision | medium | Historical Store material: owner wants it removed; scope confirmation pending |
 | S10 | decision | medium | Back up the private shelf signing identity |
 | S11 | scope | low | Content kinds beyond the four standalone kinds |
 | S12 | scope | low | Keyboard-access pass on the admin page |

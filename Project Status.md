@@ -25,9 +25,10 @@ through Story Studio's real installer.
 ## 1b. Two-instance workflow (owner-facing) — added 2026-09-21
 
 - **Working instance** — what Story Studio uses: `/Applications/gateway-kh.app`,
-  build `b12550f-202609201849`, port **8000**, real profile
-  `~/Library/Application Support/gateway-kh/`. Healthy and untouched. It is only
-  changed when the owner explicitly says so.
+  **promoted 2026-09-21 to build `5f94b4a-202609210554`**, port **8000**, real
+  profile `~/Library/Application Support/gateway-kh/`. Signature valid; profile
+  verified byte-identical across the promotion; rollback bundle at
+  `backups/rollback-20260921/`.
 - **Test instance** — where new work is verified: `test-instance/` in the
   container root, source `worktrees/handoff-completion`, port **8100**, isolated
   profile (`test-instance/support`, `test-instance/data`), no real credentials,
@@ -261,49 +262,55 @@ Deliberately not run, with reason:
 
 ## 8. Decisions, limitations, blockers
 
-- Development stays in the existing `worktrees/handoff-completion` worktree on
-  `codex/content-pack-delivery`; the owner's `main` checkout is untouched.
-- The branch was **not** fast-forwarded to `main` (PR #7 is unrelated UI version
-  display). Recorded rather than silently merged or rebased.
-- Nothing was committed, pushed, merged, installed, deployed or migrated.
-  No credential was read, rotated or extracted. No paid call or real generation.
+- Development stays in `worktrees/handoff-completion`; the owner's `main` checkout
+  is untouched. The branch was fast-forwarded to `main` (PR #7) and the verified
+  work committed as `5f94b4a`.
+- No push, deploy, credential change, paid call or destructive migration occurred.
 - `[INHERITED]` reports in `_handoffs/2026-09-20-*` are evidence, not truth; the
   `[MEASURED]` tables here supersede them where they disagree.
-- Legacy transferred Store packs remain archive-only by design; this work never
-  reissues, re-signs or claims ownership of them.
+- Legacy transferred Store packs remain archive-only by design, pending the
+  owner's cleanup decision in section 10.
 
-### Genuine blocker
+## 9. Two-instance state (current)
 
-Installation. The feature is only usable after the verified build replaces the
-installed app (or the owner runs the worktree source). Exact safe steps and
-rollback:
+- **Working:** `/Applications/gateway-kh.app` build `5f94b4a-202609210554`,
+  port 8000, signature valid, profile byte-identical. Story Studio's endpoint
+  unchanged.
+- **Test:** `test-instance/` on port 8100, isolated profile, running the same
+  committed source. `run.sh` / `status.sh` / `stop.sh`.
+- **Rollback:** `backups/rollback-20260921/` (previous bundle, profile hash
+  record, rendered UI evidence).
 
-1. Authorize the replacement of `/Applications/gateway-kh.app`.
-2. Quit the running app; confirm port 8000 is free and the gateway pid changes
-   (kill by PID, never `pkill -f`).
-3. Back up the current installed bundle (a fresh pre-install backup exists at
-   `backups/pre-authoring-install-20260921-DVfK1s`).
-4. Copy `worktrees/handoff-completion/menubar/build/gateway-kh.app` into
-   `/Applications/`, start it, and verify `/health` reports build
-   `b12550f-202609210501` with strict/deep signature valid.
-5. Rollback: restore the backed-up bundle and relaunch.
+## 10. Promotion record — 2026-09-21
 
-No owner input is needed to finish source work; this is the only blocked step.
+- Commit `5f94b4a` "Add private Content Packs shelf and Story delivery" on
+  `codex/content-pack-delivery`, fast-forwarded from `b12550f` to `main`
+  `736d7b0` first. Worktree clean after commit.
+- Full gate on the committed snapshot: e2e 521/521, content delivery 15/15, real
+  Story integration 1/1, handoff contract 11/11, content library 9/9, pack
+  authoring 21/5/1, audit/job/recovery/retention/relocation/native/packaging,
+  UI 7/3/10/9/12 — all exit 0.
+- Build `sh menubar/build.sh --no-install` → `5f94b4a-202609210554`, arm64,
+  ad-hoc signature valid.
+- Promotion: quit the app, freed port 8000 by PID, `ditto` the verified bundle
+  into `/Applications`, relaunch. `/health` reports `5f94b4a-202609210554`
+  (new pid `81547`); strict signature still valid after startup; `.env`,
+  `menubar.json`, `voices.json`, `models_cache.json` and `model-limits.local.json`
+  byte-identical to before.
+- Cleanup: old app-version backups and both `menubar/build` outputs removed and
+  consolidated to the single rollback folder (92 MB). Container ~1.6 GB → ~982 MB.
+- Historical transfer archives (`transfer-staging/`, 586 MB) were **not** deleted:
+  they are irreplaceable and await an explicit owner decision.
 
-## 9. Exact next action / resumable handoff
+## 11. Exact next action / resumable handoff
 
-State to resume from:
-
-- Branch `codex/content-pack-delivery` at `b12550f`, worktree
-  `worktrees/handoff-completion`, all work uncommitted.
-- Changed files: see `git status` in section 3 and the diff at
-  `backups/pre-recovery-20260921-115619/tracked-modifications.patch`.
-- Last verification: section 7 (all green) after the P0 fix.
-- Running processes owned by this session: none. The pre-existing live gateway
-  (pid 52952, build `b12550f-202609201849`) and Studio Hub workers were not
-  started or stopped.
-- Owned fixtures: none remaining (UI fixture stopped and its temp dir removed).
-
-Next action: request owner authorization to install the verified build (P5). If
-declined or deferred, the source change set is complete and reviewable as-is; the
-only remaining verification gap is a keyboard-access pass on the rendered page.
+- Branch `codex/content-pack-delivery`: promoted code at `5f94b4a`, documentation
+  commit on top; worktree clean.
+- Working instance promoted, healthy and verified; test instance running on 8100.
+- Stabilization plan `docs/superpowers/plans/2026-09-21-stabilization-plan.md`:
+  S1, S2 and S8 done. Next unblocked packet: S3 (authority read cost), then S12.
+- Pending owner decision: delete `transfer-staging/` (586 MB of historical Store
+  archives and authoring sources) or keep it.
+- Verification gaps needing the owner or environment: S4 native UI suite on the
+  promoted build, S5 real cloud + local generation, S6 real-Hub fleet suite,
+  S7 code-only Graphify refresh, S12 keyboard-access pass.
