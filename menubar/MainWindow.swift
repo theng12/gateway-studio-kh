@@ -386,8 +386,8 @@ final class MainWindow: NSObject, NSTableViewDataSource, NSTableViewDelegate {
         ("Overview", "1"),
         ("Audio", ""), ("Subtitle", ""), ("Image", ""),
         ("Music", ""), ("Video", ""), ("Chat", ""),
-        ("Jobs", "2"), ("Voices", "3"), ("Models", "4"),
-        ("Providers", "5"), ("Fleet", "6"), ("Content Packs", ""),
+        ("Jobs", "2"), ("Voices", "3"), ("Models", "4"), ("Content Packs", ""),
+        ("Providers", "5"), ("Fleet", "6"),
     ]
 
     /// A sidebar row is either a group header or a section.
@@ -398,28 +398,29 @@ final class MainWindow: NSObject, NSTableViewDataSource, NSTableViewDelegate {
     /// *"an empty 'Create' heading would have been a lie dressed as navigation"* —
     /// because every page here was management. It is not empty now: the six lanes
     /// generate for real, so the heading names a group that exists.
+    ///
+    /// **"Library & app" was doing three jobs at once** — things you keep (Jobs,
+    /// Voices, Models), the machines work runs on (Providers, Fleet), and the app's
+    /// own settings — with Content Packs stranded after Settings. Split into
+    /// Library, Connection and App so a row sits under a heading that answers the
+    /// same question it does.
     private enum SidebarRow {
         case header(String)
         case section(Int)
     }
 
     private static let layout: [SidebarRow] = [
-        .section(0),
+        .section(0),                                    // Overview
         .header("Create"),
-        .section(1),
-        .section(2),
-        .section(3),
-        .section(4),
-        .section(5),
-        .section(6),
-        .header("Library & app"),
-        .section(7),
-        .section(8),
-        .section(9),
-        .section(10),
-        .section(11),
-        .section(12),
-        .section(13),
+        .section(1), .section(2), .section(3),          // Audio, Subtitle, Image
+        .section(4), .section(5), .section(6),          // Music, Video, Chat
+        .header("Library"),
+        .section(7), .section(8), .section(9),          // Jobs, Voices, Models
+        .section(13),                                   // Content Packs
+        .header("Connection"),
+        .section(10), .section(11),                     // Providers, Fleet
+        .header("App"),
+        .section(12),                                   // Settings
     ]
 
     private var rowForSection: [Int: Int] {

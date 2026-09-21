@@ -30,6 +30,10 @@ port, so there is never a question of which service answered.
 
 ## Smaller things
 
+- The sidebar is grouped by what each page is for now — **Create** (the six
+  lanes), **Library** (Jobs, Voices, Models, Content Packs), **Connection**
+  (Providers, Fleet) and **App** (Settings) — instead of one long "Library & app"
+  group with Content Packs stranded at the bottom.
 - **Providers** cards no longer clip their buttons in a narrow window, and a
   **No key** filter plus a live count keeps the ones you still need to configure
   in view — finished providers drop out.

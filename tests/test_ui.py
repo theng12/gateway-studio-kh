@@ -43,14 +43,16 @@ SIDEBAR = [
     "Music",
     "Video",
     "Chat",
-    "LIBRARY & APP",
+    "LIBRARY",
     "Jobs",
     "Voices",
     "Models",
+    "Content Packs",
+    "CONNECTION",
     "Providers",
     "Fleet",
+    "APP",
     "Settings",
-    "Content Packs",
 ]
 
 #: Sections reachable from the View menu, in row order:
@@ -58,9 +60,8 @@ SIDEBAR = [
 #: it is opened with ⌘, or by clicking its sidebar row, and is checked in
 #: section 6 rather than duplicated in the View menu.
 #:
-#: Rows are 1-based, because that is what the accessibility layer counts. The
-#: Create lanes sit between Overview and the "Library & app" group, which is
-#: Studio Hub's grouping, so every management row shifted down by seven.
+#: Rows are 1-based, because that is what the accessibility layer counts, and the
+#: grouping is Create / Library / Connection / App.
 SECTIONS = [
     (1, "Overview", "gateway-kh — Overview"),
     (3, "Audio", "gateway-kh — Audio"),
@@ -72,9 +73,9 @@ SECTIONS = [
     (10, "Jobs", "gateway-kh — Jobs"),
     (11, "Voices", "gateway-kh — Voices"),
     (12, "Models", "gateway-kh — Models"),
-    (13, "Providers", "gateway-kh — Providers"),
-    (14, "Fleet", "gateway-kh — Fleet"),
-    (16, "Content Packs", "gateway-kh — Content Packs"),
+    (13, "Content Packs", "gateway-kh — Content Packs"),
+    (15, "Providers", "gateway-kh — Providers"),
+    (16, "Fleet", "gateway-kh — Fleet"),
 ]
 
 failures: list[str] = []
@@ -792,8 +793,9 @@ def main() -> int:
     check("and a management row still selects its section",
           window_title() == "gateway-kh — Jobs", window_title())
 
-    # The row that the owner could not find before it existed.
-    sidebar_select(15)
+    # The row that the owner could not find before it existed. Settings is now the
+    # last row, under its own "App" heading.
+    sidebar_select(18)
     time.sleep(2.0)
     check("Settings is reachable by clicking its sidebar row",
           window_title() == "gateway-kh — Settings", window_title())
