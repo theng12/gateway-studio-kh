@@ -26,6 +26,11 @@ test instance on port 8100 running the same committed source. Full evidence:
   filter (All / Key set / No key) with a keyless count; the Voices bulk controls
   moved above the table with Select all shown / Select none. The native Voices
   layout still needs the Accessibility-enabled S4 run to confirm screen geometry.
+- S4 completed on the promoted build: 127/127 UI checks pass after fixing test
+  drift (Content Packs sidebar row, stale Jobs heading, empty-Jobs skip).
+- S7 completed: code-only Graphify refresh (2692 nodes / 6795 edges).
+- S10 completed: identity backup script, its test suite, and a verified
+  backup → damage → restore drill on an isolated profile.
 
 ## Packet index
 
@@ -40,7 +45,7 @@ test instance on port 8100 running the same committed source. Full evidence:
 | S7 | verification | low | Code-only Graphify refresh |
 | S8 | decision | high | ~~Promote Content Packs build to working~~ — **done 2026-09-21 (`5f94b4a-202609210554`)** |
 | S9 | decision | medium | ~~Historical Store material~~ — **done 2026-09-21: moved to `_trash/`** |
-| S10 | decision | medium | Back up the private shelf signing identity |
+| S10 | decision | medium | ~~Back up the private shelf signing identity~~ — **done 2026-09-21** |
 | S11 | scope | low | Content kinds beyond the four standalone kinds |
 | S12 | scope | low | Keyboard-access pass on the admin page |
 
@@ -250,6 +255,18 @@ automatically, and `README.md` only tells the owner to do it.
 
 **Acceptance.** Documented procedure plus a verified restore drill on the test
 instance.
+
+**Done 2026-09-21.** Added `scripts/backup_content_authority.py`: it copies the
+three authority files at mode `0600`, verifies each by SHA-256, and refuses to
+overwrite an existing backup or to copy a missing/world-readable identity. Its
+rules are covered by `tests/test_content_authority_backup.py` (4/4). A real
+restore drill ran on an isolated profile against the actual Story registry
+(read-only): setup → backup → delete `signing-key.pem` (shelf reports
+unavailable) → copy the backup back → shelf reports configured and available. The
+procedure is documented in `docs/content-packs-authoring.md`. The optional
+"never been backed up" warning was deliberately not added — it would need new
+durable state to be truthful, and the documented step is enough for a
+single-owner shelf.
 
 ## S11 — Content kinds beyond the four standalone kinds (low)
 

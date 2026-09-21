@@ -355,6 +355,19 @@ build `97bb3a5-202609210714`:
 - Command: `.venv/bin/python tests/test_ui.py` (drives the real app; needs
   Accessibility for the host process).
 
+## 10e. Private shelf identity backup (S10) — done 2026-09-21
+
+- `scripts/backup_content_authority.py` copies the three authority files
+  (`initialized`, `authority.json`, `signing-key.pem`) at mode `0600`, verifies
+  each copy by SHA-256, and refuses to overwrite an existing backup or copy a
+  missing/world-readable identity. It prints no secrets.
+- `tests/test_content_authority_backup.py` covers those rules (4/4).
+- Restore drill on an isolated profile against the real Story registry
+  (read-only): setup → backup → delete `signing-key.pem` (shelf reports
+  unavailable) → copy the backup back → shelf reports configured and available.
+- Procedure documented in `docs/content-packs-authoring.md`. The identity is
+  created only when the owner runs explicit shelf setup.
+
 ## 11. Exact next action / resumable handoff
 
 - Branch `codex/content-pack-delivery`: promoted code at `5f94b4a`, documentation
