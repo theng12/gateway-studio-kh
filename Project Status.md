@@ -25,9 +25,9 @@ through Story Studio's real installer.
 ## 1b. Two-instance workflow (owner-facing) — added 2026-09-21
 
 - **Working instance** — what Story Studio uses: `/Applications/gateway-kh.app`,
-  **promoted 2026-09-21 to build `c50c05e-202609211705`** (regular Dock app;
-  earlier `df2566c-…`, `e14d19e-…`, `97bb3a5-…`, `6ed4c44-…`, `5f94b4a-…`), port
-  **8787** (was 8000), bound `0.0.0.0`, real profile
+  **promoted 2026-09-21 to build `c74ae22-202609211712`** (regular Dock app;
+  earlier `c50c05e-…`, `df2566c-…`, `e14d19e-…`, `97bb3a5-…`, `6ed4c44-…`,
+  `5f94b4a-…`), port **8787** (was 8000), bound `0.0.0.0`, real profile
   `~/Library/Application Support/gateway-kh/`. Signature valid; profile verified
   byte-identical across promotion; single rollback at `backups/rollback-20260921/`.
 - **Test instance** — where new work is verified: `test-instance/` in the
@@ -518,6 +518,22 @@ app, and the light-mode fix).
 - `tests/test_ui.py` gained "the sidebar offers What's New beside the version";
   the suite passes **127/127** with 7 environment skips (no fleet controllers,
   and Studio Hub is not running on this Mac right now).
+
+## 10l. Sidebar regrouped (2026-09-21)
+
+The owner reported the sidebar grouping was muddled. "Library & app" was
+answering three questions at once — what you keep, where work runs, and the
+app's own settings — with Content Packs stranded after Settings.
+
+- New groups: **Create** (Audio…Chat) · **Library** (Jobs, Voices, Models,
+  Content Packs) · **Connection** (Providers, Fleet) · **App** (Settings).
+- The View menu follows the same order; ⌘1–⌘6 keep their original pages.
+- Build `c74ae22-202609211712`, promoted. `tests/test_ui.py` pins the new
+  grouping and rows: **132/132 pass** (2 environment skips, no fleet
+  controllers).
+- One run failed with a stray second window (`What's New`) mid-walk and the
+  titles cascaded; it reproduced clean manually and the next full run was green,
+  so it was interference rather than a defect.
 
 ## 11. Exact next action / resumable handoff
 
