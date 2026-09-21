@@ -81,10 +81,11 @@ final class JobsSection: NSObject, AppSection, NSTableViewDataSource, NSTableVie
 
     private let columns: [(id: String, title: String, width: CGFloat)] = [
         ("time", "When", 70),
-        ("modality", "Type", 88),
-        ("model", "Model", 190),
-        ("state", "State", 140),
-        ("outputs", "Outputs", 72),
+        ("modality", "Type", 80),
+        ("provider", "Provider", 130),
+        ("model", "Model", 180),
+        ("state", "State", 130),
+        ("outputs", "Outputs", 66),
     ]
 
     func activated() {
@@ -129,6 +130,10 @@ final class JobsSection: NSObject, AppSection, NSTableViewDataSource, NSTableVie
         table.usesAlternatingRowBackgroundColors = true
         table.allowsMultipleSelection = false
         table.style = .inset
+        // Share the width between columns: there is no horizontal scroller, so a
+        // wider list must truncate its cells rather than push them past a clipped
+        // edge at the window's minimum size.
+        table.columnAutoresizingStyle = .uniformColumnAutoresizingStyle
         for column in columns {
             let tableColumn = NSTableColumn(identifier: NSUserInterfaceItemIdentifier(column.id))
             tableColumn.title = column.title
@@ -326,6 +331,11 @@ final class JobsSection: NSObject, AppSection, NSTableViewDataSource, NSTableVie
             field.textColor = .secondaryLabelColor
         case "modality":
             field.stringValue = (string(job["modality"]) ?? "").capitalized
+        case "provider":
+            // The gateway resolves the display name; fall back to the id it stored
+            // so a provider removed from the registry still names the job.
+            field.stringValue = string(job["provider_name"]) ?? string(job["provider_id"]) ?? "?"
+            field.textColor = .secondaryLabelColor
         case "model":
             field.stringValue = string(job["model_name"]) ?? string(job["model_id"]) ?? "?"
         case "state":
