@@ -728,6 +728,16 @@ def main() -> int:
           "Running on " in summary and f":{gateway_port()}" in summary
           and "providers" in summary, summary[:160])
 
+    # The notes must be one click from every page, beside the build stamp the owner
+    # reads to answer "what am I running?". Only its presence is asserted here: the
+    # click opens a second window whose AX tree makes the press itself racy, and the
+    # same action is already exercised from the status menu.
+    sidebar_buttons = osa(wrap(
+        f"tell {MAIN_WINDOW} to tell splitter group 1 to return (title of every button)"
+    ))
+    check("the sidebar offers What's New beside the version",
+          "New" in sidebar_buttons, sidebar_buttons[:120])
+
     # Force the window small before visiting the pages, as AGENTS.md prescribes:
     # at the restored size a page with a too-tall required height simply fits, so
     # sizing to the frame the owner might actually use is what makes the check

@@ -25,9 +25,9 @@ through Story Studio's real installer.
 ## 1b. Two-instance workflow (owner-facing) — added 2026-09-21
 
 - **Working instance** — what Story Studio uses: `/Applications/gateway-kh.app`,
-  **promoted 2026-09-21 to build `df2566c-202609211649`** (regular Dock app;
-  earlier `e14d19e-…`, `97bb3a5-…`, `6ed4c44-…`, `5f94b4a-…`), port **8787**
-  (was 8000), bound `0.0.0.0`, real profile
+  **promoted 2026-09-21 to build `c50c05e-202609211705`** (regular Dock app;
+  earlier `df2566c-…`, `e14d19e-…`, `97bb3a5-…`, `6ed4c44-…`, `5f94b4a-…`), port
+  **8787** (was 8000), bound `0.0.0.0`, real profile
   `~/Library/Application Support/gateway-kh/`. Signature valid; profile verified
   byte-identical across promotion; single rollback at `backups/rollback-20260921/`.
 - **Test instance** — where new work is verified: `test-instance/` in the
@@ -503,6 +503,21 @@ identities and Story's real consumer:
 
 Remaining for the owner: install it in Story Studio on the video Mac (Content
 Store → Download/Install) and confirm it appears there.
+
+## 10k. What's New link beside the build stamp (2026-09-21)
+
+The notes window already existed but was reachable only from Overview and the
+status menu. Added a small accent link under the version line in the persistent
+sidebar footer (`MainWindow`), opening the same `WhatsNewWindow`, and refreshed
+`menubar/whats-new.md` with this build's changes (Content Packs, remote Story via
+Tailscale, the port move, the provider key filter, Voices bulk controls, the Dock
+app, and the light-mode fix).
+
+- Build `c50c05e-202609211705`, promoted. Verified `[MEASURED]`: the sidebar
+  exposes the button, and pressing it opened `gateway-kh — What's New`.
+- `tests/test_ui.py` gained "the sidebar offers What's New beside the version";
+  the suite passes **127/127** with 7 environment skips (no fleet controllers,
+  and Studio Hub is not running on this Mac right now).
 
 ## 11. Exact next action / resumable handoff
 
