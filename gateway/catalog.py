@@ -77,6 +77,29 @@ _PROVIDER_ALIAS = {
     "transcription": "provider",
 }
 
+# Story Studio's legacy capability catalogue reads `GET /v1/models` and keeps a
+# row only when `modality` and `operation` come from fixed vocabularies. This
+# endpoint published 124 rows without them, so every row was dropped and Story's
+# diagnostics reported an empty catalogue while the per-modality pickers (which
+# use their own routes) worked. Publishing the two fields is additive; music has
+# no operation in Story's vocabulary, so it stays out of that one view by design.
+_CAPABILITY_MODALITY = {
+    "chat": "text",
+    "image": "image",
+    "video": "video",
+    "tts": "audio",
+    "transcription": "audio",
+    "music": "audio",
+}
+_CAPABILITY_OPERATION = {
+    "chat": "chat.response",
+    "image": "image.generation",
+    "video": "video.generation",
+    "tts": "voice.tts",
+    "transcription": "audio.transcription",
+    "music": "music.generate",
+}
+
 _IMAGE_RATIOS = ["16:9", "9:16", "1:1", "4:3", "3:4"]
 
 
@@ -1088,6 +1111,10 @@ class Catalog:
             "qualification_only": False,
             "locked": locked,
             "lock_reason": lock_reason,
+            # The capability catalogue's own vocabulary; see _CAPABILITY_* above.
+            "modality": _CAPABILITY_MODALITY.get(modality, "text"),
+            "operation": _CAPABILITY_OPERATION.get(modality, "chat.response"),
+            "availability": "unavailable" if locked else "available",
         }
 
         # A location's rows are attributed to the maker, never the site. The old
