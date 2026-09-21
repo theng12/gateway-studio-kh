@@ -992,6 +992,37 @@ download.
 Rollback labels were checked while pruning: each `.app` contains exactly the build
 its filename claims.
 
+## 10z. The Gateway no longer depends on every Mac updating first (2026-09-22)
+
+The owner asked whether publication really has to wait for the 1.4.216 DMG. **The
+DMG was never the gate — the parsing client is.** `min_story_version` only narrated
+compatibility; the row was still sent, and a kind an older Story does not know
+throws inside `parseContentStoreCatalog`, which answers 500 for the **whole**
+Content Store. Sending the row is the hazard, not the version field.
+
+**Fixed in `products()`**: a product whose `min_story_version` is newer than the
+client's `story_version` is now **withheld** rather than listed as incompatible.
+So an old app never receives a row it cannot parse — publishing a new kind no longer
+waits on every Mac updating. Two guards:
+
+- Withheld only when the client **stated a parseable version**. A malformed
+  `story_version` keeps the old behaviour and sees everything, because silently
+  emptying the catalogue would be a worse failure than a stale row.
+- Behaviour change to know: a client below a product's floor now sees **nothing**
+  rather than an "incompatible" row. Measured live — `story_version=1.4.216` → 140
+  products, `not-a-version` → 140, `1.0.0` → 0. Nothing below the 1.0.843 floor was
+  installable anyway, and it is what prevents the outage.
+
+Test: `test_a_client_too_old_for_a_product_does_not_receive_it` (19/19 in the
+delivery suite). Build `6c7aefb-202609211958`, promoted.
+
+**On the DMG itself.** `dist/Story Studio KH 1.4.216-arm64.dmg` exists and its
+`app.asar` carries the support (17 `metadata_formula` hits). But it was built from an
+**uncommitted tree** — 59 modified and 22 untracked files, and the last commit
+touching `genstudio-content-store.ts` is an unrelated one. So it is a real build of a
+real fix, but not a traceable release: if that tree is reset, the DMG's source is
+gone. That is Story's to close before 1.4.216 is treated as shipped.
+
 ## 11. Exact next action / resumable handoff
 
 - Branch `codex/content-pack-delivery`: promoted app code at `97bb3a5`

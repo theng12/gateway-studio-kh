@@ -443,6 +443,47 @@ process.exit(verify(null,Buffer.from(canonical(row.payload),'utf8'),key,Buffer.f
         self.assertFalse(content_delivery._available(release), "a corrupted archive must read as unavailable")
         path.write_bytes(untouched)
 
+    def test_a_client_too_old_for_a_product_does_not_receive_it(self) -> None:
+        """A pack the client is too old to parse is withheld, not listed.
+
+        A kind an older Story does not know throws inside its catalogue parser and
+        takes the whole Content Store down with it, so publishing a new kind is only
+        safe if old clients never receive the row. A malformed `story_version` must
+        not silently empty the catalogue, so that case keeps seeing everything.
+        """
+        self._setup()
+        record = _record("private-ledger")
+        self._install_registry_records([record])
+        self._publish(self._build_archive(record, "Private Ledger"))
+
+        state_path = content_delivery._state_path()
+        original = json.loads(state_path.read_text())
+
+        def rewrite(minimum: str) -> None:
+            state = json.loads(state_path.read_text())
+            for row in state["releases"]:
+                row["min_story_version"] = minimum
+            replacement = state_path.with_suffix(".tmp")
+            replacement.write_text(json.dumps(state))
+            os.chmod(replacement, 0o600)  # the authority state must stay private
+            os.replace(replacement, state_path)
+
+        def listed(story_version: str) -> bool:
+            response = self.client.get("/v1/content/products", params={"story_version": story_version},
+                                       headers=self._story_headers())
+            self.assertEqual(response.status_code, 200, response.text[:200])
+            return any("private-ledger" in product["product_id"] for product in response.json()["products"])
+
+        try:
+            rewrite("99.0.0")
+            self.assertFalse(listed("1.4.216"), "a product the client cannot install must not be sent")
+            self.assertTrue(listed("not-a-version"), "a malformed version must not empty the catalogue")
+        finally:
+            replacement = state_path.with_suffix(".tmp")
+            replacement.write_text(json.dumps(original))
+            os.chmod(replacement, 0o600)
+            os.replace(replacement, state_path)
+
     def test_real_story_validation_restore_grant_and_exact_download(self) -> None:
         setup = self._setup()
         record = _record("private-ledger")

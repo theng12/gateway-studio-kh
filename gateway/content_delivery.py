@@ -742,11 +742,25 @@ def products(story_version: str, state: dict[str, Any] | None = None) -> dict[st
     state = state if state is not None else _configured_state()
     try:
         client_version = _version(story_version)
+        client_version_known = True
     except DeliveryError:
         client_version = (0, 0, 0)
+        client_version_known = False
     rows = []
     for row, public in _current_releases(state):
         compatible = client_version >= _version(row["min_story_version"])
+        # Never hand a client a product its own parser may not understand. A kind the
+        # client does not know throws inside `parseContentStoreCatalog` and Story then
+        # answers 500 for the **whole** Content Store — one product empties every
+        # other — so a pack the client is too old to install is withheld rather than
+        # listed as incompatible. This is what makes it safe to publish a new kind
+        # before every Mac has updated: an old client simply does not see it.
+        #
+        # Withheld only when the client stated a version we could parse: a malformed
+        # `story_version` must not silently empty the catalogue, so it keeps the old
+        # behaviour and sees everything.
+        if client_version_known and not compatible:
+            continue
         rows.append({
             "product_id": row["product_id"], "entitlement_family": row["entitlement_family"],
             "kind": _wire_kind(row["kind"]), "title": row["title"], "summary": row["description"],
