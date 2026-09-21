@@ -50,7 +50,7 @@ os.environ.update({
 from fastapi.testclient import TestClient
 from gateway.api import app
 from gateway.activity import story_activity
-from gateway import content_delivery
+from gateway import content_delivery, content_packs
 
 
 def _canonical(value) -> str:
@@ -378,6 +378,70 @@ process.exit(verify(null,Buffer.from(canonical(row.payload),'utf8'),key,Buffer.f
             self.assertIn("at most 12", str(caught.exception))
             metadata["tags"] = metadata["tags"][:12]
             content_delivery._validate_catalog_row(metadata)
+
+    def test_a_content_request_reads_the_authority_once(self) -> None:
+        """The dependency hands the handler the state it already read.
+
+        `_configured_state()` re-reads the authority files *and* spawns Node to
+        re-inspect the signing identity (~100 ms). Reading it in the dependency and
+        again in the handler measured ~204 ms per configured request, so the
+        dependency returns the state and the handler passes it down.
+        """
+        self._setup()
+        record = _record("private-ledger")
+        self._install_registry_records([record])
+        archive = self._build_archive(record, "Private Ledger")
+        self._publish(archive)
+        original = content_delivery._configured_state
+        reads: list[int] = []
+
+        def counting():
+            reads.append(1)
+            return original()
+
+        with patch.object(content_delivery, "_configured_state", side_effect=counting):
+            response = self.client.get("/v1/content/products", params={"story_version": "1.4.216"},
+                                       headers=self._story_headers())
+        self.assertEqual(response.status_code, 200, response.text[:200])
+        self.assertEqual(len(reads), 1, f"one request read the content authority {len(reads)} times")
+
+    def test_availability_verifies_once_and_rechecks_a_changed_archive(self) -> None:
+        """Availability keeps the SHA-256 guarantee without re-hashing every request.
+
+        It read and hashed every archive in the library on each catalogue request
+        (~155 ms for 140 packs). The verified answer is cached against the archive
+        file's own stat instead, so a changed file is re-verified rather than
+        trusted.
+        """
+        self._setup()
+        record = _record("private-ledger")
+        self._install_registry_records([record])
+        archive = self._build_archive(record, "Private Ledger")
+        self._publish(archive)
+        state = content_delivery._configured_state()
+        release = next(row for row in state["releases"] if row["pack_id"] == record["pack_id"])
+
+        original = content_packs.read_archive
+        hashed: list[int] = []
+
+        def counting(digest, **kwargs):
+            hashed.append(1)
+            return original(digest, **kwargs)
+
+        content_delivery._availability.clear()  # publishing already warmed this entry
+        with patch.object(content_packs, "read_archive", side_effect=counting):
+            for _ in range(3):
+                self.assertTrue(content_delivery._available(release))
+        self.assertEqual(len(hashed), 1, f"re-hashed an unchanged archive {len(hashed)} times")
+
+        # Same size, different bytes: the cache must not answer from the stamp alone.
+        path = content_packs.LIBRARY / release["archive_sha256"] / "archive.sspack"
+        untouched = path.read_bytes()
+        corrupted = bytearray(untouched)
+        corrupted[0] ^= 0xFF
+        path.write_bytes(bytes(corrupted))
+        self.assertFalse(content_delivery._available(release), "a corrupted archive must read as unavailable")
+        path.write_bytes(untouched)
 
     def test_real_story_validation_restore_grant_and_exact_download(self) -> None:
         setup = self._setup()

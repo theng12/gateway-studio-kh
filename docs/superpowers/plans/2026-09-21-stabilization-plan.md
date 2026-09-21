@@ -42,7 +42,7 @@ test instance on port 8100 running the same committed source. Full evidence:
 |---|---|---|---|
 | S1 | defect | high | ~~Commit the verified work so it cannot be lost~~ — **done 2026-09-21 (`5f94b4a`)** |
 | S2 | defect | medium | ~~Light-mode table hover is unreadable~~ — **done 2026-09-21** |
-| S3 | perf | watch | Content authority read twice per request — measured, not demonstrated |
+| S3 | perf | watch | ~~Content authority read twice per request~~ — **done 2026-09-22: `products` 204 ms → 5.5 ms** |
 | S4 | verification | high | ~~Native UI (`test_ui.py`) on the promoted build~~ — **done 2026-09-21, 127/127** |
 | S5 | verification | medium | ~~Real generation through the working instance~~ — **done 2026-09-21** |
 | S6 | verification | low | ~~Real-Hub fleet suite, knowingly~~ — **done 2026-09-21, 47/47** |
@@ -108,7 +108,7 @@ to `tests/test_content_library_ui.js`; a positive control confirms the guard
 rejects the old `#1a202b` literal. UI suites 20/20. The running test instance was
 restarted and now serves the token-based rule.
 
-## S3 — Content authority read twice per request (medium)
+## S3 — Content authority read twice per request (medium) — **done 2026-09-22**
 
 **Why.** `_configured_state()` costs ≈55 ms because it spawns Node to re-inspect
 the signing identity. The P0 `require_content_authority` dependency and the
@@ -130,14 +130,35 @@ scale.
 P4); all content delivery tests, `test_handoff_api` and `test_e2e` green;
 damaged-key recovery still returns `CONTENT_AUTHORITY_DAMAGED`.
 
-**Disposition 2026-09-21 — watch, not scheduled.** The cost is measured but not
-demonstrated to matter: content routes are hit only when Story Studio opens its
-Content Packs page, the shelf is private and single-owner, and 113 ms is well
-inside any user-visible budget. Both repairs carry real risk (threading state
-through nine functions, or a cache that must stay fail-closed against a
-replaced key), so per the project rule against speculative work this stays open
-as a monitor item with the measured number and upgrade paths above. Revisit if a
-real shelf ever shows the latency.
+**Outcome 2026-09-22 — measured at 140 products, and the real cost was not the
+double read.** The recorded 113 ms was stale: with the re-homed library on the
+shelf a configured request measured **~204 ms**, and profiling split it three ways.
+
+- **The double read** (option 1): `require_content_authority` returns the authority
+  state and each handler passes it down; `_configured_state()` stays the fallback
+  for non-HTTP callers. One read per request, pinned by
+  `test_a_content_request_reads_the_authority_once`.
+- **The signing inspection** (option 2): `_signing("inspect")` alone was **116 ms**
+  of the budget — a Node spawn on every request. It is cached against the key
+  file's `dev/ino/mode/size/mtime_ns/ctime_ns`, and the stamp is re-stated before
+  the result is stored, so a key swapped mid-inspection is never cached under the
+  new key's stamp. When the key cannot be stated — missing, symlinked, not a
+  regular file — nothing is cached at all, so deletion still fails closed. Signing
+  is never cached.
+- **What actually dominated**: `_available()` called `content_packs.read_archive`
+  per release, so a single catalogue request **read and hashed every archive in the
+  library** (140 packs, thumbnail recipes ~7 MB each) to answer "is it still
+  there". It keeps exactly that SHA-256 guarantee but caches the verified answer
+  against the archive file's own stat; a changed file is re-hashed, and a
+  same-size corruption reads as unavailable
+  (`test_availability_verifies_once_and_rechecks_a_changed_archive`).
+
+**Measured after** (live instance, 140 products): `products` 391 → **8 ms**,
+`account` 406 → **6 ms**, `shelves` → 7 ms; over HTTP `products` ~204 → **~5.5 ms**,
+with the first request after a restart still paying the one inspection. The payload
+is unchanged — 140 products, Story's parser 200, a visual style and a thumbnail
+recipe both still install `activated: true` — and the signing-identity check was
+**not** weakened: a damaged key still returns `CONTENT_AUTHORITY_DAMAGED`.
 
 ## S4 — Native UI verification on the promoted build (high)
 

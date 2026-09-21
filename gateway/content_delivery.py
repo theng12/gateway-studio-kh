@@ -12,6 +12,7 @@ import os
 from pathlib import Path
 import re
 import stat
+import threading
 from typing import Any
 from uuid import uuid4
 
@@ -166,7 +167,54 @@ def _validate_catalog_row(metadata: dict[str, Any]) -> None:
                             "CONTENT_CATALOG_ROW_INVALID")
 
 
+_inspection_lock = threading.Lock()
+_inspection: dict[str, Any] = {"stamp": None, "result": None}
+
+
+def _key_stamp() -> tuple[int, ...] | None:
+    """The signing key file's identity, or None when it cannot be stated safely.
+
+    None means "do not trust a cache": a deleted, replaced or symlinked key goes
+    back through a real inspection, so the failure stays fail-closed.
+    """
+    try:
+        info = _key_path().lstat()
+    except OSError:
+        return None
+    if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
+        return None
+    return (info.st_dev, info.st_ino, info.st_mode, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+
+
 def _signing(action: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Sign, or inspect the signing identity once per unchanged key file.
+
+    The inspection is a Node spawn measured at ~116 ms and it runs on every
+    configured content request, because `_read_state` re-verifies that the key still
+    matches the stored authority. The answer can only change when the key file
+    changes, so it is cached against the file's own identity — and the identity is
+    re-stated before the result is stored, so a key swapped mid-inspection is never
+    cached under the new key's stamp. The authority comparison in `_read_state`
+    stays, so a stale entry could not pass as a match anyway.
+
+    Signing is never cached: it is a per-payload operation.
+    """
+    if action != "inspect":
+        return _signing_uncached(action, payload)
+    stamp = _key_stamp()
+    if stamp is not None:
+        with _inspection_lock:
+            if _inspection["stamp"] == stamp:
+                return _inspection["result"]
+    result = _signing_uncached("inspect")
+    if stamp is not None and _key_stamp() == stamp:
+        with _inspection_lock:
+            _inspection["stamp"] = stamp
+            _inspection["result"] = result
+    return result
+
+
+def _signing_uncached(action: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
     request: dict[str, Any] = {"action": action, "private_key_path": str(_key_path())}
     if payload is not None:
         request["payload"] = payload
@@ -342,12 +390,48 @@ def _version(value: str) -> tuple[int, int, int]:
     return tuple(int(part) for part in matched.groups())
 
 
+_availability_lock = threading.Lock()
+_availability: dict[str, tuple[tuple[int, ...], bool]] = {}
+
+
 def _available(release: dict[str, Any]) -> bool:
+    """Whether the archive is still present and still matches its identity.
+
+    The check is `read_archive`'s — a regular, non-symlinked file whose bytes hash to
+    the recorded digest, at the recorded byte count — but its answer can only change
+    when the file does, so it is cached against the file's own stat. Without that, a
+    single catalogue request read **and hashed every archive in the library** (140
+    packs, the thumbnail recipes ~7 MB each) to decide which were available, which
+    measured ~155 ms per request. An entry whose stat changes is re-hashed, so a
+    corrupted or replaced archive still reads as unavailable.
+    """
     try:
-        data = content_packs.read_archive(release["archive_sha256"])
+        digest = release["archive_sha256"]
+        expected = release["bytes"]
+    except (KeyError, TypeError):
+        return False
+    path = content_packs.LIBRARY / digest / "archive.sspack"
+    if path.is_symlink() or path.parent.is_symlink():
+        return False
+    try:
+        info = path.lstat()
+    except OSError:
+        return False
+    if not stat.S_ISREG(info.st_mode) or info.st_size != expected:
+        return False
+    stamp = (info.st_dev, info.st_ino, info.st_mode, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+    with _availability_lock:
+        cached = _availability.get(digest)
+        if cached is not None and cached[0] == stamp:
+            return cached[1]
+    try:
+        data = content_packs.read_archive(digest)
     except (content_packs.PackError, KeyError, TypeError):
         return False
-    return len(data) == release.get("bytes")
+    result = len(data) == expected
+    with _availability_lock:
+        _availability[digest] = (stamp, result)
+    return result
 
 
 def _validate_dependency_closure(
@@ -582,6 +666,12 @@ def publish_draft(draft_id: str, revision: int) -> dict[str, Any]:
     return publish_archive(metadata["archive_sha256"])
 
 
+# Reading the authority is cheap now that the two things that made it expensive are
+# cached against the files they depend on: the signing-identity inspection (a Node
+# spawn, ~116 ms) and each archive's verification (reading and hashing every pack,
+# ~155 ms for the whole catalogue). Both invalidate on the file's own stat, so a
+# replaced or deleted key or archive is re-checked rather than trusted. Measured:
+# `products()` 391 ms -> 8 ms, `account()` 406 ms -> 6 ms.
 def _configured_state() -> dict[str, Any]:
     if not config.gateway_api_key():
         raise DeliveryError("Content Store is not connected.", 503, "CONTENT_STORE_NOT_CONNECTED")
@@ -593,8 +683,16 @@ def _configured_state() -> dict[str, Any]:
         raise
 
 
-def ensure_configured() -> None:
-    _configured_state()
+def ensure_configured() -> dict[str, Any]:
+    """Read the authority once, for the caller to reuse.
+
+    `_read_state()` is not cheap — it re-reads the authority files *and* spawns
+    Node to re-inspect the signing identity (~100 ms measured). The request
+    dependency and the handler both need the state, so the dependency returns it
+    and the handler passes it in; reading twice per request was ~204 ms for a
+    configured shelf.
+    """
+    return _configured_state()
 
 
 def _current_releases(state: dict[str, Any]) -> list[tuple[dict[str, Any], dict[str, Any]]]:
@@ -626,8 +724,8 @@ def _entitlement(row: dict[str, Any], public: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def account() -> dict[str, Any]:
-    state = _configured_state()
+def account(state: dict[str, Any] | None = None) -> dict[str, Any]:
+    state = state if state is not None else _configured_state()
     return _bounded({
         "account_id": state["authority"]["account_id"],
         "content_account_id": state["authority"]["account_id"],
@@ -640,8 +738,8 @@ def account() -> dict[str, Any]:
     })
 
 
-def products(story_version: str) -> dict[str, Any]:
-    state = _configured_state()
+def products(story_version: str, state: dict[str, Any] | None = None) -> dict[str, Any]:
+    state = state if state is not None else _configured_state()
     try:
         client_version = _version(story_version)
     except DeliveryError:
@@ -662,15 +760,15 @@ def products(story_version: str) -> dict[str, Any]:
     return _bounded({"products": rows})
 
 
-def shelves(story_version: str) -> dict[str, Any]:
-    visible = [row["product_id"] for row in products(story_version)["products"]]
+def shelves(story_version: str, state: dict[str, Any] | None = None) -> dict[str, Any]:
+    visible = [row["product_id"] for row in products(story_version, state)["products"]]
     return _bounded({"shelves": ([{"shelf_id": "gateway.private", "title": "Private Content Packs",
                                    "position": 0, "product_ids": visible}] if visible else []),
                      "fallback_product_ids": []})
 
 
-def public_key() -> dict[str, Any]:
-    state = _configured_state()
+def public_key(state: dict[str, Any] | None = None) -> dict[str, Any]:
+    state = state if state is not None else _configured_state()
     authority = state["authority"]
     key = {"key_id": authority["key_id"], "algorithm": "ed25519",
            "public_key_base64": authority["public_key_base64"], "current": True}
@@ -685,8 +783,8 @@ def public_key() -> dict[str, Any]:
     }
 
 
-def receipts() -> dict[str, Any]:
-    state = _configured_state()
+def receipts(state: dict[str, Any] | None = None) -> dict[str, Any]:
+    state = state if state is not None else _configured_state()
     authority = state["authority"]
     current = _current_releases(state)
     entitlements = [_entitlement(row, public) for row, public in current]
@@ -719,8 +817,8 @@ def receipts() -> dict[str, Any]:
     })
 
 
-def release_history(family: str) -> dict[str, Any]:
-    state = _configured_state()
+def release_history(family: str, state: dict[str, Any] | None = None) -> dict[str, Any]:
+    state = state if state is not None else _configured_state()
     matches = [row for row in state["releases"] if row["entitlement_family"] == family]
     if not matches:
         raise DeliveryError("No such private entitlement.", 404, "CONTENT_ENTITLEMENT_NOT_FOUND")
@@ -752,8 +850,9 @@ def _grant_token(payload: dict[str, Any], api_key: str) -> str:
     return f"{encoded}.{signature}"
 
 
-def issue_download(release_id: str, origin: str, api_key: str) -> dict[str, Any]:
-    state = _configured_state()
+def issue_download(release_id: str, origin: str, api_key: str,
+                   state: dict[str, Any] | None = None) -> dict[str, Any]:
+    state = state if state is not None else _configured_state()
     public = {row["release_id"]: row for row in _release_rows(state)}
     row = next((item for item in state["releases"] if item["release_id"] == release_id), None)
     if not row or not public.get(release_id, {}).get("available"):
@@ -785,8 +884,9 @@ def issue_download(release_id: str, origin: str, api_key: str) -> dict[str, Any]
     }
 
 
-def resolve_release_id(entitlement_family: str, version: str) -> str:
-    state = _configured_state()
+def resolve_release_id(entitlement_family: str, version: str,
+                       state: dict[str, Any] | None = None) -> str:
+    state = state if state is not None else _configured_state()
     matches = [row for row in state["releases"]
                if row["entitlement_family"] == entitlement_family and row["version"] == version]
     if len(matches) != 1 or not _available(matches[0]):

@@ -733,6 +733,36 @@ lost scroll margin, or a tab strip that stops announcing selection fails without
 a browser. Deliberate limit: the browser check is Chrome-only and not wired into
 the routine suite, because it needs a gateway URL.
 
+## 10r. S3 — content requests are ~37× faster, without weakening a check (2026-09-22)
+
+The recorded cost was stale and understated. At 140 products a configured content
+request measured **~204 ms**; it is now **~5.5 ms** over HTTP (`products` 391 → 8 ms
+in-process, `account` 406 → 6 ms).
+
+Three separate costs, all found by profiling rather than assumption:
+
+- **The double read** (`require_content_authority` plus the handler):
+  `require_content_authority` now *returns* the authority state and every handler
+  passes it down; `_configured_state()` remains the fallback for non-HTTP callers.
+  Pinned by `test_a_content_request_reads_the_authority_once`.
+- **The signing inspection**, 116 ms a request — a Node spawn inside
+  `_read_state`. Cached against the key file's `dev/ino/mode/size/mtime_ns/ctime_ns`,
+  with the stamp re-stated before storing so a key swapped mid-inspection is never
+  cached under the new stamp. Nothing is cached when the key cannot be stated
+  (missing, symlinked, not a regular file), so deletion still fails closed. Signing
+  is never cached.
+- **The real dominant cost**: `_available()` called `content_packs.read_archive`
+  for every release, so one catalogue request **read and hashed every archive in the
+  library** — 140 packs, the thumbnail recipes ~7 MB each. It keeps the identical
+  SHA-256 guarantee and caches the verified answer against the archive file's stat;
+  a changed file is re-hashed, and a same-size corruption reads as unavailable
+  (`test_availability_verifies_once_and_rechecks_a_changed_archive`).
+
+Nothing was traded away: the payload is byte-identical in shape (140 products),
+Story's parser returns 200, a visual style and a thumbnail recipe still install
+`activated: true`, and a damaged signing key still answers
+`CONTENT_AUTHORITY_DAMAGED`. Build `37a5969-202609211856`, promoted.
+
 ## 11. Exact next action / resumable handoff
 
 - Branch `codex/content-pack-delivery`: promoted app code at `97bb3a5`

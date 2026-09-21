@@ -190,21 +190,25 @@ def require_content_auth(authorization: str | None = Header(default=None)) -> st
     return configured
 
 
-def require_content_authority(api_key: str = Depends(require_content_auth)) -> str:
-    """Answer an unconfigured Store before any request-shape validation.
+def require_content_authority(api_key: str = Depends(require_content_auth)) -> dict[str, Any]:
+    """Answer an unconfigured Store before any request-shape validation, and hand
+    the handler the authority state it just read.
 
     FastAPI raises a missing required query parameter or a malformed body as 422,
     so a route that parses first reports an unconfigured Store as a bad request.
     Dependencies run before that validation, and `AGENTS.md` requires unconfigured
     delivery to stay `CONTENT_STORE_NOT_CONNECTED`; this keeps the two apart without
     weakening validation once a shelf exists.
+
+    The state is returned rather than merely checked: reading it costs a Node
+    signing-identity inspection (~100 ms), and the handler re-read it — measured at
+    ~204 ms per content request.
     """
     from . import content_delivery
     try:
-        content_delivery.ensure_configured()
+        return content_delivery.ensure_configured()
     except content_delivery.DeliveryError as exc:
         raise GatewayError(exc.status, str(exc), exc.code) from exc
-    return api_key
 
 
 def _require_idempotency_key(value: str | None) -> str:
@@ -1280,43 +1284,48 @@ async def _content_body(
 
 
 @app.get("/v1/content/account")
-def content_account(_: str = Depends(require_content_authority)) -> dict[str, Any]:
+def content_account(state: dict[str, Any] = Depends(require_content_authority)) -> dict[str, Any]:
     from . import content_delivery
-    return _content_result(content_delivery.account)
+    return _content_result(content_delivery.account, state)
 
 
 @app.get("/v1/content/products")
-def content_products(story_version: str = Query(...), _: str = Depends(require_content_authority)) -> dict[str, Any]:
+def content_products(story_version: str = Query(...),
+                     state: dict[str, Any] = Depends(require_content_authority)) -> dict[str, Any]:
     from . import content_delivery
-    return _content_result(content_delivery.products, story_version)
+    return _content_result(content_delivery.products, story_version, state)
 
 
 @app.get("/v1/content/shelves")
-def content_shelves(story_version: str = Query(...), _: str = Depends(require_content_authority)) -> dict[str, Any]:
+def content_shelves(story_version: str = Query(...),
+                    state: dict[str, Any] = Depends(require_content_authority)) -> dict[str, Any]:
     from . import content_delivery
-    return _content_result(content_delivery.shelves, story_version)
+    return _content_result(content_delivery.shelves, story_version, state)
 
 
 @app.get("/v1/content/public-key")
-def content_public_key(_: str = Depends(require_content_authority)) -> dict[str, Any]:
+def content_public_key(state: dict[str, Any] = Depends(require_content_authority)) -> dict[str, Any]:
     from . import content_delivery
-    return _content_result(content_delivery.public_key)
+    return _content_result(content_delivery.public_key, state)
 
 
 @app.get("/v1/content/receipts")
-def content_receipts(_: str = Depends(require_content_authority)) -> dict[str, Any]:
+def content_receipts(state: dict[str, Any] = Depends(require_content_authority)) -> dict[str, Any]:
     from . import content_delivery
-    return _content_result(content_delivery.receipts)
+    return _content_result(content_delivery.receipts, state)
 
 
 @app.get("/v1/content/entitlements/{family}/releases")
-def content_release_history(family: str, _: str = Depends(require_content_authority)) -> dict[str, Any]:
+def content_release_history(family: str,
+                            state: dict[str, Any] = Depends(require_content_authority)) -> dict[str, Any]:
     from . import content_delivery
-    return _content_result(content_delivery.release_history, family)
+    return _content_result(content_delivery.release_history, family, state)
 
 
 @app.post("/v1/content/downloads")
-async def content_download(request: Request, api_key: str = Depends(require_content_authority)) -> dict[str, Any]:
+async def content_download(request: Request,
+                           api_key: str = Depends(require_content_auth),
+                           state: dict[str, Any] = Depends(require_content_authority)) -> dict[str, Any]:
     from . import content_delivery
     body = await _content_body(request, (
         {"release_id": str},
@@ -1324,8 +1333,8 @@ async def content_download(request: Request, api_key: str = Depends(require_cont
     ))
     release_id = (body["release_id"] if "release_id" in body else
                   _content_result(content_delivery.resolve_release_id,
-                                  body["entitlement_family"], body["version"]))
-    return _content_result(content_delivery.issue_download, release_id, _content_origin(request), api_key)
+                                  body["entitlement_family"], body["version"], state))
+    return _content_result(content_delivery.issue_download, release_id, _content_origin(request), api_key, state)
 
 
 @app.get("/v1/content/archives/{release_id}")
