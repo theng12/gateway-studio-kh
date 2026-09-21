@@ -390,14 +390,32 @@
     <section class="card shelf-section" aria-labelledby="archive-heading">
       <div class="body">
         <h2 id="archive-heading">Preserved archives</h2>
-        <p>Archive-only storage for `.sspack` inputs. Import validates safety and hashes, but does not create ownership, publish a release, or install a pack. Review an eligible archive here before adding it to the private shelf.</p>
-        <label for="pack-file">Archive (.sspack, up to 50 MiB)</label>
-        <input id="pack-file" type="file" accept=".sspack">
+        <p>Archive-only storage for `.sspack` inputs. <b>Each archive carries its own name, description, kind and identity</b>, so importing asks you for nothing — choose one file, several, or a whole folder. Import validates safety and hashes but does not create ownership, publish a release, or install a pack. Review an eligible archive here before adding it to the private shelf.</p>
+        <label for="pack-files">Archives (.sspack, up to 50 MiB each)</label>
+        <input id="pack-files" type="file" accept=".sspack" multiple>
+        <input id="pack-folder" type="file" webkitdirectory directory multiple hidden>
         <div class="row" style="margin-top:12px">
-          <button id="pack-import" class="primary" onclick="importPack(this)">Validate and preserve archive</button>
+          <button id="pack-import" class="primary" onclick="importPack(this)">Validate and preserve</button>
+          <button onclick="document.getElementById('pack-folder').click()">Choose a folder…</button>
           <button onclick="loadPacks()">Refresh preserved archives</button>
         </div>
         <div id="pack-message" class="msg" role="status" aria-live="polite"></div>
+        <div class="row" style="margin-top:12px">
+          <input id="pack-search" type="search" placeholder="Search name, id, kind or tag…" oninput="renderPacks()" style="max-width:300px">
+          <select id="pack-sort" onchange="renderPacks()" aria-label="Sort preserved archives">
+            <option value="name">Name A–Z</option>
+            <option value="name-desc">Name Z–A</option>
+            <option value="kind">Kind</option>
+            <option value="version">Latest version</option>
+            <option value="integrity">Integrity</option>
+          </select>
+          <select id="pack-filter" onchange="renderPacks()" aria-label="Filter preserved archives">
+            <option value="all">All archives</option>
+            <option value="verified">Integrity verified</option>
+            <option value="unavailable">Not verified</option>
+          </select>
+          <span class="stat" id="pack-count"></span>
+        </div>
       </div>
       <div id="pack-library"></div>
     </section>
@@ -667,42 +685,115 @@ async function loadPacks() {
     const rows = result.archives || [];
     if (typeof shelfState !== 'undefined') shelfState.archives = rows;
     if (message.dataset.loadError === 'true') { message.textContent = ''; message.className = 'msg'; delete message.dataset.loadError; }
-    document.getElementById('pack-library').innerHTML = rows.length ? rows.map(row => `
-      <article class="card"><div class="body">
-        <h3>${esc(row.title || row.pack_id || 'Unreadable archive')} <span class="badge">${esc(row.version || '')}</span></h3>
-        <p>${esc((row.item_kinds || []).join(' · '))}</p>
-        <p>Preserved archive · Integrity: ${esc(row.integrity)} · Ownership: unverified · Not installed</p>
-        <p class="hint">${esc(row.integrity_detail || '')}</p>
-        <p class="hint">${esc(row.trust_requirement || 'Re-import the original archive to validate it.')}</p>
-        <p class="hint">${esc(row.compatibility || '')}</p>
-        <details><summary>Archive identity</summary><code style="overflow-wrap:anywhere">${esc(row.archive_sha256)}</code></details>
-        ${/^[a-f0-9]{64}$/.test(row.archive_sha256) ? `<div class="row" style="margin-top:10px">
-          <button class="sm" ${row.integrity !== 'verified' ? 'disabled' : ''} onclick="savePack('${row.archive_sha256}',this)">Save preserved archive…</button>
-          <button class="sm" data-shelf-publish="archive:${row.archive_sha256}" data-shelf-eligible="${row.integrity === 'verified' ? 'true' : 'false'}" ${typeof shelfState === 'undefined' || !shelfReady() || !shelfAcknowledged() || row.integrity !== 'verified' ? 'disabled' : ''} onclick="publishPreservedArchive('${row.archive_sha256}',this)">Review and add to shelf</button>
-        </div>` : ''}
-      </div></article>`).join('') : '<div class="empty">No preserved archives yet. Imported archives stay archive-only until you explicitly review and add one to the private shelf.</div>';
-    if (typeof updateShelfControls === 'function') updateShelfControls();
+    renderPacks();
   } catch (error) {
     message.dataset.loadError = 'true';
     message.className = 'msg bad'; message.textContent = `Cannot read library: ${error.message}. Use Refresh library to retry.`;
   }
 }
 
+// Search, sort and filter are a view over the one fetched list, so every control
+// re-renders from `shelfState.archives` instead of re-reading the Gateway. The
+// per-archive block is unchanged: an imported archive is still archive-only and
+// only "Review and add to shelf" makes it a release.
+function renderPacks() {
+  const target = document.getElementById('pack-library');
+  if (!target) return;
+  const rows = (typeof shelfState !== 'undefined' ? shelfState.archives : null) || [];
+  const search = (document.getElementById('pack-search')?.value || '').trim().toLowerCase();
+  const sort = document.getElementById('pack-sort')?.value || 'name';
+  const filter = document.getElementById('pack-filter')?.value || 'all';
+  const kindOf = row => (row.item_kinds || []).join(' ').toLowerCase();
+  const nameOf = row => String(row.title || row.pack_id || '');
+  const versionKey = row => String(row.version || '').split('.').map(part => part.padStart(6, '0')).join('.');
+  let list = rows.filter(row => {
+    if (filter === 'verified' && row.integrity !== 'verified') return false;
+    if (filter === 'unavailable' && row.integrity === 'verified') return false;
+    if (!search) return true;
+    return [nameOf(row), row.pack_id, row.version, kindOf(row), ...(row.tags || [])]
+      .filter(Boolean).join(' ').toLowerCase().includes(search);
+  });
+  const comparators = {
+    name: (a, b) => nameOf(a).localeCompare(nameOf(b)),
+    'name-desc': (a, b) => nameOf(b).localeCompare(nameOf(a)),
+    kind: (a, b) => kindOf(a).localeCompare(kindOf(b)) || nameOf(a).localeCompare(nameOf(b)),
+    version: (a, b) => versionKey(b).localeCompare(versionKey(a)),
+    integrity: (a, b) => String(a.integrity).localeCompare(String(b.integrity)) || nameOf(a).localeCompare(nameOf(b)),
+  };
+  list = list.slice().sort(comparators[sort] || comparators.name);
+  const count = document.getElementById('pack-count');
+  if (count) {
+    count.textContent = rows.length
+      ? `${list.length} of ${rows.length} archive${rows.length === 1 ? '' : 's'}`
+      : '';
+  }
+  target.innerHTML = list.length ? list.map(row => `
+    <article class="card"><div class="body">
+      <h3>${esc(row.title || row.pack_id || 'Unreadable archive')} <span class="badge">${esc(row.version || '')}</span></h3>
+      <p>${esc((row.item_kinds || []).join(' · '))}</p>
+      <p>Preserved archive · Integrity: ${esc(row.integrity)} · Ownership: unverified · Not installed</p>
+      <p class="hint">${esc(row.integrity_detail || '')}</p>
+      <p class="hint">${esc(row.trust_requirement || 'Re-import the original archive to validate it.')}</p>
+      <p class="hint">${esc(row.compatibility || '')}</p>
+      <details><summary>Archive identity</summary><code style="overflow-wrap:anywhere">${esc(row.archive_sha256)}</code></details>
+      ${/^[a-f0-9]{64}$/.test(row.archive_sha256) ? `<div class="row" style="margin-top:10px">
+        <button class="sm" ${row.integrity !== 'verified' ? 'disabled' : ''} onclick="savePack('${row.archive_sha256}',this)">Save preserved archive…</button>
+        <button class="sm" data-shelf-publish="archive:${row.archive_sha256}" data-shelf-eligible="${row.integrity === 'verified' ? 'true' : 'false'}" ${typeof shelfState === 'undefined' || !shelfReady() || !shelfAcknowledged() || row.integrity !== 'verified' ? 'disabled' : ''} onclick="publishPreservedArchive('${row.archive_sha256}',this)">Review and add to shelf</button>
+      </div>` : ''}
+    </div></article>`).join('')
+    : `<div class="empty">${rows.length
+      ? 'No preserved archive matches that search or filter.'
+      : 'No preserved archives yet. Imported archives stay archive-only until you explicitly review and add one to the private shelf.'}</div>`;
+  if (typeof updateShelfControls === 'function') updateShelfControls();
+}
+
+// One button, one or many archives. Each file is preserved through the same call
+// the single-file flow used; nothing is typed in, because the archive already
+// carries its own name, description, kind and identity. A failure is reported per
+// file and never stops the batch, so a folder with a few bad archives still
+// imports the rest.
 async function importPack(button) {
-  const file = document.getElementById('pack-file').files[0];
   const message = document.getElementById('pack-message');
-  if (!file || file.size > 50 * 1024 * 1024) {
-    message.className = 'msg bad'; message.textContent = 'Choose a .sspack archive no larger than 50 MiB.'; return;
+  const inputs = [document.getElementById('pack-files'), document.getElementById('pack-folder')];
+  const files = [];
+  for (const input of inputs) {
+    for (const file of Array.from(input?.files || [])) {
+      if (String(file.name || '').toLowerCase().endsWith('.sspack')) files.push(file);
+    }
+  }
+  if (!files.length) {
+    message.className = 'msg bad';
+    message.textContent = 'Choose one or more .sspack archives, or a folder of them.';
+    return;
   }
   button.disabled = true;
-  try {
-    const row = await api('/content-library/import', {method:'POST', headers:{'Content-Type':'application/octet-stream'}, body:file});
-    message.className = 'msg'; message.textContent = `Preserved ${row.pack_id} ${row.version}. Integrity checked; archive-only until you review and add it to the private shelf.`;
-    await loadPacks();
-    await loadContentShelf();
-  } catch (error) {
-    message.className = 'msg bad'; message.textContent = `Archive not imported: ${error.message}`;
-  } finally { button.disabled = false; }
+  let imported = 0;
+  const failures = [];
+  for (let index = 0; index < files.length; index++) {
+    const file = files[index];
+    if (files.length > 1) {
+      message.className = 'msg';
+      message.textContent = `Preserving ${index + 1} of ${files.length}: ${file.name}…`;
+    }
+    try {
+      if (file.size > 50 * 1024 * 1024) throw new Error('larger than 50 MiB');
+      await api('/content-library/import', {method:'POST', headers:{'Content-Type':'application/octet-stream'}, body:file});
+      imported++;
+    } catch (error) {
+      failures.push(`${file.name}: ${error.message}`);
+    }
+  }
+  button.disabled = false;
+  for (const input of inputs) { if (input) input.value = ''; }
+  await loadPacks();
+  await loadContentShelf();
+  if (failures.length) {
+    message.className = 'msg bad';
+    message.textContent = `Preserved ${imported} of ${files.length}. Not imported — ${failures.slice(0, 4).join('; ')}${failures.length > 4 ? ` (+${failures.length - 4} more)` : ''}`;
+  } else {
+    message.className = 'msg';
+    message.textContent = `Preserved ${imported} archive${imported === 1 ? '' : 's'}. Archive-only until you review and add one to the private shelf.`;
+  }
 }
 
 async function savePack(digest, button) {
