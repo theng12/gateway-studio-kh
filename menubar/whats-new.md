@@ -1,6 +1,44 @@
 # What's new in gateway-kh
 
-Newest first. This is the same list the **What's New** button in the app shows.
+Newest first. This is the same list the **What's New** link in the app shows.
+
+---
+
+## Content Packs: make your own, and install them in Story Studio
+
+You can now build your own Content Packs and have Story Studio install them with
+no Store account, no purchase and no credits.
+
+- The **Content Packs** page sets up a private shelf once — your own signing
+  identity, separate from the old Store — then you author a Topic Pack draft,
+  review it and choose **Add to shelf**.
+- **Story Studio discovers shelved packs** through the same Gateway URL and
+  installs them with its normal Download/Install.
+- The shelf accepts only **newly reserved** pack identities, so historical Store
+  packs are never reissued, re-signed or claimed as new.
+- Back up the identity *and* its releases with
+  `scripts/backup_content_authority.py`; the shelf cannot serve a release whose
+  archive is missing.
+
+## Run Story Studio from another Mac
+
+The Gateway can serve your whole Tailscale network now, so Story Studio on
+another Mac connects by pointing its **Base URL** at this Mac's Tailscale
+address. **Settings** shows that address with a **Copy** button. The gateway also
+moved off port 8000 (a very common port, and Story's own default) to its own
+port, so there is never a question of which service answered.
+
+## Smaller things
+
+- **Providers** cards no longer clip their buttons in a narrow window, and a
+  **No key** filter plus a live count keeps the ones you still need to configure
+  in view — finished providers drop out.
+- **Voices** bulk controls moved above the table, with **Select all shown** and
+  **Select none**: search, select all shown, then Enable selected.
+- The app is a **normal Dock app** now — Dock icon, ⌘-Tab, and clicking the Dock
+  icon brings the window back. The menu-bar bolt is still there.
+- **What's New?** now sits under the build stamp in the sidebar.
+- Fixed: table rows read as black-on-black in light appearance.
 
 ---
 

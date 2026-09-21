@@ -363,6 +363,9 @@ final class MainWindow: NSObject, NSTableViewDataSource, NSTableViewDelegate {
     private var statusDot = NSView()
     private let sidebarStatus = NSTextField(labelWithString: "…")
     private let sidebarVersion = NSTextField(wrappingLabelWithString: "")
+    /// A small link under the version, so the notes are one click from every page
+    /// instead of only on Overview or in the status menu.
+    private let whatsNewButton = NSButton(title: "What’s New?", target: nil, action: nil)
     private var statusTimer: Timer?
 
     /// Section names accepted by `--open` and the menu.
@@ -457,6 +460,10 @@ final class MainWindow: NSObject, NSTableViewDataSource, NSTableViewDelegate {
         sections[currentIndex].activated()
     }
 
+    @objc private func openWhatsNew() {
+        WhatsNewWindow.shared.show()
+    }
+
     // MARK: Construction
 
     private func build() {
@@ -532,7 +539,19 @@ final class MainWindow: NSObject, NSTableViewDataSource, NSTableViewDelegate {
         sidebarVersion.isSelectable = true
         sidebarVersion.stringValue = "App version \(GatewayController.shared.appVersion)\nBuild \(GatewayController.shared.appBuild)"
 
-        let statusText = NSStackView(views: [sidebarStatus, sidebarVersion])
+        // A link, not a button: it sits under the build stamp, where the owner
+        // looks to answer "what am I running?", so it must not read as a primary
+        // control and must not widen the 200pt sidebar.
+        whatsNewButton.target = self
+        whatsNewButton.action = #selector(openWhatsNew)
+        whatsNewButton.isBordered = false
+        whatsNewButton.font = .systemFont(ofSize: 10.5, weight: .medium)
+        whatsNewButton.contentTintColor = .controlAccentColor
+        whatsNewButton.setButtonType(.momentaryChange)
+        whatsNewButton.alignment = .left
+        whatsNewButton.toolTip = "See what changed in this build"
+
+        let statusText = NSStackView(views: [sidebarStatus, sidebarVersion, whatsNewButton])
         statusText.orientation = .vertical
         statusText.alignment = .leading
         statusText.spacing = 2
