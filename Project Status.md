@@ -404,6 +404,32 @@ response in the whole run was 402. The suite needs a real speech clip in
 `data/*.wav`; the owner's artifacts had been pruned, so a synthetic clip was made
 with macOS `say`, used for the run, then removed — `data/` is unchanged.
 
+## 10h. Tailscale access for a remote Story Studio (2026-09-21)
+
+The owner runs Story Studio on a **different machine**; its default
+`http://127.0.0.1:8000` means *that* machine, so it could never reach this
+gateway. Enabled the tailnet path on the working instance:
+
+- Changed `GATEWAY_HOST=127.0.0.1` → **`GATEWAY_HOST=0.0.0.0`** in the working
+  profile's `.env` (mode preserved `0600`), then restarted the gateway by PID;
+  the app respawned it (`--host 0.0.0.0`, new pid). The project's rule is to
+  bind `0.0.0.0` and **never the Tailscale address alone** — that would take
+  loopback dark and break local Story Studio.
+- This Mac is `m2-max-32-512`, Tailscale IPv4 **100.126.154.54**, MagicDNS
+  `m2-max-32-512.tail4e72cf.ts.net`.
+- Verified `[MEASURED]`: `/v1/models` from the Tailscale IP with the key → 200
+  (124 models); without a key → 401; `/admin/api/status` without a key → 401;
+  `/health` → 200 (health is unauthenticated by design); loopback still 200.
+- Remote Story Studio must set **Base URL `http://100.126.154.54:8000`** and the
+  GenStudio API key = this gateway's key (Settings → Copy). Both machines must
+  be on the same tailnet account (`owner-account@`).
+- Exposure note: `0.0.0.0` also listens on the LAN, and the macOS application
+  firewall is **disabled** on this Mac. The API key protects `/v1` and `/admin`;
+  `/health` is open. Tighten with the firewall or Tailscale ACLs if wanted.
+- Tailscale node keys expire by default; mark this Mac (and the client Mac)
+  non-expiring so the link does not silently die
+  (`docs/fleet-deployment-notes.md` §3).
+
 ## 11. Exact next action / resumable handoff
 
 - Branch `codex/content-pack-delivery`: promoted app code at `97bb3a5`
