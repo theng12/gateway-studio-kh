@@ -501,8 +501,11 @@ identities and Story's real consumer:
    complete backup: `backups/content-authority-20260921-170315/` (identity +
    archive).
 
-Remaining for the owner: install it in Story Studio on the video Mac (Content
-Store → Download/Install) and confirm it appears there.
+**Owner-confirmed 2026-09-22 `[REPORTED, owner]`:** Story Studio on the video Mac
+listed *Keeping Food Before Refrigeration* as owned and **Download/Install
+worked** end to end. With the isolated-profile install above (measured here) and
+this consumer confirmation, the private delivery path is proven for a real pack
+from reservation through installation.
 
 ## 10k. What's New link beside the build stamp (2026-09-21)
 
