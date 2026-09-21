@@ -185,9 +185,30 @@
      rather than claiming "locally". */
   .tabs { display: flex; gap: 6px; margin: 0 0 15px; flex-wrap: wrap; }
   .tabs button { border-radius: 99px; padding: 5px 14px; font-size: 12.5px; }
-  .tabs button[aria-selected="true"] {
+  /* The Create tabs are aria-pressed toggles (S12), so the highlight has to key on
+     that attribute: it stayed on aria-selected and the selected tab lost its fill. */
+  .tabs button[aria-pressed="true"], .tabs button[aria-selected="true"] {
     background: var(--accent); border-color: transparent; color: var(--on-accent);
   }
+  /* A kind pill. One glance should say what a pack *is* without reading its title. */
+  .pill {
+    display: inline-block; padding: 1px 8px; border-radius: 99px; font-size: 11px;
+    font-weight: 600; white-space: nowrap; color: var(--dim);
+    border: 1px solid var(--line); background: color-mix(in srgb, CanvasText 4%, Canvas);
+  }
+  .pill-row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 0 0 12px; }
+  .pill-row button { border-radius: 99px; padding: 3px 11px; font-size: 12px; }
+  .pill-row button[aria-pressed="true"] { background: var(--accent); border-color: transparent; color: var(--on-accent); }
+  /* Grouped rows instead of one card per pack: a card per release meant a page of
+     scrolling for 140 current products. */
+  .pack-group { margin-top: 18px; }
+  .pack-group > h3 {
+    display: flex; align-items: center; gap: 8px; margin: 0 0 6px;
+    font-size: 11.5px; font-weight: 600; text-transform: uppercase; letter-spacing: .4px; color: var(--dim);
+  }
+  .pack-row td { padding: 5px 10px; }
+  .pack-row .title { font-weight: 500; }
+  .pack-row .muted { color: var(--tertiary); font-size: 11.5px; white-space: nowrap; }
   .split { display: grid; grid-template-columns: minmax(300px, 400px) minmax(0, 1fr); gap: 18px; align-items: start; }
   @media (max-width: 920px) { .split { grid-template-columns: minmax(0, 1fr); } }
   .pane { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 15px; }
@@ -325,6 +346,9 @@
       <p>Private authoring drafts, shelved releases, and preserved archives. Set up the private shelf explicitly;
       importing or authoring never installs a pack or invents ownership.</p></div>
 
+    <div class="tabs" id="packs-tabs" role="group" aria-label="Content Packs view"></div>
+
+    <div class="pack-panel" id="packs-panel-setup" hidden>
     <section class="card shelf-section" id="shelf-setup-section" aria-labelledby="shelf-setup-heading">
       <div class="body">
         <div class="shelf-meta"><h2 id="shelf-setup-heading">Set up private shelf</h2><span id="shelf-status" class="badge">Checking…</span></div>
@@ -351,6 +375,9 @@
       </div>
     </section>
 
+    </div>
+
+    <div class="pack-panel" id="packs-panel-drafts" hidden>
     <section class="authoring shelf-section" aria-labelledby="author-heading">
       <h2 id="author-heading">Drafts</h2>
       <p>Use the existing Topic Pack editor for unfinished work. Save, validate, and export as before; adding a saved draft to the shelf is a separate explicit action.</p>
@@ -387,6 +414,9 @@
       </div>
     </section>
 
+    </div>
+
+    <div class="pack-panel" id="packs-panel-shelved">
     <section class="card shelf-section" aria-labelledby="shelf-heading">
       <div class="body">
         <h2 id="shelf-heading">Shelved</h2>
@@ -397,6 +427,9 @@
       </div>
     </section>
 
+    </div>
+
+    <div class="pack-panel" id="packs-panel-preserved" hidden>
     <section class="card shelf-section" aria-labelledby="archive-heading">
       <div class="body">
         <h2 id="archive-heading">Preserved archives</h2>
@@ -429,6 +462,7 @@
       </div>
       <div id="pack-library"></div>
     </section>
+    </div>
   </section>
 </main>
 
@@ -551,7 +585,7 @@ function setView(view) {
   document.getElementById('view-packs').style.display = view === 'packs' ? '' : 'none';
   if (view === 'models') loadModels();
   else if (view === 'providers') loadProviders();
-  else if (view === 'packs') { loadContentShelf(); loadPacks(); loadAuthoring(); }
+  else if (view === 'packs') { renderPacksTabs(); selectPacksTab(packsTab); loadContentShelf(); loadPacks(); loadAuthoring(); }
   else loadCreate();
 }
 
@@ -595,15 +629,90 @@ function updateShelfControls() {
     button.disabled = shelfState.publishPending.has(key) || !shelfReady() || !shelfAcknowledged() || button.dataset.shelfEligible !== 'true';
   });
 }
+// The page grew four jobs — shelve, preserve, draft, set up — into one long scroll,
+// so each is a tab now, and the lists inside them are grouped by kind with a small
+// pill per row: 140 products as one card each was unreadable.
+const PACKS_TABS = [
+  {key: 'shelved', title: 'Shelved'},
+  {key: 'preserved', title: 'Preserved'},
+  {key: 'drafts', title: 'Drafts'},
+  {key: 'setup', title: 'Setup'},
+];
+const PACK_KIND_ORDER = ['topic-pack', 'series-formula', 'visual-style', 'thumbnail-recipe'];
+let packsTab = 'shelved';
+let shelfKindFilter = 'all';
+
+function renderPacksTabs() {
+  const host = document.getElementById('packs-tabs');
+  if (!host) return;
+  host.innerHTML = PACKS_TABS.map(tab =>
+    `<button data-packs-tab="${tab.key}" aria-pressed="${tab.key === packsTab}"
+             onclick="selectPacksTab('${tab.key}')">${esc(tab.title)}</button>`).join('');
+}
+function selectPacksTab(key) {
+  packsTab = key;
+  renderPacksTabs();
+  for (const tab of PACKS_TABS) {
+    const panel = document.getElementById(`packs-panel-${tab.key}`);
+    if (panel) panel.hidden = tab.key !== key;
+  }
+}
+function packKindRank(kind) {
+  const index = PACK_KIND_ORDER.indexOf(kind);
+  return index < 0 ? PACK_KIND_ORDER.length : index;
+}
+function groupedByKind(rows, kindOf) {
+  const groups = new Map();
+  for (const row of rows) {
+    const kind = kindOf(row) || '';
+    if (!groups.has(kind)) groups.set(kind, []);
+    groups.get(kind).push(row);
+  }
+  return [...groups.keys()]
+    .sort((a, b) => packKindRank(a) - packKindRank(b) || a.localeCompare(b))
+    .map(kind => [kind, groups.get(kind)]);
+}
+function packKindFilterRow(rows) {
+  if (!rows.length) return '';
+  const counts = {};
+  for (const row of rows) counts[row.kind || ''] = (counts[row.kind || ''] || 0) + 1;
+  const entries = [['all', `All ${rows.length}`],
+    ...Object.keys(counts).sort((a, b) => packKindRank(a) - packKindRank(b) || a.localeCompare(b))
+      .map(kind => [kind, `${shelfKindLabel(kind)} ${counts[kind]}`])];
+  return '<div class="pill-row" role="group" aria-label="Filter by content pack type">' +
+    entries.map(([key, label]) =>
+      `<button data-kind-filter="${esc(key)}" aria-pressed="${key === shelfKindFilter}"
+               onclick="setShelfKindFilter('${esc(key)}')">${esc(label)}</button>`).join('') + '</div>';
+}
+function setShelfKindFilter(kind) {
+  shelfKindFilter = kind;
+  renderShelfReleases((shelfState.data && shelfState.data.releases) || []);
+}
 function renderShelfReleases(releases) {
   const target = shelfNode('releases');
   if (!target) return;
-  target.innerHTML = releases.length ? releases.map(row => `
-    <article class="card"><div class="body">
-      <h3>${esc(row.title || row.pack_id || 'Untitled pack')} <span class="badge">${esc(row.version || '')}</span></h3>
-      <p>${esc(shelfKindLabel(row.kind))} · ${esc(row.bytes == null ? '' : `${row.bytes} bytes`)} · ${row.current ? 'Current release' : 'Previous release'} · ${row.available ? 'Available' : 'Unavailable'}</p>
-      <p class="hint shelf-release-meta">Release ${esc(row.release_id || 'unknown')} · Private shelf only · Not installed here.</p>
-    </div></article>`).join('') : '<div class="empty">No shelved releases yet. Drafts and preserved archives remain separate until you explicitly add one.</div>';
+  const all = Array.isArray(releases) ? releases : [];
+  if (!all.length) {
+    target.innerHTML = '<div class="empty">No shelved releases yet. Drafts and preserved archives remain separate until you explicitly add one.</div>';
+    return;
+  }
+  const visible = shelfKindFilter === 'all' ? all : all.filter(row => (row.kind || '') === shelfKindFilter);
+  const body = groupedByKind(visible, row => row.kind).map(([kind, rows]) => {
+    const ordered = rows.slice().sort((a, b) =>
+      String(a.title || a.pack_id || '').localeCompare(String(b.title || b.pack_id || '')));
+    return `<section class="pack-group">
+      <h3>${esc(shelfKindLabel(kind))} <span class="pill">${ordered.length}</span></h3>
+      <div class="tablewrap"><table><tbody>${ordered.map(row => `
+        <tr class="pack-row">
+          <td><span class="pill">${esc(shelfKindLabel(row.kind))}</span></td>
+          <td class="title">${esc(row.title || row.pack_id || 'Untitled pack')}</td>
+          <td class="muted">v${esc(row.version || '?')}</td>
+          <td class="muted">${row.current ? 'Current release' : 'Previous release'} · ${row.available ? 'Available' : 'Unavailable'} · Not installed here</td>
+        </tr>`).join('')}</tbody></table></div>
+    </section>`;
+  }).join('');
+  target.innerHTML = packKindFilterRow(all) +
+    (body || '<div class="empty">No pack of that type.</div>');
 }
 function renderShelfStatus(data) {
   const status = shelfNode('status');
@@ -737,23 +846,26 @@ function renderPacks() {
       ? `${list.length} of ${rows.length} archive${rows.length === 1 ? '' : 's'}`
       : '';
   }
-  target.innerHTML = list.length ? list.map(row => `
-    <article class="card"><div class="body">
-      <h3>${esc(row.title || row.pack_id || 'Unreadable archive')} <span class="badge">${esc(row.version || '')}</span></h3>
-      <p>${esc((row.item_kinds || []).join(' · '))}</p>
-      <p>Preserved archive · Integrity: ${esc(row.integrity)} · Ownership: unverified · Not installed</p>
-      <p class="hint">${esc(row.integrity_detail || '')}</p>
-      <p class="hint">${esc(row.trust_requirement || 'Re-import the original archive to validate it.')}</p>
-      <p class="hint">${esc(row.compatibility || '')}</p>
-      <details><summary>Archive identity</summary><code style="overflow-wrap:anywhere">${esc(row.archive_sha256)}</code></details>
-      ${/^[a-f0-9]{64}$/.test(row.archive_sha256) ? `<div class="row" style="margin-top:10px">
-        <button class="sm" ${row.integrity !== 'verified' ? 'disabled' : ''} onclick="savePack('${row.archive_sha256}',this)">Save preserved archive…</button>
-        <button class="sm" data-shelf-publish="archive:${row.archive_sha256}" data-shelf-eligible="${row.integrity === 'verified' ? 'true' : 'false'}" ${typeof shelfState === 'undefined' || !shelfReady() || !shelfAcknowledged() || row.integrity !== 'verified' ? 'disabled' : ''} onclick="publishPreservedArchive('${row.archive_sha256}',this)">Review and add to shelf</button>
-      </div>` : ''}
-    </div></article>`).join('')
-    : `<div class="empty">${rows.length
+  if (!list.length) {
+    target.innerHTML = `<div class="empty">${rows.length
       ? 'No preserved archive matches that search or filter.'
       : 'No preserved archives yet. Imported archives stay archive-only until you explicitly review and add one to the private shelf.'}</div>`;
+    if (typeof updateShelfControls === 'function') updateShelfControls();
+    return;
+  }
+  target.innerHTML = groupedByKind(list, row => (row.item_kinds || [])[0]).map(([kind, group]) => `
+    <section class="pack-group">
+      <h3>${esc(shelfKindLabel(kind))} <span class="pill">${group.length}</span></h3>
+      <div class="tablewrap"><table><tbody>${group.map(row => `
+        <tr class="pack-row">
+          <td><span class="pill">${esc(shelfKindLabel(kind))}</span></td>
+          <td class="title">${esc(row.title || row.pack_id || 'Unreadable archive')}</td>
+          <td class="muted">v${esc(row.version || '?')}</td>
+          <td class="muted">Preserved · Integrity: ${esc(row.integrity)} · Ownership: unverified · Not installed</td>
+          <td class="muted">${esc(row.integrity_detail || row.trust_requirement || 'Re-import the original archive to validate it.')}</td>
+          <td>${/^[a-f0-9]{64}$/.test(row.archive_sha256) ? `<button class="sm" ${row.integrity !== 'verified' ? 'disabled' : ''} onclick="savePack('${row.archive_sha256}',this)">Save preserved archive…</button> <button class="sm" data-shelf-publish="archive:${row.archive_sha256}" data-shelf-eligible="${row.integrity === 'verified' ? 'true' : 'false'}" ${typeof shelfState === 'undefined' || !shelfReady() || !shelfAcknowledged() || row.integrity !== 'verified' ? 'disabled' : ''} onclick="publishPreservedArchive('${row.archive_sha256}',this)">Review and add to shelf</button>` : ''}</td>
+        </tr>`).join('')}</tbody></table></div>
+    </section>`).join('');
   if (typeof updateShelfControls === 'function') updateShelfControls();
 }
 

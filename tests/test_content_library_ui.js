@@ -6,6 +6,9 @@ const path = require('node:path');
 
 const source = fs.readFileSync(path.join(__dirname, '../gateway/admin_ui.html'), 'utf8');
 const readSource = source.slice(source.indexOf('async function loadPacks()'), source.indexOf('async function importPack('));
+// The kind grouping the packs renderer uses lives in the shelf helpers, outside the
+// loadPacks..importPack slice, so it is run in the same script scope.
+const helperSource = source.slice(source.indexOf('const SHELF_KIND_LABELS = {'), source.indexOf('function renderShelfStatus('));
 const importSource = source.slice(source.indexOf('async function importPack('), source.indexOf('async function savePack('));
 
 function harness({ archives = [], importer } = {}) {
@@ -32,8 +35,7 @@ function harness({ archives = [], importer } = {}) {
     updateShelfControls: () => {},
     loadContentShelf: async () => {},
   });
-  vm.runInContext(readSource, context);
-  vm.runInContext(importSource, context);
+  vm.runInContext(`${helperSource}\n${readSource}\n${importSource}`, context);
   return { context, nodes, node, calls };
 }
 

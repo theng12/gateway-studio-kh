@@ -935,6 +935,38 @@ catalogue on every load.
 with `min_app_version: "1.4.216"`, shelve, and install both kinds through Story's
 installer; then re-test the saved/restored catalogue path.
 
+## 10x. Content Packs reorganized: tabs, type pills, one row per pack (2026-09-22)
+
+The page had grown four jobs into one long scroll — 149 release rows plus 149
+preserved archives, each rendered as its own card.
+
+- **Tabs**: **Shelved · Preserved · Drafts · Setup**, using the same `aria-pressed`
+  toggle pattern as the Create tabs (every tab stays in the Tab order and announces
+  selection). Shelved is the default; only the visible panel's controls are in the
+  Tab order because hidden panels are not focusable.
+- **Grouped by type, with pills**: each list is grouped by kind (Topic Pack, Series
+  Formula, Visual Style, Thumbnail Recipe) with a count pill per group and a small
+  kind pill on **every row**, so a pack's type reads at a glance.
+- **A type filter row** on the shelved list — `All 149 · Topic Pack 48 · Series
+  Formula 21 · Visual Style 44 · Thumbnail Recipe 36` — which narrows to one type.
+- **One row per pack instead of a card**, which is what actually removed the
+  scrolling: 149 releases and 149 archives now read as compact lists.
+- **A regression this uncovered**: S12 moved the Create tabs from `aria-selected`
+  to `aria-pressed` but the CSS still keyed the selected style on `aria-selected`,
+  so the selected Create tab had silently lost its highlight. Styled on both now.
+- **Preserved rows showed 60-character pack ids, not names.** Cause was
+  pre-existing: `inspect_archive` recorded identity but never the pack's `name`, so
+  there was nothing to show. It reads the document's `name` now, and the 149
+  existing library entries were backfilled in place (`store-analysis/
+  backfill_archive_titles.py`, atomic temp-and-rename so a running gateway never sees
+  a partial file) — all 149 titled.
+- **Verified**: all Node suites green (6 + 7 + 10 + 10 + 4); the library harness now
+  runs the shelf helpers in the same script scope, since the new renderer groups by
+  kind through them; `tests/check_admin_keyboard.mjs` passes on the new tabs (5
+  controls, all reached and ringed); the 18-test delivery suite and the 9-test
+  library suite pass; and both tabs were checked as rendered screenshots against the
+  live shelf. Build `e32b0de-202609211938`, promoted.
+
 ## 11. Exact next action / resumable handoff
 
 - Branch `codex/content-pack-delivery`: promoted app code at `97bb3a5`

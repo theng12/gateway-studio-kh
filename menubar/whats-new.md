@@ -30,6 +30,10 @@ port, so there is never a question of which service answered.
 
 ## Smaller things
 
+- **Content Packs** is split into **Shelved · Preserved · Drafts · Setup** tabs
+  instead of one long scroll, and every pack carries a small **type pill** with the
+  list grouped by type. A filter row shows how many of each type you have and
+  narrows to one, so 140 products read as a list rather than a card each.
 - The **Content Packs** page is now in the app itself (no browser detour), and it
   imports archives in bulk: choose one file, several, or a whole folder, and one
   click preserves them all. Nothing is typed in — each archive carries its own

@@ -131,9 +131,18 @@ def inspect_archive(data: bytes) -> dict:
                         or item["path"] not in declared or type(item.get("schema_version")) is not int
                         or item["schema_version"] != 1):
                     raise PackError("Unsupported or undeclared content item.")
+            # The pack's own name, so the preserved-archive list can show what a pack
+            # *is* rather than its 60-character identity. The document was already
+            # read and verified above; this only parses it again to take `name`.
+            title = ""
+            if items:
+                document = _json(archive.read(items[0]["path"]))
+                if isinstance(document, dict) and isinstance(document.get("name"), str):
+                    title = document["name"].strip()[:200]
             return {
                 "archive_sha256": hashlib.sha256(data).hexdigest(), "bytes": len(data),
                 **{key: manifest[key] for key in ("pack_id", "publisher_id", "version", "min_app_version")},
+                "title": title,
                 "delivery_profile": profile, "item_kinds": sorted({item["kind"] for item in items}),
                 "file_count": len(files), "integrity": "verified", "ownership": "unverified",
                 "installable": False, "trust_requirement": trust,
