@@ -653,6 +653,19 @@ archives.
 - **Remaining: 76 asset packs** (40 visual-style, 36 thumbnail-recipe) need real
   preview bytes, which per the skills come from Studio Hub production or the
   owner's originals — this Mac must not generate them, and Studio Hub was quit.
+- **The 39 blocked packs have a named owner now.** Sent Story
+  `_handoffs/2026-09-22_wire-kind-parity-lettering-and-metadata-formula.md`
+  (our record: `_handoffs/2026-09-22-wire-kind-parity-handoff.md`). The earlier
+  claim that Story "cannot serve fonts" was too broad: Story already has the wire
+  kind `font_pack`, the archive `case 'lettering-style'`
+  (`content-packs/archive.ts:325`) and `letteringCatalogue()`
+  (`services/lettering-catalogue.ts:80`) — what is missing is any bridge, since
+  `font_pack` appears nowhere in `electron/server` outside the kind union, so a
+  delivered font product maps to no archive and installs nothing.
+  `metadata-formula` genuinely has no wire kind. The handoff leads with the
+  ordering rule from Story's own comment
+  (`genstudio-content-store.ts:45-53`): one unknown kind kills the whole
+  catalogue parse, so Story must accept a kind before Gateway publishes one.
 
 ## 11. Exact next action / resumable handoff
 
