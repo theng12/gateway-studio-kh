@@ -25,10 +25,10 @@ through Story Studio's real installer.
 ## 1b. Two-instance workflow (owner-facing) — added 2026-09-21
 
 - **Working instance** — what Story Studio uses: `/Applications/gateway-kh.app`,
-  **promoted 2026-09-21 to build `6ed4c44-202609210701`** (regular Dock app; was
-  `5f94b4a-202609210554`), port **8000**, real profile
+  **promoted 2026-09-21 to build `97bb3a5-202609210714`** (regular Dock app;
+  earlier `6ed4c44-…`, `5f94b4a-…`), port **8000**, real profile
   `~/Library/Application Support/gateway-kh/`. Signature valid; profile verified
-  byte-identical across promotion; rollback bundle at `backups/rollback-20260921/`.
+  byte-identical across promotion; single rollback at `backups/rollback-20260921/`.
 - **Test instance** — where new work is verified: `test-instance/` in the
   container root, source `worktrees/handoff-completion`, port **8100**, isolated
   profile (`test-instance/support`, `test-instance/data`), no real credentials,
@@ -317,6 +317,24 @@ Deliberately not run, with reason:
   `LSUIElement=false`, signature valid, `lsappinfo` reports
   `type="Foreground"`, `/health` on the new build. The owner's 10 entered cloud
   provider keys survived the app swap.
+
+## 10c. User-requested UI fixes (done 2026-09-21)
+
+- **Providers page squished / buttons clipped.** The web console's provider card
+  header was one non-wrapping flex row inside `overflow:hidden`, so in a narrow
+  pane Configure/Disable were cut off. Now wraps, the name block shrinks, long
+  URLs wrap, and the field grid uses `minmax(min(260px,100%),1fr)`. Verified by a
+  620 px headless render: every button is visible.
+- **Key-status filter.** Added All / Key set / No key plus a live "N without a
+  key" count, so after entering a key the owner can keep viewing only the
+  keyless ones. Behavioral test in `test_console_actions.js`.
+- **Voices controls were a footer below the scrolling table.** Moved to two rows
+  above the table, and added **Select all shown** (selects the currently filtered
+  rows) and **Select none**, so search → select all shown → Enable selected works.
+- Commit `97bb3a5`; built `97bb3a5-202609210714`; promoted and verified
+  (`type="Foreground"`, signature valid, cloud keys preserved). The native Voices
+  layout could not be machine-verified because Accessibility is still not granted
+  (S4); it compiles and the build is installed.
 
 ## 11. Exact next action / resumable handoff
 

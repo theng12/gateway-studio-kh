@@ -21,6 +21,11 @@ test instance on port 8100 running the same committed source. Full evidence:
   promoted as `6ed4c44-202609210701`. This also removes the accessory-process
   caveats that S4's `test_ui.py` runs relied on; its comments were updated, but
   the suite still needs Accessibility to run.
+- User-requested UI fixes (`97bb3a5`, promoted as `97bb3a5-202609210714`):
+  provider cards no longer clip their buttons in a narrow pane; a key-status
+  filter (All / Key set / No key) with a keyless count; the Voices bulk controls
+  moved above the table with Select all shown / Select none. The native Voices
+  layout still needs the Accessibility-enabled S4 run to confirm screen geometry.
 
 ## Packet index
 
