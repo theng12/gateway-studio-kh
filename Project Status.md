@@ -813,6 +813,37 @@ imports); and `swiftc -parse menubar/VoicesWindow.swift` is clean, confirming th
 parse complaint in `AGENTS.md` is the extractor's, not broken Swift. The 0.8.36
 skill copy was left alone — refreshing it edits the owner's Codex skill config.
 
+## 10u. Spot review of the re-authored packs (2026-09-22)
+
+The approved review approach was "automated rebuild from your own sources, with a
+sample review plus every conflict". The sample became **every pack**, because the
+comparison is cheap and a sample would hide exactly the kind of drift worth
+catching.
+
+`store-analysis/reauthor/review_rebuilds.py` compares all **145** rebuilt packs
+field by field against the originals, normalising only what must change — the item
+`id` and every remapped reference — so any other difference is a finding. A `1.0.1`
+is compared against the `1.0.0` it corrects; a pack whose source directory is gone
+is compared against its preserved archive.
+
+**Result: 4 differences, all of them the intentional tag trim, and 0 asset
+deviations.**
+
+- The four are `baroque-mythological-sky`, `bold-gory-cartoon`,
+  `golden-epic-poster` and `inked-crosshatch-storybook` — each carried 14 tags and
+  Story's catalogue parser caps tags at 12, so the last two were dropped from each.
+  The report lists the exact tags removed, so the decision is reviewable rather
+  than merely asserted.
+- **No preview asset differs by a single byte** from the original: the WebP files
+  travelled through the rebuild unchanged, which is what makes the "owner-supplied
+  originals" claim true rather than aspirational.
+- The merged Wars/Treaties pack and the two archive-rebuilt thumbnails are included
+  and clean.
+
+Full record: `_handoffs/2026-09-22-re-authored-pack-spot-review.md`. Tooling:
+`store-analysis/reauthor/` in the container, beside `mapping.json` and
+`INVENTORY.md`.
+
 ## 11. Exact next action / resumable handoff
 
 - Branch `codex/content-pack-delivery`: promoted app code at `97bb3a5`
