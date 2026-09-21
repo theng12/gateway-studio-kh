@@ -565,6 +565,23 @@ handled correctly by the gateway:
   job is a durable unknown-outcome hold that is **not** resubmitted
   automatically, which is the designed behaviour.
 
+### Sweep result (owner-requested)
+
+- **Disabled** `nvidia-nim-main::deepseek-ai/deepseek-v4-flash-0731`
+  (`changed: 1`); it has no `enabled` flag now and offered dropped 124 → 123.
+- **No other dead model found.** No provider reports a discovery error, and no
+  other enabled model has a terminal failure in the job history.
+- Two other providers list the same model name; **OpenRouter's
+  `deepseek/deepseek-v4-flash-0731` is live** (`expiration_date: None` from its
+  public model list — checked without a paid call), and the `:batch` sibling is
+  the already-known-bad class and stays off. Experiential Labs' entry is
+  unverified but has no failure record.
+- **Groq's `whisper-large-v3` and `whisper-large-v3-turbo` are enabled but
+  withheld** — by design: the gateway must ask for SRT and Groq's Whisper cannot
+  return it. They never reach Story, so they are harmless; disabling them would
+  only tidy the enabled count.
+- `minimax-direct` has a key but zero models enabled — nothing to do.
+
 ## 11. Exact next action / resumable handoff
 
 - Branch `codex/content-pack-delivery`: promoted app code at `97bb3a5`
