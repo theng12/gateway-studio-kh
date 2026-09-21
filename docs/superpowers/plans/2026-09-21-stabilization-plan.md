@@ -46,7 +46,7 @@ test instance on port 8100 running the same committed source. Full evidence:
 | S4 | verification | high | ~~Native UI (`test_ui.py`) on the promoted build~~ — **done 2026-09-21, 127/127** |
 | S5 | verification | medium | ~~Real generation through the working instance~~ — **done 2026-09-21** |
 | S6 | verification | low | ~~Real-Hub fleet suite, knowingly~~ — **done 2026-09-21, 47/47** |
-| S7 | verification | low | Code-only Graphify refresh |
+| S7 | verification | low | ~~Code-only Graphify refresh~~ — **done 2026-09-22: 2785 nodes / 7008 edges** |
 | S8 | decision | high | ~~Promote Content Packs build to working~~ — **done 2026-09-21 (`5f94b4a-202609210554`)** |
 | S9 | decision | medium | ~~Historical Store material~~ — **done 2026-09-21: moved to `_trash/`** |
 | S10 | decision | medium | ~~Back up the private shelf signing identity~~ — **done 2026-09-21** |
@@ -230,7 +230,7 @@ response in the whole run was 402. The suite needs a real speech clip under
 artifacts had been pruned, so a synthetic clip was made with macOS `say`,
 used for the run, and removed afterwards — `data/` is unchanged.
 
-## S7 — Code-only Graphify refresh (low)
+## S7 — Code-only Graphify refresh (low) — **done 2026-09-22**
 
 **Why.** `AGENTS.md` asks for `graphify extract . --update --code-only` after
 structural work. The binary is not on PATH in this session.
@@ -239,6 +239,34 @@ structural work. The binary is not on PATH in this session.
 LLM extraction) after S1 commits. Confirm `graphify-out/` stays gitignored.
 
 **Acceptance.** Graph rebuilt; no generated files staged.
+
+**Outcome 2026-09-22.** The binary is at `~/.local/bin/graphify` (a symlink into
+the `uv` tool dir), not on this session's PATH. Run from the worktree:
+`graphify extract . --update --code-only`, then
+`graphify cluster-only . --no-label` to regenerate the report **without** paying
+for LLM community naming (`--no-label` keeps `Community N` placeholders; plain
+`cluster-only` names them with a key).
+
+Rebuilt from a graph dated before this session's structural work: 20 code files
+re-extracted, 87 unchanged, **2785 nodes / 7008 edges / 154 communities**;
+`GRAPH_REPORT.md`, `graph.json` and `graph.html` all refreshed to 2026-09-22 02:01.
+The graph carries this session's additions (`tests/check_admin_keyboard.mjs` is a
+node with 9 edges, `tests/check_native.py`, `scripts/encrypt_content_authority_backup.sh`
+and `tests/test_admin_accessibility.js` are all present). Working tree still clean —
+`graphify-out/` is ignored at `.gitignore:29`, so nothing generated was staged.
+
+Two graphify limitations met on the way, neither a defect in this repo:
+
+- It warns that node ids `cocoa` and `webkit` are **minted by more than one file**
+  in `menubar/` (the derived id is not unique across files) and drops the
+  duplicate; its own suggested remedy is a per-subfolder extract plus
+  `merge-graphs`, which is not worth it for two framework imports.
+- `swiftc -parse menubar/VoicesWindow.swift` is **clean**, confirming the parse
+  complaint `AGENTS.md` records is the extractor's limitation, not broken Swift.
+
+Left alone deliberately: `graphify install --platform codex` would refresh the
+0.8.36 skill copy against the 0.9.64 package the binary reports, but that edits
+the owner's Codex skill configuration and is not this packet's business.
 
 ## S8 — Promote the Content Packs build to working (high, owner command)
 

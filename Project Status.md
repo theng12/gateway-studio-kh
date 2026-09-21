@@ -792,6 +792,27 @@ Full record and the exact commands: `_handoffs/2026-09-22-hardening-owner-action
   owner runs it once in a terminal; the plaintext backup stays until he has
   decrypted the archive and is satisfied.
 
+## 10t. S7 — the graph is current again (2026-09-22)
+
+`graphify-out/` was dated before this session's structural work. Refreshed from the
+worktree: `graphify extract . --update --code-only`, then `graphify cluster-only .
+--no-label` (the `--no-label` keeps `Community N` placeholders instead of paying for
+LLM naming). **2785 nodes / 7008 edges / 154 communities**, with
+`GRAPH_REPORT.md`, `graph.json` and `graph.html` all written at 2026-09-22 02:01.
+
+It carries this session's additions — `tests/check_admin_keyboard.mjs` is a node
+with 9 edges, and `tests/check_native.py`,
+`scripts/encrypt_content_authority_backup.sh` and
+`tests/test_admin_accessibility.js` are all present. The working tree stayed clean:
+`graphify-out/` is ignored at `.gitignore:29`, so nothing generated was staged.
+
+Two extractor limitations noted, neither a repo defect: `cocoa` and `webkit` are
+minted by more than one `menubar/` file and the extractor drops the duplicate (its
+remedy, per-subfolder extract plus `merge-graphs`, is not worth two framework
+imports); and `swiftc -parse menubar/VoicesWindow.swift` is clean, confirming the
+parse complaint in `AGENTS.md` is the extractor's, not broken Swift. The 0.8.36
+skill copy was left alone — refreshing it edits the owner's Codex skill config.
+
 ## 11. Exact next action / resumable handoff
 
 - Branch `codex/content-pack-delivery`: promoted app code at `97bb3a5`
