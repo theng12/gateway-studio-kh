@@ -763,6 +763,35 @@ Story's parser returns 200, a visual style and a thumbnail recipe still install
 `activated: true`, and a damaged signing key still answers
 `CONTENT_AUTHORITY_DAMAGED`. Build `37a5969-202609211856`, promoted.
 
+## 10s. Hardening: exposure measured, one action done, two for the owner (2026-09-22)
+
+Full record and the exact commands: `_handoffs/2026-09-22-hardening-owner-actions.md`.
+
+- **The port is exposed but the door is locked.** The gateway binds `*:8787`, the
+  macOS application firewall is **disabled**, and the LAN address is
+  `192.168.1.239`. Measured from that address, unauthenticated `/v1/models` and
+  `/admin/api/status` both answer **401**; over Tailscale, 401. Only `/health`
+  answers keyless, and it publishes build/pid/counts, no secret. So hardening is
+  defence in depth here rather than closing an open door.
+- **Tailscale key expiry looks already correct.** `tailscale status --json`
+  publishes no `KeyExpiry`/`Expiry` on `Self`, which is what a non-expiring node
+  key looks like; confirm once in the admin console rather than infer it from an
+  omitted field. Nothing to change if it is already off.
+- **Closing the LAN needs `pf`, which needs sudo this session cannot get**
+  (approval prompts are disabled). The app firewall is the wrong tool — it is
+  per-application and the gateway *is* the listener, so it would cut the tailnet
+  too. The handoff carries a ready `pf` anchor (allow `lo0` + `utun`, drop the
+  rest) with the two curl checks that prove both directions, and a warning that a
+  wrong interface name cuts Tailscale.
+- **The authority backup can be encrypted now**:
+  `scripts/encrypt_content_authority_backup.sh` seals the whole backup directory
+  into one AES-256 archive. Verified — it round-trips to byte-identical files,
+  refuses a wrong passphrase, refuses to overwrite, verifies the written file
+  decrypts to the same digest before reporting success, and leaves no plaintext in
+  the output. It prompts for the passphrase and never stores or echoes it, so the
+  owner runs it once in a terminal; the plaintext backup stays until he has
+  decrypted the archive and is satisfied.
+
 ## 11. Exact next action / resumable handoff
 
 - Branch `codex/content-pack-delivery`: promoted app code at `97bb3a5`
