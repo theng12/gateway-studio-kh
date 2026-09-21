@@ -30,7 +30,7 @@ test instance on port 8100 running the same committed source. Full evidence:
 | S6 | verification | low | Real-Hub fleet suite, knowingly |
 | S7 | verification | low | Code-only Graphify refresh |
 | S8 | decision | high | ~~Promote Content Packs build to working~~ — **done 2026-09-21 (`5f94b4a-202609210554`)** |
-| S9 | decision | medium | Historical Store material: owner wants it removed; scope confirmation pending |
+| S9 | decision | medium | ~~Historical Store material~~ — **done 2026-09-21: moved to `_trash/`** |
 | S10 | decision | medium | Back up the private shelf signing identity |
 | S11 | scope | low | Content kinds beyond the four standalone kinds |
 | S12 | scope | low | Keyboard-access pass on the admin page |
@@ -200,6 +200,11 @@ authority. The new private authority deliberately refuses to reissue them.
    missing contract and owner decision first; never mint ownership or re-sign.
 
 **Acceptance.** Decision recorded in `Project Status.md`; no trust bypass added.
+
+**Done 2026-09-21.** The owner chose to retire the historical material rather
+than keep it live. It was moved to `_trash/transfer-staging/` (586 MB) under the
+new recoverable-delete convention — not hard-deleted — and the private shelf
+still refuses to reissue historical identities. See `_trash/README.md`.
 
 ## S10 — Back up the private shelf signing identity (medium)
 

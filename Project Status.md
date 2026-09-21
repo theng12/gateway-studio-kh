@@ -268,8 +268,8 @@ Deliberately not run, with reason:
 - No push, deploy, credential change, paid call or destructive migration occurred.
 - `[INHERITED]` reports in `_handoffs/2026-09-20-*` are evidence, not truth; the
   `[MEASURED]` tables here supersede them where they disagree.
-- Legacy transferred Store packs remain archive-only by design, pending the
-  owner's cleanup decision in section 10.
+- Legacy transferred Store packs remain archive-only by design; the historical
+  material now lives in `_trash/` (recoverable) per the cleanup convention.
 
 ## 9. Two-instance state (current)
 
@@ -299,8 +299,9 @@ Deliberately not run, with reason:
   byte-identical to before.
 - Cleanup: old app-version backups and both `menubar/build` outputs removed and
   consolidated to the single rollback folder (92 MB). Container ~1.6 GB → ~982 MB.
-- Historical transfer archives (`transfer-staging/`, 586 MB) were **not** deleted:
-  they are irreplaceable and await an explicit owner decision.
+- Historical transfer archives (586 MB) and other superseded material were moved
+  to `_trash/` (container root) under the owner's recoverable-delete convention;
+  see `_trash/README.md`. Nothing in `_trash` was hard-deleted.
 
 ## 11. Exact next action / resumable handoff
 
@@ -309,8 +310,8 @@ Deliberately not run, with reason:
 - Working instance promoted, healthy and verified; test instance running on 8100.
 - Stabilization plan `docs/superpowers/plans/2026-09-21-stabilization-plan.md`:
   S1, S2 and S8 done. Next unblocked packet: S3 (authority read cost), then S12.
-- Pending owner decision: delete `transfer-staging/` (586 MB of historical Store
-  archives and authoring sources) or keep it.
+- Cleanup convention (owner, 2026-09-21): old material is **moved to `_trash/`**,
+  never hard-deleted. Applies to all future cleanups.
 - Verification gaps needing the owner or environment: S4 native UI suite on the
   promoted build, S5 real cloud + local generation, S6 real-Hub fleet suite,
   S7 code-only Graphify refresh, S12 keyboard-access pass.
