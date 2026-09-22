@@ -10,6 +10,11 @@ We are making one convention coherent across all of the owner's projects, and th
 repo is one of them. It is about **deletions**, and it should take you under five
 minutes.
 
+**The rule is already global.** It now sits in the owner's global instructions at
+`~/.codex/AGENTS.md`, so every session in every project already has it. What is
+missing here is the *folder* — and this repo is one of the few that does not have one
+yet. Do not re-litigate the rule; just install it locally.
+
 ## The rule
 
 **Every removal goes to this project's `_trash/` — never `rm`.** That covers *all* of
@@ -58,9 +63,9 @@ Nothing here is read by the app, tests or build. It is outside Git.
 
 3. **Add `_trash/` to this project's `.gitignore`** if it is not already there, so the
    folder and its contents can never be committed.
-4. **Add the rule to this project's working rules** — the same bullet, in the
-   instructions file this repo uses for agent rules (add a `## Working rules` section
-   if none exists):
+4. **Optionally mirror the rule in this project's own working rules.** It already
+   applies from the global file, so this is only for local visibility (add a
+   `## Working rules` section if none exists):
 
 ```markdown
 - **Every removal goes to this project's `_trash/` — never `rm`.** This covers *all*
