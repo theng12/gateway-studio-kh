@@ -333,16 +333,16 @@ test('a pack the shelf refuses is reported and the control comes back', async ()
   assert.match(h.node('received-pack-message').textContent, /Historical pack identities/);
 });
 
-test('a shelf that cannot author shows one view, and it is the setup step', async () => {
+test('a shelf with no setup yet shows the one setup step and nothing else', async () => {
   const h = harness(async (pathName) => {
     if (pathName === '/content-shelf') {
-      return {...READY_SHELF, authoring: false, configured: false, available: true, releases: []};
+      return {...READY_SHELF, configured: false, available: true, releases: []};
     }
     return {};
   });
   await h.context.loadContentShelf();
 
-  // No tab bar at all, and nothing offered that a receiving Mac cannot do.
+  // No tab bar, and nothing offered that cannot happen yet.
   assert.equal(h.node('packs-tabs').hidden, true);
   assert.equal(h.node('packs-panel-setup').hidden, false);
   assert.equal(h.node('packs-panel-shelved').hidden, true);
@@ -350,9 +350,9 @@ test('a shelf that cannot author shows one view, and it is the setup step', asyn
   assert.equal(h.node('packs-panel-drafts').hidden, true);
 });
 
-test('once set up, a receiving shelf shows the packs and no authorship claim', async () => {
+test('once set up, the only view is the packs and the one add action', async () => {
   const h = harness(async (pathName) => {
-    if (pathName === '/content-shelf') return {...READY_SHELF, authoring: false};
+    if (pathName === '/content-shelf') return READY_SHELF;
     return {};
   });
   await h.context.loadContentShelf();
@@ -360,21 +360,21 @@ test('once set up, a receiving shelf shows the packs and no authorship claim', a
   assert.equal(h.node('packs-tabs').hidden, true);
   assert.equal(h.node('packs-panel-shelved').hidden, false);
   assert.equal(h.node('packs-panel-setup').hidden, true);
-  // "I confirm I authored this pack" is a claim only an author makes.
+  // "I confirm I authored this pack" is a claim only an author makes, and no
+  // authoring happens here.
   assert.equal(h.node('shelf-ack-label').hidden, true);
   assert.match(h.node('packs-intro').textContent, /available to Story Studio/);
 });
 
-test('an authoring Mac keeps all four tabs and its acknowledgement', async () => {
-  const h = harness(async (pathName) => {
-    if (pathName === '/content-shelf') return {...READY_SHELF, authoring: true};
-    return {};
-  });
-  await h.context.loadContentShelf();
-
-  assert.equal(h.node('packs-tabs').hidden, false);
-  assert.equal(h.node('packs-panel-shelved').hidden, false);
-  assert.equal(h.node('packs-panel-setup').hidden, true);
-  assert.equal(h.node('shelf-ack-label').hidden, false);
-  assert.match(h.node('packs-intro').textContent, /authoring drafts/);
+test('the console does not branch on whether this Mac could author', async () => {
+  for (const authoring of [true, false]) {
+    const h = harness(async (pathName) => {
+      if (pathName === '/content-shelf') return {...READY_SHELF, authoring};
+      return {};
+    });
+    await h.context.loadContentShelf();
+    assert.equal(h.node('packs-tabs').hidden, true, `authoring=${authoring} still shows one view`);
+    assert.equal(h.node('packs-panel-shelved').hidden, false);
+    assert.equal(h.node('shelf-ack-label').hidden, true);
+  }
 });

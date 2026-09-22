@@ -158,6 +158,9 @@ def inspect_archive(data: bytes) -> dict:
                 "archive_sha256": hashlib.sha256(data).hexdigest(), "bytes": len(data),
                 **{key: manifest[key] for key in ("pack_id", "publisher_id", "version", "min_app_version")},
                 "title": title, "description": description, "tags": tags,
+                # The pack states the product and family it was built for, so an
+                # importing shelf can read the identity instead of reconstructing it.
+                "entitlement": manifest.get("entitlement") or {},
                 "item_ids": item_ids,
                 "delivery_profile": profile, "item_kinds": sorted({item["kind"] for item in items}),
                 "file_count": len(files), "integrity": "verified", "ownership": "unverified",

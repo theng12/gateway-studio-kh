@@ -297,7 +297,6 @@ process.exit(verify(null,Buffer.from(canonical(row.payload),'utf8'),key,Buffer.f
         self.assertEqual(response.status_code, 200)
         self.assertFalse(response.json()["configured"])
         self.assertEqual(set(response.json()), {
-            "authoring",
             "configured", "available", "detail", "authority", "supported_kinds", "releases",
         })
         self.assertFalse((SUPPORT / "data" / "content-delivery").exists())
@@ -329,15 +328,9 @@ process.exit(verify(null,Buffer.from(canonical(row.payload),'utf8'),key,Buffer.f
         first = response.json()
         self.assertEqual(set(first), {
             "configured", "available", "detail", "authority", "supported_kinds", "releases",
-            # Whether this Mac can author at all, so the console can show one view
-            # to a shelf that can only receive packs.
-            "authoring",
         })
         self.assertTrue(first["configured"])
         self.assertTrue(first["available"])
-        # This suite runs against the real Story checkout, so authoring is possible
-        # here and the full console stays.
-        self.assertTrue(first["authoring"])
         self.assertEqual(first["supported_kinds"], [
             "series-formula", "topic-pack", "visual-style", "thumbnail-recipe",
             # Accepted by Story 1.4.216; withheld from older clients in `products()`.

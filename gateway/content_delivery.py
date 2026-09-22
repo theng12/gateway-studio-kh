@@ -592,11 +592,6 @@ def _status(state: dict[str, Any], available: bool, detail: str) -> dict[str, An
         "detail": detail,
         "authority": _public_authority(state),
         "supported_kinds": SUPPORTED_KINDS,
-        # Whether this Mac can author a pack at all — the same fact that chooses
-        # between Story's validated publish path and the plain import one. It is
-        # reported, never toggled: a console that cannot author has no business
-        # showing reservation, drafts or an authorship acknowledgement.
-        "authoring": _authoring_available(),
         "releases": _release_rows(state),
     }
 
@@ -626,7 +621,7 @@ def status() -> dict[str, Any]:
     except DeliveryError as exc:
         ready, detail = False, str(exc)
     return {"configured": False, "available": ready, "detail": detail, "authority": None,
-            "supported_kinds": SUPPORTED_KINDS, "authoring": _authoring_available(), "releases": []}
+            "supported_kinds": SUPPORTED_KINDS, "releases": []}
 
 
 def setup() -> dict[str, Any]:
@@ -689,6 +684,12 @@ def _imported_metadata(digest: str, authority: dict[str, Any], state: dict[str, 
     # at thirteen — the outage that made this a release gate. No parser runs on this
     # path, so the cap is applied here, and the archive is trimmed rather than refused.
     tags = [tag for tag in (inspection.get("tags") or []) if isinstance(tag, str)][:12]
+    # The pack states the product and family it was built for. Read them; fall back
+    # to the pack-id rule only for an archive that declares none.
+    entitlement = inspection.get("entitlement")
+    entitlement = entitlement if isinstance(entitlement, dict) else {}
+    declared_sku = str(entitlement.get("sku") or "").strip()
+    declared_family = str(entitlement.get("family") or "").strip()
     return {
         "archive_sha256": digest,
         "archive_bytes": len(content_packs.read_archive(digest)),
@@ -697,8 +698,8 @@ def _imported_metadata(digest: str, authority: dict[str, Any], state: dict[str, 
         "title": inspection.get("title") or pack_id,
         "kind": kinds[0],
         "publisher_id": inspection["publisher_id"],
-        "product_id": pack_id.replace(".pack.", ".sku."),
-        "entitlement_family": pack_id.replace(".pack.", ".family."),
+        "product_id": declared_sku or pack_id.replace(".pack.", ".sku."),
+        "entitlement_family": declared_family or pack_id.replace(".pack.", ".family."),
         "item_ids": item_ids,
         "min_story_version": inspection["min_app_version"],
         "description": str(inspection.get("description") or "")[:2000],

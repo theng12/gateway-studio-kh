@@ -656,20 +656,21 @@ const PACK_KIND_ORDER = ['topic-pack', 'series-formula', 'visual-style', 'thumbn
 let packsTab = 'shelved';
 let shelfKindFilter = 'all';
 
-// Whether this Mac can author a pack — served by the shelf as `authoring`, which
-// is the same fact the gateway uses to pick its publish path. Starts true so the
-// authoring console is unchanged until a status arrives that says otherwise.
-let shelfAuthoring = true;
-
-// A shelf that can only receive packs gets one view, not four. Set up first when
-// there is no shelf yet, because an import cannot land anywhere until there is
-// one; otherwise the packs themselves, with the one action they need.
+// **One view, for everyone.** The app publishes packs; it does not author them.
+// Authoring happens in an authoring session — which reads a pack's sources and
+// builds the `.sspack` — and what comes back is one file to import, exactly as a
+// customer receives one. So there is no authoring mode here to be in: set the shelf
+// up once if it does not exist, then add packs and see them.
+//
+// (`status.authoring` still reports whether this Mac could run Story's own
+// validation; the gateway uses it to pick its publish path. The console does not
+// branch on it, deliberately.)
 function applyPacksMode() {
   const host = document.getElementById('packs-tabs');
-  if (host) host.hidden = !shelfAuthoring;
-  const configured = !!shelfState.data?.configured;
-  if (packsTab !== 'setup' && packsTab !== 'shelved') packsTab = 'shelved';
-  const key = shelfAuthoring ? packsTab : (configured ? 'shelved' : 'setup');
+  if (host) host.hidden = true;
+  // Set up first only while there is no shelf, because an import has nowhere to
+  // land until there is one.
+  const key = shelfState.data?.configured ? 'shelved' : 'setup';
   packsTab = key;
   for (const tab of PACKS_TABS) {
     const panel = document.getElementById(`packs-panel-${tab.key}`);
@@ -677,13 +678,12 @@ function applyPacksMode() {
   }
   const intro = document.getElementById('packs-intro');
   if (intro) {
-    intro.textContent = shelfAuthoring
-      ? 'Private authoring drafts, shelved releases, and preserved archives. Set up the private shelf explicitly; importing or authoring never installs a pack or invents ownership.'
-      : 'Packs you have added are available to Story Studio. Nothing here is installed until you choose to download it in Story Studio.';
+    intro.textContent = 'Packs you have added are available to Story Studio. Nothing here is installed until you choose to download it in Story Studio.';
   }
-  // The authorship acknowledgement is a claim only an author makes.
+  // The authorship acknowledgement is a claim only an author makes, and no author
+  // works here.
   const ack = document.getElementById('shelf-ack-label');
-  if (ack) ack.hidden = !shelfAuthoring;
+  if (ack) ack.hidden = true;
 }
 
 function renderPacksTabs() {
@@ -779,7 +779,6 @@ async function loadContentShelf() {
     const data = await api('/content-shelf');
     if (refresh !== shelfState.refresh) return;
     shelfState.data = data;
-    shelfAuthoring = data?.authoring !== false;
     renderShelfStatus(data);
     applyPacksMode();
     shelfMessage('');
