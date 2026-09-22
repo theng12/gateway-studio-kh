@@ -50,7 +50,7 @@ test instance on port 8100 running the same committed source. Full evidence:
 | S8 | decision | high | ~~Promote Content Packs build to working~~ — **done 2026-09-21 (`5f94b4a-202609210554`)** |
 | S9 | decision | medium | ~~Historical Store material~~ — **done 2026-09-21: moved to `_trash/`** |
 | S10 | decision | medium | ~~Back up the private shelf signing identity~~ — **done 2026-09-21** |
-| S11 | scope | low | Content kinds beyond the four standalone kinds — **handoff sent 2026-09-22** (`_handoffs/2026-09-22-wire-kind-parity-lettering-and-metadata-formula.md`) |
+| S11 | scope | low | ~~Content kinds beyond the four standalone kinds~~ — **done 2026-09-22: 28 packs delivered (20 `font_pack`, 8 `metadata_formula`)** |
 | S12 | scope | low | ~~Keyboard-access pass on the admin page~~ — **done 2026-09-22** |
 
 "Defect" = reproducible defect; "verification" = unverified area; "decision" =
@@ -338,7 +338,7 @@ procedure is documented in `docs/content-packs-authoring.md`. The optional
 durable state to be truthful, and the documented step is enough for a
 single-owner shelf.
 
-## S11 — Content kinds beyond the four standalone kinds (low)
+## S11 — Content kinds beyond the four standalone kinds (low) — **done 2026-09-22**
 
 **Why.** Story 1.4.213's content parser exposes only Series Formula, Topic Pack,
 Visual Style and Thumbnail Recipe. Subtitle-style, scene-effect, overlay,
