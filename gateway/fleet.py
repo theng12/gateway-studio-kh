@@ -30,6 +30,7 @@ import hashlib
 import json
 import math
 import os
+import re
 import stat
 import threading
 import time
@@ -40,6 +41,7 @@ from urllib.parse import urlsplit
 
 import httpx
 
+from . import config
 from .config import DATA_DIR
 from .hub import hub_base_url, hub_token
 
@@ -789,6 +791,10 @@ def _probe(base: str, token: str, *, timeout: float = _TIMEOUT) -> dict:
         "matrix": stats.get("matrix") or [],
         "jobs_total": stats.get("total"),
         "capacity": capabilities.get("capacity") or {},
+        # The Hub's own per-model physical capacity. The router reads this so a
+        # model is weighted by the machines that can run **it**, not by every
+        # machine at the site (see `routing_candidates`).
+        "model_supply": _model_supply_index(capabilities.get("model_supply") or []),
         "latency_ms": int((time.time() - started) * 1000),
     })
     return location
@@ -1098,6 +1104,12 @@ def snapshot(force: bool = False, *, allow_stale: bool = False) -> dict:
 # global_job_claiming: false}`. So the gateway chooses a *site* and never a
 # machine -- which machine has the memory for the model is machine-specific and
 # is the controller's decision, not this module's.
+#
+# Choosing the *site* still has to respect the model: the Hub's `model_supply`
+# says how many machines at each controller can actually run **it** (memory floor
+# and all), so the weight is per model rather than per site. Setting
+# `GATEWAY_PREFER_FASTEST_SITE=1` trades that capacity share for latency and ranks
+# the fastest site first.
 
 
 def _as_int(value: object) -> int:
@@ -1121,6 +1133,82 @@ def usable_location_ids() -> set[str]:
         }
     except Exception:  # noqa: BLE001 - a routing hint must never break the catalogue
         return set()
+
+
+#: The Hub's operation names for this gateway's modalities, read from the Hub's own
+#: `OPERATION_BY_MODALITY` table (`components/hub/backend/capabilities.py`). Used
+#: only as the middle fallback, when a location publishes capacity per operation but
+#: no per-model supply row.
+_HUB_OPERATION_BY_MODALITY = {
+    "image": "image.text_to_image",
+    "music": "music.generation",
+    "tts": "voice.tts",
+    "transcription": "audio.transcription",
+    "video": "video.generation",
+}
+
+
+def _as_optional_int(value: object) -> int | None:
+    """`None` stays `None`: "the Hub did not say" is not "zero"."""
+    return None if value is None else _as_int(value)
+
+
+def _truthy(value: object) -> bool:
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _model_supply_index(rows: object) -> dict[str, dict[str, int]]:
+    """The Hub's per-model physical capacity, keyed by the model id it names.
+
+    `model_supply` is the Hub's own reduction of every worker's evidence, and it
+    already answers the question the router used to approximate: how many
+    *machines* can run **this** model. `eligible` counts the machines that clear
+    the model's memory floor; `available` counts the ones ready with a free slot
+    now. Both are read, never derived — and a machine that cannot fit the model is
+    in neither, which is the whole point.
+    """
+    index: dict[str, dict[str, int]] = {}
+    if not isinstance(rows, list):
+        return index
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        model_id = str(row.get("internal_model_id") or "").strip()
+        if not model_id:
+            continue
+        index[model_id] = {
+            "eligible": _as_int(row.get("eligible_physical_slots_total")),
+            "available": _as_int(row.get("available_physical_slots")),
+        }
+    return index
+
+
+#: Apple chip generation out of the marketing brand string ("Apple M4 Pro").
+_CHIP_GENERATION = re.compile(r"\bM([1-9])\b")
+
+
+def _site_speed_score(machines: object) -> float:
+    """The fastest Mac at a site, by the Hub's own chip+RAM proxy.
+
+    Mirrors Studio Hub's `_studio_speed_score` (`generation * 100 + memory_gb`),
+    which is itself a proxy for image throughput because nothing in the fleet
+    measures seconds-per-image. Used only behind `GATEWAY_PREFER_FASTEST_SITE`;
+    it ranks, it never admits or excludes.
+    """
+    best = 0.0
+    if not isinstance(machines, list):
+        return best
+    for machine in machines:
+        if not isinstance(machine, dict):
+            continue
+        match = _CHIP_GENERATION.search(str(machine.get("chip") or "").upper())
+        generation = int(match.group(1)) if match else 0
+        try:
+            memory_gb = max(0.0, float(machine.get("memory_gb") or 0.0))
+        except (TypeError, ValueError):
+            memory_gb = 0.0
+        best = max(best, generation * 100 + memory_gb)
+    return best
 
 
 def _weighted_tiebreak(routing_key: str, location_id: str, compatible_slots: int) -> float:
@@ -1182,7 +1270,26 @@ def routing_candidates(
             continue
 
         capacity = row.get("capacity") or {}
-        slots = _as_int(capacity.get("eligible_physical_machine_slots_total"))
+        # The exact model first: how many machines at this site can run **this**
+        # model. The old site-wide total counted each 8 GB image Mac in the weight
+        # for a 24 GB model it can never run, so a small-Mac site out-weighed a
+        # big-Mac one and the heavy jobs serialised on its single fitting Mac.
+        supply = (row.get("model_supply") or {}).get(model_id) or {}
+        slots = _as_int(supply.get("eligible"))
+        available = _as_optional_int(supply.get("available"))
+        if slots <= 0:
+            # The Hub's capacity per operation, for a location that publishes no
+            # per-model supply row.
+            operation = _HUB_OPERATION_BY_MODALITY.get(str(modality or ""))
+            by_operation = (capacity.get("by_operation") or {}).get(operation or "") or {}
+            slots = _as_int(by_operation.get("eligible_physical_machine_slots_total"))
+            if available is None:
+                available = _as_optional_int(by_operation.get("available_physical_machine_slots"))
+        if slots <= 0:
+            # Then the site-wide total, as before, so an older Hub is not penalised.
+            slots = _as_int(capacity.get("eligible_physical_machine_slots_total"))
+            if available is None:
+                available = _as_optional_int(capacity.get("available_physical_machine_slots"))
         if slots <= 0:
             # A Hub that does not report capacity still reports machines. Fall back
             # to the reachable machine count so a site is never weighted zero.
@@ -1197,7 +1304,12 @@ def routing_candidates(
             "location_id": location_id,
             "label": row.get("label") or location_id,
             "slots": max(slots, 1),
+            # 0 is a real reading ("every fitting machine is busy"); None is "the
+            # Hub did not say". The rank below treats them the same, but keeping
+            # them distinct lets a reader tell them apart.
+            "available": available,
             "queue": max(queue, 0),
+            "speed": _site_speed_score(row.get("machines")),
         })
     return candidates
 
@@ -1220,16 +1332,23 @@ def route(
             return None, f"the location that owns this voice ({only_location}) cannot run {model_id}"
         return None, f"no location can run {model_id} right now"
 
+    prefer_fastest = _truthy(config.get("GATEWAY_PREFER_FASTEST_SITE"))
+
     def rank(candidate: dict) -> tuple:
-        # Pressure first -- queue per eligible machine -- then the weighted
-        # lottery, then the id so the result is deterministic.
-        return (
-            candidate["queue"] / candidate["slots"],
-            _weighted_tiebreak(
-                routing_key or model_id, candidate["location_id"], candidate["slots"]
-            ),
-            candidate["location_id"],
+        # Pressure first -- queue per **fitting** machine -- then the weighted
+        # lottery, then free fitting capacity, then the id so the result is
+        # deterministic. `slots` is the model's own eligible machine count, so a
+        # site's small Macs no longer dilute a heavy model's share.
+        pressure = candidate["queue"] / candidate["slots"]
+        lottery = _weighted_tiebreak(
+            routing_key or model_id, candidate["location_id"], candidate["slots"]
         )
+        free = -(candidate["available"] or 0)
+        if prefer_fastest:
+            # `GATEWAY_PREFER_FASTEST_SITE=1`: fastest site first, using the Hub's
+            # chip+RAM proxy. Off by default; capacity-first is the fleet default.
+            return (-candidate["speed"], pressure, free, lottery, candidate["location_id"])
+        return (pressure, free, lottery, candidate["location_id"])
 
     chosen = min(candidates, key=rank)
     note = (

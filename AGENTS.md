@@ -394,9 +394,18 @@ Routing follows the split Studio Hub declares in `/api/hub/capabilities`
 global_job_claiming: false}`:
 
 - **The gateway chooses the site, never the machine.** `fleet.route` ranks
-  candidates by pressure (`queue / eligible_physical_machine_slots`), then a
-  weighted lottery weighted by that slot count; which machine has the memory for
-  a model belongs to the controller.
+  candidates by pressure (`queue / eligible fitting machines`), then a weighted
+  lottery weighted by that count; which machine has the memory for a model
+  belongs to the controller.
+
+- **The weight is per model, not per site.** The Hub publishes `model_supply`
+  (per model) and `capacity.by_operation` (per operation); `routing_candidates`
+  reads the exact model's eligible machine count first, then the operation's, and
+  falls back to the site-wide total only for a Hub that publishes neither. A site
+  with ten 8 GB image Macs and one 24 GB Mac must not out-weigh a site with two
+  24 GB Macs for a 24 GB model. `available` (ready with a free slot) breaks a
+  pressure tie, and `GATEWAY_PREFER_FASTEST_SITE=1` ranks the fastest site first
+  with the Hub's chip+RAM proxy when latency matters more than capacity share.
 
 - **Capacity belongs in the weight, never as a rank term.** Ported from the old
   `MultiSiteAssignment`: raw size as a rank made a small site unreachable, the
