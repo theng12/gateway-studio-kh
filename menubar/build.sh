@@ -152,6 +152,13 @@ BUILD_ID="$(git -C "$ROOT" rev-parse --short HEAD 2>/dev/null || echo nogit)-$(d
 echo "$BUILD_ID" > "$APP/Contents/Resources/gateway/BUILD"
 echo "    build $BUILD_ID"
 
+# The version a person names ("which one is installed?"), separate from the exact
+# build stamp. One file, one place to bump; the app shows both, and the DMG name
+# carries both so the latest is obvious in dist/.
+MARKETING_VERSION="$(tr -d '[:space:]' < "$ROOT/VERSION" 2>/dev/null || true)"
+[ -n "$MARKETING_VERSION" ] || MARKETING_VERSION="0.0.0"
+echo "    version $MARKETING_VERSION"
+
 echo "==> bundling what's new"
 cp "$HERE/whats-new.md" "$APP/Contents/Resources/whats-new.md"
 
@@ -166,7 +173,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
     <key>CFBundleIdentifier</key><string>kh.gateway.menubar</string>
     <key>CFBundleExecutable</key><string>GatewayKH</string>
     <key>CFBundlePackageType</key><string>APPL</string>
-    <key>CFBundleShortVersionString</key><string>0.1.0</string>
+    <key>CFBundleShortVersionString</key><string>$MARKETING_VERSION</string>
     <key>CFBundleVersion</key><string>$BUILD_ID</string>
     <key>GatewayBuild</key><string>$BUILD_ID</string>
     <key>CFBundleIconFile</key><string>AppIcon</string>
@@ -196,12 +203,12 @@ codesign --force --deep --sign - "$APP"
 codesign --verify --deep --strict --verbose=2 "$APP"
 
 # A DMG belongs beside the app on every build: a stable build is not ready until it can
-# be handed to another Mac, so it lands in dist/ with the build stamp in its name.
-# `hdiutil` ships with macOS, so this needs nothing installed. The app is ad-hoc
-# signed and the image is not notarised, so a Mac that did not build it still needs
-# the right-click Open — the same step the other projects' DMGs need.
+# be handed to another Mac, so it lands in dist/ with the version and build stamp in
+# its name. `hdiutil` ships with macOS, so this needs nothing installed. The app is
+# ad-hoc signed and the image is not notarised, so a Mac that did not build it still
+# needs the right-click Open — the same step the other projects' DMGs need.
 DIST="$ROOT/dist"
-DMG="$DIST/gateway-kh-${BUILD_ID}-arm64.dmg"
+DMG="$DIST/gateway-kh-${MARKETING_VERSION}-${BUILD_ID}-arm64.dmg"
 mkdir -p "$DIST"
 rm -f "$DMG"
 DMG_STAGE="$(mktemp -d)"

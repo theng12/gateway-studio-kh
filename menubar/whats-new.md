@@ -4,24 +4,33 @@ Newest first. This is the same list the **What's New** link in the app shows.
 
 ---
 
-## Clearer words for the two Fleet tokens
+## v0.2.0 — smarter fleet generation
 
-Adding a Studio Hub location now asks for its **Fleet token** by name and says
-what each token is for. The **Hub token** is that Mac's own key, needed only to
-manage shared voices; the **Fleet token** is the work badge that sends and
-collects work. Joining a controller stays the Mac's own decision, made on that
-Mac — GatewayKH cannot join or unjoin it.
+Generation now goes to the machines that can actually run **that model**, and a
+controller that cannot serve one is stepped over instead of failing the job.
 
-## Content Packs: make your own, and install them in Story Studio
+- **Numbers decide, not speed.** A site is weighted by how many of its Macs fit
+  the requested model, so ten 8 GB image Macs no longer out-weigh two 24 GB Macs
+  for a model only the big ones can run. Free capacity breaks a tie, and the
+  optional `GATEWAY_PREFER_FASTEST_SITE=1` setting is a nudge, never a takeover.
+- **A model a controller cannot run is not offered.** When Studio Hub reports a
+  model as not dispatchable there, it is withheld from the picker rather than
+  offered and then refused.
+- **A refusal is handled, not fatal.** If a controller still refuses the model at
+  submit, the job moves to the next location that offers it. A voice stays on the
+  one controller that holds its reference clip.
+- **Clearer Fleet tokens.** Adding a Studio Hub location asks for its **Fleet
+  token** by name. The **Hub token** is that Mac's own key, needed only to manage
+  shared voices; the **Fleet token** is the work badge that sends and collects
+  work. Joining a controller stays that Mac's own decision, made on that Mac.
 
-You can now build your own Content Packs and have Story Studio install them with
-no Store account, no purchase and no credits.
+## Content Packs: install a pack someone sent you
 
-- The **Content Packs** page sets up a private shelf once — your own signing
-  identity, separate from the old Store — then you author a Topic Pack draft,
-  review it and choose **Add to shelf**.
-- **Story Studio discovers shelved packs** through the same Gateway URL and
-  installs them with its normal Download/Install.
+The **Content Packs** page sets up a private shelf once — your own signing
+identity, separate from the old Store — then you add a `.sspack` someone sent
+you, and Story Studio discovers it through the same Gateway URL and installs it
+with its normal Download/Install. The shelf publishes; it does not author.
+
 - The shelf accepts only **newly reserved** pack identities, so historical Store
   packs are never reissued, re-signed or claimed as new.
 - Back up the identity *and* its releases with
