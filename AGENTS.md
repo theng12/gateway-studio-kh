@@ -800,11 +800,13 @@ a specifier (-1700) and a title-only check passed for unwired buttons. The
 suite presses **Check Gateway** and asserts a named build.
 ## Working rules
 
-- **`_trash/` is the owner's, and "delete" means *move* there — never `rm`.** Every
-  project has a `_trash/` folder that he sorts out himself: do not delete or tidy
-  anything *inside* it, and do not remove project material any other way. When he asks
-  for something to be deleted, **move** it into that project's `_trash/` (create the
-  folder if it is absent) and say where it went, so a deletion is always recoverable.
+- **Every removal goes to that project's `_trash/` — never `rm`.** This covers
+  *all* of it, not only what he asks for: a file he names, and equally a file you
+  decide is clutter while cleaning up. Move it into the project's `_trash/` (create
+  the folder if absent), keep any sub-structure, and say where it went. `_trash/`
+  itself is **his** to sort out: never delete or tidy anything *inside* it. The one
+  thing that is not a file is a Git branch or remote ref — record its name and SHA in
+  a note under `_trash/` before deleting it, and never rewrite published history.
   `_trash/` is outside Git and nothing in it is read by the app, tests or build; see
   `_trash/README.md` for what is in it.
   A cleanup pass on 2026-09-22 broke this twice — it permanently deleted four
