@@ -121,10 +121,62 @@ def _poll_batch(
     )
 
 
+def _jobs_path(kind: str) -> str:
+    """Where a modality's batches live.
+
+    Image, voice and music share `/api/hub/jobs`; transcription has its own route
+    and its batches are *not* visible from the other one — polling, fetching an
+    artifact or cancelling on the wrong path answers 404 rather than a useful
+    error. Every route for a modality is built from this one answer so they cannot
+    disagree.
+    """
+    return "/api/hub/transcription/jobs" if kind == "transcription" else "/api/hub/jobs"
+
+
 def _artifact_url(base: str, batch_id: str, item_index: int, kind: str) -> str:
-    if kind == "transcription":
-        return f"{base}/api/hub/transcription/jobs/{batch_id}/items/{item_index}/artifact"
-    return f"{base}/api/hub/jobs/{batch_id}/items/{item_index}/artifact"
+    return f"{base}{_jobs_path(kind)}/{batch_id}/items/{item_index}/artifact"
+
+
+def _ack_delivery(
+    base: str,
+    headers: dict[str, str],
+    batch_id: str,
+    item_index: int,
+    kind: str,
+) -> dict[str, Any]:
+    """Assert to the Hub that one delivered artifact was verified received.
+
+    The Hub marks its output receipt and index protection only after a 2xx from
+    this route, and the route is deliberately *not* reachable by downloading an
+    artifact: it is the caller's assertion that it has the bytes. That is why the
+    adapter hands this to the worker as a callback instead of calling it here —
+    the bytes are only really delivered once they are on disk.
+
+    Never raises. A refusal or an unreachable Hub is recorded and reported, not
+    turned into a failed generation: the artifact is already saved and serveable,
+    and losing it because a receipt was refused would be the worse outcome.
+    """
+    route = f"{_jobs_path(kind)}/{batch_id}/items/{item_index}/ack"
+    try:
+        with httpx.Client(timeout=httpx.Timeout(30.0, connect=10.0)) as client:
+            response = client.post(f"{base}{route}", headers=headers)
+    except httpx.HTTPError as exc:
+        return {
+            "ok": False,
+            "status": None,
+            "route": route,
+            "error": f"{type(exc).__name__}: {exc}",
+        }
+    try:
+        answer: Any = response.json()
+    except ValueError:
+        answer = response.text[:200]
+    return {
+        "ok": 200 <= response.status_code < 300,
+        "status": response.status_code,
+        "route": route,
+        "answer": answer,
+    }
 
 
 # Voice placement, keyed by **(voice, controller)**.
@@ -432,17 +484,29 @@ def _generate_image_or_voice(request: BackendRequest) -> BackendResult:
         media_type = "image/png" if request.modality == "image" else "audio/wav"
 
     terminal = (outcome.get("item") or {}).get("terminal_result") or {}
+    payload: dict[str, Any] = {
+        "hub_batch_id": batch_id,
+        "hub_machine": terminal.get("machine_id"),
+        "hub_worker": terminal.get("worker_id"),
+        "resolved_seed": terminal.get("resolved_seed"),
+        "sha256": terminal.get("sha256"),
+        "bytes": terminal.get("bytes"),
+    }
+
+    def deliver() -> dict[str, Any]:
+        # Mutating the payload the result already carries is how the receipt
+        # reaches the job record: the worker calls this before `store.succeed`,
+        # so the answer it records is the one saved with the job.
+        payload["delivery_ack"] = _ack_delivery(
+            base, headers, batch_id, 0, request.modality
+        )
+        return payload["delivery_ack"]
+
     return BackendResult(
         content=artifact.content,
         media_type=media_type,
-        payload={
-            "hub_batch_id": batch_id,
-            "hub_machine": terminal.get("machine_id"),
-            "hub_worker": terminal.get("worker_id"),
-            "resolved_seed": terminal.get("resolved_seed"),
-            "sha256": terminal.get("sha256"),
-            "bytes": terminal.get("bytes"),
-        },
+        payload=payload,
+        deliver=deliver,
     )
 
 
@@ -512,10 +576,21 @@ def _generate_transcription(request: BackendRequest) -> BackendResult:
                 status=artifact.status_code,
             )
 
+    payload: dict[str, Any] = {"hub_batch_id": batch_id}
+
+    def deliver() -> dict[str, Any]:
+        # Subtitle has its own receipt route; the SRT is only really delivered
+        # once the worker has written it.
+        payload["delivery_ack"] = _ack_delivery(
+            base, headers, batch_id, 0, "transcription"
+        )
+        return payload["delivery_ack"]
+
     return BackendResult(
         content=artifact.content,
         media_type="application/x-subrip",
-        payload={"hub_batch_id": batch_id},
+        payload=payload,
+        deliver=deliver,
     )
 
 

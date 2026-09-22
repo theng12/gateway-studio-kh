@@ -55,6 +55,13 @@ class BackendResult:
     text: str | None = None
     payload: dict[str, Any] = field(default_factory=dict)
     additional_artifacts: list[Artifact] = field(default_factory=list)
+    #: Sent by the caller **after** it has durably kept the artifacts, never from
+    #: inside the download. A delivery receipt is the caller asserting that
+    #: delivery was *verified* — the Hub protects its output index only on a 2xx
+    #: there — so acknowledging while the bytes exist only in memory would release
+    #: work that was never actually kept. Returns what the upstream answered, for
+    #: the job record.
+    deliver: Callable[[], dict[str, Any]] | None = None
 
     @property
     def artifacts(self) -> list[Artifact]:

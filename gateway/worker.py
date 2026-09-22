@@ -243,6 +243,19 @@ def execute_job(job: dict[str, Any], store: JobStore) -> None:
         if record_artifacts is not None:
             record_artifacts(job_id, [stored[-1]])
 
+    # **The delivery receipt goes out only now.** The Hub protects its output
+    # receipt and index on a 2xx from its ack route, and that route is the caller
+    # asserting it has verified delivery — downloading an artifact never reaches
+    # it. So it is sent once every artifact is on disk, never from inside the
+    # download. A refusal is recorded, not raised: the artifact is saved and
+    # serveable, and discarding real work over a bookkeeping step would be worse.
+    if result.deliver is not None:
+        receipt = result.deliver()
+        if not receipt.get("ok"):
+            log.warning(
+                "job %s: upstream did not acknowledge delivery: %s", job_id, receipt
+            )
+
     store.succeed(
         job_id,
         asset_path=stored[0]["path"] if stored else None,
