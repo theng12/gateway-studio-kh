@@ -274,3 +274,61 @@ test('copying the authoring brief produces a credential-free local handoff', asy
   assert.doesNotMatch(copied, /Bearer\s|sk-[A-Za-z0-9]|-----BEGIN|token:|password:/i);
   assert.match(h.node('brief-message').textContent, /copied/i);
 });
+
+test('a pack someone sent is added to the shelf in one action', async () => {
+  const calls = [];
+  const h = harness(async (pathName, options) => {
+    calls.push([pathName, (options && options.method) || 'GET']);
+    if (pathName === '/content-shelf') return READY_SHELF;
+    if (pathName === '/content-library/import-and-publish') {
+      return {release: {pack_id: 'com.fixture.pack', title: 'Sent Pack'}, archive: {}};
+    }
+    return {};
+  });
+  const input = h.node('received-pack-files');
+  input.files = [{name: 'sent-pack.sspack', size: 1024}];
+  const button = element();
+
+  await h.context.addReceivedPack(button);
+
+  // One request, and the one that publishes: the person who was sent a pack is
+  // not asked to know that preserving and publishing are separate steps.
+  assert.deepEqual(calls.filter(([, method]) => method === 'POST'),
+    [['/content-library/import-and-publish', 'POST']]);
+  assert.equal(button.disabled, false);
+  assert.equal(input.value, '');
+  assert.match(h.node('received-pack-message').textContent, /available to Story Studio/i);
+});
+
+test('adding a pack asks for a pack file rather than posting anything else', async () => {
+  const calls = [];
+  const h = harness(async (pathName) => { calls.push(pathName); return {}; });
+  const input = h.node('received-pack-files');
+  input.files = [{name: 'notes.txt', size: 10}];
+  const button = element();
+
+  await h.context.addReceivedPack(button);
+
+  assert.deepEqual(calls, []);
+  assert.equal(button.disabled, false);
+  assert.match(h.node('received-pack-message').textContent, /Choose a \.sspack file/);
+});
+
+test('a pack the shelf refuses is reported and the control comes back', async () => {
+  const h = harness(async (pathName) => {
+    if (pathName === '/content-shelf') return READY_SHELF;
+    if (pathName === '/content-library/import-and-publish') {
+      throw new Error('Historical pack identities cannot enter the private shelf.');
+    }
+    return {};
+  });
+  const input = h.node('received-pack-files');
+  input.files = [{name: 'old-pack.sspack', size: 1024}];
+  const button = element();
+
+  await h.context.addReceivedPack(button);
+
+  assert.equal(button.disabled, false);
+  assert.match(h.node('received-pack-message').textContent, /Not added/);
+  assert.match(h.node('received-pack-message').textContent, /Historical pack identities/);
+});

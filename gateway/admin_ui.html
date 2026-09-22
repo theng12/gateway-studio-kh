@@ -417,6 +417,20 @@
     </div>
 
     <div class="pack-panel" id="packs-panel-shelved">
+    <section class="card shelf-section" aria-labelledby="received-heading">
+      <div class="body">
+        <h2 id="received-heading">Add a pack someone sent you</h2>
+        <p>Choose a <code>.sspack</code> file and it is added to this shelf and available to Story Studio.
+        The file carries its own name, description, kind and identity, so nothing else is asked for, and it is
+        published under this gateway's own signing identity — the sender's is not needed and not shared.</p>
+        <label for="received-pack-files">Pack file (.sspack, up to 50 MiB each)</label>
+        <input id="received-pack-files" type="file" accept=".sspack" multiple>
+        <div class="row" style="margin-top:12px">
+          <button id="received-pack-add" class="primary" onclick="addReceivedPack(this)">Add to shelf</button>
+        </div>
+        <div id="received-pack-message" class="msg" role="status" aria-live="polite"></div>
+      </div>
+    </section>
     <section class="card shelf-section" aria-labelledby="shelf-heading">
       <div class="body">
         <h2 id="shelf-heading">Shelved</h2>
@@ -874,6 +888,47 @@ function renderPacks() {
 // carries its own name, description, kind and identity. A failure is reported per
 // file and never stops the batch, so a folder with a few bad archives still
 // imports the rest.
+// One pack in, one product available. A person who was sent a .sspack should not
+// have to know what "preserve" means, or that publishing is a separate step.
+async function addReceivedPack(button) {
+  const input = document.getElementById('received-pack-files');
+  const message = document.getElementById('received-pack-message');
+  const files = Array.from(input?.files || [])
+    .filter(file => String(file.name || '').toLowerCase().endsWith('.sspack'));
+  if (!files.length) {
+    message.className = 'msg bad';
+    message.textContent = 'Choose a .sspack file first.';
+    return;
+  }
+  button.disabled = true;
+  let added = 0;
+  const failures = [];
+  for (let index = 0; index < files.length; index++) {
+    const file = files[index];
+    message.className = 'msg';
+    message.textContent = `Adding ${index + 1} of ${files.length}: ${file.name}…`;
+    try {
+      if (file.size > 50 * 1024 * 1024) throw new Error('larger than 50 MiB');
+      await api('/content-library/import-and-publish', {
+        method: 'POST', headers: {'Content-Type': 'application/octet-stream'}, body: file,
+      });
+      added++;
+    } catch (error) {
+      failures.push(`${file.name}: ${error.message}`);
+    }
+  }
+  button.disabled = false;
+  if (input) input.value = '';
+  await loadContentShelf();
+  if (failures.length) {
+    message.className = 'msg bad';
+    message.textContent = `Added ${added} of ${files.length}. Not added — ${failures.slice(0, 4).join('; ')}`;
+  } else {
+    message.className = 'msg good';
+    message.textContent = `${added} pack${added === 1 ? '' : 's'} added to the shelf and available to Story Studio.`;
+  }
+}
+
 async function importPack(button) {
   const message = document.getElementById('pack-message');
   const inputs = [document.getElementById('pack-files'), document.getElementById('pack-folder')];

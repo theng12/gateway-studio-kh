@@ -135,14 +135,30 @@ def inspect_archive(data: bytes) -> dict:
             # *is* rather than its 60-character identity. The document was already
             # read and verified above; this only parses it again to take `name`.
             title = ""
+            description = ""
+            tags: list[str] = []
             if items:
                 document = _json(archive.read(items[0]["path"]))
-                if isinstance(document, dict) and isinstance(document.get("name"), str):
-                    title = document["name"].strip()[:200]
+                if isinstance(document, dict):
+                    if isinstance(document.get("name"), str):
+                        title = document["name"].strip()[:200]
+                    # The store blurb and tags travel inside the pack, so a shelf
+                    # that only ever receives archives can still present one.
+                    if isinstance(document.get("description"), str):
+                        description = document["description"].strip()[:2000]
+                    if isinstance(document.get("tags"), list):
+                        tags = [tag for tag in document["tags"] if isinstance(tag, str)][:64]
+            # The manifest names every item it carries, which is what a release
+            # records. Read from there rather than from the documents so a pack
+            # whose files are unreadable cannot be published with a short list.
+            item_ids = [item.get("id") for item in items]
+            if any(not isinstance(value, str) or not value or len(value) > 200 for value in item_ids):
+                raise PackError("Manifest items must each declare an identity.")
             return {
                 "archive_sha256": hashlib.sha256(data).hexdigest(), "bytes": len(data),
                 **{key: manifest[key] for key in ("pack_id", "publisher_id", "version", "min_app_version")},
-                "title": title,
+                "title": title, "description": description, "tags": tags,
+                "item_ids": item_ids,
                 "delivery_profile": profile, "item_kinds": sorted({item["kind"] for item in items}),
                 "file_count": len(files), "integrity": "verified", "ownership": "unverified",
                 "installable": False, "trust_requirement": trust,

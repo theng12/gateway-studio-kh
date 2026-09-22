@@ -1385,6 +1385,31 @@ async def import_content_archive(request: Request) -> Any:
         return _error(422, str(exc), "CONTENT_ARCHIVE_INVALID")
 
 
+@router.post("/api/content-library/import-and-publish", dependencies=[Depends(require_admin)])
+async def import_and_publish_archive(request: Request) -> Any:
+    """One pack in, one product available — what a received `.sspack` needs.
+
+    The two steps stay separate for the owner, who reviews an archive before adding
+    it to the shelf; this is the same pair without the review, for an install that
+    was sent a pack that was already authored and validated elsewhere.
+    """
+    from . import content_delivery, content_packs
+
+    data = bytearray()
+    async for chunk in request.stream():
+        if len(data) + len(chunk) > content_packs.MAX_ARCHIVE:
+            return _error(413, "Content Packs are limited to 50 MiB.")
+        data.extend(chunk)
+    if not data:
+        return _error(422, "A pack archive is required.", "CONTENT_ARCHIVE_INVALID")
+    try:
+        return await run_in_threadpool(content_delivery.import_and_publish, bytes(data))
+    except content_packs.PackError as exc:
+        return _error(422, str(exc), "CONTENT_ARCHIVE_INVALID")
+    except content_delivery.DeliveryError as exc:
+        return _error(exc.status, str(exc), exc.code)
+
+
 @router.get("/api/content-library/{digest}/archive", dependencies=[Depends(require_admin)])
 def export_content_archive(digest: str) -> Any:
     from . import content_packs
