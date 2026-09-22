@@ -618,6 +618,7 @@ Moved to [docs/giving-the-app-away.md](docs/giving-the-app-away.md).
   `_trash/` is outside Git and nothing in it is read by the app, tests or build; see
   `_trash/README.md` for what is in it.
 - **Finished work is committed and pushed, and a release carries a DMG in `dist/`.** Do not call work stable, done or shipped while it is uncommitted, unpushed, or has no installable artifact. Commit and push through the project's normal flow, landing it in `main` unless the owner says otherwise; for a release, build the DMG into that project's `dist/` folder so it is ready to hand to another Mac with no further steps. A project that ships a Mac app but has no DMG step gains one rather than being exempt. Keep `dist/` out of Git.
+- **Version bumps are patch-only for now: `0.2.1`, `0.2.2`, … up to `0.2.1000`.** The owner asked for this (2026-09-22). `VERSION` at the repo root is the one place to bump; `menubar/build.sh` reads it for `CFBundleShortVersionString` and the DMG name, and the sidebar shows it beside the build stamp. Increment the **third** number by one per shipped change — do not roll to `0.3.x` or `1.0.0` until the owner says so.
 - **Test narrowly, and off the owner's screen. The full `tests/test_ui.py` is a
   release gate, not a routine check.** It walks every section, forces the window
   to 700 pt, selects sidebar rows and presses controls, so it takes over the

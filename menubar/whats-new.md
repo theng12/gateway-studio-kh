@@ -4,7 +4,7 @@ Newest first. This is the same list the **What's New** link in the app shows.
 
 ---
 
-## v0.2.0 — smarter fleet generation
+## Smarter fleet generation
 
 Generation now goes to the machines that can actually run **that model**, and a
 controller that cannot serve one is stepped over instead of failing the job.
