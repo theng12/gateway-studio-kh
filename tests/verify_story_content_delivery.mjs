@@ -19,6 +19,11 @@ const adminHeaders = {
   'content-type': 'application/json',
 }
 const kinds = ['series-formula', 'topic-pack', 'visual-style', 'thumbnail-recipe']
+// What the shelf *supports* is a superset of what this fixture publishes. Story
+// 1.4.216 added two kinds, and those are withheld from older clients at product
+// level — so they belong in `supported_kinds` and not in the products this
+// fixture, which asks as 1.4.213, expects back.
+const supportedKinds = [...kinds, 'lettering-style', 'metadata-formula']
 const storyVersion = '1.4.213'
 const templates = {
   'series-formula': 'content-packs/free-starters/formula/ancient-humans',
@@ -205,7 +210,7 @@ async function roundTrip() {
   const initialShelf = await initial.json()
   exactKeys(initialShelf, ['configured', 'available', 'detail', 'authority', 'supported_kinds', 'releases'])
   assert.equal(initialShelf.configured, false)
-  assert.deepEqual(initialShelf.supported_kinds, kinds)
+  assert.deepEqual(initialShelf.supported_kinds, supportedKinds)
   const setup = await adminJson('/admin/api/content-shelf/setup', { acknowledge: true })
   exactKeys(setup, ['configured', 'available', 'detail', 'authority', 'supported_kinds', 'releases'])
   assert.equal(setup.configured, true)
