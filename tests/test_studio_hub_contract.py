@@ -13,6 +13,7 @@ Hub, no real generation, no credential, no installed app.
 from __future__ import annotations
 
 import atexit
+import hashlib
 import json
 import os
 import shutil
@@ -642,6 +643,153 @@ class HubDiscoveryTests(unittest.TestCase):
         # An engine nobody mapped stays undiscovered rather than becoming a
         # model some lane would then refuse to run.
         self.assertNotIn("some/unknown-engine", by_id)
+
+
+class VoiceReferenceMetadataTests(_HubCase):
+    """Item 4 — the reference carries its metadata, and the answer is checked."""
+
+    def _clip(self) -> Path:
+        clip = _TEMP_ROOT / "reference.wav"
+        clip.write_bytes(b"reference-clip-bytes")
+        return clip
+
+    def _reference(self, clip: Path) -> dict[str, Any]:
+        return {
+            "path": str(clip),
+            "transcript": "hello there",
+            "segments": [{"start": 0.0, "end": 1.0, "text": "hello there"}],
+            "language": "en",
+            "source_id": "voice-abc123",
+        }
+
+    def _staged_payload(self, clip: Path, **overrides: Any) -> dict[str, Any]:
+        audio = clip.read_bytes()
+        payload: dict[str, Any] = {
+            "asset_id": "staged-asset-1",
+            "sha256": hashlib.sha256(audio).hexdigest(),
+            "bytes": len(audio),
+            "media_type": "audio/wav",
+            "created_at": time.time(),
+            "expires_at": time.time() + 3600,
+            "transcript_supplied": True,
+            "origin": "genstudio",
+        }
+        payload.update(overrides)
+        return payload
+
+    def _stage(self, hub: _Hub, clip: Path, reference: dict[str, Any] | None = None) -> str:
+        client = httpx.Client(transport=httpx.MockTransport(hub.handler))
+        try:
+            with self.hub_client(hub):
+                return hub_module._stage_voice_reference(
+                    client,
+                    HUB,
+                    {"X-Hub-Token": "test-token"},
+                    "voice-abc123",
+                    clip,
+                    reference if reference is not None else self._reference(clip),
+                )
+        finally:
+            client.close()
+
+    def test_the_reference_carries_language_and_source_identity(self) -> None:
+        clip = self._clip()
+        voice = SimpleNamespace(
+            id="voice-abc123",
+            display_name="Narrator",
+            language="en",
+            raw={
+                "reference_path": str(clip),
+                "reference_transcript": "hello there",
+                "reference_segments": [{"start": 0.0, "end": 1.0, "text": "hello there"}],
+            },
+        )
+        from gateway import voices as voices_module
+
+        with patch.object(voices_module, "resolve", return_value=voice):
+            reference = hub_module._reference_for(
+                self.request(modality="tts", params={"voice_id": "voice-abc123"})
+            )
+        self.assertIsNotNone(reference)
+        self.assertEqual(reference["language"], "en")
+        self.assertEqual(reference["source_id"], "voice-abc123")
+        self.assertEqual(reference["segments"][0]["text"], "hello there")
+
+    def test_every_accepted_field_is_sent(self) -> None:
+        clip = self._clip()
+        hub = _Hub(reference=self._staged_payload(clip))
+        asset_id = self._stage(hub, clip)
+        self.assertEqual(asset_id, "staged-asset-1")
+        body = hub.payloads[0]
+        self.assertIsInstance(body, bytes)
+        digest = hashlib.sha256(clip.read_bytes()).hexdigest()
+        for field, value in (
+            ("language", b"en"),
+            ("sha256", digest.encode()),
+            ("source_asset_id", b"voice-abc123"),
+            ("ttl_seconds", str(int(hub_module._REFERENCE_TTL_S)).encode()),
+            ("transcript_segments", b"hello there"),
+        ):
+            self.assertIn(f'name="{field}"'.encode(), body, f"{field} was not sent")
+            self.assertIn(value, body, f"{field} did not carry its value")
+
+    def test_a_reference_that_came_back_different_is_refused(self) -> None:
+        """A wrong digest means the staged clip is not the voice's recording."""
+        clip = self._clip()
+        for overrides in (
+            {"sha256": "0" * 64},
+            {"bytes": 1},
+            {"media_type": "text/plain"},
+            {"expires_at": time.time() - 10},
+            {"origin": "local"},
+            {"transcript_supplied": False},
+        ):
+            with self.subTest(overrides=overrides):
+                hub = _Hub(reference=self._staged_payload(clip, **overrides))
+                with self.assertRaises(BackendError) as raised:
+                    self._stage(hub, clip)
+                self.assertEqual(raised.exception.code, "VOICE_PROVIDER_RESULT_INVALID")
+
+    def test_a_correct_answer_that_states_less_is_not_a_mismatch(self) -> None:
+        """A Hub that omits a field is unverified there, never 'wrong'."""
+        clip = self._clip()
+        payload = self._staged_payload(clip)
+        for field in ("bytes", "media_type", "expires_at", "transcript_supplied", "origin"):
+            payload.pop(field, None)
+        hub = _Hub(reference=payload)
+        self.assertEqual(self._stage(hub, clip), "staged-asset-1")
+
+    def test_the_staged_asset_is_the_reference_the_job_uses(self) -> None:
+        """The placement still reaches the job as `voice_reference_asset_id`."""
+        clip = self._clip()
+        hub = _Hub(reference=self._staged_payload(clip))
+        payload = self._staged_payload(clip)
+        hub.reference = payload
+        params = {"text": "speak", "voice_id": "voice-abc123"}
+        voice = SimpleNamespace(
+            id="voice-abc123",
+            display_name="Narrator",
+            language="en",
+            raw={
+                "reference_path": str(clip),
+                "reference_transcript": "hello there",
+                "reference_segments": [{"start": 0.0, "end": 1.0, "text": "hello there"}],
+            },
+        )
+        from gateway import voices as voices_module
+
+        with patch.object(voices_module, "resolve", return_value=voice), self.hub_client(hub):
+            # The controller does not already hold the clip, so it is staged.
+            hub_module._REFERENCE_CACHE.clear()
+            result = hub_module.StudioHubBackend().generate(
+                self.request(modality="tts", params=params)
+            )
+        submitted = next(
+            body for body in hub.payloads if isinstance(body, dict) and body.get("modality")
+        )
+        self.assertEqual(submitted["voice_reference_asset_id"], "staged-asset-1")
+        self.assertNotIn("voice_library_id", submitted)
+        self.assertIsNotNone(result.content)
 
 
 if __name__ == "__main__":
