@@ -4,6 +4,14 @@ Newest first. This is the same list the **What's New** link in the app shows.
 
 ---
 
+## Clearer words for the two Fleet tokens
+
+Adding a Studio Hub location now asks for its **Fleet token** by name and says
+what each token is for. The **Hub token** is that Mac's own key, needed only to
+manage shared voices; the **Fleet token** is the work badge that sends and
+collects work. Joining a controller stays the Mac's own decision, made on that
+Mac — GatewayKH cannot join or unjoin it.
+
 ## Content Packs: make your own, and install them in Story Studio
 
 You can now build your own Content Packs and have Story Studio install them with
