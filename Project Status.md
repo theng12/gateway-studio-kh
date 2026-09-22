@@ -1111,6 +1111,32 @@ version bump, content unchanged, and the 1.0.0 superseded rows remain — but th
 matcher now treats an argument containing a dot as an exact pack id, and tests use
 full ids. Build `ec4df4d-202609220213`, promoted.
 
+## 10cc. Cleanup pass, and one mistake worth recording (2026-09-22)
+
+The owner asked for the machine to be left clean, and for everything to sit in one
+place (`main`).
+
+- **Everything is in `main`**: three branches were already merged there, so only
+  today's work needed landing. It was a **fast-forward** — `main` moved to `f932184`
+  with no merge commit and no possibility of conflict — then pushed. All four
+  branches are now ancestors of `main`, and the fixes were verified present in
+  `main`'s own files (10/10 spot checks), not merely in history. The running app and
+  the 168-product Store are untouched by Git work.
+- **Removed**: the `.DS_Store` stash (a Finder artifact, preserved to `/tmp` first),
+  my scratch files in `/tmp`, 154 MB of redundant build outputs under
+  `store-analysis/` (the published copies live in the library), the three merged local
+  branches, and the four superseded app builds that had accumulated from today's
+  promotes — `_trash` back to 678 MB with one fallback plus the sanctioned rollback.
+- **A mistake**: the cleanup used the glob `/tmp/story-*`, which also matched
+  `/tmp/story-studio-backend-tests-*` and two small `/tmp/story-studio-*.txt` files
+  belonging to the **Story** session. The test directories are scratch recreated on
+  every run, so the damage is likely nil, but two small text files were not mine to
+  remove and are not recoverable. Narrow globs, or an explicit file list, from now on.
+
+Still kept deliberately: `_trash/transfer-staging` (586 MB) as the recovery source
+for the re-authoring, the sanitised rollback pair (2 x 92 MB), and the identity
+backups.
+
 ## 11. Exact next action / resumable handoff
 
 - Branch `codex/content-pack-delivery`: promoted app code at `97bb3a5`
