@@ -223,6 +223,94 @@ def _require_idempotency_key(value: str | None) -> str:
     return value
 
 
+def _discard_recovery_hold(job_id: str) -> dict[str, Any]:
+    """Resolve a recovery hold by calling the Hub's discard, on the operator's word.
+
+    A Hub item that settled `uncertain` keeps the node's machine reserved for
+    reconciliation, and only a person can decide that waiting is over. So this is
+    an explicit action with no timer anywhere near it: the Hub runs its own
+    thirty-minute silence sweep as the walk-away backstop, and a gateway that
+    abandoned real work automatically would be making a different and much worse
+    decision.
+
+    It refuses anything that is not a hold, because discarding live work would
+    abandon a worker that may still be running — the same rule the Hub enforces
+    with a 400. A refusal from the Hub is recorded and surfaced; the hold stays.
+    """
+    job = store.get(job_id)
+    if job is None:
+        raise GatewayError(404, "No such job.", "JOB_NOT_FOUND")
+    if not job.get("recovery_state"):
+        raise GatewayError(
+            409,
+            "This job is not waiting on a recovery hold, so there is nothing to discard.",
+            "NO_RECOVERY_HOLD",
+        )
+    context = job.get("recovery_context")
+    if not isinstance(context, dict) or not context:
+        raise GatewayError(
+            409,
+            "This hold does not name the upstream attempt it is waiting on — it was recorded "
+            "before the gateway kept that context, so reconcile it at the source instead.",
+            "RECOVERY_CONTEXT_MISSING",
+        )
+    provider_id = str(job.get("provider_id") or "")
+    definition = registry.definition(provider_id)
+    if definition is None:
+        raise GatewayError(
+            409, f"Provider '{provider_id}' is no longer configured.", "PROVIDER_NOT_FOUND"
+        )
+    answer: dict[str, Any]
+    discard = getattr(adapter_for(definition), "discard", None)
+    if discard is None:
+        answer = {
+            "ok": False,
+            "status": None,
+            "reason": f"the {definition.kind} lane cannot discard upstream work",
+        }
+    else:
+        request = BackendRequest(
+            provider_id=provider_id,
+            model_id=str(job.get("model_id") or ""),
+            modality=str(job.get("modality") or ""),
+            params={},
+            values=registry.credentials.resolved(provider_id),
+            base_url=definition.base_url,
+            display_name=definition.display_name,
+            upstream_job_id=str(job.get("upstream_job_id") or context.get("hub_batch_id") or ""),
+            upstream_item_index=int(context.get("hub_item_index") or 0),
+        )
+        try:
+            answer = discard(request)
+        except Exception as exc:  # noqa: BLE001 - an action must report, not 500
+            answer = {"ok": False, "status": None, "error": f"{type(exc).__name__}: {exc}"}
+        if not isinstance(answer, dict):
+            answer = {
+                "ok": False,
+                "status": None,
+                "error": f"unreadable discard answer: {answer!r}",
+            }
+    # Recorded either way, so a refused discard is visible rather than silent.
+    store.record_discard_remote(job_id, answer)
+    if not answer.get("ok"):
+        reason = answer.get("reason") or answer.get("error") or f"HTTP {answer.get('status')}"
+        raise GatewayError(
+            409, f"The upstream did not discard the attempt: {reason}", "DISCARD_REFUSED"
+        )
+    detail = (
+        "An operator discarded this uncertain attempt: it was abandoned rather than "
+        "reconciled, so a result the original worker may still produce is ignored."
+    )
+    closed = store.close_recovery_hold(
+        job_id, code="DISCARDED_UNCERTAIN", detail=detail
+    )
+    return {
+        "ok": True,
+        "discard": answer,
+        "job": _job_envelope(closed or store.get(job_id)),
+    }
+
+
 def _load_job(job_id: str, modality: str) -> dict[str, Any]:
     job = store.get(job_id)
     if job is None or job["modality"] != modality:

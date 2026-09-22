@@ -77,10 +77,12 @@ class _Hub:
         item: dict[str, Any] | None = None,
         reference: dict[str, Any] | None = None,
         voice_reference_status: int = 201,
+        discard_status: int = 200,
     ) -> None:
         self.calls: list[tuple[str, str]] = []
         self.acks: list[str] = []
         self.deletes: list[str] = []
+        self.discards: list[str] = []
         self.payloads: list[Any] = []
         self._states = list(states or ["done"])
         self.artifact = artifact
@@ -89,6 +91,7 @@ class _Hub:
         self.item = item
         self.reference = reference
         self.voice_reference_status = voice_reference_status
+        self.discard_status = discard_status
 
     # ── the transport ────────────────────────────────────────────────────
     def handler(self, request: httpx.Request) -> httpx.Response:
@@ -107,6 +110,16 @@ class _Hub:
                     "running_signalled": 0,
                     "running_pending": 0,
                 },
+            )
+        if method == "POST" and path.endswith("/discard"):
+            self.discards.append(path)
+            if self.discard_status >= 400:
+                return httpx.Response(
+                    self.discard_status,
+                    json={"detail": "Discard is available only for an uncertain job"},
+                )
+            return httpx.Response(
+                200, json={"ok": True, "batch_id": BATCH, "item_index": 0}
             )
         if method == "POST" and path.endswith("/ack"):
             self.acks.append(path)
@@ -877,8 +890,195 @@ class UncertainIsARecoveryHoldTests(_HubCase):
             self.assertIn("music-worker-1", held["recovery_detail"])
             self.assertIn("MUSIC_OUTCOME_UNCERTAIN", held["recovery_detail"])
             self.assertIn(BATCH, held["recovery_detail"])
+            # And structured, so an operator action can name the exact attempt.
+            self.assertEqual(held["recovery_context"]["hub_batch_id"], BATCH)
+            self.assertEqual(held["recovery_context"]["hub_item_index"], 0)
+            self.assertEqual(
+                held["recovery_context"]["hub_discard_route"],
+                f"/api/hub/jobs/{BATCH}/items/0/discard",
+            )
             # And nothing resubmits it.
             self.assertEqual(store.due(time.time() + 60), [])
+        finally:
+            store.close()
+
+
+class DiscardRecoveryHoldTests(_HubCase):
+    """The controller may now act on a hold — explicitly, and never on a timer."""
+
+    def test_discard_calls_the_hubs_route_for_a_hold(self) -> None:
+        hub = _Hub()
+        with self.hub_client(hub):
+            answer = hub_module.StudioHubBackend().discard(
+                self.request(modality="music", upstream_job_id=BATCH)
+            )
+        self.assertTrue(answer["ok"])
+        self.assertEqual(hub.discards, [f"/api/hub/jobs/{BATCH}/items/0/discard"])
+        self.assertTrue(answer["answer"]["ok"])
+
+    def test_a_hub_that_refuses_the_discard_says_so(self) -> None:
+        """Only an uncertain item can be discarded — the Hub answers 400."""
+        hub = _Hub(discard_status=400)
+        with self.hub_client(hub):
+            answer = hub_module.StudioHubBackend().discard(
+                self.request(modality="image", upstream_job_id=BATCH)
+            )
+        self.assertFalse(answer["ok"])
+        self.assertEqual(answer["status"], 400)
+        self.assertIn("uncertain", answer["answer"]["detail"])
+
+    def test_transcription_has_no_discard_route_to_call(self) -> None:
+        hub = _Hub()
+        with self.hub_client(hub):
+            answer = hub_module.StudioHubBackend().discard(
+                self.request(modality="transcription", upstream_job_id=BATCH)
+            )
+        self.assertEqual(hub.discards, [])
+        self.assertFalse(answer["ok"])
+        self.assertIn("no discard route for transcription", answer["reason"])
+
+    def test_a_job_that_never_dispatched_has_nothing_to_discard(self) -> None:
+        hub = _Hub()
+        with self.hub_client(hub):
+            answer = hub_module.StudioHubBackend().discard(self.request(modality="image"))
+        self.assertEqual(hub.discards, [])
+        self.assertFalse(answer["ok"])
+        self.assertIn("nothing was dispatched", answer["reason"])
+
+
+class DiscardActionTests(_HubCase):
+    """The admin action is the only thing that discards, and only for a hold."""
+
+    def setUp(self) -> None:
+        from fastapi.testclient import TestClient
+
+        from gateway import api
+
+        self.api = api
+        self.client = TestClient(api.app, client=("127.0.0.1", 54321))
+
+    def tearDown(self) -> None:
+        self.client.close()
+
+    def _hold(self, *, context: bool = True) -> str:
+        """A job settled as an uncertain Hub item, the way the worker leaves it."""
+        row, created = self.api.store.submit(
+            modality="music",
+            model_id="model/test",
+            params={"prompt": "x"},
+            idempotency_key=f"discard-{self.id()}",
+            provider_id="studio-hub-test",
+        )
+        self.assertTrue(created)
+        self.assertTrue(self.api.store.mark_running(row["id"]))
+        self.api.store.record_upstream_acceptance(row["id"], BATCH)
+        self.api.store.fail(
+            row["id"],
+            code="UNKNOWN_OUTCOME",
+            detail="the Hub settled the item without knowing the worker's outcome",
+            recovery_state="unknown_outcome",
+            recovery_detail="batch hub-batch-1 item 0",
+            recovery_context=(
+                {
+                    "hub_batch_id": BATCH,
+                    "hub_item_index": 0,
+                    "hub_worker": "music-worker-1",
+                    "hub_discard_route": f"/api/hub/jobs/{BATCH}/items/0/discard",
+                }
+                if context
+                else None
+            ),
+        )
+        return row["id"]
+
+    def _discard(self, job_id: str, hub: _Hub) -> Any:
+        definition = SimpleNamespace(
+            id="studio-hub-test", kind="studio_hub", base_url=HUB, display_name="Hub"
+        )
+        with patch.object(
+            self.api.registry, "definition", return_value=definition
+        ), patch.object(
+            self.api.registry.credentials, "resolved", return_value={"hub_token": "t"}
+        ), self.hub_client(hub):
+            return self.client.post(
+                f"/admin/api/jobs/{job_id}/discard-uncertain"
+            )
+
+    def test_the_operator_action_discards_and_closes_the_hold(self) -> None:
+        hub = _Hub()
+        job_id = self._hold()
+        response = self._discard(job_id, hub)
+        self.assertEqual(response.status_code, 200, response.text)
+        body = response.json()
+        self.assertTrue(body["ok"])
+        self.assertEqual(hub.discards, [f"/api/hub/jobs/{BATCH}/items/0/discard"])
+        job = self.api.store.get(job_id)
+        self.assertEqual(job["error_code"], "DISCARDED_UNCERTAIN")
+        self.assertFalse(job["recovery_required"], "a resolved hold must stop asking")
+        self.assertIsNone(job["recovery_context"])
+        self.assertEqual(job["discard_remote"]["status"], 200)
+
+    def test_a_job_that_is_not_a_hold_is_refused(self) -> None:
+        hub = _Hub()
+        row, _ = self.api.store.submit(
+            modality="music",
+            model_id="model/test",
+            params={"prompt": "x"},
+            idempotency_key=f"not-a-hold-{self.id()}",
+            provider_id="studio-hub-test",
+        )
+        response = self._discard(row["id"], hub)
+        self.assertEqual(response.status_code, 409, response.text)
+        self.assertEqual(response.json()["code"], "NO_RECOVERY_HOLD")
+        self.assertEqual(hub.discards, [], "live work must never be discarded")
+
+    def test_a_hold_recorded_without_context_is_refused_plainly(self) -> None:
+        hub = _Hub()
+        job_id = self._hold(context=False)
+        response = self._discard(job_id, hub)
+        self.assertEqual(response.status_code, 409, response.text)
+        self.assertEqual(response.json()["code"], "RECOVERY_CONTEXT_MISSING")
+        self.assertEqual(hub.discards, [])
+
+    def test_a_refused_discard_keeps_the_hold(self) -> None:
+        hub = _Hub(discard_status=400)
+        job_id = self._hold()
+        response = self._discard(job_id, hub)
+        self.assertEqual(response.status_code, 409, response.text)
+        self.assertEqual(response.json()["code"], "DISCARD_REFUSED")
+        job = self.api.store.get(job_id)
+        self.assertTrue(job["recovery_required"], "a refused discard resolves nothing")
+        self.assertEqual(job["discard_remote"]["status"], 400)
+
+    def test_nothing_discards_on_its_own(self) -> None:
+        """An uncertain outcome must not walk itself into a discard."""
+        hub = _Hub(
+            states=["uncertain"],
+            item={
+                "state": "uncertain",
+                "error": "the worker outcome is not known",
+                "error_code": "MUSIC_OUTCOME_UNCERTAIN",
+                "worker_id": "music-worker-1",
+            },
+        )
+        store = JobStore(_TEMP_ROOT / "no-auto-discard.sqlite3")
+        try:
+            row, _ = store.submit(
+                modality="music",
+                model_id="model/test",
+                params={"prompt": "x"},
+                idempotency_key="no-auto-discard",
+                provider_id="studio-hub-test",
+            )
+            self.assertTrue(store.mark_running(row["id"]))
+            with patch.object(worker_module, "registry", _Registry()), patch.object(
+                worker_module, "adapter_for", return_value=hub_module.StudioHubBackend()
+            ), self.hub_client(hub):
+                worker_module.execute_job(row, store)
+            held = store.get(row["id"])
+            self.assertEqual(hub.discards, [], "the gateway must never discard by itself")
+            self.assertTrue(held["recovery_required"])
+            self.assertIsNone(held["discard_remote"])
         finally:
             store.close()
 

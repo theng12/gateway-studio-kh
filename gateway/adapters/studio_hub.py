@@ -207,29 +207,19 @@ def _artifact_url(base: str, batch_id: str, item_index: int, kind: str) -> str:
     return f"{base}{_jobs_path(kind)}/{batch_id}/items/{item_index}/artifact"
 
 
-def _ack_delivery(
-    base: str,
-    headers: dict[str, str],
-    batch_id: str,
-    item_index: int,
-    kind: str,
+def _recorded_call(
+    method: str, url: str, headers: dict[str, str], route: str
 ) -> dict[str, Any]:
-    """Assert to the Hub that one delivered artifact was verified received.
+    """One authenticated Hub call whose answer is recorded and never raised.
 
-    The Hub marks its output receipt and index protection only after a 2xx from
-    this route, and the route is deliberately *not* reachable by downloading an
-    artifact: it is the caller's assertion that it has the bytes. That is why the
-    adapter hands this to the worker as a callback instead of calling it here —
-    the bytes are only really delivered once they are on disk.
-
-    Never raises. A refusal or an unreachable Hub is recorded and reported, not
-    turned into a failed generation: the artifact is already saved and serveable,
-    and losing it because a receipt was refused would be the worse outcome.
+    A delivery receipt, a cancellation and a discard are all "tell the Hub
+    something, then report what it said". None of them may fail the job: each is a
+    recording, and the caller decides what its answer means. Kept in one place so
+    no one of them quietly grows a retry, a raise or a different timeout.
     """
-    route = f"{_jobs_path(kind)}/{batch_id}/items/{item_index}/ack"
     try:
         with httpx.Client(timeout=httpx.Timeout(30.0, connect=10.0)) as client:
-            response = client.post(f"{base}{route}", headers=headers)
+            response = client.request(method, url, headers=headers)
     except httpx.HTTPError as exc:
         return {
             "ok": False,
@@ -247,6 +237,25 @@ def _ack_delivery(
         "route": route,
         "answer": answer,
     }
+
+
+def _ack_delivery(
+    base: str,
+    headers: dict[str, str],
+    batch_id: str,
+    item_index: int,
+    kind: str,
+) -> dict[str, Any]:
+    """Assert to the Hub that one delivered artifact was verified received.
+
+    The Hub marks its output receipt and index protection only after a 2xx from
+    this route, and the route is deliberately *not* reachable by downloading an
+    artifact: it is the caller's assertion that it has the bytes. That is why the
+    adapter hands this to the worker as a callback instead of calling it here —
+    the bytes are only really delivered once they are on disk.
+    """
+    route = f"{_jobs_path(kind)}/{batch_id}/items/{item_index}/ack"
+    return _recorded_call("POST", f"{base}{route}", headers, route)
 
 
 def _cancel_batch(
@@ -263,32 +272,9 @@ def _cancel_batch(
     `queued_cancelled`, `running_signalled`, `running_pending` — rather than
     flattened into a boolean, because "we asked and nothing was running to stop"
     and "we asked and a worker was told" are different facts.
-
-    Never raises, for the same reason as the receipt: the caller is recording an
-    outcome, and a cancel the Hub could not confirm is exactly the case that must
-    not be reported as a confirmed stop.
     """
     route = f"{_jobs_path(kind)}/{batch_id}"
-    try:
-        with httpx.Client(timeout=httpx.Timeout(30.0, connect=10.0)) as client:
-            response = client.request("DELETE", f"{base}{route}", headers=headers)
-    except httpx.HTTPError as exc:
-        return {
-            "ok": False,
-            "status": None,
-            "route": route,
-            "error": f"{type(exc).__name__}: {exc}",
-        }
-    try:
-        answer: Any = response.json()
-    except ValueError:
-        answer = response.text[:200]
-    return {
-        "ok": 200 <= response.status_code < 300,
-        "status": response.status_code,
-        "route": route,
-        "answer": answer,
-    }
+    return _recorded_call("DELETE", f"{base}{route}", headers, route)
 
 
 # Voice placement, keyed by **(voice, controller)**.
@@ -807,6 +793,41 @@ class StudioHubBackend:
             f"Studio Hub does not serve '{request.modality}'",
             code="MODEL_MODALITY_MISMATCH",
         )
+
+    def discard(self, request: BackendRequest) -> dict[str, Any]:
+        """Abandon an uncertain Hub attempt, releasing the machine it reserved.
+
+        An uncertain item keeps its Mac reserved because the accepted worker may
+        still be running, and only the Hub's own operator could previously release
+        it. From Hub `639fcf9` the controller's fleet credential may, which is what
+        lets this gateway act on a hold it recorded.
+
+        **Operator-initiated, never automatic.** The Hub already discards after
+        thirty minutes of silence as the walk-away backstop; the gateway abandoning
+        real work on a timer would be a different and much worse decision. Nothing
+        but the explicit action calls this.
+
+        Only an item the Hub already settled `uncertain` can be discarded — it
+        answers 400 otherwise — and it has no discard route for transcription
+        batches, which is reported plainly rather than attempted.
+        """
+        batch_id = str(request.upstream_job_id or "").strip()
+        if not batch_id:
+            return {
+                "ok": False,
+                "status": None,
+                "reason": "nothing was dispatched to the Hub for this job",
+            }
+        if request.modality == "transcription":
+            return {
+                "ok": False,
+                "status": None,
+                "reason": "the Hub has no discard route for transcription batches",
+            }
+        route = (
+            f"/api/hub/jobs/{batch_id}/items/{request.upstream_item_index}/discard"
+        )
+        return _recorded_call("POST", f"{_resolve_base(request)}{route}", _headers(request), route)
 
     def cancel(self, request: BackendRequest) -> dict[str, Any]:
         """Stop a Hub batch this gateway dispatched.

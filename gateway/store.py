@@ -88,6 +88,14 @@ _ADDED_COLUMNS: tuple[tuple[str, str], ...] = (
     # signalled the worker" and "dispatch never began" are different claims, and
     # collapsing them is how a requested cancel becomes a reported remote stop.
     ("cancel_remote", "TEXT"),
+    # The upstream's own identifiers for work whose outcome is unknown — batch,
+    # item, worker, machine and the routes that resolve it. Structured rather than
+    # only prose, because an operator action has to name the exact batch and item
+    # it is resolving, and parsing them back out of a sentence would make the
+    # action depend on the wording of a message.
+    ("recovery_context", "TEXT"),
+    # What the upstream answered when an operator resolved a recovery hold.
+    ("discard_remote", "TEXT"),
 )
 
 
@@ -170,15 +178,18 @@ class JobStore:
             result["retryable"] = bool(result["retryable"])
         result["cancel_requested"] = result.get("cancel_requested_at") is not None
         result["recovery_required"] = bool(result.get("recovery_state"))
-        raw = result.get("cancel_remote")
-        if isinstance(raw, str) and raw:
-            try:
-                result["cancel_remote"] = json.loads(raw)
-            except ValueError:
-                # A row we cannot read is "unknown", not "the Hub confirmed it".
-                result["cancel_remote"] = None
-        elif raw == "":
-            result["cancel_remote"] = None
+        # A JSON column we cannot read is "unknown", never a confirmation: an
+        # unreadable cancel must not read as a remote stop, and an unreadable
+        # recovery context must not look like a resolvable hold.
+        for column in ("cancel_remote", "recovery_context", "discard_remote"):
+            raw = result.get(column)
+            if raw == "":
+                result[column] = None
+            elif isinstance(raw, str):
+                try:
+                    result[column] = json.loads(raw)
+                except ValueError:
+                    result[column] = None
         return result
 
     def _recover_interrupted(self) -> int:
@@ -324,6 +335,7 @@ class JobStore:
         retryable: bool = False,
         recovery_state: str | None = None,
         recovery_detail: str | None = None,
+        recovery_context: dict[str, Any] | None = None,
     ) -> None:
         """Settle once, retaining a late failure without reopening a terminal row."""
         with self._lock:
@@ -354,10 +366,58 @@ class JobStore:
                     "retryable": int(bool(retryable)),
                     "recovery_state": recovery_state,
                     "recovery_detail": recovery_detail,
+                    "recovery_context": (
+                        json.dumps(recovery_context) if recovery_context else None
+                    ),
                     "next_action_at": None,
                 },
             )
             self._conn.commit()
+
+    def record_discard_remote(self, job_id: str, answer: dict[str, Any]) -> bool:
+        """Persist what the upstream answered when an operator resolved a hold."""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT id FROM jobs WHERE id = ?", (job_id,)
+            ).fetchone()
+            if row is None:
+                return False
+            self._update_locked(job_id, {"discard_remote": json.dumps(answer)})
+            self._conn.commit()
+            return True
+
+    def close_recovery_hold(
+        self, job_id: str, *, code: str, detail: str
+    ) -> dict[str, Any] | None:
+        """Mark a hold resolved by decision, so it stops asking to be reconciled.
+
+        The job stays terminal and keeps its failure — what changes is that the
+        *unknown* is gone, because an operator abandoned the attempt. Clearing
+        `recovery_state` is what takes it off the recovery list; leaving it set
+        after a successful discard would keep telling an operator to reconcile
+        work that no longer exists to reconcile.
+        """
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT id FROM jobs WHERE id = ?", (job_id,)
+            ).fetchone()
+            if row is None:
+                return None
+            self._update_locked(
+                job_id,
+                {
+                    "error_code": code,
+                    "error_detail": detail,
+                    "retryable": 0,
+                    "recovery_state": None,
+                    "recovery_detail": None,
+                    "recovery_context": None,
+                },
+            )
+            self._conn.commit()
+            return self._row_dict(
+                self._conn.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()
+            )
 
     def mark_running(self, job_id: str) -> bool:
         """Claim only work still accepted, not a cancelled row in an old snapshot."""

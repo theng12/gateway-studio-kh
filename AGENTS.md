@@ -839,6 +839,19 @@ now closed, and these are the parts that were expensive to work out.
   hash alike; the declared checksum is what stops a mangled upload becoming the clip
   a voice is cloned from. The digest must match; the other fields are checked only
   when stated (absence is *unverified*, never *wrong*).
+- **The controller may now discard a hold — explicitly, never automatically.** From
+  Hub `639fcf9` the fleet credential may call
+  `POST /api/hub/jobs/{batch}/items/{i}/discard` (owner decision 2026-09-22), which
+  only accepts an item already `uncertain` (else 400), clears the worker/recovery
+  identity, marks it cancelled with `DISCARDED_UNCERTAIN` and frees the node's
+  machine. The gateway exposes that as the admin action
+  `POST /admin/api/jobs/{job_id}/discard-uncertain` — the **only** caller of the
+  discard path. The Hub already discards after thirty minutes of silence as the
+  walk-away backstop, so the gateway must not add a timer: abandoning real work is a
+  human decision. The action refuses a job that is not a hold (`NO_RECOVERY_HOLD`,
+  because discarding live work would abandon a worker that may still be running), and
+  a refusal keeps the hold and is recorded on `discard_remote`. There is **no
+  transcription discard route** on the Hub, so that case is reported plainly.
 - **`uncertain` is a recovery hold, not a failure.** A Hub item that settles
   `uncertain` after dispatch has an *unknown* worker outcome: the work may have
   completed, so reporting an ordinary failure invites a retry that generates twice.
@@ -846,7 +859,9 @@ now closed, and these are the parts that were expensive to work out.
   dict, so the job settles `recovery_state: unknown_outcome`, `recovery_required`,
   non-retryable and never due again, with the batch, item, worker, machine, the
   Hub's error code and its reconcile/discard routes in `recovery_detail`. Nothing is
-  reconciled or discarded automatically — the Hub keeps both operator-only.
+  reconciled or discarded automatically: the hub keeps both **operator-initiated**,
+  and from `639fcf9` the discard is reachable by a controller's fleet credential
+  (above) as well as by the node's own operator.
 
 ## Working rules
 

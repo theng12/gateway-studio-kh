@@ -763,6 +763,23 @@ def create_cancel(job_id: str) -> Any:
     return _job_envelope(store.cancel(job_id))
 
 
+@router.post("/api/jobs/{job_id}/discard-uncertain", dependencies=[Depends(require_admin)])
+def discard_uncertain_job(job_id: str) -> Any:
+    """Abandon an uncertain upstream attempt and release the machine it reserved.
+
+    The controller was allowed to do this from Hub `639fcf9`; before that an
+    uncertain item pinned a node's machine until the Hub's own thirty-minute
+    sweep. This is the **only** caller of the discard path — it is an explicit
+    operator decision, and nothing schedules it.
+    """
+    from .api import GatewayError, _discard_recovery_hold
+
+    try:
+        return _discard_recovery_hold(job_id)
+    except GatewayError as exc:
+        return _error(exc.status, exc.detail, exc.code)
+
+
 # ---------------------------------------------------------------------------
 # Voices
 #

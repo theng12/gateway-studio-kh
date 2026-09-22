@@ -62,6 +62,7 @@ def _fail(
     retryable: bool = False,
     recovery_state: str | None = None,
     recovery_detail: str | None = None,
+    recovery_context: dict[str, Any] | None = None,
 ) -> None:
     """Settle a real store, while keeping the small legacy test double usable."""
     try:
@@ -72,6 +73,7 @@ def _fail(
             retryable=retryable,
             recovery_state=recovery_state,
             recovery_detail=recovery_detail,
+            recovery_context=recovery_context,
         )
     except TypeError as exc:
         if "unexpected keyword" not in str(exc):
@@ -208,6 +210,7 @@ def execute_job(job: dict[str, Any], store: JobStore) -> None:
             retryable=exc.retryable,
             recovery_state=RECOVERY_UNKNOWN if unknown else None,
             recovery_detail=recovery_detail if unknown else None,
+            recovery_context=exc.recovery if unknown else None,
         )
         return
     except Exception as exc:  # noqa: BLE001 - a backend bug must not kill the worker

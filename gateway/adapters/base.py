@@ -135,6 +135,11 @@ class BackendRequest:
     #: dispatched, so there is nothing upstream to cancel — which is a different
     #: state from "the upstream refused", and must not read the same.
     upstream_job_id: str = ""
+    #: Which item of that upstream batch this job is. The gateway submits
+    #: single-item batches, so this is 0 today — but the Hub's per-item routes
+    #: (ack, artifact, discard) all name an index, and hardcoding it in each of
+    #: them is how one of them ends up addressing the wrong item.
+    upstream_item_index: int = 0
 
 
 @runtime_checkable
