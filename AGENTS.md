@@ -800,6 +800,17 @@ a specifier (-1700) and a title-only check passed for unwired buttons. The
 suite presses **Check Gateway** and asserts a named build.
 ## Working rules
 
+- **`_trash/` is the owner's, and "delete" means *move* there — never `rm`.** Every
+  project has a `_trash/` folder that he sorts out himself: do not delete or tidy
+  anything *inside* it, and do not remove project material any other way. When he asks
+  for something to be deleted, **move** it into that project's `_trash/` (create the
+  folder if it is absent) and say where it went, so a deletion is always recoverable.
+  `_trash/` is outside Git and nothing in it is read by the app, tests or build; see
+  `_trash/README.md` for what is in it.
+  A cleanup pass on 2026-09-22 broke this twice — it permanently deleted four
+  superseded app builds *from* `_trash`, and an over-broad `/tmp/story-*` glob removed
+  the Story session's test scratch and two of its small text files. Both are exactly
+  what this rule exists to prevent.
 - **Test narrowly, and off the owner's screen. The full `tests/test_ui.py` is a
   release gate, not a routine check.** It walks every section, forces the window
   to 700 pt, selects sidebar rows and presses controls, so it takes over the
