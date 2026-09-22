@@ -1199,8 +1199,9 @@ def main() -> int:
     check("summarises locations", "location" in fleet and "reachable" in fleet, fleet[:220])
     check("says how many machines are online",
           "machine online" in fleet or "machines online" in fleet, fleet[:240])
-    check("has a form for adding a location",
-          "Add a location" in fleet and "Hub service token" in fleet, fleet[-300:])
+    check("has a form for adding a location that names the Fleet token and explains both",
+          "Add a location" in fleet and "Fleet token" in fleet
+          and "Two tokens, two jobs" in fleet, fleet[-400:])
 
     # Three tables, so hundreds of machines virtualise instead of stacking.
     # Fleet scrolls, so its three tables are nested inside the page scroll view.

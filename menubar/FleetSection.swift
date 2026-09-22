@@ -208,29 +208,66 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
             "Another Mac running Studio Hub. Standalone or controller, both work. "
             + "A new machine can be added while it is still standalone and keep working "
             + "after it is promoted to a controller; nothing here depends on the role. "
-            + "Use its address and its fleet credential — that is sufficient for "
-            + "everything this gateway does, and it cannot change the controller's "
-            + "settings or identity the way its Hub service token can. A controller reports its own "
-            + "nodes — this gateway never contacts them directly. Every location below can be "
-            + "renamed at any time: a name is a label, and no address, credential or model "
-            + "depends on it. On the other Mac, Studio Hub must be told to answer on a network "
-            + "this one can reach: in its Settings, stop the services, tick its Tailscale "
-            + "network under \u{201C}Listening on\u{201D}, and start them again. It answers only "
-            + "that Mac itself by default, and nothing here can change that from a distance."
+            + "Enter its address and its Fleet token — the Fleet token is the one this "
+            + "gateway needs to send work there and collect the results. A controller "
+            + "reports its own nodes — this gateway never contacts them directly. Every "
+            + "location below can be renamed at any time: a name is a label, and no "
+            + "address, credential or model depends on it. On the other Mac, Studio Hub "
+            + "must be told to answer on a network this one can reach: in its Settings, "
+            + "stop the services, tick its Tailscale network under "
+            + "\u{201C}Listening on\u{201D}, and start them again. It answers only that Mac "
+            + "itself by default, and nothing here can change that from a distance."
+        ))
+        // The Hub's own Connections page labels these two and says what each is for.
+        // A person pasting a token here has to be able to tell which one this page
+        // wants before they paste it: both reach every route the gateway calls, so
+        // the wrong one works silently until the day it matters.
+        root.addArrangedSubview(PageKit.help(
+            "Two tokens, two jobs.\n\n"
+            + "Hub token — the Mac's own key.\n"
+            + "Who it is for: the person who owns that Mac, using that Mac.\n"
+            + "What it does: change settings, install or remove models, delete output, "
+            + "manage shared voices.\n"
+            + "Never send it to GatewayKH unless GatewayKH will manage shared voices on "
+            + "that Mac. Anyone who holds it can do everything on that Mac.\n\n"
+            + "Fleet token — the work badge for the group.\n"
+            + "Who it is for: GatewayKH, and every Mac that joins a controller.\n"
+            + "What it allows: send work, follow the job, download the result, "
+            + "acknowledge it, cancel it or discard an uncertain one, and read the model "
+            + "and fleet lists.\n"
+            + "What it cannot do: change settings, install or remove models, delete "
+            + "output, manage shared voices, or make a Mac join or leave.\n"
+            + "This is the token to enter here."
+        ))
+        // Joining is the Mac's own act, on the Mac itself. Nothing on this side can
+        // enlist or dismiss a machine, and saying so here stops "why can't GatewayKH
+        // just add it?" from becoming a support question.
+        root.addArrangedSubview(PageKit.help(
+            "Joining is that Mac's own decision, made from its own app with its Hub "
+            + "token. GatewayKH cannot join or unjoin a Mac."
         ))
 
         labelField.placeholderString = "Name (e.g. Blue Room)"
         labelField.widthAnchor.constraint(equalToConstant: 220).isActive = true
         urlField.placeholderString = "http://10.0.0.5:47873"
         urlField.widthAnchor.constraint(equalToConstant: 260).isActive = true
-        tokenField.placeholderString = "fleet credential"
+        tokenField.placeholderString = "the controller's Fleet token"
         tokenField.widthAnchor.constraint(equalToConstant: 260).isActive = true
         let addButton = NSButton(title: "Add location", target: self, action: #selector(addLocation))
         addButton.bezelStyle = .rounded
 
         root.addArrangedSubview(PageKit.formRow("Name", labelField))
         root.addArrangedSubview(PageKit.formRow("Address", urlField))
-        root.addArrangedSubview(PageKit.formRow("Token", tokenField))
+        root.addArrangedSubview(PageKit.formRow(
+            "Fleet token",
+            [
+                tokenField,
+                PageKit.help(
+                    "The token this gateway needs to send work to that Mac and "
+                    + "collect the results."
+                ),
+            ]
+        ))
         root.addArrangedSubview(PageKit.formRow("", addButton))
 
         addStatus.font = .systemFont(ofSize: 11.5)
@@ -791,24 +828,31 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
             caption.font = .systemFont(ofSize: 11)
             caption.textColor = .secondaryLabelColor
             caption.lineBreakMode = .byWordWrapping
-            caption.maximumNumberOfLines = 3
+            // Both captions spell out what a token is for; the Fleet one lists the
+            // full allowlist, so it needs more than the three lines it used to get.
+            caption.maximumNumberOfLines = 6
             caption.preferredMaxLayoutWidth = 320
             return caption
         }
 
-        let fleet = field("fleet token")
-        let hub = field("Hub token (optional)")
+        let fleet = field("the controller's Fleet token")
+        let hub = field("the controller's Hub token (optional)")
         let stack = NSStackView(views: [
-            caption("Fleet token — from Connections. Runs work and reads fleet state."),
+            caption("Fleet token — the work badge for the group, from the controller's "
+                    + "Connections page. It sends work, follows the job, downloads and "
+                    + "acknowledges the result, cancels or discards it, and reads the model "
+                    + "and fleet lists. This is the one that runs work."),
             fleet,
-            caption("Hub token — from Connections. Only to put a voice into this controller's "
-                    + "library; never used to run work. Leave empty if you do not share voices."),
+            caption("Hub token — the Mac's own key, from the controller's Connections page. "
+                    + "Kept for shared-voice administration only: it creates, lists or removes "
+                    + "shared voices on that controller. Never used to run work. Leave empty "
+                    + "if you do not share voices."),
             hub,
         ])
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.spacing = 5
-        stack.frame = NSRect(x: 0, y: 0, width: 320, height: 150)
+        stack.frame = NSRect(x: 0, y: 0, width: 320, height: 230)
 
         let alert = NSAlert()
         alert.messageText = "Credentials for \(label)"

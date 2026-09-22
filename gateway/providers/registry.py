@@ -77,11 +77,14 @@ def _fleet_definitions_by_id() -> dict[str, ProviderDefinition]:
                     label="Fleet token",
                     env_var=f"FLEET_{controller_id.upper()}_HUB_TOKEN",
                     secret=True,
-                    placeholder="the controller's fleet token",
+                    placeholder="the controller's Fleet token",
                     help_text=(
-                        "From the controller's Connections page, the token labelled Fleet token. "
-                        "Enough for everything this gateway does with a location's work, and it "
-                        "cannot change that controller's settings or identity."
+                        "The work badge for the group. From the controller's Connections page, "
+                        "the token labelled Fleet token. It sends work, follows the job, "
+                        "downloads and acknowledges the result, cancels or discards an uncertain "
+                        "one, and reads the model and fleet lists; it cannot change settings, "
+                        "install or remove models, delete output, manage shared voices, or make "
+                        "a Mac join or leave. This is the token GatewayKH needs to run work."
                     ),
                 ),
                 CredentialField(
@@ -92,10 +95,12 @@ def _fleet_definitions_by_id() -> dict[str, ProviderDefinition]:
                     required=False,
                     placeholder="the controller's Hub token",
                     help_text=(
-                        "The token Connections labels Hub token. Optional, and needed only to "
-                        "create, list or remove shared voices — the Hub refuses those routes to a "
+                        "The Mac's own key. From the controller's Connections page, the token "
+                        "labelled Hub token. Optional, and needed only to create, list or remove "
+                        "shared voices on that controller — the Hub refuses those routes to a "
                         "fleet token on purpose, so a node's credential can never administer a "
-                        "controller. It is never used to run work or read fleet state."
+                        "controller. Never send it unless GatewayKH will manage shared voices "
+                        "there; anyone who holds it can do everything on that Mac."
                     ),
                 ),
             ),

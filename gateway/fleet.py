@@ -236,9 +236,10 @@ def credential_scope(base: str, token: str, *, timeout: float = _TIMEOUT) -> dic
         return {
             "scope": "operator",
             "detail": (
-                "This is the controller's Hub service token. It is sufficient but not least "
-                "privilege: it can change that controller's settings and identity, reach its "
-                "storage, and shut it down. Use the fleet credential instead."
+                "This is the controller's Hub token — the Mac's own key, not the work "
+                "credential. It is sufficient but not least privilege: it can change that "
+                "controller's settings and identity, reach its storage, and shut it down. "
+                "Use the Fleet token instead."
             ),
         }
     if response.status_code == 403:
@@ -246,7 +247,7 @@ def credential_scope(base: str, token: str, *, timeout: float = _TIMEOUT) -> dic
         # looks like, and it is the answer we want.
         return {
             "scope": "fleet",
-            "detail": "A fleet credential — sufficient for everything this gateway does.",
+            "detail": "A valid Fleet token — the work badge, and the credential this gateway runs work with.",
         }
     if response.status_code == 401:
         # Measured against Hub 0.5.1: a wrong token and no token both answer 401,

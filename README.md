@@ -358,11 +358,16 @@ the provider ships but does not list, use **Add model manually** in that provide
 
 Story Studio talks to exactly one endpoint, and this is it. So the list of *locations* lives here:
 a location is another Mac (or site) running Studio Hub in **controller** mode, reached by its
-address and its Hub service token. Its nodes belong to it and are reported by it — this gateway
+address and its **Fleet token**. Its nodes belong to it and are reported by it — this gateway
 never contacts a node directly, which is the topology Studio Hub's own plan specifies:
 
 > "GenStudio connects once to each location's controller using its address/IP and Hub token. Each
 > controller manages its joined nodes; nodes do not contact GenStudio directly."
+
+(The plan uses "Hub token" for what this gateway calls the **Fleet token** — the work badge it
+asks for, sufficient for everything here and unable to administer the controller. The controller's
+own **Hub token** is needed only to manage shared voices. See
+`docs/credential-rotation-decision.md`.)
 
 **The local Mac is always the first location**, discovered the same way the rest of the gateway
 discovers the Hub, so a single-Mac install shows something true with nothing configured.
@@ -407,7 +412,7 @@ catalogue like any other — and work is dispatched to it through the same adapt
 which already takes a per-provider address and token. Its models are **opt-in**, like every provider
 except the local Hub, so adding a site never silently publishes its whole model list.
 
-Add a location with its address and Hub service token. The token is stored in the **credential
+Add a location with its address and Fleet token. The token is stored in the **credential
 store** (`data/credentials.json`, `0600`) under the provider id the location maps to — one secret
 store, not two that can drift. `data/fleet.json` holds only the roster: id, name, address. Tokens
 are never returned by an API and are masked in the UI, and adding the same address again updates it
