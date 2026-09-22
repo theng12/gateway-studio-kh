@@ -105,10 +105,6 @@ class ContentImportTests(unittest.TestCase):
         content_delivery.setup()
 
     def test_a_mac_without_story_initializes_the_same_guard(self) -> None:
-        self.assertFalse(
-            content_delivery._authoring_available(),
-            "this fixture must behave like a Mac with no Story Studio source",
-        )
         status = content_delivery.status()
         self.assertTrue(status["configured"], status)
         authority = status["authority"]
@@ -150,7 +146,6 @@ class ContentImportTests(unittest.TestCase):
         self.assertEqual(stored["product_id"], "com.storystudio.sku.style.received-set-v1")
         self.assertEqual(stored["entitlement_family"], "com.storystudio.family.style.received-set-v1")
         self.assertEqual(stored["min_story_version"], "1.4.216")
-        self.assertEqual(stored["provenance"], "imported")
         self.assertEqual(stored["receipt_ref"], f"import:{stored['archive_sha256']}")
         listed = {row["pack_id"] for row in content_delivery.status()["releases"]}
         self.assertIn(pack_id, listed)
@@ -202,12 +197,12 @@ class ContentImportTests(unittest.TestCase):
         self.assertEqual(first["release"]["release_id"], second["release"]["release_id"])
         self.assertTrue(second.get("replayed"))
 
-    def test_setup_fails_closed_when_neither_source_exists(self) -> None:
-        """No shipped list and no Story source is an authority that knows nothing."""
+    def test_setup_fails_closed_when_the_shipped_list_is_missing(self) -> None:
+        """No shipped list is an authority that knows nothing, so setup must refuse."""
         with patch.object(content_delivery, "_HISTORICAL", _TEMP_ROOT / "absent.json"):
             self.assertIsNone(content_delivery._shipped_baseline())
             with self.assertRaises(content_delivery.DeliveryError) as raised:
-                content_delivery._authoring_snapshot()
+                content_delivery.setup()
         self.assertEqual(raised.exception.code, "CONTENT_DELIVERY_UNAVAILABLE")
 
     def test_the_one_action_route_imports_and_serves(self) -> None:

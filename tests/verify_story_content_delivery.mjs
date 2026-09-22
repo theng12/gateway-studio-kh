@@ -137,20 +137,18 @@ async function buildArchive(record, modules) {
 }
 
 async function importAndPublish(archive) {
-  const imported = await response('/admin/api/content-library/import', {
+  // One request: importing is the only publish path now, and the shelf reads every
+  // identity fact from the archive's own manifest.
+  const published = await response('/admin/api/content-library/import-and-publish', {
     method: 'POST', headers: { authorization: `Bearer ${apiKey}`, 'content-type': 'application/octet-stream' }, body: archive.bytes,
   })
-  if (imported.status !== 200) throw Error(`archive import: ${await imported.text()}`)
-  const importedRow = await imported.json()
-  assert.equal(importedRow.archive_sha256, archive.sha256)
-  const published = await adminJson('/admin/api/content-shelf/publish', {
-    archive_sha256: archive.sha256, acknowledge_authorship: true,
-  })
-  exactKeys(published, ['release', 'replayed'])
-  exactKeys(published.release, ['release_id', 'pack_id', 'version', 'archive_sha256', 'bytes', 'title', 'kind', 'current', 'available', 'published_at'])
-  assert.equal(published.release.archive_sha256, archive.sha256)
-  assert.equal(published.replayed, false)
-  return published.release
+  if (published.status !== 200) throw Error(`archive import-and-publish: ${await published.text()}`)
+  const body = await published.json()
+  exactKeys(body, ['archive', 'release', 'replayed'])
+  exactKeys(body.release, ['release_id', 'pack_id', 'version', 'archive_sha256', 'bytes', 'title', 'kind', 'current', 'available', 'published_at'])
+  assert.equal(body.release.archive_sha256, archive.sha256)
+  assert.equal(body.replayed, false)
+  return body.release
 }
 
 async function importStory() {
@@ -216,31 +214,13 @@ async function roundTrip() {
   assert.equal(setup.configured, true)
   assert.ok(setup.authority)
 
-  const registry = await import(pathToFileURL(join(fixtureRoot, 'scripts/content-packs/authoring-registry.mjs')).href)
-  const packTools = await import(pathToFileURL(join(fixtureRoot, 'scripts/content-packs/lib.mjs')).href)
+  const packTools = await import(pathToFileURL(join(storyRoot, 'scripts/content-packs/lib.mjs')).href)
   const topicV1 = recordFor('topic-pack')
   const topicV2 = recordFor('topic-pack', '1.0.1')
   const records = [recordFor('series-formula'), topicV1, recordFor('visual-style'), recordFor('thumbnail-recipe'), topicV2]
-  const reserved = await registry.reserveAuthoringBatch({
-    registryPath: join(fixtureRoot, 'content-packs/authoring-registry.json'), repositoryRoot: fixtureRoot,
-    request: {
-      expected_revision: 1,
-      coordinator: { task: 'Gateway isolated Story delivery verification', branch: 'fixture-only' },
-      proposal_ref: 'Synthetic test-only records, reserved after Gateway baseline setup.', records,
-    },
-  })
-  let revision = reserved.revision
   const archives = []
   for (const record of records) {
     archives.push({ record, ...(await buildArchive(record, packTools)) })
-    const transitioned = await registry.transitionAuthoringRecord({
-      registryPath: join(fixtureRoot, 'content-packs/authoring-registry.json'), repositoryRoot: fixtureRoot,
-      request: {
-        expected_revision: revision, coordinator: { task: 'Gateway isolated Story delivery verification', branch: 'fixture-only' },
-        receipt_ref: reserved.receipt_ref, pack_id: record.pack_id, version: record.version, changes: { status: 'authored' },
-      },
-    })
-    revision = transitioned.revision
   }
   const v1 = archives.find(archive => archive.record === topicV1)
   const v2 = archives.find(archive => archive.record === topicV2)

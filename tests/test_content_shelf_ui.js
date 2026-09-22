@@ -43,7 +43,7 @@ function harness(api, overrides = {}) {
     if (!nodes.has(id)) nodes.set(id, element());
     return nodes.get(id);
   };
-  const start = source.indexOf('const CONTENT_PACK_AUTHORING_BRIEF =');
+  const start = source.indexOf('const SHELF_KIND_LABELS = {');
   const end = source.indexOf('async function loadStatus()', start);
   assert.ok(start >= 0 && end > start, 'content shelf controller must exist');
   const context = vm.createContext({
@@ -67,7 +67,7 @@ function harness(api, overrides = {}) {
     ...overrides,
   });
   vm.runInContext(source.slice(start, end), context);
-  return {context, node, state: () => vm.runInContext('shelfState', context), authorState: () => vm.runInContext('authorState', context)};
+  return {context, node, state: () => vm.runInContext('shelfState', context)};
 }
 
 test('unconfigured setup stays gated until the owner acknowledges it', async () => {
@@ -158,12 +158,10 @@ test('shelf refresh renders all supported kinds and escapes release metadata', a
   assert.match(html, /not installed/i);
 });
 
-test('a failed shelf refresh clears the last ready state before publication controls update', async () => {
+test('a failed shelf refresh clears the last ready state', async () => {
   let fail = false;
-  let publishCalls = 0;
-  const h = harness(async (pathName) => {
+  const h = harness(async pathName => {
     if (pathName === '/content-shelf' && fail) throw Error('shelf status unavailable');
-    if (pathName === '/content-shelf/publish') { publishCalls += 1; return {}; }
     return READY_SHELF;
   });
 
@@ -174,105 +172,6 @@ test('a failed shelf refresh clears the last ready state before publication cont
 
   assert.equal(h.state().data, null);
   assert.match(h.node('shelf-message').textContent, /status unavailable/);
-  const button = element();
-  h.node('shelf-authorship-ack').checked = true;
-  await h.context.publishPreservedArchive('d'.repeat(64), button);
-  assert.equal(publishCalls, 0);
-  assert.match(h.node('shelf-message').textContent, /Set up an available private shelf/);
-});
-
-test('a refused draft publication refreshes a sealed candidate without overwriting open editor text', async () => {
-  const draft = {
-    id: 'b'.repeat(64),
-    pack_id: 'com.fixture.pack',
-    version: '1.0.0',
-    revision: 3,
-    document_text: '{"name":"Saved"}',
-    sealed: false,
-  };
-  let currentDraft = draft;
-  let rejectPublish;
-  const h = harness(async (pathName, options) => {
-    if (pathName === '/content-shelf') return READY_SHELF;
-    if (pathName.endsWith('/publish')) return new Promise((_, reject) => { rejectPublish = reject; });
-    if (pathName === '/pack-authoring') return {available:true, reservations:[]};
-    if (pathName === '/pack-authoring/drafts') return {drafts: [currentDraft]};
-    return currentDraft;
-  });
-  await h.context.loadContentShelf();
-  h.node('shelf-authorship-ack').checked = true;
-  h.context.updateShelfControls();
-  h.authorState().draft = {...draft};
-  h.authorState().savedText = draft.document_text;
-  h.node('author-document').value = draft.document_text;
-  const button = element();
-
-  const pending = h.context.publishAuthorDraft(draft.id, draft.revision, button);
-  await Promise.resolve();
-  h.node('author-document').value = '{"name":"Unsaved while shelving"}';
-  h.context.authorEdited();
-  currentDraft = {...draft, sealed:true};
-  rejectPublish(Error('Registry receipt is not eligible for this shelf.'));
-  await pending;
-
-  assert.equal(button.disabled, false);
-  assert.equal(h.authorState().draft.id, draft.id);
-  assert.equal(h.authorState().draft.sealed, true);
-  assert.equal(h.node('author-document').value, '{"name":"Unsaved while shelving"}');
-  assert.equal(h.node('author-document').readOnly, true);
-  assert.match(h.node('author-message').textContent, /immutable export candidate/i);
-  assert.match(h.node('author-message').textContent, /sealed/i);
-  assert.doesNotMatch(h.node('author-message').textContent, /remains intact and editable/i);
-});
-
-test('repeated archive shelving clicks share one pending request and restore the control', async () => {
-  let finish;
-  let publishCalls = 0;
-  const digest = 'c'.repeat(64);
-  const archive = {pack_id: 'com.fixture.pack', version: '1.0.0', archive_sha256: digest, integrity: 'verified', item_kinds: ['topic-pack']};
-  const h = harness(async (pathName, options) => {
-    if (pathName === '/content-shelf') return READY_SHELF;
-    if (pathName === '/content-library') return {archives: [archive]};
-    if (pathName === '/content-shelf/publish') {
-      publishCalls += 1;
-      return new Promise(resolve => { finish = resolve; });
-    }
-    return {};
-  });
-  await h.context.loadContentShelf();
-  await h.context.loadPacks();
-  h.node('shelf-authorship-ack').checked = true;
-  h.context.updateShelfControls();
-  const button = element();
-
-  const pending = h.context.publishPreservedArchive(digest, button);
-  await Promise.resolve();
-  const repeated = await h.context.publishPreservedArchive(digest, button);
-  assert.equal(repeated, undefined);
-  assert.equal(publishCalls, 1);
-  assert.equal(button.disabled, true);
-  assert.match(button.textContent, /Shelving/);
-
-  finish({release: READY_SHELF.releases[0] || {}, replayed: false});
-  await pending;
-  assert.equal(button.disabled, false);
-  assert.match(h.node('shelf-message').textContent, /shelf/i);
-});
-
-test('copying the authoring brief produces a credential-free local handoff', async () => {
-  let copied = '';
-  const h = harness(async () => READY_SHELF, {
-    navigator: {clipboard: {writeText: async value => { copied = value; }}},
-  });
-
-  await h.context.copyAuthoringBrief();
-  assert.match(copied, /local private destination/i);
-  assert.match(copied, /standalone .*content pack skill/i);
-  assert.match(copied, /series formula/i);
-  assert.match(copied, /visual style/i);
-  assert.match(copied, /thumbnail recipe/i);
-  assert.doesNotMatch(copied, /Bearer\s|sk-[A-Za-z0-9]|-----BEGIN|token:|password:/i);
-  assert.match(h.node('brief-message').textContent, /copied/i);
 });
 
 test('a pack someone sent is added to the shelf in one action', async () => {
@@ -302,7 +201,7 @@ test('a pack someone sent is added to the shelf in one action', async () => {
 
 test('adding a pack asks for a pack file rather than posting anything else', async () => {
   const calls = [];
-  const h = harness(async (pathName) => { calls.push(pathName); return {}; });
+  const h = harness(async pathName => { calls.push(pathName); return {}; });
   const input = h.node('received-pack-files');
   input.files = [{name: 'notes.txt', size: 10}];
   const button = element();
@@ -315,7 +214,7 @@ test('adding a pack asks for a pack file rather than posting anything else', asy
 });
 
 test('a pack the shelf refuses is reported and the control comes back', async () => {
-  const h = harness(async (pathName) => {
+  const h = harness(async pathName => {
     if (pathName === '/content-shelf') return READY_SHELF;
     if (pathName === '/content-library/import-and-publish') {
       throw new Error('Historical pack identities cannot enter the private shelf.');
@@ -334,7 +233,7 @@ test('a pack the shelf refuses is reported and the control comes back', async ()
 });
 
 test('a shelf with no setup yet shows the one setup step and nothing else', async () => {
-  const h = harness(async (pathName) => {
+  const h = harness(async pathName => {
     if (pathName === '/content-shelf') {
       return {...READY_SHELF, configured: false, available: true, releases: []};
     }
@@ -342,39 +241,31 @@ test('a shelf with no setup yet shows the one setup step and nothing else', asyn
   });
   await h.context.loadContentShelf();
 
-  // No tab bar, and nothing offered that cannot happen yet.
-  assert.equal(h.node('packs-tabs').hidden, true);
   assert.equal(h.node('packs-panel-setup').hidden, false);
   assert.equal(h.node('packs-panel-shelved').hidden, true);
-  assert.equal(h.node('packs-panel-preserved').hidden, true);
-  assert.equal(h.node('packs-panel-drafts').hidden, true);
 });
 
 test('once set up, the only view is the packs and the one add action', async () => {
-  const h = harness(async (pathName) => {
+  const h = harness(async pathName => {
     if (pathName === '/content-shelf') return READY_SHELF;
     return {};
   });
   await h.context.loadContentShelf();
 
-  assert.equal(h.node('packs-tabs').hidden, true);
   assert.equal(h.node('packs-panel-shelved').hidden, false);
   assert.equal(h.node('packs-panel-setup').hidden, true);
-  // "I confirm I authored this pack" is a claim only an author makes, and no
-  // authoring happens here.
-  assert.equal(h.node('shelf-ack-label').hidden, true);
   assert.match(h.node('packs-intro').textContent, /available to Story Studio/);
 });
 
-test('the console does not branch on whether this Mac could author', async () => {
-  for (const authoring of [true, false]) {
-    const h = harness(async (pathName) => {
-      if (pathName === '/content-shelf') return {...READY_SHELF, authoring};
-      return {};
-    });
-    await h.context.loadContentShelf();
-    assert.equal(h.node('packs-tabs').hidden, true, `authoring=${authoring} still shows one view`);
-    assert.equal(h.node('packs-panel-shelved').hidden, false);
-    assert.equal(h.node('shelf-ack-label').hidden, true);
-  }
+test('the full console script remains valid JavaScript', () => {
+  new vm.Script(source.match(/<script>([\s\S]*)<\/script>/)[1]);
+});
+
+test('table row hover follows the appearance instead of a fixed dark literal', () => {
+  // A hardcoded dark background outside the dark media query made light-appearance
+  // rows black-on-black. Every surface must come from a Canvas/CanvasText token.
+  const rule = source.match(/tbody tr:hover\s*\{([^}]*)\}/);
+  assert.ok(rule, 'the table hover rule must exist');
+  assert.doesNotMatch(rule[1], /#[0-9a-fA-F]{3,8}\b/, 'hover must not use a fixed hex colour');
+  assert.match(rule[1], /color-mix\(|var\(--/, 'hover must use a theme token');
 });

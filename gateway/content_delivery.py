@@ -16,7 +16,7 @@ import threading
 from typing import Any
 from uuid import uuid4
 
-from . import config, content_packs, pack_authoring
+from . import config, content_packs, node_tool
 
 
 SUPPORTED_KINDS = [
@@ -31,7 +31,6 @@ SUPPORTED_KINDS = [
     "lettering-style",
     "metadata-formula",
 ]
-_BRIDGE = Path(__file__).with_name("story_pack_validation.mjs")
 #: The historical Store identities this build ships, so an install with no Story
 #: Studio source can still refuse to reissue them. Exported from the owner's
 #: authority by store-analysis/export_historical_identities.py: no keys inside.
@@ -74,14 +73,14 @@ def _now(moment: datetime | None = None) -> str:
 def _node_request(script: Path, request: dict[str, Any]) -> dict[str, Any]:
     encoded = json.dumps(request, ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode()
     try:
-        completed = pack_authoring._run_process(
-            [pack_authoring._node_executable(), str(script)],
+        completed = node_tool.run_process(
+            [node_tool.node_executable(), str(script)],
             encoded,
-            pack_authoring._tool_environment(),
+            node_tool.tool_environment(),
             timeout=30,
             output_limit=_PUBLIC_MAX,
         )
-    except (pack_authoring.AuthoringError, OSError) as exc:
+    except (node_tool.NodeToolError, OSError) as exc:
         raise DeliveryError("Content delivery prerequisites are unavailable.", 503,
                             "CONTENT_DELIVERY_UNAVAILABLE") from exc
     try:
@@ -96,18 +95,11 @@ def _node_request(script: Path, request: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
-def _story_paths() -> tuple[Path, Path]:
-    story_root = Path(pack_authoring._story_source()).expanduser()
-    configured = config.get("GATEWAY_STORY_REGISTRY", "").strip()
-    registry = Path(configured).expanduser() if configured else story_root / "content-packs" / "authoring-registry.json"
-    return story_root, registry
-
-
 def _shipped_baseline() -> dict[str, Any] | None:
     """The historical identities this build carries, or None when it carries none.
 
     None is not "nothing to refuse": it means this build cannot state the guard, so
-    setup must fall back to Story's own registry or fail closed.
+    setup must fail closed rather than initialize an unguarded authority.
     """
     try:
         if _HISTORICAL.stat().st_size > 1024 * 1024:
@@ -125,112 +117,7 @@ def _shipped_baseline() -> dict[str, Any] | None:
     return {"registry_revision": revision, "pack_ids": pack_ids, "family_ids": family_ids}
 
 
-def _authoring_available() -> bool:
-    """Whether this Mac can run Story's own parser and registry at all.
 
-    The owner's checkout can, and there the authored path stays fully validated.
-    A Mac that was only ever sent packs cannot, and asking Story to judge an
-    authoring claim there would fail rather than say something useful. Decided by
-    the source being *present*, never by catching a failure — a broken checkout on
-    the owner's Mac must still fail closed instead of quietly downgrading to the
-    unvalidated path.
-    """
-    story_root, registry = _story_paths()
-    return (story_root / "scripts" / "content-packs" / "authoring-registry.mjs").is_file() and registry.is_file()
-
-
-def _authoring_snapshot() -> tuple[dict[str, Any], str]:
-    """The identities to refuse at setup, and where they came from."""
-    if _authoring_available():
-        return _story_snapshot(), "story"
-    shipped = _shipped_baseline()
-    if shipped is None:
-        raise DeliveryError(
-            "Private Content Pack setup needs either Story Studio's authoring registry or the "
-            "historical identity list this build ships.",
-            503,
-            "CONTENT_DELIVERY_UNAVAILABLE",
-        )
-    return shipped, "shipped"
-
-
-def _story_snapshot() -> dict[str, Any]:
-    story_root, registry = _story_paths()
-    result = _node_request(_BRIDGE, {
-        "action": "snapshot", "story_root": str(story_root), "registry_path": str(registry),
-    })
-    if (type(result.get("registry_revision")) is not int or result["registry_revision"] < 1
-            or not isinstance(result.get("pack_ids"), list)
-            or not isinstance(result.get("family_ids"), list)
-            or any(not isinstance(value, str) for value in result["pack_ids"] + result["family_ids"])):
-        raise DeliveryError("Story registry returned invalid identity metadata.", 503, "CONTENT_DELIVERY_UNAVAILABLE")
-    return result
-
-
-def _validate_archive(digest: str) -> dict[str, Any]:
-    story_root, registry = _story_paths()
-    result = _node_request(_BRIDGE, {
-        "action": "validate",
-        "story_root": str(story_root),
-        "registry_path": str(registry),
-        "archive_path": str(content_packs.LIBRARY / digest / "archive.sspack"),
-    })
-    required_text = (
-        "receipt_ref", "pack_id", "publisher_id", "version", "min_story_version",
-        "product_id", "entitlement_family", "item_id", "kind", "title",
-        "description", "changelog", "archive_sha256",
-    )
-    item_ids = result.get("item_ids")
-    if (any(not isinstance(result.get(key), str) for key in required_text)
-            or not isinstance(item_ids, list) or not item_ids
-            or any(not isinstance(entry, str) or not entry for entry in item_ids)
-            or len(set(item_ids)) != len(item_ids)
-            or result["item_id"] != item_ids[0]
-            or result.get("kind") not in SUPPORTED_KINDS
-            or result.get("archive_sha256") != digest
-            or type(result.get("archive_bytes")) is not int or result["archive_bytes"] < 1
-            or type(result.get("receipt_revision")) is not int
-            or type(result.get("registry_revision")) is not int
-            or not isinstance(result.get("tags"), list)
-            or any(not isinstance(tag, str) for tag in result["tags"])
-            or not isinstance(result.get("dependencies"), list)):
-        raise DeliveryError("Story validation returned invalid publication metadata.", 503, "CONTENT_DELIVERY_UNAVAILABLE")
-    return result
-
-
-def _catalog_row(metadata: dict[str, Any]) -> dict[str, Any]:
-    """The product row Story will parse, built from the validated pack metadata."""
-    return {
-        "product_id": metadata["product_id"], "entitlement_family": metadata["entitlement_family"],
-        "kind": _wire_kind(metadata["kind"]), "title": metadata["title"],
-        "summary": metadata["description"], "description": metadata["description"],
-        "publisher_id": metadata["publisher_id"], "credit_price": 0, "free": True,
-        "owned": True, "retired": False, "successor_product_id": None, "current_release": None,
-        "compatible": True, "compatibility_reason": None, "bundle_components": [],
-        "owned_component_credit_value": 0, "showcase_videos": [], "cover": None, "hero": None,
-        "tags": metadata["tags"], "license": None, "discount": None,
-    }
-
-
-def _validate_catalog_row(metadata: dict[str, Any]) -> None:
-    """Refuse a pack whose product row Story's own catalogue parser rejects.
-
-    One bad row is not one bad product: `parseContentStoreCatalog` throws on the
-    first invalid entry and Story surfaces a 500 for the whole Content Store, so a
-    pack with 14 tags emptied the entire catalogue — measured, not hypothetical.
-    The parser is the authority on its own limits, so it is called rather than its
-    numbers copied, and a kind or field it learns later is covered for free.
-    """
-    story_root, _ = _story_paths()
-    result = _node_request(_BRIDGE, {
-        "action": "validate-catalog-row", "story_root": str(story_root), "row": _catalog_row(metadata),
-    })
-    if result.get("ok") is not True:
-        reason = result.get("reason")
-        if not isinstance(reason, str) or not reason or len(reason) > 200:
-            reason = "Story's catalogue parser rejected this pack's product row."
-        raise DeliveryError(f"Story would reject this pack's catalogue entry: {reason}", 422,
-                            "CONTENT_CATALOG_ROW_INVALID")
 
 
 _inspection_lock = threading.Lock()
@@ -605,21 +492,16 @@ def status() -> dict[str, Any]:
         except DeliveryError as exc:
             return {"configured": False, "available": False, "detail": str(exc), "authority": None,
                     "supported_kinds": SUPPORTED_KINDS, "releases": []}
-        try:
-            _story_snapshot()
-            ready = bool(config.gateway_api_key())
-            detail = ("Private Content Pack delivery is ready." if ready
-                      else "Set a nonempty Gateway API key to use private Content Pack delivery.")
-        except DeliveryError as exc:
-            ready, detail = False, str(exc)
-        return _status(state, ready, detail)
-    try:
-        _story_snapshot()
         ready = bool(config.gateway_api_key())
-        detail = ("Ready for explicit private Content Pack authority setup." if ready
-                  else "Set a nonempty Gateway API key before setup.")
-    except DeliveryError as exc:
-        ready, detail = False, str(exc)
+        detail = ("Private Content Pack delivery is ready." if ready
+                  else "Set a nonempty Gateway API key to use private Content Pack delivery.")
+        return _status(state, ready, detail)
+    if not config.gateway_api_key():
+        ready, detail = False, "Set a nonempty Gateway API key before setup."
+    elif _shipped_baseline() is None:
+        ready, detail = False, "Private Content Pack setup needs the historical identity list this build ships."
+    else:
+        ready, detail = True, "Ready for explicit private Content Pack authority setup."
     return {"configured": False, "available": ready, "detail": detail, "authority": None,
             "supported_kinds": SUPPORTED_KINDS, "releases": []}
 
@@ -627,7 +509,13 @@ def status() -> dict[str, Any]:
 def setup() -> dict[str, Any]:
     if not config.gateway_api_key():
         raise DeliveryError("Set a nonempty Gateway API key before setup.", 503, "API_KEY_NOT_CONFIGURED")
-    snapshot, baseline_source = _authoring_snapshot()
+    snapshot = _shipped_baseline()
+    if snapshot is None:
+        raise DeliveryError(
+            "Private Content Pack setup needs the historical identity list this build ships.",
+            503,
+            "CONTENT_DELIVERY_UNAVAILABLE",
+        )
     with _lock():
         if _state_path().exists() or _state_path().is_symlink():
             return _status(_read_state(), True, "Private Content Pack delivery is ready.")
@@ -644,9 +532,6 @@ def setup() -> dict[str, Any]:
                 "account_id": f"gateway.private.account.{uuid4().hex}",
                 **signing,
                 "created_at": _now(),
-                # Where the guard came from: Story's registry here, or the list
-                # this build ships on a Mac that only receives packs.
-                "baseline_source": baseline_source,
                 "baseline_revision": snapshot["registry_revision"],
                 "baseline_pack_ids": snapshot["pack_ids"],
                 "baseline_family_ids": snapshot["family_ids"],
@@ -657,18 +542,17 @@ def setup() -> dict[str, Any]:
     return _status(state, True, "Private Content Pack delivery is ready.")
 
 
-def _imported_metadata(digest: str, authority: dict[str, Any], state: dict[str, Any]) -> dict[str, Any]:
-    """Publish metadata for an archive this shelf received rather than authored.
+def _archive_metadata(digest: str, authority: dict[str, Any], state: dict[str, Any]) -> dict[str, Any]:
+    """Publish metadata read from the archive's own manifest.
 
-    Every identity fact comes from the archive itself, which was built and validated
-    on the Mac that authored it, and the product and family are derived from the
-    pack id by the rule every published pack already follows — so an imported pack
-    keeps the identity it was published under instead of acquiring a new one per
-    install.
+    Every identity fact comes from the archive itself, and the product and family
+    are read from the manifest's `entitlement` — falling back to the pack-id rule
+    only for an archive that declares none — so a pack keeps the identity it was
+    built under instead of acquiring a new one per install.
 
-    The receipt records *this* shelf's import, which is the truth: it did not author
-    the pack, it received one. Its revision must sit above the baseline or the
-    historical-identity guard would refuse the pack it was written for.
+    The receipt records *this* shelf's import. Its revision must sit above the
+    baseline or the historical-identity guard would refuse the pack it was written
+    for.
     """
     inspection = content_packs.inspect_archive(content_packs.read_archive(digest))
     pack_id = str(inspection["pack_id"])
@@ -708,17 +592,7 @@ def _imported_metadata(digest: str, authority: dict[str, Any], state: dict[str, 
         "dependencies": [],
         "receipt_ref": f"import:{digest}",
         "receipt_revision": int(authority.get("baseline_revision") or 0) + 1 + len(state.get("releases") or []),
-        "provenance": "imported",
     }
-
-
-def _authoring_metadata(digest: str, authority: dict[str, Any], state: dict[str, Any]) -> dict[str, Any]:
-    """What this shelf knows about an archive: authored here, or received."""
-    if _authoring_available():
-        metadata = _validate_archive(digest)
-        _validate_catalog_row(metadata)
-        return {**metadata, "provenance": "authored"}
-    return _imported_metadata(digest, authority, state)
 
 
 def publish_archive(digest: str, *, metadata: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -733,7 +607,7 @@ def publish_archive(digest: str, *, metadata: dict[str, Any] | None = None) -> d
         except content_packs.PackError as exc:
             raise DeliveryError(str(exc), 410, "CONTENT_ARCHIVE_UNAVAILABLE") from exc
         if metadata is None:
-            metadata = _authoring_metadata(digest, state["authority"], state)
+            metadata = _archive_metadata(digest, state["authority"], state)
         if metadata["archive_bytes"] != len(data):
             raise DeliveryError("Validated archive byte count changed.", 409, "CONTENT_ARCHIVE_CHANGED")
         authority = state["authority"]
@@ -745,7 +619,7 @@ def publish_archive(digest: str, *, metadata: dict[str, Any] | None = None) -> d
             public = next(row for row in _release_rows(state) if row["release_id"] == same_version["release_id"])
             return {"release": public, "replayed": True}
         if metadata["receipt_revision"] <= authority["baseline_revision"]:
-            raise DeliveryError("This authoring identity predates private authority setup.", 409, "CONTENT_IDENTITY_HISTORICAL")
+            raise DeliveryError("This release identity predates private authority setup.", 409, "CONTENT_IDENTITY_HISTORICAL")
         if not existing_identity:
             if (metadata["pack_id"] in authority["baseline_pack_ids"]
                     or metadata["entitlement_family"] in authority["baseline_family_ids"]):
@@ -781,9 +655,6 @@ def publish_archive(digest: str, *, metadata: dict[str, Any] | None = None) -> d
                 "entitlement_family", "item_ids", "min_story_version", "description",
                 "tags", "changelog", "dependencies", "receipt_revision", "receipt_ref",
             )},
-            # Whether this shelf authored the pack or received it, so a reader never
-            # has to infer it from the receipt shape.
-            "provenance": metadata.get("provenance"),
             "archive_sha256": digest,
             "bytes": len(data),
             "published_at": _now(),
@@ -804,25 +675,6 @@ def import_and_publish(data: bytes) -> dict[str, Any]:
     entry = content_packs.import_archive(data)
     result = publish_archive(entry["archive_sha256"])
     return {"archive": entry, **result}
-
-
-def publish_draft(draft_id: str, revision: int) -> dict[str, Any]:
-    try:
-        state = _configured_state()
-        draft = pack_authoring.read_draft(draft_id)
-        if (draft.get("pack_id") in state["authority"]["baseline_pack_ids"]
-                and not any(row["pack_id"] == draft["pack_id"] for row in state["releases"])):
-            raise DeliveryError("This draft identity predates private authority setup.", 409,
-                                "CONTENT_IDENTITY_HISTORICAL")
-        data, _ = pack_authoring.export_draft(draft_id, revision)
-        metadata = content_packs.import_archive(data)
-    except DeliveryError:
-        raise
-    except pack_authoring.AuthoringError as exc:
-        raise DeliveryError(str(exc), exc.status, "PACK_AUTHORING_REFUSED") from exc
-    except content_packs.PackError as exc:
-        raise DeliveryError(str(exc), 422, "CONTENT_ARCHIVE_INVALID") from exc
-    return publish_archive(metadata["archive_sha256"])
 
 
 # Reading the authority is cheap now that the two things that made it expensive are

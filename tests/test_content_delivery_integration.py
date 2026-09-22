@@ -52,6 +52,7 @@ class ContentDeliveryIntegration(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="gateway-content-delivery-") as temporary:
             root = Path(temporary)
             fixture = root / "story-authoring"
+            fixture.mkdir(parents=True, exist_ok=True)
             env = dict(os.environ)
             env.update({
                 "GATEWAY_APP_SUPPORT": str(root / "support"),
@@ -68,16 +69,9 @@ class ContentDeliveryIntegration(unittest.TestCase):
                 "GATEWAY_NO_MIGRATE": "1",
                 "GATEWAY_API_KEY": API_KEY,
                 "GATEWAY_HOST": "127.0.0.1",
-                "GATEWAY_STORY_SOURCE": str(fixture),
-                "GATEWAY_STORY_REGISTRY": str(fixture / "content-packs" / "authoring-registry.json"),
                 "GATEWAY_AUTHORING_NODE": NODE,
                 "STORY_STUDIO_DATA_DIR": str(root / "story-data"),
             })
-            prepared = subprocess.run(
-                [NODE, "tests/prepare_authoring_fixture.mjs", str(fixture), str(STORY), "--empty-registry"],
-                cwd=ROOT, env=env, text=True, capture_output=True, timeout=45, check=True,
-            )
-            self.assertIsNone(json.loads(prepared.stdout)["key"])
             port = unused_port()
             process = subprocess.Popen(
                 [sys.executable, "-m", "uvicorn", "gateway.api:app", "--host", "127.0.0.1", "--port", str(port),

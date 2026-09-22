@@ -6,7 +6,6 @@ from pathlib import Path
 import base64
 from concurrent.futures import ThreadPoolExecutor
 import hashlib
-import io
 import json
 import shutil
 import stat
@@ -17,7 +16,6 @@ import time
 import unittest
 from unittest.mock import patch
 from urllib.parse import parse_qs, urlencode, urlsplit, urlunsplit
-import zipfile
 from datetime import datetime, timezone
 
 
@@ -240,34 +238,10 @@ class ContentDeliveryTest(unittest.TestCase):
         self.assertEqual(response.status_code, 200, response.text)
         return response.json()["archive_sha256"]
 
-    def _story_schema_invalid_archive(self, data: bytes) -> bytes:
-        with zipfile.ZipFile(io.BytesIO(data)) as source:
-            files = {entry.filename: source.read(entry.filename) for entry in source.infolist()}
-        manifest = json.loads(files["manifest.json"])
-        document_path = manifest["items"][0]["path"]
-        document = json.loads(files[document_path])
-        document.pop("compatible_formula_ids")
-        files[document_path] = json.dumps(document, separators=(",", ":")).encode()
-        declared = next(row for row in manifest["files"] if row["path"] == document_path)
-        declared["bytes"] = len(files[document_path])
-        declared["sha256"] = hashlib.sha256(files[document_path]).hexdigest()
-        files["manifest.json"] = json.dumps(manifest, separators=(",", ":")).encode()
-        output = io.BytesIO()
-        with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED) as archive:
-            for name, content in files.items():
-                entry = zipfile.ZipInfo(name, date_time=(2026, 1, 1, 0, 0, 0))
-                entry.compress_type = zipfile.ZIP_DEFLATED
-                entry.create_system = 3
-                entry.external_attr = 0o100600 << 16
-                archive.writestr(entry, content)
-        return output.getvalue()
-
     def _publish(self, data: bytes):
-        digest = self._preserve(data)
-        return self.client.post("/admin/api/content-shelf/publish", json={
-            "archive_sha256": digest,
-            "acknowledge_authorship": True,
-        })
+        # One pack in, one product available: importing is the only publisher now,
+        # and every identity fact comes from the archive's own manifest.
+        return self.client.post("/admin/api/content-library/import-and-publish", content=data)
 
     def _story_headers(self, key: str = "content-delivery-fixture-key") -> dict[str, str]:
         return {"Authorization": f"Bearer {key}"}
@@ -306,12 +280,13 @@ process.exit(verify(null,Buffer.from(canonical(row.payload),'utf8'),key,Buffer.f
             self.assertEqual(unavailable.json()["code"], "CONTENT_STORE_NOT_CONNECTED")
 
     def test_status_reports_missing_or_timed_out_node_as_safe_unavailability(self) -> None:
+        self._setup()
         for failure in (
-            content_delivery.pack_authoring.AuthoringError("missing executable /private/path", 503),
-            content_delivery.pack_authoring.AuthoringError("helper timed out with secret args", 503),
+            content_delivery.node_tool.NodeToolError("missing executable /private/path", 503),
+            content_delivery.node_tool.NodeToolError("helper timed out with secret args", 503),
         ):
             with self.subTest(str(failure)), patch.object(
-                    content_delivery.pack_authoring, "_run_process", side_effect=failure):
+                    content_delivery.node_tool, "run_process", side_effect=failure):
                 response = self.client.get("/admin/api/content-shelf")
                 self.assertEqual(response.status_code, 200, response.text)
                 body = response.json()
@@ -339,7 +314,9 @@ process.exit(verify(null,Buffer.from(canonical(row.payload),'utf8'),key,Buffer.f
         self.assertEqual(set(first["authority"]), {
             "account_id", "key_id", "public_key_fingerprint", "created_at", "baseline_revision",
         })
-        self.assertEqual(first["authority"]["baseline_revision"], 1)
+        shipped = content_delivery._shipped_baseline()
+        self.assertIsNotNone(shipped, "the shipped historical identity list must be present")
+        self.assertEqual(first["authority"]["baseline_revision"], shipped["registry_revision"])
         serialized = json.dumps(first).lower()
         self.assertNotIn("private_key", serialized)
         self.assertNotIn("public_key_base64", serialized)
@@ -407,40 +384,6 @@ process.exit(verify(null,Buffer.from(canonical(row.payload),'utf8'),key,Buffer.f
         started = time.monotonic()
         self.assertFalse(self.client.get("/admin/api/content-shelf").json()["configured"])
         self.assertLess(time.monotonic() - started, 1.0)
-
-        archive = SUPPORT / "archive-fifo.sspack"
-        os.mkfifo(archive, 0o600)
-        with self.assertRaises(content_delivery.DeliveryError):
-            content_delivery._node_request(content_delivery._BRIDGE, {
-                "action": "validate", "story_root": str(STORY_SOURCE),
-                "registry_path": str(STORY_REGISTRY), "archive_path": str(archive),
-            })
-        self.assertLess(time.monotonic() - started, 1.0)
-
-    def test_catalog_row_guard_uses_storys_own_parser(self) -> None:
-        """A product row Story's catalogue parser rejects must not be publishable.
-
-        One invalid row throws in `parseContentStoreCatalog`, and Story then answers
-        500 for the whole Content Store, so a pack with 14 tags emptied every
-        product — measured, not hypothetical. The guard calls the real parser
-        rather than copying its limits, so a kind or field Story learns later is
-        covered without a Gateway change.
-        """
-        if not (STORY_SOURCE / "electron/server/lib/genstudio-content-store.ts").is_file():
-            self.skipTest("Story source is unavailable")
-        metadata = {
-            "product_id": "com.storystudio.sku.style.demo-v2",
-            "entitlement_family": "com.storystudio.family.style.demo-v2",
-            "kind": "visual-style", "title": "Demo style", "description": "A demo style.",
-            "publisher_id": "com.storystudio",
-            "tags": [f"tag{index}" for index in range(13)],
-        }
-        with patch.object(content_delivery, "_story_paths", return_value=(STORY_SOURCE, STORY_REGISTRY)):
-            with self.assertRaises(content_delivery.DeliveryError) as caught:
-                content_delivery._validate_catalog_row(metadata)
-            self.assertIn("at most 12", str(caught.exception))
-            metadata["tags"] = metadata["tags"][:12]
-            content_delivery._validate_catalog_row(metadata)
 
     def test_a_content_request_reads_the_authority_once(self) -> None:
         """The dependency hands the handler the state it already read.
@@ -554,9 +497,8 @@ process.exit(verify(null,Buffer.from(canonical(row.payload),'utf8'),key,Buffer.f
         "exactly one item" rule was lifted: every item must still be receipted and
         the whole list is stored.
 
-        A second pack claiming one of those items is refused — by the **registry**,
-        which enforces item-id uniqueness before the shelf ever sees the archive. The
-        shelf's own overlap check is therefore defence in depth, not the only guard.
+        A second pack claiming one of those items is refused by the shelf's own
+        overlap check — with the registry cross-check gone, that check is the guard.
         """
         self._setup()
         items = ["com.storystudio.lettering.alpha", "com.storystudio.lettering.beta"]
@@ -575,13 +517,12 @@ process.exit(verify(null,Buffer.from(canonical(row.payload),'utf8'),key,Buffer.f
         self.assertEqual(again.status_code, 200, again.text[:200])
         self.assertTrue(again.json()["replayed"])
 
-        # The registry refuses a second pack that claims an already-receipted item.
+        # A second pack that claims an already-published item is refused.
         thief = self._multi_item_record("thief", ["com.storystudio.lettering.alpha"])
-        self._install_registry_records([record, thief])
         stolen = self._build_multi_archive(thief, [("alpha", "Alpha")])
         refused = self._publish(stolen)
-        self.assertEqual(refused.status_code, 503, refused.text[:200])
-        self.assertIn("registry", refused.json()["detail"].lower())
+        self.assertEqual(refused.status_code, 409, refused.text[:200])
+        self.assertIn("identities must remain unique", refused.json()["detail"].lower())
 
     def test_real_story_validation_restore_grant_and_exact_download(self) -> None:
         setup = self._setup()
@@ -592,7 +533,7 @@ process.exit(verify(null,Buffer.from(canonical(row.payload),'utf8'),key,Buffer.f
         response = self._publish(archive)
         self.assertEqual(response.status_code, 200, response.text)
         publication = response.json()
-        self.assertEqual(set(publication), {"release", "replayed"})
+        self.assertEqual(set(publication), {"archive", "release", "replayed"})
         self.assertFalse(publication["replayed"])
         release = publication["release"]
         self.assertEqual(set(release), {
@@ -753,20 +694,11 @@ process.exit(verify(null,Buffer.from(canonical(row.payload),'utf8'),key,Buffer.f
                 {"pack_id": "com.storystudio.pack.topic.alpha", "version": "1.0.0"},
             ])
 
-    def test_historical_draft_is_refused_before_candidate_export(self) -> None:
-        historical = _record("historical-draft")
-        self._install_registry_records([historical])
-        self._setup()
-        draft = {"pack_id": historical["pack_id"], "version": historical["version"]}
-        with patch.object(content_delivery.pack_authoring, "read_draft", return_value=draft), \
-                patch.object(content_delivery.pack_authoring, "export_draft") as export:
-            with self.assertRaisesRegex(content_delivery.DeliveryError, "predates private authority setup"):
-                content_delivery.publish_draft("historical-fixture", 1)
-            export.assert_not_called()
-
     def test_historical_archive_is_never_eligible(self) -> None:
+        shipped = content_delivery._shipped_baseline()
+        self.assertIsNotNone(shipped, "the shipped historical identity list must be present")
         historical = _record("historical-archive")
-        self._install_registry_records([historical])
+        historical["pack_id"] = shipped["pack_ids"][0]
         self._setup()
         refused = self._publish(self._build_archive(historical, "Historical Archive"))
         self.assertEqual(refused.status_code, 409, refused.text)
@@ -792,12 +724,9 @@ process.exit(verify(null,Buffer.from(canonical(row.payload),'utf8'),key,Buffer.f
         self.assertEqual([row["version"] for row in rows if row["current"]], ["1.10.0"])
 
         candidate = self._build_archive(failed, "Failed Durable Write")
-        digest = self._preserve(candidate)
         with patch.object(content_delivery, "_atomic_state", side_effect=content_delivery.DeliveryError(
                 "Private Content Pack authority state could not be stored.", 503, "CONTENT_DELIVERY_UNAVAILABLE")):
-            refused = self.client.post("/admin/api/content-shelf/publish", json={
-                "archive_sha256": digest, "acknowledge_authorship": True,
-            })
+            refused = self.client.post("/admin/api/content-library/import-and-publish", content=candidate)
         self.assertEqual(refused.status_code, 503)
         self.assertNotIn(failed["pack_id"], [
             row["pack_id"] for row in self.client.get("/admin/api/content-shelf").json()["releases"]
@@ -812,32 +741,6 @@ process.exit(verify(null,Buffer.from(canonical(row.payload),'utf8'),key,Buffer.f
             results = list(pool.map(content_delivery.publish_archive, [digest, digest]))
         self.assertEqual(sorted(result["replayed"] for result in results), [False, True])
         self.assertEqual(len(self.client.get("/admin/api/content-shelf").json()["releases"]), 1)
-
-    def test_invalid_registry_receipt_cannot_publish(self) -> None:
-        self._setup()
-        record = _record("invalid-receipt")
-        self._install_registry_records([record])
-        digest = self._preserve(self._build_archive(record, "Invalid Receipt"))
-        registry = json.loads(STORY_REGISTRY.read_text())
-        registry["records"][0]["receipt_ref"] = "authoring:" + "0" * 64
-        STORY_REGISTRY.write_text(json.dumps(registry))
-        refused = self.client.post("/admin/api/content-shelf/publish", json={
-            "archive_sha256": digest, "acknowledge_authorship": True,
-        })
-        self.assertNotEqual(refused.status_code, 200)
-        self.assertEqual(self.client.get("/admin/api/content-shelf").json()["releases"], [])
-
-    def test_lightweight_valid_but_story_schema_invalid_archive_never_publishes(self) -> None:
-        self._setup()
-        record = _record("story-schema-invalid")
-        self._install_registry_records([record])
-        invalid = self._story_schema_invalid_archive(self._build_archive(record, "Schema Invalid"))
-        digest = self._preserve(invalid)
-        refused = self.client.post("/admin/api/content-shelf/publish", json={
-            "archive_sha256": digest, "acknowledge_authorship": True,
-        })
-        self.assertNotEqual(refused.status_code, 200, refused.text)
-        self.assertEqual(self.client.get("/admin/api/content-shelf").json()["releases"], [])
 
     def test_public_response_bound_accepts_exactly_one_mib_and_refuses_one_more_byte(self) -> None:
         empty = {"value": ""}
