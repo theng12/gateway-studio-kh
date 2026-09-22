@@ -22,7 +22,8 @@ controller that cannot serve one is stepped over instead of failing the job.
 - **Clearer Fleet tokens.** Adding a Studio Hub location asks for its **Fleet
   token** by name. The **Hub token** is that Mac's own key, needed only to manage
   shared voices; the **Fleet token** is the work badge that sends and collects
-  work. Joining a controller stays that Mac's own decision, made on that Mac.
+  work. Joining a controller stays that Mac's own decision, made on that Mac with
+  the controller's **Fleet token** — not a Hub token.
 
 ## Content Packs: install a pack someone sent you
 

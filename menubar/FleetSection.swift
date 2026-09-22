@@ -243,8 +243,8 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
         // enlist or dismiss a machine, and saying so here stops "why can't GatewayKH
         // just add it?" from becoming a support question.
         root.addArrangedSubview(PageKit.help(
-            "Joining is that Mac's own decision, made from its own app with its Hub "
-            + "token. GatewayKH cannot join or unjoin a Mac."
+            "Joining is that Mac's own decision, made from its own app with the "
+            + "controller's Fleet token. GatewayKH cannot join or unjoin a Mac."
         ))
 
         labelField.placeholderString = "Name (e.g. Blue Room)"
