@@ -809,10 +809,6 @@ suite presses **Check Gateway** and asserts a named build.
   a note under `_trash/` before deleting it, and never rewrite published history.
   `_trash/` is outside Git and nothing in it is read by the app, tests or build; see
   `_trash/README.md` for what is in it.
-  A cleanup pass on 2026-09-22 broke this twice — it permanently deleted four
-  superseded app builds *from* `_trash`, and an over-broad `/tmp/story-*` glob removed
-  the Story session's test scratch and two of its small text files. Both are exactly
-  what this rule exists to prevent.
 - **Test narrowly, and off the owner's screen. The full `tests/test_ui.py` is a
   release gate, not a routine check.** It walks every section, forces the window
   to 700 pt, selects sidebar rows and presses controls, so it takes over the
