@@ -1023,6 +1023,50 @@ touching `genstudio-content-store.ts` is an unrelated one. So it is a real build
 real fix, but not a traceable release: if that tree is reset, the DMG's source is
 gone. That is Story's to close before 1.4.216 is treated as shipped.
 
+## 10aa. The font and metadata packs are delivered — 21 of 28 (2026-09-22)
+
+Story accepted both kinds and confirmed the spellings, and the Gateway's withholding
+rule removed the need to wait for every Mac to update, so both kinds are live.
+
+- **Gateway enabled**: `lettering-style` and `metadata-formula` added to
+  `SUPPORTED_KINDS` in **both** gates — `content_delivery.py` and the bridge's own
+  set in `story_pack_validation.mjs`, which validates the archive's kind too.
+- **The one non-mechanical wire spelling**: `_wire_kind` gained
+  `{"lettering-style": "font_pack"}`. Confirmed live — the catalogue publishes
+  `font_pack` and `metadata_formula`.
+- **21 packs shelved, all pinned `min_app_version: "1.4.216"`**: 14 lettering
+  (`font_pack`) and 7 metadata (`metadata_formula`).
+- **Withholding proven on the live shelf**: `story_version=1.4.216` → **161**
+  products; `1.4.213` and `1.4.0` → **140**, exactly the four older kinds. So the
+  owner's current app cannot receive a kind it cannot parse.
+- **Acceptance, through Story's own 1.4.216 code**: a `font_pack` and a
+  `metadata_formula` product both install `activated: true`, and the installed
+  lettering pack then appears in `letteringCatalogue()` with its `axis`, its
+  **phrase** and its pack swatch URL — the bridge Story implemented, exercised from
+  the archive this Gateway delivered.
+- Build `4e5dd76-202609220152`, promoted.
+
+**Three traps, all found by doing it:**
+
+1. `MULTI_ITEM_KINDS = {lettering-style, metadata-formula}` — the registry requires
+   `item_ids` (a **list**) for these kinds and refuses the singular `item_id`, even
+   when the pack holds one item.
+2. A record with `min_app_version_status: "fixed"` must have that **literal version
+   in the source's `pack.json`** (the registry compares the two), and the builder
+   then **refuses `--min-app-version`** — the override is only for
+   release-parameterized sources carrying `{{MIN_APP_VERSION}}`.
+3. `finish_batch`'s `held/` restore re-copies the source tree, so an in-place fix to
+   a generated source is **clobbered** on the next run; the held copy has to be fixed
+   too.
+
+**Still blocked: 7 packs are multi-item and the shelf publishes one item per pack.**
+Six lettering packs and one metadata pack hold **six items each** (`item_ids` length
+6), so `publish_archive`'s "exactly one standalone content item" rule refuses them.
+They are reported, never silently published as whichever item is first. Delivering
+them needs the shelf's single-item assumption lifted — a change to the bridge's
+item-count rule, the release state's `item_id`, the entitlement, and the identity
+checks, with the existing single-item rows kept readable. Owner decision pending.
+
 ## 11. Exact next action / resumable handoff
 
 - Branch `codex/content-pack-delivery`: promoted app code at `97bb3a5`

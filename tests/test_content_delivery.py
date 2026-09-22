@@ -272,6 +272,8 @@ process.exit(verify(null,Buffer.from(canonical(row.payload),'utf8'),key,Buffer.f
         self.assertTrue(first["available"])
         self.assertEqual(first["supported_kinds"], [
             "series-formula", "topic-pack", "visual-style", "thumbnail-recipe",
+            # Accepted by Story 1.4.216; withheld from older clients in `products()`.
+            "lettering-style", "metadata-formula",
         ])
         self.assertEqual(set(first["authority"]), {
             "account_id", "key_id", "public_key_fingerprint", "created_at", "baseline_revision",

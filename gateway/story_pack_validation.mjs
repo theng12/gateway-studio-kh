@@ -7,7 +7,7 @@ import { pathToFileURL, fileURLToPath } from 'node:url'
 
 const MAX_INPUT = 64 * 1024
 const MAX_ARCHIVE = 50 * 1024 * 1024
-const SUPPORTED_KINDS = new Set(['series-formula', 'topic-pack', 'visual-style', 'thumbnail-recipe'])
+const SUPPORTED_KINDS = new Set(['series-formula', 'topic-pack', 'visual-style', 'thumbnail-recipe', 'lettering-style', 'metadata-formula'])
 class ValidationError extends Error {}
 const fail = message => { throw new ValidationError(message) }
 

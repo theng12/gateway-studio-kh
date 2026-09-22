@@ -24,6 +24,12 @@ SUPPORTED_KINDS = [
     "topic-pack",
     "visual-style",
     "thumbnail-recipe",
+    # Story 1.4.216 accepted these two, so the shelf may publish them. Safe to offer
+    # before every Mac updates because `products()` withholds a product from a client
+    # older than its `min_story_version`: an older app never receives a row whose kind
+    # its parser does not know.
+    "lettering-style",
+    "metadata-formula",
 ]
 _BRIDGE = Path(__file__).with_name("story_pack_validation.mjs")
 _SIGNER = Path(__file__).with_name("content_signing.mjs")
@@ -700,8 +706,14 @@ def _current_releases(state: dict[str, Any]) -> list[tuple[dict[str, Any], dict[
     return [(row, public[row["release_id"]]) for row in state["releases"] if row["release_id"] in public]
 
 
+# The pack kind -> wire kind spelling. Story's spelling table is mechanical except
+# for one entry: the product kind for lettering has been `font_pack` since 1.4.62, so
+# `lettering-style.replace("-", "_")` would be wrong.
+_WIRE_KIND_EXCEPTIONS = {"lettering-style": "font_pack"}
+
+
 def _wire_kind(kind: str) -> str:
-    return kind.replace("-", "_")
+    return _WIRE_KIND_EXCEPTIONS.get(kind, kind.replace("-", "_"))
 
 
 def _wire_release(row: dict[str, Any], public: dict[str, Any]) -> dict[str, Any]:
