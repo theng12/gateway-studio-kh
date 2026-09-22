@@ -125,7 +125,12 @@ def _validate_archive(digest: str) -> dict[str, Any]:
         "product_id", "entitlement_family", "item_id", "kind", "title",
         "description", "changelog", "archive_sha256",
     )
+    item_ids = result.get("item_ids")
     if (any(not isinstance(result.get(key), str) for key in required_text)
+            or not isinstance(item_ids, list) or not item_ids
+            or any(not isinstance(entry, str) or not entry for entry in item_ids)
+            or len(set(item_ids)) != len(item_ids)
+            or result["item_id"] != item_ids[0]
             or result.get("kind") not in SUPPORTED_KINDS
             or result.get("archive_sha256") != digest
             or type(result.get("archive_bytes")) is not int or result["archive_bytes"] < 1
@@ -491,6 +496,15 @@ def _validate_dependency_closure(
         visit(dependency, initial_stack)
 
 
+def _release_item_ids(row: dict[str, Any]) -> list[str]:
+    """A release's item ids. Rows written before multi-item packs carry `item_id`."""
+    listed = row.get("item_ids")
+    if isinstance(listed, list) and listed:
+        return [entry for entry in listed if isinstance(entry, str)]
+    single = row.get("item_id")
+    return [single] if isinstance(single, str) else []
+
+
 def _release_rows(state: dict[str, Any]) -> list[dict[str, Any]]:
     available = {row.get("release_id"): _available(row) for row in state["releases"] if isinstance(row, dict)}
     current: dict[str, dict[str, Any]] = {}
@@ -616,14 +630,16 @@ def publish_archive(digest: str) -> dict[str, Any]:
                 raise DeliveryError("Historical pack or family identities cannot enter the private shelf.", 409, "CONTENT_IDENTITY_HISTORICAL")
         else:
             first = existing_identity[0]
-            identity_fields = ("publisher_id", "product_id", "entitlement_family", "item_id", "kind")
-            if any(first[field] != metadata[field] for field in identity_fields):
+            identity_fields = ("publisher_id", "product_id", "entitlement_family", "kind")
+            if (any(first[field] != metadata[field] for field in identity_fields)
+                    or set(_release_item_ids(first)) != set(metadata["item_ids"])):
                 raise DeliveryError("A later release changed the private product identity.", 409, "CONTENT_IDENTITY_CONFLICT")
+        wanted_items = set(metadata["item_ids"])
         for other in state["releases"]:
             if other["pack_id"] != metadata["pack_id"] and (
                 other["product_id"] == metadata["product_id"]
                 or other["entitlement_family"] == metadata["entitlement_family"]
-                or other["item_id"] == metadata["item_id"]
+                or bool(wanted_items & set(_release_item_ids(other)))
             ):
                 raise DeliveryError("Product, family, and item identities must remain unique.", 409, "CONTENT_IDENTITY_CONFLICT")
         available_releases = [row for row in state["releases"] if _available(row)]
@@ -640,7 +656,7 @@ def publish_archive(digest: str) -> dict[str, Any]:
             "release_id": f"gateway.private.release.{hashlib.sha256(release_identity.encode()).hexdigest()[:24]}",
             **{key: metadata[key] for key in (
                 "pack_id", "version", "title", "kind", "publisher_id", "product_id",
-                "entitlement_family", "item_id", "min_story_version", "description",
+                "entitlement_family", "item_ids", "min_story_version", "description",
                 "tags", "changelog", "dependencies", "receipt_revision", "receipt_ref",
             )},
             "archive_sha256": digest,

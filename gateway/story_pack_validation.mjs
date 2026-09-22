@@ -6,10 +6,19 @@ import { dirname, join, resolve } from 'node:path'
 import { pathToFileURL, fileURLToPath } from 'node:url'
 
 const MAX_INPUT = 64 * 1024
+const MAX_ITEMS = 24  // the registry's own ceiling (MAX_PACK_ITEMS)
 const MAX_ARCHIVE = 50 * 1024 * 1024
 const SUPPORTED_KINDS = new Set(['series-formula', 'topic-pack', 'visual-style', 'thumbnail-recipe', 'lettering-style', 'metadata-formula'])
 class ValidationError extends Error {}
 const fail = message => { throw new ValidationError(message) }
+
+/** A pack's display name when its items do not name it: its own slug, title-cased. */
+function packTitle(packId) {
+  const slug = String(packId).split('.').pop() ?? ''
+  // The re-homed identity ends in `-v2`, which is bookkeeping rather than a name.
+  const named = slug.replace(/-v\d+$/, '')
+  return named.split('-').filter(Boolean).map(word => word.charAt(0).toUpperCase() + word.slice(1)).join(' ') || packId
+}
 
 async function readInput() {
   const chunks = []
@@ -94,21 +103,35 @@ async function validate(request, storyRoot, repositoryRoot) {
     })
     const verified = await story.archive.verifyDeliveryAttestedContentPackArchive(bytes)
     const manifest = verified.manifest
-    if (manifest.items.length !== 1 || manifest.bundles.length !== 0 || verified.documents.size !== 1) {
-      fail('private shelf publications require exactly one standalone content item and no bundles')
+    // A pack may hold several items — the lettering and metadata packs hold six
+    // styles each — so the rule is 1 to MAX_ITEMS, not exactly one, and one document
+    // per item. Bundles stay refused: a bundle would make it a coordinator, which is
+    // what the standalone product model exists to prevent.
+    if (!manifest.items.length || manifest.items.length > MAX_ITEMS
+      || manifest.bundles.length !== 0 || verified.documents.size !== manifest.items.length) {
+      fail(`private shelf publications require 1 to ${MAX_ITEMS} standalone content items and no bundles`)
     }
-    const item = manifest.items[0]
-    const document = verified.documents.get(item.id)
-    if (!document || !SUPPORTED_KINDS.has(document.kind) || document.kind !== item.kind) {
+    const resolved = manifest.items.map(item => ({ item, document: verified.documents.get(item.id) }))
+    if (resolved.some(({ item, document }) => !document || !SUPPORTED_KINDS.has(document.kind) || document.kind !== item.kind)) {
       fail('this Content Pack kind requires a coordinated Story update before private delivery')
     }
+    const kind = resolved[0].document.kind
+    if (resolved.some(({ document }) => document.kind !== kind)) {
+      fail('a private shelf pack must hold one kind of content')
+    }
+    const itemIds = manifest.items.map(item => item.id)
+    const primary = resolved[0].document
     const record = registry.records.find(candidate => candidate.pack_id === manifest.pack_id && candidate.version === manifest.version)
     if (!record) fail('archive identity has no current Story authoring registry receipt')
     if (record.status !== 'reserved' && record.status !== 'authored') fail('archive authoring identity is not publishable')
-    if (record.publisher_id !== manifest.publisher_id || record.kind !== document.kind
+    // Every item must be receipted, and the counts must match: a pack could otherwise
+    // claim six styles and ship a seventh the registry never reserved.
+    const receipted = record.item_ids ?? [record.item_id]
+    if (record.publisher_id !== manifest.publisher_id || record.kind !== kind
       || record.stocking_proposal.family.id !== manifest.entitlement.family
       || record.stocking_proposal.sku.id !== manifest.entitlement.sku
-      || !(record.item_ids ?? [record.item_id]).includes(item.id)) {
+      || itemIds.length !== receipted.length
+      || !itemIds.every(id => receipted.includes(id))) {
       fail('archive identity does not match its Story authoring registry receipt')
     }
     const batch = registry.batches.find(candidate => candidate.receipt_ref === record.receipt_ref
@@ -129,11 +152,16 @@ async function validate(request, storyRoot, repositoryRoot) {
       min_story_version: manifest.min_app_version,
       product_id: manifest.entitlement.sku,
       entitlement_family: manifest.entitlement.family,
-      item_id: item.id,
-      kind: document.kind,
-      title: document.name,
-      description: document.description ?? '',
-      tags: Array.isArray(document.tags) ? document.tags : [],
+      // `item_id` stays for the single-item readers; `item_ids` is the truth.
+      item_id: itemIds[0],
+      item_ids: itemIds,
+      kind,
+      // A pack has no name of its own; a lone item names the product, and a pack of
+      // several takes its name from the slug its author chose, with the release
+      // changelog as the pack-level description.
+      title: itemIds.length === 1 ? primary.name : packTitle(manifest.pack_id),
+      description: (itemIds.length === 1 ? primary.description : (manifest.changelog || primary.description)) ?? '',
+      tags: Array.isArray(primary.tags) ? primary.tags : [],
       changelog: manifest.changelog ?? '',
       dependencies: manifest.dependencies ?? [],
       archive_sha256: createHash('sha256').update(bytes).digest('hex'),

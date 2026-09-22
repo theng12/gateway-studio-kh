@@ -53,6 +53,12 @@ from gateway.activity import story_activity
 from gateway import content_delivery, content_packs
 
 
+# A 1x1 PNG: the smallest thing the lettering schema's preview asset can be.
+_TINY_PNG = base64.b64decode(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+)
+
+
 def _canonical(value) -> str:
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
 
@@ -141,6 +147,61 @@ class ContentDeliveryTest(unittest.TestCase):
             "records": [{"receipt_ref": receipt, **record} for record in records],
         }))
         return receipt
+
+    def _multi_item_record(self, slug: str, items: list[str]) -> dict:
+        return {
+            "pack_id": f"com.storystudio.pack.lettering.{slug}",
+            "item_ids": items,
+            "version": "1.0.0",
+            "publisher_id": "com.storystudio",
+            "min_app_version": "1.4.216",
+            "min_app_version_status": "fixed",
+            "kind": "lettering-style",
+            "source_path": f"content-packs/reserved/lettering-{slug}-1.0.0",
+            "status": "reserved",
+            "dependencies": [],
+            "stocking_proposal": {
+                "family": {"id": f"com.storystudio.family.lettering.{slug}", "status": "proposed"},
+                "sku": {"id": f"com.storystudio.sku.lettering.{slug}", "status": "proposed"},
+            },
+        }
+
+    def _build_multi_archive(self, record: dict, items: list[tuple[str, str]]) -> bytes:
+        """A pack holding several items, the shape the big lettering packs have."""
+        key = hashlib.sha256(f"{record['pack_id']}:{len(items)}".encode()).hexdigest()[:12]
+        source = SUPPORT / "build-inputs" / f"multi-{key}"
+        output = SUPPORT / "build-outputs" / f"multi-{key}.sspack"
+        source.mkdir(parents=True, exist_ok=True)
+        (source / "content").mkdir()
+        (source / "pack.json").write_text(json.dumps({
+            "pack_format": 1, "pack_id": record["pack_id"], "publisher_id": record["publisher_id"],
+            "version": record["version"], "min_app_version": record["min_app_version"],
+            "lifecycle": "active", "changelog": "Two styles in one pack.",
+            "entitlement": {"sku": record["stocking_proposal"]["sku"]["id"],
+                            "family": record["stocking_proposal"]["family"]["id"]},
+            "dependencies": record["dependencies"],
+        }))
+        # The lettering schema requires at least one preview asset, and the archive
+        # layer checks the declared file is really there.
+        (source / "assets").mkdir()
+        for slug, name in items:
+            asset_name = f"{slug}.png"
+            (source / "assets" / asset_name).write_bytes(_TINY_PNG)
+            (source / "content" / f"{slug}.json").write_text(json.dumps({
+                "kind": "lettering-style", "schema_version": 1,
+                "id": f"com.storystudio.lettering.{slug}", "axis": "font",
+                "name": name, "description": f"{name} description.",
+                "phrase": f"{name} phrase.",
+                "preview_assets": [f"assets/{asset_name}"],
+            }))
+        output.parent.mkdir(parents=True, exist_ok=True)
+        completed = subprocess.run([
+            shutil.which("node") or "node",
+            str(STORY_SOURCE / "scripts/content-packs/build-pack.mjs"), str(source),
+            "--output", str(output), "--delivery-profile", "genstudio-store-receipt-v1",
+        ], cwd=STORY_SOURCE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+        self.assertEqual(completed.returncode, 0, completed.stdout.decode() + completed.stderr.decode())
+        return output.read_bytes()
 
     def _build_archive(self, record: dict, title: str) -> bytes:
         key = hashlib.sha256(f"{record['pack_id']}:{record['version']}:{title}".encode()).hexdigest()[:12]
@@ -485,6 +546,42 @@ process.exit(verify(null,Buffer.from(canonical(row.payload),'utf8'),key,Buffer.f
             replacement.write_text(json.dumps(original))
             os.chmod(replacement, 0o600)
             os.replace(replacement, state_path)
+
+    def test_a_multi_item_pack_publishes_and_keeps_every_item(self) -> None:
+        """A pack may hold several items, and none of them may be borrowed.
+
+        The lettering and metadata packs hold six styles each, so the shelf's
+        "exactly one item" rule was lifted: every item must still be receipted and
+        the whole list is stored.
+
+        A second pack claiming one of those items is refused — by the **registry**,
+        which enforces item-id uniqueness before the shelf ever sees the archive. The
+        shelf's own overlap check is therefore defence in depth, not the only guard.
+        """
+        self._setup()
+        items = ["com.storystudio.lettering.alpha", "com.storystudio.lettering.beta"]
+        record = self._multi_item_record("duo", items)
+        self._install_registry_records([record])
+        archive = self._build_multi_archive(record, [("alpha", "Alpha"), ("beta", "Beta")])
+
+        response = self._publish(archive)
+        self.assertEqual(response.status_code, 200, response.text[:300])
+        stored = next(row for row in content_delivery._configured_state()["releases"]
+                      if row["pack_id"] == record["pack_id"])
+        self.assertEqual(stored["item_ids"], items)
+
+        # Re-publishing the same archive replays rather than duplicating the release.
+        again = self._publish(archive)
+        self.assertEqual(again.status_code, 200, again.text[:200])
+        self.assertTrue(again.json()["replayed"])
+
+        # The registry refuses a second pack that claims an already-receipted item.
+        thief = self._multi_item_record("thief", ["com.storystudio.lettering.alpha"])
+        self._install_registry_records([record, thief])
+        stolen = self._build_multi_archive(thief, [("alpha", "Alpha")])
+        refused = self._publish(stolen)
+        self.assertEqual(refused.status_code, 503, refused.text[:200])
+        self.assertIn("registry", refused.json()["detail"].lower())
 
     def test_real_story_validation_restore_grant_and_exact_download(self) -> None:
         setup = self._setup()

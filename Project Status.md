@@ -1067,6 +1067,50 @@ them needs the shelf's single-item assumption lifted — a change to the bridge'
 item-count rule, the release state's `item_id`, the entitlement, and the identity
 checks, with the existing single-item rows kept readable. Owner decision pending.
 
+## 10bb. Multi-item packs served — the library is complete at 168 (2026-09-22)
+
+The shelf's "exactly one standalone item" rule was **our** limitation, not Story's
+(which allows 24), and it blocked the seven biggest packs — six lettering packs and
+one metadata pack holding **six styles each**. Lifted, and all seven delivered.
+
+**What changed**
+
+- **Bridge** (`story_pack_validation.mjs`): 1 to `MAX_ITEMS` (24) items, one document
+  per item, bundles still refused; every item must be a supported kind and all the
+  same kind; the item list must match the registry receipt **by count and by
+  membership**, so a pack cannot claim six styles and ship a seventh.
+- **Gateway**: the release row stores `item_ids`; `_release_item_ids()` reads both
+  shapes, so the 161 single-item rows written earlier keep working; the identity
+  check compares item **sets**; cross-pack uniqueness is now set intersection, so one
+  pack cannot borrow another's item.
+- **Title for a pack that holds several items**: the pack has no name of its own, so
+  it takes its author-chosen slug title-cased (`…lettering.investigation` →
+  "Investigation"), with the release changelog as the description. A lone item still
+  names its own product.
+
+**Result**: the 6 lettering and 1 metadata multi-item packs are shelved, all
+`min_app_version: "1.4.216"`. Withholding still holds — **1.4.216 sees 168 products**
+(font_pack 20, metadata_formula 8), **1.4.213 sees 140**. The whole deliverable
+library is now delivered: 28 new packs, **168 products**, none of them historical.
+
+**Acceptance**: the six-style Investigation pack installs through Story's own 1.4.216
+code `activated: true`, and **all six** of its styles appear in
+`letteringCatalogue()` with their own ids — the bridge working for a multi-item pack,
+not just a single style.
+
+**The three recorded traps are fixed at the tooling level**: the generator emits
+`item_ids` for the multi-item kinds, writes a pinned version literally and the builder
+withholds the override for it, and `finish_batch`'s `held/` restore is now one-shot —
+it clears the held copy, which is exactly what had silently undone an in-place fix.
+
+**A fourth trap, found by doing it**: `bump_corrected.py` matched records by
+*slug suffix*, and `calm-v2` also matches `topic.everyday-calm-v2`;
+`explainer-v2` matched a formula and `investigation-v2` a thumbnail. Three unrelated
+packs were bumped to 1.0.1 with identical bytes before it surfaced. Harmless — a
+version bump, content unchanged, and the 1.0.0 superseded rows remain — but the
+matcher now treats an argument containing a dot as an exact pack id, and tests use
+full ids. Build `ec4df4d-202609220213`, promoted.
+
 ## 11. Exact next action / resumable handoff
 
 - Branch `codex/content-pack-delivery`: promoted app code at `97bb3a5`
