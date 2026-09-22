@@ -31,3 +31,4 @@ graphify-out/
 # Finder metadata and local development-tool state.
 .DS_Store
 .serena/
+dist/

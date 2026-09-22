@@ -809,6 +809,7 @@ suite presses **Check Gateway** and asserts a named build.
   a note under `_trash/` before deleting it, and never rewrite published history.
   `_trash/` is outside Git and nothing in it is read by the app, tests or build; see
   `_trash/README.md` for what is in it.
+- **Finished work is committed and pushed, and a release carries a DMG in `dist/`.** Do not call work stable, done or shipped while it is uncommitted, unpushed, or has no installable artifact. Commit and push through the project's normal flow, landing it in `main` unless the owner says otherwise; for a release, build the DMG into that project's `dist/` folder so it is ready to hand to another Mac with no further steps. A project that ships a Mac app but has no DMG step gains one rather than being exempt. Keep `dist/` out of Git.
 - **Test narrowly, and off the owner's screen. The full `tests/test_ui.py` is a
   release gate, not a routine check.** It walks every section, forces the window
   to 700 pt, selects sidebar rows and presses controls, so it takes over the

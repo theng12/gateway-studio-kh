@@ -195,6 +195,22 @@ find "$APP/Contents/Resources" -type d -name "__pycache__" -prune -exec rm -rf {
 codesign --force --deep --sign - "$APP"
 codesign --verify --deep --strict --verbose=2 "$APP"
 
+# A DMG belongs beside the app on every build: a stable build is not ready until it can
+# be handed to another Mac, so it lands in dist/ with the build stamp in its name.
+# `hdiutil` ships with macOS, so this needs nothing installed. The app is ad-hoc
+# signed and the image is not notarised, so a Mac that did not build it still needs
+# the right-click Open — the same step the other projects' DMGs need.
+DIST="$ROOT/dist"
+DMG="$DIST/gateway-kh-${BUILD_ID}-arm64.dmg"
+mkdir -p "$DIST"
+rm -f "$DMG"
+DMG_STAGE="$(mktemp -d)"
+cp -R "$APP" "$DMG_STAGE/"
+ln -s /Applications "$DMG_STAGE/Applications"
+hdiutil create -volname "gateway-kh" -srcfolder "$DMG_STAGE" -ov -format UDZO "$DMG" >/dev/null
+rm -rf "$DMG_STAGE"
+echo "DMG: $DMG"
+
 if [ "$INSTALL" = "1" ]; then
   # Prefer the system /Applications folder. `~/Applications` is hidden by
   # default in Finder, absent from the sidebar, and easy to miss — an app in
