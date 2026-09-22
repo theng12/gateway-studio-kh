@@ -83,6 +83,11 @@ _ADDED_COLUMNS: tuple[tuple[str, str], ...] = (
     ("late_result_state", "TEXT"),
     ("late_error_code", "TEXT"),
     ("late_error_detail", "TEXT"),
+    # What the upstream answered when asked to stop a dispatched job. Kept
+    # separate from `cancel_state`, which records *our* lifecycle: "the Hub
+    # signalled the worker" and "dispatch never began" are different claims, and
+    # collapsing them is how a requested cancel becomes a reported remote stop.
+    ("cancel_remote", "TEXT"),
 )
 
 
@@ -165,6 +170,15 @@ class JobStore:
             result["retryable"] = bool(result["retryable"])
         result["cancel_requested"] = result.get("cancel_requested_at") is not None
         result["recovery_required"] = bool(result.get("recovery_state"))
+        raw = result.get("cancel_remote")
+        if isinstance(raw, str) and raw:
+            try:
+                result["cancel_remote"] = json.loads(raw)
+            except ValueError:
+                # A row we cannot read is "unknown", not "the Hub confirmed it".
+                result["cancel_remote"] = None
+        elif raw == "":
+            result["cancel_remote"] = None
         return result
 
     def _recover_interrupted(self) -> int:
@@ -392,6 +406,23 @@ class JobStore:
             )
             self._conn.commit()
             return result.rowcount == 1
+
+    def record_cancel_remote(self, job_id: str, answer: dict[str, Any]) -> bool:
+        """Persist what the upstream answered when asked to stop this job.
+
+        Recorded, never interpreted: the reader decides what it means, and the
+        absence of a confirmation stays visible as `ok: false` rather than
+        becoming a silent success.
+        """
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT id FROM jobs WHERE id = ?", (job_id,)
+            ).fetchone()
+            if row is None:
+                return False
+            self._update_locked(job_id, {"cancel_remote": json.dumps(answer)})
+            self._conn.commit()
+            return True
 
     def record_upstream_acceptance(self, job_id: str, upstream_job_id: str) -> bool:
         """Persist an adapter's id immediately after the remote accepts work."""

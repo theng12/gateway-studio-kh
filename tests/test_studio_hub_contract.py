@@ -41,6 +41,11 @@ os.environ.update(
         "GATEWAY_ENV_FILE": str(_TEMP_ROOT / ".env"),
         "GATEWAY_NO_MIGRATE": "1",
         "STUDIOHUB_READY_FILE": str(_TEMP_ROOT / "no-hub-ready.json"),
+        "GATEWAY_HOST": "127.0.0.1",
+        "GATEWAY_API_KEY": "fixture-key",
+        "GATEWAY_FLEET": str(_TEMP_ROOT / "fleet.json"),
+        "GATEWAY_VOICES": str(_TEMP_ROOT / "voices.json"),
+        "GATEWAY_VOICES_OUT": str(_TEMP_ROOT / "voices.json"),
     }
 )
 
@@ -160,6 +165,7 @@ class _HubCase(unittest.TestCase):
         values: dict[str, str] | None = None,
         model_id: str = "model/test",
         checkpoint: Callable[[str], None] | None = None,
+        upstream_job_id: str = "",
     ) -> BackendRequest:
         return BackendRequest(
             provider_id="studio-hub-test",
@@ -169,6 +175,7 @@ class _HubCase(unittest.TestCase):
             values=values if values is not None else {"hub_token": "test-token"},
             base_url=HUB,
             checkpoint=checkpoint,
+            upstream_job_id=upstream_job_id,
         )
 
     def generate(self, hub: _Hub, request: BackendRequest) -> BackendResult:
@@ -346,6 +353,136 @@ class WorkerReceiptTests(unittest.TestCase):
             self.assertEqual(receipt["status"], 409)
         finally:
             store.close()
+
+
+class UpstreamCancelTests(_HubCase):
+    """Item 2 — the cancel request reaches the Hub and its answer is kept."""
+
+    def test_cancel_asks_the_hub_to_stop_the_batch(self) -> None:
+        hub = _Hub()
+        with self.hub_client(hub):
+            answer = hub_module.StudioHubBackend().cancel(
+                self.request(modality="image", upstream_job_id=BATCH)
+            )
+        self.assertTrue(answer["ok"])
+        self.assertEqual(hub.deletes, [f"/api/hub/jobs/{BATCH}"])
+        self.assertEqual(answer["answer"]["queued_cancelled"], 1)
+        self.assertEqual(answer["answer"]["running_signalled"], 0)
+
+    def test_transcription_cancel_uses_the_transcription_route(self) -> None:
+        hub = _Hub()
+        with self.hub_client(hub):
+            answer = hub_module.StudioHubBackend().cancel(
+                self.request(modality="transcription", upstream_job_id=BATCH)
+            )
+        self.assertEqual(hub.deletes, [f"/api/hub/transcription/jobs/{BATCH}"])
+        self.assertTrue(answer["ok"])
+
+    def test_a_job_that_never_dispatched_asks_the_hub_nothing(self) -> None:
+        hub = _Hub()
+        with self.hub_client(hub):
+            answer = hub_module.StudioHubBackend().cancel(self.request(modality="image"))
+        self.assertEqual(hub.deletes, [])
+        self.assertFalse(answer["ok"])
+        self.assertIn("nothing was dispatched", answer["reason"])
+
+    def test_a_hub_that_refuses_the_cancel_did_not_stop_anything(self) -> None:
+        hub = _Hub(cancel_status=404)
+        with self.hub_client(hub):
+            answer = hub_module.StudioHubBackend().cancel(
+                self.request(modality="image", upstream_job_id=BATCH)
+            )
+        self.assertFalse(answer["ok"])
+        self.assertEqual(answer["status"], 404)
+        self.assertEqual(answer["answer"]["detail"], "no such batch")
+
+
+class CancelRemotePersistenceTests(unittest.TestCase):
+    def test_the_hub_answer_round_trips_on_the_job(self) -> None:
+        store = JobStore(_TEMP_ROOT / "cancel-remote.sqlite3")
+        try:
+            row, _ = store.submit(
+                modality="image",
+                model_id="model/test",
+                params={},
+                idempotency_key="cancel-remote",
+                provider_id="studio-hub-test",
+            )
+            store.record_cancel_remote(
+                row["id"], {"ok": True, "status": 200, "answer": {"queued_cancelled": 2}}
+            )
+            got = store.get(row["id"])
+            self.assertEqual(got["cancel_remote"]["answer"]["queued_cancelled"], 2)
+        finally:
+            store.close()
+
+
+class CancelEndpointTests(_HubCase):
+    """The public cancel route asks the owner of the work and stores the answer."""
+
+    def setUp(self) -> None:
+        from fastapi.testclient import TestClient
+
+        from gateway import api
+
+        self.api = api
+        self.client = TestClient(api.app, client=("127.0.0.1", 54321))
+        self.headers = {"Authorization": "Bearer fixture-key"}
+
+    def tearDown(self) -> None:
+        self.client.close()
+
+    def _dispatched_job(self, modality: str) -> str:
+        row, created = self.api.store.submit(
+            modality=modality,
+            model_id="model/test",
+            params={"prompt": "x"},
+            idempotency_key=f"cancel-{modality}-{self.id()}",
+            provider_id="studio-hub-test",
+        )
+        self.assertTrue(created)
+        self.assertTrue(self.api.store.mark_running(row["id"]))
+        self.api.store.record_upstream_acceptance(row["id"], BATCH)
+        return row["id"]
+
+    def _cancel(self, path: str, hub: _Hub) -> dict[str, Any]:
+        definition = SimpleNamespace(
+            id="studio-hub-test", kind="studio_hub", base_url=HUB, display_name="Hub"
+        )
+        with patch.object(
+            self.api.registry, "definition", return_value=definition
+        ), patch.object(
+            self.api.registry.credentials, "resolved", return_value={"hub_token": "t"}
+        ), self.hub_client(hub):
+            response = self.client.post(path, headers=self.headers)
+        self.assertEqual(response.status_code, 200, response.text)
+        return response.json()
+
+    def test_an_image_cancel_records_what_the_hub_answered(self) -> None:
+        hub = _Hub()
+        job_id = self._dispatched_job("image")
+        body = self._cancel(f"/v1/images/{job_id}/cancel", hub)
+        self.assertEqual(hub.deletes, [f"/api/hub/jobs/{BATCH}"])
+        self.assertTrue(body["cancel_remote"]["ok"])
+        self.assertTrue(body["cancel_requested"])
+        # The local vocabulary still says "requested": the Hub cancelling what it
+        # had queued is not the same claim as the gateway stopping work itself.
+        self.assertEqual(body["cancel_state"], "requested")
+
+    def test_a_refused_cancel_is_never_reported_as_a_remote_stop(self) -> None:
+        hub = _Hub(cancel_status=404)
+        job_id = self._dispatched_job("image")
+        body = self._cancel(f"/v1/images/{job_id}/cancel", hub)
+        self.assertFalse(body["cancel_remote"]["ok"])
+        self.assertEqual(body["cancel_remote"]["status"], 404)
+        self.assertEqual(body["cancel_state"], "requested")
+
+    def test_a_music_cancel_reaches_the_hub(self) -> None:
+        hub = _Hub()
+        job_id = self._dispatched_job("music")
+        body = self._cancel(f"/v1/music/jobs/{job_id}/cancel", hub)
+        self.assertEqual(hub.deletes, [f"/api/hub/jobs/{BATCH}"])
+        self.assertTrue(body["cancel_remote"]["ok"])
 
 
 if __name__ == "__main__":

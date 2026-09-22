@@ -124,8 +124,26 @@ class BackendRequest:
     # Async adapters can call this immediately after receiving a durable remote
     # id. Existing adapters that do not checkpoint remain conservatively manual.
     checkpoint: Callable[[str], None] | None = None
+    #: The durable id the upstream gave this work, carried on a cancellation so an
+    #: adapter can ask the *owner of the work* to stop it. Empty means nothing was
+    #: dispatched, so there is nothing upstream to cancel — which is a different
+    #: state from "the upstream refused", and must not read the same.
+    upstream_job_id: str = ""
 
 
 @runtime_checkable
 class Backend(Protocol):
     def generate(self, request: BackendRequest) -> BackendResult: ...
+
+
+class CancellableBackend(Protocol):
+    """A backend whose remote work can be asked to stop.
+
+    Deliberately separate from `Backend`: most adapters issue a one-shot request
+    whose only in-flight state is a socket, and claiming they can cancel remote
+    work would be false. An adapter that *can* is asked through `getattr`, so
+    "this lane cannot cancel upstream" is an answer the caller records rather
+    than a method that silently does nothing.
+    """
+
+    def cancel(self, request: BackendRequest) -> dict[str, Any]: ...

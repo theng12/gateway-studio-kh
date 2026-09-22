@@ -179,6 +179,48 @@ def _ack_delivery(
     }
 
 
+def _cancel_batch(
+    base: str,
+    headers: dict[str, str],
+    batch_id: str,
+    kind: str,
+) -> dict[str, Any]:
+    """Ask the Hub to stop a dispatched batch, and report what it answered.
+
+    The Hub's own answer is the only evidence there is: it cancels what is still
+    queued, *signals* what is already running, and cannot promise a worker that
+    has accepted the work will stop. So the fields are recorded verbatim —
+    `queued_cancelled`, `running_signalled`, `running_pending` — rather than
+    flattened into a boolean, because "we asked and nothing was running to stop"
+    and "we asked and a worker was told" are different facts.
+
+    Never raises, for the same reason as the receipt: the caller is recording an
+    outcome, and a cancel the Hub could not confirm is exactly the case that must
+    not be reported as a confirmed stop.
+    """
+    route = f"{_jobs_path(kind)}/{batch_id}"
+    try:
+        with httpx.Client(timeout=httpx.Timeout(30.0, connect=10.0)) as client:
+            response = client.request("DELETE", f"{base}{route}", headers=headers)
+    except httpx.HTTPError as exc:
+        return {
+            "ok": False,
+            "status": None,
+            "route": route,
+            "error": f"{type(exc).__name__}: {exc}",
+        }
+    try:
+        answer: Any = response.json()
+    except ValueError:
+        answer = response.text[:200]
+    return {
+        "ok": 200 <= response.status_code < 300,
+        "status": response.status_code,
+        "route": route,
+        "answer": answer,
+    }
+
+
 # Voice placement, keyed by **(voice, controller)**.
 #:
 #: The value is `(kind, id, at)`: either the controller's own library voice or an
@@ -603,4 +645,26 @@ class StudioHubBackend:
         raise BackendError(
             f"Studio Hub does not serve '{request.modality}'",
             code="MODEL_MODALITY_MISMATCH",
+        )
+
+    def cancel(self, request: BackendRequest) -> dict[str, Any]:
+        """Stop a Hub batch this gateway dispatched.
+
+        Cancellation that never reached the Hub was only ever a local request:
+        the batch kept running at the location while Story Studio was told the
+        job was cancelled. This is the request that actually reaches the work,
+        and its answer is what the caller records.
+
+        A job with no upstream id has nothing to stop — that is reported as
+        "nothing dispatched", not as a successful stop.
+        """
+        batch_id = str(request.upstream_job_id or "").strip()
+        if not batch_id:
+            return {
+                "ok": False,
+                "status": None,
+                "reason": "nothing was dispatched to the Hub for this job",
+            }
+        return _cancel_batch(
+            _resolve_base(request), _headers(request), batch_id, request.modality
         )

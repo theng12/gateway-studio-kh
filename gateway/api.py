@@ -244,8 +244,62 @@ def _lifecycle_fields(job: dict[str, Any]) -> dict[str, Any]:
         **{key: bool(job.get(key)) for key in ("cancel_requested", "retryable", "recovery_required")},
         **{key: job.get(key) for key in (
             "cancel_state", "recovery_state", "recovery_detail", "upstream_job_id", "late_result_state",
+            "cancel_remote",
         )},
     }
+
+
+def _cancel_upstream(job: dict[str, Any]) -> dict[str, Any] | None:
+    """Ask whoever owns dispatched work to stop it, and record the answer.
+
+    A cancellation after dispatch is a *request*: a worker that has accepted the
+    job is not ours to stop. So this asks the lane that took the work — for a
+    Studio Hub location, its own DELETE route — and stores exactly what came back
+    on the job's `cancel_remote`. Nothing may report a remote stop the owner of
+    the work did not confirm, and an unconfirmed answer stays visible as
+    `ok: false` beside the reason.
+
+    A job with no upstream id never left the gateway; `store.cancel` already
+    settled that case locally, and there is nothing to ask.
+    """
+    batch_id = str(job.get("upstream_job_id") or "").strip()
+    if not batch_id:
+        return None
+    provider_id = str(job.get("provider_id") or "")
+    definition = registry.definition(provider_id)
+    if definition is None:
+        return None
+    adapter = adapter_for(definition)
+    cancel = getattr(adapter, "cancel", None)
+    if cancel is None:
+        answer: dict[str, Any] = {
+            "ok": False,
+            "status": None,
+            "reason": f"the {definition.kind} lane cannot cancel dispatched work",
+        }
+    else:
+        request = BackendRequest(
+            provider_id=provider_id,
+            model_id=str(job.get("model_id") or ""),
+            modality=str(job.get("modality") or ""),
+            params={},
+            values=registry.credentials.resolved(provider_id),
+            base_url=definition.base_url,
+            display_name=definition.display_name,
+            upstream_job_id=batch_id,
+        )
+        try:
+            answer = cancel(request)
+        except Exception as exc:  # noqa: BLE001 - a cancel must never 500 the caller
+            answer = {"ok": False, "status": None, "error": f"{type(exc).__name__}: {exc}"}
+        if not isinstance(answer, dict):
+            answer = {
+                "ok": False,
+                "status": None,
+                "error": f"unreadable cancel answer: {answer!r}",
+            }
+    store.record_cancel_remote(job["id"], answer)
+    return answer
 
 
 def _job_envelope(job: dict[str, Any]) -> dict[str, Any]:
@@ -633,8 +687,10 @@ def get_chat_response(job_id: str) -> dict[str, Any]:
 
 @app.post("/v1/chat/responses/{job_id}/cancel", dependencies=[Depends(require_auth)])
 def cancel_chat_response(job_id: str) -> dict[str, Any]:
-    _load_job(job_id, "chat")
-    return _job_envelope(store.cancel(job_id))
+    job = _load_job(job_id, "chat")
+    store.cancel(job_id)
+    _cancel_upstream(job)
+    return _job_envelope(store.get(job_id))
 
 
 @app.post("/v1/chat/completions", dependencies=[Depends(require_auth)])
@@ -786,8 +842,10 @@ def get_image_file(job_id: str) -> Response:
 
 @app.post("/v1/images/{job_id}/cancel", dependencies=[Depends(require_auth)])
 def cancel_image_job(job_id: str) -> dict[str, Any]:
-    _load_job(job_id, "image")
-    return _job_envelope(store.cancel(job_id))
+    job = _load_job(job_id, "image")
+    store.cancel(job_id)
+    _cancel_upstream(job)
+    return _job_envelope(store.get(job_id))
 
 
 # ---------------------------------------------------------------------------
@@ -977,8 +1035,10 @@ def get_job_output(job_id: str, asset_id: str) -> Response:
 
 @app.post("/v1/jobs/{job_id}/cancel", dependencies=[Depends(require_auth)])
 def cancel_tts_job(job_id: str) -> dict[str, Any]:
-    _load_job(job_id, "tts")
-    return _job_envelope(store.cancel(job_id))
+    job = _load_job(job_id, "tts")
+    store.cancel(job_id)
+    _cancel_upstream(job)
+    return _job_envelope(store.get(job_id))
 
 
 # ---------------------------------------------------------------------------
@@ -1016,6 +1076,14 @@ def get_music_job(job_id: str) -> dict[str, Any]:
 @app.get("/v1/music/jobs/{job_id}/outputs/{asset_id}", dependencies=[Depends(require_auth)])
 def get_music_output(job_id: str, asset_id: str) -> Response:
     return _artifact_response(_load_job(job_id, "music"), "audio/mpeg", asset_id=asset_id)
+
+
+@app.post("/v1/music/jobs/{job_id}/cancel", dependencies=[Depends(require_auth)])
+def cancel_music_job(job_id: str) -> dict[str, Any]:
+    job = _load_job(job_id, "music")
+    store.cancel(job_id)
+    _cancel_upstream(job)
+    return _job_envelope(store.get(job_id))
 
 
 # ---------------------------------------------------------------------------
