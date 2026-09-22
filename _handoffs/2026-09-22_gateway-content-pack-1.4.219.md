@@ -45,11 +45,11 @@ was coming (`lettering-style → font_pack`); that exception is now in the code.
 - The four base kinds are **still the four we ship**. Your last verified set
   (45/19/40/36) was before the re-authored `-v2` set was shelved; the shelf now
   serves **49/22/44/37**, plus **26 `font_pack`** and **9 `metadata_formula`**.
-- **We do NOT publish `niche_bundle` (Channel Kit).** `channel-kit` is not in
-  `SUPPORTED_KINDS` and there is no `channel-kit → niche_bundle` wire exception, so
-  a Channel Kit archive is refused at import. That is the one kind on your
-  seven-kind list we do not serve; if Story expects `niche_bundle` from gateway-kh,
-  it is a new kind to add and it is **not published today**.
+- **`niche_bundle` (Channel Kit) is retired here, not merely unsupported.**
+  `channel-kit` is not in `SUPPORTED_KINDS` and there is no `channel-kit →
+  niche_bundle` wire exception, so a Channel Kit archive is refused at import. The
+  owner's decision (2026-09-22): Channel Kit is a legacy format and kits are not
+  wanted, so gateway-kh will **not** add `niche_bundle`. Do not expect it from us.
 
 ## 2. `min_app_version` per kind — nothing needs more than 1.4.219
 
@@ -93,33 +93,37 @@ was coming (`lettering-style → font_pack`); that exception is now in the code.
   `keeping-food-before-refrigeration` exists and is served, even though its source
   directory does not exist on this Mac. "Source missing" and "not deliverable" are
   different facts here.
-- **So: the packs are current. Dropping `8051fc28` is safe for delivery** — the
-  shelf does not depend on it — **but neither repo can make your guards pass by
-  changing gateway-kh.** If the authoring record itself must be clean, it has to be
-  fixed on the Story branch with the owner's re-authoring tooling, or dropped.
+- **The owner's decision (2026-09-22): the `8051fc28` authoring record is
+  retired.** It predates gateway-kh dropping its authoring surface, it is not used
+  for delivery, and the shelf does not depend on it — so you may **drop the
+  commit**. If you would rather keep the sources until a future re-author is
+  wanted, they remain recoverable on that branch; the delivered archives are the
+  shelf's `-v2` set either way. Neither repo can make your four guards pass by
+  changing gateway-kh, because gateway-kh no longer authors.
 
 ## 4. How to consume the update
 
 - **Confirmed: pack-only changes ship as their own `.sspack` files imported into
-  the shelf, with no app release.** The gateway's own version (`0.2.0`) and its
+  the shelf, with no app release.** The gateway's own version (`0.2.1`) and its
   recent changes (fleet routing/readiness, the Fleet-token copy) do not touch the
   Content Pack contract.
 - **No new pack delivery is pending.** The shelf set is unchanged since the
-  re-authored `-v2` batch. If you are consuming that set, the manifest below is
-  the verification list.
-- **Full manifest of all 187 current releases** — `pack_id`, `version`,
-  `wire_kind`, `min_story_version`, `archive_sha256`, `archive_bytes`,
-  `published_at`:
-  `_handoffs/content-shelf-manifest-2026-09-22.tsv`
+  re-authored `-v2` batch.
+- **The shelf is the source of truth, not a tracked list.** Enumerate the current
+  releases from the gateway's own `/admin/api/content-shelf` — each row carries
+  `pack_id`, `version`, `kind`, `archive_sha256`, `bytes` and `published_at` — and
+  the per-download grant carries `archive_sha256` to check against it. The owner
+  will hand over a full manifest separately if you want one; the private library
+  does not belong in the git repo.
 - **Verification path:** list products through the gateway, then Download/Install
-  through Story's normal path. The gateway's delivery grant carries
-  `archive_sha256`, which should equal the manifest row; the release is signed by
-  the shelf's Ed25519 identity, which is unchanged. The shelf's baseline revision
-  is `289`, so every delivered receipt revision sits above it.
+  through Story's normal path. The release is signed by the shelf's Ed25519
+  identity, which is unchanged, and the gateway's delivery grant carries
+  `archive_sha256`, which should equal the shelf row for that release. The shelf's
+  baseline revision is `289`, so every delivered receipt revision sits above it.
 
 ## One line for the thread
 
-Nothing on the Content Pack wire changed at 1.4.219; six kinds are served, the
-two added kinds carry their own 1.4.216 floors, `niche_bundle` is not served, and
-the `-v2` archives on the shelf are current while the authoring registry is a
-Story-branch record that gateway-kh no longer produces or owns.
+Nothing on the Content Pack wire changed at 1.4.219; six kinds are served, the two
+added kinds carry their own 1.4.216 floors, `niche_bundle`/Channel Kit is retired
+and will not be added, and the `-v2` archives on the shelf are current. `8051fc28`
+is a retired authoring record — drop it; gateway-kh delivers from the shelf.
