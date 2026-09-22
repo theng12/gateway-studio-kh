@@ -343,7 +343,7 @@
   <!-- PRIVATE CONTENT PACKS: setup, authoring, shelving, and archive preservation. -->
   <section id="view-packs" style="display:none">
     <div class="heading"><h1>Content Packs</h1>
-      <p>Private authoring drafts, shelved releases, and preserved archives. Set up the private shelf explicitly;
+      <p id="packs-intro">Private authoring drafts, shelved releases, and preserved archives. Set up the private shelf explicitly;
       importing or authoring never installs a pack or invents ownership.</p></div>
 
     <div class="tabs" id="packs-tabs" role="group" aria-label="Content Packs view"></div>
@@ -436,7 +436,7 @@
         <h2 id="shelf-heading">Shelved</h2>
         <p>Private releases that Story Studio may discover through the configured Gateway. Discovery does not install anything; Story Studio’s existing Download/Install action remains explicit.</p>
         <p id="shelf-supported" class="hint">Supported types: checking…</p>
-        <label class="check shelf-ack"><input id="shelf-authorship-ack" type="checkbox" onchange="updateShelfControls()"> I confirm I authored or have permission to distribute this new pack and accept responsibility for its provenance and license.</label>
+        <label class="check shelf-ack" id="shelf-ack-label"><input id="shelf-authorship-ack" type="checkbox" onchange="updateShelfControls()"> I confirm I authored or have permission to distribute this new pack and accept responsibility for its provenance and license.</label>
         <div id="shelf-releases" style="margin-top:14px"></div>
       </div>
     </section>
@@ -656,6 +656,36 @@ const PACK_KIND_ORDER = ['topic-pack', 'series-formula', 'visual-style', 'thumbn
 let packsTab = 'shelved';
 let shelfKindFilter = 'all';
 
+// Whether this Mac can author a pack — served by the shelf as `authoring`, which
+// is the same fact the gateway uses to pick its publish path. Starts true so the
+// authoring console is unchanged until a status arrives that says otherwise.
+let shelfAuthoring = true;
+
+// A shelf that can only receive packs gets one view, not four. Set up first when
+// there is no shelf yet, because an import cannot land anywhere until there is
+// one; otherwise the packs themselves, with the one action they need.
+function applyPacksMode() {
+  const host = document.getElementById('packs-tabs');
+  if (host) host.hidden = !shelfAuthoring;
+  const configured = !!shelfState.data?.configured;
+  if (packsTab !== 'setup' && packsTab !== 'shelved') packsTab = 'shelved';
+  const key = shelfAuthoring ? packsTab : (configured ? 'shelved' : 'setup');
+  packsTab = key;
+  for (const tab of PACKS_TABS) {
+    const panel = document.getElementById(`packs-panel-${tab.key}`);
+    if (panel) panel.hidden = tab.key !== key;
+  }
+  const intro = document.getElementById('packs-intro');
+  if (intro) {
+    intro.textContent = shelfAuthoring
+      ? 'Private authoring drafts, shelved releases, and preserved archives. Set up the private shelf explicitly; importing or authoring never installs a pack or invents ownership.'
+      : 'Packs you have added are available to Story Studio. Nothing here is installed until you choose to download it in Story Studio.';
+  }
+  // The authorship acknowledgement is a claim only an author makes.
+  const ack = document.getElementById('shelf-ack-label');
+  if (ack) ack.hidden = !shelfAuthoring;
+}
+
 function renderPacksTabs() {
   const host = document.getElementById('packs-tabs');
   if (!host) return;
@@ -749,7 +779,9 @@ async function loadContentShelf() {
     const data = await api('/content-shelf');
     if (refresh !== shelfState.refresh) return;
     shelfState.data = data;
+    shelfAuthoring = data?.authoring !== false;
     renderShelfStatus(data);
+    applyPacksMode();
     shelfMessage('');
   } catch (error) {
     if (refresh !== shelfState.refresh) return;

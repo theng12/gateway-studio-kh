@@ -592,6 +592,11 @@ def _status(state: dict[str, Any], available: bool, detail: str) -> dict[str, An
         "detail": detail,
         "authority": _public_authority(state),
         "supported_kinds": SUPPORTED_KINDS,
+        # Whether this Mac can author a pack at all — the same fact that chooses
+        # between Story's validated publish path and the plain import one. It is
+        # reported, never toggled: a console that cannot author has no business
+        # showing reservation, drafts or an authorship acknowledgement.
+        "authoring": _authoring_available(),
         "releases": _release_rows(state),
     }
 
@@ -621,7 +626,7 @@ def status() -> dict[str, Any]:
     except DeliveryError as exc:
         ready, detail = False, str(exc)
     return {"configured": False, "available": ready, "detail": detail, "authority": None,
-            "supported_kinds": SUPPORTED_KINDS, "releases": []}
+            "supported_kinds": SUPPORTED_KINDS, "authoring": _authoring_available(), "releases": []}
 
 
 def setup() -> dict[str, Any]:

@@ -332,3 +332,49 @@ test('a pack the shelf refuses is reported and the control comes back', async ()
   assert.match(h.node('received-pack-message').textContent, /Not added/);
   assert.match(h.node('received-pack-message').textContent, /Historical pack identities/);
 });
+
+test('a shelf that cannot author shows one view, and it is the setup step', async () => {
+  const h = harness(async (pathName) => {
+    if (pathName === '/content-shelf') {
+      return {...READY_SHELF, authoring: false, configured: false, available: true, releases: []};
+    }
+    return {};
+  });
+  await h.context.loadContentShelf();
+
+  // No tab bar at all, and nothing offered that a receiving Mac cannot do.
+  assert.equal(h.node('packs-tabs').hidden, true);
+  assert.equal(h.node('packs-panel-setup').hidden, false);
+  assert.equal(h.node('packs-panel-shelved').hidden, true);
+  assert.equal(h.node('packs-panel-preserved').hidden, true);
+  assert.equal(h.node('packs-panel-drafts').hidden, true);
+});
+
+test('once set up, a receiving shelf shows the packs and no authorship claim', async () => {
+  const h = harness(async (pathName) => {
+    if (pathName === '/content-shelf') return {...READY_SHELF, authoring: false};
+    return {};
+  });
+  await h.context.loadContentShelf();
+
+  assert.equal(h.node('packs-tabs').hidden, true);
+  assert.equal(h.node('packs-panel-shelved').hidden, false);
+  assert.equal(h.node('packs-panel-setup').hidden, true);
+  // "I confirm I authored this pack" is a claim only an author makes.
+  assert.equal(h.node('shelf-ack-label').hidden, true);
+  assert.match(h.node('packs-intro').textContent, /available to Story Studio/);
+});
+
+test('an authoring Mac keeps all four tabs and its acknowledgement', async () => {
+  const h = harness(async (pathName) => {
+    if (pathName === '/content-shelf') return {...READY_SHELF, authoring: true};
+    return {};
+  });
+  await h.context.loadContentShelf();
+
+  assert.equal(h.node('packs-tabs').hidden, false);
+  assert.equal(h.node('packs-panel-shelved').hidden, false);
+  assert.equal(h.node('packs-panel-setup').hidden, true);
+  assert.equal(h.node('shelf-ack-label').hidden, false);
+  assert.match(h.node('packs-intro').textContent, /authoring drafts/);
+});

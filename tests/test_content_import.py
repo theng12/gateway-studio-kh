@@ -111,6 +111,9 @@ class ContentImportTests(unittest.TestCase):
         )
         status = content_delivery.status()
         self.assertTrue(status["configured"], status)
+        # This Mac can only receive packs, and says so — which is what lets the
+        # console show one view instead of four tabs of authoring machinery.
+        self.assertFalse(status["authoring"])
         authority = status["authority"]
         shipped = content_delivery._shipped_baseline()
         self.assertIsNotNone(shipped)
