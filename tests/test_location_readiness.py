@@ -1,0 +1,166 @@
+#!/usr/bin/env python3
+"""A controller that cannot serve a model is handled at the site, not the job.
+
+Two halves:
+
+* **Prevent** — `can_publish` withholds a model the Hub reports as not
+  dispatchable (`dispatch_state` present and not `eligible`), so the picker never
+  offers work the chosen controller will refuse. Absence stays unverified.
+* **Handle** — the worker recognises a Hub `LOCATION_NOT_READY` refusal at submit
+  and tries the next location that offers the same model, unless a voice pins the
+  route to the one controller that holds the reference clip.
+"""
+
+from __future__ import annotations
+
+import atexit
+import os
+import shutil
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
+
+
+_TEMP_ROOT = Path(tempfile.mkdtemp(prefix="gateway-location-readiness-"))
+atexit.register(shutil.rmtree, _TEMP_ROOT, ignore_errors=True)
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+os.environ.update(
+    {
+        "GATEWAY_APP_SUPPORT": str(_TEMP_ROOT),
+        "GATEWAY_DATA": str(_TEMP_ROOT / "data"),
+        "GATEWAY_ARTIFACTS": str(_TEMP_ROOT / "data" / "artifacts"),
+        "GATEWAY_DB": str(_TEMP_ROOT / "data" / "jobs.sqlite3"),
+        "GATEWAY_CREDENTIALS": str(_TEMP_ROOT / "data" / "credentials.json"),
+        "GATEWAY_MODEL_CACHE": str(_TEMP_ROOT / "data" / "models_cache.json"),
+        "GATEWAY_ENV_FILE": str(_TEMP_ROOT / ".env"),
+        "GATEWAY_NO_MIGRATE": "1",
+        "STUDIOHUB_READY_FILE": str(_TEMP_ROOT / "no-hub-ready.json"),
+    }
+)
+
+from gateway import fleet  # noqa: E402
+from gateway.adapters.base import BackendError, BackendResult  # noqa: E402
+from gateway.providers import registry  # noqa: E402
+from gateway.store import JobStore  # noqa: E402
+import gateway.worker as worker_module  # noqa: E402
+
+
+MODEL = "mlx-community/heavy-model"
+
+
+def _definition(provider_id: str) -> SimpleNamespace:
+    return SimpleNamespace(id=provider_id, base_url=f"https://{provider_id}", display_name=provider_id)
+
+
+class _TwoLocations:
+    """Both locations offer the model; the worker must be able to try the second."""
+
+    credentials = SimpleNamespace(is_enabled=lambda _provider_id: True, resolved=lambda _provider_id: {})
+    models = SimpleNamespace(enabled_models=lambda _modality: [
+        (_definition("studio-hub-a"), {"model_id": MODEL}),
+        (_definition("studio-hub-b"), {"model_id": MODEL}),
+    ])
+
+    @staticmethod
+    def definition(provider_id: str):
+        return _definition(provider_id)
+
+
+def _snapshot(allow_stale: bool = False) -> dict:
+    return {"locations": [
+        {"id": location_id, "label": location_id.upper(), "reachable": True,
+         "capacity": {}, "model_supply": {MODEL: {"eligible": 1, "available": 1}},
+         "machines": [], "machine_summary": {"reachable": 1}, "running_jobs": []}
+        for location_id in ("a", "b")
+    ]}
+
+
+class _RefuseFirstLocation:
+    """Refuses the first site with the Hub's not-ready code, then succeeds."""
+
+    def __init__(self) -> None:
+        self.tried: list[str] = []
+
+    def generate(self, request):
+        self.tried.append(request.provider_id)
+        if request.provider_id == "studio-hub-a":
+            raise BackendError(
+                "the location cannot serve this model right now (MODEL_NOT_READY)",
+                code="LOCATION_NOT_READY",
+                status=409,
+                retryable=True,
+                upstream_accepted=False,
+            )
+        return BackendResult(content=b"image-bytes", media_type="image/png", payload={})
+
+
+class CanPublishReadinessTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.definition = registry.definition("studio-hub-local")
+        self.model = {
+            "modality": "image",
+            "model_id": "mlx-community/heavy-model",
+            "raw": {"catalogued": True, "memory_eligible": True},
+        }
+
+    def _publishable(self, dispatch_state: str | None) -> bool:
+        raw = dict(self.model["raw"])
+        if dispatch_state is not None:
+            raw["dispatch_state"] = dispatch_state
+        return registry.models.can_publish(self.definition, {**self.model, "raw": raw})
+
+    def test_an_ineligible_controller_withholds_the_model(self) -> None:
+        self.assertFalse(self._publishable("ineligible"))
+
+    def test_an_eligible_controller_offers_it(self) -> None:
+        self.assertTrue(self._publishable("eligible"))
+
+    def test_an_absent_dispatch_state_stays_unverified(self) -> None:
+        # A Hub that does not publish it must not lose its whole catalogue.
+        self.assertTrue(self._publishable(None))
+
+
+class RerouteTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.store = JobStore(_TEMP_ROOT / f"reroute-{id(self)}.sqlite3")
+
+    def tearDown(self) -> None:
+        self.store.close()
+
+    def _run(self, params: dict, provider_id: str = "studio-hub-a"):
+        row, _ = self.store.submit(
+            modality="image",
+            model_id=MODEL,
+            params=params,
+            idempotency_key=f"reroute-{id(self)}-{provider_id}-{len(params)}",
+            provider_id=provider_id,
+        )
+        self.assertTrue(self.store.mark_running(row["id"]))
+        adapter = _RefuseFirstLocation()
+        with patch.object(worker_module, "registry", _TwoLocations()), \
+                patch.object(worker_module, "adapter_for", return_value=adapter), \
+                patch.object(fleet, "snapshot", _snapshot), \
+                patch.object(registry.models, "enabled_models",
+                             _TwoLocations.models.enabled_models):
+            worker_module.execute_job(row, self.store)
+        return adapter, self.store.get(row["id"])
+
+    def test_a_site_refusal_moves_the_job_to_the_next_location(self) -> None:
+        adapter, settled = self._run({"prompt": "a cat"})
+        self.assertEqual(adapter.tried, ["studio-hub-a", "studio-hub-b"])
+        self.assertEqual(settled["state"], "succeeded", settled)
+        # The row now names the site that actually took the work.
+        self.assertEqual(settled["provider_id"], "studio-hub-b")
+
+    def test_a_voice_is_not_re_routed_to_a_location_without_the_clip(self) -> None:
+        adapter, settled = self._run({"prompt": "a cat", "voice_id": "studio-hub-a::voice-1"})
+        self.assertEqual(adapter.tried, ["studio-hub-a"], "a pinned voice must stay put")
+        self.assertEqual(settled["state"], "failed")
+        self.assertEqual(settled["error_code"], "LOCATION_NOT_READY")
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)

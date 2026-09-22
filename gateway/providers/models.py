@@ -267,10 +267,19 @@ class ModelInventory:
         # 2. The Hub already decides whether a model fits the machine it runs on.
         #    A model that cannot run here must not be offered; its `memory_eligible`
         #    is that location's verdict, so a bigger site's copy stays publishable.
+        # 3. `files_verified` is not "ready": the Hub combines files, runtime, OS
+        #    and chip into `dispatch_state`, and it refuses a submit for a model
+        #    that is not `eligible` with 409 MODEL_NOT_READY. Withhold it here so
+        #    the picker never offers work the chosen controller will refuse.
+        #    Absence stays unverified — a Hub that does not publish it withholds
+        #    nothing.
         raw = model.get("raw") or {}
         if raw.get("catalogued") is False:
             return False
         if raw.get("memory_eligible") is False:
+            return False
+        dispatch_state = raw.get("dispatch_state")
+        if dispatch_state is not None and dispatch_state != "eligible":
             return False
         return True
 

@@ -25,6 +25,7 @@ from .adapters import BackendError, BackendRequest, adapter_for
 from .config import ARTIFACT_DIR
 from .providers import registry
 from .store import RECOVERY_UNKNOWN, JobStore
+from . import fleet
 
 log = logging.getLogger("gateway.worker")
 
@@ -164,70 +165,100 @@ def execute_job(job: dict[str, Any], store: JobStore) -> None:
 
     params["_job_id"] = job_id
     record_acceptance = getattr(store, "record_upstream_acceptance", None)
-    request = BackendRequest(
-        provider_id=provider_id,
-        model_id=model_id,
-        modality=modality,
-        params=params,
-        values=registry.credentials.resolved(provider_id),
-        base_url=definition.base_url,
-        display_name=definition.display_name,
-        checkpoint=(
-            (lambda upstream_job_id: record_acceptance(job_id, upstream_job_id))
-            if record_acceptance is not None
-            else None
-        ),
-    )
-
-    adapter = adapter_for(definition)
-    try:
-        result = adapter.generate(request)
-    except BackendError as exc:
-        log.warning("job %s failed via %s: %s", job_id, provider_id, exc)
-        current = store.get(job_id) if hasattr(store, "get") else job
-        current = current or {}
-        # Once dispatch began, an adapter that cannot prove pre-acceptance must
-        # be treated as ambiguous even when it calls the failure retryable.
-        unknown = bool(current.get("upstream_job_id")) or exc.upstream_accepted is True
-        unknown = unknown or (
-            current.get("dispatch_started_at") is not None
-            and exc.upstream_accepted is None
+    # A voice is pinned to the controller that holds its reference clip, so a
+    # refusal there is final. Any other job may be tried at the next location that
+    # offers the same model: `LOCATION_NOT_READY` is a property of the site, not of
+    # the job, and the adapter proved the Hub accepted nothing before it refused.
+    pinned = fleet.pinned_location(params)
+    tried: set[str] = set()
+    result = None
+    while True:
+        definition = registry.definition(provider_id)
+        if definition is None or not registry.credentials.is_enabled(provider_id):
+            _fail(
+                store,
+                job_id,
+                code="PROVIDER_DISABLED" if definition is not None else "PROVIDER_NOT_FOUND",
+                detail=f"provider '{provider_id}' is disabled or unknown",
+            )
+            return
+        request = BackendRequest(
+            provider_id=provider_id,
+            model_id=model_id,
+            modality=modality,
+            params=params,
+            values=registry.credentials.resolved(provider_id),
+            base_url=definition.base_url,
+            display_name=definition.display_name,
+            checkpoint=(
+                (lambda upstream_job_id: record_acceptance(job_id, upstream_job_id))
+                if record_acceptance is not None
+                else None
+            ),
         )
-        if exc.code == "PROVIDER_SUBMISSION_UNCERTAIN":
-            unknown = True
-        detail = _unknown_detail(str(exc)) if unknown else str(exc)[:500]
-        # A durable recovery hold keeps the upstream's own identifiers, so the
-        # operator has the batch, item, worker and the routes that resolve it
-        # rather than a failure they have to reconstruct.
-        recovery_detail = detail
-        if unknown and exc.recovery:
-            recovery_detail = f"{detail} {json.dumps(exc.recovery, sort_keys=True)}"
-        _fail(
-            store,
-            job_id,
-            code=exc.code,
-            detail=detail,
-            retryable=exc.retryable,
-            recovery_state=RECOVERY_UNKNOWN if unknown else None,
-            recovery_detail=recovery_detail if unknown else None,
-            recovery_context=exc.recovery if unknown else None,
-        )
-        return
-    except Exception as exc:  # noqa: BLE001 - a backend bug must not kill the worker
-        log.exception("job %s raised unexpectedly", job_id)
-        getter = getattr(store, "get", None)
-        current = getter(job_id) if getter is not None else job
-        current = current or {}
-        detail = _unknown_detail(f"{type(exc).__name__}: {exc}")
-        _fail(
-            store,
-            job_id,
-            code="PROVIDER_FAILED",
-            detail=detail,
-            recovery_state=RECOVERY_UNKNOWN if current.get("dispatch_started_at") else None,
-            recovery_detail=detail if current.get("dispatch_started_at") else None,
-        )
-        return
+        adapter = adapter_for(definition)
+        try:
+            result = adapter.generate(request)
+            break
+        except BackendError as exc:
+            if exc.code == "LOCATION_NOT_READY" and pinned is None:
+                tried.add(provider_id)
+                chosen, note = fleet.route(model_id, modality, exclude_locations=tried)
+                if chosen is not None and chosen.id not in tried:
+                    log.warning(
+                        "job %s: %s cannot serve '%s' (%s); rerouting to %s",
+                        job_id, provider_id, model_id, exc, chosen.id,
+                    )
+                    provider_id = chosen.id
+                    record_route = getattr(store, "record_route", None)
+                    if record_route is not None:
+                        record_route(job_id, provider_id)
+                    continue
+            log.warning("job %s failed via %s: %s", job_id, provider_id, exc)
+            current = store.get(job_id) if hasattr(store, "get") else job
+            current = current or {}
+            # Once dispatch began, an adapter that cannot prove pre-acceptance must
+            # be treated as ambiguous even when it calls the failure retryable.
+            unknown = bool(current.get("upstream_job_id")) or exc.upstream_accepted is True
+            unknown = unknown or (
+                current.get("dispatch_started_at") is not None
+                and exc.upstream_accepted is None
+            )
+            if exc.code == "PROVIDER_SUBMISSION_UNCERTAIN":
+                unknown = True
+            detail = _unknown_detail(str(exc)) if unknown else str(exc)[:500]
+            # A durable recovery hold keeps the upstream's own identifiers, so the
+            # operator has the batch, item, worker and the routes that resolve it
+            # rather than a failure they have to reconstruct.
+            recovery_detail = detail
+            if unknown and exc.recovery:
+                recovery_detail = f"{detail} {json.dumps(exc.recovery, sort_keys=True)}"
+            _fail(
+                store,
+                job_id,
+                code=exc.code,
+                detail=detail,
+                retryable=exc.retryable,
+                recovery_state=RECOVERY_UNKNOWN if unknown else None,
+                recovery_detail=recovery_detail if unknown else None,
+                recovery_context=exc.recovery if unknown else None,
+            )
+            return
+        except Exception as exc:  # noqa: BLE001 - a backend bug must not kill the worker
+            log.exception("job %s raised unexpectedly", job_id)
+            getter = getattr(store, "get", None)
+            current = getter(job_id) if getter is not None else job
+            current = current or {}
+            detail = _unknown_detail(f"{type(exc).__name__}: {exc}")
+            _fail(
+                store,
+                job_id,
+                code="PROVIDER_FAILED",
+                detail=detail,
+                recovery_state=RECOVERY_UNKNOWN if current.get("dispatch_started_at") else None,
+                recovery_detail=detail if current.get("dispatch_started_at") else None,
+            )
+            return
 
     # **Every artifact the provider returned is written.** A job holds a list now,
     # because a provider can answer several variations for one request (Suno sends

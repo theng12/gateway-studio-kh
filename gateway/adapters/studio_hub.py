@@ -41,6 +41,22 @@ _TERMINAL_BAD = {"error", "failed", "cancelled", "cancelled_items"}
 #: Kept out of `_TERMINAL_BAD` so the two cannot be collapsed again.
 _TERMINAL_UNCERTAIN = {"uncertain"}
 
+#: Hub submit refusals that mean "this controller cannot run that model", not
+#: "the job is broken". The Hub itself said so with a 409; the worker may try
+#: another location that offers the same model. `MODEL_MODALITY_MISMATCH` is
+#: deliberately not here — that is a routing bug, not a site property.
+_LOCATION_REFUSAL_CODES = {"MODEL_NOT_READY", "MODEL_NOT_PACKAGED"}
+
+
+def _hub_refusal_code(response: httpx.Response) -> str | None:
+    """The Hub's own `code` on a refusal, when it carries one."""
+    try:
+        body = response.json()
+    except ValueError:
+        return None
+    code = body.get("code") if isinstance(body, dict) else None
+    return str(code) if code else None
+
 
 def _uncertain_result(batch_id: str, item_index: int, item: dict[str, Any]) -> tuple[str, dict[str, Any]]:
     """The operator-facing description of an item the Hub cannot vouch for.
@@ -638,6 +654,20 @@ def _generate_image_or_voice(request: BackendRequest) -> BackendResult:
             ) from exc
 
         if response.status_code >= 400:
+            code = _hub_refusal_code(response)
+            if code in _LOCATION_REFUSAL_CODES:
+                # A site property, not a job failure: the controller cannot serve
+                # this model right now, and it accepted nothing. `upstream_accepted`
+                # is therefore False, so the worker may safely try the next
+                # location that offers the same model instead of calling the job
+                # failed (or, worse, holding it as an unknown outcome).
+                raise BackendError(
+                    f"the location cannot serve this model right now ({code})",
+                    code="LOCATION_NOT_READY",
+                    status=response.status_code,
+                    retryable=True,
+                    upstream_accepted=False,
+                )
             raise BackendError(
                 f"hub submit HTTP {response.status_code}: {response.text[:200]}",
                 code="PROVIDER_FAILED",
@@ -735,6 +765,15 @@ def _generate_transcription(request: BackendRequest) -> BackendResult:
             ) from exc
 
         if response.status_code >= 400:
+            code = _hub_refusal_code(response)
+            if code in _LOCATION_REFUSAL_CODES:
+                raise BackendError(
+                    f"the location cannot serve this model right now ({code})",
+                    code="LOCATION_NOT_READY",
+                    status=response.status_code,
+                    retryable=True,
+                    upstream_accepted=False,
+                )
             raise BackendError(
                 f"hub transcription HTTP {response.status_code}: {response.text[:200]}",
                 code="PROVIDER_FAILED",

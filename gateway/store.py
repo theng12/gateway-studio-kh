@@ -552,6 +552,17 @@ class JobStore:
                 self._conn.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()
             )
 
+    def record_route(self, job_id: str, provider_id: str) -> bool:
+        """Point a queued job at a different location after a site refusal.
+
+        The model is unchanged; only the controller that will run it moved. The
+        published model id is location-independent (`fleet.publish_id` collapses
+        every site to the maker), so nothing the caller sees changes — only the row
+        that records which site actually took the work.
+        """
+        self._update(job_id, provider_id=provider_id)
+        return True
+
     def _update(self, job_id: str, **fields: Any) -> None:
         fields["updated_at"] = time.time()
         with self._lock:

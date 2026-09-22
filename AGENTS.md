@@ -404,8 +404,18 @@ global_job_claiming: false}`:
   falls back to the site-wide total only for a Hub that publishes neither. A site
   with ten 8 GB image Macs and one 24 GB Mac must not out-weigh a site with two
   24 GB Macs for a 24 GB model. `available` (ready with a free slot) breaks a
-  pressure tie, and `GATEWAY_PREFER_FASTEST_SITE=1` ranks the fastest site first
-  with the Hub's chip+RAM proxy when latency matters more than capacity share.
+  pressure tie, and `GATEWAY_PREFER_FASTEST_SITE=1` is a **nudge, not a
+  takeover**: it only breaks a tie between controllers whose numbers already match
+  and that both have a fitting Mac free. Utilisation by capacity stays the rule,
+  so work a smaller Mac can do is never pulled onto a big one.
+
+- **A controller that cannot serve a model is a site property, not a job
+  failure.** `can_publish` withholds a model whose `dispatch_state` is present and
+  not `eligible` (absence stays unverified), so the picker never offers what the
+  Hub will refuse. When the Hub still answers `409 MODEL_NOT_READY` /
+  `MODEL_NOT_PACKAGED` at submit, the adapter names it `LOCATION_NOT_READY` and
+  the worker re-routes to the next location that offers the same model. A voice is
+  never re-routed — its reference clip lives on one controller.
 
 - **Capacity belongs in the weight, never as a rank term.** Ported from the old
   `MultiSiteAssignment`: raw size as a rank made a small site unreachable, the

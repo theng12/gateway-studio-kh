@@ -525,11 +525,7 @@ def _pinned_location(params: dict[str, Any]) -> str | None:
     """
     from . import fleet
 
-    for key in ("voice_id", "voice_reference_source_id", "voice_library_id"):
-        location_id = fleet.location_for_voice(str(params.get(key) or ""))
-        if location_id:
-            return location_id
-    return None
+    return fleet.pinned_location(params)
 
 
 def _submit(

@@ -114,6 +114,27 @@ def location_for_voice(voice_id: str) -> str | None:
     provider_id, _, _ = (voice_id or "").partition(ID_SEPARATOR)
     return controller_id_from(provider_id)
 
+
+#: Request params that can name the location a voice belongs to.
+_VOICE_PIN_KEYS = ("voice_id", "voice_reference_source_id", "voice_library_id")
+
+
+def pinned_location(params: dict) -> str | None:
+    """The location a request already names, if it names one.
+
+    A voice id carries its owner (`studio-hub-<controller>::<raw>`), so voice work
+    must go to that location and no other — the reference clip exists on one Hub,
+    not on the fleet. The submit path pins the route with this, and the worker uses
+    it to know a refused job must **not** be re-routed to a different controller.
+    """
+    if not isinstance(params, dict):
+        return None
+    for key in _VOICE_PIN_KEYS:
+        location_id = location_for_voice(str(params.get(key) or ""))
+        if location_id:
+            return location_id
+    return None
+
 #: Per-request budget. A controller on the far end of a VPN is slower than
 #: loopback, and a location that takes longer than this is reported unreachable
 #: with the timeout as its reason rather than silently omitted.
@@ -1227,7 +1248,8 @@ def _weighted_tiebreak(routing_key: str, location_id: str, compatible_slots: int
 
 
 def routing_candidates(
-    model_id: str, modality: str, *, only_location: str | None = None
+    model_id: str, modality: str, *, only_location: str | None = None,
+    exclude_locations: set[str] | None = None,
 ) -> list[dict]:
     """Every location that can run this model right now, with its pressure.
 
@@ -1264,6 +1286,10 @@ def routing_candidates(
         if model["model_id"] != model_id:
             continue
         if only_location is not None and location_id != only_location:
+            continue
+        if exclude_locations and location_id in exclude_locations:
+            # Tried already and refused this model; the worker is looking for the
+            # next site, not the same one again.
             continue
         row = rows.get(location_id) or {}
         if not row.get("reachable"):
@@ -1320,34 +1346,44 @@ def route(
     *,
     routing_key: str = "",
     only_location: str | None = None,
+    exclude_locations: set[str] | None = None,
 ) -> tuple[ProviderDefinition | None, str]:
     """Choose the location that should run this model. Never raises.
 
     Returns the location's provider definition and a human note naming the choice,
-    or `(None, reason)` when nothing can take it.
+    or `(None, reason)` when nothing can take it. `exclude_locations` is how the
+    worker asks for the **next** site after one refused the model at submit.
     """
-    candidates = routing_candidates(model_id, modality, only_location=only_location)
+    candidates = routing_candidates(
+        model_id, modality, only_location=only_location, exclude_locations=exclude_locations
+    )
     if not candidates:
         if only_location is not None:
             return None, f"the location that owns this voice ({only_location}) cannot run {model_id}"
+        if exclude_locations:
+            return None, f"every location that offers {model_id} refused it"
         return None, f"no location can run {model_id} right now"
 
     prefer_fastest = _truthy(config.get("GATEWAY_PREFER_FASTEST_SITE"))
 
     def rank(candidate: dict) -> tuple:
-        # Pressure first -- queue per **fitting** machine -- then the weighted
-        # lottery, then free fitting capacity, then the id so the result is
+        # Pressure first -- queue per **fitting** machine -- then free fitting
+        # capacity, then the weighted lottery, then the id so the result is
         # deterministic. `slots` is the model's own eligible machine count, so a
-        # site's small Macs no longer dilute a heavy model's share.
+        # site's small Macs no longer dilute a heavy model's share. Numbers decide;
+        # the controller still picks which machine runs it.
         pressure = candidate["queue"] / candidate["slots"]
+        free = -(candidate["available"] or 0)
         lottery = _weighted_tiebreak(
             routing_key or model_id, candidate["location_id"], candidate["slots"]
         )
-        free = -(candidate["available"] or 0)
-        if prefer_fastest:
-            # `GATEWAY_PREFER_FASTEST_SITE=1`: fastest site first, using the Hub's
-            # chip+RAM proxy. Off by default; capacity-first is the fleet default.
-            return (-candidate["speed"], pressure, free, lottery, candidate["location_id"])
+        if prefer_fastest and (candidate["available"] or 0) > 0:
+            # `GATEWAY_PREFER_FASTEST_SITE=1` is a **nudge, not a takeover**: it
+            # only breaks a tie between sites whose numbers already match and that
+            # each have a fitting Mac free. Fleet utilisation by capacity stays the
+            # rule, so work a smaller Mac can do is not pulled onto a big one — the
+            # controller's own scheduler still reserves large Macs for heavy jobs.
+            return (pressure, free, -candidate["speed"], lottery, candidate["location_id"])
         return (pressure, free, lottery, candidate["location_id"])
 
     chosen = min(candidates, key=rank)

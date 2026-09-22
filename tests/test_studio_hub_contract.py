@@ -78,6 +78,7 @@ class _Hub:
         reference: dict[str, Any] | None = None,
         voice_reference_status: int = 201,
         discard_status: int = 200,
+        submit_refusal: dict[str, Any] | None = None,
     ) -> None:
         self.calls: list[tuple[str, str]] = []
         self.acks: list[str] = []
@@ -92,6 +93,7 @@ class _Hub:
         self.reference = reference
         self.voice_reference_status = voice_reference_status
         self.discard_status = discard_status
+        self.submit_refusal = submit_refusal
 
     # ── the transport ────────────────────────────────────────────────────
     def handler(self, request: httpx.Request) -> httpx.Response:
@@ -128,9 +130,13 @@ class _Hub:
             return httpx.Response(200, json={"ok": True})
         if method == "POST" and path == "/api/hub/jobs":
             self.payloads.append(json.loads(request.content or b"{}"))
+            if self.submit_refusal is not None:
+                return httpx.Response(409, json=self.submit_refusal)
             return httpx.Response(200, json={"batch_id": BATCH})
         if method == "POST" and path == "/api/hub/transcription/jobs":
             self.payloads.append({"content_type": request.headers.get("content-type", "")})
+            if self.submit_refusal is not None:
+                return httpx.Response(409, json=self.submit_refusal)
             return httpx.Response(200, json={"batch_id": BATCH})
         if method == "POST" and path == "/api/hub/voice-references":
             self.payloads.append(request.content)
@@ -1081,6 +1087,43 @@ class DiscardActionTests(_HubCase):
             self.assertIsNone(held["discard_remote"])
         finally:
             store.close()
+
+
+class LocationRefusalTests(_HubCase):
+    """A Hub 409 MODEL_NOT_READY is a site property, not a provider failure.
+
+    The adapter must name it so the worker can try another location instead of
+    settling the job failed, and it must say the Hub accepted nothing so the job
+    is never held as an unknown outcome.
+    """
+
+    def test_a_not_ready_refusal_is_a_location_refusal(self) -> None:
+        hub = _Hub(submit_refusal={
+            "code": "MODEL_NOT_READY",
+            "detail": "model files, runtime, OS, or chip are not ready",
+        })
+        with self.assertRaises(BackendError) as caught:
+            self.generate(hub, self.request(modality="image", params={"prompt": "x"}))
+        self.assertEqual(caught.exception.code, "LOCATION_NOT_READY")
+        self.assertFalse(caught.exception.upstream_accepted)
+        self.assertTrue(caught.exception.retryable)
+
+    def test_a_not_packaged_refusal_is_a_location_refusal(self) -> None:
+        hub = _Hub(submit_refusal={
+            "code": "MODEL_NOT_PACKAGED",
+            "detail": "model is not in the packaged catalog",
+        })
+        with self.assertRaises(BackendError) as caught:
+            self.generate(hub, self.request(modality="image", params={"prompt": "x"}))
+        self.assertEqual(caught.exception.code, "LOCATION_NOT_READY")
+        self.assertFalse(caught.exception.upstream_accepted)
+
+    def test_another_refusal_stays_a_provider_failure(self) -> None:
+        hub = _Hub(submit_refusal={"code": "VALIDATION_FAILED", "detail": "bad prompt"})
+        with self.assertRaises(BackendError) as caught:
+            self.generate(hub, self.request(modality="image", params={"prompt": "x"}))
+        self.assertEqual(caught.exception.code, "PROVIDER_FAILED")
+        self.assertIsNone(caught.exception.upstream_accepted)
 
 
 if __name__ == "__main__":
