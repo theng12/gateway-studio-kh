@@ -74,10 +74,42 @@ def check_content_packs_page() -> tuple[bool, str]:
     return title == "gateway-kh — Content Packs", f"window is {title!r}"
 
 
+def check_jobs_recovery() -> tuple[bool, str]:
+    """The discard action appears only on a job that is actually a recovery hold.
+
+    Read-only: it opens Jobs, selects the first row and reads what is drawn. The
+    invariant it guards is the one that matters — a normal job must never offer to
+    abandon work — and it reports whether a hold was there to inspect.
+    """
+    title = open_section("Jobs")
+    if title != "gateway-kh — Jobs":
+        return False, f"Jobs did not open (window is {title!r})"
+    table = "table 1 of scroll area 2 of splitter group 1"
+    rows = int(osa(f"tell {MAIN_WINDOW} to tell {table} to return (count of rows)") or 0)
+    if rows == 0:
+        return True, "no jobs to inspect"
+    osa(f"tell {MAIN_WINDOW} to tell {table} to select row 1")
+    time.sleep(1.4)
+    detail = osa(
+        f"tell {MAIN_WINDOW} to tell splitter group 1 to return (value of every static text)"
+    )
+    offered = "Discard uncertain attempt" in osa(
+        f"tell {MAIN_WINDOW} to tell splitter group 1 to return (title of every button)"
+    )
+    on_hold = "Manual recovery required" in detail
+    if offered and not on_hold:
+        return False, "a discard was offered for a job that is not a recovery hold"
+    return True, f"rows={rows} hold={on_hold} discard_offered={offered}"
+
+
 CHECKS = {
     "sidebar": ("sidebar footer shows the app version and the What's New link", check_sidebar),
     "jobs-provider": ("Jobs table has a Provider column and a real value", check_jobs_provider),
     "content-packs": ("Content Packs opens the embedded page in this window", check_content_packs_page),
+    "jobs-recovery": (
+        "the discard action is offered only for a recovery hold",
+        check_jobs_recovery,
+    ),
 }
 
 

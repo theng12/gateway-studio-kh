@@ -110,6 +110,54 @@ struct JobsOutputsCheck {
         "late_result_state": NSNull(),
     ]
 
+    /// An uncertain Hub attempt: the state a recovery hold is in, with the
+    /// upstream identifiers the discard call has to name.
+    static let jobUncertain: [String: Any] = [
+        "id": "job-uncertain",
+        "state": "failed",
+        "modality": "music",
+        "model_name": "music-model",
+        "provider_name": "Studio Hub",
+        "created_at": 1.0,
+        "outputs": [],
+        "error_code": "UNKNOWN_OUTCOME",
+        "error_detail": "the Hub settled the item without knowing the worker's outcome",
+        "cancel_requested": false,
+        "cancel_state": NSNull(),
+        "retryable": false,
+        "recovery_required": true,
+        "recovery_state": "unknown_outcome",
+        "recovery_detail": "Studio Hub settled batch hub-batch-9 item 0.",
+        "recovery_context": ["hub_batch_id": "hub-batch-9", "hub_item_index": 0],
+        "discard_remote": NSNull(),
+        "upstream_job_id": "hub-batch-9",
+        "late_result_state": NSNull(),
+    ]
+
+    /// A hold recorded before the gateway kept that context: nothing to name, so
+    /// offering a discard would fail on press.
+    static let jobHoldWithoutContext: [String: Any] = [
+        "id": "job-hold-old",
+        "state": "failed",
+        "modality": "image",
+        "model_name": "image-model",
+        "provider_name": "Studio Hub",
+        "created_at": 1.0,
+        "outputs": [],
+        "error_code": "UNKNOWN_OUTCOME",
+        "error_detail": "an older hold",
+        "cancel_requested": false,
+        "cancel_state": NSNull(),
+        "retryable": false,
+        "recovery_required": true,
+        "recovery_state": "unknown_outcome",
+        "recovery_detail": "no upstream identifiers were recorded",
+        "recovery_context": NSNull(),
+        "discard_remote": NSNull(),
+        "upstream_job_id": NSNull(),
+        "late_result_state": NSNull(),
+    ]
+
     static let jobRunning: [String: Any] = [
         "id": "job-running",
         "state": "running",
@@ -181,14 +229,14 @@ struct JobsOutputsCheck {
             "upstream_job_id": NSNull(),
             "late_result_state": NSNull(),
         ]
-        GatewayAPI.jobs = [outputJob, jobRunning, jobQueued]
+        GatewayAPI.jobs = [outputJob, jobRunning, jobQueued, jobUncertain, jobHoldWithoutContext]
 
         let section = JobsSection()
         _ = section.view
         section.activated()
 
         let table = descendants(section.view).compactMap { $0 as? NSTableView }.first!
-        assert(table.numberOfRows == 3, "jobs did not load")
+        assert(table.numberOfRows == 5, "jobs did not load")
         table.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
         RunLoop.main.run(until: Date().addingTimeInterval(0.1))
 
@@ -216,6 +264,34 @@ struct JobsOutputsCheck {
         staleCompletion(.success(Data("stale-output".utf8)))
         RunLoop.main.run(until: Date().addingTimeInterval(0.1))
         assert(labels(section.view).contains { $0.contains("The upstream request may still settle late.") }, "stale output replaced selected job: \(labels(section.view))")
+
+        // ── an uncertain Hub hold: offered, confirmed, then discarded ──
+        table.selectRowIndexes(IndexSet(integer: 3), byExtendingSelection: false)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+        assert(labels(section.view).contains { $0.contains("hub-batch-9") },
+               "the hold should name the attempt it is waiting on")
+        assert(buttons(section.view).contains { $0.title.hasPrefix("Discard") },
+               "a discardable hold must offer the discard action: \(buttons(section.view).map { $0.title })")
+
+        let postsBefore = GatewayAPI.postPaths.count
+        section.confirmDiscard = { false }
+        buttons(section.view).first { $0.title.hasPrefix("Discard") }!.performClick(nil)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+        assert(GatewayAPI.postPaths.count == postsBefore,
+               "declining the confirmation must discard nothing: \(GatewayAPI.postPaths)")
+
+        section.confirmDiscard = { true }
+        buttons(section.view).first { $0.title.hasPrefix("Discard") }!.performClick(nil)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+        assert(GatewayAPI.postPaths.contains("/admin/api/jobs/job-uncertain/discard-uncertain"),
+               "the discard must reach the operator endpoint: \(GatewayAPI.postPaths)")
+
+        // A hold that names no upstream attempt offers nothing: the call would
+        // have nothing to abandon and would fail on press.
+        table.selectRowIndexes(IndexSet(integer: 4), byExtendingSelection: false)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+        assert(!buttons(section.view).contains { $0.title.hasPrefix("Discard") },
+               "a hold with no upstream attempt must not offer a discard: \(buttons(section.view).map { $0.title })")
 
         table.selectRowIndexes(IndexSet(integer: 2), byExtendingSelection: false)
         RunLoop.main.run(until: Date().addingTimeInterval(0.1))

@@ -70,7 +70,14 @@ final class JobsSection: NSObject, AppSection, NSTableViewDataSource, NSTableVie
     private var summaryLabel: NSTextField!
     private var detailStatusLabel: NSTextField!
     private var cancelButton: NSButton?
+    private var discardButton: NSButton?
     private var rows: [[String: Any]] = []
+
+    /// Asked before anything is discarded. A property so the native test can
+    /// answer without a modal alert: the confirmation is part of the behaviour
+    /// (abandoning work the Hub may still be running is deliberate), not
+    /// decoration around it.
+    var confirmDiscard: (() -> Bool)?
     private var selectedJobID: String?
     private var selectionGeneration = 0
     private var reloadGeneration = 0
@@ -424,6 +431,7 @@ final class JobsSection: NSObject, AppSection, NSTableViewDataSource, NSTableVie
         detailStatusLabel = PageKit.help("")
         detailStack.addArrangedSubview(detailStatusLabel)
         cancelButton = nil
+        discardButton = nil
     }
 
     private func renderDetail(_ job: [String: Any]) {
@@ -480,6 +488,24 @@ final class JobsSection: NSObject, AppSection, NSTableViewDataSource, NSTableVie
             cancel.controlSize = .small
             detailStack.addArrangedSubview(cancel)
             cancelButton = cancel
+        }
+
+        // An uncertain attempt on a Hub location pins that node's machine until
+        // it is reconciled or discarded. The owner is the only one who can decide
+        // that waiting is over, so the decision is a button — never a timer.
+        discardButton = nil
+        if canDiscardRecoveryHold(job) {
+            let discard = NSButton(
+                title: "Discard uncertain attempt…",
+                target: self,
+                action: #selector(discardSelectedJob)
+            )
+            discard.bezelStyle = .rounded
+            discard.controlSize = .small
+            discard.toolTip = "Abandon this attempt on the Studio Hub and free the machine it reserved. "
+                + "Whatever the original worker still produces is ignored."
+            detailStack.addArrangedSubview(discard)
+            discardButton = discard
         }
 
         detailStatusLabel = PageKit.help("")
@@ -676,6 +702,59 @@ final class JobsSection: NSObject, AppSection, NSTableViewDataSource, NSTableVie
 
     private func cancelPath(_ jobID: String) -> String {
         "/admin/api/create/status/\(escapedJobID(jobID))/cancel"
+    }
+
+    /// Whether this job is a hold the owner can resolve by discarding.
+    ///
+    /// Only a hold that names the upstream attempt qualifies: the discard call has
+    /// to say which batch and item it is abandoning, and a hold recorded before the
+    /// gateway kept that context has nothing to name. Offering the button there
+    /// would fail on press, which is worse than not offering it.
+    private func canDiscardRecoveryHold(_ job: [String: Any]) -> Bool {
+        guard job["recovery_required"] as? Bool == true else { return false }
+        guard let context = job["recovery_context"] as? [String: Any] else { return false }
+        return !(string(context["hub_batch_id"]) ?? "").isEmpty
+    }
+
+    @objc private func discardSelectedJob() {
+        guard let jobID = selectedJobID,
+              let job = rows.first(where: { string($0["id"]) == jobID }),
+              canDiscardRecoveryHold(job) else { return }
+        guard (confirmDiscard ?? confirmDiscardWithAlert)() else { return }
+        let requestGeneration = selectionGeneration
+        discardButton?.isEnabled = false
+        setStatus("Discarding the uncertain attempt…", error: false)
+        GatewayAPI.post(discardPath(jobID)) { [weak self] result in
+            guard let self,
+                  self.isCurrent(jobID: jobID, generation: requestGeneration)
+            else { return }
+            switch result {
+            case .success:
+                self.setStatus("Attempt discarded. The machine is released and the result is ignored.", error: false)
+                self.reload()
+            case .failure(let error):
+                self.discardButton?.isEnabled = true
+                self.setStatus("Could not discard the attempt: \(error.localizedDescription)", error: true)
+            }
+        }
+    }
+
+    /// The owner's confirmation, naming what is abandoned. Discarding ignores
+    /// whatever the worker may still produce and cannot be undone.
+    private func confirmDiscardWithAlert() -> Bool {
+        let alert = NSAlert()
+        alert.messageText = "Discard this uncertain attempt?"
+        alert.informativeText = """
+        The Studio Hub will abandon the attempt and release the machine it has been         holding. Anything the original worker still produces is ignored, and this         cannot be undone. Reconcile it instead if the result may still matter.
+        """
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Discard")
+        alert.addButton(withTitle: "Keep waiting")
+        return alert.runModal() == .alertFirstButtonReturn
+    }
+
+    private func discardPath(_ jobID: String) -> String {
+        "/admin/api/jobs/\(escapedJobID(jobID))/discard-uncertain"
     }
 
     private func statusPath(_ jobID: String) -> String {

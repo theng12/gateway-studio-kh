@@ -1302,6 +1302,11 @@ def list_jobs(
                 "error_code": job.get("error_code"),
                 "error_detail": job.get("error_detail"),
                 **_lifecycle_fields(job),
+                # The Jobs window offers the discard action only for a hold that
+                # names the upstream attempt it is waiting on, so the row carries
+                # that context and the last discard answer too.
+                "recovery_context": job.get("recovery_context"),
+                "discard_remote": job.get("discard_remote"),
                 "outputs": _admin_outputs(job, pinned),
             }
         )

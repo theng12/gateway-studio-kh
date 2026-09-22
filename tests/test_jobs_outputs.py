@@ -52,6 +52,16 @@ class JobsOutputsNative(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
         self.assertIn("PASS:", result.stdout)
 
+    def test_discarding_a_recovery_hold_is_an_explicit_operator_action(self) -> None:
+        source = (ROOT / "menubar" / "JobsWindow.swift").read_text()
+        self.assertIn(
+            '"/admin/api/jobs/\(escapedJobID(jobID))/discard-uncertain"', source
+        )
+        # The confirmation is part of the behaviour: abandoning work the Hub may
+        # still be running is a decision, and the button is the only caller.
+        self.assertIn("confirmDiscard", source)
+        self.assertIn("confirmDiscardWithAlert", source)
+
     def test_output_library_uses_authenticated_local_file_flow(self) -> None:
         source = (ROOT / "menubar" / "JobsWindow.swift").read_text()
         self.assertIn("GatewayAPI.download(", source)
