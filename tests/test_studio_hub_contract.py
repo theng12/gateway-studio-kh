@@ -485,5 +485,164 @@ class CancelEndpointTests(_HubCase):
         self.assertTrue(body["cancel_remote"]["ok"])
 
 
+class MusicModalityTests(_HubCase):
+    """Item 3 — Music is dispatched, discovered and offered like any other lane."""
+
+    def test_music_submits_its_own_modality_with_its_engine_parameters(self) -> None:
+        hub = _Hub()
+        result = self.generate_then_deliver(
+            hub,
+            self.request(
+                modality="music",
+                model_id="ACE-Step/Ace-Step1.5",
+                params={
+                    "prompt": "a warm lofi loop",
+                    "duration_seconds": 120,
+                    "steps": 30,
+                    "guidance_scale": 7.5,
+                    "shift": 1.0,
+                    "seed": 4,
+                    "instrumental": True,
+                    "lyrics": "la la la",
+                    "vocal_language": "en",
+                },
+            ),
+        )
+        body = hub.payloads[0]
+        self.assertEqual(body["modality"], "music")
+        self.assertEqual(body["model"], "ACE-Step/Ace-Step1.5")
+        item = body["items"][0]
+        self.assertEqual(item["prompt"], "a warm lofi loop")
+        self.assertEqual(
+            item["params"],
+            {
+                "duration_seconds": 120,
+                "steps": 30,
+                "guidance_scale": 7.5,
+                "shift": 1.0,
+                "seed": 4,
+                "instrumental": True,
+                "lyrics": "la la la",
+                "vocal_language": "en",
+            },
+        )
+        self.assertEqual(hub.acks, [f"/api/hub/jobs/{BATCH}/items/0/ack"])
+        self.assertEqual(result.media_type, "audio/wav")
+
+    def test_the_instrumental_only_engine_takes_the_shared_parameters(self) -> None:
+        """Stable Audio 3 is instrumental only — its item carries no lyrics."""
+        hub = _Hub()
+        self.generate_then_deliver(
+            hub,
+            self.request(
+                modality="music",
+                model_id="stabilityai/stable-audio-3-optimized",
+                params={
+                    "prompt": "brushed drums",
+                    "duration_seconds": 200,
+                    "steps": 20,
+                    "guidance_scale": 6.0,
+                    "seed": 11,
+                },
+            ),
+        )
+        item = hub.payloads[0]["items"][0]
+        self.assertEqual(
+            item["params"],
+            {"duration_seconds": 200, "steps": 20, "guidance_scale": 6.0, "seed": 11},
+        )
+
+    def test_music_never_receives_image_geometry(self) -> None:
+        hub = _Hub()
+        self.generate_then_deliver(
+            hub,
+            self.request(
+                modality="music",
+                params={"prompt": "x", "width": 1024, "height": 1024, "aspect_ratio": "1:1"},
+            ),
+        )
+        self.assertEqual(hub.payloads[0]["items"][0]["params"], {})
+
+    def test_image_never_receives_music_parameters(self) -> None:
+        hub = _Hub()
+        self.generate_then_deliver(
+            hub,
+            self.request(
+                modality="image",
+                params={"prompt": "x", "lyrics": "la", "duration_seconds": 90, "seed": 3},
+            ),
+        )
+        self.assertEqual(hub.payloads[0]["items"][0]["params"], {"seed": 3})
+
+    def test_a_location_can_run_music(self) -> None:
+        from gateway.adapters import _MODALITIES_BY_KIND, serves
+        from gateway.providers import registry
+
+        self.assertIn("music", _MODALITIES_BY_KIND["studio_hub"])
+        self.assertTrue(serves(registry.definition("studio-hub-local"), "music"))
+
+
+class HubDiscoveryTests(unittest.TestCase):
+    """The engine table is what makes a Hub model offerable at all."""
+
+    def test_the_music_engine_is_discovered_as_music(self) -> None:
+        from gateway.providers import discovery
+
+        packages = {
+            "models": [
+                {
+                    "model_id": "ACE-Step/Ace-Step1.5",
+                    "package_id": "ace-step-1-5-turbo",
+                    "engine": "music-mlx",
+                    "files_state": "files_verified",
+                    "type": "model",
+                },
+                {
+                    "model_id": "stabilityai/stable-audio-3-optimized",
+                    "package_id": "stable-audio-3-medium",
+                    "engine": "music-mlx",
+                    "files_state": "files_verified",
+                    "type": "model",
+                },
+                {
+                    "model_id": "Qwen/Qwen3-TTS-12Hz-0.6B-Base-4bit",
+                    "package_id": "qwen3-tts",
+                    "engine": "voice-mlx",
+                    "files_state": "files_verified",
+                    "type": "model",
+                },
+                {
+                    "model_id": "some/unknown-engine",
+                    "package_id": "mystery",
+                    "engine": "mystery-mlx",
+                    "files_state": "files_verified",
+                    "type": "model",
+                },
+            ]
+        }
+        catalog = {"models": [{"repo": "ACE-Step/Ace-Step1.5", "capabilities": ["music"]}]}
+
+        def fake_get(url: str, **_kwargs: Any) -> httpx.Response:
+            if url.endswith("/api/hub/model-packages"):
+                return httpx.Response(200, json=packages)
+            return httpx.Response(200, json=catalog)
+
+        definition = SimpleNamespace(
+            id="studio-hub-local", kind="studio_hub", base_url=HUB, display_name="Hub"
+        )
+        with patch.object(discovery.httpx, "get", side_effect=fake_get):
+            result = discovery._studio_hub(definition, {})
+
+        by_id = {model.model_id: model for model in result.models}
+        self.assertEqual(by_id["ACE-Step/Ace-Step1.5"].modality, "music")
+        self.assertEqual(by_id["stabilityai/stable-audio-3-optimized"].modality, "music")
+        self.assertEqual(
+            by_id["Qwen/Qwen3-TTS-12Hz-0.6B-Base-4bit"].modality, "tts"
+        )
+        # An engine nobody mapped stays undiscovered rather than becoming a
+        # model some lane would then refuse to run.
+        self.assertNotIn("some/unknown-engine", by_id)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

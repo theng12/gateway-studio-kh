@@ -38,7 +38,27 @@ _TERMINAL_BAD = {"error", "failed", "cancelled", "cancelled_items", "uncertain"}
 _HUB_MODALITY = {
     "image": "image",
     "tts": "voice",
+    "music": "music",
 }
+
+#: What the Hub's Music item accepts, per its two engines.
+#:
+#: ACE-Step/Ace-Step1.5 sings and does long form and takes `lyrics`,
+#: `vocal_language`, `instrumental` and `shift`; stabilityai/stable-audio-3-optimized
+#: is instrumental only and takes the rest. The gateway forwards whichever of these
+#: the caller set and invents none of them — which engine accepts what is the
+#: engine's own answer, and a Hub refusal names the field far better than a
+#: default guessed here.
+_HUB_MUSIC_PARAMS = (
+    "duration_seconds",
+    "steps",
+    "guidance_scale",
+    "shift",
+    "seed",
+    "instrumental",
+    "lyrics",
+    "vocal_language",
+)
 
 
 def _resolve_base(request: BackendRequest) -> str:
@@ -455,9 +475,16 @@ def _generate_image_or_voice(request: BackendRequest) -> BackendResult:
             "'params' must be an object of Hub parameters.", code="INVALID_PARAMS"
         )
     item: dict[str, Any] = {"params": dict(supplied or {})}
-    if request.modality == "image":
+    if request.modality in {"image", "music"}:
+        # Both address the worker by `prompt`; Music then takes its own engine
+        # parameters and no image geometry.
         item["prompt"] = str(request.params.get("prompt") or "")
-        for key in ("seed", "width", "height", "aspect_ratio", "resolution"):
+        keys = (
+            ("seed", "width", "height", "aspect_ratio", "resolution")
+            if request.modality == "image"
+            else _HUB_MUSIC_PARAMS
+        )
+        for key in keys:
             if request.params.get(key) is not None:
                 item["params"][key] = request.params[key]
     else:
@@ -523,6 +550,7 @@ def _generate_image_or_voice(request: BackendRequest) -> BackendResult:
 
     media_type = artifact.headers.get("content-type", "").split(";")[0].strip()
     if not media_type:
+        # Music comes back as WAV like voice, so only image differs.
         media_type = "image/png" if request.modality == "image" else "audio/wav"
 
     terminal = (outcome.get("item") or {}).get("terminal_result") or {}
@@ -638,7 +666,7 @@ def _generate_transcription(request: BackendRequest) -> BackendResult:
 
 class StudioHubBackend:
     def generate(self, request: BackendRequest) -> BackendResult:
-        if request.modality in {"image", "tts"}:
+        if request.modality in {"image", "tts", "music"}:
             return _generate_image_or_voice(request)
         if request.modality == "transcription":
             return _generate_transcription(request)

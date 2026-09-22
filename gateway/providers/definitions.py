@@ -746,9 +746,9 @@ PROVIDER_DEFINITIONS: tuple[ProviderDefinition, ...] = (
         category="multi",
         kind=KIND_STUDIO_HUB,
         base_url="",  # discovered at runtime from hub-ready.json
-        modalities=("image", "tts", "transcription"),
+        modalities=("image", "tts", "music", "transcription"),
         discovery=DISCOVERY_STUDIO_HUB,
-        description="Your own Apple Silicon runners: FLUX images, Qwen3/VoxCPM2/OmniVoice voice, Whisper transcription.",
+        description="Your own Apple Silicon runners: FLUX images, Qwen3/VoxCPM2/OmniVoice voice, ACE-Step and Stable Audio music, Whisper transcription.",
         docs_url="",
         credential_fields=(
             CredentialField(

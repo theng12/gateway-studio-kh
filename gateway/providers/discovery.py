@@ -457,6 +457,8 @@ def _elevenlabs_models(definition: ProviderDefinition, values: dict[str, str]) -
 _HUB_ENGINE_MODALITY = {
     "image-mflux": "image",
     "voice-mlx": "tts",
+    # The Hub's own engine->worker table, and the one the brief names.
+    "music-mlx": "music",
     "subtitle-mlx": "transcription",
 }
 
