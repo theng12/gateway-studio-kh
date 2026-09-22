@@ -100,6 +100,7 @@ class BackendError(Exception):
         status: int | None = None,
         retryable: bool = False,
         upstream_accepted: bool | None = None,
+        recovery: dict[str, Any] | None = None,
     ) -> None:
         super().__init__(message)
         self.code = code
@@ -108,6 +109,11 @@ class BackendError(Exception):
         # `None` means the adapter did not establish whether the remote accepted
         # work; the worker must not infer that a retry is safe from `retryable`.
         self.upstream_accepted = upstream_accepted
+        # The upstream's own identifiers for work whose outcome is unknown — the
+        # batch, the item, the worker it went to, and the routes that reconcile or
+        # discard it. Carried so a recovery hold is actionable rather than a
+        # failure an operator has to guess about.
+        self.recovery = recovery
 
 
 @dataclass(slots=True)

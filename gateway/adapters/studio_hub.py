@@ -33,7 +33,46 @@ JOB_DEADLINE_S = 900.0
 
 # Hub item states -> our terminal interpretation.
 _TERMINAL_OK = {"done", "succeeded", "complete", "completed"}
-_TERMINAL_BAD = {"error", "failed", "cancelled", "cancelled_items", "uncertain"}
+_TERMINAL_BAD = {"error", "failed", "cancelled", "cancelled_items"}
+#: The Hub settled an item **after dispatch** without knowing the worker's
+#: outcome. That is a recovery hold, never an ordinary failure: the work may have
+#: completed, so treating it as failed invites a retry that generates it twice,
+#: and treating it as failed also hides the one thing an operator can act on.
+#: Kept out of `_TERMINAL_BAD` so the two cannot be collapsed again.
+_TERMINAL_UNCERTAIN = {"uncertain"}
+
+
+def _uncertain_result(batch_id: str, item_index: int, item: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+    """The operator-facing description of an item the Hub cannot vouch for.
+
+    Built from what the Hub states — its own error code, the worker and machine
+    that took the work, and its reason — plus the two routes that resolve it.
+    Nothing here is inferred: an absent field stays absent.
+    """
+    recovery = item.get("recovery") if isinstance(item.get("recovery"), dict) else {}
+    reason = str(
+        item.get("error") or recovery.get("reason") or "the worker outcome is not known"
+    )
+    context: dict[str, Any] = {
+        "hub_batch_id": batch_id,
+        "hub_item_index": item_index,
+        "hub_error_code": item.get("error_code"),
+        "hub_worker": item.get("worker_id"),
+        "hub_machine": item.get("machine"),
+        "hub_reason": reason,
+        "hub_phase": recovery.get("phase"),
+        # Operator actions. The Hub owns them; the gateway never discards or
+        # reconciles on its own, because both are decisions about real work.
+        "hub_reconcile_route": f"/api/hub/jobs/{batch_id}/items/{item_index}/reconcile",
+        "hub_discard_route": f"/api/hub/jobs/{batch_id}/items/{item_index}/discard",
+    }
+    detail = (
+        f"Studio Hub settled batch {batch_id} item {item_index} after dispatch without "
+        f"knowing the worker's outcome: {reason} Reconcile it on the Hub "
+        f"({context['hub_reconcile_route']}) or discard it "
+        f"({context['hub_discard_route']}); the gateway will not dispatch it again."
+    )
+    return detail, context
 
 _HUB_MODALITY = {
     "image": "image",
@@ -125,6 +164,17 @@ def _poll_batch(
 
         if state in _TERMINAL_OK:
             return {"summary": summary, "item": item or {}}
+        if state in _TERMINAL_UNCERTAIN:
+            # `upstream_accepted=True` is what makes the worker record this as a
+            # recovery hold rather than a retryable failure, and the code is the
+            # one the store already uses for "do not resubmit this".
+            detail, context = _uncertain_result(batch_id, item_index, item or {})
+            raise BackendError(
+                detail,
+                code="UNKNOWN_OUTCOME",
+                upstream_accepted=True,
+                recovery=context,
+            )
         if state in _TERMINAL_BAD:
             error = (item or {}).get("error") or summary.get("error") or {}
             message = error.get("message") if isinstance(error, dict) else str(error)

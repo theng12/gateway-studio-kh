@@ -792,5 +792,96 @@ class VoiceReferenceMetadataTests(_HubCase):
         self.assertIsNotNone(result.content)
 
 
+class UncertainIsARecoveryHoldTests(_HubCase):
+    """Item 5 — an unknown worker outcome is a hold, never an ordinary failure."""
+
+    def test_the_adapter_reports_uncertain_as_an_unknown_outcome(self) -> None:
+        hub = _Hub(
+            states=["uncertain"],
+            item={
+                "state": "uncertain",
+                "error": "The Voice worker did not confirm cancellation",
+                "error_code": "VOICE_CANCEL_OUTCOME_UNCERTAIN",
+                "worker_id": "voice-worker-2",
+                "machine": "local",
+                "recovery": {"phase": "uncertain", "reason": "must be reconciled"},
+            },
+        )
+        with self.assertRaises(BackendError) as raised:
+            self.generate(hub, self.request(modality="tts", params={"text": "x"}))
+        exc = raised.exception
+        self.assertEqual(exc.code, "UNKNOWN_OUTCOME")
+        self.assertTrue(exc.upstream_accepted, "an unknown outcome must not look retryable")
+        self.assertFalse(exc.retryable)
+        self.assertEqual(exc.recovery["hub_batch_id"], BATCH)
+        self.assertEqual(exc.recovery["hub_item_index"], 0)
+        self.assertEqual(exc.recovery["hub_worker"], "voice-worker-2")
+        self.assertEqual(exc.recovery["hub_machine"], "local")
+        self.assertEqual(exc.recovery["hub_error_code"], "VOICE_CANCEL_OUTCOME_UNCERTAIN")
+        self.assertEqual(exc.recovery["hub_phase"], "uncertain")
+        self.assertIn("/reconcile", exc.recovery["hub_reconcile_route"])
+        self.assertIn("/discard", exc.recovery["hub_discard_route"])
+
+    def test_an_ordinary_hub_failure_is_still_an_ordinary_failure(self) -> None:
+        hub = _Hub(
+            states=["error"],
+            item={"state": "error", "error": {"message": "worker refused the prompt"}},
+        )
+        with self.assertRaises(BackendError) as raised:
+            self.generate(hub, self.request(modality="image", params={"prompt": "x"}))
+        self.assertEqual(raised.exception.code, "PROVIDER_FAILED")
+        self.assertIsNone(raised.exception.recovery)
+        self.assertFalse(raised.exception.upstream_accepted)
+
+    def test_a_cancelled_item_is_still_a_failure_not_a_hold(self) -> None:
+        hub = _Hub(states=["cancelled"], item={"state": "cancelled"})
+        with self.assertRaises(BackendError) as raised:
+            self.generate(hub, self.request(modality="image", params={"prompt": "x"}))
+        self.assertEqual(raised.exception.code, "PROVIDER_FAILED")
+        self.assertIsNone(raised.exception.recovery)
+
+    def test_the_worker_settles_uncertain_as_a_recovery_hold(self) -> None:
+        hub = _Hub(
+            states=["uncertain"],
+            item={
+                "state": "uncertain",
+                "error": "the accepted Music canonical request settings are missing",
+                "error_code": "MUSIC_OUTCOME_UNCERTAIN",
+                "worker_id": "music-worker-1",
+                "machine": "local",
+            },
+        )
+        store = JobStore(_TEMP_ROOT / "uncertain-hold.sqlite3")
+        try:
+            row, created = store.submit(
+                modality="music",
+                model_id="model/test",
+                params={"prompt": "a warm loop"},
+                idempotency_key="uncertain-hold",
+                provider_id="studio-hub-test",
+            )
+            self.assertTrue(created)
+            self.assertTrue(store.mark_running(row["id"]))
+            with patch.object(worker_module, "registry", _Registry()), patch.object(
+                worker_module, "adapter_for", return_value=hub_module.StudioHubBackend()
+            ), self.hub_client(hub):
+                worker_module.execute_job(row, store)
+
+            held = store.get(row["id"])
+            self.assertEqual(held["state"], "failed")
+            self.assertEqual(held["error_code"], "UNKNOWN_OUTCOME")
+            self.assertEqual(held["recovery_state"], "unknown_outcome")
+            self.assertTrue(held["recovery_required"])
+            self.assertFalse(held["retryable"], "a recovery hold is never auto-retried")
+            # The operator gets the identifiers, not just a sentence.
+            self.assertIn("music-worker-1", held["recovery_detail"])
+            self.assertIn("MUSIC_OUTCOME_UNCERTAIN", held["recovery_detail"])
+            self.assertIn(BATCH, held["recovery_detail"])
+            # And nothing resubmits it.
+            self.assertEqual(store.due(time.time() + 60), [])
+        finally:
+            store.close()
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

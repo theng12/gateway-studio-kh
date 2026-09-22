@@ -194,6 +194,12 @@ def execute_job(job: dict[str, Any], store: JobStore) -> None:
         if exc.code == "PROVIDER_SUBMISSION_UNCERTAIN":
             unknown = True
         detail = _unknown_detail(str(exc)) if unknown else str(exc)[:500]
+        # A durable recovery hold keeps the upstream's own identifiers, so the
+        # operator has the batch, item, worker and the routes that resolve it
+        # rather than a failure they have to reconstruct.
+        recovery_detail = detail
+        if unknown and exc.recovery:
+            recovery_detail = f"{detail} {json.dumps(exc.recovery, sort_keys=True)}"
         _fail(
             store,
             job_id,
@@ -201,7 +207,7 @@ def execute_job(job: dict[str, Any], store: JobStore) -> None:
             detail=detail,
             retryable=exc.retryable,
             recovery_state=RECOVERY_UNKNOWN if unknown else None,
-            recovery_detail=detail if unknown else None,
+            recovery_detail=recovery_detail if unknown else None,
         )
         return
     except Exception as exc:  # noqa: BLE001 - a backend bug must not kill the worker
