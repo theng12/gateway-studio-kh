@@ -211,3 +211,78 @@ serves; `/api/hub/model-health` has one row per (machine, model) with a state.
 **When you ship it, tell us the Hub version and which keys changed** so we verify
 against the running Hub rather than a checkout, and we will wire the router to the
 new numbers the same day.
+
+---
+
+# Addendum (after 0.6.48): the activity reporter, in words
+
+**Forward just this section.** Hub 0.6.48 (build 2c8dabe) answers all six gaps
+above, verified against the running Hub on 2026-09-23. Two things remain, and they
+are now the only entries left in the Fleet Issues list the owner cannot act on.
+
+## A. Why `fleet_activity.limitation` fires
+
+Every machine at a site carries the same sentence, and the Hub gives no reason:
+
+```
+This Mac (agent)         state=long_idle  completed=11  median_runtime_s=null
+                         limitation="Direct activity partially unavailable"
+terranash-1100 (controller, 4 machines)  state=unknown  completed=0
+                         median_runtime_s=null
+                         2 machines "Activity reporter temporarily unavailable"
+                         2 machines "Direct activity partially unavailable"
+                         pulse: 4 unknown
+```
+
+The gateway surfaces the sentence verbatim — it is the Hub's own wording and we
+will not paraphrase it — but that is all it can do with it, so the owner reads
+"Direct activity partially unavailable" and has nothing to act on. It is also the
+reason every machine at a site reports `state: unknown`.
+
+**What we ask** — a machine-readable reason beside the sentence, on each
+`fleet_activity.machines[]` row:
+
+- `limitation_code` — a closed vocabulary, e.g. `reporter_unavailable`,
+  `partial_read`, `stale_snapshot`, `waiting_for_worker`. We will map it verbatim.
+- `limitation_reason` — one short phrase for the page; null when there is nothing
+  more to say.
+- `limitation_since` — epoch seconds, so the page can say "for 12m" and distinguish
+  a blip from a standing condition.
+- `limitation_affects` — which fields are missing because of it, e.g.
+  `["state", "completed", "median_runtime"]`. Today the page cannot tell whether a
+  blank median is a limitation or simply not measured yet.
+- If it is transient, whatever the Hub knows about recovery (`next_attempt_at`,
+  `eta_seconds`) — the gateway renders "retry in Ns" for jobs already.
+
+Absence stays `null`, as everywhere: no code is "the Hub did not say", which is not
+the same as "nothing is wrong".
+
+## B. Per-machine activity completeness
+
+The same gap makes the Machines tab show `0 done` and `—` for Median on the
+controller's four machines, because `fleet_activity.machines[].completed` is `0` and
+`median_runtime_s` is `null` while `state` is `unknown`. On this Mac the state and
+the count are real (`long_idle`, `completed: 11`); only the median is missing, and
+the column falls back to `fleet/overview`'s `average_seconds`, labelled `avg` so the
+two are never confused.
+
+**What we ask:** populate the per-machine direct activity (state, completed, failed,
+median) for joined machines, or tell us what the reporter is waiting for — a worker
+route, a heartbeat, a periodic flush — so the gateway can say that instead of
+showing a blank. If the honest answer is "a joined machine never reports direct
+activity", say so and we will label the column that way and stop treating it as a
+warning.
+
+## How to verify
+
+```bash
+curl -s -H "X-Hub-Token: $TOKEN" http://<controller>:47873/api/hub/stats \
+  | jq '.fleet_activity.machines[] | {machine, state, completed, median_runtime_s,
+        limitation, limitation_code, limitation_reason, limitation_since,
+        limitation_affects}'
+```
+
+**Acceptance:** a machine whose activity is limited carries a `limitation_code`
+from the closed set; the affected fields are named; a machine that reports fully
+has `limitation: null`.
+
