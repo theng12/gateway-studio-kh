@@ -19,6 +19,10 @@ for a catalogue problem instead of a network one.
   tries the next location offering that model, instead of holding the job as an
   unknown outcome you have to reconcile by hand. A read timeout *after* the
   request left is still treated as ambiguous, because it may have arrived.
+- **A definite refusal is never a hold either.** Any 4xx the Hub answers is its
+  own decision, so nothing was accepted: a `409 "This Hub is in agent mode"`
+  used to become a durable unknown-outcome hold. Only a 5xx — which may have been
+  accepted before it failed — keeps that careful path.
 
 ## Fleet: the Hub explains its own activity gaps
 

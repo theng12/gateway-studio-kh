@@ -81,6 +81,7 @@ class _Hub:
         submit_refusal: dict[str, Any] | None = None,
         connect_error: bool = False,
         read_timeout: bool = False,
+        server_error: bool = False,
     ) -> None:
         self.calls: list[tuple[str, str]] = []
         self.acks: list[str] = []
@@ -98,6 +99,7 @@ class _Hub:
         self.submit_refusal = submit_refusal
         self.connect_error = connect_error
         self.read_timeout = read_timeout
+        self.server_error = server_error
 
     # ── the transport ────────────────────────────────────────────────────
     def handler(self, request: httpx.Request) -> httpx.Response:
@@ -140,6 +142,8 @@ class _Hub:
             return httpx.Response(200, json={"ok": True})
         if method == "POST" and path == "/api/hub/jobs":
             self.payloads.append(json.loads(request.content or b"{}"))
+            if self.server_error:
+                return httpx.Response(500, json={"detail": "the Hub failed"})
             if self.submit_refusal is not None:
                 return httpx.Response(409, json=self.submit_refusal)
             return httpx.Response(200, json={"batch_id": BATCH})
@@ -1168,12 +1172,37 @@ class LocationRefusalTests(_HubCase):
         self.assertEqual(caught.exception.code, "LOCATION_NOT_READY")
         self.assertFalse(caught.exception.upstream_accepted)
 
-    def test_another_refusal_stays_a_provider_failure(self) -> None:
+    def test_another_refusal_is_definite_not_unknown(self) -> None:
+        # The Hub answered and refused, so it accepted nothing. `None` here meant
+        # "nobody knows", which turned a definite 4xx into a durable unknown-outcome
+        # hold — measured live on a 409 "This Hub is in agent mode".
         hub = _Hub(submit_refusal={"code": "VALIDATION_FAILED", "detail": "bad prompt"})
         with self.assertRaises(BackendError) as caught:
             self.generate(hub, self.request(modality="image", params={"prompt": "x"}))
         self.assertEqual(caught.exception.code, "PROVIDER_FAILED")
+        self.assertIs(caught.exception.upstream_accepted, False)
+        self.assertFalse(caught.exception.retryable)
+
+    def test_an_agent_mode_refusal_is_definite_not_unknown(self) -> None:
+        # The live shape: a 409 carrying only `detail`, no code. The Hub refused to
+        # take customer work, so the job must fail cleanly rather than become a hold.
+        hub = _Hub(submit_refusal={
+            "detail": "This Hub is in agent mode; submit customer jobs to a controller."
+        })
+        with self.assertRaises(BackendError) as caught:
+            self.generate(hub, self.request(modality="image", params={"prompt": "x"}))
+        self.assertIs(caught.exception.upstream_accepted, False)
+
+    def test_a_server_error_stays_ambiguous(self) -> None:
+        # A 5xx may have been accepted before it failed, so it keeps the careful
+        # path — the distinction the 4xx rule must not swallow.
+        hub = _Hub(submit_refusal=None)
+        hub.server_error = True
+        with self.assertRaises(BackendError) as caught:
+            self.generate(hub, self.request(modality="image", params={"prompt": "x"}))
+        self.assertEqual(caught.exception.status, 500)
         self.assertIsNone(caught.exception.upstream_accepted)
+        self.assertTrue(caught.exception.retryable)
 
 
 if __name__ == "__main__":

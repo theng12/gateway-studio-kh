@@ -706,6 +706,13 @@ def _generate_image_or_voice(request: BackendRequest) -> BackendResult:
                 code="PROVIDER_FAILED",
                 status=response.status_code,
                 retryable=response.status_code >= 500,
+                # **A 4xx is the Hub's own decision**, so it accepted nothing and
+                # there is no unknown outcome to reconcile. Measured live: a 409
+                # "This Hub is in agent mode; submit customer jobs to a controller"
+                # became a durable `unknown_outcome` hold — reconciliation work the
+                # caller never created. Only a 5xx leaves room for "it may have been
+                # accepted before it failed".
+                upstream_accepted=None if response.status_code >= 500 else False,
             )
 
         submitted = response.json() or {}
@@ -822,6 +829,9 @@ def _generate_transcription(request: BackendRequest) -> BackendResult:
                 code="PROVIDER_FAILED",
                 status=response.status_code,
                 retryable=response.status_code >= 500,
+                # Same rule as the shared jobs route: a 4xx is the Hub deciding,
+                # so nothing was accepted and there is no unknown outcome.
+                upstream_accepted=None if response.status_code >= 500 else False,
             )
 
         submitted = response.json() or {}
