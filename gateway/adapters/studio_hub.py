@@ -293,6 +293,25 @@ def _cancel_batch(
     return _recorded_call("DELETE", f"{base}{route}", headers, route)
 
 
+def _retry_item(
+    base: str,
+    headers: dict[str, str],
+    batch_id: str,
+    item_index: int,
+    kind: str,
+) -> dict[str, Any]:
+    """Ask the Hub to re-queue one failed item, and report what it answered.
+
+    New in Hub 0.6.48. **Only an item in state `error` is accepted**: the Hub
+    answers 400 for a queued/running/done/cancelled item, for a cancelled batch,
+    and for an `uncertain` item — which must be discarded before it can be retried,
+    and the Hub offers discard only on the jobs path. The answer is recorded, never
+    raised, like every other operator call; the caller reads `ok`/`status`.
+    """
+    route = f"{_jobs_path(kind)}/{batch_id}/items/{item_index}/retry"
+    return _recorded_call("POST", f"{base}{route}", headers, route)
+
+
 # Voice placement, keyed by **(voice, controller)**.
 #:
 #: The value is `(kind, id, at)`: either the controller's own library voice or an
@@ -888,4 +907,24 @@ class StudioHubBackend:
             }
         return _cancel_batch(
             _resolve_base(request), _headers(request), batch_id, request.modality
+        )
+
+    def retry(self, request: BackendRequest) -> dict[str, Any]:
+        """Re-queue one failed item of a Hub batch this gateway can see.
+
+        The mirror of `cancel` on the same handle: the batch id names the batch,
+        the item index names the work, and the modality picks the route. A job with
+        no upstream id has nothing to retry — reported as "nothing dispatched", not
+        as a successful retry.
+        """
+        batch_id = str(request.upstream_job_id or "").strip()
+        if not batch_id:
+            return {
+                "ok": False,
+                "status": None,
+                "reason": "nothing was dispatched to the Hub for this job",
+            }
+        return _retry_item(
+            _resolve_base(request), _headers(request), batch_id,
+            request.upstream_item_index, request.modality,
         )

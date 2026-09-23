@@ -1408,6 +1408,9 @@ final class FleetJobsTab: FleetTabView {
     /// Ask the Hub to stop this batch. The shell owns the request, so the tab
     /// stays a view — and the button is the only place a generation is touched.
     var onCancel: ((FleetJob) -> Void)?
+    /// Ask the Hub to re-queue one failed item. Only items in state `error` are
+    /// accepted; the Hub refuses the rest with its own sentence.
+    var onRetry: ((FleetJob, FleetJobError) -> Void)?
 
     // Built in `init` rather than inline: the Cancel column's button captures the
     // tab, and `self` is not available until after `super.init`.
@@ -1496,8 +1499,8 @@ final class FleetJobsTab: FleetTabView {
         } else if let text = job.errorText {
             reason = text
         } else if let count = job.errorCount, count > 0 {
-            reason = "\(count) item\(count == 1 ? "" : "s") failed. The Hub publishes the count "
-                + "here; the per-item reason is in its own job list."
+            reason = "\(count) item\(count == 1 ? "" : "s") failed. Each is listed below with the "
+                + "Hub's own reason."
         } else if let uncertain = job.uncertain, uncertain > 0 {
             reason = "\(uncertain) item\(uncertain == 1 ? "" : "s") uncertain — the Hub could not "
                 + "confirm the outcome, so it will not dispatch them again on its own."
@@ -1507,9 +1510,9 @@ final class FleetJobsTab: FleetTabView {
         let message = PageKit.label(reason, size: 11.5, colour: colour, wrapping: true)
         message.maximumNumberOfLines = 4
         let hint = PageKit.label(
-            "Fix: Cancel asks the Hub at this location to stop the batch — it stops what is still "
-            + "queued and signals what is running, and cannot promise a worker that already took "
-            + "the work will stop. Refresh re-reads the Hub's list.",
+            "Fix: Retry re-queues a failed item — the Hub accepts only an item in an error state, and "
+            + "refuses a cancelled batch or an uncertain item (discard that first). Cancel asks the Hub "
+            + "to stop the batch; Refresh re-reads its list.",
             size: 11, colour: .secondaryLabelColor, wrapping: true
         )
         hint.maximumNumberOfLines = 3
@@ -1526,6 +1529,25 @@ final class FleetJobsTab: FleetTabView {
         stack.wantsLayer = true
         stack.tint = colour
         stack.translatesAutoresizingMaskIntoConstraints = false
+
+        // **The failed items, named and retryable.** From Hub 0.6.48 the batch row
+        // carries `errors[]` — the item index, a code and the Hub's own message —
+        // so the card can say which item failed instead of only how many, and can
+        // offer the one action that applies to it.
+        for item in job.failedItems {
+            let index = item.itemIndex.map { "Item \($0)" } ?? "Item"
+            let label = PageKit.label("\(index) · \(item.text)", size: 11,
+                                      colour: .secondaryLabelColor, wrapping: true)
+            label.maximumNumberOfLines = 3
+            let retry = FleetClosureButton(title: "Retry") { [weak self] in
+                self?.onRetry?(job, item)
+            }
+            let row = PageKit.row([label, NSView(), retry], spacing: 8)
+            stack.addArrangedSubview(row)
+            row.widthAnchor.constraint(
+                equalTo: stack.widthAnchor, constant: -24
+            ).isActive = true
+        }
         return stack
     }
 

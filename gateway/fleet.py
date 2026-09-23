@@ -632,6 +632,12 @@ def _running_jobs(batches: list[dict]) -> list[dict]:
             "id": batch.get("id"),
             "modality": batch.get("modality"),
             "model": batch.get("model"),
+            # The canonical id, new in 0.6.48: the same string a model row, a
+            # supply row and a health row carry.
+            "model_id": batch.get("model_id"),
+            # Per-item failure text, new in 0.6.48 — the batch's `error` is a count,
+            # so this is the only place the list route says *what* failed.
+            "errors": batch.get("errors"),
             "label": batch.get("label"),
             "total": batch.get("total"),
             "queued": batch.get("queued"),
@@ -772,6 +778,13 @@ def _probe(base: str, token: str, *, timeout: float = _TIMEOUT) -> dict:
                 packages_payload = _fetch(client, base, token, "/api/hub/model-packages")
             except httpx.HTTPError:
                 packages_payload = {}
+            try:
+                # The Hub's own per-(machine, model) verdict and reason. New in
+                # 0.6.48 and on the Fleet allowlist from then; a 403 from an older
+                # Hub is one more empty list, not a failure.
+                health_payload = _fetch(client, base, token, "/api/hub/model-health")
+            except httpx.HTTPError:
+                health_payload = {}
     except httpx.HTTPStatusError as exc:
         location["error"] = (
             "Rejected the Hub token (HTTP %d)." % exc.response.status_code
@@ -874,6 +887,9 @@ def _probe(base: str, token: str, *, timeout: float = _TIMEOUT) -> dict:
         # The Models tab: one trimmed row per (model, machine), with the installed
         # package's `dispatch_state` joined in.
         "local_models": local_models,
+        # The Hub's own per-(machine, model) verdict, with its reason. The Models
+        # tab shows this instead of assembling a story from four other fields.
+        "model_health": _model_health_rows(health_payload),
         # The Machines tab: capabilities' worker roster, falling back to the
         # node list's studios.
         "workers": _worker_roster(capabilities, node_rows),
@@ -936,6 +952,11 @@ def _local_models(payload: object, dispatch: dict[str, object]) -> list[dict]:
         fit = row.get("fit")
         out.append({
             "model": row.get("repo"),
+            # The Hub's canonical join key, added in 0.6.48: a model row, a
+            # `model_supply` row, a model-health row and a batch all carry this
+            # same string. `model` (the repo) is kept because it is what this
+            # gateway publishes and dispatches, and on 0.6.48 the two agree.
+            "model_id": row.get("model_id"),
             "label": row.get("label"),
             "family": row.get("family"),
             "studio": row.get("hub_studio"),
@@ -989,6 +1010,63 @@ def _studio_modality(studio: object, stated: object = None) -> object:
     return _STUDIO_MODALITY.get(str(studio or "").strip().lower())
 
 
+def _model_health_rows(payload: object) -> list[dict]:
+    """Per-(machine, model) health with the Hub's own reason, one row each.
+
+    Published by Hub 0.6.48 as `{"models": [{model_id, machine, state, reason,
+    hint, observed_at}]}` with a closed `state` vocabulary. Read verbatim: a
+    missing value stays `None`, because "the Hub did not say" and "nothing is
+    wrong" must not render the same — the same rule every other field follows.
+    """
+    rows = payload.get("models") if isinstance(payload, dict) else None
+    if not isinstance(rows, list):
+        return []
+    out: list[dict] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        out.append({
+            "model_id": row.get("model_id"),
+            "machine": row.get("machine"),
+            "state": row.get("state"),
+            "reason": row.get("reason"),
+            "hint": row.get("hint"),
+            "observed_at": row.get("observed_at"),
+        })
+    return out
+
+
+def _worker_models(row: dict) -> list[str]:
+    """The model ids a worker serves, from its own catalogue evidence.
+
+    Hub 0.6.48 publishes this (it was empty through 0.6.47, which is *why*
+    `model_supply` was empty — the supply view is built from it). Each entry is an
+    object naming `internal_model_id`; a bare string is accepted too, so a Hub that
+    trims the shape keeps working.
+    """
+    models = row.get("models")
+    if not isinstance(models, list):
+        return []
+    out: list[str] = []
+    for entry in models:
+        if isinstance(entry, dict):
+            model_id = str(entry.get("internal_model_id") or entry.get("model_id") or "").strip()
+        elif isinstance(entry, str):
+            model_id = entry.strip()
+        else:
+            continue
+        if model_id:
+            out.append(model_id)
+    return out
+
+
+def _worker_operations(row: dict) -> list[str]:
+    operations = row.get("supported_operations")
+    if not isinstance(operations, list):
+        return []
+    return [str(operation) for operation in operations if str(operation).strip()]
+
+
 def _trim_worker(row: object) -> dict | None:
     """One capabilities worker, trimmed to the keys the Fleet page draws."""
     if not isinstance(row, dict):
@@ -1009,6 +1087,10 @@ def _trim_worker(row: object) -> dict | None:
         "slots": capacity.get("slots"),
         "slots_total": capacity.get("slots_total"),
         "last_seen_at": row.get("last_seen_at"),
+        # What this worker actually serves, from the worker's own catalogue — the
+        # answer to "which workers have this model", not an approximation by studio.
+        "models": _worker_models(row),
+        "supported_operations": _worker_operations(row),
     }
 
 
@@ -1048,6 +1130,10 @@ def _workers_from_nodes(nodes: object) -> list[dict]:
                 "slots": None,
                 "slots_total": None,
                 "last_seen_at": None,
+                # A node names studios, not a catalogue, so there is nothing to
+                # invent here.
+                "models": [],
+                "supported_operations": [],
             })
     return out
 
@@ -1109,6 +1195,7 @@ def locations() -> list[dict]:
             "by_machine": {}, "matrix": [], "jobs_total": None, "latency_ms": None,
             "site_id": None, "controller_id": None, "ready": None,
             "capacity": {}, "local_models": [], "workers": [], "hub_workers": [],
+            "model_health": [],
             "probe_machines_hidden": 0,
         }
     rows.append(local)
@@ -1366,6 +1453,10 @@ def running_flat(rows: list[dict]) -> list[dict]:
                 "batch_id": job.get("id"),
                 "modality": job.get("modality"),
                 "model": job.get("model"),
+                "model_id": job.get("model_id"),
+                # The per-item failures: `[{item_index, code, message}]`. The text
+                # the "Needs attention" card draws, and what a Retry addresses.
+                "errors": job.get("errors"),
                 "label": job.get("label"),
                 "total": job.get("total"),
                 "running": job.get("running"),
@@ -1547,6 +1638,27 @@ def _issues_for(row: dict) -> list[dict]:
                 f"Model {name} is downloading.", "Fleet → Models",
             ))
 
+    # **The Hub's own verdict, where it is a fault.** `model_health` (0.6.48) is one
+    # row per (machine, model). `ready` and `download_required` are normal states —
+    # a model that is not downloaded is not broken — so only the states that need
+    # someone are reported, aggregated per state so a small machine that cannot fit
+    # twenty models is one line rather than twenty.
+    fault_states = ("quarantined", "unsupported_os", "unsupported_chip", "runtime_missing")
+    health_counts: dict[str, int] = {}
+    for entry in row.get("model_health") or []:
+        if not isinstance(entry, dict):
+            continue
+        state = str(entry.get("state") or "").strip().lower()
+        if state in fault_states:
+            health_counts[state] = health_counts.get(state, 0) + 1
+    for state, count in sorted(health_counts.items()):
+        models_text = f"{count} model" + ("" if count == 1 else "s")
+        out.append(_issue(
+            "warning", "model_health", location_id, location, models_text,
+            f"{models_text} report {state.replace('_', ' ')} on at least one machine.",
+            "Fleet → Models",
+        ))
+
     for job in row.get("running_jobs") or []:
         if not isinstance(job, dict) or not job.get("stalled"):
             continue
@@ -1701,7 +1813,10 @@ def _supply_from_local_models(local_models: object) -> dict[str, dict[str, int]]
     for row in local_models:
         if not isinstance(row, dict):
             continue
-        model_id = str(row.get("model") or "").strip()
+        # The Hub's canonical `model_id` is what `model_supply.internal_model_id`
+        # and a batch both carry; `model` (the repo) is the fallback for a Hub that
+        # predates the field. On Hub 0.6.48 the two are the same string here.
+        model_id = str(row.get("model_id") or row.get("model") or "").strip()
         if not model_id:
             continue
         entry = supply.setdefault(model_id, {"eligible": 0, "available": 0})
@@ -1724,10 +1839,12 @@ def _model_supply_index(
     now. Both are read, never derived — and a machine that cannot fit the model is
     in neither, which is the whole point.
 
-    **A Hub that publishes no `model_supply` is filled from its own per-machine
-    model rows** (`fallback`), because that is the same evidence the Hub would have
-    reduced. The Hub's published row always wins where both exist, so a future Hub
-    that starts sending `model_supply` is believed over our reduction of it.
+    **A Hub that publishes no `model_supply` at all is filled from its own
+    per-machine model rows** (`fallback`), because that is the same evidence the
+    Hub would have reduced. Hub 0.6.48 publishes the rows, so from there the
+    published set is authoritative and the fallback is not merged in: a model the
+    Hub deliberately left out is "unknown", and re-adding it from our own reduction
+    would overrule a decision the Hub is better placed to make.
     """
     index: dict[str, dict[str, int]] = {}
     if isinstance(rows, list):
@@ -1741,9 +1858,8 @@ def _model_supply_index(
                 "eligible": _as_int(row.get("eligible_physical_slots_total")),
                 "available": _as_int(row.get("available_physical_slots")),
             }
-    if fallback:
-        for model_id, counts in fallback.items():
-            index.setdefault(model_id, counts)
+    if not index and fallback:
+        index = dict(fallback)
     return index
 
 

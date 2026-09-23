@@ -100,6 +100,8 @@ struct FleetLocation: Decodable {
     var machines: [FleetMachine] = []
     var workers: [FleetWorker] = []
     var localModels: [FleetLocalModel] = []
+    /// The Hub's own per-(machine, model) verdict and reason (0.6.48).
+    var modelHealth: [FleetModelHealth] = []
     var machineSummary: FleetMachineSummary?
     /// Normally a count. The gateway published this as an array of batch rows
     /// first, so either shape is accepted rather than failing the whole location.
@@ -110,7 +112,7 @@ struct FleetLocation: Decodable {
 
     private enum CodingKeys: String, CodingKey {
         case id, label, url, local, reachable, error, role, version, providerId, latencyMs
-        case machines, workers, localModels, machineSummary, runningJobs
+        case machines, workers, localModels, modelHealth, machineSummary, runningJobs
         case modelsDiscovered, modelsEnabled, modelsPublishable
     }
 
@@ -129,6 +131,7 @@ struct FleetLocation: Decodable {
         machines = lenientArray(c, forKey: .machines)
         workers = lenientArray(c, forKey: .workers)
         localModels = lenientArray(c, forKey: .localModels)
+        modelHealth = lenientArray(c, forKey: .modelHealth)
         machineSummary = try? c.decode(FleetMachineSummary.self, forKey: .machineSummary)
         if let count = try? c.decode(Int.self, forKey: .runningJobs) {
             runningJobs = count
@@ -191,12 +194,20 @@ struct FleetWorker: Decodable {
     var slotsTotal: Int?
     /// Usually epoch seconds, but the Hub could spell it as text; see `FleetScalar`.
     var lastSeenAt: FleetScalar?
+    /// What this worker actually serves, from its own catalogue (Hub 0.6.48).
+    /// This is the answer to "which workers have this model" rather than an
+    /// approximation by studio.
+    var models: [String] = []
+    var supportedOperations: [String] = []
 }
 
 // MARK: - Local model
 
 struct FleetLocalModel: Decodable {
     var model: String?
+    /// The Hub's canonical join id (0.6.48). It is what a supply row, a health row
+    /// and a batch carry; `model` (the repo) is what this gateway publishes.
+    var modelId: String?
     var label: String?
     var family: String?
     var studio: String?
@@ -270,11 +281,19 @@ struct FleetJob: Decodable {
     var cancelled: Bool?
     var cancelledItems: Int?
     var routing: String?
-    /// The Hub's own reason a batch is being held. The per-item failure text is at
-    /// `/api/hub/jobs/{batch_id}`, a read this page does not make.
+    /// The Hub's own reason a batch is being held.
     var governorNote: String?
+    /// The canonical model id (0.6.48), the same string a model and health row use.
+    var modelId: String?
+    /// **Per-item failure text (0.6.48).** The batch's `error` is only a count, so
+    /// this is the one place the list route says *what* failed and which item — and
+    /// the item index is what a retry addresses. Optional because a 0.6.47 Hub
+    /// sends no such key at all, and a non-optional array would drop the row.
+    var errors: [FleetJobError]?
     var avgS: Double?
     var startedAt: Double?
+
+    var failedItems: [FleetJobError] { errors ?? [] }
 
     var errorCount: Int? {
         guard let error else { return nil }
@@ -294,6 +313,52 @@ struct FleetJob: Decodable {
               let locationId, !locationId.isEmpty else { return false }
         return cancelled != true && (cancelRequested ?? 0) == 0
     }
+
+    /// A failed item can be retried only on a batch the Hub still holds. The Hub
+    /// accepts only items in state `error`, so the page offers Retry on exactly
+    /// those and lets the Hub refuse the rest with its own words.
+    func canRetry(_ item: FleetJobError) -> Bool {
+        guard let batchId, !batchId.isEmpty,
+              let locationId, !locationId.isEmpty else { return false }
+        return cancelled != true && item.itemIndex != nil
+    }
+}
+
+/// One failed item of a batch, as the Hub's `errors[]` states it (0.6.48).
+struct FleetJobError: Decodable {
+    var itemIndex: Int?
+    var code: String?
+    var message: String?
+
+    /// What a card shows for this item: the Hub's message, else its code, else a
+    /// plain statement that the item failed — never an empty line.
+    var text: String {
+        if let message, !message.trimmingCharacters(in: .whitespaces).isEmpty { return message }
+        if let code, !code.isEmpty { return code }
+        return "this item failed"
+    }
+}
+
+// MARK: - Model health
+
+/// The Hub's own per-(machine, model) verdict, with its reason (0.6.48).
+///
+/// `state` is a closed vocabulary from the Hub: ready, download_required,
+/// runtime_missing, unsupported_os, unsupported_chip, insufficient_memory,
+/// quarantined, unknown. Read verbatim; nothing is mapped to a nicer word, and a
+/// missing state stays unknown rather than becoming "fine".
+struct FleetModelHealth: Decodable {
+    var modelId: String?
+    var machine: String?
+    var state: String?
+    var reason: String?
+    var hint: String?
+    var observedAt: Double?
+    /// Not in the hub's row: the location it belongs to, attached by the client.
+    var locationId: String?
+    var location: String?
+
+    var isReady: Bool { (state ?? "").lowercased() == "ready" }
 }
 
 // MARK: - Issue
@@ -409,8 +474,30 @@ extension FleetSnapshot {
         return out
     }
 
-    /// Worker modalities per machine, keyed by whatever the worker rows name.
+    /// Every model-health row, with its location attached, keyed for the Models
+    /// detail table by (location, machine, model).
     ///
+    /// The Hub keys health by the canonical `model_id` while a model row may carry
+    /// only the repo; both spellings are indexed so a lookup finds the row either
+    /// way, and a health row for a model the Hub names differently is not lost.
+    var modelHealthIndex: [String: FleetModelHealth] {
+        var index: [String: FleetModelHealth] = [:]
+        for location in locations {
+            for var row in location.modelHealth {
+                row.locationId = row.locationId ?? location.id
+                row.location = row.location ?? location.label
+                for key in [
+                    "\(location.id ?? "")|\(row.machine ?? "")|\(row.modelId ?? "")",
+                    "\(row.location ?? "")|\(row.machine ?? "")|\(row.modelId ?? "")",
+                ] {
+                    index[key] = row
+                }
+            }
+        }
+        return index
+    }
+
+    /// Worker modalities per machine, keyed by whatever the worker rows name.
     /// This fills the Machines tab's "Studios" column — which workers a machine
     /// actually serves — rather than the job counts, which answer a different
     /// question and are labelled separately. The Hub names a machine by id in

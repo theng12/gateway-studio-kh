@@ -205,7 +205,7 @@ class RankTests(unittest.TestCase):
 #: The exact keys `/admin/api/fleet` publishes per local model row. Checked as a
 #: set so an accidental extra field — or a dropped one — fails here.
 LOCAL_MODEL_KEYS = {
-    "model", "label", "family", "studio", "modality", "machine", "kind",
+    "model", "model_id", "label", "family", "studio", "modality", "machine", "kind",
     "size_gb", "min_unified_memory_gb", "required_free_memory_gb",
     "memory_eligible", "runtime_ready", "available", "loaded", "fit",
     "cache_state", "catalog_error", "catalog_stale", "active_download",
@@ -573,14 +573,24 @@ class SupplyReductionTests(unittest.TestCase):
         ])
         self.assertEqual(supply["m/a"], {"eligible": 0, "available": 0})
 
-    def test_a_published_hub_row_wins_over_the_reduction(self) -> None:
+    def test_a_published_hub_set_is_authoritative(self) -> None:
+        # Hub 0.6.48 publishes `model_supply`, so our reduction is not merged into
+        # it: a model the Hub deliberately left out is "unknown", and re-adding it
+        # from our own reduction would overrule a decision the Hub is better placed
+        # to make. (The reduction still fills a Hub that publishes nothing — see the
+        # probe test above.)
         index = fleet._model_supply_index(
             [{"internal_model_id": "m/a", "eligible_physical_slots_total": 1,
               "available_physical_slots": 1}],
             {"m/a": {"eligible": 9, "available": 9}, "m/b": {"eligible": 2, "available": 0}},
         )
         self.assertEqual(index["m/a"], {"eligible": 1, "available": 1})
-        self.assertEqual(index["m/b"], {"eligible": 2, "available": 0})
+        self.assertNotIn("m/b", index)
+
+    def test_an_empty_hub_set_falls_back_wholesale(self) -> None:
+        fallback = {"m/a": {"eligible": 2, "available": 1}}
+        self.assertEqual(fleet._model_supply_index([], fallback), fallback)
+        self.assertEqual(fleet._model_supply_index(None, fallback), fallback)
 
 
 if __name__ == "__main__":

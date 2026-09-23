@@ -195,6 +195,7 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
 
         jobsTab.onRefresh = { [weak self] in self?.refreshEverything() }
         jobsTab.onCancel = { [weak self] job in self?.cancelJob(job) }
+        jobsTab.onRetry = { [weak self] job, item in self?.retryJobItem(job, item: item) }
     }
 
     // MARK: Tabs
@@ -457,17 +458,27 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
                     detail: "\(what) — \(error.localizedDescription)"
                 )
             case .success(let payload):
-                let answer = payload["result"] as? [String: Any] ?? [:]
-                if answer["ok"] as? Bool == false {
+                // **The adapter wraps the Hub's answer.** `result` is
+                // `{ok, status, route, answer}` — the Hub's own body is nested one
+                // level down. Reading the counts off `result` yielded `nil` for all
+                // three, so a real cancellation reported "0 queued cancelled, 0
+                // signalled, 0 pending" while the Hub had done exactly what was
+                // asked. The counts come from `answer`.
+                let result = payload["result"] as? [String: Any] ?? [:]
+                let hub = result["answer"] as? [String: Any] ?? [:]
+                if result["ok"] as? Bool == false {
+                    let why = (result["error"] as? String)
+                        ?? (hub["detail"] as? String)
+                        ?? "the Hub did not accept the request"
                     self.report(
                         .warning,
-                        title: "The Hub did not stop it",
-                        detail: (answer["reason"] as? String) ?? "\(what) — nothing was dispatched."
+                        title: "Could not stop it",
+                        detail: "\(what) — \(why)"
                     )
                 } else {
-                    let queued = answer["queued_cancelled"] as? Int ?? 0
-                    let signalled = answer["running_signalled"] as? Int ?? 0
-                    let pending = answer["running_pending"] as? Int ?? 0
+                    let queued = (hub["queued_cancelled"] as? Int) ?? 0
+                    let signalled = (hub["running_signalled"] as? Int) ?? 0
+                    let pending = (hub["running_pending"] as? Int) ?? 0
                     self.report(
                         .success,
                         title: "Asked the Hub to stop it",
@@ -475,6 +486,53 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
                             + "signalled, \(pending) still pending. A worker that already took the "
                             + "work cannot be promised to stop."
                     )
+                }
+            }
+            self.reload()
+        }
+    }
+
+    /// Ask a location's Hub to re-queue one failed item of a batch.
+    ///
+    /// **The Hub is the authority on whether it may be retried.** Only an item in
+    /// state `error` is accepted; a cancelled batch and an `uncertain` item are
+    /// refused with their own sentence, and the refusal is shown as the Hub wrote
+    /// it — an item that must be discarded first is a different situation from a
+    /// retry that failed.
+    private func retryJobItem(_ job: FleetJob, item: FleetJobError) {
+        guard let batchId = job.batchId, let locationId = job.locationId,
+              let index = item.itemIndex else { return }
+        let encodedLocation = locationId.addingPercentEncoding(withAllowedCharacters: .alphanumerics)
+            ?? locationId
+        let encodedBatch = batchId.addingPercentEncoding(withAllowedCharacters: .alphanumerics)
+            ?? batchId
+        let what = "\(FleetFormat.words(job.modality)) · \(job.model ?? job.label ?? batchId) "
+            + "item \(index)"
+        setStatus("Asking the Hub to retry \(what)…")
+        GatewayAPI.post(
+            "/admin/api/fleet/controllers/\(encodedLocation)/jobs/\(encodedBatch)"
+            + "/items/\(index)/retry",
+            body: ["modality": job.modality ?? ""]
+        ) { [weak self] result in
+            guard let self else { return }
+            switch result {
+            case .failure(let error):
+                self.report(.error, title: "Could not ask the Hub to retry it",
+                            detail: "\(what) — \(error.localizedDescription)")
+            case .success(let payload):
+                let outcome = payload["result"] as? [String: Any] ?? [:]
+                let hub = outcome["answer"] as? [String: Any] ?? [:]
+                if outcome["ok"] as? Bool == false {
+                    let why = (outcome["error"] as? String)
+                        ?? (hub["detail"] as? String)
+                        ?? (hub["message"] as? String)
+                        ?? "the Hub refused the retry"
+                    self.report(.warning, title: "The Hub refused the retry",
+                                detail: "\(what) — \(why)")
+                } else {
+                    let state = (hub["state"] as? String) ?? "queued"
+                    self.report(.success, title: "Asked the Hub to retry it",
+                                detail: "\(what) is \(state) again.")
                 }
             }
             self.reload()

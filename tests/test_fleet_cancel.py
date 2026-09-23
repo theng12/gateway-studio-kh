@@ -98,5 +98,56 @@ class FleetCancel(unittest.TestCase):
         self.assertEqual(adapter.requests[0].modality, "transcription")
 
 
+class RecordingRetryAdapter:
+    def __init__(self):
+        self.requests = []
+
+    def retry(self, request):
+        self.requests.append(request)
+        return {"ok": True, "status": 200, "answer": {"ok": True, "batch_id": "batch-9",
+                                                      "item_index": request.upstream_item_index,
+                                                      "state": "queued"}}
+
+
+class NoRetryAdapter:
+    pass
+
+
+class FleetRetry(unittest.TestCase):
+    @staticmethod
+    def _request(adapter, *, controller="ctrl-1", batch="batch-9", index=2, modality="image"):
+        definition = types.SimpleNamespace(id="studio-hub-ctrl-1", display_name="Blue Room")
+        snapshot = {"locations": [_location()]}
+        with patch.object(fleet, "snapshot", return_value=snapshot), \
+             patch.object(admin.registry, "definition", return_value=definition), \
+             patch.object(admin.registry.credentials, "resolved",
+                          return_value={"hub_token": "fleet-tok"}), \
+             patch.object(admin, "adapter_for", return_value=adapter):
+            return admin.fleet_retry_job_item(controller, batch, index, {"modality": modality})
+
+    def test_the_retry_names_the_batch_and_the_failed_item(self):
+        adapter = RecordingRetryAdapter()
+        response = self._request(adapter)
+        self.assertEqual(len(adapter.requests), 1)
+        self.assertEqual(adapter.requests[0].upstream_job_id, "batch-9")
+        # The item index is the whole point: a batch can hold several failures, and
+        # the Hub refuses a retry that names the wrong one.
+        self.assertEqual(adapter.requests[0].upstream_item_index, 2)
+        self.assertEqual(adapter.requests[0].base_url, "http://10.9.9.9:47873")
+        self.assertEqual(response["item_index"], 2)
+        self.assertEqual(response["result"]["answer"]["state"], "queued")
+
+    def test_a_modality_no_lane_serves_is_refused_before_any_request(self):
+        adapter = RecordingRetryAdapter()
+        response = self._request(adapter, modality="telepathy")
+        self.assertEqual(response.status_code, 422)
+        self.assertEqual(adapter.requests, [], "a refused retry must reach nothing")
+
+    def test_a_lane_that_cannot_retry_says_so(self):
+        response = self._request(NoRetryAdapter())
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("cannot retry", json.loads(bytes(response.body))["detail"])
+
+
 if __name__ == "__main__":
     unittest.main()

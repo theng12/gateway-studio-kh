@@ -4,6 +4,34 @@ Newest first. This is the same list the **What's New** link in the app shows.
 
 ---
 
+## Fleet: the Hub's own answers, and Retry
+
+Studio Hub 0.6.48 publishes what the gateway had been approximating. Where a
+location is on 0.6.48, the Fleet page now uses it:
+
+- **The Hub's own per-model capacity** drives placement, instead of the gateway's
+  reduction of the same rows. A Hub that publishes nothing still gets the
+  reduction, so a 0.6.47 location keeps working exactly as it did.
+- **Workers name the models they serve**, so a model's machines section can say
+  which worker actually has it rather than inferring from the studio.
+- **Per-item failure text.** A batch's `error` is a count; the Hub now sends
+  `errors[]` — item, code and the Hub's own sentence — so the Jobs tab says which
+  item failed and why, and offers **Retry** on it. The Hub refuses a retry of
+  anything that is not in an error state, and its refusal is shown in its own
+  words (a cancelled batch, or an uncertain item that must be discarded first).
+- **Model health with a reason.** The Hub's per-(machine, model) verdict —
+  `ready`, `download_required`, `runtime_missing`, `unsupported_os`,
+  `unsupported_chip`, `insufficient_memory`, `quarantined` — is read verbatim.
+  `ready` and `download_required` are normal, so only the states that need someone
+  are reported on the Overview, one line per state.
+- **One canonical model id.** A model row, a capacity row, a health row and a
+  batch now carry the same `model_id`, so the joins no longer rely on the repo
+  happening to match.
+
+Also fixed: the Cancel confirmation reported "0 queued cancelled, 0 signalled, 0
+pending" on a real cancellation — the adapter nests the Hub's answer one level
+down and the counts were read from the wrong level.
+
 ## Fleet: only what is actionable, and one line per condition
 
 The Overview's issue list repeated the same Hub condition once per machine —
