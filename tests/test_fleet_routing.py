@@ -469,6 +469,34 @@ class IssueDerivationTests(unittest.TestCase):
         # The gateway says which count it left out of, so "unknown" is not read as
         # "offline".
         self.assertIn("neither online nor offline", unknown[0]["message"])
+        self.assertIn("report no state", unknown[0]["message"])
+
+        # One machine reads as one machine, not "1 machine report".
+        single = dict(row)
+        single["machines"] = [{"machine": "m1"}]
+        single["activity"] = {"pulse": {}, "machines": [
+            {"machine": "m1", "state": "unknown",
+             "limitation": "Direct activity partially unavailable"}]}
+        one = fleet._issues([single])
+        note = next(issue for issue in one if issue["code"] == "machine_unknown_state")
+        self.assertEqual(note["subject"], "1 machine")
+        self.assertIn("1 machine reports no state", note["message"])
+
+    def test_an_unreachable_location_is_named_by_its_address(self) -> None:
+        # The row already shows the label; the subject is where to reach it, not
+        # the bare controller id repeated beside its own name.
+        row = {
+            "id": "ctrl-1", "label": "Blue Room", "url": "http://10.0.0.9:47873",
+            "reachable": False, "error": "No answer within 6s.",
+            "machines": [], "activity": {"pulse": {}, "machines": []},
+            "running_jobs": [], "local_models": [], "workers": [],
+            "probe_machines_hidden": 0,
+        }
+        issue = next(
+            issue for issue in fleet._issues([row]) if issue["code"] == "location_unreachable"
+        )
+        self.assertEqual(issue["subject"], "http://10.0.0.9:47873")
+        self.assertEqual(issue["message"], "No answer within 6s.")
 
 
 class AdminEnrichmentTests(unittest.TestCase):

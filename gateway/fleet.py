@@ -1419,10 +1419,15 @@ def _issues_for(row: dict) -> list[dict]:
     location_id = row.get("id")
     location = row.get("label") or row.get("id") or "location"
     subject = str(location_id if location_id is not None else location)
+    # A location-level issue is *about* the whole row, so its subject is the
+    # address the page would otherwise make you go and find — a bare controller id
+    # (`de7250e146a7`) next to the label is the same fact twice, and not the useful
+    # one. Falls back to the id only when the Hub never gave an address.
+    address = str(row.get("url") or "").strip() or subject
 
     if not row.get("reachable"):
         out.append(_issue(
-            "error", "location_unreachable", location_id, location, subject,
+            "error", "location_unreachable", location_id, location, address,
             # The location's own sentence: it already says what to do about it.
             row.get("error") or "This location is not answering.",
             "Fleet → Locations",
@@ -1432,7 +1437,7 @@ def _issues_for(row: dict) -> list[dict]:
         row.get("ready") is False or _truthy(row.get("drained"))
     ):
         out.append(_issue(
-            "warning", "controller_drained", location_id, location, subject,
+            "warning", "controller_drained", location_id, location, address,
             "The controller reports itself drained and will not accept new work.",
             "Studio Hub on that Mac",
         ))
@@ -1481,8 +1486,8 @@ def _issues_for(row: dict) -> list[dict]:
         machines_text = f"{unknown_state} machine" + ("" if unknown_state == 1 else "s")
         out.append(_issue(
             "info", "machine_unknown_state", location_id, location, machines_text,
-            f"{machines_text} report no state. The Hub counts them as neither online nor "
-            "offline, so they are left out of both.",
+            f"{machines_text} {'reports' if unknown_state == 1 else 'report'} no state. "
+            "The Hub counts them as neither online nor offline, so they are left out of both.",
             "Fleet → Machines",
         ))
 
