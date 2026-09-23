@@ -31,7 +31,7 @@ apply here and to delegated workers.
 
 
 One API in front of every local Studio Hub location and 18 cloud providers, so
-**Story Studio KH points at a single URL** (`http://127.0.0.1:8000`) and its model
+**Story Studio KH points at a single URL** (`http://127.0.0.1:8787`) and its model
 pickers fill. Story Studio's architecture contract requires it to call exactly one
 endpoint and treat it as GenStudio — this is that endpoint. It needs **zero code
 changes**, only `genstudio_url` and an API key.
@@ -359,8 +359,14 @@ against `/admin/api/status` returns 200 with no header. Measure auth on the
 Story surface (`/v1/...`), which needs the key.
 ## Ports
 
-- **8000** is this gateway, Story Studio's *default* `genstudio_url`, so no
-  configuration is needed. The tests read the configured port.
+- **8787** is this gateway's port — the default in `gateway/config.py` and the
+  app's `AppConfig`, and where this Mac's working instance is bound. Every Story
+  Studio client points its Base URL at `http://<host>:8787`. The tests read the
+  configured port, never a hardcoded one.
+- **It was 8000** because that is Story Studio's *default* `genstudio_url` and
+  needed no configuration. The owner moved it to 8787 on 2026-09-21 (8000 is the
+  most contested dev port and is also Story's own default, which kept "is this
+  pointed at the right thing?" ambiguous). A fresh install now defaults to 8787.
 - **The older GenStudio KH API used 8000 too.** As of 2026-09-18 it is
   **stopped and disabled**: `launchctl bootout` plus `launchctl disable
   gui/$(id -u)/com.genstudiokh.local-api`, so it does not return at login. Its
@@ -563,10 +569,10 @@ answers `/health`.
     Measured: a gateway from 21:47 still served at 23:33 through four "rebuild and
     restart" cycles.
   * otherwise a kill triggers a spawn that **fails to bind**
-    (`[Errno 48] address already in use`) while the old gateway holds 8000, and the
+    (`[Errno 48] address already in use`) while the old gateway holds 8787, and the
     app adopts it.
 
-So: **kill by PID, never by pattern**, confirm port 8000 is free and the gateway PID
+So: **kill by PID, never by pattern**, confirm port 8787 is free and the gateway PID
 *changed* before measuring anything. `pgrep -f` is safe for reading; `pkill -f` is
 dangerous only when the pattern is your own.
 
@@ -574,7 +580,7 @@ dangerous only when the pattern is your own.
 running.** So:
 
   * `applicationShouldTerminate` stops the child, runs `killPortHolders()`, and
-    waits (≤2 s) until `portIsHeld()` is false; quit → **port 8000 free**. The
+    waits (≤2 s) until `portIsHeld()` is false; quit → **port 8787 free**. The
     opt-out is a Settings checkbox, *"Keep the gateway running after I quit"*
     (`AppConfig.keepGatewayRunning`, default `false`).
   * `menubar/build.sh` writes

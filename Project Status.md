@@ -5,10 +5,16 @@ Durable recovery, execution and handoff record. Written and maintained
 observed in this recovery session; `[INHERITED]` = documented by an earlier
 session, not independently re-verified; `[UNKNOWN]` = not yet established.
 
+> **This is a dated recovery log, not the current state.** The living handoff is
+> [`docs/tasks/HANDOFF.md`](docs/tasks/HANDOFF.md) — read that first, and where the
+> two disagree, HANDOFF.md and the code win. Sections 3–7 and 10a–10cc record what
+> happened and why, in order; §1b, §2, §9 and §11 were the "current state"
+> sections and were reconciled on **2026-09-23**.
+
 ## 1. Project purpose and architecture
 
 A personal **model gateway** that presents one GenStudio-compatible API
-(`http://127.0.0.1:8000`) in front of local Apple-Silicon Studio Hub runners and
+(`http://127.0.0.1:8787`) in front of local Apple-Silicon Studio Hub runners and
 ~18 cloud providers, so **Story Studio KH** talks to a single endpoint with no
 code changes. It has grown a second capability: a **private Content Pack
 workshop and shelf** that authors, qualifies and serves `.sspack` packages
@@ -49,20 +55,19 @@ through Story Studio's real installer.
 ## 2. Current checkout, branch, base SHA, runtime
 
 - Container: `/build/Developer/gateway-kh`
-- Normal checkout: `repository/` — branch `main`, HEAD `736d7b0`, clean except a
-  preserved `.DS_Store` modification. Untouched.
-- **Working checkout: `worktrees/handoff-completion/`, branch
-  `codex/content-pack-delivery`.** Fast-forwarded to `main` `736d7b0`, with the
-  Content Packs work committed on top; latest commit `665f38c`. Clean tree.
+- Checkout: `repository/` — the only worktree, branch `main` = `origin/main`,
+  clean tree. The old `worktrees/handoff-completion/` and branch
+  `codex/content-pack-delivery` are gone. `[MEASURED] 2026-09-23`
+- Running gateway (stable): **version 0.2.17** on **port 8787**, regular Dock app,
+  real jobs and provider keys in use. The exact build stamp is in
+  `docs/tasks/HANDOFF.md`. `[MEASURED] 2026-09-23`
 - Story source dependency: `/build/Developer/story-studio-kh` at
-  `6f3c4e3` (1.4.213), `node_modules` present. Installed
-  `/Applications/Story Studio KH.app` 1.4.213.
-- Running gateway (stable): build `97bb3a5-202609210714` on port 8000, regular
-  Dock app, 124 models offered, real jobs and provider keys in use. `[MEASURED]`
-- Worktree `.venv` Python 3.11.16; Node v26.8.2.
+  `866c375d` (2026-09-23), `node_modules` present. Installed
+  `/Applications/Story Studio KH.app` **1.4.219**. `[MEASURED] 2026-09-23`
+- `.venv` Python 3.11.16; Node v26.8.2.
 - **Sections 3–7 below record the recovery baseline from earlier on 2026-09-21**
-  (what was found before any edit). They are historical; the current state is in
-  §1b and §11.
+  (what was found before any edit). They are historical; the current state is
+  `docs/tasks/HANDOFF.md`.
 
 ## 3. Inherited work preserved before any edit
 
@@ -283,11 +288,11 @@ Deliberately not run, with reason:
 
 ## 9. Two-instance state (current)
 
-- **Working:** `/Applications/gateway-kh.app` build `5f94b4a-202609210554`,
-  port 8000, signature valid, profile byte-identical. Story Studio's endpoint
-  unchanged.
-- **Test:** `test-instance/` on port 8100, isolated profile, running the same
-  committed source. `run.sh` / `status.sh` / `stop.sh`.
+- **Working:** `/Applications/gateway-kh.app`, **0.2.17**, port **8787**,
+  signature valid; Story Studio's endpoint is `http://<host>:8787`. Build stamp:
+  `docs/tasks/HANDOFF.md`. `[MEASURED] 2026-09-23`
+- **Test:** `test-instance/` (port 8100, isolated profile, no keys, no Hub) with
+  `run.sh` / `status.sh` / `stop.sh`; not verified running on 2026-09-23.
 - **Rollback:** `backups/rollback-20260921/` (previous bundle, profile hash
   record, rendered UI evidence).
 
@@ -1139,11 +1144,21 @@ backups.
 
 ## 11. Exact next action / resumable handoff
 
+**Superseded 2026-09-23 by [`docs/tasks/HANDOFF.md`](docs/tasks/HANDOFF.md), which
+is now the single place to read and update.** Current state: gateway **0.2.16**
+shipped on `main` (`0e4c082`), DMG in `dist/`, app and gateway running
+`0e4c082-202609231049` on port 8787. Open: the gateway-side downgrade guard and the
+per-controller `trusted_publisher` display (awaiting the owner's go), a real
+remote-controller release push (the two controllers were off), the per-node
+generation sweep, and a full `test_ui.py` gate before the 50-node rollout. Details
+and the dated reasoning live in HANDOFF.md; the bullets below are the 2026-09-21
+snapshot and are kept only as history.
+
 - Branch `codex/content-pack-delivery`: promoted app code at `97bb3a5`
   (build `97bb3a5-202609210714`), later documentation/backup commits on top;
-  worktree clean.
+  worktree clean. *(Historical; that branch and worktree are gone — see §2.)*
 - Working instance promoted, healthy and verified (`type="Foreground"`, signature
-  valid); test instance running on 8100.
+  valid); test instance was running on 8100.
 - Stabilization plan `docs/superpowers/plans/2026-09-21-stabilization-plan.md`:
   **S1, S2, S4, S5, S6, S7, S8, S9, S10 done.** S3 is a documented watch item
   (measured, not demonstrated). Remaining: S11 (needs a coordinated Story Studio

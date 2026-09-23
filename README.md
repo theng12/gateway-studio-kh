@@ -222,7 +222,7 @@ the menu bar icon.
 
 **Settings** is where the gateway's own API key lives, with a **Copy** button — that is the value
 Story Studio needs. Paste it into **Story Studio → Settings → This Mac → GenStudio API key**, and set
-**Base URL** to `http://127.0.0.1:8000`. It is the last item in the sidebar, under "Library & app".
+**Base URL** to `http://127.0.0.1:8787`. It is the last item in the sidebar, under "Library & app".
 
 **Launch at login** uses a LaunchAgent (`~/Library/LaunchAgents/kh.gateway.menubar.plist`) rather
 than `SMAppService`, because `SMAppService` requires a signed, registered bundle and this app is
@@ -249,10 +249,10 @@ updated. That file is also how the build is verified without a GUI.
 ```bash
 uv venv --python 3.11
 uv pip install --python .venv/bin/python -r requirements.txt
-GATEWAY_API_KEY=your-key .venv/bin/python -m uvicorn gateway.api:app --host 127.0.0.1 --port 8000 --no-proxy-headers
+GATEWAY_API_KEY=your-key .venv/bin/python -m uvicorn gateway.api:app --host 127.0.0.1 --port 8787 --no-proxy-headers
 ```
 
-Then open **http://127.0.0.1:8000/admin** for the provider console.
+Then open **http://127.0.0.1:8787/admin** for the provider console.
 
 For a network bind, set `GATEWAY_HOST` to the same address as `--host` and configure
 `GATEWAY_API_KEY`. Admin requests from a non-loopback peer require that key even
@@ -754,15 +754,20 @@ scripts/import_voices.py      imports voices from the old Voice Studio
 scripts/annotate_voice_segments.py   generates aligned reference timestamps
 ```
 
-### Why port 8000
+### Why port 8787
 
-The gateway listens on **8000**, which is Story Studio's *default* `genstudio_url` — so it needs no
-configuration to find this service, and a settings reset is harmless rather than pointing somewhere
-that does not answer.
+The gateway listens on **8787**, the default in both `gateway/config.py` and the app's
+`AppConfig`, and every Story Studio client points at `http://<host>:8787`.
 
-It was 8010 while the older GenStudio KH API held 8000. That API is now **stopped and disabled**
-(2026-09-18): its LaunchAgent carried `KeepAlive: true`, so a plain `kill` restarted it within
-seconds and only `launchctl disable` made it stay down. With the port free, this gateway took it.
+It was 8000 originally because that is Story Studio's *default* `genstudio_url` — no
+configuration needed. The owner moved it to **8787** (2026-09-21, `Project Status.md`
+§10h): 8000 is the most contested dev port and is also Story's own default, which kept
+"is this pointed at the right thing?" permanently ambiguous. Story Studio clients set
+the Base URL to `http://…:8787`.
+
+Earlier still it was 8010 while the older GenStudio KH API held 8000. That API is now
+**stopped and disabled** (2026-09-18): its LaunchAgent carried `KeepAlive: true`, so a
+plain `kill` restarted it within seconds and only `launchctl disable` made it stay down.
 
 The port is still configurable in Settings, and `tests/test_ui.py` reads the app's configured port
 rather than assuming one.

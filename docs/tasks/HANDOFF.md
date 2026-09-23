@@ -1,6 +1,7 @@
 # HANDOFF — gateway-kh
 
-**Read this first.** Written 2026-09-23 against **VERSION `0.2.16`, commit `0e4c082`**.
+**Read this first.** Written 2026-09-23 against **VERSION `0.2.17`** (the release
+commit and running build stamp are named in `WHERE THINGS STAND`).
 If this file disagrees with the code, **the code wins — fix this file in the same change**.
 Every path below is inside the Git checkout `repository/` unless it says otherwise.
 `[MEASURED]` = observed in the session that wrote this; `[reason not recorded]` = the
@@ -10,10 +11,10 @@ project does not say why, and nobody should guess.
 
 | Thing | Value |
 |---|---|
-| Current release | **0.2.16** — `repository/VERSION`, one line, the only place to bump |
-| Branch | `main` = `origin/main` = `0e4c082` (clean tree); remote `github.com/theng12/gateway-kh` |
-| Running build | `/Applications/gateway-kh.app`, stamp `0e4c082-202609231049`, serving `/health` |
-| Distribution | DMG in `repository/dist/` (`gateway-kh-0.2.16.dmg`), named by version alone |
+| Current release | **0.2.17** — `repository/VERSION`, one line, the only place to bump |
+| Branch | `main` = `origin/main`, clean tree; remote `github.com/theng12/gateway-kh` |
+| Running build | `/Applications/gateway-kh.app`, port **8787**; stamp at `/health` and in `…/Resources/gateway/BUILD` |
+| Distribution | DMG in `repository/dist/` (`gateway-kh-0.2.17.dmg`), named by version alone |
 | SSD/setup kit | `repository/dist/setup-kit/` — "copy this whole folder to each SSD/Mac" |
 
 - **Versions are patch-only for now:** `0.2.1`, `0.2.2`, … up to `0.2.1000`. Increment the
@@ -24,9 +25,11 @@ project does not say why, and nobody should guess.
   and Studio Hub **0.6.39** `[MEASURED]` — both far behind the current release. Rebuild it
   deliberately for a rollout; do not hand-edit it. `[reason not recorded]` for why it has not
   been refreshed.
-- The live gateway runs on **port 8787** here (`.env` `GATEWAY_PORT` + `menubar.json`), while
-  `gateway/config.py` still defaults to **8000**. `README.md`'s "Why port 8000" section is
-  therefore stale; `Project Status.md` §10h records the 8000 → 8787 move and the reason.
+- The port is **8787** everywhere that matters: the default in `gateway/config.py`
+  and the app's `AppConfig`, this Mac's `.env`/`menubar.json`, and `README.md`'s
+  "Why port 8787". It was 8000 until the owner moved it (2026-09-21, `Project
+  Status.md` §10h: 8000 is the most contested dev port and Story Studio's own
+  default). Every Story Studio client points at `http://<host>:8787`.
 
 ## THE WORKING LOOP
 
@@ -78,8 +81,9 @@ Run everything from `repository/`. Python tooling is the checkout venv `.venv/bi
 - **Never `rm` — every removal goes to `_trash/`.** That includes clutter you decide on
   yourself, keeping sub-structure, and say where it went. `_trash/` is the **owner's** to
   empty: never delete or tidy inside it. Git branches/refs are the exception — record name and
-  SHA in a note under `_trash/` first. (`_trash/` is currently nearly empty even though its
-  README still lists contents — the owner emptied it; that is normal.)
+  SHA in a note under `_trash/` first. (`_trash/` is the owner's: it may be nearly
+  empty, and its README may list items he has since removed — that is his call, not
+  a defect to fix.)
 - **`pkill -f "GatewayKH"` kills the shell running it** because the shell's own command line
   holds the pattern; the command never finishes and the old gateway survives. Kill by **PID**,
   then prove the PID changed and 8787 is free before measuring.
@@ -143,11 +147,15 @@ Run everything from `repository/`. Python tooling is the checkout venv `.venv/bi
   fleet to be up.
 - **No independent review** of the release-publisher work; `test_ui.py` has had no full run since
   before the freeze for a 50-node rollout.
-- **Stale docs:** `Project Status.md` §11 still describes branch `codex/content-pack-delivery`
-  and build `97bb3a5` (2026-09-21); no such local branch exists now. `README.md` still says port
-  8000. `docs/fleet-deployment-notes.md` is the pre-deployment plan and is marked `[confirm]`
-  where Hub behaviour was unknown.
-- An unused remote branch `origin/codex/local-release-dmg` still exists; `[reason not recorded]`.
+- **Docs reconciled 2026-09-23.** `README.md`, `AGENTS.md` and `Project Status.md`
+  (§1/§2/§9/§11) now agree with the code: port 8787, `main` as the only worktree,
+  current release. The dated records — `_handoffs/`, `docs/superpowers/plans/`,
+  and the dated sections of `Project Status.md` — deliberately keep the numbers
+  they were written with; history is not rewritten. `docs/fleet-deployment-notes.md`
+  remains the pre-deployment plan, marked `[confirm]` where Hub behaviour was then unknown.
+- An unused remote branch `origin/codex/local-release-dmg` exists; left alone
+  deliberately (not this session's ref to delete). `[reason not recorded]` for why
+  it still exists.
 
 ## SECRETS
 

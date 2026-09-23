@@ -187,7 +187,7 @@ struct AppConfig: Codable {
             ? repository : container
         return AppConfig(
             gatewayDir: gatewayDir,
-            port: 8000,
+            port: 8787,
             autoStartGateway: true,
             keepGatewayRunning: false
         )

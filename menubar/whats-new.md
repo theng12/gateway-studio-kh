@@ -4,6 +4,18 @@ Newest first. This is the same list the **What's New** link in the app shows.
 
 ---
 
+## The default port is now 8787
+
+A fresh install listens on **8787** — the port this Mac's working instance already
+uses. It was 8000, which is Story Studio's *own* default and the most contested dev
+port, so "is this pointed at the right thing?" was never answerable from the number
+alone.
+
+- **Existing installs are unaffected.** Their `.env` and Settings keep whatever port
+  they already set; only a machine that has never chosen one gets 8787.
+- The port stays editable in Settings, and `README.md`'s port section now says 8787.
+- Point Story Studio's Base URL at `http://<host>:8787` (Settings → Copy).
+
 ## Publish Studio Hub app releases from the gateway
 
 GatewayKH signs a Studio Hub app release with its own Ed25519 **publisher** key and

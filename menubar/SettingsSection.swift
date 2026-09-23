@@ -465,8 +465,8 @@ final class SettingsSection: NSObject, AppSection {
 
     @objc private func save() {
         let typed = portField.stringValue.trimmingCharacters(in: .whitespaces)
-        // **A mistyped port is refused, not replaced with 8000.** `?? 8000` meant an
-        // empty or unparseable field silently rebound the gateway to 8000 while the
+        // **A mistyped port is refused, not replaced with 8787.** `?? 8787` meant an
+        // empty or unparseable field silently rebound the gateway to 8787 while the
         // page still said "Saved. Restarting…" — so Story Studio, pointed at the
         // port the owner had actually chosen, went dark with nothing on screen to
         // explain why. Put the real value back and say what was wrong.

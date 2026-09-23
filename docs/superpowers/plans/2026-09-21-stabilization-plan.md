@@ -10,6 +10,10 @@ promoted 2026-09-21 to build `5f94b4a-202609210554` on port 8000 (real profile);
 test instance on port 8100 running the same committed source. Full evidence:
 `Project Status.md`.
 
+> **Dated starting point.** The port has since moved to **8787** and the current
+> state lives in [`docs/tasks/HANDOFF.md`](../../tasks/HANDOFF.md); the fix steps
+> below were updated to 8787, but the history above is left as written.
+
 **Execution log.**
 - 2026-09-21: S1 committed (`5f94b4a`), S2 fixed (light-mode hover + guard),
   S8 promoted to the working instance and verified. Old app-version backups and
@@ -173,7 +177,7 @@ unverified in the real native shell.
 2. Confirm every section still opens and the window does not resize at the
    860×560 minimum (the documented invariant).
 3. Press "Open Content Packs in Browser" and confirm it reaches
-   `http://127.0.0.1:8000/admin#packs`.
+   `http://127.0.0.1:8787/admin#packs`.
 
 **Acceptance.** 128 checks pass (or every skip is explained as environment);
 no window growth; the Content Packs entry opens the page.
@@ -276,7 +280,7 @@ the only step that changes what the owner uses.
 
 **Steps.** Follow `test-instance/README.md`: freeze the SHA (S1), run the full
 gate, `sh menubar/build.sh --no-install`, back up the installed bundle, quit the
-app, confirm port 8000 free and PID changed, replace, relaunch, verify `/health`
+app, confirm port 8787 free and PID changed, replace, relaunch, verify `/health`
 build and signature, confirm profile files unchanged, record it. Rollback =
 restore the backed-up bundle.
 
