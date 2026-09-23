@@ -1,7 +1,7 @@
 # HANDOFF — gateway-kh
 
-**Read this first.** Written 2026-09-23 against **VERSION `0.2.18`**, release commit
-`9b7876a`, running build `9b7876a-202609231626`.
+**Read this first.** Written 2026-09-23 against **VERSION `0.2.19`**, release commit
+`8bd434d`, running build `8bd434d-202609231740`.
 If this file disagrees with the code, **the code wins — fix this file in the same change**.
 Every path below is inside the Git checkout `repository/` unless it says otherwise.
 `[MEASURED]` = observed in the session that wrote this; `[reason not recorded]` = the
@@ -11,10 +11,10 @@ project does not say why, and nobody should guess.
 
 | Thing | Value |
 |---|---|
-| Current release | **0.2.18** — `repository/VERSION`, one line, the only place to bump |
+| Current release | **0.2.19** — `repository/VERSION`, one line, the only place to bump |
 | Branch | `main` = `origin/main`, clean tree; remote `github.com/theng12/gateway-kh` |
-| Running build | `/Applications/gateway-kh.app`, port **8787**, stamp `9b7876a-202609231626` (`/health` and `…/Resources/gateway/BUILD`) |
-| Distribution | DMG in `repository/dist/` (`gateway-kh-0.2.18.dmg`), named by version alone |
+| Running build | `/Applications/gateway-kh.app`, port **8787**, stamp `8bd434d-202609231740` (`/health` and `…/Resources/gateway/BUILD`) |
+| Distribution | DMG in `repository/dist/` (`gateway-kh-0.2.19.dmg`), named by version alone |
 | SSD/setup kit | `repository/dist/setup-kit/` — "copy this whole folder to each SSD/Mac" |
 
 - **Versions are patch-only for now:** `0.2.1`, `0.2.2`, … up to `0.2.1000`. Increment the
@@ -105,9 +105,12 @@ Run everything from `repository/`. Python tooling is the checkout venv `.venv/bi
   fire would disable every model on a stale inventory. `inventoryAgeMs` is the honest number.
 - **Never identify a machine, model, location or batch by its label.** Ids are identities;
   labels are the owner's to change. A location's provider id derives from its controller id.
-- **A definite 4xx from the Hub is its own refusal, never an unknown-outcome hold;** only a 5xx
-  may have been accepted. A **connect timeout/refusal** is an unreachable location, not a job
-  failure — but a read timeout *after* the request left is still ambiguous.
+- **A definite 4xx from any provider is its own refusal, never an unknown-outcome hold;**
+  only a 5xx may have been accepted. The worker enforces this centrally on `BackendError.status`,
+  so every adapter inherits it. A **connect timeout/refusal** is an unreachable location, not a
+  job failure — but a read timeout *after* the request left is still ambiguous. A `400` that
+  names `temperature` as unsupported is retried once without it (recorded as `params_dropped`),
+  because newer reasoning models accept only their default.
 - **A page must never resize the window.** A page with a required height wraps its body in an
   `NSScrollView` with a `FlippedView`; keep table floors low and cap wrapping labels.
 - **The bundled Python runtime's build is explicit:** `swiftc -target
@@ -137,6 +140,13 @@ Run everything from `repository/`. Python tooling is the checkout venv `.venv/bi
 
 ## OPEN / IN FLIGHT
 
+- **Shipped in 0.2.19 (`8bd434d`):** a definite provider `4xx` settles as a failure instead of a
+  durable unknown-outcome hold, and a model that refuses `temperature` is retried once without it
+  (`params_dropped`). Covered by `tests/test_job_recovery.py` and `tests/test_chat_temperature.py`;
+  `test_e2e.py` 546/546 `[MEASURED]`. **Gap it exposed:** a *cloud* recovery hold carries no
+  `recovery_context`, so `discard-uncertain` refuses it (`RECOVERY_CONTEXT_MISSING`) and the UI has
+  no way to clear one — a job lost to a gateway restart mid-flight (the OpenRouter
+  `deepseek-v4-flash` hold) stays a hold until someone edits the database or adds that action.
 - **Shipped in 0.2.18 (`9b7876a`):** the gateway-side **downgrade guard** (refuse/warn when a
   controller already holds a newer version) and the per-controller **`trusted_publisher`** display
   in Fleet → Locations → Release. The full `tests/test_ui.py` release gate passed **135/135** on
