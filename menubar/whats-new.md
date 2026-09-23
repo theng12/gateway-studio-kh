@@ -4,6 +4,25 @@ Newest first. This is the same list the **What's New** link in the app shows.
 
 ---
 
+## Models: browse the catalogue by operation
+
+The **Models** page is a browser over the whole catalogue now, not one flat list.
+
+- **Operations lead.** Chat, image, video, voice, transcription and music are
+  chips with live counts, so what a model *does* is one click away. Enabled /
+  not-enabled sits beside them in the same shape.
+- **Filters that say what they mean.** Provider, discovered or added by hand,
+  free or paid lane, the provider's stated privacy stance, and whether the
+  provider itself is switched on — all clearable in one press.
+- **Sort and group.** Order by operation, name, provider or enabled-first, with a
+  direction toggle; group the result by operation, provider or state to read it
+  as sections.
+- **Every number is counted before you act.** Each chip shows how many models it
+  would leave, and *Enable / Disable all matching* covers exactly that set — the
+  page size pins to the whole catalogue while grouping, so a group header counts
+  the group, never a page.
+- **Roomier type.** Model names lead, ids sit beneath them in a quieter monospace.
+
 ## Runs on older macOS
 
 GatewayKH now states its own **macOS 11** minimum instead of inheriting whatever

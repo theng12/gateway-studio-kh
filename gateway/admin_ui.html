@@ -118,6 +118,50 @@
   .filters .grow { flex: 1; min-width: 220px; }
   .filters select { width: auto; min-width: 150px; font-family: inherit; }
 
+  /* ---- Models: operation/state chips, view controls, row type --------------
+     The owner asked to sort by what a model *does*, so the operations are a row
+     of pressed-or-not buttons with counts rather than a dropdown: one glance says
+     how much of the catalogue is chat, image, video or transcription, and one
+     click narrows to it. */
+  .chip-row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 0 0 10px; }
+  .chip-row .chip-label {
+    font-size: 11.5px; font-weight: 600; text-transform: uppercase; letter-spacing: .4px;
+    color: var(--dim); margin-right: 2px;
+  }
+  .chip {
+    display: inline-flex; align-items: center; gap: 7px;
+    border-radius: 99px; padding: 4px 12px; font-size: 12.5px; font-weight: 500;
+  }
+  .chip[aria-pressed="true"] { background: var(--accent); border-color: transparent; color: var(--on-accent); }
+  /* A pressed chip keeps its accent through hover and press: the generic button
+     rules are more specific than the attribute selector, so without these the
+     selected operation went grey the moment the pointer crossed it. */
+  .chip[aria-pressed="true"]:hover { background: var(--accent); filter: brightness(1.08); }
+  .chip[aria-pressed="true"]:active { background: var(--accent); filter: brightness(.94); }
+  .chip .n {
+    font-size: 11px; font-variant-numeric: tabular-nums; color: var(--dim);
+    padding: 0 5px; border-radius: 99px; background: color-mix(in srgb, CanvasText 8%, Canvas);
+  }
+  .chip[aria-pressed="true"] .n { color: inherit; background: color-mix(in srgb, Canvas 22%, transparent); }
+  .controls label.check.inline { margin: 0; }
+  .controls select { width: auto; min-width: 0; font-family: inherit; }
+  /* Model rows: the name leads and the id supports it. The page is scanned, not
+     read, so the name is a touch heavier and the id drops to a quiet monospace
+     where the eye can find it without it competing. */
+  #m-q { font-family: inherit; }
+  #m-rows td { font-size: 13px; }
+  #m-rows .m-name { font-size: 13.5px; font-weight: 500; letter-spacing: -.05px; overflow-wrap: anywhere; }
+  #m-rows .m-id {
+    font-family: ui-monospace, "SF Mono", monospace; font-size: 11.5px;
+    color: var(--tertiary); overflow-wrap: anywhere;
+  }
+  #m-rows .m-provider { font-size: 12.5px; }
+  #m-rows tr.m-group td {
+    background: var(--panel2); font-size: 11.5px; font-weight: 600; color: var(--dim);
+    text-transform: uppercase; letter-spacing: .4px; padding: 7px 10px;
+  }
+  #m-rows tr.m-group .n { font-weight: 500; color: var(--tertiary); text-transform: none; letter-spacing: 0; }
+
   .card { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); margin-bottom: 12px; overflow: hidden; }
   .card.off { opacity: .62; }
   /* Wrap instead of clipping: this console is a pane the owner resizes, and a
@@ -253,15 +297,74 @@
          everything else stays discovered but hidden.</p>
       <div class="stat" id="stats" style="margin-top:8px">loading…</div>
     </div>
-    <div class="filters" style="margin-top:18px">
+
+    <!-- **Operation first.** The catalogue is over a thousand rows and what a model
+         *does* is what the owner shops by, so the operations are a headline control
+         rather than one more dropdown — and each carries its own count, computed by
+         the server with every other filter already applied, so a chip never promises
+         rows the page would not show. State is the same shape beside it because
+         "what is actually switched on" is the other question asked here. -->
+    <div class="chip-row" id="m-modality-chips" style="margin-top:18px"></div>
+    <div class="chip-row" id="m-state-chips"></div>
+
+    <div class="filters">
       <div class="grow"><input type="text" id="m-q" placeholder="Search models by name or id…" autocomplete="off"></div>
-      <select id="m-modality"></select>
-      <select id="m-provider"></select>
-      <label class="check"><input type="checkbox" id="m-only-enabled"> Enabled only</label>
-      <button class="sm" onclick="clearFilters()">Clear</button>
+      <select id="m-provider" aria-label="Filter by provider"></select>
+      <select id="m-source" aria-label="Filter by where the model came from">
+        <option value="">Any source</option>
+        <option value="discovered">Discovered</option>
+        <option value="curated">Curated by hand</option>
+        <option value="user">Added by hand</option>
+      </select>
+      <select id="m-lane" aria-label="Filter by free or paid">
+        <option value="">Free or paid</option>
+        <option value="free">Free lanes</option>
+        <option value="paid">Paid lanes</option>
+      </select>
+      <select id="m-privacy" aria-label="Filter by what the provider states about your prompts">
+        <option value="">Any privacy stance</option>
+        <option value="non_private">May retain prompts</option>
+        <option value="unverified">Retention unverified</option>
+        <option value="private">States it is private</option>
+      </select>
+      <select id="m-provider-lane" aria-label="Filter by whether the provider is switched on">
+        <option value="">Provider on or off</option>
+        <option value="on">Provider switched on</option>
+        <option value="off">Provider switched off</option>
+      </select>
+      <button class="sm" onclick="clearFilters()">Clear filters</button>
     </div>
-    <div class="row" style="margin-bottom:10px">
+
+    <div class="row controls" style="margin-bottom:10px">
       <div class="stat" id="m-count">…</div>
+      <div class="spacer"></div>
+      <label class="check inline" for="m-sort">Sort</label>
+      <select id="m-sort" aria-label="Sort models">
+        <option value="">Catalogue order</option>
+        <option value="modality">Operation</option>
+        <option value="name">Name</option>
+        <option value="provider">Provider</option>
+        <option value="status">Enabled first</option>
+      </select>
+      <button class="sm" id="m-order" onclick="toggleModelOrder()" title="Sort ascending">↑</button>
+      <label class="check inline" for="m-group">Group</label>
+      <select id="m-group" aria-label="Group models">
+        <option value="">No grouping</option>
+        <option value="modality">Operation</option>
+        <option value="provider">Provider</option>
+        <option value="state">Enabled state</option>
+      </select>
+      <label class="check inline" for="m-show">Show</label>
+      <select id="m-show" aria-label="How many models to list">
+        <option value="200">200</option>
+        <option value="400" selected>400</option>
+        <option value="1000">1000</option>
+        <option value="2000">All (up to 2000)</option>
+      </select>
+    </div>
+
+    <div class="row" style="margin-bottom:10px">
+      <div class="hint" style="margin:0">Bulk actions cover every match, not only the rows on screen.</div>
       <div class="spacer"></div>
       <button class="primary sm" id="m-enable-all" onclick="bulk(true)">Enable all matching</button>
       <button class="sm" id="m-disable-all" onclick="bulk(false)">Disable all matching</button>
@@ -270,7 +373,7 @@
       <div class="scroll">
         <table>
           <thead><tr>
-            <th style="width:44px"></th><th>Model</th><th>Provider</th><th style="width:120px">Modality</th>
+            <th style="width:44px"></th><th>Model</th><th>Provider</th><th style="width:150px">Operation</th>
           </tr></thead>
           <tbody id="m-rows"></tbody>
         </table>
@@ -387,6 +490,12 @@ const state = {
   models: {},
   modelRows: [],
   meta: { matched: 0, total: 0, enabled_total: 0 },
+  // The model browser's view state that is not a control's own value: the
+  // operation and state are chip rows, and the sort direction is a toggle, so
+  // they have nowhere else to live.
+  modelModality: '',
+  modelStatus: '',
+  modelOrder: 'asc',
 };
 
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -729,22 +838,66 @@ async function loadStatus() {
 
 /* ---------------------------------- models --------------------------------- */
 
-function filters() {
+// What a model *does*, in the owner's words rather than the catalogue's. The
+// internal names are `chat` and `tts`; "LLM chat" and "Voice / TTS" are what the
+// pages beside this one call them, and this map is the one place the two meet.
+const MODALITY_LABELS = {
+  chat: 'LLM chat', image: 'Image', video: 'Video',
+  tts: 'Voice / TTS', transcription: 'Transcription', music: 'Music',
+};
+const modalityLabel = m => MODALITY_LABELS[m] || (m || 'unknown');
+const PRIVACY_LABELS = {
+  non_private: 'may retain prompts', unverified: 'retention unverified',
+  private: 'states it is private',
+};
+const SOURCE_LABELS = { discovered: 'discovered', curated: 'curated by hand', user: 'added by hand' };
+
+// **One query, built once.** The browse read, the bulk action and the sentence the
+// confirmation shows all come from here, so the button that says "Enable all 23
+// matching" asked the server for exactly those 23.
+function modelQuery() {
   return {
     q: document.getElementById('m-q').value.trim(),
-    modality: document.getElementById('m-modality').value,
+    modality: state.modelModality || '',
+    status: state.modelStatus || '',
     provider_id: document.getElementById('m-provider').value,
-    only_enabled: document.getElementById('m-only-enabled').checked,
+    source: document.getElementById('m-source').value,
+    lane: document.getElementById('m-lane').value,
+    privacy: document.getElementById('m-privacy').value,
+    provider_lane: document.getElementById('m-provider-lane').value,
   };
 }
 
+// Only the keys the server filters on. Sorting, page size and grouping decide how
+// the page *draws* a set, never which set it is, so a bulk action must not carry
+// them.
+function modelFilterBody() {
+  const body = {};
+  const query = modelQuery();
+  Object.keys(query).forEach(k => { if (query[k]) body[k] = query[k]; });
+  return body;
+}
+
+// **Grouping is a whole-catalogue view.** Group headers computed from one page of
+// a thousand rows would be numbers about the page, not about the catalogue, so
+// grouping pins the page size to everything the endpoint will list — and disables
+// the size control rather than leaving it showing a number the request ignores.
+function syncModelShow() {
+  const grouped = !!document.getElementById('m-group').value;
+  const show = document.getElementById('m-show');
+  show.disabled = grouped;
+  if (grouped) show.value = '2000';
+  show.title = grouped ? 'Grouping covers the whole catalogue.' : '';
+}
+
 async function loadModels() {
-  const f = filters();
+  syncModelShow();
+  const query = modelQuery();
   const params = new URLSearchParams();
-  if (f.q) params.set('q', f.q);
-  if (f.modality) params.set('modality', f.modality);
-  if (f.provider_id) params.set('provider_id', f.provider_id);
-  if (f.only_enabled) params.set('only_enabled', 'true');
+  Object.keys(query).forEach(k => { if (query[k]) params.set(k, query[k]); });
+  const sort = document.getElementById('m-sort').value;
+  if (sort) { params.set('sort', sort); params.set('order', state.modelOrder); }
+  params.set('limit', document.getElementById('m-show').value);
 
   let data;
   try { data = await api('/models?' + params.toString()); }
@@ -753,16 +906,15 @@ async function loadModels() {
   state.modelRows = data.models;
   state.meta = data;
   populateFilters(data);
+  renderModelChips(data);
+  syncModelOrder();
   renderModels();
 }
 
 let filtersPopulated = false;
 function populateFilters(data) {
   if (filtersPopulated) return;
-  const mod = document.getElementById('m-modality');
   const prov = document.getElementById('m-provider');
-  mod.innerHTML = '<option value="">All modalities</option>' +
-    (data.modalities || []).map(m => `<option>${esc(m)}</option>`).join('');
   prov.innerHTML = '<option value="">All providers</option>' +
     (data.providers || []).map(([id, name]) => `<option value="${esc(id)}">${esc(name)}</option>`).join('');
   filtersPopulated = true;
@@ -788,29 +940,99 @@ function privacyBadge(dataUse, isFreeLane) {
   return ` ${parts.join(' ')}`;
 }
 
-function renderModels() {
-  const rows = state.modelRows;
-  const { matched, listable_total, enabled_total, returned } = state.meta;
-  const shown = `showing ${returned} of ${matched} matching · <b>${enabled_total}</b> of ${listable_total} enabled overall`;
-  document.getElementById('m-count').innerHTML = shown;
-  document.getElementById('m-enable-all').textContent = `Enable all ${matched} matching`;
-  document.getElementById('m-disable-all').textContent = `Disable all ${matched} matching`;
+function modelChip(value, text, count, active, attribute) {
+  return `<button class="chip" ${attribute}="${esc(value)}" aria-pressed="${active === value}">` +
+         `${esc(text)}<span class="n">${count}</span></button>`;
+}
 
-  document.getElementById('m-rows').innerHTML = rows.map(r => `
+// **Counts come from the server, not from the rows on screen**, and each one is
+// computed with its own filter lifted — so the operation chips keep telling the
+// owner how much video exists while he is looking at video. Pressing a chip is how
+// the page is sorted by operation in one click rather than reading a dropdown.
+function renderModelChips(data) {
+  const facets = data.facets || {};
+  const counts = facets.modality || {};
+  const modalities = data.modalities || [];
+  const total = modalities.reduce((sum, m) => sum + (counts[m] || 0), 0);
+  document.getElementById('m-modality-chips').innerHTML =
+    '<span class="chip-label">Operation</span>' +
+    modelChip('', 'All', total, state.modelModality || '', 'data-modality') +
+    modalities.map(m =>
+      modelChip(m, modalityLabel(m), counts[m] || 0, state.modelModality || '', 'data-modality')).join('');
+
+  const status = facets.status || { enabled: 0, disabled: 0 };
+  document.getElementById('m-state-chips').innerHTML =
+    '<span class="chip-label">State</span>' +
+    modelChip('', 'Any', (status.enabled || 0) + (status.disabled || 0), state.modelStatus || '', 'data-status') +
+    modelChip('enabled', 'Enabled', status.enabled || 0, state.modelStatus || '', 'data-status') +
+    modelChip('disabled', 'Not enabled', status.disabled || 0, state.modelStatus || '', 'data-status');
+}
+
+function modelGroupKey(by) {
+  if (by === 'modality') return r => modalityLabel(r.modality);
+  if (by === 'provider') return r => r.provider_name;
+  if (by === 'state') return r => (r.enabled ? 'Enabled' : 'Not enabled');
+  return null;
+}
+
+function modelRow(r) {
+  return `
     <tr class="${r.enabled ? 'on' : ''}">
       <td><input type="checkbox" ${r.enabled ? 'checked' : ''}
                  onchange="toggleModel('${esc(r.provider_id)}','${esc(r.model_id)}', this.checked)"></td>
       <td>
-        <div>${esc(r.display_name)}</div>
-        <div class="mid">${esc(r.model_id)}</div>
+        <div class="m-name">${esc(r.display_name)}</div>
+        <div class="m-id">${esc(r.model_id)}</div>
       </td>
-      <td style="font-size:12.5px">${esc(r.provider_name)}
+      <td class="m-provider">${esc(r.provider_name)}
         ${r.provider_enabled ? '' : '<span class="badge warn">provider off</span>'}
         ${privacyBadge(r.data_use, r.free_lane)}</td>
-      <td><span class="badge">${esc(r.modality)}</span></td>
-    </tr>`).join('');
+      <td><span class="badge">${esc(modalityLabel(r.modality))}</span></td>
+    </tr>`;
+}
 
+function renderModels() {
+  const rows = state.modelRows;
+  const { matched, listable_total, enabled_total, returned } = state.meta;
+  document.getElementById('m-count').innerHTML =
+    `showing ${returned} of ${matched} matching · <b>${enabled_total}</b> of ${listable_total} enabled overall`;
+  document.getElementById('m-enable-all').textContent = `Enable all ${matched} matching`;
+  document.getElementById('m-disable-all').textContent = `Disable all ${matched} matching`;
+
+  const key = modelGroupKey(document.getElementById('m-group').value);
+  if (key) {
+    // Bucket so each label is one contiguous block, whatever order the server sent
+    // the rows in. Grouping is a view over the whole match, so re-ordering rows
+    // into their groups is the point of it, not a side effect to avoid.
+    const groups = new Map();
+    rows.forEach(r => {
+      const label = key(r);
+      if (!groups.has(label)) groups.set(label, []);
+      groups.get(label).push(r);
+    });
+    let html = '';
+    groups.forEach((groupRows, label) => {
+      html += `<tr class="m-group"><td colspan="4">${esc(label)} <span class="n">${groupRows.length}</span></td></tr>`;
+      html += groupRows.map(modelRow).join('');
+    });
+    document.getElementById('m-rows').innerHTML = html;
+  } else {
+    document.getElementById('m-rows').innerHTML = rows.map(modelRow).join('');
+  }
   document.getElementById('m-empty').style.display = rows.length ? 'none' : '';
+}
+
+function syncModelOrder() {
+  const button = document.getElementById('m-order');
+  button.disabled = !document.getElementById('m-sort').value;
+  button.textContent = state.modelOrder === 'desc' ? '↓' : '↑';
+  button.title = state.modelOrder === 'desc' ? 'Sort descending' : 'Sort ascending';
+}
+
+function toggleModelOrder() {
+  state.modelOrder = state.modelOrder === 'asc' ? 'desc' : 'asc';
+  syncModelOrder();
+  loadModels();
 }
 
 async function toggleModel(providerId, modelId, enabled) {
@@ -830,21 +1052,37 @@ async function toggleModel(providerId, modelId, enabled) {
   loadStatus();
 }
 
+// Every active filter gets a phrase, because the confirmation's number and the
+// request's set are the same set only if both were described the same way. A
+// filter that narrowed the count but not the sentence is how "all 23 matching"
+// once meant "all 445".
+function modelFilterPhrases(f) {
+  const phrases = [];
+  if (f.q) phrases.push(`matching “${f.q}”`);
+  if (f.modality) phrases.push(`doing ${modalityLabel(f.modality)}`);
+  if (f.status === 'enabled') phrases.push('that are enabled right now');
+  if (f.status === 'disabled') phrases.push('that are not enabled');
+  if (f.provider_id) phrases.push(`from ${f.provider_id}`);
+  if (f.source) phrases.push(`from the ${SOURCE_LABELS[f.source] || f.source} set`);
+  if (f.lane) phrases.push(f.lane === 'free' ? 'on free lanes' : 'on paid lanes');
+  if (f.privacy) phrases.push(`whose privacy is “${PRIVACY_LABELS[f.privacy] || f.privacy}”`);
+  if (f.provider_lane) phrases.push(f.provider_lane === 'on' ? 'on switched-on providers' : 'on switched-off providers');
+  return phrases;
+}
+
 async function bulk(enabled) {
-  const f = filters();
+  const f = modelQuery();
   const n = state.meta.matched;
   if (!n) return;
-  const what = [f.q ? `matching “${f.q}”` : '', f.modality ? `in ${f.modality}` : '',
-                f.provider_id ? `from ${f.provider_id}` : '',
-                f.only_enabled ? 'that are enabled right now' : ''].filter(Boolean).join(' ');
+  const phrases = modelFilterPhrases(f);
   // The server refuses a bulk action that names nothing, so an unfiltered click
   // has to say "all of them" out loud. Otherwise an accidental click with the
   // filters cleared would be the same request as a deliberate one, and that is
   // exactly how the whole catalogue got disabled once.
-  const body = { ...f, enabled };
-  if (!what) body.scope = 'all';
-  const sentence = what
-    ? `${enabled ? 'Enable' : 'Disable'} all ${n} models ${what}?`
+  const body = { ...modelFilterBody(), enabled };
+  if (!phrases.length) body.scope = 'all';
+  const sentence = phrases.length
+    ? `${enabled ? 'Enable' : 'Disable'} all ${n} models ${phrases.join(' ')}?`
     : `${enabled ? 'Enable' : 'Disable'} ALL ${n} models — every model in the catalogue, with no filter?`;
   if (!confirm(sentence)) return;
   try {
@@ -866,10 +1104,16 @@ function flash(text) {
 }
 
 function clearFilters() {
-  document.getElementById('m-q').value = '';
-  document.getElementById('m-modality').value = '';
-  document.getElementById('m-provider').value = '';
-  document.getElementById('m-only-enabled').checked = false;
+  ['m-q', 'm-provider', 'm-source', 'm-lane', 'm-privacy', 'm-provider-lane',
+   'm-sort', 'm-group'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.value = '';
+  });
+  const show = document.getElementById('m-show');
+  if (show) show.value = '400';
+  state.modelModality = '';
+  state.modelStatus = '';
+  state.modelOrder = 'asc';
   loadModels();
 }
 
@@ -878,9 +1122,21 @@ document.getElementById('m-q').addEventListener('input', () => {
   clearTimeout(searchTimer);
   searchTimer = setTimeout(loadModels, 220);
 });
-document.getElementById('m-modality').addEventListener('change', loadModels);
-document.getElementById('m-provider').addEventListener('change', loadModels);
-document.getElementById('m-only-enabled').addEventListener('change', loadModels);
+['m-provider', 'm-source', 'm-lane', 'm-privacy', 'm-provider-lane', 'm-sort', 'm-show']
+  .forEach(id => document.getElementById(id).addEventListener('change', loadModels));
+document.getElementById('m-group').addEventListener('change', loadModels);
+document.getElementById('m-modality-chips').addEventListener('click', event => {
+  const button = event.target.closest('button[data-modality]');
+  if (!button) return;
+  state.modelModality = button.dataset.modality;
+  loadModels();
+});
+document.getElementById('m-state-chips').addEventListener('click', event => {
+  const button = event.target.closest('button[data-status]');
+  if (!button) return;
+  state.modelStatus = button.dataset.status;
+  loadModels();
+});
 
 /* -------------------------------- providers -------------------------------- */
 

@@ -366,18 +366,61 @@ def _flat_models() -> list[dict[str, Any]]:
     return rows
 
 
+#: How the browser may order rows. `modality` **is** the operation a model performs —
+#: the axis the owner shops by ("LLM, image, video, transcription"), so it sorts as a
+#: whole tier rather than a badge to scan. Every key falls through to a stable,
+#: human-readable tiebreak so two rows never swap places between refreshes.
+_MODEL_SORTS: dict[str, Any] = {
+    "modality": lambda r: (r["modality"], r["display_name"].lower(), r["provider_name"].lower()),
+    "name": lambda r: (r["display_name"].lower(), r["provider_name"].lower(), r["modality"]),
+    "provider": lambda r: (r["provider_name"].lower(), r["modality"], r["display_name"].lower()),
+    "status": lambda r: (not r["enabled"], r["modality"], r["display_name"].lower()),
+}
+
+
 def _filter_models(
     rows: list[dict[str, Any]],
     *,
-    q: str | None,
-    modality: str | None,
-    provider_id: str | None,
-    only_enabled: bool,
+    q: str | None = None,
+    modality: str | None = None,
+    provider_id: str | None = None,
+    source: str | None = None,
+    status: str | None = None,
+    lane: str | None = None,
+    privacy: str | None = None,
+    provider_lane: str | None = None,
+    only_enabled: bool = False,
 ) -> list[dict[str, Any]]:
+    """The model browser's one filter, shared by the browse route and the bulk route.
+
+    An unrecognised value for any filter is a no-op rather than a refusal: the
+    console sends `""` for "any", and a filter that means "everything" must not be
+    the one thing that empties the page. `only_enabled` is the older spelling of
+    `status=enabled`, kept because the bulk route's own test and a saved query both
+    still speak it.
+    """
+    if status is None and only_enabled:
+        status = "enabled"
     if provider_id:
         rows = [r for r in rows if r["provider_id"] == provider_id]
     if modality:
         rows = [r for r in rows if r["modality"] == modality]
+    if source:
+        rows = [r for r in rows if r["source"] == source]
+    if status == "enabled":
+        rows = [r for r in rows if r["enabled"]]
+    elif status == "disabled":
+        rows = [r for r in rows if not r["enabled"]]
+    if lane == "free":
+        rows = [r for r in rows if r["free_lane"]]
+    elif lane == "paid":
+        rows = [r for r in rows if not r["free_lane"]]
+    if privacy:
+        rows = [r for r in rows if r["data_use"] == privacy]
+    if provider_lane == "on":
+        rows = [r for r in rows if r["provider_enabled"]]
+    elif provider_lane == "off":
+        rows = [r for r in rows if not r["provider_enabled"]]
     if q:
         needle = q.strip().lower()
         rows = [
@@ -385,9 +428,69 @@ def _filter_models(
             for r in rows
             if needle in r["display_name"].lower() or needle in r["model_id"].lower()
         ]
-    if only_enabled:
-        rows = [r for r in rows if r["enabled"]]
     return rows
+
+
+def _counts(
+    rows: list[dict[str, Any]], value: Any, universe: tuple[str, ...] | list[str] = ()
+) -> dict[str, int]:
+    """Count a dimension, with every value in `universe` present even at zero.
+
+    A key that is simply absent and a key that is zero are the same thing only if
+    the reader already knows the full value set — and the whole point of a facet is
+    that the reader does not. So the universe is stated: "no free lanes match this"
+    is published as `0`, never as a missing key that renders as an empty chip.
+    """
+    counts = {str(key): 0 for key in universe}
+    for row in rows:
+        key = str(value(row))
+        counts[key] = counts.get(key, 0) + 1
+    return counts
+
+
+def _model_facets(everything: list[dict[str, Any]], **filters: Any) -> dict[str, Any]:
+    """Chip counts for each filter, each computed with *its own* filter removed.
+
+    A facet that counted the set it also filters would read zero for every value
+    once one was chosen — the operation chips would tell the owner there is no
+    image the moment they look at image. Excluding only the dimension being counted
+    keeps every other choice in force, so each number says what picking that chip
+    *would* show. A dimension with no active filter is unaffected.
+    """
+
+    def subset(exclude: str) -> list[dict[str, Any]]:
+        narrowed = {k: v for k, v in filters.items() if k != exclude}
+        return _filter_models(everything, **narrowed)
+
+    status_rows = subset("status")
+    lane_rows = subset("lane")
+    provider_rows = subset("provider_lane")
+    return {
+        # The operation set is whatever the catalogue actually holds, so a chip that
+        # appears is one the console can filter to. Source and privacy are fixed
+        # vocabularies, so they keep their shape even when a value matches nothing.
+        "modality": _counts(
+            subset("modality"), lambda r: r["modality"], sorted({r["modality"] for r in everything})
+        ),
+        "source": _counts(
+            subset("source"), lambda r: r["source"], ("curated", "discovered", "user")
+        ),
+        "privacy": _counts(
+            subset("privacy"), lambda r: r["data_use"], ("non_private", "private", "unverified")
+        ),
+        "status": {
+            "enabled": sum(1 for r in status_rows if r["enabled"]),
+            "disabled": sum(1 for r in status_rows if not r["enabled"]),
+        },
+        "lane": {
+            "free": sum(1 for r in lane_rows if r["free_lane"]),
+            "paid": sum(1 for r in lane_rows if not r["free_lane"]),
+        },
+        "provider_lane": {
+            "on": sum(1 for r in provider_rows if r["provider_enabled"]),
+            "off": sum(1 for r in provider_rows if not r["provider_enabled"]),
+        },
+    }
 
 
 @router.get("/api/models", dependencies=[Depends(require_admin)])
@@ -395,13 +498,35 @@ def search_models(
     q: str | None = None,
     modality: str | None = None,
     provider_id: str | None = None,
+    source: str | None = None,
+    status: str | None = None,
+    lane: str | None = None,
+    privacy: str | None = None,
+    provider_lane: str | None = None,
     only_enabled: bool = False,
+    sort: str | None = None,
+    order: str = "asc",
     limit: int = Query(400, ge=1, le=2000),
 ) -> dict[str, Any]:
     everything = _flat_models()
-    matched = _filter_models(
-        everything, q=q, modality=modality, provider_id=provider_id, only_enabled=only_enabled
-    )
+    filters: dict[str, Any] = {
+        "q": q,
+        "modality": modality,
+        "provider_id": provider_id,
+        "source": source,
+        "status": status,
+        "lane": lane,
+        "privacy": privacy,
+        "provider_lane": provider_lane,
+    }
+    matched = _filter_models(everything, only_enabled=only_enabled, **filters)
+    # **Sort before slicing, not after.** With more models than one page holds, a
+    # client-side sort could only reorder the rows it was given — "sort by operation"
+    # would order a page that was chosen without regard to operation. The full match
+    # is ordered first, then the page is cut.
+    descending = order == "desc"
+    if sort in _MODEL_SORTS:
+        matched = sorted(matched, key=_MODEL_SORTS[sort], reverse=descending)
     return {
         "models": matched[:limit],
         "matched": len(matched),
@@ -415,9 +540,16 @@ def search_models(
         "listable_total": len(everything),
         "enabled_total": sum(1 for r in everything if r["enabled"]),
         "modalities": sorted({r["modality"] for r in everything}),
+        "sources": sorted({r["source"] for r in everything}),
+        "privacy_values": sorted({r["data_use"] for r in everything}),
         "providers": sorted(
             {(r["provider_id"], r["provider_name"]) for r in everything}  # type: ignore[arg-type]
         ),
+        # Echoed so the page can show what it actually asked for rather than what it
+        # meant to ask for — an ignored sort would otherwise look applied.
+        "sort": sort if sort in _MODEL_SORTS else None,
+        "order": "desc" if descending else "asc",
+        "facets": _model_facets(everything, **filters),
     }
 
 
@@ -480,7 +612,18 @@ def bulk_models(payload: dict[str, Any]) -> Any:
     the same reason.
     """
     described = any(
-        payload.get(field) for field in ("q", "modality", "provider_id", "only_enabled")
+        payload.get(field)
+        for field in (
+            "q",
+            "modality",
+            "provider_id",
+            "source",
+            "status",
+            "lane",
+            "privacy",
+            "provider_lane",
+            "only_enabled",
+        )
     )
     if not described and payload.get("scope") != "all":
         return _error(
@@ -494,6 +637,11 @@ def bulk_models(payload: dict[str, Any]) -> Any:
         q=payload.get("q"),
         modality=payload.get("modality"),
         provider_id=payload.get("provider_id"),
+        source=payload.get("source"),
+        status=payload.get("status"),
+        lane=payload.get("lane"),
+        privacy=payload.get("privacy"),
+        provider_lane=payload.get("provider_lane"),
         only_enabled=bool(payload.get("only_enabled")),
     )
     enabled = bool(payload.get("enabled"))

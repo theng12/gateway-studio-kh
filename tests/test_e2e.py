@@ -1167,6 +1167,90 @@ def main() -> int:
             check("the console says 'all' out loud when no filter is set",
                   "body.scope = 'all'" in page)
 
+            print("\n\033[1m10c. The model browser's filters, sorting and facets\033[0m")
+            # The Models page is a browser over the whole catalogue, so its filters
+            # and ordering are computed server-side: a client-side sort could only
+            # reorder the page it was handed, and a facet that counted its own
+            # filtered set would read zero the moment it was used.
+            full = req(client, "GET", "/admin/api/models?limit=2000").json()
+            check("every operation facet totals the whole catalogue",
+                  sum(full["facets"]["modality"].values()) == full["listable_total"],
+                  f"{full['facets']['modality']} vs {full['listable_total']}")
+            for modality in full["modalities"]:
+                one = req(client, "GET",
+                          f"/admin/api/models?modality={modality}&limit=1").json()
+                check(f"the {modality} chip counts exactly the rows it would show",
+                      one["facets"]["modality"].get(modality) == one["matched"],
+                      f"{one['facets']['modality'].get(modality)} vs {one['matched']}")
+                check(f"and every operation is still counted while {modality} is chosen",
+                      len(one["facets"]["modality"]) == len(full["modalities"]),
+                      f"{one['facets']['modality']}")
+
+            for name, field in (("lane", "free"), ("provider_lane", "off"),
+                                ("privacy", "non_private")):
+                filtered = req(client, "GET",
+                               f"/admin/api/models?{name}={field}&limit=1").json()
+                check(f"the {name} facet counts the set its own filter would show",
+                      filtered["facets"][name].get(field) == filtered["matched"],
+                      f"{filtered['facets'][name].get(field)} vs {filtered['matched']}")
+
+            # Sorting has to be applied to the full match before the page is cut,
+            # so the visible slice is already in order.
+            ordered = req(client, "GET",
+                          "/admin/api/models?sort=modality&limit=2000").json()["models"]
+            modalities_shown = [r["modality"] for r in ordered]
+            check("sort by operation orders the page by operation",
+                  modalities_shown == sorted(modalities_shown), f"{modalities_shown[:6]}")
+            names_shown = [r["display_name"].lower() for r in
+                           req(client, "GET",
+                               "/admin/api/models?sort=name&limit=2000").json()["models"]]
+            check("sort by name orders the page by name",
+                  names_shown == sorted(names_shown), f"{names_shown[:6]}")
+            flags_shown = [r["enabled"] for r in
+                           req(client, "GET",
+                               "/admin/api/models?sort=status&limit=2000").json()["models"]]
+            check("sort by status puts the enabled rows first",
+                  flags_shown == sorted(flags_shown, reverse=True), f"{flags_shown[:6]}")
+            descending = req(client, "GET",
+                             "/admin/api/models?sort=name&order=desc&limit=2000").json()
+            check("and the direction is honoured and echoed back",
+                  descending["order"] == "desc" and descending["sort"] == "name",
+                  f"{descending['sort']}/{descending['order']}")
+            check("an unknown sort is ignored, not echoed as applied",
+                  req(client, "GET",
+                      "/admin/api/models?sort=nonsense&limit=5").json()["sort"] is None)
+
+            # `status` is the tri-state the console's State chips send, and it has
+            # to keep the older `only_enabled` working rather than replace it.
+            enabled_only = req(client, "GET",
+                               "/admin/api/models?status=enabled&limit=2000").json()
+            check("status=enabled matches the older only_enabled spelling",
+                  enabled_only["matched"] == req(
+                      client, "GET",
+                      "/admin/api/models?only_enabled=true&limit=2000").json()["matched"])
+            check("and it is exactly what enabled_total already counted",
+                  enabled_only["matched"] == full["enabled_total"],
+                  f"{enabled_only['matched']} vs {full['enabled_total']}")
+            disabled_only = req(client, "GET",
+                                "/admin/api/models?status=disabled&limit=2000").json()
+            check("status=disabled is the other half, with nothing lost between them",
+                  enabled_only["matched"] + disabled_only["matched"] == full["listable_total"],
+                  f"{enabled_only['matched']} + {disabled_only['matched']}"
+                  f" != {full['listable_total']}")
+
+            # A new filter must reach the bulk route too, or the confirmation's
+            # number and the set it acts on part company — the `only_enabled`
+            # incident with a new face.
+            free_matched = req(client, "GET",
+                               "/admin/api/models?lane=free&limit=2000").json()["matched"]
+            lane_bulk = httpx.post(f"{BASE}/admin/api/models/bulk", headers=AUTH,
+                                   json={"lane": "free", "enabled": False})
+            check("a bulk action on the free-lane filter acts on that filter's set",
+                  lane_bulk.status_code == 200 and lane_bulk.json()["matched"] == free_matched,
+                  lane_bulk.text[:160])
+            httpx.post(f"{BASE}/admin/api/models/bulk", headers=AUTH,
+                       json={"scope": "all", "enabled": True})
+
             # **An id that is not a provider cannot be written.** The published
             # namespace `studio-hub` is what Story Studio reads for every location,
             # and enable state written under it was never swept — it outlived the
