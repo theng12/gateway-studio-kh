@@ -4,6 +4,13 @@ Newest first. This is the same list the **What's New** link in the app shows.
 
 ---
 
+## Runs on older macOS
+
+GatewayKH now states its own **macOS 11** minimum instead of inheriting whatever
+macOS the build toolchain shipped. A build made before this change stamped a
+macOS 27 minimum and would not open on macOS 14, reporting "requires macOS 27".
+The same code was always fine on macOS 11; the build just never said so.
+
 ## Smarter fleet generation
 
 Generation now goes to the machines that can actually run **that model**, and a

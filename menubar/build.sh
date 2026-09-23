@@ -38,9 +38,20 @@ echo "==> compiling menu bar app (Swift)"
 # Swift 6's strict concurrency checking would reject the small amount of shared
 # mutable state this single-threaded AppKit app relies on, for no safety gain
 # here -- everything touching the UI already runs on the main thread.
+#
+# **The deployment target must be explicit.** Without `-target`, `swiftc` stamps
+# the executable's `LC_BUILD_VERSION` with the *SDK* version -- macOS 27 on this
+# toolchain -- and LaunchServices enforces that over Info.plist's
+# `LSMinimumSystemVersion`. Measured: a binary built with no target reports
+# `minos 27.0`, and macOS 14 refuses it with "requires macOS 27". The same code
+# compiles cleanly back to 11.0, so state the floor rather than inherit it.
+# `GATEWAY_APP_ARCH` lets the same script build an Intel slice.
+TARGET_ARCH="${GATEWAY_APP_ARCH:-$(uname -m)}"
+MACOS_MIN="${GATEWAY_MACOS_MIN:-11.0}"
 swiftc \
   -swift-version 5 \
   -O \
+  -target "${TARGET_ARCH}-apple-macos${MACOS_MIN}" \
   -framework Cocoa \
   -framework WebKit \
   -o "$APP/Contents/MacOS/$APP_NAME" \
@@ -56,7 +67,13 @@ swiftc \
 # ---------------------------------------------------------------------------
 PY_VERSION="${GATEWAY_PYTHON_VERSION:-3.11.16}"
 PY_TAG="${GATEWAY_PYTHON_TAG:-20260901}"
-PY_ARCH="${GATEWAY_PYTHON_ARCH:-aarch64}"
+PY_ARCH="${GATEWAY_PYTHON_ARCH:-}"
+if [ -z "$PY_ARCH" ]; then
+  case "$TARGET_ARCH" in
+    arm64|aarch64) PY_ARCH="aarch64" ;;
+    *) PY_ARCH="$TARGET_ARCH" ;;
+  esac
+fi
 PY_ASSET="${GATEWAY_PYTHON_ASSET:-cpython-${PY_VERSION}+${PY_TAG}-${PY_ARCH}-apple-darwin-install_only.tar.gz}"
 PY_URL="${GATEWAY_PYTHON_URL:-https://github.com/astral-sh/python-build-standalone/releases/download/${PY_TAG}/${PY_ASSET}}"
 
@@ -177,7 +194,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
     <key>CFBundleVersion</key><string>$BUILD_ID</string>
     <key>GatewayBuild</key><string>$BUILD_ID</string>
     <key>CFBundleIconFile</key><string>AppIcon</string>
-    <key>LSMinimumSystemVersion</key><string>13.0</string>
+    <key>LSMinimumSystemVersion</key><string>$MACOS_MIN</string>
     <key>NSHighResolutionCapable</key><true/>
     <!-- A regular app: Dock icon and Cmd-Tab, with the menu bar bolt still there
          as a convenience. Closing the window keeps the app (and gateway) alive. -->
@@ -208,7 +225,7 @@ codesign --verify --deep --strict --verbose=2 "$APP"
 # ad-hoc signed and the image is not notarised, so a Mac that did not build it still
 # needs the right-click Open — the same step the other projects' DMGs need.
 DIST="$ROOT/dist"
-DMG="$DIST/gateway-kh-${MARKETING_VERSION}-${BUILD_ID}-arm64.dmg"
+DMG="$DIST/gateway-kh-${MARKETING_VERSION}-${BUILD_ID}-${TARGET_ARCH}.dmg"
 mkdir -p "$DIST"
 rm -f "$DMG"
 DMG_STAGE="$(mktemp -d)"
