@@ -1382,8 +1382,13 @@ final class FleetModelsTab: FleetTabView {
 /// Refresh and says who owns the fix instead.
 final class FleetJobsTab: FleetTabView {
     var onRefresh: (() -> Void)?
+    /// Ask the Hub to stop this batch. The shell owns the request, so the tab
+    /// stays a view — and the button is the only place a generation is touched.
+    var onCancel: ((FleetJob) -> Void)?
 
-    private let running = FleetTableController(columns: FleetJobsTab.runningColumns())
+    // Built in `init` rather than inline: the Cancel column's button captures the
+    // tab, and `self` is not available until after `super.init`.
+    private var running: FleetTableController!
     private let activity = FleetTableController(columns: FleetJobsTab.activityColumns())
     private let runningTitle = PageKit.sectionTitle("Running now")
     private let activityTitle = PageKit.sectionTitle("Work by machine")
@@ -1392,6 +1397,8 @@ final class FleetJobsTab: FleetTabView {
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
+        running = FleetTableController(columns: FleetJobsTab.runningColumns(
+            cancel: { [weak self] job in self?.onCancel?(job) }))
         running.emptyText = "Nothing is running right now."
         activity.emptyText = "No machine has reported any work."
         running.container.heightAnchor.constraint(equalToConstant: 220).isActive = true
@@ -1417,12 +1424,12 @@ final class FleetJobsTab: FleetTabView {
     required init?(coder: NSCoder) { fatalError("not used") }
 
     func update(snapshot: FleetSnapshot, filter: FleetFilter) {
-        // A running batch carries a location *label*, not the id, so the filter's
-        // id is resolved to its label once here. The activity rows carry the id.
-        let locationLabel = snapshot.locations.first { $0.id == filter.locationID }?.label
+        // A running batch now carries the location's id, so it filters the same way
+        // every other tab does — a label is not an identity to match on.
         let runningRows = snapshot.running.filter { job in
-            (filter.locationID == nil || job.location == locationLabel)
-                && filter.matchesSearch([job.location, job.modality, job.model, job.label, job.error])
+            filter.matchesLocation(job.locationId)
+                && filter.matchesSearch([job.location, job.modality, job.model, job.label,
+                                         job.errorText, job.governorNote, job.batchId])
         }
         let activityRows = snapshot.machines.filter { row in
             filter.matchesLocation(row.locationId)
@@ -1436,7 +1443,7 @@ final class FleetJobsTab: FleetTabView {
     private func rebuildProblems(_ jobs: [FleetJob]) {
         for view in problems.arrangedSubviews { view.removeFromSuperview() }
         let broken = jobs.filter { job in
-            job.stalled == true || !(job.error ?? "").trimmingCharacters(in: .whitespaces).isEmpty
+            job.stalled == true || (job.errorCount ?? 0) > 0 || (job.uncertain ?? 0) > 0
         }
         guard !broken.isEmpty else {
             problems.addArrangedSubview(PageKit.label(
@@ -1460,22 +1467,32 @@ final class FleetJobsTab: FleetTabView {
             size: 12.5, weight: .semibold
         )
         let reason: String
-        if let error = job.error, !error.trimmingCharacters(in: .whitespaces).isEmpty {
-            reason = error
+        if let note = job.governorNote, !note.trimmingCharacters(in: .whitespaces).isEmpty {
+            // The Hub's own note about why it is holding the batch.
+            reason = note
+        } else if let text = job.errorText {
+            reason = text
+        } else if let count = job.errorCount, count > 0 {
+            reason = "\(count) item\(count == 1 ? "" : "s") failed. The Hub publishes the count "
+                + "here; the per-item reason is in its own job list."
+        } else if let uncertain = job.uncertain, uncertain > 0 {
+            reason = "\(uncertain) item\(uncertain == 1 ? "" : "s") uncertain — the Hub could not "
+                + "confirm the outcome, so it will not dispatch them again on its own."
         } else {
             reason = "The Hub lists this batch as stalled and has not marked it finished."
         }
         let message = PageKit.label(reason, size: 11.5, colour: colour, wrapping: true)
         message.maximumNumberOfLines = 4
         let hint = PageKit.label(
-            "Fix: press Refresh to re-read the Hub's list. The Hub settles its own queue, and a "
-            + "batch it has already handed to a worker cannot be promised to stop — if it stays "
-            + "stalled, check the machine on the Machines tab.",
+            "Fix: Cancel asks the Hub at this location to stop the batch — it stops what is still "
+            + "queued and signals what is running, and cannot promise a worker that already took "
+            + "the work will stop. Refresh re-reads the Hub's list.",
             size: 11, colour: .secondaryLabelColor, wrapping: true
         )
         hint.maximumNumberOfLines = 3
         let progress = PageKit.label(
-            Self.progressText(job) + " · started " + FleetFormat.relative(job.startedAt),
+            Self.progressText(job) + Self.troubleText(job) + " · started "
+            + FleetFormat.relative(job.startedAt),
             size: 11, colour: .tertiaryLabelColor
         )
         let stack = FleetTintStack(views: [heading, message, hint, progress])
@@ -1494,7 +1511,41 @@ final class FleetJobsTab: FleetTabView {
             + "\(job.retrying ?? 0) retrying, \(job.done ?? 0) of \(job.total ?? 0) done"
     }
 
-    private static func runningColumns() -> [FleetColumn] {
+    /// The Hub's own timings for a batch, appended to the progress line.
+    ///
+    /// A countdown rather than `relativeTime`: a retry time is in the future, and
+    /// "in 0s"/"0s ago" would be a wrong answer to a question nobody asked.
+    private static func troubleText(_ job: FleetJob) -> String {
+        var parts: [String] = []
+        if let silent = job.noProgressS, silent > 0 {
+            parts.append("no progress for \(Int(silent))s")
+        }
+        if let routing = job.routing, !routing.isEmpty {
+            parts.append("routing \(routing)")
+        }
+        if let retry = job.nextRetryAt, retry > 0 {
+            let seconds = retry - Date().timeIntervalSince1970
+            if seconds > 0 { parts.append("retry in \(Int(seconds))s") }
+        }
+        return parts.isEmpty ? "" : " · " + parts.joined(separator: " · ")
+    }
+
+    /// What is happening to a batch, from the Hub's own facts.
+    ///
+    /// `error` is a count of failed items rather than a sentence, so a failed
+    /// batch is drawn as "2 failed" and the Hub's reason (`governor_note`) or the
+    /// per-item text is drawn separately. Reporting the count as if it were the
+    /// word was how a failed batch read as "0".
+    static func stateText(_ job: FleetJob) -> String {
+        if job.cancelled == true { return "cancelled" }
+        if (job.cancelRequested ?? 0) > 0 { return "stop requested" }
+        if let text = job.errorText { return text }
+        if let count = job.errorCount, count > 0 { return "\(count) failed" }
+        if let uncertain = job.uncertain, uncertain > 0 { return "\(uncertain) uncertain" }
+        return job.stalled == true ? "stalled" : "in flight"
+    }
+
+    private static func runningColumns(cancel: @escaping (FleetJob) -> Void) -> [FleetColumn] {
         func job(_ any: Any) -> FleetJob? { any as? FleetJob }
         return [
             FleetColumn(
@@ -1525,27 +1576,50 @@ final class FleetJobsTab: FleetTabView {
                 id: "jstate", title: "State", width: 220,
                 text: { row in
                     guard let job = job(row) else { return "—" }
-                    if let error = job.error, !error.trimmingCharacters(in: .whitespaces).isEmpty {
-                        return error
-                    }
-                    return job.stalled == true ? "stalled" : "in flight"
+                    return FleetJobsTab.stateText(job)
                 },
-                sortValue: { row in
-                    guard let job = job(row) else { return .none }
-                    if let error = job.error { return .text(error) }
-                    return .text(job.stalled == true ? "stalled" : "in flight")
-                },
+                sortValue: { .text(job($0).map(FleetJobsTab.stateText) ?? "") },
                 colour: { row in
                     guard let job = job(row) else { return .labelColor }
-                    if let error = job.error, !error.isEmpty { return .systemRed }
-                    return job.stalled == true ? .systemOrange : .labelColor
+                    if job.cancelled == true { return .secondaryLabelColor }
+                    if (job.errorCount ?? 0) > 0 || (job.uncertain ?? 0) > 0 {
+                        return .systemRed
+                    }
+                    if job.stalled == true || (job.cancelRequested ?? 0) > 0 {
+                        return .systemOrange
+                    }
+                    return .labelColor
                 },
-                tooltip: { job($0)?.error }
+                tooltip: { job($0)?.governorNote }
             ),
             FleetColumn(
                 id: "jstarted", title: "Started", width: 100,
                 text: { FleetFormat.relative(job($0)?.startedAt) },
                 sortValue: { .number(job($0)?.startedAt ?? 0) }
+            ),
+            // **The cancel is the one Fleet action that reaches upstream.** It is
+            // offered only while the Hub still holds the batch and has not already
+            // been asked to stop it; the answer comes back as a request, not a
+            // promise, and the banner says which.
+            FleetColumn(
+                id: "jcancel", title: "", width: 96, sortable: false,
+                text: { _ in "" },
+                cell: { any in
+                    let cell = NSTableCellView()
+                    guard let row = job(any) else { return cell }
+                    let button = FleetClosureButton(title: "Cancel") { cancel(row) }
+                    button.isEnabled = row.canCancel
+                    button.toolTip = row.canCancel
+                        ? "Ask the Hub at this location to stop the batch."
+                        : "This batch has already finished, or a stop was already asked for."
+                    button.translatesAutoresizingMaskIntoConstraints = false
+                    cell.addSubview(button)
+                    NSLayoutConstraint.activate([
+                        button.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 4),
+                        button.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
+                    ])
+                    return cell
+                }
             ),
         ]
     }

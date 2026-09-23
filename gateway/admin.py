@@ -33,8 +33,8 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from starlette.concurrency import run_in_threadpool
 
 from .activity import story_activity
-from .adapters import serves, support_status
-from .catalog import catalog
+from .adapters import BackendError, BackendRequest, adapter_for, serves, support_status
+from .catalog import MODALITIES, catalog
 from . import fleet
 from .config import is_loopback, request_is_loopback
 from .hub import hub_status
@@ -1742,3 +1742,67 @@ def fleet_test_controller(controller_id: str) -> Any:
             else {"scope": "unknown", "detail": "Not reachable, so the credential was not checked."}
         ),
     }
+
+
+@router.post(
+    "/api/fleet/controllers/{controller_id}/jobs/{batch_id}/cancel",
+    dependencies=[Depends(require_admin)],
+)
+def fleet_cancel_job(controller_id: str, batch_id: str, payload: dict[str, Any]) -> Any:
+    """Ask a location's Hub to stop a batch this gateway can see running.
+
+    **The Hub owns the work, so this is a request, not a result.** Its answer says
+    what it actually did — `queued_cancelled`, `running_signalled`,
+    `running_pending` — and those are passed through rather than flattened into a
+    boolean, because a worker that has already accepted an item cannot be promised
+    to stop. Cancelling only locally is how a batch keeps running at the location
+    while the caller is told it was stopped, which is why this goes through the
+    same adapter the worker uses instead of marking a row here.
+
+    `modality` picks the route: transcription batches live at
+    `/api/hub/transcription/jobs` and are invisible to the shared jobs route, so a
+    cancel aimed at the wrong one answers 404 at the Hub.
+    """
+    modality = str(payload.get("modality") or "").strip()
+    if modality not in MODALITIES:
+        return _error(422, f"modality must be one of {', '.join(MODALITIES)}")
+    # `allow_stale`: this is a click, and a live probe of every controller to find
+    # one url would make a cancel wait on the whole fleet. The page has just read
+    # the snapshot, so it is warm.
+    location = next(
+        (
+            row
+            for row in (fleet.snapshot(allow_stale=True).get("locations") or [])
+            if str(row.get("id")) == controller_id
+        ),
+        None,
+    )
+    if location is None:
+        return _error(404, "No such location.")
+    provider_id = str(location.get("provider_id") or "")
+    definition = registry.definition(provider_id)
+    if definition is None:
+        return _error(404, f"no provider '{provider_id}'")
+    # `getattr`, not a protocol check: "this lane cannot cancel upstream" is an
+    # answer to report, and most adapters issue a one-shot request with no remote
+    # state to stop.
+    cancel = getattr(adapter_for(definition), "cancel", None)
+    if cancel is None:
+        return _error(400, f"{definition.display_name} cannot cancel work upstream.")
+    request = BackendRequest(
+        provider_id=provider_id,
+        model_id="",
+        modality=modality,
+        params={},
+        values=registry.credentials.resolved(provider_id),
+        # The address the Fleet page already carries, so the credential and the
+        # route are aimed at the same controller. Never this Mac's Hub by default.
+        base_url=str(location.get("url") or ""),
+        display_name=definition.display_name,
+        upstream_job_id=batch_id,
+    )
+    try:
+        result = cancel(request)
+    except BackendError as exc:
+        return _error(exc.status, exc.detail, exc.code)
+    return {"batch_id": batch_id, "location": location.get("label"), "result": result}

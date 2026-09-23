@@ -240,8 +240,14 @@ struct FleetFit: Decodable {
 // MARK: - Job
 
 struct FleetJob: Decodable {
+    /// The location's id and provider id: a cancel has to name the controller
+    /// whose Hub holds the batch, and a label is not an identity.
+    var locationId: String?
+    var providerId: String?
     var location: String?
     var locationLocal: Bool?
+    /// The Hub's batch id — the handle on work this gateway did not itself create.
+    var batchId: String?
     var modality: String?
     var model: String?
     var label: String?
@@ -250,9 +256,44 @@ struct FleetJob: Decodable {
     var queued: Int?
     var retrying: Int?
     var done: Int?
-    var error: String?
+    /// **The Hub's `error` is a count of failed items, not a sentence.** Measured
+    /// live: `"error": 0` beside `"queued"/"running"`. Typed `String?` it decoded
+    /// to nothing, so the "Needs attention" card was blank on exactly the batches
+    /// it exists for. A lenient scalar reads whichever the Hub states.
+    var error: FleetScalar?
     var stalled: Bool?
+    var stalledAfterS: Double?
+    var noProgressS: Double?
+    var nextRetryAt: Double?
+    var uncertain: Int?
+    var cancelRequested: Int?
+    var cancelled: Bool?
+    var cancelledItems: Int?
+    var routing: String?
+    /// The Hub's own reason a batch is being held. The per-item failure text is at
+    /// `/api/hub/jobs/{batch_id}`, a read this page does not make.
+    var governorNote: String?
+    var avgS: Double?
     var startedAt: Double?
+
+    var errorCount: Int? {
+        guard let error else { return nil }
+        if case .text(let text) = error { return Int(text) }
+        return error.doubleValue.map { Int($0) }
+    }
+
+    var errorText: String? {
+        guard case .text(let text)? = error, Int(text) == nil, !text.isEmpty else { return nil }
+        return text
+    }
+
+    /// A stop can be asked for only while the Hub still has the batch and has not
+    /// already been asked. Offering it after a request is how a button lies.
+    var canCancel: Bool {
+        guard let batchId, !batchId.isEmpty,
+              let locationId, !locationId.isEmpty else { return false }
+        return cancelled != true && (cancelRequested ?? 0) == 0
+    }
 }
 
 // MARK: - Issue

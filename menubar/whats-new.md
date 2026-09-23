@@ -4,6 +4,26 @@ Newest first. This is the same list the **What's New** link in the app shows.
 
 ---
 
+## Fleet: stop a running batch
+
+The **Jobs** tab can ask a location's Hub to stop a batch it is running.
+
+- **Cancel, per running batch.** The button asks the controller that holds the
+  batch, using the address and Fleet token already on file — never this Mac's Hub
+  by default. The answer is the Hub's own: how many queued items it cancelled, how
+  many workers it signalled, and how many are still pending, because a worker that
+  has already taken the work cannot be promised to stop. The button goes away once
+  a stop has been asked for, rather than offering a request already made.
+- **The Hub's real status, not a guess.** A batch's `error` was read as a sentence
+  when the Hub publishes a *count*, so a failed batch could read as "0". It now
+  says "2 failed", and the Hub's own note about why it is holding a batch
+  (`governor_note`) plus its stall and retry timings are shown beside it.
+- **Uncertain items are named.** A batch the Hub could not confirm is reported as
+  "N uncertain" — work it will not dispatch again on its own.
+- Transcription batches are addressed on the Hub's transcription route, which is
+  a different path from every other modality; the modality travels with the row so
+  the cancel cannot land on the wrong one.
+
 ## Fleet: one page per question
 
 The **Fleet** page is now five tabs instead of one long scroll, and every table

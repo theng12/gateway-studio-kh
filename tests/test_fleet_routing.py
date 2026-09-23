@@ -376,6 +376,35 @@ class FleetTabTests(unittest.TestCase):
             sum(1 for issue in issues if issue["severity"] in ("error", "warning")),
         )
 
+    def test_a_running_batch_carries_the_handle_a_cancel_needs(self) -> None:
+        # The Fleet page cancels a Hub batch by naming the controller and the
+        # batch. A label is not an identity, so the location id and the provider
+        # id travel with the row; `batch_id` is the Hub's handle on work this
+        # gateway did not itself create.
+        rows = fleet.running_flat([{
+            "id": "ctrl-1", "label": "Blue Room", "local": False,
+            "provider_id": "studio-hub-ctrl-1",
+            "running_jobs": [{
+                "id": "batch-9", "modality": "image", "model": "m",
+                "total": 4, "running": 1, "queued": 2, "retrying": 0, "done": 1,
+                "error": 0, "stalled": True, "stalled_after_s": 900,
+                "no_progress_s": 1200, "next_retry_at": None, "uncertain": 1,
+                "cancel_requested": 0, "cancelled": False, "cancelled_items": 0,
+                "routing": "pool", "governor_note": "waiting on a free slot",
+                "avg_s": 9.2, "started_at": 5,
+            }],
+        }])
+        self.assertEqual(len(rows), 1)
+        row = rows[0]
+        self.assertEqual(row["batch_id"], "batch-9")
+        self.assertEqual(row["location_id"], "ctrl-1")
+        self.assertEqual(row["provider_id"], "studio-hub-ctrl-1")
+        # The Hub's own reason a batch is held, and its own uncertainty count —
+        # the page cannot get these anywhere else.
+        self.assertEqual(row["governor_note"], "waiting on a free slot")
+        self.assertEqual(row["uncertain"], 1)
+        self.assertTrue(row["stalled"])
+
 
 class IssueDerivationTests(unittest.TestCase):
     def test_machine_controller_and_job_conditions_are_reported(self) -> None:

@@ -194,6 +194,7 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
         locationsTab.onRemove = { [weak self] location in self?.removeController(location) }
 
         jobsTab.onRefresh = { [weak self] in self?.refreshEverything() }
+        jobsTab.onCancel = { [weak self] job in self?.cancelJob(job) }
     }
 
     // MARK: Tabs
@@ -426,6 +427,58 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
     func controlTextDidChange(_ notification: Notification) {
         filter.query = searchField.stringValue
         applyFilter()
+    }
+
+    /// Ask a location's Hub to stop a running batch.
+    ///
+    /// **The Hub owns the work, so this reports a request, not a result.** Its
+    /// answer counts what was still queued and got cancelled, what worker was
+    /// signalled, and what is still pending — and the banner says all three,
+    /// because "a worker was told" and "it stopped" are different facts. Nothing
+    /// is marked cancelled here; the reload that follows shows what the Hub did.
+    private func cancelJob(_ job: FleetJob) {
+        guard let batchId = job.batchId, let locationId = job.locationId else { return }
+        let encodedLocation = locationId.addingPercentEncoding(withAllowedCharacters: .alphanumerics)
+            ?? locationId
+        let encodedBatch = batchId.addingPercentEncoding(withAllowedCharacters: .alphanumerics)
+            ?? batchId
+        let what = "\(FleetFormat.words(job.modality)) · \(job.model ?? job.label ?? batchId)"
+        setStatus("Asking the Hub to stop \(what)…")
+        GatewayAPI.post(
+            "/admin/api/fleet/controllers/\(encodedLocation)/jobs/\(encodedBatch)/cancel",
+            body: ["modality": job.modality ?? ""]
+        ) { [weak self] result in
+            guard let self else { return }
+            switch result {
+            case .failure(let error):
+                self.report(
+                    .error,
+                    title: "Could not ask the Hub to stop it",
+                    detail: "\(what) — \(error.localizedDescription)"
+                )
+            case .success(let payload):
+                let answer = payload["result"] as? [String: Any] ?? [:]
+                if answer["ok"] as? Bool == false {
+                    self.report(
+                        .warning,
+                        title: "The Hub did not stop it",
+                        detail: (answer["reason"] as? String) ?? "\(what) — nothing was dispatched."
+                    )
+                } else {
+                    let queued = answer["queued_cancelled"] as? Int ?? 0
+                    let signalled = answer["running_signalled"] as? Int ?? 0
+                    let pending = answer["running_pending"] as? Int ?? 0
+                    self.report(
+                        .success,
+                        title: "Asked the Hub to stop it",
+                        detail: "\(what) — \(queued) queued cancelled, \(signalled) worker(s) "
+                            + "signalled, \(pending) still pending. A worker that already took the "
+                            + "work cannot be promised to stop."
+                    )
+                }
+            }
+            self.reload()
+        }
     }
 
     // MARK: Banner

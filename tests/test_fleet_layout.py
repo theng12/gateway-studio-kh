@@ -92,9 +92,12 @@ FIXTURE = {
          "memory_gb": 16.0, "disk_free_gb": 380.0, "modalities": {}},
     ],
     "running": [
-        {"location": "Blue Room", "location_local": False, "modality": "voice",
-         "model": "mock-hub/clone-model", "running": 1, "queued": 2, "total": 3,
-         "stalled": True, "error": "the machine stopped answering", "started_at": 1},
+        {"location_id": "ctrl-1", "provider_id": "studio-hub-ctrl-1",
+         "location": "Blue Room", "location_local": False, "modality": "voice",
+         "model": "mock-hub/clone-model", "batch_id": "batch-9",
+         "running": 1, "queued": 2, "total": 3, "stalled": True,
+         "governor_note": "waiting on a free slot", "uncertain": 1,
+         "no_progress_s": 1200, "routing": "pool", "started_at": 1},
     ],
     "issues": [
         {"severity": "error", "code": "running_stalled", "location_id": "ctrl-1",
@@ -194,6 +197,26 @@ enum GatewayAPI {
         let jobs = FleetJobsTab(frame: .zero)
         jobs.update(snapshot: snapshot, filter: FleetFilter())
         _ = layout("Jobs", jobs, rows: 1)
+
+        // The cancel is the one Fleet action that reaches upstream. It must be
+        // offered for a batch the Hub still holds, and the Hub's own reason must
+        // be what the page says rather than a field read as the wrong type.
+        guard let live = snapshot.running.first else {
+            print("FAIL: the running batch did not decode"); exit(1)
+        }
+        assert(live.canCancel, "a running batch with an id must be cancellable")
+        assert(FleetJobsTab.stateText(live).contains("uncertain"),
+               "state text ignored the Hub's uncertainty: \(FleetJobsTab.stateText(live))")
+        assert(live.errorCount == nil, "a missing error count must stay unknown, not 0")
+        let cancelButtons = descendants(jobs).compactMap { $0 as? FleetClosureButton }
+            .filter { $0.title == "Cancel" }
+        assert(cancelButtons.count == 1 && cancelButtons[0].isEnabled,
+               "expected one enabled Cancel button, got \(cancelButtons.map { $0.isEnabled })")
+
+        // A batch already asked to stop must not offer it again.
+        var asked = live
+        asked.cancelRequested = 1
+        assert(!asked.canCancel, "a batch already being stopped must not offer Cancel again")
 
         // The location filter must actually narrow: the controller's machines only.
         let filteredMachines = FleetMachinesTab(frame: .zero)

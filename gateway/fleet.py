@@ -638,9 +638,25 @@ def _running_jobs(batches: list[dict]) -> list[dict]:
             "running": batch.get("running"),
             "retrying": batch.get("retrying"),
             "done": batch.get("done"),
+            # **The Hub's own `error` is a count, not a sentence.** Measured live:
+            # `"error": 0` on a finished batch alongside `"queued"/"running"`. Read
+            # as text it decoded to nothing, so the page's "Needs attention" card
+            # was blank on exactly the batches it exists for. The reason a batch is
+            # held is `governor_note`; the per-item failure text lives at
+            # `/api/hub/jobs/{batch_id}`, a read this page does not make.
             "error": batch.get("error"),
             "stalled": batch.get("stalled"),
+            "stalled_after_s": batch.get("stalled_after_s"),
+            "no_progress_s": batch.get("no_progress_s"),
+            "next_retry_at": batch.get("next_retry_at"),
+            "uncertain": batch.get("uncertain"),
+            "cancel_requested": batch.get("cancel_requested"),
+            "cancelled": batch.get("cancelled"),
+            "cancelled_items": batch.get("cancelled_items"),
+            "routing": batch.get("routing"),
             "governor_note": batch.get("governor_note"),
+            "avg_s": batch.get("avg_s"),
+            "processing_elapsed_s": batch.get("processing_elapsed_s"),
             "started_at": batch.get("created_at"),
             "last_activity_at": batch.get("last_activity_at"),
         })
@@ -1333,8 +1349,16 @@ def running_flat(rows: list[dict]) -> list[dict]:
     for row in rows:
         for job in row["running_jobs"]:
             out.append({
+                # **The location's id and provider id travel with the row.** A
+                # cancel has to name the controller whose Hub holds the batch, and
+                # a label is not an identity — the page may rename it at any time.
+                "location_id": row.get("id"),
+                "provider_id": row.get("provider_id"),
                 "location": row["label"],
                 "location_local": row["local"],
+                # The Hub's batch id: what a cancel addresses, and the only handle
+                # on the upstream work this gateway did not itself create.
+                "batch_id": job.get("id"),
                 "modality": job.get("modality"),
                 "model": job.get("model"),
                 "label": job.get("label"),
@@ -1345,6 +1369,16 @@ def running_flat(rows: list[dict]) -> list[dict]:
                 "done": job.get("done"),
                 "error": job.get("error"),
                 "stalled": job.get("stalled"),
+                "stalled_after_s": job.get("stalled_after_s"),
+                "no_progress_s": job.get("no_progress_s"),
+                "next_retry_at": job.get("next_retry_at"),
+                "uncertain": job.get("uncertain"),
+                "cancel_requested": job.get("cancel_requested"),
+                "cancelled": job.get("cancelled"),
+                "cancelled_items": job.get("cancelled_items"),
+                "routing": job.get("routing"),
+                "governor_note": job.get("governor_note"),
+                "avg_s": job.get("avg_s"),
                 "started_at": job.get("started_at"),
             })
     return out
