@@ -222,13 +222,23 @@ def execute_job(job: dict[str, Any], store: JobStore) -> None:
             log.warning("job %s failed via %s: %s", job_id, provider_id, exc)
             current = store.get(job_id) if hasattr(store, "get") else job
             current = current or {}
-            # Once dispatch began, an adapter that cannot prove pre-acceptance must
-            # be treated as ambiguous even when it calls the failure retryable.
+            # **A definite 4xx is the provider's own refusal — it accepted
+            # nothing.** That is a settled failure, never a recovery hold, no
+            # matter which adapter raised it. Without this a `400` such as
+            # "'temperature' does not support 0.7 with this model" became a
+            # permanent `unknown_outcome` hold the owner could not clear.
+            # A 5xx, or a failure carrying no status at all after dispatch, stays
+            # ambiguous because the request may have arrived.
+            definite_refusal = isinstance(exc.status, int) and 400 <= exc.status < 500
             unknown = bool(current.get("upstream_job_id")) or exc.upstream_accepted is True
-            unknown = unknown or (
-                current.get("dispatch_started_at") is not None
-                and exc.upstream_accepted is None
-            )
+            if not definite_refusal:
+                # Once dispatch began, an adapter that cannot prove pre-acceptance
+                # must be treated as ambiguous even when it calls the failure
+                # retryable.
+                unknown = unknown or (
+                    current.get("dispatch_started_at") is not None
+                    and exc.upstream_accepted is None
+                )
             if exc.code == "PROVIDER_SUBMISSION_UNCERTAIN":
                 unknown = True
             detail = _unknown_detail(str(exc)) if unknown else str(exc)[:500]

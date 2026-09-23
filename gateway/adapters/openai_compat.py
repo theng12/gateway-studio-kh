@@ -97,6 +97,21 @@ def _raise_for(response: httpx.Response, provider: str) -> None:
     )
 
 
+def _temperature_refused(response: httpx.Response) -> bool:
+    """A 400 saying this model will not take the temperature we sent.
+
+    Newer reasoning models accept only their own default. A 400 is a definite
+    refusal — nothing ran, nothing was charged — so re-sending once without the
+    knob is safe, and it is the only way a caller that always sets a temperature
+    (Story Studio sends 0.7) can use such a model at all. Without this the 400
+    became a permanent unknown-outcome hold instead of a working job.
+    """
+    if response.status_code != 400:
+        return False
+    text = response.text.lower()
+    return "temperature" in text and ("does not support" in text or "unsupported" in text)
+
+
 def _messages(params: dict[str, Any]) -> list[dict[str, Any]]:
     """Story Studio sends `input`; older callers send `messages`."""
     raw = params.get("input") or params.get("messages") or []
@@ -166,15 +181,28 @@ def _chat(request: BackendRequest) -> BackendResult:
     }:
         body["response_format"] = response_format
 
-    try:
-        response = httpx.post(
-            f"{_base(request)}/chat/completions",
-            headers={**_auth(request.values), "Content-Type": "application/json"},
-            json=body,
-            timeout=CHAT_TIMEOUT,
-        )
-    except httpx.HTTPError as exc:
-        raise BackendError(f"network: {exc}", code="PROVIDER_UNAVAILABLE", retryable=True) from exc
+    def send() -> httpx.Response:
+        try:
+            return httpx.post(
+                f"{_base(request)}/chat/completions",
+                headers={**_auth(request.values), "Content-Type": "application/json"},
+                json=body,
+                timeout=CHAT_TIMEOUT,
+            )
+        except httpx.HTTPError as exc:
+            raise BackendError(
+                f"network: {exc}", code="PROVIDER_UNAVAILABLE", retryable=True
+            ) from exc
+
+    response = send()
+    dropped: list[str] = []
+    if "temperature" in body and _temperature_refused(response):
+        # The model supports only its default temperature. Drop the knob and ask
+        # once more; the result records that it was dropped, so nobody reads the
+        # output as if 0.7 had been honoured.
+        body.pop("temperature")
+        dropped.append("temperature")
+        response = send()
 
     _raise_for(response, request.provider_id)
     payload = response.json()
@@ -188,14 +216,14 @@ def _chat(request: BackendRequest) -> BackendResult:
     if isinstance(text, list):
         text = "".join(p.get("text", "") for p in text if isinstance(p, dict))
 
-    return BackendResult(
-        text=text or "",
-        payload={
-            "finish_reason": choice.get("finish_reason"),
-            "usage": payload.get("usage"),
-            "model": payload.get("model") or request.model_id,
-        },
-    )
+    result_payload = {
+        "finish_reason": choice.get("finish_reason"),
+        "usage": payload.get("usage"),
+        "model": payload.get("model") or request.model_id,
+    }
+    if dropped:
+        result_payload["params_dropped"] = dropped
+    return BackendResult(text=text or "", payload=result_payload)
 
 
 def _image_count(params: dict[str, Any]) -> int:

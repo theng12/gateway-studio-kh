@@ -4,6 +4,21 @@ Newest first. This is the same list the **What's New** link in the app shows.
 
 ---
 
+## A provider's “no” is a failure, not a mystery
+
+Two things made a refused chat call look like a lost one.
+
+- **A definite `4xx` from any provider is the provider's own refusal** — nothing ran,
+  nothing was charged. It now settles as an ordinary failed job instead of a durable
+  *unknown outcome* hold you have to reconcile by hand. Only a `5xx`, or a connection
+  that never got an answer, stays ambiguous.
+- **A model that accepts only its default temperature no longer fails.** Newer
+  reasoning models (OpenAI's `gpt-6-luna`, for one) answer
+  `400 "temperature does not support 0.7 with this model"`. Because a `400` ran
+  nothing, the gateway re-asks once without the temperature and records that it did
+  (`params_dropped`) — so the call works, and you can see the knob was dropped rather
+  than believe `0.7` was used.
+
 ## A release is never pushed backwards
 
 A controller that already holds a **newer** build than the one being published is
