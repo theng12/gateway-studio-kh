@@ -626,9 +626,70 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
             )
             return
         }
+
+        // Warn *before* a 1.1 GB push when a controller already holds something
+        // newer. Studio Hub's updater has no ordering, so it would take the older
+        // build; the gateway refuses that too, but catching it here saves the
+        // round trip and lets the owner decide with the labels in front of them.
+        let older = downgrades(of: version)
+        if !older.isEmpty {
+            let lines = older.map { "• \($0.label) holds \($0.held)" }.joined(separator: "\n")
+            let confirm = NSAlert()
+            confirm.messageText = "Publish \(version) over a newer release?"
+            confirm.informativeText =
+                "These controllers already hold a newer version:\n\(lines)\n\n"
+                + "Publishing \(version) would take them backwards. Continue only if "
+                + "that is what you want."
+            confirm.alertStyle = .warning
+            confirm.addButton(withTitle: "Publish anyway")
+            confirm.addButton(withTitle: "Cancel")
+            guard confirm.runModal() == .alertFirstButtonReturn else { return }
+            publishRelease(
+                path: url.path, version: version, build: build,
+                filename: url.lastPathComponent, allowDowngrade: true
+            )
+            return
+        }
+
         publishRelease(
             path: url.path, version: version, build: build, filename: url.lastPathComponent
         )
+    }
+
+    /// The controllers that already hold a **newer** version than `version`.
+    ///
+    /// Mirrors `gateway/release_publisher.py::is_downgrade`: the backend guard is
+    /// the enforcement, and this only powers the warning. A version with no
+    /// dotted-number order is never treated as a downgrade — refusing on a guess
+    /// would be worse than not refusing.
+    private func downgrades(of version: String) -> [(label: String, held: String)] {
+        locations.compactMap { location in
+            guard location.local != true, location.reachable != false else { return nil }
+            guard let held = location.release?.version, isNewer(held, than: version) else { return nil }
+            return (label: location.label ?? location.id ?? "Controller", held: held)
+        }
+    }
+
+    /// `1.2.3` as comparable numbers, or `nil` when it is not dotted numbers.
+    private func versionParts(_ version: String?) -> [Int]? {
+        let text = (version ?? "").trimmingCharacters(in: .whitespaces)
+        guard !text.isEmpty else { return nil }
+        var numbers: [Int] = []
+        for part in text.split(separator: ".", omittingEmptySubsequences: false) {
+            guard !part.isEmpty, part.allSatisfy(\.isNumber), let value = Int(part) else { return nil }
+            numbers.append(value)
+        }
+        return numbers
+    }
+
+    private func isNewer(_ candidate: String?, than version: String) -> Bool {
+        guard let held = versionParts(candidate), let target = versionParts(version) else { return false }
+        let count = max(held.count, target.count)
+        let paddedHeld = held + Array(repeating: 0, count: count - held.count)
+        let paddedTarget = target + Array(repeating: 0, count: count - target.count)
+        // `[Int]` is not Comparable; lexicographic order is the same comparison.
+        // True when the target is below what is held, i.e. the held one is newer.
+        return paddedTarget.lexicographicallyPrecedes(paddedHeld)
     }
 
     /// `StudioHub-0.6.50-abc1234.dmg` → version `0.6.50`, build `abc1234`.
@@ -656,7 +717,10 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
         return "\(count) controller\(count == 1 ? "" : "s")"
     }
 
-    private func publishRelease(path: String, version: String, build: String, filename: String) {
+    private func publishRelease(
+        path: String, version: String, build: String, filename: String,
+        allowDowngrade: Bool = false
+    ) {
         publishing = true
         locationsTab.setPublishing(
             true,
@@ -664,14 +728,17 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
                 + "A 1.1 GB artifact is base64 in one body, so this can take a while."
         )
         setStatus("Signing and pushing \(filename)…")
+        var body: [String: Any] = [
+            "artifact_path": path,
+            "version": version,
+            "build": build,
+            "filename": filename,
+        ]
+        // Only sent when the owner chose to override the newer-version guard.
+        if allowDowngrade { body["allow_downgrade"] = true }
         GatewayAPI.post(
             "/admin/api/release/publish",
-            body: [
-                "artifact_path": path,
-                "version": version,
-                "build": build,
-                "filename": filename,
-            ],
+            body: body,
             timeout: Self.publishTimeout
         ) { [weak self] result in
             guard let self else { return }

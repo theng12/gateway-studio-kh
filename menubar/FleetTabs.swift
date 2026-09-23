@@ -722,6 +722,9 @@ final class FleetLocationsTab: FleetTabView {
     /// The per-controller release report, rebuilt on every fleet read.
     private let releaseStack = NSStackView()
     private let releaseStatus = PageKit.label("", size: 11.5, colour: .secondaryLabelColor, wrapping: true)
+    /// This gateway's own publisher fingerprint, so a controller that trusts it
+    /// reads "this gateway" rather than an opaque hex string.
+    private var identityFingerprint: String?
     private lazy var publishButton: FleetClosureButton = {
         FleetClosureButton(title: "Publish a Studio Hub release…") { [weak self] in
             self?.onPublishRelease?()
@@ -997,6 +1000,7 @@ final class FleetLocationsTab: FleetTabView {
         }
         let report = state?.lastPush
         let reportKnown = state != nil
+        identityFingerprint = state?.identity?.fingerprint
         if let error = state?.error, !error.isEmpty {
             addReleaseLine(error, colour: .systemOrange)
         }
@@ -1070,12 +1074,49 @@ final class FleetLocationsTab: FleetTabView {
         )
         outcomeLabel.preferredMaxLayoutWidth = 620
 
-        let stack = NSStackView(views: [top, outcomeLabel])
+        // What the controller trusts decides whether a push will be accepted at
+        // all, so it is shown beside what it holds — before the push, not only
+        // after a refusal.
+        let trustLabel = PageKit.label(
+            trustedPublisherText(for: location),
+            size: 11.5, colour: trustedPublisherColour(for: location), wrapping: true
+        )
+        trustLabel.preferredMaxLayoutWidth = 620
+
+        let stack = NSStackView(views: [top, trustLabel, outcomeLabel])
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.spacing = 2
         stack.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         return stack
+    }
+
+    /// What the controller says it trusts. `reported == false` is "this Hub does
+    /// not carry the field" (older than 0.6.51), which is **not** the same answer
+    /// as an installed `null` — that one means it trusts nobody and a push will
+    /// be refused until the gateway's fingerprint is installed.
+    private func trustedPublisherText(for location: FleetLocation) -> String {
+        guard let trust = location.trustedPublisher, trust.reported == true else {
+            return "Trusted publisher: the Hub did not report one."
+        }
+        let fingerprint = (trust.fingerprint ?? "").trimmingCharacters(in: .whitespaces)
+        guard !fingerprint.isEmpty else {
+            return "Trusted publisher: none installed yet — a push is refused until you install "
+                + "this gateway's fingerprint there (Settings → Studio Hub app releases)."
+        }
+        let who = (trust.publisherId ?? "").trimmingCharacters(in: .whitespaces)
+        let short = String(fingerprint.prefix(12))
+        let named = fingerprint == identityFingerprint ? "this gateway" : (who.isEmpty ? "unnamed" : who)
+        return "Trusted publisher: \(named) \(short)…"
+    }
+
+    private func trustedPublisherColour(for location: FleetLocation) -> NSColor {
+        guard let trust = location.trustedPublisher, trust.reported == true else {
+            return .secondaryLabelColor
+        }
+        let fingerprint = (trust.fingerprint ?? "").trimmingCharacters(in: .whitespaces)
+        guard !fingerprint.isEmpty else { return .systemOrange }
+        return fingerprint == identityFingerprint ? .systemGreen : .systemOrange
     }
 
     /// The last push's outcome for one controller. A refusal is the gateway's or
@@ -1111,6 +1152,9 @@ final class FleetLocationsTab: FleetTabView {
             return reportKnown ? .secondaryLabelColor : .systemOrange
         }
         if outcome.ok == true { return .systemGreen }
+        // A refused downgrade is a decision for the owner, not a failure: orange,
+        // and the detail says what it holds and how to publish anyway.
+        if outcome.downgrade == true { return .systemOrange }
         return outcome.status == 409 ? .systemOrange : .systemRed
     }
 

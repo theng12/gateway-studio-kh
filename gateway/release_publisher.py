@@ -31,6 +31,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import re
 from pathlib import Path
 import time
 from typing import Any
@@ -64,6 +65,37 @@ class ReleaseError(ValueError):
         self.status = status
         self.code = code
         super().__init__(message)
+
+
+# ---------------------------------------------------------------------------
+# Ordering two versions — the downgrade guard
+# ---------------------------------------------------------------------------
+
+_VERSION_RE = re.compile(r"^\d+(?:\.\d+)*$")
+
+
+def version_key(version: str) -> tuple[int, ...] | None:
+    """Order a release version, or `None` when it is not dotted numbers.
+
+    The Hub's own updater has no ordering at all: it offers whatever build
+    differs from what it holds, so a gateway publishing `0.6.50` over a
+    controller holding `0.6.51` would walk that Mac *backwards*. This is the
+    gateway's guard against that. Only a clean `1.2.3`-style version gets an
+    order; anything else (a date, a suffix, an empty field) has none here and is
+    not blocked, because refusing on a guess is worse than not refusing.
+    """
+    text = (version or "").strip()
+    if not _VERSION_RE.match(text):
+        return None
+    return tuple(int(part) for part in text.split("."))
+
+
+def is_downgrade(publishing: str, held: str) -> bool:
+    """True only when both versions order and the controller's is the newer one."""
+    published, present = version_key(publishing), version_key(held)
+    if published is None or present is None:
+        return False
+    return present > published
 
 
 # ---------------------------------------------------------------------------
@@ -340,12 +372,22 @@ def last_push() -> dict[str, Any]:
 
 
 def publish(
-    *, artifact_path: str | Path, version: str, build: str, filename: str | None = None
+    *,
+    artifact_path: str | Path,
+    version: str,
+    build: str,
+    filename: str | None = None,
+    allow_downgrade: bool = False,
 ) -> dict[str, Any]:
     """Sign one artifact and offer it to every configured controller.
 
     Returns the descriptor, its fingerprint, and a per-controller outcome in which
     `release` is what the controller **read back** after storing it.
+
+    Before each push the controller is asked what it holds. A controller holding a
+    **newer** version than this artifact is refused (`RELEASE_DOWNGRADE`) unless
+    `allow_downgrade` is set: the Hub's updater has no ordering and would take the
+    older build, so the gateway is the only place that can stop it.
     """
     path = Path(artifact_path).expanduser()
     if not path.is_file():
@@ -355,13 +397,30 @@ def publish(
         artifact, version=version, build=build, filename=filename or path.name
     )
     fingerprint = identity()["fingerprint"]
+    target = descriptor["version"]
 
     controllers = fleet._read()  # noqa: SLF001 - the roster, and only controllers take a release
     results: dict[str, Any] = {}
     for row in controllers:
         controller_id = str(row.get("id") or "")
-        outcome = push(str(row.get("url") or ""), fleet._token_for(controller_id),  # noqa: SLF001
-                       descriptor, artifact)
+        url = str(row.get("url") or "")
+        token = fleet._token_for(controller_id)  # noqa: SLF001
+        held = read_release(url, token)
+        held_version = str((held or {}).get("version") or "").strip()
+        if held is not None and not allow_downgrade and is_downgrade(target, held_version):
+            outcome = {
+                "ok": False,
+                "status": None,
+                "code": "RELEASE_DOWNGRADE",
+                "detail": (
+                    f"this controller holds {held_version}, which is newer than {target}. "
+                    "Publishing would take it backwards; publish a newer build, or choose "
+                    "to publish anyway."
+                ),
+                "release": None,
+            }
+        else:
+            outcome = push(url, token, descriptor, artifact)
         outcome["label"] = row.get("label") or controller_id
         results[controller_id] = outcome
 

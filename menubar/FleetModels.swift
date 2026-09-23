@@ -118,11 +118,14 @@ struct FleetLocation: Decodable {
     /// controller itself — never what was pushed. `nil` is "it holds none", or a
     /// controller with no release route; it is not a version of zero.
     var release: FleetReleaseDescriptor?
+    /// The release publisher this controller has installed (Hub 0.6.51+), read
+    /// from the same answer. `nil` means the gateway sent no such field.
+    var trustedPublisher: FleetTrustedPublisher?
 
     private enum CodingKeys: String, CodingKey {
         case id, label, url, local, reachable, error, role, version, providerId, latencyMs
         case machines, workers, localModels, modelHealth, machineSummary, runningJobs
-        case modelsDiscovered, modelsEnabled, modelsPublishable, release
+        case modelsDiscovered, modelsEnabled, modelsPublishable, release, trustedPublisher
     }
 
     init(from decoder: Decoder) throws {
@@ -153,6 +156,7 @@ struct FleetLocation: Decodable {
         modelsEnabled = try? c.decode(Int.self, forKey: .modelsEnabled)
         modelsPublishable = try? c.decode(Int.self, forKey: .modelsPublishable)
         release = try? c.decode(FleetReleaseDescriptor.self, forKey: .release)
+        trustedPublisher = try? c.decode(FleetTrustedPublisher.self, forKey: .trustedPublisher)
     }
 }
 
@@ -213,6 +217,20 @@ struct FleetReleaseDescriptor: Decodable {
     }
 }
 
+/// What a controller says it has installed as a release publisher, from Hub
+/// 0.6.51's `trusted_publisher` beside `release`.
+///
+/// `reported` keeps two absences apart: a Hub that answers `trusted_publisher:
+/// null` is saying it trusts nobody (the state that makes a push answer 409),
+/// while a Hub with no such field said nothing at all. Flattening both to `nil`
+/// would draw the same sentence for "install my key" and "the Hub is too old".
+struct FleetTrustedPublisher: Decodable {
+    /// `false` when the gateway reports the Hub did not carry the field.
+    var reported: Bool?
+    var publisherId: String?
+    var fingerprint: String?
+}
+
 /// What one controller answered to a push.
 ///
 /// `detail` is the controller's (or the gateway's) own sentence and is shown
@@ -228,6 +246,9 @@ struct FleetPushOutcome: Decodable {
     /// The controller's label, attached by the gateway for the page.
     var label: String?
     var release: FleetReleaseDescriptor?
+    /// The gateway refused this controller because it already holds a newer
+    /// version; the owner can choose to publish anyway.
+    var downgrade: Bool?
 }
 
 /// The result of one `POST /admin/api/release/publish` — also the shape of

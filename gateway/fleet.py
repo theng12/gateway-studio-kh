@@ -933,6 +933,10 @@ def _probe(base: str, token: str, *, timeout: float = _TIMEOUT) -> dict:
             if isinstance(release_payload.get("release"), dict)
             else None
         ),
+        # The publisher fingerprint this controller has installed, when its Hub
+        # reports it (0.6.51+). `reported` is separate from the fingerprint so
+        # "it says it trusts nobody" and "it did not tell us" stay distinct.
+        "trusted_publisher": _trusted_publisher(release_payload),
         # The Machines tab: capabilities' worker roster, falling back to the
         # node list's studios.
         "workers": _worker_roster(capabilities, node_rows),
@@ -944,6 +948,28 @@ def _probe(base: str, token: str, *, timeout: float = _TIMEOUT) -> dict:
         "latency_ms": int((time.time() - started) * 1000),
     })
     return location
+
+
+def _trusted_publisher(payload: Any) -> dict[str, Any]:
+    """A controller's installed release trust, from its own `/api/hub/release` answer.
+
+    `reported` keeps the two absences apart: Hub 0.6.51 answers
+    `trusted_publisher: null` when it trusts nobody (the state that makes a push
+    answer 409), while a controller with no such field answered nothing at all.
+    Both used to look identical once flattened to `None`.
+    """
+    if not isinstance(payload, dict) or "trusted_publisher" not in payload:
+        return {"reported": False, "publisher_id": None, "fingerprint": None}
+    value = payload.get("trusted_publisher")
+    if not isinstance(value, dict):
+        return {"reported": True, "publisher_id": None, "fingerprint": None}
+    publisher_id = value.get("publisher_id")
+    fingerprint = value.get("fingerprint")
+    return {
+        "reported": True,
+        "publisher_id": publisher_id if isinstance(publisher_id, str) else None,
+        "fingerprint": fingerprint if isinstance(fingerprint, str) else None,
+    }
 
 
 def _version_from(overview: dict) -> str | None:

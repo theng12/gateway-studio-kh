@@ -141,10 +141,10 @@ test('identity publishes the controller own raw key and fingerprint', async () =
   assert.equal(identity.body.fingerprint, sha256hex(Buffer.from(controller.publicKey, 'hex')))
 })
 
-test('nothing stored: release is null and the artifact is 404', async () => {
+test('nothing stored: release is null, no trusted publisher, and the artifact is 404', async () => {
   const release = await request('/api/hub/release')
   assert.equal(release.status, 200)
-  assert.deepEqual(release.body, { release: null })
+  assert.deepEqual(release.body, { release: null, trusted_publisher: null })
   const artifactResponse = await request('/api/hub/release/artifact')
   assert.equal(artifactResponse.status, 404)
 })
@@ -179,7 +179,7 @@ test('a Fleet token on the trust route is 403, not 401', async () => {
   assert.equal(response.status, 403)
   // The refusal must not have installed trust.
   const release = await request('/api/hub/release')
-  assert.deepEqual(release.body, { release: null })
+  assert.deepEqual(release.body, { release: null, trusted_publisher: null })
 })
 
 test('trust with a fingerprint alone is stored but cannot verify a signature', async () => {
@@ -254,10 +254,15 @@ test('a valid push with only the eleven contract fields is 200 and countersigned
   assert.equal(verified, true, 'controller_signature must verify against the controller public key')
 })
 
-test('GET /release returns exactly what was stored', async () => {
+test('GET /release returns exactly what was stored, and names the trusted publisher', async () => {
   const release = await request('/api/hub/release')
   assert.equal(release.status, 200)
-  assert.deepEqual(release.body, { release: storedDescriptor })
+  // Hub 0.6.51 added `trusted_publisher` beside `release`: the installed
+  // fingerprint, and the publisher id off the stored descriptor.
+  assert.deepEqual(release.body, {
+    release: storedDescriptor,
+    trusted_publisher: { publisher_id: 'gatewaykh', fingerprint: gatewayFingerprint },
+  })
 })
 
 test('step 1 refuses a bad schema or a missing required field and names it', async () => {

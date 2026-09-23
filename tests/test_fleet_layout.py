@@ -60,6 +60,8 @@ FIXTURE = {
             "role": "agent", "version": "0.6.47", "provider_id": "studio-hub-local",
             "models_discovered": 5, "models_enabled": 4, "models_publishable": 2,
             "release": None,
+            # An older Hub that does not carry the field: "did not report".
+            "trusted_publisher": {"reported": False, "publisher_id": None, "fingerprint": None},
             "machines": [{"machine": "local", "label": "This Mac", "reachable": True}],
             "workers": [
                 {"id": "voice", "studio": "voice", "modality": "voice", "machine": "local",
@@ -92,6 +94,8 @@ FIXTURE = {
                 "publisher_key_id": "cd" * 32, "controller_key_id": "34" * 32,
                 "controller_signature": "countersig",
             },
+            # Hub 0.6.51 says it trusts nobody — the 409 state, not an unknown.
+            "trusted_publisher": {"reported": True, "publisher_id": None, "fingerprint": None},
             "machines": [
                 {"machine": "mac-a", "label": "mac-a", "state": "long_idle"},
                 {"machine": "mac-b", "label": "mac-b", "state": "offline"},
@@ -242,6 +246,14 @@ enum GatewayAPI {
         let texts = descendants(locations).compactMap { ($0 as? NSTextField)?.stringValue }
         assert(texts.contains(where: { $0.contains("held 0.6.49 (deadbee)") }),
                "the Release section did not show what the controller holds")
+        // The trusted publisher decides whether a push will be accepted at all, so
+        // "trusts nobody" and "did not say" must not draw the same sentence.
+        assert(snapshot.locations.first(where: { $0.id == "ctrl-1" })?.trustedPublisher?.reported == true,
+               "the controller's trusted-publisher field did not decode")
+        assert(snapshot.locations.first(where: { $0.id == "local" })?.trustedPublisher?.reported == false,
+               "the local Hub's missing trusted-publisher field did not decode as unreported")
+        assert(texts.contains(where: { $0.contains("Trusted publisher: none installed yet") }),
+               "the Release section did not say no trusted publisher is installed")
         assert(texts.contains(where: {
                    $0.contains("Last push refused")
                        && $0.contains("Install this gateway's publisher fingerprint")

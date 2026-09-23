@@ -4,6 +4,23 @@ Newest first. This is the same list the **What's New** link in the app shows.
 
 ---
 
+## A release is never pushed backwards
+
+A controller that already holds a **newer** build than the one being published is
+now refused before anything is sent.
+
+- **The gateway asks each controller what it holds first** and stops a downgrade with
+  `RELEASE_DOWNGRADE`, naming both versions. Studio Hub's own updater has no ordering —
+  it takes any build that differs — so this gateway is the only place a rollback can
+  be caught.
+- **The publish panel warns before the push**: if a controller holds a newer version,
+  it lists them and asks, with **Publish anyway** for a deliberate rollback. A version
+  with no numeric order (a date, a suffix) is never treated as a downgrade.
+- **Fleet → Locations → Release shows each controller's trusted publisher** (Hub
+  0.6.51+): the fingerprint it has installed for app releases. It reads “this gateway”
+  when it matches, and says plainly when none is installed yet — the state that makes a
+  push answer 409. “It trusts nobody” and “this Hub did not say” stay separate sentences.
+
 ## The default port is now 8787
 
 A fresh install listens on **8787** — the port this Mac's working instance already

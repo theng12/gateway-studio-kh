@@ -193,6 +193,81 @@ class ReleasePublish(unittest.TestCase):
         self.assertIsNone(outcome["status"])
         self.assertIn("could not reach the controller", outcome["detail"])
 
+    def _trust_and_hold(self, version: str, build: str) -> None:
+        """Put a release on the mock controller, so it holds something to compare."""
+        self.controller.trust(rp.identity()["public_key_hex"])
+        descriptor = rp.descriptor_for_bytes(
+            self.artifact, version=version, build=build, filename=self.dmg.name
+        )
+        outcome = rp.push(
+            self.controller.base, self.controller.fleet_token, descriptor, self.artifact
+        )
+        self.assertTrue(outcome["ok"], outcome["detail"])
+
+    def test_publishing_an_older_version_is_refused(self) -> None:
+        # The Hub's own updater has no ordering — it takes whatever build differs —
+        # so a gateway pushing 0.6.50 over a controller holding 0.6.51 would walk
+        # that Mac backwards. Nothing on the controller side can stop it; this is
+        # the only guard.
+        self._trust_and_hold("0.6.51", "newer")
+        outcome = self._publish()["locations"]["ctrl-1"]
+        self.assertFalse(outcome["ok"], outcome)
+        self.assertEqual(outcome["code"], "RELEASE_DOWNGRADE")
+        self.assertIn("0.6.51", outcome["detail"])
+        self.assertIn("0.6.50", outcome["detail"])
+        # Refused *before* the push: the controller still holds the newer release.
+        held = rp.read_release(self.controller.base, self.controller.fleet_token)
+        self.assertEqual(held["version"], "0.6.51")
+
+    def test_allow_downgrade_publishes_anyway(self) -> None:
+        self._trust_and_hold("0.6.51", "newer")
+        location = [{"id": "ctrl-1", "label": "Blue Room", "url": self.controller.base}]
+        with patch.object(fleet, "_read", return_value=location), \
+             patch.object(fleet, "_token_for", return_value=self.controller.fleet_token):
+            state = rp.publish(
+                artifact_path=self.dmg, version="0.6.50", build="abc1234",
+                allow_downgrade=True,
+            )
+        outcome = state["locations"]["ctrl-1"]
+        self.assertTrue(outcome["ok"], outcome["detail"])
+        held = rp.read_release(self.controller.base, self.controller.fleet_token)
+        self.assertEqual(held["version"], "0.6.50")
+
+    def test_a_newer_version_is_not_blocked(self) -> None:
+        self._trust_and_hold("0.6.49", "older")
+        outcome = self._publish()["locations"]["ctrl-1"]
+        self.assertTrue(outcome["ok"], outcome["detail"])
+
+    def test_version_ordering_is_not_guessed(self) -> None:
+        self.assertTrue(rp.is_downgrade("0.6.50", "0.6.51"))
+        self.assertFalse(rp.is_downgrade("0.6.51", "0.6.50"))
+        self.assertFalse(rp.is_downgrade("0.6.50", "0.6.50"))
+        self.assertTrue(rp.is_downgrade("0.6.9", "0.6.10"))  # 10 > 9, not string order
+        # A version with no dotted-number order is never blocked on a guess.
+        for odd in ("", "abc1234", "2026-09-23", "0.6.50-beta"):
+            self.assertFalse(rp.is_downgrade("0.6.50", odd), odd)
+        self.assertEqual(rp.version_key("1.2.3"), (1, 2, 3))
+        self.assertIsNone(rp.version_key("1.2.3-rc1"))
+
+    def test_fleet_reports_the_trusted_publisher(self) -> None:
+        fingerprint = "ab" * 32
+        self.assertEqual(
+            fleet._trusted_publisher(
+                {"trusted_publisher": {"publisher_id": "gatewaykh", "fingerprint": fingerprint}}
+            ),
+            {"reported": True, "publisher_id": "gatewaykh", "fingerprint": fingerprint},
+        )
+        # Explicit null is "trusts nobody"; a missing key is "did not say". The
+        # page must not draw the same sentence for both.
+        self.assertEqual(
+            fleet._trusted_publisher({"trusted_publisher": None}),
+            {"reported": True, "publisher_id": None, "fingerprint": None},
+        )
+        self.assertEqual(
+            fleet._trusted_publisher({}),
+            {"reported": False, "publisher_id": None, "fingerprint": None},
+        )
+
     def test_absence_is_null_never_a_stub(self) -> None:
         self.assertIsNone(
             rp.read_release(self.controller.base, self.controller.fleet_token)

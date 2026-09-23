@@ -1908,6 +1908,10 @@ def release_publish(payload: dict[str, Any]) -> Any:
     The artifact is the DMG exactly as built — never repackaged, never re-signed
     after the fact — and the answer is per controller: the release it **read back**
     after storing, or the controller's own refusal sentence verbatim.
+
+    A controller that already holds a **newer** version is refused
+    (`RELEASE_DOWNGRADE`) unless `allow_downgrade` is true: the Hub's updater has
+    no ordering, so only this side can stop a rollback.
     """
     artifact = str(payload.get("artifact_path") or "").strip()
     if not artifact:
@@ -1919,6 +1923,7 @@ def release_publish(payload: dict[str, Any]) -> Any:
             version=str(payload.get("version") or ""),
             build=str(payload.get("build") or ""),
             filename=str(filename) if filename else None,
+            allow_downgrade=bool(payload.get("allow_downgrade")),
         )
     except release_publisher.ReleaseError as exc:
         return _error(exc.status, exc.message, exc.code)

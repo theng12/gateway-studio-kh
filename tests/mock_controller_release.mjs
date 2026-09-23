@@ -395,7 +395,17 @@ export async function startController({
 
   function handleGetRelease(req, res) {
     // Never a stub: null until something is stored, the stored descriptor after.
-    sendJson(res, 200, { release: storedRelease ? storedRelease.descriptor : null })
+    // `trusted_publisher` mirrors Hub 0.6.51: null when nothing is trusted, the
+    // installed fingerprint otherwise (with the stored release's publisher_id).
+    sendJson(res, 200, {
+      release: storedRelease ? storedRelease.descriptor : null,
+      trusted_publisher: trusted.fingerprint
+        ? {
+            publisher_id: storedRelease?.descriptor?.publisher_id ?? null,
+            fingerprint: trusted.fingerprint,
+          }
+        : null,
+    })
   }
 
   function handleIdentity(req, res) {
