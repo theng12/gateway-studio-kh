@@ -178,13 +178,23 @@ MAIN_WINDOW = '(first window whose subrole is "AXStandardWindow")'
 
 
 def window_count() -> int:
-    """Count the app's real windows, ignoring system dialogs."""
-    try:
-        return int(osa(wrap(
-            'return (count of (every window whose subrole is "AXStandardWindow"))'
-        )) or 0)
-    except (RuntimeError, ValueError):
-        return -1
+    """Count the app's real windows, ignoring system dialogs.
+
+    A busy app (just relaunched, still loading providers and models) can answer
+    `0` for a moment while its AX tree is rebuilt. That is a read that failed, not
+    a window that closed, so retry it rather than reporting a closed window.
+    """
+    for _ in range(3):
+        try:
+            value = int(osa(wrap(
+                'return (count of (every window whose subrole is "AXStandardWindow"))'
+            )) or 0)
+        except (RuntimeError, ValueError):
+            value = -1
+        if value >= 0:
+            return value
+        time.sleep(0.6)
+    return -1
 
 
 def window_title() -> str:
@@ -207,14 +217,22 @@ def window_size() -> tuple[int, int]:
     resize guard first passed. The guard now asserts the read worked.
     """
     try:
-        raw = osa(wrap(f'''
-            set w to {MAIN_WINDOW}
-            set s to size of w
-            return ((item 1 of s) as text) & "x" & ((item 2 of s) as text)'''))
-        width, _, height = raw.partition("x")
-        return int(width.strip()), int(height.strip())
-    except (RuntimeError, ValueError):
-        return -1, -1
+        for _ in range(3):
+            raw = osa(wrap(f'''
+                set w to {MAIN_WINDOW}
+                set s to size of w
+                return ((item 1 of s) as text) & "x" & ((item 2 of s) as text)'''))
+            width, _, height = raw.partition("x")
+            try:
+                size = (int(width.strip()), int(height.strip()))
+            except ValueError:
+                size = (-1, -1)
+            if size[0] > 0 and size[1] > 0:
+                return size
+            time.sleep(0.6)
+    except RuntimeError:
+        pass
+    return -1, -1
 
 
 def set_window_size(width: int, height: int) -> None:
@@ -225,11 +243,26 @@ def set_window_size(width: int, height: int) -> None:
     time.sleep(1.0)
 
 
-def open_section(name: str) -> str:
-    """Select a section from the real View menu and return the window title."""
+def open_section(name: str, expect: str | None = None, timeout: float = 20.0) -> str:
+    """Select a section from the real View menu and return the window title.
+
+    Menu clicks land asynchronously: right after a relaunch the app can still be
+    on the previous page when the title is read, which looked exactly like "the
+    menu item does not work". When the caller knows the title it expects, wait for
+    it instead of reading once.
+    """
     osa(wrap(f'click menu item "{name}" of menu 1 of menu bar item "View" of menu bar 1'))
-    time.sleep(2.5)
-    return window_title()
+    if expect is None:
+        time.sleep(2.5)
+        return window_title()
+    deadline = time.time() + timeout
+    title = ""
+    while time.time() < deadline:
+        time.sleep(0.9)
+        title = window_title()
+        if title == expect:
+            return title
+    return title
 
 
 def sidebar_rows() -> int:
@@ -802,7 +835,7 @@ def main() -> int:
               baseline_size[1] == 700, f"{baseline_size}")
 
     for row, name, expected in SECTIONS:
-        title = open_section(name)
+        title = open_section(name, expect=expected)
         check(f"View → {name} selects it", title == expected, title)
         check(f"still exactly one window on “{name}”", window_count() == 1,
               f"{window_count()} windows")
