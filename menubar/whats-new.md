@@ -4,6 +4,24 @@ Newest first. This is the same list the **What's New** link in the app shows.
 
 ---
 
+## Fleet: the Hub explains its own activity gaps
+
+Hub 0.6.49 adds a machine-readable reason beside the fleet-activity limitation it
+already published — and fixes the gap underneath it: only the Voice worker answered
+`/api/fleet/activity`, so Image, Subtitle and Music were recorded as "no reporter"
+and any machine running more than one studio read as partially unavailable, with
+its state unknown.
+
+- Every machine now carries `limitation_code` (`reporter_unavailable`,
+  `partial_read`, `stale_snapshot`, `waiting_for_worker`, or null), a short
+  `limitation_reason`, when the standing condition began, and which readings are
+  genuinely missing. The Machines tab draws the phrase and the code, and the Issues
+  list names them beside the Hub's own sentence, which is kept verbatim.
+- **A machine that reports fully carries null throughout**, and a null median under
+  a null code is "not measured yet" — a different fact from "could not be
+  measured". The activity warnings on this Mac's own machine are gone as a result:
+  it now reads `ready`, 15 completed jobs, no limitation.
+
 ## Fleet: an agent-mode Hub is never sent customer work
 
 A live probe caught it: one image job and one TTS job both failed with

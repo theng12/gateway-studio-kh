@@ -174,7 +174,38 @@ struct FleetMachine: Decodable {
     /// **Job counts per modality**, not a list of models the machine offers. The
     /// table labels the column "Work done by kind" so the two are never confused.
     var modalities: [String: Int]?
+    /// The Hub's sentence when it could not fully read this machine's activity.
     var limitation: String?
+    /// Hub 0.6.49's machine-readable reason beside that sentence. A closed set:
+    /// `reporter_unavailable`, `partial_read`, `stale_snapshot`,
+    /// `waiting_for_worker` — or null, which with a null sentence means the machine
+    /// reports **fully**, not that nobody checked.
+    var limitationCode: String?
+    var limitationReason: String?
+    var limitationSince: FleetScalar?
+    /// The fields genuinely missing because of it, e.g. `["state", "median_runtime"]`.
+    var limitationAffects: [String]?
+
+    /// What the Limitation column draws: the Hub's phrase if it gave one, else its
+    /// sentence, plus which readings are missing. A machine that reports fully
+    /// draws an em dash, never an empty cell that could read as a glitch.
+    var limitationText: String {
+        var parts: [String] = []
+        if let reason = limitationReason, !reason.isEmpty {
+            parts.append(reason)
+        } else if let limitation, !limitation.isEmpty {
+            parts.append(limitation)
+        } else {
+            return "—"
+        }
+        if let code = limitationCode, !code.isEmpty {
+            parts.append("(\(code))")
+        }
+        if let affects = limitationAffects, !affects.isEmpty {
+            parts.append("missing \(affects.joined(separator: ", "))")
+        }
+        return parts.joined(separator: " · ")
+    }
 }
 
 // MARK: - Worker

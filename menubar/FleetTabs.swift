@@ -1067,9 +1067,14 @@ final class FleetMachinesTab: NSView {
             ),
             FleetColumn(
                 id: "limitation", title: "Limitation", width: 260,
-                text: { FleetFormat.text(machine($0)?.limitation) },
-                sortValue: { .text(machine($0)?.limitation ?? "") },
-                tooltip: { machine($0)?.limitation }
+                text: { machine($0)?.limitationText ?? "—" },
+                sortValue: { .text(machine($0)?.limitationReason ?? machine($0)?.limitation ?? "") },
+                tooltip: { row in
+                    // The Hub's own sentence stays reachable even when the column
+                    // shows its shorter phrase.
+                    let machine = machine(row)
+                    return machine?.limitation ?? machine?.limitationText
+                }
             ),
         ]
     }

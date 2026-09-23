@@ -499,6 +499,65 @@ class IssueDerivationTests(unittest.TestCase):
         self.assertEqual(issue["message"], "No answer within 6s.")
 
 
+    def test_the_limitation_reason_and_affects_travel_with_the_machine(self) -> None:
+        # Hub 0.6.49 adds a closed code, a short phrase and the fields genuinely
+        # missing. All of it travels beside the sentence, which is kept verbatim.
+        row = {
+            "id": "site", "label": "Site", "local": False, "reachable": True,
+            "role": "controller", "ready": True,
+            "machines": [{"machine": "m1", "label": "M1"}],
+            "activity": {"pulse": {}, "machines": [{
+                "machine": "m1", "state": "unknown",
+                "limitation": "Direct activity partially unavailable",
+                "limitation_code": "partial_read",
+                "limitation_reason": "Some reporters missing",
+                "limitation_since": 1790000000.0,
+                "limitation_affects": ["state", "median_runtime"],
+            }]},
+            "running_jobs": [], "local_models": [], "workers": [],
+            "probe_machines_hidden": 0,
+        }
+        flat = fleet.machines_flat([row])
+        self.assertEqual(flat[0]["limitation_code"], "partial_read")
+        self.assertEqual(flat[0]["limitation_reason"], "Some reporters missing")
+        self.assertEqual(flat[0]["limitation_affects"], ["state", "median_runtime"])
+        self.assertEqual(flat[0]["limitation_since"], 1790000000.0)
+
+        issue = next(issue for issue in fleet._issues([row])
+                     if issue["code"] == "machine_limited")
+        self.assertIn("Direct activity partially unavailable", issue["message"])
+        self.assertIn("Some reporters missing", issue["message"])
+        self.assertIn("partial_read", issue["message"])
+        self.assertIn("missing median_runtime, state", issue["message"])
+
+    def test_a_fully_reporting_machine_raises_no_limitation_issue(self) -> None:
+        # Measured live on 0.6.49: the machine that used to read
+        # `limitation="Direct activity partially unavailable"` now reads
+        # state=ready, completed=15, limitation=null, limitation_code=null. A null
+        # median under a null code is "not measured yet", not a limitation.
+        row = {
+            "id": "site", "label": "Site", "local": False, "reachable": True,
+            "role": "controller", "ready": True,
+            "machines": [{"machine": "m1", "label": "M1"}],
+            "activity": {"pulse": {}, "machines": [{
+                "machine": "m1", "state": "ready", "completed": 15,
+                "median_runtime_s": None, "limitation": None, "limitation_code": None,
+                "limitation_reason": None, "limitation_since": None,
+                "limitation_affects": None,
+            }]},
+            "running_jobs": [], "local_models": [], "workers": [],
+            "probe_machines_hidden": 0,
+        }
+        codes = {issue["code"] for issue in fleet._issues([row])}
+        self.assertNotIn("machine_limited", codes, codes)
+        self.assertNotIn("machine_unknown_state", codes, codes)
+        # The readings are still carried, so the Machines tab shows the real number.
+        flat = fleet.machines_flat([row])[0]
+        self.assertEqual(flat["state"], "ready")
+        self.assertEqual(flat["completed"], 15)
+        self.assertIsNone(flat["limitation_code"])
+
+
 class AdminEnrichmentTests(unittest.TestCase):
     def test_locations_gain_counts_without_the_cache_being_mutated(self) -> None:
         from gateway import admin as admin_module

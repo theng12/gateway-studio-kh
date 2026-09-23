@@ -1400,6 +1400,25 @@ def _summarise(rows: list[dict]) -> dict:
     }
 
 
+def _limitation_fields(entry: dict) -> dict:
+    """The Hub's own reason for a machine's activity limitation, read verbatim.
+
+    `limitation` is the sentence; 0.6.49 adds a closed `limitation_code`, a short
+    `limitation_reason`, when the standing condition began (`limitation_since`), and
+    which fields are consequently missing (`limitation_affects`). All are published
+    as-is, because a null code under a null sentence is the Hub saying the machine
+    reports **fully** — and a null median beneath that is "not measured yet", which
+    is a different fact from "could not be measured".
+    """
+    return {
+        "limitation": entry.get("limitation"),
+        "limitation_code": entry.get("limitation_code"),
+        "limitation_reason": entry.get("limitation_reason"),
+        "limitation_since": entry.get("limitation_since"),
+        "limitation_affects": entry.get("limitation_affects"),
+    }
+
+
 def machines_flat(rows: list[dict]) -> list[dict]:
     """Every machine in the fleet as one row, with its location attached.
 
@@ -1434,7 +1453,7 @@ def machines_flat(rows: list[dict]) -> list[dict]:
                 "disk_free_gb": machine.get("disk_free_gb"),
                 "health": machine.get("health"),
                 "modalities": machine.get("modalities") or {},
-                "limitation": entry.get("limitation"),
+                **_limitation_fields(entry),
             })
         # A machine the activity report knows about but the overview omitted is
         # still a machine.
@@ -1456,7 +1475,7 @@ def machines_flat(rows: list[dict]) -> list[dict]:
                 "median_runtime_s": entry.get("median_runtime_s"),
                 "chip": None, "memory_gb": None, "disk_free_gb": None, "health": None,
                 "modalities": {},
-                "limitation": entry.get("limitation"),
+                **_limitation_fields(entry),
             })
     return out
 
@@ -1567,7 +1586,7 @@ def _issues_for(row: dict) -> list[dict]:
     # that says how many machines are affected, with the Hub's own wording kept
     # verbatim. A machine-specific fault (offline, unhealthy) still gets its own
     # row, because it names a machine someone can go and look at.
-    limitations: dict[str, int] = {}
+    limitations: dict[tuple[str, str, str], dict] = {}
     unknown_state = 0
     for machine in machines_flat([row]):
         machine_id = str(machine.get("machine") or "")
@@ -1590,14 +1609,35 @@ def _issues_for(row: dict) -> list[dict]:
             ))
         limitation = str(machine.get("limitation") or "").strip()
         if limitation:
-            limitations[limitation] = limitations.get(limitation, 0) + 1
+            key = (
+                limitation,
+                str(machine.get("limitation_code") or ""),
+                str(machine.get("limitation_reason") or ""),
+            )
+            bucket = limitations.setdefault(key, {"count": 0, "affects": set()})
+            bucket["count"] += 1
+            affects = machine.get("limitation_affects")
+            if isinstance(affects, list):
+                bucket["affects"].update(str(field) for field in affects)
 
     if limitations:
-        for text, count in sorted(limitations.items()):
+        for (text, code, reason), bucket in sorted(limitations.items()):
+            count = bucket["count"]
             machines_text = f"{count} machine" + ("" if count == 1 else "s")
+            # The Hub's sentence stays verbatim and the 0.6.49 code and phrase are
+            # added beside it, never instead of it: "Direct activity partially
+            # unavailable" is what the owner sees on that Mac's own Hub, and the
+            # code is what makes it groupable and reportable.
+            detail = f"{machines_text}: {text}"
+            if reason and reason.lower() not in text.lower():
+                detail += f" — {reason}"
+            if code:
+                detail += f" ({code})"
+            if bucket["affects"]:
+                detail += "; missing " + ", ".join(sorted(bucket["affects"]))
             out.append(_issue(
                 "warning", "machine_limited", location_id, location, machines_text,
-                f"{machines_text}: {text}", "Fleet → Machines",
+                detail, "Fleet → Machines",
             ))
     if unknown_state:
         machines_text = f"{unknown_state} machine" + ("" if unknown_state == 1 else "s")
