@@ -638,5 +638,40 @@ class TakesCustomerJobsTests(unittest.TestCase):
             self.assertEqual(fleet.usable_location_ids(), {"ctrl"})
 
 
+class VoicePinTests(unittest.TestCase):
+    """A voice pins its owner's route — unless the owner cannot take the work.
+
+    A voice owned by an agent-mode Hub pinned TTS to a site that answers 409, and
+    once agents are excluded from routing the same pin resolved to a 404. The pin
+    now holds only while the owner accepts customer work; otherwise the job routes
+    to a controller and the adapter stages the reference clip there.
+    """
+
+    def test_a_voice_owned_by_an_agent_is_not_pinned(self) -> None:
+        rows = [
+            _location("local", role="agent", drained=True),
+            _location("ctrl", role="controller", drained=False),
+        ]
+        with patch.object(fleet, "snapshot", return_value={"locations": rows}):
+            self.assertIsNone(
+                fleet.pinned_location({"voice_id": "studio-hub-local::voice-a"})
+            )
+
+    def test_a_voice_owned_by_a_controller_still_pins_it(self) -> None:
+        rows = [_location("ctrl", role="controller", drained=False)]
+        with patch.object(fleet, "snapshot", return_value={"locations": rows}):
+            self.assertEqual(
+                fleet.pinned_location({"voice_id": "studio-hub-ctrl::voice-a"}), "ctrl"
+            )
+
+    def test_an_owner_the_snapshot_cannot_classify_keeps_the_pin(self) -> None:
+        # Misrouting a voice whose clip lives on one Hub is worse than a refusal, so
+        # an unknown owner keeps the old behaviour.
+        with patch.object(fleet, "snapshot", return_value={"locations": []}):
+            self.assertEqual(
+                fleet.pinned_location({"voice_id": "studio-hub-ghost::voice-a"}), "ghost"
+            )
+
+
 if __name__ == "__main__":
     unittest.main()

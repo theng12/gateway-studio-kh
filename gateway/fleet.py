@@ -120,20 +120,46 @@ _VOICE_PIN_KEYS = ("voice_id", "voice_reference_source_id", "voice_library_id")
 
 
 def pinned_location(params: dict) -> str | None:
-    """The location a request already names, if it names one.
+    """The location a request already names, if it names one **that can take it**.
 
     A voice id carries its owner (`studio-hub-<controller>::<raw>`), so voice work
-    must go to that location and no other — the reference clip exists on one Hub,
-    not on the fleet. The submit path pins the route with this, and the worker uses
-    it to know a refused job must **not** be re-routed to a different controller.
+    belongs at the location holding the reference clip — but only when that location
+    accepts customer work. A voice owned by an **agent-mode Hub** (this Mac, when it
+    is a node of a controller) pins work to a site that answers `409`, which is not a
+    route at all: measured live, a TTS job carrying a local voice resolved to a
+    404 because the only candidate was the agent that had just been excluded.
+
+    When the owner cannot take work the pin is dropped and the job routes to a
+    controller that can; the adapter stages the reference clip there, which is the
+    same cross-location path a voice owned elsewhere already uses. An owner the
+    snapshot cannot classify keeps the pin, because misrouting a voice whose clip
+    lives on one Hub is worse than a refusal that names the reason.
     """
     if not isinstance(params, dict):
         return None
     for key in _VOICE_PIN_KEYS:
         location_id = location_for_voice(str(params.get(key) or ""))
         if location_id:
-            return location_id
+            return location_id if _location_takes_customer_jobs(location_id) else None
     return None
+
+
+def _location_takes_customer_jobs(location_id: str) -> bool:
+    """Whether a named location accepts customer work, from the cached snapshot.
+
+    The submit path already pays for one fleet read, so this must not add another.
+    A location the snapshot does not know, or a snapshot that cannot be read, keeps
+    the old behaviour (the pin holds) rather than silently sending voice work to a
+    site that may not hold the clip.
+    """
+    try:
+        rows = snapshot(allow_stale=True).get("locations") or []
+    except Exception:  # noqa: BLE001 - a routing hint must never break a submit
+        return True
+    for row in rows:
+        if str(row.get("id")) == location_id:
+            return _takes_customer_jobs(row)
+    return True
 
 #: Per-request budget. A controller on the far end of a VPN is slower than
 #: loopback, and a location that takes longer than this is reported unreachable

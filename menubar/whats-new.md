@@ -22,6 +22,14 @@ enabled on this Mac's **agent** provider and on neither controller. The controll
 that owns this Mac can already serve them — all available and cached across four
 machines — so the image and TTS lanes are enabled on the controllers.
 
+**A voice still pins its owner — unless that owner cannot take the work.** A voice
+belongs to the location that holds its reference clip, which is why voice work is
+never re-routed. But when the owner is an agent, pinning there is a dead end: the
+TTS job resolved to "model not available" because the only candidate was the agent
+just excluded. The pin now holds only while the owner accepts customer work;
+otherwise the job routes to a controller and the reference clip is staged there,
+the same path a voice owned anywhere else already uses.
+
 ## Fleet: the Hub's own answers, and Retry
 
 Studio Hub 0.6.48 publishes what the gateway had been approximating. Where a
