@@ -1127,16 +1127,27 @@ struct FleetModelAggregate {
 /// wording rather than a dot.
 final class FleetModelsTab: FleetTabView {
     private let master = FleetTableController(columns: FleetModelsTab.masterColumns(), rowHeight: 22)
-    private let detail = FleetTableController(columns: FleetModelsTab.detailColumns(), rowHeight: 36)
+    // Built in `init`: the Worker column reads the per-worker catalogue, which is
+    // instance state (set by `update`), so the closure captures the tab.
+    private var detail: FleetTableController!
     private let masterTitle = PageKit.sectionTitle("Local models")
     private let detailTitle = PageKit.sectionTitle("Machines serving this model")
     private let statusLabel = PageKit.label("", size: 11.5, colour: .secondaryLabelColor, wrapping: true)
 
     private var aggregates: [FleetModelAggregate] = []
     private var selectedModel: String?
+    /// "machine|model id" -> the worker that serves it, from `workers[].models`
+    /// (Hub 0.6.48). This is a fact the Hub states, not an inference from a studio.
+    private var workerLookup: [String: String] = [:]
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
+        detail = FleetTableController(columns: FleetModelsTab.detailColumns(
+            worker: { [weak self] row in
+                guard let self else { return "—" }
+                let key = "\(row.machine ?? "")|\(row.modelId ?? row.model ?? "")"
+                return self.workerLookup[key] ?? "—"
+            }), rowHeight: 36)
         // Master and detail sit inside this tab's own scroll view, with fixed
         // heights in the document. That keeps the tab's required height out of the
         // window: a plain stack of two fixed tables grew the window at the app's
@@ -1165,7 +1176,18 @@ final class FleetModelsTab: FleetTabView {
 
     required init?(coder: NSCoder) { fatalError("not used") }
 
-    func update(models: [FleetLocalModel], filter: FleetFilter) {
+    func update(models: [FleetLocalModel], workers: [FleetWorker], filter: FleetFilter) {
+        // Which worker serves which model, straight from the worker's own catalogue
+        // (0.6.48). A worker that states no models is simply absent, so the column
+        // reads "—" rather than a guess.
+        workerLookup = [:]
+        for worker in workers {
+            guard let machine = worker.machine, !machine.isEmpty else { continue }
+            let name = worker.id ?? worker.studio ?? "worker"
+            for modelId in worker.models where !modelId.isEmpty {
+                workerLookup["\(machine)|\(modelId)"] = name
+            }
+        }
         let filtered = models.filter { row in
             filter.matchesLocation(row.locationId)
                 && filter.matchesSearch([
@@ -1324,7 +1346,9 @@ final class FleetModelsTab: FleetTabView {
         ]
     }
 
-    private static func detailColumns() -> [FleetColumn] {
+    private static func detailColumns(
+        worker: @escaping (FleetLocalModel) -> String
+    ) -> [FleetColumn] {
         func row(_ any: Any) -> FleetLocalModel? { any as? FleetLocalModel }
         return [
             FleetColumn(
@@ -1336,6 +1360,14 @@ final class FleetModelsTab: FleetTabView {
                 id: "dmachine", title: "Machine", width: 170,
                 text: { row($0)?.machine ?? "—" },
                 sortValue: { .text(row($0)?.machine ?? "") }
+            ),
+            // **Which worker actually serves it**, from the worker's own catalogue.
+            // The machine is where the hardware is; the worker is what would run the
+            // job, and on a Mac with four studios those are not the same answer.
+            FleetColumn(
+                id: "dworker", title: "Worker", width: 170,
+                text: { any in row(any).map(worker) ?? "—" },
+                sortValue: { any in .text(row(any).map(worker) ?? "") }
             ),
             FleetColumn(
                 id: "davailable", title: "Available", width: 80,

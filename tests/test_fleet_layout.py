@@ -35,7 +35,9 @@ FIXTURE = {
             "workers": [
                 {"id": "voice", "studio": "voice", "modality": "voice", "machine": "local",
                  "online": True, "ready": True, "busy": False, "drained": False,
-                 "maintenance": False, "quarantined": False, "slots": 1, "slots_total": 1},
+                 "maintenance": False, "quarantined": False, "slots": 1, "slots_total": 1,
+                 "models": ["mock-hub/clone-model"],
+                 "supported_operations": ["voice.tts"]},
             ],
             "local_models": [
                 {"model": "mock-hub/clone-model", "label": "Clone Model", "studio": "voice",
@@ -191,7 +193,7 @@ enum GatewayAPI {
         _ = layout("Machines", machines, rows: 3)
 
         let models = FleetModelsTab(frame: .zero)
-        models.update(models: snapshot.allLocalModels, filter: FleetFilter())
+        models.update(models: snapshot.allLocalModels, workers: snapshot.locations.flatMap { $0.workers }, filter: FleetFilter())
         _ = layout("Models", models, rows: 4)
 
         let jobs = FleetJobsTab(frame: .zero)

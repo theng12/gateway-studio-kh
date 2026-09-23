@@ -377,7 +377,7 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
         overviewTab.setStatus(error, colour: .systemOrange)
         locationsTab.update(locations: [])
         machinesTab.update(machines: [], studios: [:], filter: filter)
-        modelsTab.update(models: [], filter: filter)
+        modelsTab.update(models: [], workers: [], filter: filter)
         jobsTab.update(snapshot: empty, filter: filter)
         // A location filter that outlived its locations would hide the next read's
         // rows for a reason nothing on the page explains.
@@ -409,7 +409,10 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
         overviewTab.update(snapshot: snapshot, filter: filter)
         machinesTab.update(
             machines: snapshot.machines, studios: snapshot.studiosByMachine, filter: filter)
-        modelsTab.update(models: snapshot.allLocalModels, filter: filter)
+        modelsTab.update(
+            models: snapshot.allLocalModels,
+            workers: snapshot.locations.flatMap { $0.workers },
+            filter: filter)
         jobsTab.update(snapshot: snapshot, filter: filter)
     }
 
