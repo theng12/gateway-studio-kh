@@ -1,7 +1,7 @@
 # HANDOFF — gateway-kh
 
-**Read this first.** Written 2026-09-23 against **VERSION `0.2.17`** (the release
-commit and running build stamp are named in `WHERE THINGS STAND`).
+**Read this first.** Written 2026-09-23 against **VERSION `0.2.17`**, release commit
+`284089e`, running build `284089e-202609231514`.
 If this file disagrees with the code, **the code wins — fix this file in the same change**.
 Every path below is inside the Git checkout `repository/` unless it says otherwise.
 `[MEASURED]` = observed in the session that wrote this; `[reason not recorded]` = the
@@ -13,7 +13,7 @@ project does not say why, and nobody should guess.
 |---|---|
 | Current release | **0.2.17** — `repository/VERSION`, one line, the only place to bump |
 | Branch | `main` = `origin/main`, clean tree; remote `github.com/theng12/gateway-kh` |
-| Running build | `/Applications/gateway-kh.app`, port **8787**; stamp at `/health` and in `…/Resources/gateway/BUILD` |
+| Running build | `/Applications/gateway-kh.app`, port **8787**, stamp `284089e-202609231514` (`/health` and `…/Resources/gateway/BUILD`) |
 | Distribution | DMG in `repository/dist/` (`gateway-kh-0.2.17.dmg`), named by version alone |
 | SSD/setup kit | `repository/dist/setup-kit/` — "copy this whole folder to each SSD/Mac" |
 
