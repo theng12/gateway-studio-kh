@@ -835,6 +835,9 @@ def _probe(base: str, token: str, *, timeout: float = _TIMEOUT) -> dict:
             "probe_entries_hidden": hidden,
         })
 
+    dispatch = _dispatch_index(packages_payload)
+    local_models = _local_models(models_payload, dispatch)
+
     location.update({
         "reachable": True,
         # Prefer the Hub's own identity; fall back to the older sources only when
@@ -860,15 +863,17 @@ def _probe(base: str, token: str, *, timeout: float = _TIMEOUT) -> dict:
         "matrix": stats.get("matrix") or [],
         "jobs_total": stats.get("total"),
         "capacity": capabilities.get("capacity") or {},
-        # The Hub's own per-model physical capacity. The router reads this so a
-        # model is weighted by the machines that can run **it**, not by every
-        # machine at the site (see `routing_candidates`).
-        "model_supply": _model_supply_index(capabilities.get("model_supply") or []),
+        # Per-model physical capacity, which the router reads so a model is
+        # weighted by the machines that can run **it**, not by every machine at the
+        # site (see `routing_candidates`). The Hub's own reduction when it publishes
+        # one; otherwise the same counts reduced from its per-machine model rows.
+        "model_supply": _model_supply_index(
+            capabilities.get("model_supply") or [],
+            _supply_from_local_models(local_models),
+        ),
         # The Models tab: one trimmed row per (model, machine), with the installed
         # package's `dispatch_state` joined in.
-        "local_models": _local_models(
-            models_payload, _dispatch_index(packages_payload)
-        ),
+        "local_models": local_models,
         # The Machines tab: capabilities' worker roster, falling back to the
         # node list's studios.
         "workers": _worker_roster(capabilities, node_rows),
@@ -1649,7 +1654,44 @@ def _truthy(value: object) -> bool:
     return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
-def _model_supply_index(rows: object) -> dict[str, dict[str, int]]:
+def _supply_from_local_models(local_models: object) -> dict[str, dict[str, int]]:
+    """Per-model machine counts, reduced from the Hub's own per-machine rows.
+
+    Hub 0.6.47 publishes `capabilities.model_supply` **empty** — measured against
+    one agent and two controllers — while `/api/hub/models` states, per machine and
+    model, whether that machine is `memory_eligible` and `available`. Counting
+    those stated booleans is the same reduction `model_supply` describes, from the
+    Hub's own evidence rather than a guess, so the router can weight by the
+    machines that can run a **specific** model instead of falling back to the
+    site-wide total.
+
+    The model id is the Hub's `repo`, which is the id this gateway publishes and
+    dispatches for a location (30 of 35 live published ids are Hub repos; the rest
+    are companion models the Hub does not list as rows).
+
+    A machine that states neither boolean is **not** counted: `None` is "unknown",
+    which must not read as "cannot" — the same rule every other field follows.
+    """
+    supply: dict[str, dict[str, int]] = {}
+    if not isinstance(local_models, list):
+        return supply
+    for row in local_models:
+        if not isinstance(row, dict):
+            continue
+        model_id = str(row.get("model") or "").strip()
+        if not model_id:
+            continue
+        entry = supply.setdefault(model_id, {"eligible": 0, "available": 0})
+        if row.get("memory_eligible") is True:
+            entry["eligible"] += 1
+        if row.get("available") is True:
+            entry["available"] += 1
+    return supply
+
+
+def _model_supply_index(
+    rows: object, fallback: dict[str, dict[str, int]] | None = None
+) -> dict[str, dict[str, int]]:
     """The Hub's per-model physical capacity, keyed by the model id it names.
 
     `model_supply` is the Hub's own reduction of every worker's evidence, and it
@@ -1658,20 +1700,27 @@ def _model_supply_index(rows: object) -> dict[str, dict[str, int]]:
     the model's memory floor; `available` counts the ones ready with a free slot
     now. Both are read, never derived — and a machine that cannot fit the model is
     in neither, which is the whole point.
+
+    **A Hub that publishes no `model_supply` is filled from its own per-machine
+    model rows** (`fallback`), because that is the same evidence the Hub would have
+    reduced. The Hub's published row always wins where both exist, so a future Hub
+    that starts sending `model_supply` is believed over our reduction of it.
     """
     index: dict[str, dict[str, int]] = {}
-    if not isinstance(rows, list):
-        return index
-    for row in rows:
-        if not isinstance(row, dict):
-            continue
-        model_id = str(row.get("internal_model_id") or "").strip()
-        if not model_id:
-            continue
-        index[model_id] = {
-            "eligible": _as_int(row.get("eligible_physical_slots_total")),
-            "available": _as_int(row.get("available_physical_slots")),
-        }
+    if isinstance(rows, list):
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            model_id = str(row.get("internal_model_id") or "").strip()
+            if not model_id:
+                continue
+            index[model_id] = {
+                "eligible": _as_int(row.get("eligible_physical_slots_total")),
+                "available": _as_int(row.get("available_physical_slots")),
+            }
+    if fallback:
+        for model_id, counts in fallback.items():
+            index.setdefault(model_id, counts)
     return index
 
 

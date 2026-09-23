@@ -258,6 +258,16 @@ class FleetTabTests(unittest.TestCase):
         self.assertEqual({row["machine"] for row in rows}, {"mac-a", "mac-b"})
         self.assertEqual({row["modality"] for row in rows}, {"image", "voice"})
 
+    def test_the_probe_fills_model_supply_from_the_hubs_own_machine_rows(self) -> None:
+        # Hub 0.6.47 publishes `capabilities.model_supply` empty. The router must
+        # still get the per-model machine counts, reduced from the Hub's own
+        # per-machine eligibility rows, or it weights every site by its whole
+        # machine total for a model most of them cannot run.
+        location = self._probe()
+        expected = fleet._supply_from_local_models(location["local_models"])
+        self.assertTrue(expected, "the mock must state at least one eligibility")
+        self.assertEqual(location["model_supply"], expected)
+
     def test_availability_fit_error_and_dispatch_are_read_per_machine(self) -> None:
         by_machine = {
             (row["model"], row["machine"]): row
@@ -475,6 +485,44 @@ class AdminEnrichmentTests(unittest.TestCase):
         self.assertIsNone(row["models_discovered"])
         self.assertIsNone(row["models_enabled"])
         self.assertIsNone(row["models_publishable"])
+
+
+class SupplyReductionTests(unittest.TestCase):
+    """The per-model counts the router weights by, when the Hub publishes none.
+
+    Hub 0.6.47 sends `capabilities.model_supply` empty while stating, per machine
+    and model, whether that machine is memory-eligible and available. Reducing
+    those stated booleans is the same count `model_supply` describes — and the
+    router must get it, or it keeps falling back to the site-wide machine total.
+    """
+
+    def test_per_machine_rows_reduce_to_the_counts_the_router_weights_by(self) -> None:
+        rows = [
+            {"model": "m/a", "machine": "mac-1", "memory_eligible": True, "available": True},
+            {"model": "m/a", "machine": "mac-2", "memory_eligible": True, "available": False},
+            {"model": "m/a", "machine": "mac-3", "memory_eligible": False, "available": False},
+            {"model": "m/a", "machine": "mac-4", "memory_eligible": None, "available": None},
+            {"model": "m/b", "machine": "mac-1", "memory_eligible": True, "available": True},
+        ]
+        supply = fleet._supply_from_local_models(rows)
+        self.assertEqual(supply["m/a"], {"eligible": 2, "available": 1})
+        self.assertEqual(supply["m/b"], {"eligible": 1, "available": 1})
+
+    def test_an_unknown_boolean_is_never_counted_as_cannot(self) -> None:
+        # `None` is "the Hub did not say", which is not "no machine fits".
+        supply = fleet._supply_from_local_models([
+            {"model": "m/a", "machine": "mac-1", "memory_eligible": None, "available": None},
+        ])
+        self.assertEqual(supply["m/a"], {"eligible": 0, "available": 0})
+
+    def test_a_published_hub_row_wins_over_the_reduction(self) -> None:
+        index = fleet._model_supply_index(
+            [{"internal_model_id": "m/a", "eligible_physical_slots_total": 1,
+              "available_physical_slots": 1}],
+            {"m/a": {"eligible": 9, "available": 9}, "m/b": {"eligible": 2, "available": 0}},
+        )
+        self.assertEqual(index["m/a"], {"eligible": 1, "available": 1})
+        self.assertEqual(index["m/b"], {"eligible": 2, "available": 0})
 
 
 if __name__ == "__main__":

@@ -4,6 +4,22 @@ Newest first. This is the same list the **What's New** link in the app shows.
 
 ---
 
+## Fleet: placement weights the Macs that can run the model
+
+Studio Hub 0.6.47 publishes no per-model capacity — `capabilities.model_supply`
+comes back empty on every location — so placement had fallen back to counting
+every machine at a site. A site with ten 8 GB image Macs could out-weigh one with
+two 24 GB Macs for a model only the big ones can run.
+
+The gateway now reduces the Hub's **own** per-machine rows instead:
+`/api/hub/models` states, for every machine and model, whether that machine
+clears the model's memory floor (`memory_eligible`) and whether it is ready with a
+free slot (`available`). Counting those stated booleans is the same number
+`model_supply` describes, so a four-machine controller reports *4 eligible, 3
+available* for a model one of its Macs cannot hold, and the placement weight
+follows. A Hub that does publish `model_supply` is still believed over the
+reduction, and a machine that states neither boolean is never counted as "cannot".
+
 ## Fleet: stop a running batch
 
 The **Jobs** tab can ask a location's Hub to stop a batch it is running.
