@@ -696,3 +696,8 @@ Moved to [docs/giving-the-app-away.md](docs/giving-the-app-away.md).
   number read there is a claim until the bundle agrees. The file you can find is
   not automatically the running one, and the Hub auto-updates (0.6.18 → 0.6.23
   → 0.6.29 → 0.6.31) enough that the difference is not hypothetical.
+- **Every release updates `docs/tasks/HANDOFF.md`.** Read it first in a new
+  session, and keep it current: the version, anything newly learned, anything
+  newly forbidden, and what is still open. A stale handoff is worse than none,
+  because it is trusted — if it disagrees with the code, the code wins and the
+  file gets fixed.
