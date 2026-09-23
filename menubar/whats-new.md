@@ -4,6 +4,19 @@ Newest first. This is the same list the **What's New** link in the app shows.
 
 ---
 
+## The gateway stops offering a knob the model won't take
+
+The last release made a refused temperature survive; this one stops asking for it.
+
+- **A model that accepts only its own default temperature is no longer offered a
+  temperature control.** Story Studio sends `0.7` whenever the catalogue offers the
+  control, so OpenAI's reasoning models (`gpt-6-luna`, the `gpt-5`/`gpt-6` family,
+  `o1`/`o3`/`o4`) were answering `400`. They now run at their own default instead.
+- **Scoped to the API that refuses it.** A proxy that accepts `0.7` — Experiential
+  Labs' `gpt-5.6-luna` did — keeps the control, and any provider that publishes its
+  own parameter list is always believed. The one-retry-without-temperature from
+  0.2.19 stays as the safety net for a family this table has not learned yet.
+
 ## A provider's “no” is a failure, not a mystery
 
 Two things made a refused chat call look like a lost one.
