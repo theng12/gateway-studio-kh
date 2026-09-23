@@ -174,6 +174,25 @@ class ReleasePublish(unittest.TestCase):
         self.assertIn("trusted gateway key", outcome["detail"])
         self.assertIn(identity["fingerprint"], outcome["detail"])
 
+    def test_a_connect_timeout_is_an_unreachable_controller(self) -> None:
+        # A connection that was never established delivered nothing, so it is a
+        # site that is down — not a generic push failure. (A *read* timeout after
+        # the request left keeps the generic path, because it may have arrived.)
+        class _Client:
+            def __enter__(self): return self
+            def __exit__(self, *args): return False
+            def post(self, *args, **kwargs): raise httpx.ConnectTimeout("connect timed out")
+
+        descriptor = rp.descriptor_for_bytes(
+            b"x", version="0.6.50", build="abc1234", filename="f.dmg"
+        )
+        with patch.object(rp.httpx, "Client", lambda **kwargs: _Client()):
+            outcome = rp.push("http://10.255.255.1:47873", "fleet-tok", descriptor, b"x")
+        self.assertFalse(outcome["ok"])
+        self.assertEqual(outcome["code"], "LOCATION_UNREACHABLE")
+        self.assertIsNone(outcome["status"])
+        self.assertIn("could not reach the controller", outcome["detail"])
+
     def test_absence_is_null_never_a_stub(self) -> None:
         self.assertIsNone(
             rp.read_release(self.controller.base, self.controller.fleet_token)

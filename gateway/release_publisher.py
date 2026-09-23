@@ -245,7 +245,10 @@ def push(base: str, token: str, descriptor: dict[str, Any], artifact: bytes) -> 
     try:
         with httpx.Client(timeout=_PUSH_TIMEOUT) as client:
             response = client.post(endpoint, headers=_headers(token), json=body)
-    except httpx.ConnectError as exc:
+    except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
+        # A connection that was never established delivered nothing, so this is a
+        # site that is down rather than an unknown push. A read timeout after the
+        # request left is different and keeps the generic path below.
         return {
             "ok": False, "status": None, "code": "LOCATION_UNREACHABLE",
             "detail": f"could not reach the controller at {base} ({type(exc).__name__})",
