@@ -1468,8 +1468,9 @@ final class FleetJobsTab: FleetTabView {
         let message = PageKit.label(reason, size: 11.5, colour: colour, wrapping: true)
         message.maximumNumberOfLines = 4
         let hint = PageKit.label(
-            "Fix: the Hub owns its own queue, so this page cannot cancel a batch. Press Refresh to "
-            + "re-read the Hub's list; if it stays stalled, check the machine on the Machines tab.",
+            "Fix: press Refresh to re-read the Hub's list. The Hub settles its own queue, and a "
+            + "batch it has already handed to a worker cannot be promised to stop — if it stays "
+            + "stalled, check the machine on the Machines tab.",
             size: 11, colour: .secondaryLabelColor, wrapping: true
         )
         hint.maximumNumberOfLines = 3
