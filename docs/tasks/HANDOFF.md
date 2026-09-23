@@ -1,7 +1,7 @@
 # HANDOFF — gateway-kh
 
-**Read this first.** Written 2026-09-23 against **VERSION `0.2.17`**, release commit
-`284089e`, running build `284089e-202609231514`.
+**Read this first.** Written 2026-09-23 against **VERSION `0.2.18`**, release commit
+`9b7876a`, running build `9b7876a-202609231626`.
 If this file disagrees with the code, **the code wins — fix this file in the same change**.
 Every path below is inside the Git checkout `repository/` unless it says otherwise.
 `[MEASURED]` = observed in the session that wrote this; `[reason not recorded]` = the
@@ -11,10 +11,10 @@ project does not say why, and nobody should guess.
 
 | Thing | Value |
 |---|---|
-| Current release | **0.2.17** — `repository/VERSION`, one line, the only place to bump |
+| Current release | **0.2.18** — `repository/VERSION`, one line, the only place to bump |
 | Branch | `main` = `origin/main`, clean tree; remote `github.com/theng12/gateway-kh` |
-| Running build | `/Applications/gateway-kh.app`, port **8787**, stamp `284089e-202609231514` (`/health` and `…/Resources/gateway/BUILD`) |
-| Distribution | DMG in `repository/dist/` (`gateway-kh-0.2.17.dmg`), named by version alone |
+| Running build | `/Applications/gateway-kh.app`, port **8787**, stamp `9b7876a-202609231626` (`/health` and `…/Resources/gateway/BUILD`) |
+| Distribution | DMG in `repository/dist/` (`gateway-kh-0.2.18.dmg`), named by version alone |
 | SSD/setup kit | `repository/dist/setup-kit/` — "copy this whole folder to each SSD/Mac" |
 
 - **Versions are patch-only for now:** `0.2.1`, `0.2.2`, … up to `0.2.1000`. Increment the
@@ -56,6 +56,13 @@ Run everything from `repository/`. Python tooling is the checkout venv `.venv/bi
 - **The real-Hub fleet suite is opt-in:** `GATEWAY_ALLOW_LIVE_GENERATION=1 .venv/bin/python
   tests/test_fleet_standalone.py`. Without the variable it skips before contacting the Hub.
 - **Always rebuild before claiming it works.** "It builds" is not "it works."
+- **The release gate reads the Fleet page's *five tabs*, not the old single scroll.** In
+  `tests/test_ui.py` §7 the tabs are AX **radio buttons** (`select_fleet_tab`: 1 Overview,
+  2 Locations, 3 Machines, 4 Models, 5 Jobs), the page *remembers* the last tab, and each
+  tab addresses its table differently — Locations and Jobs are nested one level
+  (`table_texts(n, nested=True)`), Machines is a bare `table 1 of scroll area 2`
+  (`nested=False`). Change the Fleet tabs and §7 must change with them, or the gate reads
+  a loading view and reports the tables missing.
 - Structural change → keep the graph current: `graphify extract . --update --code-only`.
 
 ## PATHS
@@ -130,10 +137,10 @@ Run everything from `repository/`. Python tooling is the checkout venv `.venv/bi
 
 ## OPEN / IN FLIGHT
 
-- **Not started, awaiting the owner's "go":** a gateway-side **downgrade guard** (refuse/warn
-  when the published build is older than what a controller holds) and surfacing the Hub's new
-  `trusted_publisher` per controller in Fleet → Locations → Release. `trusted_publisher` is
-  **not in this gateway's code yet** `[MEASURED]`.
+- **Shipped in 0.2.18 (`9b7876a`):** the gateway-side **downgrade guard** (refuse/warn when a
+  controller already holds a newer version) and the per-controller **`trusted_publisher`** display
+  in Fleet → Locations → Release. The full `tests/test_ui.py` release gate passed **135/135** on
+  this build `[MEASURED]`. The guard is proven against the contract-enforcing mock only.
 - **Unproven on a real controller:** the release push is proven only against the **local** Hub
   on 0.6.50. The two configured remote controllers were **off** (`LOCATION_UNREACHABLE`,
   ConnectTimeout), so a real remote push and the no-trusted-key (409) path are **not** verified.
@@ -145,8 +152,11 @@ Run everything from `repository/`. Python tooling is the checkout venv `.venv/bi
   "the real release is on those controllers."
 - **Held at the owner's request:** a per-node image + TTS generation sweep; it waits for the
   fleet to be up.
-- **No independent review** of the release-publisher work; `test_ui.py` has had no full run since
-  before the freeze for a 50-node rollout.
+- **No independent review** of the release-publisher work. The gate itself was fixed in this
+  release: it had been reading the pre-rework single-scroll Fleet page (and a pinned `/18`
+  provider count), so it failed against a correct app; §7 now walks the five tabs and the AX
+  helpers retry a transient window read. If the Fleet tabs change again, that section must change
+  with them.
 - **Docs reconciled 2026-09-23.** `README.md`, `AGENTS.md` and `Project Status.md`
   (§1/§2/§9/§11) now agree with the code: port 8787, `main` as the only worktree,
   current release. The dated records — `_handoffs/`, `docs/superpowers/plans/`,
