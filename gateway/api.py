@@ -543,6 +543,16 @@ def _submit(
         modality, compound_id, only_location=_pinned_location(params)
     )
     if definition is None or model is None:
+        # **An offered model with no live site is not a missing model.** The fleet
+        # id resolved to nothing because every location that offers it is offline
+        # or cannot take customer work — a temporary, site-shaped condition, and
+        # 503 says so. The 404 below is kept for the ids that really are not in the
+        # catalogue, so the two can never read the same.
+        why = catalog.why_no_route(
+            modality, compound_id, only_location=_pinned_location(params)
+        )
+        if why is not None:
+            raise GatewayError(503, why, "SITE_CAPACITY_UNAVAILABLE")
         raise GatewayError(
             404,
             f'Model "{compound_id}" is not available on this gateway.',

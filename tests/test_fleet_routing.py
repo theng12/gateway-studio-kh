@@ -558,6 +558,57 @@ class IssueDerivationTests(unittest.TestCase):
         self.assertIsNone(flat["limitation_code"])
 
 
+class NoRouteReasonTests(unittest.TestCase):
+    """An offered model with no live site is not a missing model.
+
+    Measured live with both controllers switched off: the submit answered `404
+    Model "…" is not available on this gateway` while the model sat in the picker
+    and every location offering it was simply offline.
+    """
+
+    def _why(self, rows: list[dict], compound: str) -> str | None:
+        from gateway import catalog as catalog_module
+
+        with patch.object(fleet, "snapshot", return_value={"locations": rows}), \
+             patch.object(catalog_module.registry.models, "enabled_models",
+                          lambda modality: [(_definition(rows[0]["id"]), _model_row())]):
+            return catalog_module.catalog.why_no_route(MODALITY, compound)
+
+    def test_an_offering_site_that_is_offline_is_named(self) -> None:
+        why = self._why(
+            [_location("ctrl", role="controller", drained=False, reachable=False)],
+            f"studio-hub::{MODEL}",
+        )
+        self.assertIsNotNone(why)
+        self.assertIn("No location offering this model", why)
+        self.assertIn("offline", why)
+
+    def test_a_site_that_cannot_take_customer_work_is_named(self) -> None:
+        why = self._why(
+            [_location("agent", role="agent", drained=True)],
+            f"studio-hub::{MODEL}",
+        )
+        self.assertIn("cannot take customer work", why)
+
+    def test_an_id_the_catalogue_does_not_offer_is_still_a_missing_model(self) -> None:
+        from gateway import catalog as catalog_module
+
+        with patch.object(catalog_module.registry.models, "enabled_models",
+                          lambda modality: [(_definition("ctrl"), _model_row())]):
+            self.assertIsNone(
+                catalog_module.catalog.why_no_route(MODALITY, "studio-hub::no/such-model")
+            )
+
+    def test_a_cloud_provider_id_is_never_explained_this_way(self) -> None:
+        from gateway import catalog as catalog_module
+
+        with patch.object(catalog_module.registry.models, "enabled_models",
+                          lambda modality: []):
+            self.assertIsNone(
+                catalog_module.catalog.why_no_route(MODALITY, "openai-direct::gpt-image-2")
+            )
+
+
 class AdminEnrichmentTests(unittest.TestCase):
     def test_locations_gain_counts_without_the_cache_being_mutated(self) -> None:
         from gateway import admin as admin_module

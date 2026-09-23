@@ -4,6 +4,22 @@ Newest first. This is the same list the **What's New** link in the app shows.
 
 ---
 
+## Fleet: "the site is down" no longer reads as "no such model"
+
+With every controller switched off, submitting a fleet model answered
+`404 Model "…" is not available on this gateway` — while the model sat in the
+picker and every location offering it was simply offline. That sends you looking
+for a catalogue problem instead of a network one.
+
+- A fleet model that **is** offered but has no live site now answers **503**,
+  naming the condition: *"No location offering this model can take work right now
+  — 2 locations offline."* A genuinely unknown id still answers 404.
+- A submit whose **connection is refused** — a controller that is off — is now
+  recognised as having delivered **nothing**. It fails cleanly and the gateway
+  tries the next location offering that model, instead of holding the job as an
+  unknown outcome you have to reconcile by hand. A read timeout *after* the
+  request left is still treated as ambiguous, because it may have arrived.
+
 ## Fleet: the Hub explains its own activity gaps
 
 Hub 0.6.49 adds a machine-readable reason beside the fleet-activity limitation it

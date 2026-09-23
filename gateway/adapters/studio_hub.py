@@ -667,6 +667,20 @@ def _generate_image_or_voice(request: BackendRequest) -> BackendResult:
                 body["voice_library_id" if kind == "library" else "voice_reference_asset_id"] = value
         try:
             response = client.post(f"{base}/api/hub/jobs", headers=headers, json=body)
+        except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
+            # **Nothing left this Mac.** A connection that was never established
+            # cannot have delivered the request, so this is a site that is down —
+            # safe to re-route, and never an "unknown outcome" hold. Measured live:
+            # a controller that was switched off turned every submit into a durable
+            # unknown-outcome hold, which is a recovery problem the caller never
+            # created. A read or write timeout is different: the request may have
+            # arrived, so it keeps the ambiguous path below.
+            raise BackendError(
+                f"could not reach the Hub at {base} ({type(exc).__name__})",
+                code="LOCATION_UNREACHABLE",
+                retryable=True,
+                upstream_accepted=False,
+            ) from exc
         except httpx.HTTPError as exc:
             raise BackendError(
                 f"hub submit failed: {exc}", code="SITE_CAPACITY_UNAVAILABLE", retryable=True
@@ -776,6 +790,16 @@ def _generate_transcription(request: BackendRequest) -> BackendResult:
             response = client.post(
                 f"{base}/api/hub/transcription/jobs", headers=headers, files=files, data=data
             )
+        except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
+            # Same rule as the shared jobs route: a connection that was never
+            # established delivered nothing, so this is a site that is down rather
+            # than an unknown outcome.
+            raise BackendError(
+                f"could not reach the Hub at {base} ({type(exc).__name__})",
+                code="LOCATION_UNREACHABLE",
+                retryable=True,
+                upstream_accepted=False,
+            ) from exc
         except httpx.HTTPError as exc:
             raise BackendError(
                 f"hub transcription submit failed: {exc}",

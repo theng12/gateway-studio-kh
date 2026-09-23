@@ -79,6 +79,8 @@ class _Hub:
         voice_reference_status: int = 201,
         discard_status: int = 200,
         submit_refusal: dict[str, Any] | None = None,
+        connect_error: bool = False,
+        read_timeout: bool = False,
     ) -> None:
         self.calls: list[tuple[str, str]] = []
         self.acks: list[str] = []
@@ -94,9 +96,17 @@ class _Hub:
         self.voice_reference_status = voice_reference_status
         self.discard_status = discard_status
         self.submit_refusal = submit_refusal
+        self.connect_error = connect_error
+        self.read_timeout = read_timeout
 
     # ── the transport ────────────────────────────────────────────────────
     def handler(self, request: httpx.Request) -> httpx.Response:
+        if self.connect_error:
+            # A refused connection, as a switched-off controller gives.
+            raise httpx.ConnectError("connection refused")
+        if self.read_timeout:
+            # The request left; the answer never came. Genuinely ambiguous.
+            raise httpx.ReadTimeout("timed out")
         path = request.url.path
         method = request.method
         self.calls.append((method, path))
@@ -415,6 +425,46 @@ class UpstreamCancelTests(_HubCase):
         self.assertFalse(answer["ok"])
         self.assertEqual(answer["status"], 404)
         self.assertEqual(answer["answer"]["detail"], "no such batch")
+
+
+class SubmitConnectFailureTests(_HubCase):
+    """A submit that never opened a connection delivered nothing.
+
+    Measured live: a controller that was switched off turned every submit into a
+    durable `unknown_outcome` recovery hold — a reconciliation problem the caller
+    never created. A refused connection cannot have delivered the request, so it is
+    a site that is down; a read timeout after the request left is genuinely
+    ambiguous and keeps the careful path.
+    """
+
+    def test_a_refused_connection_is_a_site_that_is_down(self) -> None:
+        hub = _Hub(connect_error=True)
+        with self.assertRaises(hub_module.BackendError) as caught:
+            self.generate(hub, self.request(modality="image", params={"prompt": "x"}))
+        exc = caught.exception
+        self.assertEqual(exc.code, "LOCATION_UNREACHABLE")
+        self.assertTrue(exc.retryable)
+        self.assertIs(exc.upstream_accepted, False)
+
+    def test_the_same_applies_to_the_transcription_route(self) -> None:
+        hub = _Hub(connect_error=True)
+        with self.assertRaises(hub_module.BackendError) as caught:
+            self.generate(hub, self.request(
+                modality="transcription",
+                # Any existing file will do: the connection is refused before a
+                # byte of it matters.
+                params={"_upload_path": __file__, "_upload_name": "a.mp3"},
+            ))
+        self.assertEqual(caught.exception.code, "LOCATION_UNREACHABLE")
+        self.assertIs(caught.exception.upstream_accepted, False)
+
+    def test_a_silent_read_stays_ambiguous(self) -> None:
+        hub = _Hub(read_timeout=True)
+        with self.assertRaises(hub_module.BackendError) as caught:
+            self.generate(hub, self.request(modality="image", params={"prompt": "x"}))
+        exc = caught.exception
+        self.assertEqual(exc.code, "SITE_CAPACITY_UNAVAILABLE")
+        self.assertIsNone(exc.upstream_accepted, "a read timeout may have been accepted")
 
 
 class CancelRemotePersistenceTests(unittest.TestCase):

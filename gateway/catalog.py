@@ -1233,5 +1233,57 @@ class Catalog:
                 return definition, model
         return None, None
 
+    def why_no_route(
+        self, modality: str, compound: str, *, only_location: str | None = None
+    ) -> str | None:
+        """Why an **offered** fleet model has no route this moment.
+
+        Returns `None` when the id is not an enabled fleet model at all — a real
+        `MODEL_NOT_FOUND` — and a sentence naming the site condition otherwise.
+        The 404 this replaces said "not available on this gateway" while the model
+        sat in the picker and every location offering it was simply offline:
+        measured live with both controllers down, which sends the reader looking for
+        a catalogue problem instead of a network one.
+        """
+        from . import fleet
+
+        provider_id, model_id = decode_model_id(compound)
+        if provider_id != fleet.FLEET_PROVIDER_ID:
+            return None
+        offered: list[str] = []
+        for definition, model in registry.models.enabled_models(modality):
+            if model["model_id"] != model_id:
+                continue
+            location_id = fleet.controller_id_from(definition.id)
+            if location_id is None:
+                continue
+            if only_location is not None and location_id != only_location:
+                continue
+            offered.append(location_id)
+        if not offered:
+            return None
+        rows = {
+            str(row.get("id")): row
+            for row in (fleet.snapshot(allow_stale=True).get("locations") or [])
+        }
+        offline = cannot = 0
+        for location_id in offered:
+            row = rows.get(location_id) or {}
+            if not row.get("reachable"):
+                offline += 1
+            elif not fleet._takes_customer_jobs(row):  # noqa: SLF001 - one rule, one place
+                cannot += 1
+        if not offline and not cannot:
+            return "No location offering this model has a free slot right now."
+        reasons: list[str] = []
+        if offline:
+            reasons.append(f"{offline} location{'' if offline == 1 else 's'} offline")
+        if cannot:
+            reasons.append(f"{cannot} that cannot take customer work")
+        return (
+            "No location offering this model can take work right now — "
+            + " and ".join(reasons) + "."
+        )
+
 
 catalog = Catalog()

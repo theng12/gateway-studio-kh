@@ -201,7 +201,12 @@ def execute_job(job: dict[str, Any], store: JobStore) -> None:
             result = adapter.generate(request)
             break
         except BackendError as exc:
-            if exc.code == "LOCATION_NOT_READY" and pinned is None:
+            # A site that could not be reached is the same kind of fact as one that
+            # refused the model: it is a property of the location, not of the job, so
+            # the next location offering the same model is tried. `LOCATION_NOT_READY`
+            # is the Hub's own refusal; `LOCATION_UNREACHABLE` is a connection that
+            # was never established, which delivered nothing.
+            if exc.code in ("LOCATION_NOT_READY", "LOCATION_UNREACHABLE") and pinned is None:
                 tried.add(provider_id)
                 chosen, note = fleet.route(model_id, modality, exclude_locations=tried)
                 if chosen is not None and chosen.id not in tried:
