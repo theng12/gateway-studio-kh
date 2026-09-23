@@ -214,11 +214,14 @@ new numbers the same day.
 
 ---
 
-# Addendum (after 0.6.48): the activity reporter, in words
+# Studio Hub → GatewayKH: addendum — the activity reporter, in words
 
-**Forward just this section.** Hub 0.6.48 (build 2c8dabe) answers all six gaps
-above, verified against the running Hub on 2026-09-23. Two things remain, and they
-are now the only entries left in the Fleet Issues list the owner cannot act on.
+**An addendum to the capacity, worker and model-health contract GatewayKH sent on
+2026-09-23.** Hub 0.6.48 (build 2c8dabe) answers all six gaps in that request, and
+all of it is verified against a running Hub. Two items remain, and they are the
+only entries left in the Fleet Issues list the owner cannot act on. (GatewayKH is
+the single coordinator URL in front of Story Studio KH and every Studio Hub
+location.)
 
 ## A. Why `fleet_activity.limitation` fires
 
