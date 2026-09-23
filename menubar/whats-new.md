@@ -4,6 +4,24 @@ Newest first. This is the same list the **What's New** link in the app shows.
 
 ---
 
+## Fleet: an agent-mode Hub is never sent customer work
+
+A live probe caught it: one image job and one TTS job both failed with
+`409 "This Hub is in agent mode; submit customer jobs to a controller."` The
+gateway had routed them to **this Mac's own Hub**, which is an agent — it runs
+workers for a controller, and the Hub refuses customer submissions outright. A
+*drained* Hub is the same kind of "do not send me work".
+
+Both are now excluded from routing and from the catalogue's "can any location take
+this?" test, so a model only an agent offers reads as unavailable instead of being
+published and then refused on use. Standalone Hubs and controllers are unaffected,
+and a controller that is merely starting up is not treated as refusing.
+
+The probe also exposed the configuration gap behind it: the fleet's models were
+enabled on this Mac's **agent** provider and on neither controller. The controller
+that owns this Mac can already serve them — all available and cached across four
+machines — so the image and TTS lanes are enabled on the controllers.
+
 ## Fleet: the Hub's own answers, and Retry
 
 Studio Hub 0.6.48 publishes what the gateway had been approximating. Where a

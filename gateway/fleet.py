@@ -1751,17 +1751,39 @@ def _as_int(value: object) -> int:
         return 0
 
 
+def _takes_customer_jobs(row: dict) -> bool:
+    """Whether a location may be sent customer work at all.
+
+    **An agent does not take customer jobs.** It runs workers for a controller;
+    the Hub refuses a submit with `409 "This Hub is in agent mode; submit customer
+    jobs to a controller."` — measured live on 2026-09-23, after the gateway routed
+    both an image and a TTS job to this Mac's agent-mode Hub and both failed at the
+    door while the two healthy controllers sat idle.
+
+    `drained` is the Hub's own "stop sending me work" flag, set deliberately.
+    A standalone Hub and a controller both take work; only these two states do not.
+    `ready: false` is deliberately **not** a disqualifier — it is a controller
+    starting up, and treating a transient as "cannot take work" would lock the
+    catalogue during every restart.
+    """
+    if str(row.get("role") or "").strip().lower() == "agent":
+        return False
+    return row.get("drained") is not True
+
+
 def usable_location_ids() -> set[str]:
-    """Locations answering right now, by id.
+    """Locations that can actually take work right now, by id.
 
     Read once per catalogue rebuild rather than per row: this is the difference
-    between one fleet read and one per model.
+    between one fleet read and one per model. An agent or a drained Hub is left
+    out, so a model only they offer reads as unavailable rather than being
+    published to Story Studio and then refused on use.
     """
     try:
         return {
             str(row.get("id"))
             for row in snapshot(allow_stale=True)["locations"]
-            if row.get("reachable")
+            if row.get("reachable") and _takes_customer_jobs(row)
         }
     except Exception:  # noqa: BLE001 - a routing hint must never break the catalogue
         return set()
@@ -1952,6 +1974,10 @@ def routing_candidates(
             continue
         row = rows.get(location_id) or {}
         if not row.get("reachable"):
+            continue
+        # A site that cannot accept customer work is not a candidate: an agent-mode
+        # Hub answers 409 to the submit, and a drained one has been told to stop.
+        if not _takes_customer_jobs(row):
             continue
 
         capacity = row.get("capacity") or {}

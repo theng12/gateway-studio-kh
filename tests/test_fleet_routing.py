@@ -593,5 +593,50 @@ class SupplyReductionTests(unittest.TestCase):
         self.assertEqual(fleet._model_supply_index(None, fallback), fallback)
 
 
+class TakesCustomerJobsTests(unittest.TestCase):
+    """A Hub that refuses customer work is never a routing candidate.
+
+    Measured live 2026-09-23: the gateway routed an image job and a TTS job to this
+    Mac's Hub, which answered `409 "This Hub is in agent mode; submit customer jobs
+    to a controller."` Both failed while two healthy controllers sat idle.
+    """
+
+    def test_an_agent_mode_hub_is_not_a_candidate(self) -> None:
+        candidates = _route_with([
+            _location("agent", role="agent", drained=True,
+                      model_supply={MODEL: {"eligible": 9, "available": 9}}),
+            _location("ctrl", role="controller", drained=False,
+                      model_supply={MODEL: {"eligible": 1, "available": 1}}),
+        ])
+        self.assertEqual([c["location_id"] for c in candidates], ["ctrl"])
+
+    def test_a_drained_controller_is_not_a_candidate(self) -> None:
+        candidates = _route_with([
+            _location("draining", role="controller", drained=True,
+                      model_supply={MODEL: {"eligible": 9, "available": 9}}),
+            _location("ctrl", role="controller", drained=False,
+                      model_supply={MODEL: {"eligible": 1, "available": 1}}),
+        ])
+        self.assertEqual([c["location_id"] for c in candidates], ["ctrl"])
+
+    def test_a_standalone_hub_still_takes_work(self) -> None:
+        # Only `agent` and `drained` disqualify: a standalone Mac is a fleet of one
+        # and must keep working. `ready: false` is a controller starting up, not a
+        # refusal — treating it as one would lock the catalogue on every restart.
+        self.assertTrue(fleet._takes_customer_jobs({"role": "standalone", "ready": False}))
+        self.assertTrue(fleet._takes_customer_jobs({"role": "controller", "drained": False}))
+        self.assertFalse(fleet._takes_customer_jobs({"role": "agent"}))
+        self.assertFalse(fleet._takes_customer_jobs({"role": "controller", "drained": True}))
+
+    def test_the_catalogue_does_not_call_an_agent_usable(self) -> None:
+        locations = [
+            _location("agent", role="agent", drained=True),
+            _location("ctrl", role="controller", drained=False),
+            _location("gone", reachable=False),
+        ]
+        with patch.object(fleet, "snapshot", return_value={"locations": locations}):
+            self.assertEqual(fleet.usable_location_ids(), {"ctrl"})
+
+
 if __name__ == "__main__":
     unittest.main()
