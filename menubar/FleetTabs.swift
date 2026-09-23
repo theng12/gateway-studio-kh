@@ -450,7 +450,7 @@ final class FleetOverviewTab: FleetTabView {
         page.addArrangedSubview(tiles)
         page.addArrangedSubview(pulseLabel)
         page.addArrangedSubview(statusLabel)
-        page.addArrangedSubview(PageKit.sectionTitle("Needs attention"))
+        page.addArrangedSubview(PageKit.sectionTitle("Issues"))
         issuesStack.orientation = .vertical
         issuesStack.alignment = .leading
         issuesStack.spacing = 8
@@ -574,10 +574,33 @@ final class FleetOverviewTab: FleetTabView {
             if a != b { return a < b }
             return ($0.location ?? "").localizedCaseInsensitiveCompare($1.location ?? "") == .orderedAscending
         }
-        for issue in ordered {
+        // **"Wants a person" and "informational" are drawn apart.** Under one
+        // heading they read the same, which is how a Hub measurement gap ("direct
+        // activity partially unavailable") was taken for something broken. The
+        // count leads each group, so the top of the list is only what is worth
+        // acting on.
+        let problems = ordered.filter { ($0.severity ?? "") != "info" }
+        let notes = ordered.filter { ($0.severity ?? "") == "info" }
+
+        func add(_ issue: FleetIssue) {
             let row = issueRow(issue)
             issuesStack.addArrangedSubview(row)
             fullWidth(row)
+        }
+
+        if !problems.isEmpty {
+            issuesStack.addArrangedSubview(PageKit.label(
+                "\(problems.count) to look at", size: 11, weight: .semibold,
+                colour: .secondaryLabelColor))
+            problems.forEach(add)
+        }
+        if !notes.isEmpty {
+            issuesStack.addArrangedSubview(PageKit.label(
+                problems.isEmpty
+                    ? "\(notes.count) informational"
+                    : "\(notes.count) informational — nothing to fix",
+                size: 11, weight: .semibold, colour: .tertiaryLabelColor))
+            notes.forEach(add)
         }
     }
 

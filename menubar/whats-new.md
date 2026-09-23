@@ -4,6 +4,20 @@ Newest first. This is the same list the **What's New** link in the app shows.
 
 ---
 
+## Fleet: only what is actionable, and one line per condition
+
+The Overview's issue list repeated the same Hub condition once per machine —
+"Direct activity partially unavailable" appeared four times for one controller —
+and showed informational notes under a heading that said *Needs attention*, so a
+Hub measurement gap read as something broken.
+
+It is now **Issues**, split into *"N to look at"* (errors and warnings) and
+*"N informational — nothing to fix"*. A condition the Hub repeats across machines
+is one row with a count — "3 machines: Direct activity partially unavailable" —
+rather than one row per machine, and the note that some machines "report no state"
+says plainly that the Hub counts them as neither online nor offline. A fault that
+names one machine (offline, unhealthy) still gets its own row.
+
 ## Fleet: placement weights the Macs that can run the model
 
 Studio Hub 0.6.47 publishes no per-model capacity — `capabilities.model_supply`

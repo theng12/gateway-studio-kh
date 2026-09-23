@@ -1437,6 +1437,16 @@ def _issues_for(row: dict) -> list[dict]:
             "Studio Hub on that Mac",
         ))
 
+    # **A Hub condition repeated per machine is one issue, not one per machine.**
+    # "Direct activity partially unavailable" is the Hub saying it could not read
+    # that machine's activity — the same sentence on every machine at a site — and
+    # `state: unknown` is the same kind of measurement gap. Emitted per machine
+    # they buried the list under ten identical rows; aggregated they are one line
+    # that says how many machines are affected, with the Hub's own wording kept
+    # verbatim. A machine-specific fault (offline, unhealthy) still gets its own
+    # row, because it names a machine someone can go and look at.
+    limitations: dict[str, int] = {}
+    unknown_state = 0
     for machine in machines_flat([row]):
         machine_id = str(machine.get("machine") or "")
         state = str(machine.get("state") or "").strip().lower()
@@ -1447,11 +1457,7 @@ def _issues_for(row: dict) -> list[dict]:
                 f"Machine {machine_id} is offline.", "Studio Hub on that Mac",
             ))
         if not state or state == "unknown":
-            out.append(_issue(
-                "info", "machine_unknown_state", machine.get("location_id"),
-                machine.get("location"), machine_id,
-                f"Machine {machine_id} reports no state.", "Studio Hub on that Mac",
-            ))
+            unknown_state += 1
         health = machine.get("health")
         if health and str(health).lower() != "up":
             out.append(_issue(
@@ -1462,11 +1468,23 @@ def _issues_for(row: dict) -> list[dict]:
             ))
         limitation = str(machine.get("limitation") or "").strip()
         if limitation:
+            limitations[limitation] = limitations.get(limitation, 0) + 1
+
+    if limitations:
+        for text, count in sorted(limitations.items()):
+            machines_text = f"{count} machine" + ("" if count == 1 else "s")
             out.append(_issue(
-                "warning", "machine_limited", machine.get("location_id"),
-                machine.get("location"), machine_id, limitation,
-                "Studio Hub on that Mac",
+                "warning", "machine_limited", location_id, location, machines_text,
+                f"{machines_text}: {text}", "Fleet → Machines",
             ))
+    if unknown_state:
+        machines_text = f"{unknown_state} machine" + ("" if unknown_state == 1 else "s")
+        out.append(_issue(
+            "info", "machine_unknown_state", location_id, location, machines_text,
+            f"{machines_text} report no state. The Hub counts them as neither online nor "
+            "offline, so they are left out of both.",
+            "Fleet → Machines",
+        ))
 
     # One issue per worker, keyed on (machine, worker) so a Hub that repeats a
     # worker cannot multiply the page.

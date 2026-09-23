@@ -440,6 +440,36 @@ class IssueDerivationTests(unittest.TestCase):
             codes,
         )
 
+    def test_a_hub_condition_repeated_per_machine_is_one_issue(self) -> None:
+        # "Direct activity partially unavailable" is the same sentence on every
+        # machine at a site, and `state: unknown` is the same kind of measurement
+        # gap. Emitted per machine they buried the list under identical rows; they
+        # are one line with a count, so the top of the list is only what differs.
+        row = {
+            "id": "site", "label": "Site", "local": False, "reachable": True,
+            "role": "controller", "ready": True,
+            "machines": [{"machine": f"m{i}"} for i in range(1, 4)],
+            "activity": {"pulse": {}, "machines": [
+                {"machine": f"m{i}", "state": "unknown",
+                 "limitation": "Direct activity partially unavailable"}
+                for i in range(1, 4)
+            ]},
+            "running_jobs": [], "local_models": [], "workers": [],
+            "probe_machines_hidden": 0,
+        }
+        issues = fleet._issues([row])
+        limited = [issue for issue in issues if issue["code"] == "machine_limited"]
+        unknown = [issue for issue in issues if issue["code"] == "machine_unknown_state"]
+        self.assertEqual(len(limited), 1, limited)
+        self.assertEqual(limited[0]["subject"], "3 machines")
+        self.assertEqual(limited[0]["message"],
+                         "3 machines: Direct activity partially unavailable")
+        self.assertEqual(len(unknown), 1, unknown)
+        self.assertEqual(unknown[0]["subject"], "3 machines")
+        # The gateway says which count it left out of, so "unknown" is not read as
+        # "offline".
+        self.assertIn("neither online nor offline", unknown[0]["message"])
+
 
 class AdminEnrichmentTests(unittest.TestCase):
     def test_locations_gain_counts_without_the_cache_being_mutated(self) -> None:
