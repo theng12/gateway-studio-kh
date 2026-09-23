@@ -4,6 +4,32 @@ Newest first. This is the same list the **What's New** link in the app shows.
 
 ---
 
+## Fleet: one page per question
+
+The **Fleet** page is now five tabs instead of one long scroll, and every table
+in it sorts by clicking a column header.
+
+- **Overview** — the numbers at a glance, and an **Issues** list that names what
+  is wrong and where to fix it: errors first, then warnings, each row saying
+  which location and machine, the gateway's own sentence, and which tab to open.
+- **Locations** — the controller table with per-location model counts
+  (offered / discovered), and the add-a-location form. Every action now reports
+  in a **confirmation banner** under the tabs — green when it worked, orange or
+  red when it was refused — instead of a line at the bottom of the page.
+- **Machines** — filterable by location and by search. Each row now shows which
+  studios that Mac serves, and its per-kind job counts are labelled *work done by
+  kind* so they are not mistaken for models offered. A machine's own limitation
+  is shown in full rather than reduced to a dot.
+- **Local Models** — pooled across every location: how many locations offer a
+  model, how many machines can actually serve it, the best fit verdict, the
+  memory floor and what is cached. Select a model and the table below lists every
+  machine that reports it — with the Hub's own reason when it cannot serve it.
+- **Jobs** — work in flight per location, with the Hub's exact error for a
+  stalled or failed batch, and a refresh that re-reads the location's models.
+
+The location filter and the search box above the tabs apply to Machines, Models
+and Jobs.
+
 ## Models: browse the catalogue by operation
 
 The **Models** page is a browser over the whole catalogue now, not one flat list.

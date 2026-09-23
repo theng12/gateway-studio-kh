@@ -132,6 +132,143 @@ MODELS = [
 ]
 
 
+# --------------------------------------------------------------------------
+# The Fleet surface: two machines, two modalities, one row per (model, machine).
+#
+# `/api/hub/models` is what a controller answers with one row per machine per
+# model, so the Fleet page's Models tab can show per-worker supply. Three models
+# between them state the shapes the gateway has to survive:
+#
+#   mock-hub/vision-one   available on mac-a and not mac-b, with a `fit` verdict
+#   mock-hub/voice-one    `hub_catalog_error` on **both** machines, so the issue
+#                         aggregation can be shown to report it once
+#   mock-hub/voice-two    downloading on mac-b
+#
+# `mac-a`/`mac-b` are also the two physical machines the capabilities workers
+# and `fleet/nodes` roster name.
+FLEET_MODEL_ROWS = [
+    {
+        "repo": "mock-hub/vision-one", "label": "Vision One", "family": "mock-vision",
+        "hub_studio": "image", "hub_modality": "image", "hub_machine": "mac-a",
+        "kind": "mlx", "size_gb": 4.2, "min_unified_memory_gb": 8,
+        "required_free_memory_gb": 6, "memory_eligible": True, "runtime_ready": True,
+        "available": True, "loaded": False,
+        "fit": {"state": "fits", "label": "Fits", "hint": "",
+                "actual_gb": 4.2, "required_gb": 6},
+        "cache": {"state": "ready", "package_id": "vision-one-pkg"},
+        "hub_catalog_stale": False, "hub_catalog_error": None,
+        "active_download": None, "gated": False,
+    },
+    {
+        "repo": "mock-hub/vision-one", "label": "Vision One", "family": "mock-vision",
+        "hub_studio": "image", "hub_modality": "image", "hub_machine": "mac-b",
+        "kind": "mlx", "size_gb": 4.2, "min_unified_memory_gb": 8,
+        "required_free_memory_gb": 6, "memory_eligible": True, "runtime_ready": True,
+        "available": False, "loaded": False,
+        "fit": None,
+        "cache": {"state": "ready", "package_id": "vision-one-pkg"},
+        "hub_catalog_stale": False, "hub_catalog_error": None,
+        "active_download": None, "gated": False,
+    },
+    {
+        "repo": "mock-hub/voice-one", "label": "Voice One", "family": "mock-voice",
+        "hub_studio": "voice", "hub_modality": "voice", "hub_machine": "mac-a",
+        "kind": "mlx", "size_gb": 2.0, "min_unified_memory_gb": 8,
+        "required_free_memory_gb": 4, "memory_eligible": True, "runtime_ready": True,
+        "available": True, "loaded": True,
+        "fit": None,
+        "cache": {"state": "ready", "package_id": "voice-one-pkg"},
+        "hub_catalog_stale": False, "hub_catalog_error": "catalogue read failed",
+        "active_download": None, "gated": False,
+    },
+    {
+        "repo": "mock-hub/voice-one", "label": "Voice One", "family": "mock-voice",
+        "hub_studio": "voice", "hub_modality": "voice", "hub_machine": "mac-b",
+        "kind": "mlx", "size_gb": 2.0, "min_unified_memory_gb": 8,
+        "required_free_memory_gb": 4, "memory_eligible": True, "runtime_ready": True,
+        "available": False, "loaded": False,
+        "fit": None,
+        "cache": {"state": "ready", "package_id": "voice-one-pkg"},
+        "hub_catalog_stale": False, "hub_catalog_error": "catalogue read failed",
+        "active_download": None, "gated": False,
+    },
+    {
+        "repo": "mock-hub/voice-two", "label": "Voice Two", "family": "mock-voice",
+        "hub_studio": "voice", "hub_modality": "voice", "hub_machine": "mac-a",
+        "kind": "mlx", "size_gb": 1.5, "min_unified_memory_gb": 8,
+        "required_free_memory_gb": 3, "memory_eligible": True, "runtime_ready": False,
+        "available": False, "loaded": False, "fit": None,
+        # No `package_id`: this row's dispatch state is genuinely unknown, so the
+        # page must say `None` rather than guess one.
+        "cache": {"state": "not_installed"},
+        "hub_catalog_stale": False, "hub_catalog_error": None,
+        "active_download": None, "gated": True,
+    },
+    {
+        "repo": "mock-hub/voice-two", "label": "Voice Two", "family": "mock-voice",
+        "hub_studio": "voice", "hub_modality": "voice", "hub_machine": "mac-b",
+        "kind": "mlx", "size_gb": 1.5, "min_unified_memory_gb": 8,
+        "required_free_memory_gb": 3, "memory_eligible": True, "runtime_ready": False,
+        "available": False, "loaded": False, "fit": None,
+        "cache": {"state": "downloading"},
+        "hub_catalog_stale": False, "hub_catalog_error": None,
+        "active_download": {"percent": 40}, "gated": False,
+    },
+]
+
+#: `GET /api/hub/capabilities`'s rich worker roster. Four workers across two
+#: machines and two modalities, deliberately covering each state the issues list
+#: derives: one offline, one in maintenance, one quarantined, one healthy.
+FLEET_WORKERS = [
+    {"service_id": "svc-image-a", "studio_type": "image", "modality": "image",
+     "physical_machine_id": "mac-a", "online": True, "ready": True, "busy": False,
+     "physical_machine_busy": False, "drained": False, "maintenance": False,
+     "machine_quarantined": False, "last_seen_at": 1.0,
+     "available_capacity": {"slots": 1, "slots_total": 2,
+                            "shared_by_physical_machine": False}},
+    {"service_id": "svc-image-b", "studio_type": "image", "modality": "image",
+     "physical_machine_id": "mac-b", "online": False, "ready": False, "busy": False,
+     "drained": False, "maintenance": False, "machine_quarantined": False,
+     "last_seen_at": 0.5,
+     "available_capacity": {"slots": 0, "slots_total": 2}},
+    {"service_id": "svc-voice-a", "studio_type": "voice", "modality": "voice",
+     "physical_machine_id": "mac-a", "online": True, "ready": True, "busy": False,
+     "drained": False, "maintenance": True, "machine_quarantined": False,
+     "last_seen_at": 1.0,
+     "available_capacity": {"slots": 1, "slots_total": 1}},
+    {"service_id": "svc-voice-b", "studio_type": "voice", "modality": "voice",
+     "physical_machine_id": "mac-b", "online": True, "ready": False, "busy": False,
+     "drained": False, "maintenance": False, "machine_quarantined": True,
+     "last_seen_at": 0.75,
+     "available_capacity": {"slots": 0, "slots_total": 1}},
+]
+
+#: The fallback roster: a node names its studios, and `state` is the only
+#: reachability statement a node makes.
+FLEET_NODES = [
+    {"id": "mac-a", "name": "Mac A", "state": "reachable",
+     "studios": [{"id": "image", "modality": "image"},
+                  {"id": "voice", "modality": "voice"}]},
+    {"id": "mac-b", "name": "Mac B", "state": "offline",
+     "studios": [{"id": "image", "modality": "image"}]},
+]
+
+#: `dispatch_state`, joined by the `package_id` a model's `cache` names. The
+#: engine is deliberately one `_HUB_ENGINE_MODALITY` does not know, so the voice
+#: discovery path keeps seeing exactly the five packages `test_e2e` asserts while
+#: these rows are available for the Fleet page's join.
+FLEET_PACKAGES = [
+    {"package_id": "vision-one-pkg", "state": "ready", "files_state": "files_verified",
+     "runtime_state": "ready", "os_state": "ready", "chip_state": "ready",
+     "dispatch_state": "eligible", "engine": "fleet-mock",
+     "minimum_macos": "14.0", "verification": "ok"},
+    {"package_id": "voice-one-pkg", "state": "ready", "files_state": "files_verified",
+     "runtime_state": "ready", "os_state": "ready", "chip_state": "ready",
+     "dispatch_state": "ineligible", "engine": "fleet-mock",
+     "minimum_macos": "14.0", "verification": "ok"},
+]
+
+
 def _wav(seconds: float = 0.25, rate: int = 24000) -> bytes:
     buf = io.BytesIO()
     with wave.open(buf, "wb") as handle:
@@ -263,17 +400,37 @@ class Handler(BaseHTTPRequestHandler):
             self._json(200, {"machines": [], "summary": {"machines": 0}})
             return
         if path == "/api/hub/fleet/nodes":
-            self._json(200, {"nodes": [], "summary": {"nodes": 0}})
+            self._json(200, {"nodes": FLEET_NODES, "summary": {"nodes": len(FLEET_NODES)}})
             return
         if path == "/api/hub/capabilities":
-            self._json(200, {"controller": {"role": "controller", "ready": True},
-                             "site_id": "mock-site"})
+            # The rich roster `fleet._worker_roster` prefers. `/api/hub/workers`
+            # below is read too, but its rows carry no studio or physical-machine
+            # identity, so it is not the roster the page is shown.
+            self._json(200, {
+                "controller": {"role": "controller", "ready": True},
+                "site_id": "mock-site",
+                "workers": FLEET_WORKERS,
+            })
             return
         if path == "/api/hub/stats":
             self._json(200, {"fleet_activity": {}})
             return
         if path == "/api/hub/jobs":
             self._json(200, {"batches": []})
+            return
+        if path == "/api/hub/models":
+            self._json(200, {
+                "models": FLEET_MODEL_ROWS, "per_studio": {},
+                "total": len(FLEET_MODEL_ROWS),
+            })
+            return
+        if path == "/api/hub/workers":
+            self._json(200, {"workers": [
+                {"id": worker["service_id"], "title": worker["service_id"],
+                 "modality": worker["modality"], "machine": worker["physical_machine_id"],
+                 "runtime_identity": {}}
+                for worker in FLEET_WORKERS
+            ]})
             return
 
         # ---- what a location's models *are*, for the local voice lane.
@@ -317,7 +474,7 @@ class Handler(BaseHTTPRequestHandler):
                 {"package_id": "capability-only-model", "model_id": "mock-hub/capability-only-model",
                  "engine": "voice-mlx", "files_state": "files_verified",
                  "dispatch_state": "eligible", "revision": "e" * 40},
-            ]})
+            ] + FLEET_PACKAGES})
             return
         if path == "/api/hub/catalog":
             self._json(200, {"models": [

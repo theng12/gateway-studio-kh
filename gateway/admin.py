@@ -1569,6 +1569,36 @@ async def _json_body(request: Request, fields: dict[str, type]) -> Any:
 # Fleet — the location controllers this gateway aggregates for Story Studio
 
 
+def _enrich_location(row: dict[str, Any]) -> dict[str, Any]:
+    """A location row plus the gateway-side model counts for its provider.
+
+    Keyed on the row's existing `provider_id` — the provider whose models this
+    location offers, which is not the same string as the location id and must
+    never be derived by prefixing in the client.
+    """
+    enriched = dict(row)
+    provider_id = str(row.get("provider_id") or "")
+    definition = registry.definition(provider_id) if provider_id else None
+    if definition is None:
+        # A location that answers no provider definition has no gateway-side
+        # counts; `None` says "unknown", which is not zero.
+        enriched.update({
+            "models_discovered": None,
+            "models_enabled": None,
+            "models_publishable": None,
+        })
+        return enriched
+    models = registry.models.models_for(provider_id, include_disabled=True)
+    enriched.update({
+        "models_discovered": len(models),
+        "models_enabled": sum(1 for model in models if model.get("enabled")),
+        "models_publishable": sum(
+            1 for model in models if registry.models.can_publish(definition, model)
+        ),
+    })
+    return enriched
+
+
 @router.get("/api/fleet", dependencies=[Depends(require_admin)])
 def fleet_snapshot() -> dict[str, Any]:
     """Every location, its machines and its in-flight work.
@@ -1577,7 +1607,14 @@ def fleet_snapshot() -> dict[str, Any]:
     timeout and reports an unreachable one as unreachable rather than failing the
     whole read. One dead location must not hide the others.
     """
-    return fleet.snapshot()
+    data = fleet.snapshot()
+    # `fleet.snapshot()` returns the **cached** dict the catalogue and the
+    # background refresher also read. Enriching it in place would persist these
+    # gateway-side counts into the cache, so the top-level dict and every location
+    # row touched are copied instead.
+    out = dict(data)
+    out["locations"] = [_enrich_location(row) for row in data.get("locations") or []]
+    return out
 
 
 @router.get("/api/fleet/controllers", dependencies=[Depends(require_admin)])

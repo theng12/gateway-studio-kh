@@ -683,6 +683,16 @@ def _probe(base: str, token: str, *, timeout: float = _TIMEOUT) -> dict:
         # how the routing layer ended up with nothing to route on.
         "capacity": {},
         "latency_ms": None,
+        # Additive data for the Fleet page's Models and Machines tabs. Empty on an
+        # unreachable controller rather than absent, because "no data" and "no
+        # models" are different facts and the page has to tell them apart.
+        "local_models": [],
+        "workers": [],
+        # `/api/hub/workers` read raw. The rich roster the page shows is
+        # capabilities' `workers[]` (see `_worker_roster`); this endpoint's rows
+        # carry no studio or physical-machine identity, so it is kept whole
+        # rather than trimmed into a second, weaker worker shape.
+        "hub_workers": [],
     }
     try:
         with httpx.Client(timeout=timeout) as client:
@@ -725,6 +735,27 @@ def _probe(base: str, token: str, *, timeout: float = _TIMEOUT) -> dict:
                 stats = _fetch(client, base, token, "/api/hub/stats")
             except httpx.HTTPError:
                 stats = {}
+            # The per-model/per-worker supply the Fleet page's Models tab reads.
+            # Each is best-effort for the same reason `fleet/nodes` is: a Hub
+            # mid-rebuild has answered some of these routes 500 while the rest
+            # answered 200, and one broken route must not make the whole location
+            # read as offline. A failure degrades to an empty list, never to an
+            # unreachable controller.
+            try:
+                models_payload = _fetch(client, base, token, "/api/hub/models")
+            except httpx.HTTPError:
+                models_payload = {}
+            try:
+                workers_payload = _fetch(client, base, token, "/api/hub/workers")
+            except httpx.HTTPError:
+                workers_payload = {}
+            try:
+                # `dispatch_state` is the readiness gate the gateway's model
+                # withholding reads, joined by the `package_id` a model's `cache`
+                # names.
+                packages_payload = _fetch(client, base, token, "/api/hub/model-packages")
+            except httpx.HTTPError:
+                packages_payload = {}
     except httpx.HTTPStatusError as exc:
         location["error"] = (
             "Rejected the Hub token (HTTP %d)." % exc.response.status_code
@@ -797,6 +828,7 @@ def _probe(base: str, token: str, *, timeout: float = _TIMEOUT) -> dict:
         "site_id": capabilities.get("site_id") or controller.get("site_id"),
         "controller_id": controller.get("controller_id"),
         "ready": controller.get("ready"),
+        "drained": controller.get("drained"),
         "machines": real_machines,
         "machine_summary": summary,
         "probe_machines_hidden": hidden,
@@ -816,6 +848,19 @@ def _probe(base: str, token: str, *, timeout: float = _TIMEOUT) -> dict:
         # model is weighted by the machines that can run **it**, not by every
         # machine at the site (see `routing_candidates`).
         "model_supply": _model_supply_index(capabilities.get("model_supply") or []),
+        # The Models tab: one trimmed row per (model, machine), with the installed
+        # package's `dispatch_state` joined in.
+        "local_models": _local_models(
+            models_payload, _dispatch_index(packages_payload)
+        ),
+        # The Machines tab: capabilities' worker roster, falling back to the
+        # node list's studios.
+        "workers": _worker_roster(capabilities, node_rows),
+        "hub_workers": (
+            workers_payload.get("workers")
+            if isinstance(workers_payload.get("workers"), list)
+            else []
+        ),
         "latency_ms": int((time.time() - started) * 1000),
     })
     return location
@@ -826,6 +871,182 @@ def _version_from(overview: dict) -> str | None:
         if machine.get("version"):
             return str(machine["version"])
     return None
+
+
+def _dispatch_index(payload: object) -> dict[str, object]:
+    """`package_id` -> `dispatch_state`, from the Hub's installed packages.
+
+    `/api/hub/model-packages` is where readiness lives; `/api/hub/models` names
+    the package a model row belongs to inside its `cache` block. One read per
+    location, joined here so the page never walks the package list per model.
+    """
+    index: dict[str, object] = {}
+    if not isinstance(payload, dict):
+        return index
+    rows = payload.get("models") or payload.get("packages") or payload.get("items") or []
+    if not isinstance(rows, list):
+        return index
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        package_id = str(row.get("package_id") or "").strip()
+        if package_id:
+            index[package_id] = row.get("dispatch_state")
+    return index
+
+
+def _local_models(payload: object, dispatch: dict[str, object]) -> list[dict]:
+    """One trimmed row per (model, machine) the controller publishes.
+
+    A controller answers `/api/hub/models` with **one row per machine per model**
+    (measured live: 55 models x 4 machines = 220 rows), so this is a supply list,
+    not a model list. Every key is published as `None` when the Hub did not state
+    it, never as a plausible default.
+    """
+    rows = payload.get("models") if isinstance(payload, dict) else None
+    if not isinstance(rows, list):
+        return []
+    out: list[dict] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        cache = row.get("cache") if isinstance(row.get("cache"), dict) else {}
+        package_id = str(cache.get("package_id") or row.get("package_id") or "").strip()
+        fit = row.get("fit")
+        out.append({
+            "model": row.get("repo"),
+            "label": row.get("label"),
+            "family": row.get("family"),
+            "studio": row.get("hub_studio"),
+            "modality": row.get("hub_modality"),
+            "machine": row.get("hub_machine"),
+            "kind": row.get("kind"),
+            "size_gb": row.get("size_gb"),
+            "min_unified_memory_gb": row.get("min_unified_memory_gb"),
+            "required_free_memory_gb": row.get("required_free_memory_gb"),
+            "memory_eligible": row.get("memory_eligible"),
+            "runtime_ready": row.get("runtime_ready"),
+            "available": row.get("available"),
+            "loaded": row.get("loaded"),
+            "fit": fit if isinstance(fit, dict) else None,
+            "cache_state": cache.get("state"),
+            "catalog_error": row.get("hub_catalog_error"),
+            "catalog_stale": row.get("hub_catalog_stale"),
+            "active_download": bool(row.get("active_download")),
+            "gated": row.get("gated"),
+            "dispatch_state": dispatch.get(package_id) if package_id else None,
+        })
+    return out
+
+
+#: A worker names its studio (`voice`, `image`, `subtitle`, `music`) but the
+#: capabilities roster carries **no** `modality` field at all — measured live, so
+#: reading one published `null` for every worker and the Machines tab lost the one
+#: thing it groups by. `subtitle` is the studio whose modality is `transcription`,
+#: which is the same pairing `_HUB_OPERATION_BY_MODALITY` uses.
+_STUDIO_MODALITY = {
+    "voice": "voice",
+    "image": "image",
+    "subtitle": "transcription",
+    # The capabilities roster names the Subtitle service's studio `transcription`,
+    # while the node roster names it `subtitle`. Both are the same studio, and both
+    # spellings are mapped so neither roster loses its modality.
+    "transcription": "transcription",
+    "music": "music",
+}
+
+
+def _studio_modality(studio: object, stated: object = None) -> object:
+    """The modality a worker serves: what it states, else its studio's mapping.
+
+    `None` when neither is known — never a guessed modality, because the Machines
+    tab groups by this and a wrong group is a wrong answer about which Macs can do
+    the work.
+    """
+    if stated:
+        return stated
+    return _STUDIO_MODALITY.get(str(studio or "").strip().lower())
+
+
+def _trim_worker(row: object) -> dict | None:
+    """One capabilities worker, trimmed to the keys the Fleet page draws."""
+    if not isinstance(row, dict):
+        return None
+    capacity = row.get("available_capacity")
+    capacity = capacity if isinstance(capacity, dict) else {}
+    return {
+        "id": row.get("service_id"),
+        "studio": row.get("studio_type"),
+        "modality": _studio_modality(row.get("studio_type"), row.get("modality")),
+        "machine": row.get("physical_machine_id"),
+        "online": row.get("online"),
+        "ready": row.get("ready"),
+        "busy": row.get("busy"),
+        "drained": row.get("drained"),
+        "maintenance": row.get("maintenance"),
+        "quarantined": row.get("machine_quarantined"),
+        "slots": capacity.get("slots"),
+        "slots_total": capacity.get("slots_total"),
+        "last_seen_at": row.get("last_seen_at"),
+    }
+
+
+def _workers_from_nodes(nodes: object) -> list[dict]:
+    """The fallback roster for a Hub whose capabilities carry no `workers[]`.
+
+    A node names its studios, so one worker per (node, studio) is the same
+    granularity the capabilities roster uses. Only `online` is answerable from a
+    node: `ready`, `busy`, quarantine and slot counts belong to capabilities and
+    stay `None` rather than being invented.
+    """
+    out: list[dict] = []
+    if not isinstance(nodes, list):
+        return out
+    for node in nodes:
+        if not isinstance(node, dict):
+            continue
+        node_id = str(node.get("id") or node.get("machine") or node.get("name") or "")
+        online = node.get("state") == "reachable"
+        studios = node.get("studios")
+        if not isinstance(studios, list):
+            continue
+        for studio in studios:
+            if not isinstance(studio, dict):
+                continue
+            out.append({
+                "id": f"{node_id}:{studio.get('id')}",
+                "studio": studio.get("id"),
+                "modality": _studio_modality(studio.get("id"), studio.get("modality")),
+                "machine": node_id,
+                "online": online,
+                "ready": None,
+                "busy": None,
+                "drained": None,
+                "maintenance": None,
+                "quarantined": None,
+                "slots": None,
+                "slots_total": None,
+                "last_seen_at": None,
+            })
+    return out
+
+
+def _worker_roster(capabilities: object, nodes: object) -> list[dict]:
+    """The Hub's workers, preferring the rich capabilities roster.
+
+    `/api/hub/capabilities` states each worker's studio, physical machine,
+    readiness and quarantine. `fleet/nodes` only gives a node's studios, so it is
+    the fallback for a Hub that does not publish capabilities — and a
+    capabilities roster that really is empty is kept as the answer rather than
+    silently replaced by the weaker one.
+    """
+    if isinstance(capabilities, dict) and isinstance(capabilities.get("workers"), list):
+        return [
+            worker
+            for worker in (_trim_worker(row) for row in capabilities["workers"])
+            if worker is not None
+        ]
+    return _workers_from_nodes(nodes)
 
 
 def locations() -> list[dict]:
@@ -866,6 +1087,8 @@ def locations() -> list[dict]:
             "activity": {"pulse": {}, "machines": [], "observed_at": None},
             "by_machine": {}, "matrix": [], "jobs_total": None, "latency_ms": None,
             "site_id": None, "controller_id": None, "ready": None,
+            "capacity": {}, "local_models": [], "workers": [], "hub_workers": [],
+            "probe_machines_hidden": 0,
         }
     rows.append(local)
 
@@ -978,6 +1201,38 @@ def _summarise(rows: list[dict]) -> dict:
             completed += int(machine.get("completed") or 0)
             failed += int(machine.get("failed") or 0)
 
+    # The Models tab's headline numbers. `local_models_total` counts a **distinct**
+    # model once per location even though the Hub repeats it per machine; the
+    # available figure counts rows, because "this model can run on this machine
+    # right now" is the row's claim.
+    local_models_total = 0
+    models_available = 0
+    workers_total = 0
+    workers_ready = 0
+    for row in rows:
+        local_models = row.get("local_models") or []
+        local_models_total += len({
+            model.get("model")
+            for model in local_models
+            if isinstance(model, dict) and model.get("model") is not None
+        })
+        models_available += sum(
+            1 for model in local_models
+            if isinstance(model, dict) and model.get("available") is True
+        )
+        workers = row.get("workers") or []
+        workers_total += len(workers)
+        # Ready means what it says: answering, willing, and not under maintenance
+        # or quarantine. A `None` readiness is not readiness.
+        workers_ready += sum(
+            1 for worker in workers
+            if isinstance(worker, dict)
+            and worker.get("online")
+            and worker.get("ready")
+            and not worker.get("maintenance")
+            and not worker.get("quarantined")
+        )
+
     return {
         "locations": len(rows),
         "locations_up": sum(1 for row in rows if row["reachable"]),
@@ -997,6 +1252,17 @@ def _summarise(rows: list[dict]) -> dict:
         "jobs_completed": completed,
         "jobs_failed": failed,
         "running_jobs": sum(len(row["running_jobs"]) for row in rows),
+        # The Fleet page's Models/Machines tabs.
+        "local_models_total": local_models_total,
+        "models_available": models_available,
+        "workers_total": workers_total,
+        "workers_ready": workers_ready,
+        # Error + warning only: info issues are statements of fact (a downloading
+        # model, a hidden probe) and must not make the fleet look wrong.
+        "issues": sum(
+            1 for row in rows for issue in _issues_for(row)
+            if issue["severity"] in ("error", "warning")
+        ),
     }
 
 
@@ -1084,6 +1350,176 @@ def running_flat(rows: list[dict]) -> list[dict]:
     return out
 
 
+#: Errors first, then warnings, then information.
+_ISSUE_SEVERITY = {"error": 0, "warning": 1, "info": 2}
+
+
+def _issue(
+    severity: str, code: str, location_id: object, location: object,
+    subject: str, message: str, action: str,
+) -> dict:
+    return {
+        "severity": severity,
+        "code": code,
+        "location_id": location_id,
+        "location": location,
+        "subject": subject,
+        "message": message,
+        "action": action,
+    }
+
+
+def _issues_for(row: dict) -> list[dict]:
+    """Everything visibly wrong with one location, in one list.
+
+    A condition a Hub repeats on thousands of rows is aggregated: one machine
+    issue per machine, one worker issue per worker, one catalogue-error issue per
+    (location, model) however many machines repeat that model.
+    """
+    out: list[dict] = []
+    location_id = row.get("id")
+    location = row.get("label") or row.get("id") or "location"
+    subject = str(location_id if location_id is not None else location)
+
+    if not row.get("reachable"):
+        out.append(_issue(
+            "error", "location_unreachable", location_id, location, subject,
+            # The location's own sentence: it already says what to do about it.
+            row.get("error") or "This location is not answering.",
+            "Fleet → Locations",
+        ))
+
+    if str(row.get("role") or "").lower() == "controller" and (
+        row.get("ready") is False or _truthy(row.get("drained"))
+    ):
+        out.append(_issue(
+            "warning", "controller_drained", location_id, location, subject,
+            "The controller reports itself drained and will not accept new work.",
+            "Studio Hub on that Mac",
+        ))
+
+    for machine in machines_flat([row]):
+        machine_id = str(machine.get("machine") or "")
+        state = str(machine.get("state") or "").strip().lower()
+        if state == "offline":
+            out.append(_issue(
+                "warning", "machine_offline", machine.get("location_id"),
+                machine.get("location"), machine_id,
+                f"Machine {machine_id} is offline.", "Studio Hub on that Mac",
+            ))
+        if not state or state == "unknown":
+            out.append(_issue(
+                "info", "machine_unknown_state", machine.get("location_id"),
+                machine.get("location"), machine_id,
+                f"Machine {machine_id} reports no state.", "Studio Hub on that Mac",
+            ))
+        health = machine.get("health")
+        if health and str(health).lower() != "up":
+            out.append(_issue(
+                "warning", "machine_not_healthy", machine.get("location_id"),
+                machine.get("location"), machine_id,
+                f"Machine {machine_id} reports health '{health}'.",
+                "Studio Hub on that Mac",
+            ))
+        limitation = str(machine.get("limitation") or "").strip()
+        if limitation:
+            out.append(_issue(
+                "warning", "machine_limited", machine.get("location_id"),
+                machine.get("location"), machine_id, limitation,
+                "Studio Hub on that Mac",
+            ))
+
+    # One issue per worker, keyed on (machine, worker) so a Hub that repeats a
+    # worker cannot multiply the page.
+    seen_workers: set[tuple] = set()
+    for worker in row.get("workers") or []:
+        if not isinstance(worker, dict):
+            continue
+        worker_key = (worker.get("machine"), worker.get("id"))
+        if worker_key in seen_workers:
+            continue
+        seen_workers.add(worker_key)
+        worker_id = str(worker.get("id") or worker.get("machine") or "worker")
+        machine_id = str(worker.get("machine") or worker_id)
+        if _truthy(worker.get("quarantined")):
+            out.append(_issue(
+                "error", "machine_quarantined", location_id, location, machine_id,
+                f"Machine {machine_id} is quarantined.", "Fleet → Machines",
+            ))
+        if worker.get("online") is False:
+            out.append(_issue(
+                "warning", "worker_offline", location_id, location, worker_id,
+                f"Worker {worker_id} is offline.", "Studio Hub on that Mac",
+            ))
+        if _truthy(worker.get("maintenance")):
+            out.append(_issue(
+                "warning", "worker_maintenance", location_id, location, worker_id,
+                f"Worker {worker_id} is in maintenance.", "Studio Hub on that Mac",
+            ))
+
+    # A model is repeated once per machine. Conditions are OR-ed across its
+    # machines first, then reported once per model — never once per row, and never
+    # lost because the machine that stated it came second.
+    model_conditions: dict[str, dict] = {}
+    for model in row.get("local_models") or []:
+        if not isinstance(model, dict):
+            continue
+        name = str(model.get("model") or "")
+        bucket = model_conditions.setdefault(
+            name, {"catalog_error": None, "active_download": False}
+        )
+        if model.get("catalog_error") and not bucket["catalog_error"]:
+            bucket["catalog_error"] = model["catalog_error"]
+        if model.get("active_download"):
+            bucket["active_download"] = True
+    for name, bucket in model_conditions.items():
+        if bucket["catalog_error"]:
+            out.append(_issue(
+                "warning", "model_catalog_error", location_id, location, name,
+                f"Model {name} failed its catalogue check: {bucket['catalog_error']}",
+                "Fleet → Models",
+            ))
+        if bucket["active_download"]:
+            out.append(_issue(
+                "info", "model_downloading", location_id, location, name,
+                f"Model {name} is downloading.", "Fleet → Models",
+            ))
+
+    for job in row.get("running_jobs") or []:
+        if not isinstance(job, dict) or not job.get("stalled"):
+            continue
+        job_id = str(job.get("id") or job.get("model") or "job")
+        out.append(_issue(
+            "error", "running_stalled", location_id, location, job_id,
+            f"Job {job_id} is stalled.", "Fleet → Jobs",
+        ))
+
+    hidden = int(row.get("probe_machines_hidden") or 0)
+    if hidden > 0:
+        out.append(_issue(
+            "info", "probe_machines_hidden", location_id, location, str(hidden),
+            f"{hidden} Hub connectivity probe(s) are hidden from the machine list.",
+            "Fleet → Machines",
+        ))
+    return out
+
+
+def _issues(rows: list[dict]) -> list[dict]:
+    """Every location's issues, ordered error, warning, info.
+
+    Stable inside a severity by location and subject, so a page that refreshes
+    does not reshuffle rows whose facts did not change.
+    """
+    out = [issue for row in rows for issue in _issues_for(row)]
+    out.sort(key=lambda issue: (
+        _ISSUE_SEVERITY.get(issue["severity"], 3),
+        str(issue.get("location") or ""),
+        str(issue.get("subject") or ""),
+        str(issue.get("code") or ""),
+    ))
+    return out
+
+
 def snapshot(force: bool = False, *, allow_stale: bool = False) -> dict:
     """Everything the Fleet page shows, in one read.
 
@@ -1108,6 +1544,7 @@ def snapshot(force: bool = False, *, allow_stale: bool = False) -> dict:
         "machines": machines_flat(rows),
         "running": running_flat(rows),
         "summary": _summarise(rows),
+        "issues": _issues(rows),
         "generated_at": time.time(),
     }
     with _cache_lock:

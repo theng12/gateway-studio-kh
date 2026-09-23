@@ -11,7 +11,15 @@ import AppKit
 ///
 /// The local Mac is always the first location, so a single-Mac install shows
 /// something true without any configuration.
-final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableViewDelegate {
+///
+/// **The page is a shell around five inner tabs**, because the owner said the
+/// flat page was "a bit flat" and asked for "different tabs inside the fleet
+/// tab": Overview, Settings / Locations, Machines, Local Models and
+/// Jobs / Generations. The tab bar, the confirmation banner and the
+/// location/search filters are the only parts that belong to every tab; each tab
+/// builds its own body (see `FleetTabs.swift`).
+final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableViewDelegate,
+    NSSearchFieldDelegate {
     static let shared = FleetSection()
 
     let title = "Fleet"
@@ -20,25 +28,36 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
     /// demand rather than on the host's timer.
     let refreshesAutomatically = false
 
-    private var summaryLabel = NSTextField(labelWithString: "Loading…")
-    private var pulseLabel = NSTextField(labelWithString: "")
-    private var table: NSTableView!
-    /// Flattened machine rows. A table virtualises, so this can hold hundreds or
-    /// thousands without building that many views.
-    private var locations: [[String: Any]] = []
-    private var locationTable: NSTableView!
-    private var machines: [[String: Any]] = []
-    private var runningRows: [[String: Any]] = []
-    private var runningTable: NSTableView!
-    private var runningHeading = NSTextField(labelWithString: "")
-    private var statusLabel = NSTextField(labelWithString: "")
-    private var labelField = NSTextField(string: "")
-    private var urlField = NSTextField(string: "")
-    private var tokenField = NSSecureTextField(string: "")
-    private var addStatus = NSTextField(labelWithString: "")
-    private var retryFailedButton: NSButton!
+    // MARK: State
+
+    private var snapshot: FleetSnapshot?
+    private var locations: [FleetLocation] = []
+    /// The selected inner tab. Held here, not in the segmented control alone, so a
+    /// reload — which rebuilds none of the tabs — never drops the owner back to
+    /// Overview.
+    private var selectedTab: FleetTab = .overview
+    private var filter = FleetFilter()
     private var failedRefreshProviderIDs: [String] = []
     private var adding = false
+
+    // MARK: Shell furniture
+
+    private let tabControl = NSSegmentedControl(
+        labels: FleetTab.allCases.map { $0.shortTitle },
+        trackingMode: .selectOne, target: nil, action: nil
+    )
+    private let banner = FleetBanner(frame: .zero)
+    private let locationPopup = NSPopUpButton()
+    private let searchField = NSSearchField()
+    private let content = NSView()
+
+    // MARK: Tabs
+
+    private lazy var overviewTab = FleetOverviewTab(frame: .zero)
+    private lazy var locationsTab = FleetLocationsTab(frame: .zero)
+    private lazy var machinesTab = FleetMachinesTab(frame: .zero)
+    private lazy var modelsTab = FleetModelsTab(frame: .zero)
+    private lazy var jobsTab = FleetJobsTab(frame: .zero)
 
     lazy var view: NSView = buildContent()
 
@@ -49,274 +68,146 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
     // MARK: Layout
 
     private func buildContent() -> NSView {
-        let root = PageKit.page()
+        let container = NSView()
 
-        root.addArrangedSubview(PageKit.heading(
+        let top = NSStackView()
+        top.orientation = .vertical
+        top.alignment = .leading
+        top.spacing = 10
+        top.edgeInsets = NSEdgeInsets(
+            top: PageKit.pagePadding, left: PageKit.pagePadding,
+            bottom: 6, right: PageKit.pagePadding
+        )
+        top.translatesAutoresizingMaskIntoConstraints = false
+
+        top.addArrangedSubview(PageKit.heading(
             "Fleet",
             "Every location this gateway can send work to, and what each one is doing now."
         ))
 
-        summaryLabel.font = .systemFont(ofSize: 12)
-        summaryLabel.textColor = .secondaryLabelColor
-        summaryLabel.lineBreakMode = .byWordWrapping
-        summaryLabel.maximumNumberOfLines = 3
-        // Refresh means **refresh**: reachability *and* models. See
-        // `refreshEverything`.
-        let refresh = NSButton(title: "Refresh", target: self,
-                               action: #selector(refreshEverything))
-        refresh.bezelStyle = .rounded
-        refresh.controlSize = .small
-        retryFailedButton = NSButton(
-            title: "Retry failed",
-            target: self,
-            action: #selector(retryFailedRefresh)
-        )
-        retryFailedButton.bezelStyle = .rounded
-        retryFailedButton.controlSize = .small
-        retryFailedButton.isHidden = true
-        let bar = PageKit.row(
-            [summaryLabel, NSView(), retryFailedButton, refresh],
-            spacing: 8
-        )
-        root.addArrangedSubview(bar)
-        bar.widthAnchor.constraint(equalTo: root.widthAnchor, constant: -56).isActive = true
+        tabControl.segmentStyle = .rounded
+        tabControl.controlSize = .small
+        tabControl.target = self
+        tabControl.action = #selector(tabChanged)
+        tabControl.selectedSegment = selectedTab.rawValue
+        top.addArrangedSubview(tabControl)
 
-        pulseLabel.font = .systemFont(ofSize: 11.5)
-        pulseLabel.textColor = .tertiaryLabelColor
-        root.addArrangedSubview(pulseLabel)
+        // The confirmation banner sits directly under the tab bar, where an action
+        // just taken is impossible to miss. The old page reported everything into
+        // one small line at the very bottom, which is why adding a controller "kinda
+        // shows but there's no visual confirmation".
+        top.addArrangedSubview(banner)
+        pinWidth(banner, to: top)
 
-        // Three tables, not a stack of cards. The fleet has to hold hundreds of
-        // locations and machines, and a stack would build a view for every one
-        // of them; a table only builds the rows you can see.
-        locationTable = NSTableView()
-        locationTable.dataSource = self
-        locationTable.delegate = self
-        locationTable.rowHeight = 22
-        locationTable.usesAlternatingRowBackgroundColors = true
-        for (identifier, title, width) in [
-            ("llocation", "Location", 150),
-            ("lrole", "Role", 80),
-            ("lhub", "Hub", 70),
-            ("lmachines", "Machines", 80),
-            ("lstatus", "Status", 220),
-            ("lactions", "Actions", 340),
-        ] {
-            let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier(identifier))
-            column.title = title
-            column.width = CGFloat(width)
-            // The Actions column holds four buttons that are ~277pt wide together.
-            // At `minWidth = 60` it could be squeezed to 60, and because AppKit's
-            // default autoresizing style makes the *last* column absorb the
-            // difference, "Remove" was pushed outside the clip view and could
-            // neither be seen nor clicked at the default window width — the buttons
-            // were live and unreachable, which is the same defect as wiring them to
-            // nothing. A measured floor plus a horizontal scroller means they can
-            // always be reached, at any window size.
-            column.minWidth = identifier == "lactions" ? 285 : 60
-            locationTable.addTableColumn(column)
+        top.addArrangedSubview(filterRow())
+        pinWidth(filterRowHolder, to: top)
+
+        container.addSubview(top)
+
+        for tab in FleetTab.allCases {
+            let child = view(for: tab)
+            child.translatesAutoresizingMaskIntoConstraints = false
+            child.isHidden = tab != selectedTab
+            content.addSubview(child)
+            NSLayoutConstraint.activate([
+                child.topAnchor.constraint(equalTo: content.topAnchor),
+                child.leadingAnchor.constraint(equalTo: content.leadingAnchor),
+                child.trailingAnchor.constraint(equalTo: content.trailingAnchor),
+                child.bottomAnchor.constraint(equalTo: content.bottomAnchor),
+            ])
         }
-        locationTable.columnAutoresizingStyle = .noColumnAutoresizing
-        let locationScroll = NSScrollView()
-        locationScroll.documentView = locationTable
-        locationScroll.hasVerticalScroller = true
-        // Columns keep their widths and the pane scrolls, rather than the last
-        // column being squeezed out of reach. The table is wider than the pane at
-        // anything under ~1200pt, and unreachable controls are worse than a
-        // scrollbar.
-        locationScroll.hasHorizontalScroller = true
-        locationScroll.borderType = .bezelBorder
-        locationScroll.translatesAutoresizingMaskIntoConstraints = false
-        root.addArrangedSubview(PageKit.sectionTitle("Locations"))
-        root.addArrangedSubview(locationScroll)
-        NSLayoutConstraint.activate([
-            locationScroll.widthAnchor.constraint(equalTo: root.widthAnchor, constant: -56),
-            locationScroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 90),
-        ])
-
-        table = NSTableView()
-        table.dataSource = self
-        table.delegate = self
-        table.rowHeight = 22
-        table.usesAlternatingRowBackgroundColors = true
-        for (identifier, title, width) in [
-            ("state", "State", 96),
-            ("machine", "Machine", 150),
-            ("location", "Location", 140),
-            ("jobs", "Jobs", 150),
-            ("avg", "Median", 80),
-            ("hardware", "Hardware", 210),
-            ("modalities", "Modalities", 240),
-        ] {
-            let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier(identifier))
-            column.title = title
-            column.width = CGFloat(width)
-            column.minWidth = 60
-            table.addTableColumn(column)
-        }
-        let scroll = NSScrollView()
-        scroll.documentView = table
-        scroll.hasVerticalScroller = true
-        scroll.borderType = .bezelBorder
-        scroll.translatesAutoresizingMaskIntoConstraints = false
-        root.addArrangedSubview(scroll)
-        NSLayoutConstraint.activate([
-            scroll.widthAnchor.constraint(equalTo: root.widthAnchor, constant: -56),
-            scroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 220),
-        ])
-
-        statusLabel.font = .systemFont(ofSize: 11.5)
-        statusLabel.textColor = .secondaryLabelColor
-        root.addArrangedSubview(statusLabel)
-
-        // Work in flight, also as a table, and for the same reason: on a busy
-        // fleet this is the longest list on the page.
-        runningHeading = PageKit.sectionTitle("Running now")
-        root.addArrangedSubview(runningHeading)
-
-        runningTable = NSTableView()
-        runningTable.dataSource = self
-        runningTable.delegate = self
-        runningTable.rowHeight = 22
-        runningTable.usesAlternatingRowBackgroundColors = true
-        for (identifier, title, width) in [
-            ("rlocation", "Location", 150),
-            ("rmodality", "Modality", 110),
-            ("rmodel", "Model", 300),
-            ("rprogress", "Progress", 200),
-        ] {
-            let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier(identifier))
-            column.title = title
-            column.width = CGFloat(width)
-            column.minWidth = 60
-            runningTable.addTableColumn(column)
-        }
-        runningTable.columnAutoresizingStyle = .noColumnAutoresizing
-        let runningScroll = NSScrollView()
-        runningScroll.documentView = runningTable
-        runningScroll.hasVerticalScroller = true
-        runningScroll.hasHorizontalScroller = true
-        runningScroll.borderType = .bezelBorder
-        runningScroll.translatesAutoresizingMaskIntoConstraints = false
-        root.addArrangedSubview(runningScroll)
-        NSLayoutConstraint.activate([
-            runningScroll.widthAnchor.constraint(equalTo: root.widthAnchor, constant: -56),
-            runningScroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 110),
-        ])
-
-        root.addArrangedSubview(PageKit.sectionTitle("Add a location"))
-        root.addArrangedSubview(PageKit.help(
-            "Another Mac running Studio Hub. Standalone or controller, both work. "
-            + "A new machine can be added while it is still standalone and keep working "
-            + "after it is promoted to a controller; nothing here depends on the role. "
-            + "Enter its address and its Fleet token — the Fleet token is the one this "
-            + "gateway needs to send work there and collect the results. A controller "
-            + "reports its own nodes — this gateway never contacts them directly. Every "
-            + "location below can be renamed at any time: a name is a label, and no "
-            + "address, credential or model depends on it. On the other Mac, Studio Hub "
-            + "must be told to answer on a network this one can reach: in its Settings, "
-            + "stop the services, tick its Tailscale network under "
-            + "\u{201C}Listening on\u{201D}, and start them again. It answers only that Mac "
-            + "itself by default, and nothing here can change that from a distance."
-        ))
-        // The Hub's own Connections page labels these two and says what each is for.
-        // A person pasting a token here has to be able to tell which one this page
-        // wants before they paste it: both reach every route the gateway calls, so
-        // the wrong one works silently until the day it matters.
-        root.addArrangedSubview(PageKit.help(
-            "Two tokens, two jobs.\n\n"
-            + "Hub token — the Mac's own key.\n"
-            + "Who it is for: the person who owns that Mac, using that Mac.\n"
-            + "What it does: change settings, install or remove models, delete output, "
-            + "manage shared voices.\n"
-            + "Never send it to GatewayKH unless GatewayKH will manage shared voices on "
-            + "that Mac. Anyone who holds it can do everything on that Mac.\n\n"
-            + "Fleet token — the work badge for the group.\n"
-            + "Who it is for: GatewayKH, and every Mac that joins a controller.\n"
-            + "What it allows: send work, follow the job, download the result, "
-            + "acknowledge it, cancel it or discard an uncertain one, and read the model "
-            + "and fleet lists.\n"
-            + "What it cannot do: change settings, install or remove models, delete "
-            + "output, manage shared voices, or make a Mac join or leave.\n"
-            + "This is the token to enter here."
-        ))
-        // Joining is the Mac's own act, on the Mac itself. Nothing on this side can
-        // enlist or dismiss a machine, and saying so here stops "why can't GatewayKH
-        // just add it?" from becoming a support question.
-        root.addArrangedSubview(PageKit.help(
-            "Joining is that Mac's own decision, made from its own app with the "
-            + "controller's Fleet token. GatewayKH cannot join or unjoin a Mac."
-        ))
-
-        labelField.placeholderString = "Name (e.g. Blue Room)"
-        labelField.widthAnchor.constraint(equalToConstant: 220).isActive = true
-        urlField.placeholderString = "http://10.0.0.5:47873"
-        urlField.widthAnchor.constraint(equalToConstant: 260).isActive = true
-        tokenField.placeholderString = "the controller's Fleet token"
-        tokenField.widthAnchor.constraint(equalToConstant: 260).isActive = true
-        let addButton = NSButton(title: "Add location", target: self, action: #selector(addLocation))
-        addButton.bezelStyle = .rounded
-
-        root.addArrangedSubview(PageKit.formRow("Name", labelField))
-        root.addArrangedSubview(PageKit.formRow("Address", urlField))
-        root.addArrangedSubview(PageKit.formRow(
-            "Fleet token",
-            [
-                tokenField,
-                PageKit.help(
-                    "The token this gateway needs to send work to that Mac and "
-                    + "collect the results."
-                ),
-            ]
-        ))
-        root.addArrangedSubview(PageKit.formRow("", addButton))
-
-        addStatus.font = .systemFont(ofSize: 11.5)
-        addStatus.textColor = .secondaryLabelColor
-        root.addArrangedSubview(PageKit.formRow("", addStatus))
-
-        // A scrolling page, and it has to be.
-        //
-        // This page is taller than a window can be: three tables with minimum
-        // heights, four section headings and an add-location form. Pinned
-        // directly to the host, those required heights propagated outwards and
-        // **grew the window** — measured at 1162pt tall on a 1080pt screen, so
-        // the bottom edge and the resize corner were off-screen and the window
-        // could not be restored. A page's height must never be able to resize the
-        // window; a scroll view gives the content somewhere to go instead, and
-        // keeps every part of it reachable.
-        //
-        // The document view must be flipped, or AppKit scrolls to the bottom of
-        // a page whose origin is at the bottom-left.
-        let document = FlippedView()
-        document.translatesAutoresizingMaskIntoConstraints = false
-        document.addSubview(root)
-
-        let pageScroll = NSScrollView()
-        pageScroll.hasVerticalScroller = true
-        pageScroll.drawsBackground = false
-        pageScroll.translatesAutoresizingMaskIntoConstraints = false
-        pageScroll.documentView = document
+        content.translatesAutoresizingMaskIntoConstraints = false
+        container.addSubview(content)
 
         NSLayoutConstraint.activate([
-            root.topAnchor.constraint(equalTo: document.topAnchor),
-            root.leadingAnchor.constraint(equalTo: document.leadingAnchor),
-            root.trailingAnchor.constraint(equalTo: document.trailingAnchor),
-            root.bottomAnchor.constraint(equalTo: document.bottomAnchor),
-
-            document.leadingAnchor.constraint(equalTo: pageScroll.contentView.leadingAnchor),
-            document.trailingAnchor.constraint(equalTo: pageScroll.contentView.trailingAnchor),
-            document.topAnchor.constraint(equalTo: pageScroll.contentView.topAnchor),
+            top.topAnchor.constraint(equalTo: container.topAnchor),
+            top.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            top.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            content.topAnchor.constraint(equalTo: top.bottomAnchor),
+            content.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            content.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            content.bottomAnchor.constraint(equalTo: container.bottomAnchor),
         ])
 
-        let container = NSView()
-        container.addSubview(pageScroll)
-        NSLayoutConstraint.activate([
-            pageScroll.topAnchor.constraint(equalTo: container.topAnchor),
-            pageScroll.leadingAnchor.constraint(equalTo: container.leadingAnchor),
-            pageScroll.trailingAnchor.constraint(equalTo: container.trailingAnchor),
-            pageScroll.bottomAnchor.constraint(equalTo: container.bottomAnchor),
-        ])
+        wireTabs()
         return container
+    }
+
+    /// The row is kept so the shell can constrain its width after the stack has
+    /// been laid out; `filterRow()` builds and stores it.
+    private var filterRowHolder = NSView()
+
+    private func filterRow() -> NSView {
+        locationPopup.target = self
+        locationPopup.action = #selector(locationFilterChanged)
+        locationPopup.controlSize = .small
+        locationPopup.addItem(withTitle: "All locations")
+        locationPopup.widthAnchor.constraint(equalToConstant: 200).isActive = true
+
+        searchField.placeholderString = "Filter machines, models, jobs…"
+        searchField.delegate = self
+        searchField.controlSize = .small
+        searchField.widthAnchor.constraint(equalToConstant: 240).isActive = true
+
+        let row = PageKit.row([
+            PageKit.label("Show", size: 11.5, colour: .secondaryLabelColor),
+            locationPopup,
+            searchField,
+            NSView(),
+        ], spacing: 8)
+        filterRowHolder = row
+        return row
+    }
+
+    private func pinWidth(_ view: NSView, to host: NSView) {
+        view.widthAnchor.constraint(
+            equalTo: host.widthAnchor, constant: -PageKit.pagePadding * 2
+        ).isActive = true
+    }
+
+    private func view(for tab: FleetTab) -> NSView {
+        switch tab {
+        case .overview: return overviewTab
+        case .locations: return locationsTab
+        case .machines: return machinesTab
+        case .models: return modelsTab
+        case .jobs: return jobsTab
+        }
+    }
+
+    /// Point every tab's buttons at the shell. The tabs are views; the network,
+    /// the alerts and the banner all belong here.
+    private func wireTabs() {
+        overviewTab.onOpenTab = { [weak self] tab in self?.select(tab) }
+        overviewTab.onRefreshLocation = { [weak self] providerID in
+            self?.refreshProviders([providerID])
+        }
+
+        locationsTab.onRefresh = { [weak self] in self?.refreshEverything() }
+        locationsTab.onRetryFailed = { [weak self] in self?.retryFailedRefresh() }
+        locationsTab.onAddLocation = { [weak self] label, url, token in
+            self?.addLocation(label: label, url: url, token: token)
+        }
+        locationsTab.onTest = { [weak self] location in self?.testController(location) }
+        locationsTab.onRename = { [weak self] location in self?.renameController(location) }
+        locationsTab.onCredentials = { [weak self] location in self?.editCredentials(location) }
+        locationsTab.onRemove = { [weak self] location in self?.removeController(location) }
+
+        jobsTab.onRefresh = { [weak self] in self?.refreshEverything() }
+    }
+
+    // MARK: Tabs
+
+    @objc private func tabChanged() {
+        select(FleetTab(rawValue: tabControl.selectedSegment) ?? .overview)
+    }
+
+    private func select(_ tab: FleetTab) {
+        selectedTab = tab
+        tabControl.selectedSegment = tab.rawValue
+        for candidate in FleetTab.allCases {
+            view(for: candidate).isHidden = candidate != tab
+        }
     }
 
     // MARK: Data
@@ -337,10 +228,10 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
         // The provider id, not the location id: a row carries both and they are
         // different strings (`local` versus `studio-hub-local`). The gateway
         // publishes it precisely so no client has to derive it.
-        let providerIds = uniqueProviderIDs(from: locations)
+        let providerIds = uniqueProviderIDs()
         guard !providerIds.isEmpty else {
             failedRefreshProviderIDs = []
-            retryFailedButton?.isHidden = true
+            locationsTab.setRetryFailedVisible(false)
             reload()
             return
         }
@@ -356,23 +247,18 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
             guard let self else { return }
             switch result {
             case .failure(let error):
-                self.summaryLabel.stringValue = "Could not read the fleet — \(error)"
-                // Clear *every* table, not just the machines one. The Locations
-                // and Running-now tables kept their previous contents, so an error
-                // banner sat above rows still claiming a reachability that had not
-                // been measured this time. Stale numbers presented as current are
-                // the same failure as inventing them.
-                self.machines = []
-                self.locations = []
-                self.runningRows = []
-                self.table.reloadData()
-                self.runningTable.reloadData()
-                self.statusLabel.stringValue = ""
+                self.render(error: "Could not read the fleet — \(error)")
             case .success(let payload):
                 self.render(payload)
             }
             completion?()
         }
+    }
+
+    private func uniqueProviderIDs() -> [String] {
+        var seen = Set<String>()
+        return locations.compactMap { $0.providerId }
+            .filter { !$0.isEmpty && seen.insert($0).inserted }
     }
 
     @objc private func retryFailedRefresh() {
@@ -381,25 +267,18 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
         refreshProviders(providerIDs)
     }
 
-    private func uniqueProviderIDs(from rows: [[String: Any]]) -> [String] {
-        var seen = Set<String>()
-        return rows.compactMap { $0["provider_id"] as? String }
-            .filter { !$0.isEmpty && seen.insert($0).inserted }
-    }
-
     private func refreshProviders(_ providerIDs: [String]) {
         let providerIDs = providerIDs.filter { !$0.isEmpty }
         guard !providerIDs.isEmpty else { return }
-        retryFailedButton?.isHidden = true
-        summaryLabel.textColor = .secondaryLabelColor
-        summaryLabel.stringValue =
-            "Refreshing \(providerIDs.count) location\(providerIDs.count == 1 ? "" : "s")…"
+        locationsTab.setRetryFailedVisible(false)
+        setStatus("Refreshing \(providerIDs.count) location\(providerIDs.count == 1 ? "" : "s")…")
+        banner.show(.idle, title: "", detail: "")
+        banner.clear()
 
         let labels = Dictionary(
             uniqueKeysWithValues: locations.compactMap { row -> (String, String)? in
-                guard let providerID = row["provider_id"] as? String,
-                      !providerID.isEmpty else { return nil }
-                return (providerID, row["label"] as? String ?? providerID)
+                guard let providerID = row.providerId, !providerID.isEmpty else { return nil }
+                return (providerID, row.label ?? providerID)
             }
         )
         var finished = 0
@@ -437,280 +316,165 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
         labels: [String: String]
     ) {
         failedRefreshProviderIDs = failures.map { $0.providerID }
-        retryFailedButton?.isHidden = failures.isEmpty
-        summaryLabel.textColor = failures.isEmpty ? .secondaryLabelColor : .systemOrange
+        locationsTab.setRetryFailedVisible(!failures.isEmpty)
         let succeeded = total - failures.count
         guard !failures.isEmpty else {
-            summaryLabel.stringValue =
-                "Refreshed \(total) location\(total == 1 ? "" : "s")."
+            setStatus("Refreshed \(total) location\(total == 1 ? "" : "s").")
+            report(
+                .success,
+                title: "Refreshed \(total) location\(total == 1 ? "" : "s")",
+                detail: "Reachability and models were re-read. Discovered models arrive "
+                    + "disabled — enable the ones you want on the Models page."
+            )
             return
         }
         let details = failures.map {
             "\(labels[$0.providerID] ?? $0.providerID): \($0.detail)"
         }.joined(separator: "; ")
-        summaryLabel.stringValue =
-            "Refreshed \(succeeded); Could not discover at \(failures.count) " +
-            "location\(failures.count == 1 ? "" : "s") — \(details)"
+        setStatus(
+            "Refreshed \(succeeded); could not discover at \(failures.count) "
+            + "location\(failures.count == 1 ? "" : "s") — \(details)",
+            colour: .systemOrange
+        )
+        report(
+            .warning,
+            title: "Refreshed \(succeeded) of \(total) location\(total == 1 ? "" : "s")",
+            detail: details
+        )
     }
 
     private func render(_ payload: [String: Any]) {
-        let summary = payload["summary"] as? [String: Any] ?? [:]
-        let locationRows = payload["locations"] as? [[String: Any]] ?? []
+        guard let snapshot = FleetSnapshot.from(payload) else {
+            // A 200 with a shape this build cannot read: say so rather than drawing
+            // an empty fleet, because "the answer is nothing" and "I could not read
+            // the answer" must not look the same.
+            render(error: "The gateway's fleet answer could not be read.")
+            return
+        }
+        self.snapshot = snapshot
+        self.locations = snapshot.locations
 
-        let up = summary["locations_up"] as? Int ?? 0
-        let total = summary["locations"] as? Int ?? locationRows.count
-        let online = summary["machines_online"] as? Int ?? 0
-        let offline = summary["machines_offline"] as? Int ?? 0
-        // Neither online nor offline: the Hub reported no state for that machine.
-        // Shown rather than dropped, so the sentence accounts for every machine in
-        // the table below it instead of leaving an unexplained gap.
-        let unknown = summary["machines_unknown"] as? Int ?? 0
-        let completed = summary["jobs_completed"] as? Int ?? 0
-        let failed = summary["jobs_failed"] as? Int ?? 0
-        let running = summary["running_jobs"] as? Int ?? 0
-
-        var line = "\(up) of \(total) location\(total == 1 ? "" : "s") reachable"
-        line += " · \(online) machine\(online == 1 ? "" : "s") online"
-        if offline > 0 { line += ", \(offline) offline" }
-        if unknown > 0 { line += ", \(unknown) with no state reported" }
-        line += " · \(completed) job\(completed == 1 ? "" : "s") completed"
-        if failed > 0 { line += ", \(failed) failed" }
-        if running > 0 { line += " · \(running) running now" }
-        summaryLabel.stringValue = line
-
-        // The pulse is the Hub's own view of what every machine is doing, so it
-        // is shown verbatim rather than re-derived here.
-        let pulse = summary["pulse"] as? [String: Int] ?? [:]
-        let active = pulse.filter { $0.value > 0 && $0.key != "offline" }
-        pulseLabel.stringValue = active.isEmpty
-            ? (offline > 0 ? "\(offline) machine\(offline == 1 ? "" : "s") not reporting"
-                           : "No machines are reporting.")
-            : active.sorted { $0.key < $1.key }
-                .map { "\($0.value) \($0.key.replacingOccurrences(of: "_", with: " "))" }
-                .joined(separator: " · ")
-
-        // The table is fed from the flat machine list the gateway joins for us,
-        // so a machine is one row no matter how many locations it came from.
-        locations = locationRows
-        machines = payload["machines"] as? [[String: Any]] ?? []
-        runningRows = payload["running"] as? [[String: Any]] ?? []
-        locationTable.reloadData()
-        table.reloadData()
-        runningTable.reloadData()
-        runningHeading.stringValue = runningRows.isEmpty ? "Running now — nothing" : "Running now"
-        statusLabel.stringValue = machines.isEmpty
-            ? "No machines are reporting."
-            : "\(machines.count) machine\(machines.count == 1 ? "" : "s") across "
-              + "\(locationRows.count) location\(locationRows.count == 1 ? "" : "s")."
+        var providerIDs: [String: String] = [:]
+        for location in snapshot.locations {
+            if let id = location.id, let provider = location.providerId {
+                providerIDs[id] = provider
+            }
+        }
+        overviewTab.setProviderIDs(providerIDs)
+        overviewTab.update(snapshot: snapshot, filter: filter)
+        locationsTab.update(locations: snapshot.locations)
+        rebuildLocationPopup()
+        applyFilter()
     }
 
-    // MARK: Tables
-
-    func numberOfRows(in tableView: NSTableView) -> Int {
-        if tableView === runningTable { return runningRows.count }
-        if tableView === locationTable { return locations.count }
-        return machines.count
+    private func render(error: String) {
+        let empty = FleetSnapshot()
+        snapshot = nil
+        locations = []
+        overviewTab.update(snapshot: empty, filter: filter)
+        overviewTab.setStatus(error, colour: .systemOrange)
+        locationsTab.update(locations: [])
+        machinesTab.update(machines: [], studios: [:], filter: filter)
+        modelsTab.update(models: [], filter: filter)
+        jobsTab.update(snapshot: empty, filter: filter)
+        // A location filter that outlived its locations would hide the next read's
+        // rows for a reason nothing on the page explains.
+        rebuildLocationPopup()
     }
 
-    func tableView(
-        _ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int
-    ) -> NSView? {
-        guard let column = tableColumn else { return nil }
-        let isRunning = tableView === runningTable
-        let source = isRunning ? runningRows : (tableView === locationTable ? locations : machines)
-        guard row < source.count else { return nil }
-        let item = source[row]
-
-        let cell = NSTableCellView()
-        let label = NSTextField(labelWithString: "")
-        label.font = .systemFont(ofSize: 11.5)
-        label.lineBreakMode = .byTruncatingTail
-        label.translatesAutoresizingMaskIntoConstraints = false
-        cell.addSubview(label)
-        cell.textField = label
-        NSLayoutConstraint.activate([
-            label.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 4),
-            label.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -4),
-            label.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
-        ])
-
-        if tableView === locationTable {
-            // The actions column carries buttons, not text, so it is built before
-            // the label cell below rather than inside its switch.
-            if column.identifier.rawValue == "lactions" {
-                return locationActions(for: item)
-            }
-            let reachable = item["reachable"] as? Bool ?? false
-            switch column.identifier.rawValue {
-            case "llocation":
-                label.stringValue = (item["local"] as? Bool == true ? "" : "")
-                    + (item["label"] as? String ?? "—")
-            case "lrole":
-                label.stringValue = (item["role"] as? String) ?? "—"
-            case "lhub":
-                label.stringValue = (item["version"] as? String) ?? "—"
-            case "lmachines":
-                let count = (item["machines"] as? [[String: Any]])?.count ?? 0
-                label.stringValue = reachable ? "\(count)" : "—"
-            case "lstatus":
-                // A location that is down has to say why; it is the difference
-                // between fixing a token and fixing a network.
-                label.stringValue = reachable
-                    ? ((item["url"] as? String) ?? "")
-                    : ((item["error"] as? String) ?? "Not reachable")
-                label.textColor = reachable ? .secondaryLabelColor : .systemOrange
-            default:
-                break
-            }
-            return cell
+    private func rebuildLocationPopup() {
+        let previous = locationPopup.selectedItem?.representedObject as? String
+        locationPopup.removeAllItems()
+        locationPopup.addItem(withTitle: "All locations")
+        locationPopup.lastItem?.representedObject = nil
+        for location in locations {
+            locationPopup.addItem(withTitle: location.label ?? location.id ?? "Location")
+            locationPopup.lastItem?.representedObject = location.id
         }
-
-        if isRunning {
-            switch column.identifier.rawValue {
-            case "rlocation": label.stringValue = item["location"] as? String ?? "—"
-            case "rmodality": label.stringValue = item["modality"] as? String ?? "—"
-            case "rmodel": label.stringValue = item["model"] as? String ?? "—"
-            case "rprogress":
-                let running = item["running"] as? Int ?? 0
-                let queued = item["queued"] as? Int ?? 0
-                let total = item["total"] as? Int ?? 0
-                var text = "\(running) running, \(queued) queued of \(total)"
-                if item["stalled"] as? Bool == true { text += " · stalled" }
-                label.stringValue = text
-            default: break
-            }
-            return cell
+        if let previous,
+           let index = locationPopup.itemArray.firstIndex(where: {
+               ($0.representedObject as? String) == previous
+           }) {
+            locationPopup.selectItem(at: index)
+        } else {
+            locationPopup.selectItem(at: 0)
         }
-
-        switch column.identifier.rawValue {
-        case "state":
-            // The Hub's own wording, and its own limitation notice when it could
-            // not measure something.
-            var state = (item["state"] as? String)?.replacingOccurrences(of: "_", with: " ")
-                ?? ((item["reachable"] as? Bool == true) ? "up" : "offline")
-            if let limitation = item["limitation"] as? String, !limitation.isEmpty {
-                state += " ·"
-            }
-            label.stringValue = state
-            label.textColor = item["reachable"] as? Bool == false ? .systemOrange : .labelColor
-        case "machine":
-            label.stringValue = item["label"] as? String ?? "—"
-        case "location":
-            label.stringValue = item["location"] as? String ?? "—"
-        case "jobs":
-            let completed = item["completed"] as? Int
-            let failed = item["failed"] as? Int
-            if completed == nil && failed == nil {
-                label.stringValue = "—"
-            } else {
-                label.stringValue = "\(completed ?? 0) done"
-                    + ((failed ?? 0) > 0 ? ", \(failed!) failed" : "")
-            }
-        case "avg":
-            // Median when the Hub measured one; otherwise the overview's average,
-            // labelled as an average so the two are never confused.
-            if let median = item["median_runtime_s"] as? Double {
-                label.stringValue = format(median) + "s med"
-            } else if let average = item["average_seconds"] as? Double {
-                label.stringValue = format(average) + "s avg"
-            } else {
-                label.stringValue = "—"
-            }
-        case "hardware":
-            var parts: [String] = []
-            if let chip = item["chip"] as? String, !chip.isEmpty { parts.append(chip) }
-            if let memory = item["memory_gb"] as? Double { parts.append(format(memory) + " GB") }
-            if let free = item["disk_free_gb"] as? Double { parts.append(format(free) + " GB free") }
-            label.stringValue = parts.isEmpty ? "—" : parts.joined(separator: " · ")
-        case "modalities":
-            let modalities = item["modalities"] as? [String: Int] ?? [:]
-            label.stringValue = modalities.isEmpty
-                ? "—"
-                : modalities.sorted { $0.key < $1.key }
-                    .map { "\($0.value) \($0.key)" }.joined(separator: ", ")
-        default:
-            break
-        }
-        return cell
+        filter.locationID = locationPopup.selectedItem?.representedObject as? String
     }
 
-    /// Test / Token / Rename / Remove, per location.
-    ///
-    /// This Mac gets Rename only: it has no address to test and nothing to remove,
-    /// and its credential comes from its own Hub rather than from here. Its name is
-    /// its own, like any other location's.
-    private func locationActions(for item: [String: Any]) -> NSView {
-        let isLocal = item["local"] as? Bool == true
-        let id = item["id"] as? String ?? ""
-
-        func button(_ title: String, _ action: Selector) -> NSButton {
-            let button = NSButton(title: title, target: self, action: action)
-            button.identifier = NSUserInterfaceItemIdentifier(id)
-            button.bezelStyle = .rounded
-            button.controlSize = .small
-            return button
-        }
-
-        var views: [NSView] = []
-        if !isLocal {
-            views.append(button("Test", #selector(testController(_:))))
-        }
-        views.append(button("Rename", #selector(renameController(_:))))
-        if !isLocal {
-            // One credentials action, not two. Five buttons did not fit this cell,
-            // and AppKit left the overflow out of the view hierarchy entirely — so
-            // **Remove** was unreachable from the app while its endpoint worked.
-            // Merging the tokens also puts the pair in one place, which is where
-            // the difference between them belongs.
-            views.append(button("Credentials…", #selector(editCredentials(_:))))
-            views.append(button("Remove", #selector(removeController(_:))))
-        }
-
-        let cell = NSTableCellView()
-        let stack = NSStackView(views: views)
-        stack.orientation = .horizontal
-        stack.spacing = 4
-        stack.translatesAutoresizingMaskIntoConstraints = false
-        cell.addSubview(stack)
-        NSLayoutConstraint.activate([
-            stack.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 4),
-            stack.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
-        ])
-        return cell
+    private func applyFilter() {
+        guard let snapshot else { return }
+        overviewTab.update(snapshot: snapshot, filter: filter)
+        machinesTab.update(
+            machines: snapshot.machines, studios: snapshot.studiosByMachine, filter: filter)
+        modelsTab.update(models: snapshot.allLocalModels, filter: filter)
+        jobsTab.update(snapshot: snapshot, filter: filter)
     }
 
-    private func format(_ value: Double) -> String {
-        value >= 100 ? String(format: "%.0f", value) : String(format: "%.1f", value)
+    private func setStatus(_ text: String, colour: NSColor = .secondaryLabelColor) {
+        overviewTab.setStatus(text, colour: colour)
+        locationsTab.setStatus(text, colour: colour)
+    }
+
+    // MARK: Filters
+
+    @objc private func locationFilterChanged() {
+        filter.locationID = locationPopup.selectedItem?.representedObject as? String
+        applyFilter()
+    }
+
+    func controlTextDidChange(_ notification: Notification) {
+        filter.query = searchField.stringValue
+        applyFilter()
+    }
+
+    // MARK: Banner
+
+    /// Show one action's outcome, in the banner and in the Locations tab's own
+    /// status line. Every action on this page reports through here; the banner is
+    /// the visible confirmation the owner asked for.
+    private func report(_ kind: FleetBanner.Kind, title: String, detail: String) {
+        banner.show(kind, title: title, detail: detail)
+        let colour: NSColor
+        switch kind {
+        case .success: colour = .secondaryLabelColor
+        case .warning: colour = .systemOrange
+        case .error: colour = .systemRed
+        case .idle: colour = .secondaryLabelColor
+        }
+        locationsTab.setAddStatus(detail.isEmpty ? title : "\(title) — \(detail)", colour: colour)
     }
 
     // MARK: Actions
 
-    @objc private func addLocation() {
+    private func addLocation(label: String, url: String, token: String) {
         guard !adding else { return }
-        let url = urlField.stringValue.trimmingCharacters(in: .whitespaces)
         guard !url.isEmpty else {
-            addStatus.stringValue = "An address is required."
+            report(.error, title: "An address is required", detail: "Enter the controller's address, e.g. http://10.0.0.5:47873.")
             return
         }
         adding = true
-        addStatus.stringValue = "Adding…"
+        setStatus("Adding \(label.isEmpty ? url : label)…")
         GatewayAPI.post("/admin/api/fleet/controllers", body: [
-            "label": labelField.stringValue.trimmingCharacters(in: .whitespaces),
+            "label": label,
             "url": url,
-            "token": tokenField.stringValue.trimmingCharacters(in: .whitespaces),
+            "token": token,
         ]) { [weak self] result in
             guard let self else { return }
             self.adding = false
             switch result {
             case .failure(let error):
-                self.addStatus.stringValue = "Could not add the location — \(error)"
+                self.report(
+                    .error,
+                    title: "Could not add the location",
+                    detail: error.localizedDescription
+                )
             case .success(let payload):
-                self.labelField.stringValue = ""
-                self.urlField.stringValue = ""
-                self.tokenField.stringValue = ""
-                self.describe(
+                let name = label.isEmpty ? url : label
+                self.locationsTab.clearAddForm()
+                self.describeCredential(
                     payload["credential"] as? [String: Any],
-                    verb: "Added",
+                    verb: "Added \(name)",
                     discovered: payload["discovered"] as? Int,
                     discoveryError: payload["discovery_error"] as? String
                 )
@@ -719,14 +483,59 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
         }
     }
 
+    /// Render the gateway's read on a pasted credential, and what adding found.
+    ///
+    /// Both of a controller's credentials reach every route this gateway calls, so
+    /// an over-privileged one works perfectly and is never noticed. That makes
+    /// saying which one was pasted, at the moment it was pasted, the whole value of
+    /// the check.
+    private func describeCredential(
+        _ credential: [String: Any]?,
+        verb: String,
+        discovered: Int? = nil,
+        discoveryError: String? = nil
+    ) {
+        // Discovered models arrive DISABLED. Saying it here is the difference
+        // between "the location has no models" and "you have not enabled any yet".
+        var tail = ""
+        if let discovered {
+            tail = discovered == 0
+                ? " It reported no models."
+                : " Discovered \(discovered) model\(discovered == 1 ? "" : "s") — enable the ones "
+                  + "you want on the Models page; nothing is available until you do."
+        } else if let discoveryError {
+            tail = " Its models could not be read yet — \(discoveryError)"
+        }
+
+        guard let credential else {
+            report(.warning, title: verb, detail: tail)
+            return
+        }
+        let scope = credential["scope"] as? String ?? "unknown"
+        let detail = credential["detail"] as? String ?? ""
+        switch scope {
+        case "fleet":
+            report(.success, title: verb, detail: detail + tail)
+        case "operator", "rejected":
+            report(
+                .warning,
+                title: "\(verb) — check which token was pasted",
+                detail: detail + tail
+            )
+        default:
+            let lead = detail.isEmpty ? "" : detail
+            report(.success, title: verb, detail: lead + tail)
+        }
+    }
+
     /// Rename any location, at any time.
     ///
     /// A name here is a display label, never an identity: the address, the
     /// credential and every model already discovered from that location stay
     /// exactly as they are, so this can never cost a re-entry of the token.
-    @objc private func renameController(_ sender: NSButton) {
-        guard let id = sender.identifier?.rawValue else { return }
-        let current = locations.first { ($0["id"] as? String) == id }?["label"] as? String ?? ""
+    private func renameController(_ location: FleetLocation) {
+        guard let id = location.id else { return }
+        let current = location.label ?? ""
 
         let field = NSTextField(string: current)
         field.frame = NSRect(x: 0, y: 0, width: 260, height: 24)
@@ -743,66 +552,24 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
         guard alert.runModal() == .alertFirstButtonReturn else { return }
         let name = field.stringValue.trimmingCharacters(in: .whitespaces)
         guard !name.isEmpty else {
-            addStatus.stringValue = "A name is required."
+            report(.error, title: "A name is required", detail: "The location was not renamed.")
             return
         }
 
-        addStatus.stringValue = "Renaming…"
+        setStatus("Renaming \(current)…")
         GatewayAPI.patch("/admin/api/fleet/controllers/\(id)", body: ["label": name]) { [weak self] result in
             guard let self else { return }
             switch result {
             case .failure(let error):
-                self.addStatus.stringValue = "Could not rename it — \(error)"
+                self.report(.error, title: "Could not rename it", detail: error.localizedDescription)
             case .success:
-                self.addStatus.stringValue = "Renamed to “\(name)”."
+                self.report(
+                    .success,
+                    title: "Renamed to “\(name)”",
+                    detail: "Its address, credential and models are untouched."
+                )
                 self.reload()
             }
-        }
-    }
-
-    /// Render the gateway's read on a pasted credential, and what adding found.
-    ///
-    /// Both of a controller's credentials reach every route this gateway calls, so
-    /// an over-privileged one works perfectly and is never noticed. That makes
-    /// saying which one was pasted, at the moment it was pasted, the whole value of
-    /// the check.
-    private func describe(
-        _ credential: [String: Any]?,
-        verb: String,
-        discovered: Int? = nil,
-        discoveryError: String? = nil
-    ) {
-        // Discovered models arrive DISABLED, and nothing on this page says so.
-        // Saying it here is the difference between "the location has no models"
-        // and "you have not enabled any yet".
-        var tail = ""
-        if let discovered {
-            tail = discovered == 0
-                ? " It reported no models."
-                : " Discovered \(discovered) model\(discovered == 1 ? "" : "s") — enable the ones "
-                  + "you want in Models; nothing is available until you do."
-        } else if let discoveryError {
-            tail = " Its models could not be read yet — \(discoveryError)"
-        }
-
-        guard let credential else {
-            addStatus.textColor = .systemOrange
-            addStatus.stringValue = "\(verb).\(tail)"
-            return
-        }
-        let scope = credential["scope"] as? String ?? "unknown"
-        let detail = credential["detail"] as? String ?? ""
-        switch scope {
-        case "fleet":
-            addStatus.textColor = .secondaryLabelColor
-            addStatus.stringValue = "\(verb). \(detail)\(tail)"
-        case "operator", "rejected":
-            addStatus.textColor = .systemOrange
-            addStatus.stringValue = "⚠︎ \(verb), but \(detail)\(tail)"
-        default:
-            addStatus.textColor = .secondaryLabelColor
-            let lead = detail.isEmpty ? "\(verb)." : "\(verb). \(detail)"
-            addStatus.stringValue = "\(lead)\(tail)"
         }
     }
 
@@ -812,9 +579,9 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
     /// a fleet token so a node's credential can never administer the controller that
     /// owns it — and that difference is exactly what belongs in one explanation
     /// rather than two separate buttons.
-    @objc private func editCredentials(_ sender: NSButton) {
-        guard let id = sender.identifier?.rawValue else { return }
-        let label = locations.first { ($0["id"] as? String) == id }?["label"] as? String ?? id
+    private func editCredentials(_ location: FleetLocation) {
+        guard let id = location.id else { return }
+        let label = location.label ?? id
 
         func field(_ placeholder: String) -> NSSecureTextField {
             let field = NSSecureTextField(string: "")
@@ -869,23 +636,30 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
         let hubToken = hub.stringValue.trimmingCharacters(in: .whitespaces)
         guard !fleetToken.isEmpty || !hubToken.isEmpty else { return }
 
-        addStatus.textColor = .secondaryLabelColor
-        addStatus.stringValue = "Saving…"
+        setStatus("Saving credentials for \(label)…")
 
         // Fleet token first: its reply is the one that reports scope and discovery.
         let finish: () -> Void = { [weak self] in
             guard let self else { return }
-            guard !hubToken.isEmpty else { self.reload(); return }
+            guard !hubToken.isEmpty else {
+                self.reload()
+                return
+            }
             GatewayAPI.put("/admin/api/fleet/controllers/\(id)/hub-token",
                            body: ["token": hubToken]) { [weak self] result in
                 guard let self else { return }
                 if case .failure(let error) = result {
-                    self.addStatus.textColor = .systemOrange
-                    self.addStatus.stringValue = "Saved the fleet token, but not the Hub token — \(error)"
+                    self.report(
+                        .warning,
+                        title: "Saved the fleet token, but not the Hub token",
+                        detail: error.localizedDescription
+                    )
                 } else {
-                    self.addStatus.textColor = .secondaryLabelColor
-                    self.addStatus.stringValue =
-                        "Saved. \(label) keeps its fleet token for work, and can now be given shared voices."
+                    self.report(
+                        .success,
+                        title: "Saved credentials for \(label)",
+                        detail: "It keeps its fleet token for work, and can now be given shared voices."
+                    )
                 }
                 self.reload()
             }
@@ -900,12 +674,11 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
             guard let self else { return }
             switch result {
             case .failure(let error):
-                self.addStatus.textColor = .systemOrange
-                self.addStatus.stringValue = "Could not save it — \(error)"
+                self.report(.error, title: "Could not save it", detail: error.localizedDescription)
             case .success(let payload):
-                self.describe(
+                self.describeCredential(
                     payload["credential"] as? [String: Any],
-                    verb: "Saved",
+                    verb: "Saved credentials for \(label)",
                     discovered: payload["discovered"] as? Int
                 )
                 finish()
@@ -913,14 +686,15 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
         }
     }
 
-    @objc private func testController(_ sender: NSButton) {
-        guard let id = sender.identifier?.rawValue else { return }
-        addStatus.stringValue = "Testing…"
+    private func testController(_ location: FleetLocation) {
+        guard let id = location.id else { return }
+        let label = location.label ?? id
+        setStatus("Testing \(label)…")
         GatewayAPI.post("/admin/api/fleet/controllers/\(id)/test", body: [:]) { [weak self] result in
             guard let self else { return }
             switch result {
             case .failure(let error):
-                self.addStatus.stringValue = "Test failed — \(error)"
+                self.report(.error, title: "Test failed for \(label)", detail: error.localizedDescription)
             case .success(let payload):
                 let reachable = payload["reachable"] as? Bool ?? false
                 if reachable {
@@ -928,18 +702,26 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
                     let version = payload["version"] as? String ?? "unknown version"
                     let machines = payload["machines"] as? Int ?? 0
                     let nodes = payload["nodes"] as? Int ?? 0
-                    self.describe(
+                    self.describeCredential(
                         payload["credential"] as? [String: Any],
-                        verb: "Answered as \(role) on Hub \(version) — \(machines) machines, \(nodes) nodes"
+                        verb: "\(label) answered as \(role) on Hub \(version)",
+                        discovered: nil,
+                        discoveryError: nil
+                    )
+                    self.locationsTab.setAddStatus(
+                        "\(machines) machines, \(nodes) nodes reported.",
+                        colour: .secondaryLabelColor
                     )
                 } else {
                     // The reason is the gateway's, and it distinguishes a refused
                     // connection (Studio Hub answering this Mac only) from a bad
                     // token from a silent network — three problems with three
                     // different fixes, one of which otherwise costs a site visit.
-                    self.addStatus.textColor = .systemOrange
-                    self.addStatus.stringValue =
-                        "No answer — \(payload["error"] as? String ?? "unknown reason")"
+                    self.report(
+                        .error,
+                        title: "No answer from \(label)",
+                        detail: payload["error"] as? String ?? "unknown reason"
+                    )
                 }
             }
         }
@@ -951,9 +733,9 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
     /// the row, so putting it back means pasting a token again. A stray click on a
     /// table row should not do that, and the confirmation names the location so
     /// there is no doubt which one is going.
-    @objc private func removeController(_ sender: NSButton) {
-        guard let id = sender.identifier?.rawValue else { return }
-        let label = locations.first { ($0["id"] as? String) == id }?["label"] as? String ?? id
+    private func removeController(_ location: FleetLocation) {
+        guard let id = location.id else { return }
+        let label = location.label ?? id
 
         let alert = NSAlert()
         alert.messageText = "Remove \(label)?"
@@ -972,13 +754,141 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
         GatewayAPI.delete("/admin/api/fleet/controllers/\(id)") { [weak self] result in
             guard let self else { return }
             if case .failure(let error) = result {
-                self.addStatus.textColor = .systemOrange
-                self.addStatus.stringValue = "Could not remove it — \(error)"
+                self.report(.error, title: "Could not remove \(label)", detail: error.localizedDescription)
             } else {
-                self.addStatus.textColor = .secondaryLabelColor
-                self.addStatus.stringValue = "Removed \(label)."
+                self.report(
+                    .success,
+                    title: "Removed \(label)",
+                    detail: "Its models are no longer offered here."
+                )
             }
             self.reload()
         }
     }
+}
+
+// MARK: - Confirmation banner
+
+/// The page's visible confirmation: an icon, a one-line title and a secondary
+/// detail line, green for success and orange/red for anything that needs fixing.
+///
+/// The Fleet page used to report every action into one small line at the bottom,
+/// which the owner could not see while looking at the controls — "there's no
+/// visual confirmation". This is that confirmation, and it is deliberately hard
+/// to miss.
+final class FleetBanner: NSView {
+    enum Kind {
+        case idle, success, warning, error
+
+        var tint: NSColor {
+            switch self {
+            case .success: return .systemGreen
+            case .warning: return .systemOrange
+            case .error: return .systemRed
+            case .idle: return .secondaryLabelColor
+            }
+        }
+
+        var symbol: String {
+            switch self {
+            case .success: return "checkmark.circle.fill"
+            case .warning: return "exclamationmark.triangle.fill"
+            case .error: return "xmark.octagon.fill"
+            case .idle: return "info.circle"
+            }
+        }
+    }
+
+    private let icon = NSImageView()
+    private let titleLabel = NSTextField(labelWithString: "")
+    private let detailLabel = NSTextField(wrappingLabelWithString: "")
+    private var hideTimer: Timer?
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        wantsLayer = true
+        layer?.cornerRadius = 6
+        layer?.borderWidth = 1
+
+        icon.translatesAutoresizingMaskIntoConstraints = false
+        icon.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 15, weight: .semibold)
+        icon.setContentHuggingPriority(.required, for: .horizontal)
+
+        titleLabel.font = .systemFont(ofSize: 12.5, weight: .semibold)
+        titleLabel.lineBreakMode = .byTruncatingTail
+        detailLabel.font = .systemFont(ofSize: 11.5)
+        detailLabel.textColor = .secondaryLabelColor
+        detailLabel.maximumNumberOfLines = 2
+        detailLabel.lineBreakMode = .byWordWrapping
+        detailLabel.preferredMaxLayoutWidth = 520
+
+        let text = NSStackView(views: [titleLabel, detailLabel])
+        text.orientation = .vertical
+        text.alignment = .leading
+        text.spacing = 2
+        text.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+
+        let row = NSStackView(views: [icon, text])
+        row.orientation = .horizontal
+        row.alignment = .top
+        row.spacing = 9
+        row.edgeInsets = NSEdgeInsets(top: 9, left: 12, bottom: 9, right: 12)
+        row.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(row)
+        NSLayoutConstraint.activate([
+            row.topAnchor.constraint(equalTo: topAnchor),
+            row.leadingAnchor.constraint(equalTo: leadingAnchor),
+            row.trailingAnchor.constraint(equalTo: trailingAnchor),
+            row.bottomAnchor.constraint(equalTo: bottomAnchor),
+            icon.widthAnchor.constraint(equalToConstant: 18),
+        ])
+        isHidden = true
+    }
+
+    required init?(coder: NSCoder) { fatalError("not used") }
+
+    /// **The tint has to be re-resolved on an appearance switch.** `NSColor.cgColor`
+    /// snapshots whichever appearance was current when it was read, so a banner
+    /// coloured once kept its light-appearance tint in dark mode — measured
+    /// offscreen as white label text on a pale card, which is unreadable.
+    /// `updateLayer` runs inside the effective appearance, so the banner follows
+    /// the Mac and its text stays legible in both.
+    override var wantsUpdateLayer: Bool { true }
+
+    override func updateLayer() {
+        layer?.backgroundColor = kind.tint.withAlphaComponent(0.10).cgColor
+        layer?.borderColor = kind.tint.withAlphaComponent(0.35).cgColor
+    }
+
+    func show(_ kind: Kind, title: String, detail: String) {
+        hideTimer?.invalidate()
+        guard kind != .idle, !title.isEmpty || !detail.isEmpty else {
+            clear()
+            return
+        }
+        self.kind = kind
+        icon.image = NSImage(systemSymbolName: kind.symbol, accessibilityDescription: nil)
+        icon.contentTintColor = kind.tint
+        titleLabel.stringValue = title
+        titleLabel.textColor = kind.tint == .secondaryLabelColor ? .labelColor : kind.tint
+        detailLabel.stringValue = detail
+        detailLabel.isHidden = detail.isEmpty
+        needsDisplay = true  // re-runs `updateLayer` with the new kind's tint
+        isHidden = false
+        // A success is confirmation, not a permanent notice; leave a failure up
+        // until the next action so it cannot be missed.
+        if kind == .success {
+            hideTimer = Timer.scheduledTimer(withTimeInterval: 12, repeats: false) { [weak self] _ in
+                self?.clear()
+            }
+        }
+    }
+
+    func clear() {
+        hideTimer?.invalidate()
+        hideTimer = nil
+        isHidden = true
+    }
+
+    private var kind: Kind = .idle
 }

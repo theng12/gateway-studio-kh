@@ -15,6 +15,7 @@ import os
 import shutil
 import sys
 import tempfile
+import threading
 import types
 import unittest
 from pathlib import Path
@@ -24,6 +25,7 @@ from unittest.mock import patch
 _TEMP_ROOT = Path(tempfile.mkdtemp(prefix="gateway-fleet-routing-"))
 atexit.register(shutil.rmtree, _TEMP_ROOT, ignore_errors=True)
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 os.environ.update(
     {
         "GATEWAY_APP_SUPPORT": str(_TEMP_ROOT),
@@ -39,6 +41,7 @@ os.environ.update(
 
 from gateway import fleet  # noqa: E402
 from gateway.providers import registry  # noqa: E402
+from mock_upstream import FLEET_MODEL_ROWS, FLEET_WORKERS, Handler, Server  # noqa: E402
 
 
 MODEL = "mlx-community/heavy-image-model"
@@ -192,6 +195,257 @@ class RankTests(unittest.TestCase):
         )
         self.assertEqual(fleet._site_speed_score([]), 0.0)
         self.assertEqual(fleet._site_speed_score(None), 0.0)
+
+
+# --------------------------------------------------------------------------
+# The Fleet page's additive tabs: per-location models and workers, the issues
+# list, and the gateway-side model counts the admin route enriches in.
+
+
+#: The exact keys `/admin/api/fleet` publishes per local model row. Checked as a
+#: set so an accidental extra field — or a dropped one — fails here.
+LOCAL_MODEL_KEYS = {
+    "model", "label", "family", "studio", "modality", "machine", "kind",
+    "size_gb", "min_unified_memory_gb", "required_free_memory_gb",
+    "memory_eligible", "runtime_ready", "available", "loaded", "fit",
+    "cache_state", "catalog_error", "catalog_stale", "active_download",
+    "gated", "dispatch_state",
+}
+
+
+def _unreachable_location() -> dict:
+    """A location row shaped like `_probe`'s failure result."""
+    return {
+        "id": "dead", "label": "Dead", "local": False, "reachable": False,
+        "error": "Nothing is listening on that address.",
+        "role": None, "ready": None, "machines": [], "running_jobs": [],
+        "activity": {"pulse": {}, "machines": []},
+        "local_models": [], "workers": [], "probe_machines_hidden": 0,
+    }
+
+
+class FleetTabTests(unittest.TestCase):
+    """`fleet._probe` and `snapshot` against the mock Hub."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.server = Server(("127.0.0.1", 0), Handler)
+        cls.base = f"http://127.0.0.1:{cls.server.server_address[1]}"
+        cls.thread = threading.Thread(target=cls.server.serve_forever, daemon=True)
+        cls.thread.start()
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        cls.server.shutdown()
+        cls.server.server_close()
+
+    def _probe(self) -> dict:
+        return fleet._probe(self.base, "mock-token")
+
+    def test_local_models_are_trimmed_to_the_contract_keys(self) -> None:
+        location = self._probe()
+        self.assertTrue(location["reachable"], location["error"])
+        rows = location["local_models"]
+        self.assertEqual(len(rows), len(FLEET_MODEL_ROWS))
+        for row in rows:
+            self.assertEqual(set(row), LOCAL_MODEL_KEYS, row)
+
+    def test_one_row_per_model_per_machine(self) -> None:
+        rows = self._probe()["local_models"]
+        pairs = [(row["model"], row["machine"]) for row in rows]
+        self.assertEqual(len(pairs), len(set(pairs)), pairs)
+        self.assertEqual(len({row["model"] for row in rows}), 3)
+        self.assertEqual({row["machine"] for row in rows}, {"mac-a", "mac-b"})
+        self.assertEqual({row["modality"] for row in rows}, {"image", "voice"})
+
+    def test_availability_fit_error_and_dispatch_are_read_per_machine(self) -> None:
+        by_machine = {
+            (row["model"], row["machine"]): row
+            for row in self._probe()["local_models"]
+        }
+        vision_a = by_machine[("mock-hub/vision-one", "mac-a")]
+        vision_b = by_machine[("mock-hub/vision-one", "mac-b")]
+        self.assertTrue(vision_a["available"])
+        self.assertFalse(vision_b["available"])
+        self.assertEqual(vision_a["fit"]["state"], "fits")
+        self.assertIsNone(vision_b["fit"])
+        # `dispatch_state` is joined from `/api/hub/model-packages` by the
+        # `package_id` the row's cache names; a row with no package is `None`,
+        # not a guess.
+        self.assertEqual(vision_a["dispatch_state"], "eligible")
+        self.assertEqual(vision_b["dispatch_state"], "eligible")
+        voice_one = by_machine[("mock-hub/voice-one", "mac-a")]
+        self.assertEqual(voice_one["dispatch_state"], "ineligible")
+        self.assertEqual(voice_one["catalog_error"], "catalogue read failed")
+        voice_two = by_machine[("mock-hub/voice-two", "mac-a")]
+        self.assertIsNone(voice_two["dispatch_state"])
+        self.assertTrue(by_machine[("mock-hub/voice-two", "mac-b")]["active_download"])
+        self.assertFalse(voice_two["active_download"])
+
+    def test_workers_come_from_the_capabilities_roster(self) -> None:
+        location = self._probe()
+        workers = location["workers"]
+        self.assertEqual(len(workers), len(FLEET_WORKERS))
+        by_id = {worker["id"]: worker for worker in workers}
+        self.assertEqual(set(by_id), {
+            "svc-image-a", "svc-image-b", "svc-voice-a", "svc-voice-b",
+        })
+        healthy = by_id["svc-image-a"]
+        self.assertEqual(healthy["studio"], "image")
+        self.assertEqual(healthy["modality"], "image")
+        self.assertEqual(healthy["machine"], "mac-a")
+        self.assertEqual((healthy["slots"], healthy["slots_total"]), (1, 2))
+        self.assertFalse(healthy["quarantined"])
+        self.assertTrue(by_id["svc-voice-b"]["quarantined"])
+
+    def test_a_worker_modality_comes_from_its_studio_when_unstated(self) -> None:
+        # **The live capabilities roster carries no `modality` field at all.**
+        # Measured against Hub 0.6.47: reading one published `None` for every
+        # worker, so the Machines tab lost the one thing it groups by. The studio
+        # is what is stated, and `subtitle`/`transcription` are the same studio
+        # under the two rosters' spellings.
+        self.assertEqual(fleet._studio_modality("subtitle", None), "transcription")
+        self.assertEqual(fleet._studio_modality("transcription", None), "transcription")
+        self.assertEqual(fleet._studio_modality("voice", None), "voice")
+        self.assertIsNone(fleet._studio_modality("mystery", None))
+        # A stated modality always wins, so a Hub that starts publishing one is
+        # believed rather than overridden by this table.
+        self.assertEqual(fleet._studio_modality("image", "stated"), "stated")
+
+    def test_workers_fall_back_to_nodes_when_capabilities_has_none(self) -> None:
+        real_fetch = fleet._fetch
+
+        def fetch(client, base, token, path):
+            if path == "/api/hub/capabilities":
+                return {}
+            return real_fetch(client, base, token, path)
+
+        with patch.object(fleet, "_fetch", fetch):
+            location = fleet._probe(self.base, "mock-token")
+        self.assertTrue(location["reachable"], location["error"])
+        workers = location["workers"]
+        self.assertEqual(
+            [worker["id"] for worker in workers],
+            ["mac-a:image", "mac-a:voice", "mac-b:image"],
+        )
+        self.assertEqual([worker["machine"] for worker in workers],
+                         ["mac-a", "mac-a", "mac-b"])
+        self.assertTrue(workers[0]["online"] and workers[1]["online"])
+        self.assertFalse(workers[2]["online"])
+        # A node states nothing about readiness, so the page must say `None`.
+        self.assertIsNone(workers[0]["ready"])
+
+    def test_snapshot_aggregates_issues_and_counts_the_summary(self) -> None:
+        location = self._probe()
+        location.update({
+            "id": "mock", "label": "Mock", "local": False,
+            "provider_id": "studio-hub-mock",
+        })
+        with patch.object(fleet, "locations", return_value=[location, _unreachable_location()]):
+            snap = fleet.snapshot(force=True)
+
+        issues = snap["issues"]
+        codes = [(issue["severity"], issue["code"]) for issue in issues]
+        # voice-one repeats its catalogue error per machine, but the page must
+        # report the shared condition once.
+        self.assertEqual(
+            sum(1 for _, code in codes if code == "model_catalog_error"), 1)
+        # Errors first, then warnings, then info.
+        order = [fleet._ISSUE_SEVERITY[severity] for severity, _ in codes]
+        self.assertEqual(order, sorted(order), codes)
+        self.assertIn(("error", "location_unreachable"), codes)
+        self.assertIn(("error", "machine_quarantined"), codes)
+        self.assertIn(("warning", "worker_offline"), codes)
+        self.assertIn(("warning", "worker_maintenance"), codes)
+        self.assertIn(("info", "model_downloading"), codes)
+        for issue in issues:
+            self.assertEqual(
+                set(issue),
+                {"severity", "code", "location_id", "location", "subject",
+                 "message", "action"},
+            )
+            self.assertTrue(issue["message"] and issue["action"], issue)
+
+        summary = snap["summary"]
+        self.assertEqual(summary["local_models_total"], 3)
+        self.assertEqual(summary["models_available"], 2)
+        self.assertEqual(summary["workers_total"], 4)
+        self.assertEqual(summary["workers_ready"], 1)
+        self.assertEqual(
+            summary["issues"],
+            sum(1 for issue in issues if issue["severity"] in ("error", "warning")),
+        )
+
+
+class IssueDerivationTests(unittest.TestCase):
+    def test_machine_controller_and_job_conditions_are_reported(self) -> None:
+        row = {
+            "id": "site", "label": "Site", "local": False, "reachable": True,
+            "role": "controller", "ready": False,
+            "machines": [
+                {"machine": "m1", "label": "M1", "health": "degraded"},
+                {"machine": "m2", "label": "M2"},
+                {"machine": "m3", "label": "M3"},
+            ],
+            "activity": {"pulse": {}, "machines": [
+                {"machine": "m2", "state": "offline", "limitation": "no disk"},
+            ]},
+            "running_jobs": [{"id": "job-1", "stalled": True}],
+            "local_models": [], "workers": [], "probe_machines_hidden": 2,
+        }
+        codes = {issue["code"] for issue in fleet._issues([row])}
+        self.assertLessEqual(
+            {"controller_drained", "machine_not_healthy", "machine_offline",
+             "machine_limited", "machine_unknown_state", "running_stalled",
+             "probe_machines_hidden"},
+            codes,
+        )
+
+
+class AdminEnrichmentTests(unittest.TestCase):
+    def test_locations_gain_counts_without_the_cache_being_mutated(self) -> None:
+        from gateway import admin as admin_module
+
+        original = {"id": "local", "label": "This Mac",
+                    "provider_id": "studio-hub-local", "reachable": True}
+        cached = {"locations": [original], "summary": {"locations": 1},
+                  "issues": [], "generated_at": 0.0}
+        models = [
+            {"model_id": "m1", "enabled": True},
+            {"model_id": "m2", "enabled": False},
+            {"model_id": "m3", "enabled": True},
+        ]
+        definition = types.SimpleNamespace(id="studio-hub-local")
+        with patch.object(fleet, "snapshot", return_value=cached), \
+                patch.object(admin_module.registry, "definition", return_value=definition), \
+                patch.object(admin_module.registry.models, "models_for", return_value=models), \
+                patch.object(admin_module.registry.models, "can_publish",
+                             side_effect=lambda _definition, model: model["model_id"] != "m2"):
+            out = admin_module.fleet_snapshot()
+
+        row = out["locations"][0]
+        self.assertEqual(row["models_discovered"], 3)
+        self.assertEqual(row["models_enabled"], 2)
+        self.assertEqual(row["models_publishable"], 2)
+        # The cached row and its list must be untouched: the counts are this
+        # route's answer, not a mutation of the shared snapshot.
+        self.assertNotIn("models_discovered", original)
+        self.assertIsNot(row, original)
+        self.assertIsNot(out["locations"], cached["locations"])
+        self.assertIs(cached["locations"][0], original)
+
+    def test_an_unknown_provider_publishes_none_not_zero(self) -> None:
+        from gateway import admin as admin_module
+
+        cached = {"locations": [{"id": "x", "provider_id": "studio-hub-gone"}],
+                  "summary": {}, "issues": []}
+        with patch.object(fleet, "snapshot", return_value=cached), \
+                patch.object(admin_module.registry, "definition", return_value=None):
+            out = admin_module.fleet_snapshot()
+        row = out["locations"][0]
+        self.assertIsNone(row["models_discovered"])
+        self.assertIsNone(row["models_enabled"])
+        self.assertIsNone(row["models_publishable"])
 
 
 if __name__ == "__main__":
