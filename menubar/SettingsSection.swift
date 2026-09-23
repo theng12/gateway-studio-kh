@@ -33,6 +33,11 @@ final class SettingsSection: NSObject, AppSection {
     private var autoStartCheck: NSButton!
     private var keepRunningCheck: NSButton!
     private var statusLabel: NSTextField!
+    private var publisherFingerprintLabel: NSTextField!
+    private var publisherKeyBase64Label: NSTextField!
+    private var publisherKeyHexLabel: NSTextField!
+    private var publisherIDLabel: NSTextField!
+    private var releaseIdentityStatus: NSTextField!
 
     lazy var view: NSView = buildContent()
 
@@ -112,6 +117,45 @@ final class SettingsSection: NSObject, AppSection {
                 ? "Paste this and the key into Story Studio → Settings → This Mac on the other machine."
                 : "This Mac only. Set GATEWAY_HOST=0.0.0.0 in .env to reach it from another machine."
         ))
+
+        root.addArrangedSubview(divider())
+
+        // ---- Studio Hub app releases
+        //
+        // The one string an owner has to carry to another Mac is the fingerprint:
+        // a controller accepts a release only from a gateway whose publisher key
+        // its owner installed with POST /api/hub/release/trust. Both values are
+        // public; the private half never leaves the gateway, and this page never
+        // asks for it.
+        root.addArrangedSubview(PageKit.sectionTitle("Studio Hub app releases"))
+        root.addArrangedSubview(PageKit.help(
+            "This is this gateway's signing identity. Install its fingerprint on a "
+            + "controller so that controller accepts releases pushed from here. The "
+            + "fingerprint and the public key are safe to share; the private key is "
+            + "never shown."
+        ))
+        publisherFingerprintLabel = PageKit.label(
+            "Reading the publisher identity…", size: 13, wrapping: true
+        )
+        publisherFingerprintLabel.font = .monospacedSystemFont(ofSize: 13, weight: .semibold)
+        publisherFingerprintLabel.lineBreakMode = .byCharWrapping
+        publisherFingerprintLabel.maximumNumberOfLines = 2
+        publisherFingerprintLabel.preferredMaxLayoutWidth = 420
+        publisherFingerprintLabel.widthAnchor.constraint(equalToConstant: 420).isActive = true
+        root.addArrangedSubview(PageKit.formRow("Fingerprint", publisherFingerprintLabel))
+
+        publisherKeyBase64Label = identityField()
+        root.addArrangedSubview(PageKit.formRow("Public key (base64)", publisherKeyBase64Label))
+        publisherKeyHexLabel = identityField()
+        root.addArrangedSubview(PageKit.formRow("Public key (hex)", publisherKeyHexLabel))
+        publisherIDLabel = PageKit.label("—", size: 11.5, colour: .secondaryLabelColor)
+        publisherIDLabel.isSelectable = true
+        root.addArrangedSubview(PageKit.formRow("Publisher", publisherIDLabel))
+        releaseIdentityStatus = PageKit.label(
+            "", size: 11.5, colour: .secondaryLabelColor, wrapping: true
+        )
+        releaseIdentityStatus.preferredMaxLayoutWidth = 520
+        root.addArrangedSubview(PageKit.formRow("", releaseIdentityStatus))
 
         root.addArrangedSubview(divider())
 
@@ -236,6 +280,19 @@ final class SettingsSection: NSObject, AppSection {
         return box
     }
 
+    /// A read-only, selectable line for the public half of the identity.
+    ///
+    /// Monospaced and middle-truncated: the string is long, but its start and end
+    /// are what identify it, and it must stay selectable so it can be copied whole.
+    private func identityField() -> NSTextField {
+        let field = PageKit.label("—", size: 11)
+        field.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
+        field.isSelectable = true
+        field.lineBreakMode = .byTruncatingMiddle
+        field.widthAnchor.constraint(equalToConstant: 420).isActive = true
+        return field
+    }
+
     private func refresh() {
         loginCheck?.state = LaunchAgent.isInstalled ? .on : .off
         autoStartCheck?.state = ConfigStore.shared.config.autoStartGateway ? .on : .off
@@ -246,6 +303,51 @@ final class SettingsSection: NSObject, AppSection {
         dataLabel?.stringValue = AppPaths.data.path
         statusLabel?.stringValue = "Config: \(ConfigStore.shared.configPath)"
         loadRetention()
+        loadReleaseIdentity()
+    }
+
+    /// Read the publisher identity from the gateway. It is public material and
+    /// read-only here; nothing private is ever requested or drawn.
+    private func loadReleaseIdentity() {
+        GatewayAPI.get("/admin/api/release/identity") { [weak self] result in
+            guard let self else { return }
+            switch result {
+            case .failure(let error):
+                self.showReleaseIdentity(nil, error: error.localizedDescription)
+            case .success(let payload):
+                let state = FleetReleaseState.from(payload)
+                self.showReleaseIdentity(state?.identity, error: state?.error)
+            }
+        }
+    }
+
+    private func showReleaseIdentity(_ identity: FleetReleaseIdentity?, error: String?) {
+        guard let identity else {
+            publisherFingerprintLabel?.stringValue = "Unavailable"
+            publisherKeyBase64Label?.stringValue = "—"
+            publisherKeyHexLabel?.stringValue = "—"
+            publisherIDLabel?.stringValue = "—"
+            if let error, !error.isEmpty {
+                releaseIdentityStatus?.stringValue =
+                    "Could not read the publisher identity — \(error)"
+            } else {
+                releaseIdentityStatus?.stringValue =
+                    "The gateway has not published a signing identity yet."
+            }
+            return
+        }
+        publisherFingerprintLabel?.stringValue = identity.fingerprint ?? "not stated"
+        publisherKeyBase64Label?.stringValue = identity.publicKeyBase64 ?? "not stated"
+        publisherKeyHexLabel?.stringValue = identity.publicKeyHex ?? "not stated"
+        publisherIDLabel?.stringValue = identity.publisherId ?? "—"
+        var parts: [String] = []
+        if let algorithm = identity.algorithm, !algorithm.isEmpty {
+            parts.append("\(algorithm) signing key")
+        }
+        parts.append(
+            "Install the fingerprint on a controller to trust releases from this gateway."
+        )
+        releaseIdentityStatus?.stringValue = parts.joined(separator: " · ")
     }
 
     /// The limits live in the gateway, not in this app, so they are read from it.

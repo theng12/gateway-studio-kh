@@ -36,6 +36,7 @@ from .activity import story_activity
 from .adapters import BackendError, BackendRequest, adapter_for, serves, support_status
 from .catalog import MODALITIES, catalog
 from . import fleet
+from . import release_publisher
 from .config import is_loopback, request_is_loopback
 from .hub import hub_status
 from .providers import definitions, registry
@@ -1614,6 +1615,17 @@ def fleet_snapshot() -> dict[str, Any]:
     # row touched are copied instead.
     out = dict(data)
     out["locations"] = [_enrich_location(row) for row in data.get("locations") or []]
+    # **What the fleet should hold, and what it does.** The publisher identity and
+    # the last push travel with the fleet read so the page has one source for both
+    # halves of the report — the version that was signed and the version each
+    # controller read back. `identity()` creates the key on first use; a failure is
+    # reported rather than hidden, because the page then has to say why there is no
+    # fingerprint to install.
+    push = release_publisher.last_push()
+    try:
+        out["release"] = {"identity": release_publisher.identity(), "last_push": push}
+    except release_publisher.ReleaseError as exc:
+        out["release"] = {"identity": None, "last_push": push, "error": exc.message}
     return out
 
 
@@ -1861,3 +1873,52 @@ def fleet_retry_job_item(
         "location": location.get("label"),
         "result": result,
     }
+
+
+# ---------------------------------------------------------------------------
+# App releases — the Studio Hub app pushed from this gateway
+#
+# The gateway is the source of truth: it signs a release descriptor with its own
+# Ed25519 publisher key and offers it to each controller, which verifies the
+# signature against the key its owner installed and countersigns. The gateway then
+# **reads back** what the controller holds; "the request was accepted" is not the
+# answer to "what does it hold".
+# ---------------------------------------------------------------------------
+
+@router.get("/api/release/identity", dependencies=[Depends(require_admin)])
+def release_identity() -> Any:
+    """The publisher public key and fingerprint, plus the last push.
+
+    This is the only place the owner can read the fingerprint to install on a
+    controller, and the private half is never part of the answer.
+    """
+    try:
+        return {
+            "identity": release_publisher.identity(),
+            "last_push": release_publisher.last_push(),
+        }
+    except release_publisher.ReleaseError as exc:
+        return _error(exc.status, exc.message, exc.code)
+
+
+@router.post("/api/release/publish", dependencies=[Depends(require_admin)])
+def release_publish(payload: dict[str, Any]) -> Any:
+    """Sign one artifact and offer it to every configured controller.
+
+    The artifact is the DMG exactly as built — never repackaged, never re-signed
+    after the fact — and the answer is per controller: the release it **read back**
+    after storing, or the controller's own refusal sentence verbatim.
+    """
+    artifact = str(payload.get("artifact_path") or "").strip()
+    if not artifact:
+        return _error(422, "expected {'artifact_path', 'version', 'build'}")
+    filename = payload.get("filename")
+    try:
+        return release_publisher.publish(
+            artifact_path=artifact,
+            version=str(payload.get("version") or ""),
+            build=str(payload.get("build") or ""),
+            filename=str(filename) if filename else None,
+        )
+    except release_publisher.ReleaseError as exc:
+        return _error(exc.status, exc.message, exc.code)

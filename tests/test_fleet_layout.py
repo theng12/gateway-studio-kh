@@ -26,11 +26,40 @@ FIXTURE = {
         "jobs_failed": 1, "running_jobs": 1, "local_models_total": 2,
         "models_available": 3, "workers_total": 4, "workers_ready": 3, "issues": 2,
     },
+    # The publisher identity and the last push. The refusal carries the
+    # fingerprint to install, which the page must quote verbatim.
+    "release": {
+        "identity": {
+            "algorithm": "ed25519",
+            "public_key_base64": "A" * 44,
+            "public_key_hex": "ab" * 32,
+            "fingerprint": "cd" * 32,
+            "publisher_id": "gatewaykh",
+        },
+        "last_push": {
+            "updated_at": 1790000000,
+            "fingerprint": "cd" * 32,
+            "release": {
+                "version": "0.6.50", "build": "abc1234",
+                "filename": "StudioHub-0.6.50-abc1234.dmg",
+                "bytes": 1234, "sha256": "ef" * 32, "signature": "sig",
+            },
+            "locations": {
+                "ctrl-1": {
+                    "ok": False, "status": 409, "code": "PUBLISHER_NOT_TRUSTED",
+                    "detail": "no trusted gateway key is installed. Install this gateway's "
+                              "publisher fingerprint on that Mac: " + "cd" * 32,
+                    "label": "Blue Room", "release": None,
+                },
+            },
+        },
+    },
     "locations": [
         {
             "id": "local", "label": "This Mac", "local": True, "reachable": True,
             "role": "agent", "version": "0.6.47", "provider_id": "studio-hub-local",
             "models_discovered": 5, "models_enabled": 4, "models_publishable": 2,
+            "release": None,
             "machines": [{"machine": "local", "label": "This Mac", "reachable": True}],
             "workers": [
                 {"id": "voice", "studio": "voice", "modality": "voice", "machine": "local",
@@ -56,6 +85,13 @@ FIXTURE = {
             "id": "ctrl-1", "label": "Blue Room", "local": False, "reachable": True,
             "role": "controller", "version": "0.6.47", "provider_id": "studio-hub-ctrl-1",
             "models_discovered": 5, "models_enabled": 0, "models_publishable": 2,
+            # What the controller holds now: older than the pushed 0.6.50.
+            "release": {
+                "version": "0.6.49", "build": "deadbee",
+                "filename": "StudioHub-0.6.49-deadbee.dmg", "sha256": "12" * 32,
+                "publisher_key_id": "cd" * 32, "controller_key_id": "34" * 32,
+                "controller_signature": "countersig",
+            },
             "machines": [
                 {"machine": "mac-a", "label": "mac-a", "state": "long_idle"},
                 {"machine": "mac-b", "label": "mac-b", "state": "offline"},
@@ -185,7 +221,32 @@ enum GatewayAPI {
 
         let locations = FleetLocationsTab(frame: .zero)
         locations.update(locations: snapshot.locations)
+        locations.updateRelease(locations: snapshot.locations, state: snapshot.release)
         _ = layout("Locations", locations, rows: 2)
+
+        // The publisher identity and the controller-held descriptor decode, and
+        // the refusal is quoted verbatim — fingerprint and all. A page that
+        // paraphrased a 409 would hide the one string the owner has to install.
+        assert(snapshot.release?.identity?.fingerprint == String(repeating: "cd", count: 32),
+               "the publisher fingerprint did not decode")
+        assert(snapshot.release?.identity?.publicKeyHex == String(repeating: "ab", count: 32),
+               "the publisher public key did not decode")
+        assert(snapshot.locations.first(where: { $0.id == "ctrl-1" })?.release?.versionBuild
+               == "0.6.49 (deadbee)",
+               "the controller-held release did not decode")
+        let outcome = snapshot.release?.lastPush?.outcomes["ctrl-1"]
+        assert(outcome?.status == 409, "the push status did not decode")
+        assert(outcome?.ok == false, "the push outcome did not decode as a refusal")
+        assert((outcome?.detail ?? "").contains("Install this gateway's publisher fingerprint"),
+               "the refusal detail did not decode verbatim")
+        let texts = descendants(locations).compactMap { ($0 as? NSTextField)?.stringValue }
+        assert(texts.contains(where: { $0.contains("held 0.6.49 (deadbee)") }),
+               "the Release section did not show what the controller holds")
+        assert(texts.contains(where: {
+                   $0.contains("Last push refused")
+                       && $0.contains("Install this gateway's publisher fingerprint")
+               }),
+               "the Release section did not quote the refusal verbatim")
 
         let machines = FleetMachinesTab(frame: .zero)
         machines.update(machines: snapshot.machines, studios: snapshot.studiosByMachine,

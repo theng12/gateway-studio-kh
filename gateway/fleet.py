@@ -811,6 +811,15 @@ def _probe(base: str, token: str, *, timeout: float = _TIMEOUT) -> dict:
                 health_payload = _fetch(client, base, token, "/api/hub/model-health")
             except httpx.HTTPError:
                 health_payload = {}
+            try:
+                # **What this controller actually holds.** The Fleet page reports
+                # the release read back from the controller, never the push it was
+                # sent, so this is fetched with the rest of the row. Absence is
+                # `null`: a Hub with no release route (an agent, or an older
+                # controller) answered nothing, which is not an empty release.
+                release_payload = _fetch(client, base, token, "/api/hub/release")
+            except httpx.HTTPError:
+                release_payload = {}
     except httpx.HTTPStatusError as exc:
         location["error"] = (
             "Rejected the Hub token (HTTP %d)." % exc.response.status_code
@@ -916,6 +925,14 @@ def _probe(base: str, token: str, *, timeout: float = _TIMEOUT) -> dict:
         # The Hub's own per-(machine, model) verdict, with its reason. The Models
         # tab shows this instead of assembling a story from four other fields.
         "model_health": _model_health_rows(health_payload),
+        # The app release this controller holds, read from the controller itself.
+        # `None` is "it holds none" or "it has no release route" — the page draws
+        # both the same way rather than inventing a version.
+        "release": (
+            release_payload.get("release")
+            if isinstance(release_payload.get("release"), dict)
+            else None
+        ),
         # The Machines tab: capabilities' worker roster, falling back to the
         # node list's studios.
         "workers": _worker_roster(capabilities, node_rows),
@@ -1222,6 +1239,7 @@ def locations() -> list[dict]:
             "site_id": None, "controller_id": None, "ready": None,
             "capacity": {}, "local_models": [], "workers": [], "hub_workers": [],
             "model_health": [],
+            "release": None,
             "probe_machines_hidden": 0,
         }
     rows.append(local)

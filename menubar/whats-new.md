@@ -4,6 +4,30 @@ Newest first. This is the same list the **What's New** link in the app shows.
 
 ---
 
+## Publish Studio Hub app releases from the gateway
+
+GatewayKH signs a Studio Hub app release with its own Ed25519 **publisher** key and
+offers it to every configured controller, which verifies the signature against the
+key its owner installed there and countersigns. The node then pins the controller's
+countersignature, so trust chains from this gateway to the controller to the node.
+
+- **Settings shows the publisher identity** — the fingerprint you install on a
+  controller (with `POST /api/hub/release/trust`) so that controller accepts
+  releases pushed from here, plus the public key. The private key stays in the
+  gateway's data directory, is written `0600`, and is never returned by an API.
+- **Publish a release** from Fleet → Locations: choose the `.dmg` exactly as
+  built, give the version and build, and the gateway signs a descriptor — sorted
+  keys, no whitespace, UTF-8, the sha256 *inside* the signed bytes — and pushes it
+  to each controller with that controller's Fleet token.
+- **The report is what the controller holds**, read back from
+  `GET /api/hub/release`, never "the request was accepted". Each controller shows
+  the release it holds, the last push outcome, and the controller's refusal
+  reason **verbatim**. A controller that has not had the key installed yet refuses
+  with its own sentence, and the gateway names the fingerprint to install — the one
+  action that Mac needs.
+- Nothing is re-signed or rewritten after signing, and the artifact is never
+  repackaged.
+
 ## Fleet: "the site is down" no longer reads as "no such model"
 
 With every controller switched off, submitting a fleet model answered

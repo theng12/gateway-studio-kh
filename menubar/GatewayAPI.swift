@@ -76,9 +76,10 @@ enum GatewayAPI {
     static func post(
         _ path: String,
         body: [String: Any]? = nil,
+        timeout: TimeInterval = 15,
         completion: ((Result<[String: Any], Error>) -> Void)? = nil
     ) {
-        request("POST", path, body: body, completion: completion ?? { _ in })
+        request("POST", path, body: body, timeout: timeout, completion: completion ?? { _ in })
     }
 
     static func patch(
@@ -266,6 +267,7 @@ enum GatewayAPI {
         _ method: String,
         _ path: String,
         body: [String: Any]? = nil,
+        timeout: TimeInterval = 15,
         completion: @escaping (Result<[String: Any], Error>) -> Void
     ) {
         guard GatewayController.shared.isRunning else {
@@ -279,7 +281,10 @@ enum GatewayAPI {
 
         var req = URLRequest(url: target)
         req.httpMethod = method
-        req.timeoutInterval = 15
+        // The caller's ceiling: a release publish carries a whole artifact and
+        // waits for the gateway to push it to every controller, so it asks for
+        // far more than the 15 s a plain admin read needs.
+        req.timeoutInterval = timeout
         let key = EnvFile.apiKey()
         guard let (session, redirectDelegate) = authenticatedSession(for: target, key: key) else {
             DispatchQueue.main.async { completion(.failure(GatewayAPIError.badURL)) }

@@ -25,9 +25,13 @@ struct FleetSnapshot: Decodable {
     /// A flat model list, if the gateway also publishes one. The rows normally
     /// arrive nested under their location; both are read and merged.
     var models: [FleetLocalModel] = []
+    /// The app-release publisher identity and the last push, when the gateway
+    /// publishes them. Optional so a gateway from before this section still fills
+    /// every other table on the page.
+    var release: FleetReleaseState?
 
     private enum CodingKeys: String, CodingKey {
-        case generatedAt, summary, locations, machines, running, issues, models
+        case generatedAt, summary, locations, machines, running, issues, models, release
     }
 
     /// An empty snapshot, for the "could not read the fleet" case: every table is
@@ -60,6 +64,7 @@ struct FleetSnapshot: Decodable {
         running = lenientArray(c, forKey: .running)
         issues = lenientArray(c, forKey: .issues)
         models = lenientArray(c, forKey: .models)
+        release = try? c.decode(FleetReleaseState.self, forKey: .release)
     }
 }
 
@@ -109,11 +114,15 @@ struct FleetLocation: Decodable {
     var modelsDiscovered: Int?
     var modelsEnabled: Int?
     var modelsPublishable: Int?
+    /// The Studio Hub app release this controller **holds**, read from the
+    /// controller itself — never what was pushed. `nil` is "it holds none", or a
+    /// controller with no release route; it is not a version of zero.
+    var release: FleetReleaseDescriptor?
 
     private enum CodingKeys: String, CodingKey {
         case id, label, url, local, reachable, error, role, version, providerId, latencyMs
         case machines, workers, localModels, modelHealth, machineSummary, runningJobs
-        case modelsDiscovered, modelsEnabled, modelsPublishable
+        case modelsDiscovered, modelsEnabled, modelsPublishable, release
     }
 
     init(from decoder: Decoder) throws {
@@ -143,6 +152,7 @@ struct FleetLocation: Decodable {
         modelsDiscovered = try? c.decode(Int.self, forKey: .modelsDiscovered)
         modelsEnabled = try? c.decode(Int.self, forKey: .modelsEnabled)
         modelsPublishable = try? c.decode(Int.self, forKey: .modelsPublishable)
+        release = try? c.decode(FleetReleaseDescriptor.self, forKey: .release)
     }
 }
 
@@ -150,6 +160,143 @@ struct FleetMachineSummary: Decodable {
     var total: Int?
     var reachable: Int?
     var unreachable: Int?
+}
+
+// MARK: - App release
+
+/// This gateway's Ed25519 release-publisher identity.
+///
+/// Only public material is published here: the fingerprint is the lowercase hex
+/// sha256 of the raw public key — the string the owner installs on a controller
+/// with `POST /api/hub/release/trust` — and the private half never leaves the
+/// gateway's data directory. Nothing in this file may ask for or draw it.
+struct FleetReleaseIdentity: Decodable {
+    var algorithm: String?
+    var publicKeyBase64: String?
+    var publicKeyHex: String?
+    var fingerprint: String?
+    var publisherId: String?
+}
+
+/// One app-release descriptor: the gateway-signed one that was pushed, or the
+/// copy a controller stores and countersigns.
+///
+/// The controller's copy adds `controller_key_id` and `controller_signature`;
+/// the signed original carries neither, so both are optional. `nil` from any
+/// field stays "not stated" rather than becoming a zero or a blank version.
+struct FleetReleaseDescriptor: Decodable {
+    var version: String?
+    var build: String?
+    var filename: String?
+    var bytes: Int?
+    var sha256: String?
+    /// The gateway's signature over the canonical descriptor bytes.
+    var signature: String?
+    /// The publisher fingerprint the descriptor was signed by.
+    var publisherKeyId: String?
+    /// The controller's own countersignature, on a held copy only.
+    var controllerKeyId: String?
+    var controllerSignature: String?
+    var publishedAt: Double?
+    var schema: String?
+    var schemaVersion: Int?
+
+    /// `0.6.50 (abc1234)`, or whichever half the gateway actually stated. Never
+    /// invents the missing half; a descriptor with neither reads "—".
+    var versionBuild: String {
+        let version = (version ?? "").trimmingCharacters(in: .whitespaces)
+        let build = (build ?? "").trimmingCharacters(in: .whitespaces)
+        if !version.isEmpty, !build.isEmpty { return "\(version) (\(build))" }
+        if !version.isEmpty { return version }
+        if !build.isEmpty { return build }
+        return "—"
+    }
+}
+
+/// What one controller answered to a push.
+///
+/// `detail` is the controller's (or the gateway's) own sentence and is shown
+/// **verbatim**: a 409 already carries the fingerprint to install, so
+/// paraphrasing it would lose the one actionable fact. `release` is what the
+/// controller **read back** after storing — `nil` on any refusal.
+struct FleetPushOutcome: Decodable {
+    var ok: Bool?
+    /// The controller's HTTP status, or `nil` when it could not be reached.
+    var status: Int?
+    var code: String?
+    var detail: String?
+    /// The controller's label, attached by the gateway for the page.
+    var label: String?
+    var release: FleetReleaseDescriptor?
+}
+
+/// The result of one `POST /admin/api/release/publish` — also the shape of
+/// `last_push` on the fleet read: the descriptor that was signed, the fingerprint
+/// that signed it, and one outcome per configured controller.
+struct FleetPushReport: Decodable {
+    var updatedAt: Double?
+    var fingerprint: String?
+    var release: FleetReleaseDescriptor?
+    /// Keyed by controller id. Wrapped in `Lenient` so one controller's malformed
+    /// outcome is dropped alone rather than blanking every other controller's
+    /// report. Optional so a report that omits it still decodes.
+    var locations: [String: Lenient<FleetPushOutcome>]?
+
+    var outcomes: [String: FleetPushOutcome] {
+        (locations ?? [:]).compactMapValues { $0.value }
+    }
+
+    /// Every controller that did not accept, labelled and id-sorted so a banner
+    /// lists them in a stable order between two identical pushes.
+    var refusals: [(id: String, outcome: FleetPushOutcome)] {
+        outcomes
+            .sorted { ($0.value.label ?? $0.key) < ($1.value.label ?? $1.key) }
+            .map { (id: $0.key, outcome: $0.value) }
+            .filter { $0.outcome.ok != true }
+    }
+
+    var allAccepted: Bool {
+        !outcomes.isEmpty && outcomes.values.allSatisfy { $0.ok == true }
+    }
+
+    static func from(_ payload: [String: Any]) -> FleetPushReport? {
+        fleetDecode(payload)
+    }
+}
+
+/// The top-level `release` object on `/admin/api/fleet`, and the body of
+/// `/admin/api/release/identity`: the publisher identity, the last push, and the
+/// gateway's own sentence when the signer is unavailable.
+struct FleetReleaseState: Decodable {
+    var identity: FleetReleaseIdentity?
+    var lastPush: FleetPushReport?
+    var error: String?
+
+    private enum CodingKeys: String, CodingKey { case identity, lastPush, error }
+
+    /// Each part decodes on its own: a malformed last push must not blank the
+    /// fingerprint the owner still has to read off the Settings page, and a
+    /// missing identity must not cost the last push.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        identity = try? c.decode(FleetReleaseIdentity.self, forKey: .identity)
+        lastPush = try? c.decode(FleetPushReport.self, forKey: .lastPush)
+        error = try? c.decode(String.self, forKey: .error)
+    }
+
+    static func from(_ payload: [String: Any]) -> FleetReleaseState? {
+        fleetDecode(payload)
+    }
+}
+
+/// Re-serialise an admin payload and decode it with the gateway's snake_case
+/// convention, so the field names live in the `Decodable` types alone.
+func fleetDecode<T: Decodable>(_ payload: [String: Any]) -> T? {
+    guard JSONSerialization.isValidJSONObject(payload),
+          let data = try? JSONSerialization.data(withJSONObject: payload) else { return nil }
+    let decoder = JSONDecoder()
+    decoder.keyDecodingStrategy = .convertFromSnakeCase
+    return try? decoder.decode(T.self, from: data)
 }
 
 // MARK: - Machine
