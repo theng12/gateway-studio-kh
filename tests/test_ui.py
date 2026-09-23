@@ -515,6 +515,52 @@ def wait_for_detail(needle: str, timeout: float = 30.0) -> str:
     return body
 
 
+def pane_texts() -> str:
+    """Every label on the split view, the page's heading and tab labels included.
+
+    `detail_texts` reads the body's scroll view, which is right for a page whose
+    body is all there is. The Fleet page is not: its heading ("Every location
+    this gateway can send work to…") and its five tab labels sit *above* that
+    scroll view, so a check that reads only the body cannot see them.
+    """
+    return osa(wrap(
+        f'tell {MAIN_WINDOW} to tell splitter group 1 to return (value of every static text)'
+    ))
+
+
+def select_fleet_tab(index: int) -> None:
+    """Click one of the Fleet page's five inner tabs.
+
+    `NSSegmentedControl` is exposed to Accessibility as a radio group, so the
+    tabs are radio buttons: 1 Overview, 2 Locations, 3 Machines, 4 Models,
+    5 Jobs — the order of `FleetTab`. The page remembers the last tab, so a test
+    that assumes it opens on Locations reads whatever was selected before.
+    """
+    osa(wrap(
+        f'tell {MAIN_WINDOW} to tell splitter group 1 to tell radio group 1 '
+        f'to click radio button {index}'
+    ))
+    time.sleep(0.8)
+
+
+def wait_for_table(scroll_area: int = 1, nested: bool = True, timeout: float = 45.0) -> int:
+    """Wait until a tab's table exists, then return its column count.
+
+    The Fleet page fans out to every controller before it draws, and a
+    configured-but-off controller makes that take seconds, so a tab is a loading
+    view when it is first read. A fixed sleep races that; waiting for the table
+    is correct whether the read was slow or instant. `-1` means it never appeared.
+    """
+    deadline = time.time() + timeout
+    columns = -1
+    while time.time() < deadline:
+        columns = table_columns(scroll_area, nested=nested)
+        if columns > 0:
+            return columns
+        time.sleep(0.8)
+    return columns
+
+
 def detail_count(expr: str) -> int:
     try:
         return int(osa(wrap(f"tell {MAIN_WINDOW} to tell splitter group 1 to return (count of {expr})")) or 0)
@@ -767,6 +813,15 @@ def main() -> int:
         # *required* height by growing the window, which puts its bottom edge and
         # resize corner off-screen where they cannot be reached.
         after_size = window_size()
+        # A page can grow the window while its data is still arriving and put it
+        # back; the invariant is the size it is *left* at. Sample until it settles
+        # instead of judging one instant mid-load — the one-shot read failed
+        # half the time and gave two different failure counts on identical code.
+        # A page that leaves the window bigger still fails, which is the bug.
+        settle_deadline = time.time() + 5.0
+        while after_size != baseline_size and time.time() < settle_deadline:
+            time.sleep(0.5)
+            after_size = window_size()
         check(f"“{name}” did not resize the window",
               after_size == baseline_size,
               f"{baseline_size} became {after_size}")
@@ -808,7 +863,12 @@ def main() -> int:
           "One endpoint in front of every local runner" in body, body[:200])
     check("reports the gateway as running", "Gateway running" in body, body[:120])
     check("shows the endpoint and uptime", "127.0.0.1:" in body and "up " in body)
-    check("shows provider counts", "/18" in body)
+    # The tile reads "enabled/total", so the denominator is the roster's size —
+    # derived, never pinned. It was hardcoded `/18`, which failed the moment a
+    # provider was added even though the page was right.
+    provider_count = len(api_get("/admin/api/providers").get("providers") or [])
+    check("shows provider counts", provider_count > 0 and f"/{provider_count}" in body,
+          f"expected /{provider_count}, body={body[:200]}")
     # **"enabled", not "discovered".** The tile read "Offered of N discovered" while
     # N counted only models on providers that are switched on, so turning a provider
     # off made the *discovered* count fall — the opposite of what the word means. It
@@ -1191,28 +1251,54 @@ def main() -> int:
 
     # ------------------------------------------------------------------
     print("\n\033[1m7. Fleet reads the real controllers\033[0m")
-    # The local Hub is always a location, so this page has true content on a
-    # single-Mac install with nothing configured.
+    # **The Fleet page is five inner tabs now** — Overview, Locations, Machines,
+    # Models, Jobs — and it remembers the last one. This section used to read the
+    # old single scroll with three stacked tables, so it read whatever tab
+    # happened to be showing and called missing tables failures. Each check below
+    # selects the tab it is about and waits for that tab's table, because a Fleet
+    # read fans out to every controller and is a loading view when first read.
     open_section("Fleet")
-    fleet = wait_for_detail("Locations")
-    check("names the page and what it is for", "Every location" in fleet, fleet[:200])
+    # The page's own sentence is page chrome, above the body's scroll view, so
+    # `detail_texts` (which reads the body) cannot see it.
+    check("names the page and what it is for", "Every location" in pane_texts(),
+          pane_texts()[:200])
+
+    select_fleet_tab(1)  # Overview
+    fleet = wait_for_detail("locations reachable")
     check("summarises locations", "location" in fleet and "reachable" in fleet, fleet[:220])
     check("says how many machines are online",
           "machine online" in fleet or "machines online" in fleet, fleet[:240])
-    check("has a form for adding a location that names the Fleet token and explains both",
-          "Add a location" in fleet and "Fleet token" in fleet
-          and "Two tokens, two jobs" in fleet, fleet[-400:])
+    # The summary tile counts the jobs the Hub's activity report carried. The
+    # label is "jobs done"; this check looked for "completed", a word the page has
+    # never drawn, so it failed against a correct page.
+    check("counts completed and failed jobs in the summary",
+          "jobs done" in fleet, fleet[:300])
+    # Read the API beside the page, not minutes later. The fleet is live — a
+    # controller can come back while the suite walks the other tabs — and
+    # comparing a snapshot taken at the start to a fresh read at the end made the
+    # check disagree about a world that had changed underneath it.
+    fleet_api = api_get("/admin/api/fleet")
+    fleet_summary = fleet_api["summary"]
+    online = fleet_summary["machines_online"]
+    offline = fleet_summary["machines_offline"]
+    # The tile draws the number and the label as two separate labels, and
+    # `detail_texts` joins labels with newlines, so the count is its own line —
+    # "2\nmachines online · 0 offline". A substring like "2 machines online" was
+    # never on the page, which is why this check failed against a correct tile.
+    fleet_lines = [line.strip() for line in fleet.splitlines()]
+    machines_line = next((line for line in fleet_lines if "machines online" in line), "")
+    check("the page agrees with the gateway about machines online",
+          str(online) in fleet_lines and f"{offline} offline" in machines_line,
+          f"{fleet_summary}; page line={machines_line!r}")
 
-    # Three tables, so hundreds of machines virtualise instead of stacking.
-    # Fleet scrolls, so its three tables are nested inside the page scroll view.
+    select_fleet_tab(2)  # Locations
+    locations_tab = wait_for_detail("Add a location")
+    check("has a form for adding a location that names the Fleet token and explains both",
+          "Add a location" in locations_tab and "Fleet token" in locations_tab
+          and "Two tokens, two jobs" in locations_tab, locations_tab[-400:])
+    locations_columns = wait_for_table(1)
+    check("locations are a table", locations_columns >= 6, f"{locations_columns} columns")
     locations_cells = table_texts(1, nested=True)
-    machines_cells = table_texts(2, nested=True)
-    check("locations are a table", table_columns(1, nested=True) >= 6,
-          f"{table_columns(1, nested=True)} columns")
-    check("machines are a table", table_columns(2, nested=True) >= 5,
-          f"{table_columns(2, nested=True)} columns")
-    check("running work is a table", table_columns(3, nested=True) >= 3,
-          f"{table_columns(3, nested=True)} columns")
 
     # The location name is the owner's to set, so this reads what the gateway
     # currently calls it instead of asserting a literal. Renaming is a feature
@@ -1246,7 +1332,8 @@ def main() -> int:
 
     # The rest of this section reads what the local Hub reports, so it needs the
     # Hub running. Standalone or controller both work — that is the point — but
-    # "stopped" is an environment state, not a gateway defect.
+    # "stopped" is an environment state, not a gateway defect. Read once: a Hub
+    # that stops mid-suite must not make the two halves of the section disagree.
     local = next((l for l in api_get("/admin/api/fleet")["locations"] if l.get("local")), {})
     if not local.get("reachable"):
         reason = (local.get("error") or "Studio Hub is not running on this Mac")[:90]
@@ -1260,25 +1347,28 @@ def main() -> int:
             skip(label, reason)
     else:
         # The role is the Hub's to decide, so this only requires that one is
-        # reported from the set the Hub defines.
+        # reported from the set the Hub defines. The Hub's vocabulary is
+        # standalone | controller | agent — there is no `worker` role.
         check("reports the location's role",
-              # The Hub's vocabulary is standalone | controller | agent. There is
-              # no `worker` role — a joined node's row carries `agent`.
               any(r in locations_cells for r in ("standalone", "controller", "agent")),
               f"{locations_cells}")
+
+    select_fleet_tab(3)  # Machines
+    # The Machines tab is a bare table directly under the pane's scroll view,
+    # unlike Locations and Jobs whose tables are nested one level deeper.
+    machines_columns = wait_for_table(2, nested=False)
+    check("machines are a table", machines_columns >= 5, f"{machines_columns} columns")
+    machines_cells = table_texts(2, nested=False)
+    if local.get("reachable"):
         check("lists the local machine with its work",
-              any("This Mac" in cell for cell in machines_cells), f"{machines_cells}")
+              any(local_label in cell for cell in machines_cells), f"{machines_cells}")
         check("a machine reports jobs done and failed",
               any("done" in cell for cell in machines_cells), f"{machines_cells}")
-    fleet_api = api_get("/admin/api/fleet")
-    fleet_summary = fleet_api["summary"]
-    online = fleet_summary["machines_online"]
-    check("the page agrees with the gateway about machines online",
-          f"{online} machine{'s' if online != 1 else ''} online" in fleet, f"{fleet_summary}")
-    # Which machines did the work is the point of the page, so it must survive
-    # the round trip from the Hub's activity report.
-    check("counts completed and failed jobs in the summary",
-          "completed" in fleet, fleet[:300])
+
+    select_fleet_tab(5)  # Jobs
+    jobs_columns = wait_for_table(1)
+    check("running work is a table", jobs_columns >= 3, f"{jobs_columns} columns")
+
     if local.get("reachable"):
         check("the API publishes a per-machine job breakdown",
               bool(fleet_summary.get("pulse")) and "jobs_completed" in fleet_summary,
