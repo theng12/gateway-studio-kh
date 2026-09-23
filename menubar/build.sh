@@ -220,12 +220,15 @@ codesign --force --deep --sign - "$APP"
 codesign --verify --deep --strict --verbose=2 "$APP"
 
 # A DMG belongs beside the app on every build: a stable build is not ready until it can
-# be handed to another Mac, so it lands in dist/ with the version and build stamp in
-# its name. `hdiutil` ships with macOS, so this needs nothing installed. The app is
-# ad-hoc signed and the image is not notarised, so a Mac that did not build it still
-# needs the right-click Open — the same step the other projects' DMGs need.
+# be handed to another Mac, so it lands in dist/ named by **version alone**
+# (`gateway-kh-0.2.3.dmg`). The exact build stamp still lives inside the app
+# (`CFBundleVersion` / `GatewayBuild`, which Check Gateway reads); only the file name
+# is shortened, so the latest is obvious at a glance. `hdiutil` ships with macOS, so
+# this needs nothing installed. The app is ad-hoc signed and the image is not
+# notarised, so a Mac that did not build it still needs the right-click Open — the
+# same step the other projects' DMGs need.
 DIST="$ROOT/dist"
-DMG="$DIST/gateway-kh-${MARKETING_VERSION}-${BUILD_ID}-${TARGET_ARCH}.dmg"
+DMG="$DIST/gateway-kh-${MARKETING_VERSION}.dmg"
 mkdir -p "$DIST"
 rm -f "$DMG"
 DMG_STAGE="$(mktemp -d)"
