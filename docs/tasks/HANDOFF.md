@@ -1,7 +1,7 @@
 # HANDOFF — gateway-kh
 
-**Read this first.** Written 2026-09-23 against **VERSION `0.2.19`**, release commit
-`8bd434d`, running build `8bd434d-202609231740`.
+**Read this first.** Written 2026-09-23 against **VERSION `0.2.20`**, release commit
+`66e8afe`, running build `66e8afe-202609231758`.
 If this file disagrees with the code, **the code wins — fix this file in the same change**.
 Every path below is inside the Git checkout `repository/` unless it says otherwise.
 `[MEASURED]` = observed in the session that wrote this; `[reason not recorded]` = the
@@ -11,10 +11,10 @@ project does not say why, and nobody should guess.
 
 | Thing | Value |
 |---|---|
-| Current release | **0.2.19** — `repository/VERSION`, one line, the only place to bump |
+| Current release | **0.2.20** — `repository/VERSION`, one line, the only place to bump |
 | Branch | `main` = `origin/main`, clean tree; remote `github.com/theng12/gateway-kh` |
-| Running build | `/Applications/gateway-kh.app`, port **8787**, stamp `8bd434d-202609231740` (`/health` and `…/Resources/gateway/BUILD`) |
-| Distribution | DMG in `repository/dist/` (`gateway-kh-0.2.19.dmg`), named by version alone |
+| Running build | `/Applications/gateway-kh.app`, port **8787**, stamp `66e8afe-202609231758` (`/health` and `…/Resources/gateway/BUILD`) |
+| Distribution | DMG in `repository/dist/` (`gateway-kh-0.2.20.dmg`), named by version alone |
 | SSD/setup kit | `repository/dist/setup-kit/` — "copy this whole folder to each SSD/Mac" |
 
 - **Versions are patch-only for now:** `0.2.1`, `0.2.2`, … up to `0.2.1000`. Increment the
@@ -110,7 +110,9 @@ Run everything from `repository/`. Python tooling is the checkout venv `.venv/bi
   so every adapter inherits it. A **connect timeout/refusal** is an unreachable location, not a
   job failure — but a read timeout *after* the request left is still ambiguous. A `400` that
   names `temperature` as unsupported is retried once without it (recorded as `params_dropped`),
-  because newer reasoning models accept only their default.
+  because newer reasoning models accept only their default — and `catalog._DEFAULT_TEMPERATURE_ONLY`
+  now withholds that control from the known families on the provider that refuses it, so the
+  retry is a backstop rather than the fix.
 - **A page must never resize the window.** A page with a required height wraps its body in an
   `NSScrollView` with a `FlippedView`; keep table floors low and cap wrapping labels.
 - **The bundled Python runtime's build is explicit:** `swiftc -target
@@ -140,6 +142,11 @@ Run everything from `repository/`. Python tooling is the checkout venv `.venv/bi
 
 ## OPEN / IN FLIGHT
 
+- **Shipped in 0.2.20 (`66e8afe`):** `catalog._DEFAULT_TEMPERATURE_ONLY` withholds the
+  `temperature` control from default-only reasoning families **on official OpenAI only** — so
+  Story Studio stops sending the `0.7` it sends whenever the control is offered. Scoped that way
+  because a proxy (Experiential Labs' `gpt-5.6-luna`) accepts `0.7` and must keep it; a provider
+  that publishes `supported_parameters` is always believed. `tests/test_chat_controls.py`.
 - **Shipped in 0.2.19 (`8bd434d`):** a definite provider `4xx` settles as a failure instead of a
   durable unknown-outcome hold, and a model that refuses `temperature` is retried once without it
   (`params_dropped`). Covered by `tests/test_job_recovery.py` and `tests/test_chat_temperature.py`;
