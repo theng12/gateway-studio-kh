@@ -1110,6 +1110,70 @@ class DiscardActionTests(_HubCase):
         self.assertTrue(job["recovery_required"], "a refused discard resolves nothing")
         self.assertEqual(job["discard_remote"]["status"], 400)
 
+    def test_a_hold_on_a_lane_with_no_discard_route_is_closed_here(self) -> None:
+        """**The hold that had no action at all.**
+
+        Measured live: a job the gateway restarted underneath was left on
+        "manual recovery required" by `_recover_interrupted`, which records no
+        `recovery_context`; this endpoint answered `RECOVERY_CONTEXT_MISSING`
+        forever and the Jobs window offered no button, because it read the context
+        itself. No cloud lane has a discard route, so there is nothing upstream to
+        tell — the operator closing the gateway's own record is the only action,
+        and it must say that nothing was sent, not quote a discard.
+        """
+        hub = _Hub()
+        job_id = self._hold(context=False)
+        openrouter = SimpleNamespace(
+            id="openrouter-test", kind="openai_compatible", display_name="OpenRouter",
+            base_url="https://openrouter.example/api/v1",
+        )
+        with patch.object(
+            self.api.registry, "definition", return_value=openrouter
+        ), patch.object(
+            self.api.registry.credentials, "resolved", return_value={"api_key": "k"}
+        ):
+            response = self.client.post(f"/admin/api/jobs/{job_id}/discard-uncertain")
+        self.assertEqual(response.status_code, 200, response.text)
+        body = response.json()
+        self.assertTrue(body["ok"])
+        self.assertEqual(body["closed"], "local")
+        self.assertIsNone(body["discard"], "no discard happened, so none is reported")
+        self.assertEqual(hub.discards, [], "no lane with a discard route was called")
+        job = self.api.store.get(job_id)
+        self.assertEqual(job["error_code"], "HOLD_CLOSED")
+        self.assertFalse(job["recovery_required"], "the hold must stop asking")
+        self.assertIsNone(job["recovery_context"])
+        # The record says the provider was not told, so nobody later reads this as
+        # "the upstream abandoned it".
+        self.assertIn("has no discard route", job["error_detail"])
+        self.assertIn("not told", job["error_detail"])
+
+    def test_a_cloud_hold_is_published_as_a_local_close_to_the_app(self) -> None:
+        """The action the Jobs window draws comes from the gateway, not a guess."""
+        from gateway import api as api_module
+
+        job_id = self._hold()
+        job = self.api.store.get(job_id)
+        openrouter = SimpleNamespace(
+            id="openrouter-test", kind="openai_compatible", display_name="OpenRouter",
+            base_url="https://openrouter.example/api/v1",
+        )
+        hub_definition = SimpleNamespace(
+            id="studio-hub-test", kind="studio_hub", display_name="Hub",
+            base_url="http://hub.test",
+        )
+        with patch.object(self.api.registry, "definition", return_value=openrouter):
+            self.assertEqual(api_module.recovery_action(job), "close_hold")
+        with patch.object(self.api.registry, "definition", return_value=hub_definition):
+            self.assertEqual(api_module.recovery_action(job), "discard_upstream")
+        # A Hub hold that names no attempt has no honest action, so the window
+        # must draw no button rather than one that fails on press.
+        unnamed = dict(job, recovery_context=None)
+        with patch.object(self.api.registry, "definition", return_value=hub_definition):
+            self.assertIsNone(api_module.recovery_action(unnamed))
+        # And a settled job is not a hold at all.
+        self.assertIsNone(api_module.recovery_action(dict(job, recovery_required=False)))
+
     def test_nothing_discards_on_its_own(self) -> None:
         """An uncertain outcome must not walk itself into a discard."""
         hub = _Hub(

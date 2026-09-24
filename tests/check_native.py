@@ -75,11 +75,14 @@ def check_content_packs_page() -> tuple[bool, str]:
 
 
 def check_jobs_recovery() -> tuple[bool, str]:
-    """The discard action appears only on a job that is actually a recovery hold.
+    """The recovery action appears only on a job that is actually a recovery hold.
 
-    Read-only: it opens Jobs, selects the first row and reads what is drawn. The
-    invariant it guards is the one that matters — a normal job must never offer to
-    abandon work — and it reports whether a hold was there to inspect.
+    Read-only: it opens Jobs, selects the first row and reads what is drawn. There
+    are two actions now, because the gateway decides which one a hold can have —
+    *Discard uncertain attempt…* asks a Hub to release the machine an uncertain item
+    reserved, and *Close this hold…* closes the gateway's own record for a lane with
+    no discard route (every cloud provider). The invariant is therefore "at most one
+    action, and only on a hold", never a particular title.
     """
     title = open_section("Jobs")
     if title != "gateway-kh — Jobs":
@@ -93,13 +96,19 @@ def check_jobs_recovery() -> tuple[bool, str]:
     detail = osa(
         f"tell {MAIN_WINDOW} to tell splitter group 1 to return (value of every static text)"
     )
-    offered = "Discard uncertain attempt" in osa(
+    titles = osa(
         f"tell {MAIN_WINDOW} to tell splitter group 1 to return (title of every button)"
     )
+    offered = [
+        action for action in ("Discard uncertain attempt", "Close this hold")
+        if action in titles
+    ]
     on_hold = "Manual recovery required" in detail
     if offered and not on_hold:
-        return False, "a discard was offered for a job that is not a recovery hold"
-    return True, f"rows={rows} hold={on_hold} discard_offered={offered}"
+        return False, f"{offered} offered for a job that is not a recovery hold"
+    if len(offered) > 1:
+        return False, f"two recovery actions were offered at once: {offered}"
+    return True, f"rows={rows} hold={on_hold} actions={offered}"
 
 
 CHECKS = {

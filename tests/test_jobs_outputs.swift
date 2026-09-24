@@ -128,6 +128,7 @@ struct JobsOutputsCheck {
         "recovery_required": true,
         "recovery_state": "unknown_outcome",
         "recovery_detail": "Studio Hub settled batch hub-batch-9 item 0.",
+        "recovery_action": "discard_upstream",
         "recovery_context": ["hub_batch_id": "hub-batch-9", "hub_item_index": 0],
         "discard_remote": NSNull(),
         "upstream_job_id": "hub-batch-9",
@@ -135,7 +136,8 @@ struct JobsOutputsCheck {
     ]
 
     /// A hold recorded before the gateway kept that context: nothing to name, so
-    /// offering a discard would fail on press.
+    /// offering a discard would fail on press. The gateway publishes no action for
+    /// it, which is what the window must obey.
     static let jobHoldWithoutContext: [String: Any] = [
         "id": "job-hold-old",
         "state": "failed",
@@ -152,9 +154,37 @@ struct JobsOutputsCheck {
         "recovery_required": true,
         "recovery_state": "unknown_outcome",
         "recovery_detail": "no upstream identifiers were recorded",
+        "recovery_action": NSNull(),
         "recovery_context": NSNull(),
         "discard_remote": NSNull(),
         "upstream_job_id": NSNull(),
+        "late_result_state": NSNull(),
+    ]
+
+    /// A **cloud** hold: the provider accepted the request and the gateway
+    /// restarted before it settled. No cloud lane has a discard route, so the
+    /// gateway publishes `close_hold` and the operator closes the record locally —
+    /// the action that did not exist at all, which left this job stuck for good.
+    static let jobCloudHold: [String: Any] = [
+        "id": "job-cloud-hold",
+        "state": "failed",
+        "modality": "chat",
+        "model_name": "deepseek-v4-flash",
+        "provider_name": "OpenRouter",
+        "created_at": 1.0,
+        "outputs": [],
+        "error_code": "UNKNOWN_OUTCOME",
+        "error_detail": "The gateway restarted while this job was in flight.",
+        "cancel_requested": false,
+        "cancel_state": NSNull(),
+        "retryable": false,
+        "recovery_required": true,
+        "recovery_state": "unknown_outcome",
+        "recovery_detail": "Upstream job id: gen-abc123.",
+        "recovery_action": "close_hold",
+        "recovery_context": NSNull(),
+        "discard_remote": NSNull(),
+        "upstream_job_id": "gen-abc123",
         "late_result_state": NSNull(),
     ]
 
@@ -229,14 +259,16 @@ struct JobsOutputsCheck {
             "upstream_job_id": NSNull(),
             "late_result_state": NSNull(),
         ]
-        GatewayAPI.jobs = [outputJob, jobRunning, jobQueued, jobUncertain, jobHoldWithoutContext]
+        GatewayAPI.jobs = [
+            outputJob, jobRunning, jobQueued, jobUncertain, jobHoldWithoutContext, jobCloudHold,
+        ]
 
         let section = JobsSection()
         _ = section.view
         section.activated()
 
         let table = descendants(section.view).compactMap { $0 as? NSTableView }.first!
-        assert(table.numberOfRows == 5, "jobs did not load")
+        assert(table.numberOfRows == 6, "jobs did not load")
         table.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
         RunLoop.main.run(until: Date().addingTimeInterval(0.1))
 
@@ -292,6 +324,31 @@ struct JobsOutputsCheck {
         RunLoop.main.run(until: Date().addingTimeInterval(0.1))
         assert(!buttons(section.view).contains { $0.title.hasPrefix("Discard") },
                "a hold with no upstream attempt must not offer a discard: \(buttons(section.view).map { $0.title })")
+        assert(!buttons(section.view).contains { $0.title.hasPrefix("Close") },
+               "and nothing else, because the gateway published no action for it: \(buttons(section.view).map { $0.title })")
+
+        // ── a cloud hold: nothing upstream to ask, so the record is closed here ──
+        table.selectRowIndexes(IndexSet(integer: 5), byExtendingSelection: false)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+        assert(labels(section.view).contains { $0.contains("gen-abc123") },
+               "the cloud hold should name the upstream request it is waiting on")
+        assert(buttons(section.view).contains { $0.title.hasPrefix("Close") },
+               "a cloud hold must offer the local close the gateway published: \(buttons(section.view).map { $0.title })")
+        assert(!buttons(section.view).contains { $0.title.hasPrefix("Discard") },
+               "and never a discard, which no cloud lane can perform")
+
+        let cloudPostsBefore = GatewayAPI.postPaths.count
+        section.confirmDiscard = { false }
+        buttons(section.view).first { $0.title.hasPrefix("Close") }!.performClick(nil)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+        assert(GatewayAPI.postPaths.count == cloudPostsBefore,
+               "declining the confirmation must close nothing: \(GatewayAPI.postPaths)")
+
+        section.confirmDiscard = { true }
+        buttons(section.view).first { $0.title.hasPrefix("Close") }!.performClick(nil)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+        assert(GatewayAPI.postPaths.contains("/admin/api/jobs/job-cloud-hold/discard-uncertain"),
+               "closing the hold must reach the same operator endpoint: \(GatewayAPI.postPaths)")
 
         table.selectRowIndexes(IndexSet(integer: 2), byExtendingSelection: false)
         RunLoop.main.run(until: Date().addingTimeInterval(0.1))

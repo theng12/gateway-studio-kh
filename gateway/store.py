@@ -193,7 +193,19 @@ class JobStore:
         return result
 
     def _recover_interrupted(self) -> int:
-        """Close the unsafe restart window without ever replaying in-flight work."""
+        """Close the unsafe restart window without ever replaying in-flight work.
+
+        **The upstream attempt is recorded, not only described.** The sweep used to
+        leave `recovery_context` null and name the batch only inside the prose, so
+        the operator's discard action had nothing to aim at: `discard-uncertain`
+        answered `RECOVERY_CONTEXT_MISSING` forever and the Jobs window offered no
+        button, which left a restart-interrupted job unresolvable by anyone short
+        of editing the database. The context is written in the same shape the Hub
+        adapter uses, with the item index defaulted the way the discard path always
+        has — this gateway submits one-item batches, so item 0 is the batch's only
+        item — and marked so a reader can tell a reconstructed identity from one
+        the Hub itself stated.
+        """
         rows = self._conn.execute(
             "SELECT id, upstream_job_id FROM jobs WHERE state = 'running'"
         ).fetchall()
@@ -209,11 +221,21 @@ class JobStore:
                 "the gateway will not dispatch it again automatically."
                 + suffix
             )
+            context = (
+                json.dumps({
+                    "upstream_job_id": upstream,
+                    "upstream_item_index": 0,
+                    "recorded_by": "gateway_restart",
+                })
+                if upstream
+                else None
+            )
             self._conn.execute(
                 """
                 UPDATE jobs
                    SET state = 'failed', error_code = ?, error_detail = ?,
                        retryable = 0, recovery_state = ?, recovery_detail = ?,
+                       recovery_context = ?,
                        next_action_at = NULL, updated_at = ?
                  WHERE id = ? AND state = 'running'
                 """,
@@ -222,6 +244,7 @@ class JobStore:
                     detail,
                     RECOVERY_UNKNOWN,
                     detail,
+                    context,
                     now,
                     row["id"],
                 ),

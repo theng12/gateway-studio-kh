@@ -125,6 +125,12 @@ class Task4Native(unittest.TestCase):
         overview = (ROOT / "menubar").joinpath("OverviewWindow.swift").read_text()
         voices = (ROOT / "menubar").joinpath("VoicesWindow.swift").read_text()
         fleet = (ROOT / "menubar").joinpath("FleetSection.swift").read_text()
+        # The Fleet page became a shell around five tabs (`FleetTabs.swift`), and
+        # "Retry failed" moved into the Locations tab with the rest of the controls.
+        # The contract is about the *page*, so both files are read: asserting the
+        # old location turned this check red for three days while the button was
+        # present and working.
+        fleet_tabs = (ROOT / "menubar").joinpath("FleetTabs.swift").read_text()
         settings = (ROOT / "menubar").joinpath("SettingsSection.swift").read_text()
         launcher = (ROOT / "menubar").joinpath("main.swift").read_text()
 
@@ -140,7 +146,7 @@ class Task4Native(unittest.TestCase):
         self.assertIn("No jobs yet.", overview)
         self.assertIn("Could not load recent activity", overview)
         self.assertIn("Could not discover", fleet)
-        self.assertIn("Retry failed", fleet)
+        self.assertIn("Retry failed", fleet_tabs)
         self.assertIn("Could not change those voices", voices)
         self.assertIn("Retrying", voices)
         self.assertIn("download(", voices)

@@ -16,6 +16,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 
@@ -270,6 +271,109 @@ class AuditRegressions(unittest.TestCase):
                 self._chat_row("other/model:batch"),
             )
         )
+
+
+class CatalogueMergeTests(unittest.TestCase):
+    """One model offered by several locations is one row that answers for all of them.
+
+    A location is a provider internally but its models publish under the maker's
+    namespace, so `Catalog.rebuild` merges the copies. `locked`/`lock_reason`
+    merged; `availability` — the same fact in the capability catalogue's own
+    vocabulary — kept the **first** location's answer. Measured live on
+    2026-09-24: this Mac's Studio Hub was down while both controllers were up, and
+    two `studio-hub` TTS rows published `locked: false` beside
+    `availability: "unavailable"`, because `studio-hub-local` is iterated first.
+    A reader that branches on one and prints the other gets whichever site came
+    first.
+    """
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls._tmp = tempfile.TemporaryDirectory(prefix="gateway-catalogue-merge-")
+        tmp = Path(cls._tmp.name)
+        cls._env = patch.dict(
+            os.environ,
+            {
+                "GATEWAY_DATA": str(tmp / "data"),
+                "GATEWAY_ARTIFACTS": str(tmp / "data" / "artifacts"),
+                "GATEWAY_DB": str(tmp / "data" / "jobs.sqlite3"),
+                "GATEWAY_CREDENTIALS": str(tmp / "data" / "credentials.json"),
+                "GATEWAY_MODEL_CACHE": str(tmp / "data" / "models_cache.json"),
+                "GATEWAY_APP_SUPPORT": str(tmp / "app-support"),
+                "GATEWAY_ENV_FILE": str(tmp / ".env"),
+                "GATEWAY_NO_MIGRATE": "1",
+                "STUDIOHUB_READY_FILE": str(tmp / "hub-ready.json"),
+                "GATEWAY_HOST": "127.0.0.1",
+                "GATEWAY_API_KEY": "",
+            },
+        )
+        cls._env.start()
+        sys.path.insert(0, str(ROOT))
+        from gateway import catalog, fleet
+        from gateway.providers import registry
+
+        cls.catalog = catalog
+        cls.fleet = fleet
+        cls.registry = registry
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        cls._env.stop()
+        cls._tmp.cleanup()
+
+    def _rebuild_with(self, proposals: list[tuple[str, dict]], answering: set[str]):
+        """One rebuild over the given (location provider id, model) pairs."""
+        definitions = [
+            # A location provider: the prefix is what `is_location_provider` reads,
+            # and only `studio-hub-local`/`studio-hub-<controller>` carry it.
+            SimpleNamespace(
+                id=provider_id, kind="studio_hub", display_name="Studio Hub",
+                description="Your own Apple Silicon runners.",
+            )
+            for provider_id, _model in proposals
+        ]
+
+        def enabled(modality: str):
+            if modality != "image":
+                return []
+            return [
+                (definition, dict(model))
+                for definition, (_pid, model) in zip(definitions, proposals)
+            ]
+
+        with patch.object(self.registry.models, "enabled_models", enabled), \
+                patch.object(self.registry.models, "cached", lambda provider_id: {}), \
+                patch.object(self.fleet, "usable_location_ids", lambda: set(answering)), \
+                patch.object(self.registry, "definitions", lambda: definitions):
+            rebuilt = self.catalog.Catalog()
+        rows = [row for row in rebuilt.rows("image") if row["id"].endswith("::hub/model")]
+        self.assertEqual(len(rows), 1, rows)
+        return rows[0]
+
+    def test_one_answering_location_offers_the_model_in_both_vocabularies(self) -> None:
+        proposals = [
+            ("studio-hub-local", {"model_id": "hub/model", "modality": "image",
+                                  "display_name": "Hub Model", "raw": {}}),
+            ("studio-hub-site-a", {"model_id": "hub/model", "modality": "image",
+                                   "display_name": "Hub Model", "raw": {}}),
+        ]
+        # Only the controller answers; this Mac's Hub is down.
+        row = self._rebuild_with(proposals, answering={"site-a"})
+        self.assertFalse(row["locked"], row)
+        self.assertIsNone(row["lock_reason"])
+        self.assertEqual(row["availability"], "available")
+
+    def test_no_answering_location_locks_it_in_both_vocabularies(self) -> None:
+        proposals = [
+            ("studio-hub-local", {"model_id": "hub/model", "modality": "image",
+                                  "display_name": "Hub Model", "raw": {}}),
+            ("studio-hub-site-a", {"model_id": "hub/model", "modality": "image",
+                                   "display_name": "Hub Model", "raw": {}}),
+        ]
+        row = self._rebuild_with(proposals, answering=set())
+        self.assertTrue(row["locked"], row)
+        self.assertTrue(row["lock_reason"])
+        self.assertEqual(row["availability"], "unavailable")
 
 
 if __name__ == "__main__":

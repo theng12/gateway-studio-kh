@@ -337,8 +337,23 @@ struct FleetMachine: Decodable {
     var medianRuntimeS: Double?
     var chip: String?
     var memoryGb: Double?
+    /// What is free **now**, beside the total in `memoryGb`. The Hub's own
+    /// admission uses this number, and a reader who sees only the total takes it
+    /// for free memory — the column says "free" for disk and said nothing here.
+    var availableGb: Double?
     var diskFreeGb: Double?
+    var diskTotalGb: Double?
     var health: String?
+    /// The node roster's own facts, when this machine is a node of a controller.
+    /// `nodeDetail` is the controller's sentence about why it cannot reach the
+    /// node — quoted, because it is the only thing that distinguishes a machine
+    /// that never answered from one whose Hub is not running. `nil` for the
+    /// controller's own Mac, which is not a node.
+    var nodeState: String?
+    var nodeDetail: String?
+    var nodeRole: String?
+    var nodeAddress: String?
+    var nodeLastSeenAt: FleetScalar?
     /// **Job counts per modality**, not a list of models the machine offers. The
     /// table labels the column "Work done by kind" so the two are never confused.
     var modalities: [String: Int]?
@@ -373,6 +388,25 @@ struct FleetMachine: Decodable {
             parts.append("missing \(affects.joined(separator: ", "))")
         }
         return parts.joined(separator: " · ")
+    }
+
+    /// Why this machine reads the way it does, in the Hub's own words.
+    ///
+    /// The Hub states a machine's health (`unreachable`, `no_hub`, `degraded` …)
+    /// and, for a node, the controller's own sentence about reaching it. Both were
+    /// fetched and neither was ever drawn, so eight dead nodes read as eight
+    /// identical "offline" rows: the owner could see *that* they were down and
+    /// never *why*. `nil` when the Hub stated neither, so an unknown never renders
+    /// as a claim.
+    var stateReason: String? {
+        var parts: [String] = []
+        if let health, !health.isEmpty, health.lowercased() != "up" {
+            parts.append("The Hub reports its health as ‘\(health)’.")
+        }
+        if let nodeDetail, !nodeDetail.isEmpty {
+            parts.append(nodeDetail)
+        }
+        return parts.isEmpty ? nil : parts.joined(separator: " ")
     }
 }
 

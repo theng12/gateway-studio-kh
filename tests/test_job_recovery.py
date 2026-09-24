@@ -122,6 +122,51 @@ class JobRecoveryTests(unittest.TestCase):
         finally:
             reopened.close()
 
+    def test_reopen_records_the_upstream_attempt_the_hold_is_waiting_on(self) -> None:
+        """**The hold a restart leaves must name what it is waiting on.**
+
+        The sweep described the batch in prose and left `recovery_context` null,
+        so the operator's discard had nothing to aim at: `discard-uncertain`
+        answered `RECOVERY_CONTEXT_MISSING` forever and the Jobs window offered no
+        button, which left the job unresolvable short of editing the database. The
+        context is recorded in the same shape the Hub adapter uses — the batch the
+        provider accepted, and the item index the discard path already defaults to.
+        """
+        store = self.make_store("restart-context")
+        row = self.submit(store, "restart-context")
+        self.assertTrue(store.mark_running(row["id"]))
+        store.record_upstream_acceptance(row["id"], "hub-batch-11")
+        store.close()
+
+        reopened = JobStore(store.path)
+        try:
+            recovered = reopened.get(row["id"])
+            self.assertTrue(recovered["recovery_required"])
+            self.assertEqual(
+                recovered["recovery_context"],
+                {
+                    "upstream_job_id": "hub-batch-11",
+                    "upstream_item_index": 0,
+                    "recorded_by": "gateway_restart",
+                },
+            )
+        finally:
+            reopened.close()
+
+    def test_a_restart_before_dispatch_records_no_attempt(self) -> None:
+        # Nothing was accepted upstream, so there is nothing to name — and nothing
+        # to reconcile either. Absence stays absent rather than becoming a batch.
+        store = self.make_store("restart-no-upstream")
+        row = self.submit(store, "restart-no-upstream")
+        self.assertTrue(store.mark_running(row["id"]))
+        store.close()
+
+        reopened = JobStore(store.path)
+        try:
+            self.assertIsNone(reopened.get(row["id"])["recovery_context"])
+        finally:
+            reopened.close()
+
     def test_checkpoint_and_artifact_survive_reopen_as_recovery_data(self) -> None:
         upload = _TEMP_ROOT / "data" / "artifacts" / "uploads" / "old.wav"
         output = _TEMP_ROOT / "data" / "artifacts" / "late.wav"

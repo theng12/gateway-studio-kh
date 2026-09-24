@@ -223,8 +223,60 @@ def _require_idempotency_key(value: str | None) -> str:
     return value
 
 
+def _named_attempt(job: dict[str, Any]) -> tuple[str, int] | None:
+    """The batch and item a hold names, or `None` when it names nothing.
+
+    **Only `recovery_context` counts.** The Hub writes it when it settles an item
+    `uncertain`, and `store._recover_interrupted` writes it when the gateway
+    restarts mid-flight. `upstream_job_id` alone is deliberately not enough: it
+    names a batch without saying which of its items is being abandoned, and the
+    operator's decision is "abandon *this* attempt". The batch and item are read
+    from either spelling of the context so a context recorded by the Hub and one
+    reconstructed at restart are the same fact to this function.
+    """
+    context = job.get("recovery_context")
+    if not isinstance(context, dict) or not context:
+        return None
+    batch = str(context.get("hub_batch_id") or context.get("upstream_job_id") or "")
+    if not batch:
+        return None
+    try:
+        index = int(context.get("hub_item_index") or context.get("upstream_item_index") or 0)
+    except (TypeError, ValueError):
+        index = 0
+    return batch, index
+
+
+def recovery_action(job: dict[str, Any]) -> str | None:
+    """What an operator can do about this hold, decided by the lane that owns it.
+
+    Published on the job so the Jobs window stops inferring the action from
+    `recovery_context`: only the gateway knows whether a lane has a discard route
+    at all, and a button that fails on press is worse than no button.
+
+    * `"discard_upstream"` — the lane can discard (Studio Hub) **and** the hold
+      names the batch to abandon, so the Hub's own answer is the outcome.
+    * `"close_hold"` — no lane other than Studio Hub has a discard route, so
+      there is nothing upstream to tell and the operator is closing the gateway's
+      own record.
+    * `None` — not a hold, or a Hub hold that names no batch (recorded before the
+      gateway kept one): there is no honest action, and the job's own detail says
+      to reconcile it at the source.
+    """
+    if not job.get("recovery_required"):
+        return None
+    definition = registry.definition(str(job.get("provider_id") or ""))
+    if definition is None:
+        # The lane is gone, so no upstream can be reached; the local record can
+        # still be closed by the person looking at it.
+        return "close_hold"
+    if getattr(adapter_for(definition), "discard", None) is None:
+        return "close_hold"
+    return "discard_upstream" if _named_attempt(job) else None
+
+
 def _discard_recovery_hold(job_id: str) -> dict[str, Any]:
-    """Resolve a recovery hold by calling the Hub's discard, on the operator's word.
+    """Resolve a recovery hold, on the operator's word.
 
     A Hub item that settled `uncertain` keeps the node's machine reserved for
     reconciliation, and only a person can decide that waiting is over. So this is
@@ -236,6 +288,14 @@ def _discard_recovery_hold(job_id: str) -> dict[str, Any]:
     It refuses anything that is not a hold, because discarding live work would
     abandon a worker that may still be running — the same rule the Hub enforces
     with a 400. A refusal from the Hub is recorded and surfaced; the hold stays.
+
+    **A lane with no discard route is closed locally, and says so.** Only Studio
+    Hub can be asked to abandon an attempt; every cloud lane has no such route, so
+    a cloud hold had no action at all — measured live, a job interrupted by a
+    gateway restart sat on "manual recovery required" with no button in the Jobs
+    window and no endpoint that would clear it. Nothing is sent upstream in that
+    case (there is nobody to send it to) and the recorded sentence says exactly
+    that, rather than quoting a discard that never happened.
     """
     job = store.get(job_id)
     if job is None:
@@ -246,50 +306,60 @@ def _discard_recovery_hold(job_id: str) -> dict[str, Any]:
             "This job is not waiting on a recovery hold, so there is nothing to discard.",
             "NO_RECOVERY_HOLD",
         )
-    context = job.get("recovery_context")
-    if not isinstance(context, dict) or not context:
+    provider_id = str(job.get("provider_id") or "")
+    definition = registry.definition(provider_id)
+    discard = getattr(adapter_for(definition), "discard", None) if definition else None
+    if discard is None:
+        # **Nothing upstream can be told, so the record is closed here and the
+        # sentence says so.** Either the lane has no discard route at all (every
+        # cloud lane) or the provider is no longer configured; in both cases the
+        # gateway would be quoting a discard that never happened if it claimed one.
+        lane = (
+            f"The {definition.kind} lane has no discard route"
+            if definition is not None
+            else f"Provider '{provider_id}' is no longer configured"
+        )
+        detail = (
+            f"An operator closed this unknown-outcome hold. {lane}, so the provider was not "
+            "told and cannot be: the attempt stays abandoned, and a result it may still "
+            "produce is not collected."
+        )
+        closed = store.close_recovery_hold(job_id, code="HOLD_CLOSED", detail=detail)
+        return {
+            "ok": True,
+            "closed": "local",
+            "discard": None,
+            "job": _job_envelope(closed or store.get(job_id)),
+        }
+    batch, index = _named_attempt(job) or ("", 0)
+    if not batch:
         raise GatewayError(
             409,
             "This hold does not name the upstream attempt it is waiting on — it was recorded "
             "before the gateway kept that context, so reconcile it at the source instead.",
             "RECOVERY_CONTEXT_MISSING",
         )
-    provider_id = str(job.get("provider_id") or "")
-    definition = registry.definition(provider_id)
-    if definition is None:
-        raise GatewayError(
-            409, f"Provider '{provider_id}' is no longer configured.", "PROVIDER_NOT_FOUND"
-        )
-    answer: dict[str, Any]
-    discard = getattr(adapter_for(definition), "discard", None)
-    if discard is None:
+    request = BackendRequest(
+        provider_id=provider_id,
+        model_id=str(job.get("model_id") or ""),
+        modality=str(job.get("modality") or ""),
+        params={},
+        values=registry.credentials.resolved(provider_id),
+        base_url=definition.base_url,
+        display_name=definition.display_name,
+        upstream_job_id=batch,
+        upstream_item_index=index,
+    )
+    try:
+        answer = discard(request)
+    except Exception as exc:  # noqa: BLE001 - an action must report, not 500
+        answer = {"ok": False, "status": None, "error": f"{type(exc).__name__}: {exc}"}
+    if not isinstance(answer, dict):
         answer = {
             "ok": False,
             "status": None,
-            "reason": f"the {definition.kind} lane cannot discard upstream work",
+            "error": f"unreadable discard answer: {answer!r}",
         }
-    else:
-        request = BackendRequest(
-            provider_id=provider_id,
-            model_id=str(job.get("model_id") or ""),
-            modality=str(job.get("modality") or ""),
-            params={},
-            values=registry.credentials.resolved(provider_id),
-            base_url=definition.base_url,
-            display_name=definition.display_name,
-            upstream_job_id=str(job.get("upstream_job_id") or context.get("hub_batch_id") or ""),
-            upstream_item_index=int(context.get("hub_item_index") or 0),
-        )
-        try:
-            answer = discard(request)
-        except Exception as exc:  # noqa: BLE001 - an action must report, not 500
-            answer = {"ok": False, "status": None, "error": f"{type(exc).__name__}: {exc}"}
-        if not isinstance(answer, dict):
-            answer = {
-                "ok": False,
-                "status": None,
-                "error": f"unreadable discard answer: {answer!r}",
-            }
     # Recorded either way, so a refused discard is visible rather than silent.
     store.record_discard_remote(job_id, answer)
     if not answer.get("ok"):
@@ -306,6 +376,7 @@ def _discard_recovery_hold(job_id: str) -> dict[str, Any]:
     )
     return {
         "ok": True,
+        "closed": "upstream",
         "discard": answer,
         "job": _job_envelope(closed or store.get(job_id)),
     }

@@ -558,6 +558,146 @@ class IssueDerivationTests(unittest.TestCase):
         self.assertIsNone(flat["limitation_code"])
 
 
+def _node_site() -> dict:
+    """One controller: its own Mac up, one node dead three different ways.
+
+    Modelled on the live fleet of 2026-09-24, where both controllers reported
+    four nodes with `state: unreachable` — but one site's Hub said
+    `health: no_hub` and the other's `health: unreachable`, and each node's own
+    `detail` carried the connection failure.
+    """
+    return {
+        "id": "ctrl", "label": "Blue Room", "local": False, "reachable": True,
+        "role": "controller", "ready": True,
+        "machines": [
+            {"machine": "local", "label": "This Mac", "reachable": True, "health": "up",
+             "chip": "Apple M4", "memory_gb": 17.18, "available_gb": 7.16,
+             "disk_free_gb": 118.11, "disk_total_gb": 245.11},
+            {"machine": "node-a", "label": "Node A", "reachable": False, "health": "no_hub"},
+        ],
+        "nodes": [
+            {"id": "node-a", "name": "Node A", "state": "unreachable", "role": "agent",
+             "address": "http://100.0.0.9:47873",
+             "detail": "could not reach the node: All connection attempts failed"},
+        ],
+        "activity": {"pulse": {}, "machines": [
+            {"machine": "local", "state": "ready", "completed": 3},
+            {"machine": "node-a", "state": "offline"},
+        ]},
+        "workers": [
+            {"id": "local:voice", "machine": "local", "online": True, "ready": True},
+            {"id": "node-a:voice", "machine": "node-a", "online": False},
+            {"id": "node-a:image", "machine": "node-a", "online": False},
+        ],
+        "local_models": [
+            {"model": "kept/model", "machine": "local", "available": True},
+            {"model": "quiet/model", "machine": "local", "available": False},
+            {"model": "kept/model", "machine": "node-a", "available": False,
+             "catalog_error": "worker_unreachable"},
+        ],
+        "running_jobs": [], "model_health": [], "probe_machines_hidden": 0,
+    }
+
+
+class OneFaultOneRowTests(unittest.TestCase):
+    """A fault that is only a consequence of another fault is not repeated.
+
+    Measured live: eight dead nodes produced 48 warnings — "is offline", "reports
+    health 'unreachable'", and one per studio — beside 98 model rows that could
+    not be checked because those same machines were off. The list said 148 things
+    were wrong when nine were.
+    """
+
+    def _issues(self, row: dict | None = None) -> list[dict]:
+        return fleet._issues([row or _node_site()])
+
+    def test_the_node_reason_and_health_ride_on_the_offline_row(self) -> None:
+        issues = self._issues()
+        offline = [i for i in issues if i["code"] == "machine_offline"]
+        self.assertEqual([i["subject"] for i in offline], ["node-a"], issues)
+        message = offline[0]["message"]
+        # The Hub's own vocabulary for the fault, and the controller's sentence
+        # about reaching it — the two things the page never drew.
+        self.assertIn("no_hub", message)
+        self.assertIn("All connection attempts failed", message)
+
+    def test_health_is_not_a_second_row_for_the_same_machine(self) -> None:
+        codes = [i["code"] for i in self._issues()]
+        self.assertNotIn("machine_not_healthy", codes, codes)
+
+    def test_workers_on_an_offline_machine_are_counted_once(self) -> None:
+        issues = [i for i in self._issues() if i["code"] == "worker_offline"]
+        self.assertEqual(len(issues), 1, issues)
+        self.assertEqual(issues[0]["subject"], "2 workers")
+        self.assertIn("node-a", issues[0]["message"])
+        self.assertIn("1 offline machine", issues[0]["message"])
+        # The action routes to the tab that can act on it. "Studio Hub on that
+        # Mac" alone fell through to Locations, which is where the machine is not.
+        self.assertEqual(issues[0]["action"], "Fleet → Machines")
+
+    def test_a_worker_down_on_a_reachable_machine_keeps_its_own_row(self) -> None:
+        # The machine is up; the studio is not. That is a different fault, and
+        # collapsing it into the machine would hide it.
+        row = _node_site()
+        row["activity"]["machines"] = [{"machine": "local", "state": "ready"},
+                                       {"machine": "node-a", "state": "offline"}]
+        row["workers"] = [{"id": "local:voice", "machine": "local", "online": False}]
+        issues = [i for i in self._issues(row) if i["code"] == "worker_offline"]
+        self.assertEqual([i["subject"] for i in issues], ["local:voice"], issues)
+
+    def test_a_model_that_could_not_be_checked_on_an_offline_machine_is_not_a_fault(self) -> None:
+        codes = [i["code"] for i in self._issues()]
+        self.assertNotIn("model_catalog_error", codes, codes)
+
+    def test_any_other_catalogue_error_survives_even_on_an_offline_machine(self) -> None:
+        # A 401 from a node that *answered* is a different problem from a node that
+        # did not, so it is kept verbatim — the suppression is only for
+        # `worker_unreachable`.
+        row = _node_site()
+        row["local_models"].append(
+            {"model": "refused/model", "machine": "node-a", "available": False,
+             "catalog_error": "Client error '401 Unauthorized'"}
+        )
+        issues = [i for i in self._issues(row) if i["code"] == "model_catalog_error"]
+        self.assertEqual([i["subject"] for i in issues], ["refused/model"], issues)
+
+    def test_the_machine_row_carries_what_is_free_now_and_the_node_join(self) -> None:
+        flat = {row["machine"]: row for row in fleet.machines_flat([_node_site()])}
+        self.assertEqual(flat["local"]["available_gb"], 7.16)
+        self.assertIsNone(flat["local"]["node_detail"], "the controller's own Mac is not a node")
+        node = flat["node-a"]
+        self.assertEqual(node["health"], "no_hub")
+        self.assertEqual(node["node_role"], "agent")
+        self.assertEqual(node["node_address"], "http://100.0.0.9:47873")
+        self.assertIn("All connection attempts failed", node["node_detail"])
+
+
+class SummaryCountTests(unittest.TestCase):
+    """The Models tile is one fraction, so both halves must count the same thing.
+
+    Measured live: "175/102 local models available" — the numerator counted
+    (machine, model) rows and the denominator distinct (location, model) pairs, so
+    the tile claimed more models available than there were models.
+    """
+
+    def test_available_never_exceeds_the_models_that_exist(self) -> None:
+        summary = fleet._summarise([_node_site()])
+        self.assertEqual(summary["local_models_total"], 2)
+        # `kept/model` is available on the controller's own Mac and not on the dead
+        # node: available *somewhere at that location*, counted once.
+        self.assertEqual(summary["models_available"], 1)
+        self.assertLessEqual(summary["models_available"], summary["local_models_total"])
+
+    def test_one_location_offering_it_twice_is_still_one_model(self) -> None:
+        row = _node_site()
+        row["local_models"] = [
+            {"model": "m", "machine": "local", "available": False},
+            {"model": "m", "machine": "node-a", "available": True},
+        ]
+        summary = fleet._summarise([row])
+        self.assertEqual((summary["models_available"], summary["local_models_total"]), (1, 1))
+
+
 class NoRouteReasonTests(unittest.TestCase):
     """An offered model with no live site is not a missing model.
 

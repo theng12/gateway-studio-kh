@@ -944,6 +944,23 @@ _ROW_BUILDERS = {
 }
 
 
+def _publish_lock(row: dict[str, Any], locked: bool, reason: str | None) -> None:
+    """Write every spelling of "can this be offered right now" together.
+
+    `locked`/`lock_reason` and `availability` are one fact in two vocabularies —
+    the gateway's own pair and the capability catalogue's. They were written by
+    hand in `_story_row` and only `locked`/`lock_reason` were re-merged, so a
+    model offered by three locations with one answering published
+    `locked: false` beside `availability: "unavailable"` (measured live: two
+    `studio-hub` TTS rows while this Mac's Hub was down and both controllers
+    were up). A reader that branches on one and prints the other gets whichever
+    location happened to be iterated first. One writer, so they cannot disagree.
+    """
+    row["locked"] = locked
+    row["lock_reason"] = reason
+    row["availability"] = "unavailable" if locked else "available"
+
+
 def _merge_capabilities(existing: dict[str, Any], row: dict[str, Any], modality: str) -> None:
     """Fold a second location's capability facts into the row already published.
 
@@ -1049,10 +1066,11 @@ class Catalog:
                     merged[row["id"]] = row
                     continue
                 # Locking means "no location offering this can take it", so one
-                # answering location is enough to offer it.
+                # answering location is enough to offer it — and `availability` is
+                # the same fact in the capability vocabulary, so it is written by
+                # the same call rather than left holding the first site's answer.
                 if not row["locked"]:
-                    existing["locked"] = False
-                    existing["lock_reason"] = None
+                    _publish_lock(existing, False, None)
                 # Every location's previous site-scoped id stays an alias, so a
                 # preset naming any of them still finds this one row.
                 existing["legacy_ids"] = list(
@@ -1136,13 +1154,11 @@ class Catalog:
             # defaults are unsafe to rely on.
             "available": True,
             "qualification_only": False,
-            "locked": locked,
-            "lock_reason": lock_reason,
             # The capability catalogue's own vocabulary; see _CAPABILITY_* above.
             "modality": _CAPABILITY_MODALITY.get(modality, "text"),
             "operation": _CAPABILITY_OPERATION.get(modality, "chat.response"),
-            "availability": "unavailable" if locked else "available",
         }
+        _publish_lock(row, locked, lock_reason)
 
         # A location's rows are attributed to the maker, never the site. The old
         # GenStudio's own migration for this is named

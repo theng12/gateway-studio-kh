@@ -491,21 +491,27 @@ final class JobsSection: NSObject, AppSection, NSTableViewDataSource, NSTableVie
         }
 
         // An uncertain attempt on a Hub location pins that node's machine until
-        // it is reconciled or discarded. The owner is the only one who can decide
-        // that waiting is over, so the decision is a button — never a timer.
+        // it is reconciled or discarded, and an unknown cloud outcome has no
+        // upstream to ask at all. The owner is the only one who can decide that
+        // waiting is over, so the decision is a button — never a timer.
         discardButton = nil
-        if canDiscardRecoveryHold(job) {
-            let discard = NSButton(
-                title: "Discard uncertain attempt…",
+        if let action = recoveryAction(job) {
+            let closing = action == "close_hold"
+            let button = NSButton(
+                title: closing ? "Close this hold…" : "Discard uncertain attempt…",
                 target: self,
                 action: #selector(discardSelectedJob)
             )
-            discard.bezelStyle = .rounded
-            discard.controlSize = .small
-            discard.toolTip = "Abandon this attempt on the Studio Hub and free the machine it reserved. "
-                + "Whatever the original worker still produces is ignored."
-            detailStack.addArrangedSubview(discard)
-            discardButton = discard
+            button.bezelStyle = .rounded
+            button.controlSize = .small
+            button.toolTip = closing
+                ? "Close the gateway's own record of this attempt. Nothing is sent upstream — "
+                    + "this lane has no discard route — and whatever the provider may still "
+                    + "produce is not collected."
+                : "Abandon this attempt on the Studio Hub and free the machine it reserved. "
+                    + "Whatever the original worker still produces is ignored."
+            detailStack.addArrangedSubview(button)
+            discardButton = button
         }
 
         detailStatusLabel = PageKit.help("")
@@ -704,39 +710,75 @@ final class JobsSection: NSObject, AppSection, NSTableViewDataSource, NSTableVie
         "/admin/api/create/status/\(escapedJobID(jobID))/cancel"
     }
 
-    /// Whether this job is a hold the owner can resolve by discarding.
+    /// What an operator can do about this hold, as the gateway decided it.
     ///
-    /// Only a hold that names the upstream attempt qualifies: the discard call has
-    /// to say which batch and item it is abandoning, and a hold recorded before the
-    /// gateway kept that context has nothing to name. Offering the button there
-    /// would fail on press, which is worse than not offering it.
-    private func canDiscardRecoveryHold(_ job: [String: Any]) -> Bool {
-        guard job["recovery_required"] as? Bool == true else { return false }
-        guard let context = job["recovery_context"] as? [String: Any] else { return false }
-        return !(string(context["hub_batch_id"]) ?? "").isEmpty
+    /// **The gateway owns this, not the view.** It used to be inferred here from
+    /// `recovery_context`, which meant a hold the restart sweep recorded (context
+    /// null, batch named only in the prose) and every hold on a cloud lane (no
+    /// discard route exists) offered no action at all and could never be cleared
+    /// from the app. The published action is one of `discard_upstream`
+    /// (the Hub is asked, and its answer is the outcome) or `close_hold`
+    /// (nothing upstream can be told, so the gateway's own record is closed).
+    /// Anything unrecognised offers nothing rather than a button that fails.
+    private func recoveryAction(_ job: [String: Any]) -> String? {
+        guard job["recovery_required"] as? Bool == true else { return nil }
+        guard let action = string(job["recovery_action"]) else { return nil }
+        return ["discard_upstream", "close_hold"].contains(action) ? action : nil
     }
 
     @objc private func discardSelectedJob() {
         guard let jobID = selectedJobID,
               let job = rows.first(where: { string($0["id"]) == jobID }),
-              canDiscardRecoveryHold(job) else { return }
-        guard (confirmDiscard ?? confirmDiscardWithAlert)() else { return }
+              let action = recoveryAction(job) else { return }
+        let closing = action == "close_hold"
+        let confirm = confirmDiscard ?? (closing ? confirmCloseHoldWithAlert : confirmDiscardWithAlert)
+        guard confirm() else { return }
         let requestGeneration = selectionGeneration
         discardButton?.isEnabled = false
-        setStatus("Discarding the uncertain attempt…", error: false)
+        setStatus(
+            closing ? "Closing the hold…" : "Discarding the uncertain attempt…",
+            error: false
+        )
         GatewayAPI.post(discardPath(jobID)) { [weak self] result in
             guard let self,
                   self.isCurrent(jobID: jobID, generation: requestGeneration)
             else { return }
             switch result {
             case .success:
-                self.setStatus("Attempt discarded. The machine is released and the result is ignored.", error: false)
+                self.setStatus(
+                    closing
+                        ? "Hold closed. Nothing was sent upstream; the attempt stays abandoned "
+                            + "and its late result is not collected."
+                        : "Attempt discarded. The machine is released and the result is ignored.",
+                    error: false
+                )
                 self.reload()
             case .failure(let error):
                 self.discardButton?.isEnabled = true
-                self.setStatus("Could not discard the attempt: \(error.localizedDescription)", error: true)
+                self.setStatus(
+                    closing
+                        ? "Could not close the hold: \(error.localizedDescription)"
+                        : "Could not discard the attempt: \(error.localizedDescription)",
+                    error: true
+                )
             }
         }
+    }
+
+    /// The owner's confirmation for a **local** close, which contacts nobody.
+    ///
+    /// Deliberately says what does *not* happen: the provider is not told, so
+    /// nothing on its side is released, and this is not a retry.
+    private func confirmCloseHoldWithAlert() -> Bool {
+        let alert = NSAlert()
+        alert.messageText = "Close this hold?"
+        alert.informativeText = """
+        No discard can be sent for this attempt: the lane that ran it has no such        route, so the provider is not contacted and nothing on its side changes.        The gateway stops asking for a manual reconciliation and will not dispatch        it again. Anything the provider still produces is not collected. This        cannot be undone.
+        """
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Close the hold")
+        alert.addButton(withTitle: "Keep it open")
+        return alert.runModal() == .alertFirstButtonReturn
     }
 
     /// The owner's confirmation, naming what is abandoned. Discarding ignores

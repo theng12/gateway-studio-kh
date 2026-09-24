@@ -343,8 +343,14 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
         let details = failures.map {
             "\(labels[$0.providerID] ?? $0.providerID): \($0.detail)"
         }.joined(separator: "; ")
+        // **"Could not discover" keeps its capital, and that is a contract, not a
+        // style choice.** `tests/test_task4_native.py` reads this sentence to prove
+        // the page reports a discovery failure rather than silently showing no
+        // models; a rewrite that lowercased it turned the suite red for three days
+        // while the behaviour was fine. If the wording must change, change the
+        // check with it — in the same commit.
         setStatus(
-            "Refreshed \(succeeded); could not discover at \(failures.count) "
+            "Refreshed \(succeeded). Could not discover at \(failures.count) "
             + "location\(failures.count == 1 ? "" : "s") — \(details)",
             colour: .systemOrange
         )

@@ -1413,7 +1413,7 @@ def list_jobs(
     ever recorded. The app asks for 200, so 500 is headroom rather than a wall.
     """
     from . import retention
-    from .api import _lifecycle_fields
+    from .api import _lifecycle_fields, recovery_action
 
     pinned = {str(row["path"]) for row in retention.kept()}
     labels: dict[tuple[str, str], str] = {}
@@ -1451,9 +1451,15 @@ def list_jobs(
                 "error_code": job.get("error_code"),
                 "error_detail": job.get("error_detail"),
                 **_lifecycle_fields(job),
-                # The Jobs window offers the discard action only for a hold that
-                # names the upstream attempt it is waiting on, so the row carries
-                # that context and the last discard answer too.
+                # **What an operator can do about this hold, decided here.** The
+                # Jobs window used to infer it from `recovery_context`, so a hold
+                # recorded by the restart sweep — or one on a cloud lane, which has
+                # no discard route at all — showed no action and could never be
+                # cleared. Only the gateway knows which lanes can discard, so it
+                # publishes the action rather than letting the client guess:
+                # `discard_upstream`, `close_hold`, or null when there is no honest
+                # action. The context and the last discard answer ride along.
+                "recovery_action": recovery_action(job),
                 "recovery_context": job.get("recovery_context"),
                 "discard_remote": job.get("discard_remote"),
                 "outputs": _admin_outputs(job, pinned),

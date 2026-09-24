@@ -4,6 +4,56 @@ Newest first. This is the same list the **What's New** link in the app shows.
 
 ---
 
+## A dead node now says why, once
+
+The Fleet page could see *that* machines were down and never *why*, and it said the
+same thing many times over. Both are fixed.
+
+- **The reason travels with the machine.** Your controller already tells the gateway
+  whether a node is `unreachable` or has `no_hub`, and quotes its own sentence about
+  the failed connection. That now appears on the machine's row (hover its State) and
+  in the issue that names it, instead of eight identical "offline" lines.
+- **One fault, one row.** A dead machine used to produce six warnings — offline,
+  health, and one per studio — beside a model warning for every model it could not
+  check. The same fleet that read **148 things to look at** now reads the nine that
+  are actually wrong: each machine once, its workers counted once, and its
+  unreachable models left to the machine that explains them. A model fault that is
+  *not* just the machine being off (a `401` from a node that answered, say) is still
+  reported on its own.
+- **The Machines table shows what is free now.** It read "Apple M4 · 17.18 GB ·
+  118.11 GB free" — the disk labelled and the memory not. Memory now reads
+  `17.18 GB (7.14 GB free)`, which is the number the Hub itself uses to decide
+  whether a Mac can take the work.
+
+## A stuck job can be cleared again
+
+A job that was in flight when the gateway restarted was left on "manual recovery
+required" with **no action anywhere in the app**: the discard needed identifiers the
+restart sweep never recorded, and no cloud provider has a discard route to call at
+all. Those jobs were stuck until someone edited the database.
+
+- **The restart sweep now records the upstream attempt**, so a Studio Hub job gets
+  its Discard button back and the Hub is asked to release the machine.
+- **A job on a cloud lane gets "Close this hold…"** instead. Nothing is sent — there
+  is nobody to send it to — and the record says exactly that, so it can never be
+  misread later as "the provider abandoned it".
+- **The gateway publishes which action applies**, instead of the app guessing from
+  the job's context, so a button is only ever offered when pressing it works.
+
+## One model, one answer about whether it can run
+
+A model offered by several locations is published as **one** row — and that row was
+mixing two locations' answers. With this Mac's Studio Hub down and both controllers
+up, a model read `locked: false` beside `availability: "unavailable"`: the gateway's
+answer and the catalogue's, disagreeing in the same payload. Both spellings of that
+one fact are now written together.
+
+## The Models tile is a real fraction
+
+Fleet → Overview showed **"175/102 local models available"** — more models available
+than models. The numerator counted one entry per machine and the denominator one per
+model. Both halves now count models, so the tile reads `N of M` and means it.
+
 ## Adding a location no longer replaces one
 
 Every Studio Hub that has never been given a site id answers the **same** one —

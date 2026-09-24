@@ -1403,25 +1403,28 @@ def _summarise(rows: list[dict]) -> dict:
             completed += int(machine.get("completed") or 0)
             failed += int(machine.get("failed") or 0)
 
-    # The Models tab's headline numbers. `local_models_total` counts a **distinct**
-    # model once per location even though the Hub repeats it per machine; the
-    # available figure counts rows, because "this model can run on this machine
-    # right now" is the row's claim.
+    # The Models tab's headline numbers. **Both count a distinct model once per
+    # location**, because the page draws them as one fraction — "N/M local models
+    # available" — and a fraction whose numerator counts rows while its
+    # denominator counts models is nonsense: measured live on 2026-09-24 it read
+    # **175/102**, since the Hub repeats a model per machine (55 models x 4
+    # machines) while `local_models_total` collapses to the distinct set. A model
+    # counts here as available when **any** machine at that location can run it
+    # now, which is the same claim the Models tab's per-model row makes.
     local_models_total = 0
     models_available = 0
     workers_total = 0
     workers_ready = 0
     for row in rows:
-        local_models = row.get("local_models") or []
-        local_models_total += len({
-            model.get("model")
-            for model in local_models
-            if isinstance(model, dict) and model.get("model") is not None
-        })
-        models_available += sum(
-            1 for model in local_models
-            if isinstance(model, dict) and model.get("available") is True
-        )
+        local_models = [m for m in (row.get("local_models") or []) if isinstance(m, dict)]
+        by_model: dict[object, bool] = {}
+        for model in local_models:
+            name = model.get("model")
+            if name is None:
+                continue
+            by_model[name] = bool(by_model.get(name)) or model.get("available") is True
+        local_models_total += len(by_model)
+        models_available += sum(1 for available in by_model.values() if available)
         workers = row.get("workers") or []
         workers_total += len(workers)
         # Ready means what it says: answering, willing, and not under maintenance
@@ -1493,11 +1496,37 @@ def machines_flat(rows: list[dict]) -> list[dict]:
     A table is what scales: hundreds of machines as a flat list can be
     virtualised by the view, while hundreds of nested cards cannot. The join is
     done here, once, so the view never has to walk the tree.
+
+    **A node's own sentence travels with its machine.** `/api/hub/fleet/nodes`
+    states, per node, why the controller cannot reach it ("could not reach the
+    node: All connection attempts failed") and whether it is `no_hub` or
+    `unreachable`; the machine table drew neither, so eight dead nodes read as
+    eight identical "offline" rows with nothing to act on. The join is on the
+    node **id**, which is the machine id the overview uses — never the label,
+    which is the owner's to change. A machine with no node row is the
+    controller's own Mac, and the node fields stay `None` rather than borrowing
+    the machine's own facts.
     """
     out: list[dict] = []
     for row in rows:
         activity = {entry.get("machine"): entry
                     for entry in row["activity"]["machines"] if entry.get("machine")}
+        nodes = {
+            str(node.get("id")): node
+            for node in (row.get("nodes") or [])
+            if isinstance(node, dict) and node.get("id")
+        }
+
+        def node_fields(mid: str) -> dict:
+            node = nodes.get(mid) or {}
+            return {
+                "node_state": node.get("state"),
+                "node_detail": node.get("detail"),
+                "node_role": node.get("role"),
+                "node_last_seen_at": node.get("last_seen_at"),
+                "node_address": node.get("address"),
+            }
+
         seen: set[str] = set()
         for machine in row["machines"]:
             mid = str(machine.get("machine") or "")
@@ -1518,10 +1547,17 @@ def machines_flat(rows: list[dict]) -> list[dict]:
                 "median_runtime_s": entry.get("median_runtime_s"),
                 "chip": machine.get("chip"),
                 "memory_gb": machine.get("memory_gb"),
+                # What is free *now*, which is the number the Hub's own admission
+                # uses and the one a reader needs: `memory_gb` is the machine's
+                # total, so "Apple M4 · 17.18 GB" beside "118.11 GB free" read as
+                # though the memory were free too.
+                "available_gb": machine.get("available_gb"),
                 "disk_free_gb": machine.get("disk_free_gb"),
+                "disk_total_gb": machine.get("disk_total_gb"),
                 "health": machine.get("health"),
                 "modalities": machine.get("modalities") or {},
                 **_limitation_fields(entry),
+                **node_fields(mid),
             })
         # A machine the activity report knows about but the overview omitted is
         # still a machine.
@@ -1541,9 +1577,11 @@ def machines_flat(rows: list[dict]) -> list[dict]:
                 "failed": entry.get("failed"),
                 "average_seconds": None,
                 "median_runtime_s": entry.get("median_runtime_s"),
-                "chip": None, "memory_gb": None, "disk_free_gb": None, "health": None,
+                "chip": None, "memory_gb": None, "available_gb": None,
+                "disk_free_gb": None, "disk_total_gb": None, "health": None,
                 "modalities": {},
                 **_limitation_fields(entry),
+                **node_fields(mid),
             })
     return out
 
@@ -1617,7 +1655,10 @@ def _issues_for(row: dict) -> list[dict]:
 
     A condition a Hub repeats on thousands of rows is aggregated: one machine
     issue per machine, one worker issue per worker, one catalogue-error issue per
-    (location, model) however many machines repeat that model.
+    (location, model) however many machines repeat that model. **A fault that is
+    only a consequence of another fault is not repeated at all** — a machine's
+    health word and its node sentence belong to its offline row, and its workers
+    and its unreachable models are counted there rather than listed again.
     """
     out: list[dict] = []
     location_id = row.get("id")
@@ -1654,21 +1695,43 @@ def _issues_for(row: dict) -> list[dict]:
     # that says how many machines are affected, with the Hub's own wording kept
     # verbatim. A machine-specific fault (offline, unhealthy) still gets its own
     # row, because it names a machine someone can go and look at.
+    #
+    # **One fault, one row.** The Hub reports a dead machine three ways — its
+    # activity state (`offline`), its health (`unreachable` / `no_hub`), and each
+    # of its studios as an offline worker — and every one of them was a separate
+    # row, so eight dead nodes produced 48 warnings and buried the two facts that
+    # needed someone. The health word and the node's own sentence now ride on the
+    # offline row (they are *why* it is offline, not further faults), and workers
+    # on an already-offline machine are counted once instead of four times.
     limitations: dict[tuple[str, str, str], dict] = {}
     unknown_state = 0
+    offline_machines: set[str] = set()
     for machine in machines_flat([row]):
         machine_id = str(machine.get("machine") or "")
         state = str(machine.get("state") or "").strip().lower()
+        health = str(machine.get("health") or "").strip()
+        unhealthy = bool(health) and health.lower() != "up"
         if state == "offline":
+            offline_machines.add(machine_id)
+            detail = f"Machine {machine_id} is offline."
+            if unhealthy:
+                detail += f" The Hub reports its health as \u2018{health}\u2019."
+            # The controller's own sentence, quoted: it distinguishes a machine
+            # that never answered from one whose Hub is not running, and it is the
+            # only thing that tells the owner what to go and check.
+            node_detail = str(machine.get("node_detail") or "").strip()
+            if node_detail:
+                detail += f" {node_detail}"
             out.append(_issue(
                 "warning", "machine_offline", machine.get("location_id"),
-                machine.get("location"), machine_id,
-                f"Machine {machine_id} is offline.", "Studio Hub on that Mac",
+                machine.get("location"), machine_id, detail, "Studio Hub on that Mac",
             ))
-        if not state or state == "unknown":
+        elif not state or state == "unknown":
             unknown_state += 1
-        health = machine.get("health")
-        if health and str(health).lower() != "up":
+        # A health word on a machine that is *up* is its own fault and keeps its
+        # own row; on an offline machine it is the same fault in a second
+        # vocabulary, already carried above.
+        if unhealthy and machine_id not in offline_machines:
             out.append(_issue(
                 "warning", "machine_not_healthy", machine.get("location_id"),
                 machine.get("location"), machine_id,
@@ -1718,7 +1781,14 @@ def _issues_for(row: dict) -> list[dict]:
 
     # One issue per worker, keyed on (machine, worker) so a Hub that repeats a
     # worker cannot multiply the page.
+    #
+    # A worker whose machine is already reported offline is counted, not repeated:
+    # the machine row says the machine is down, and "voice is offline, image is
+    # offline, subtitle is offline, music is offline" is that one sentence four
+    # times. A worker down on a machine that is **up** is a real, separate fault
+    # and keeps its own row.
     seen_workers: set[tuple] = set()
+    offline_workers: dict[str, int] = {}
     for worker in row.get("workers") or []:
         if not isinstance(worker, dict):
             continue
@@ -1734,22 +1804,48 @@ def _issues_for(row: dict) -> list[dict]:
                 f"Machine {machine_id} is quarantined.", "Fleet → Machines",
             ))
         if worker.get("online") is False:
-            out.append(_issue(
-                "warning", "worker_offline", location_id, location, worker_id,
-                f"Worker {worker_id} is offline.", "Studio Hub on that Mac",
-            ))
+            if machine_id in offline_machines:
+                offline_workers[machine_id] = offline_workers.get(machine_id, 0) + 1
+            else:
+                out.append(_issue(
+                    "warning", "worker_offline", location_id, location, worker_id,
+                    f"Worker {worker_id} is offline.", "Studio Hub on that Mac",
+                ))
         if _truthy(worker.get("maintenance")):
             out.append(_issue(
                 "warning", "worker_maintenance", location_id, location, worker_id,
                 f"Worker {worker_id} is in maintenance.", "Studio Hub on that Mac",
             ))
 
+    if offline_workers:
+        workers_text = f"{sum(offline_workers.values())} worker" + (
+            "" if sum(offline_workers.values()) == 1 else "s")
+        machines_text = f"{len(offline_workers)} offline machine" + (
+            "" if len(offline_workers) == 1 else "s")
+        named = ", ".join(sorted(offline_workers))
+        out.append(_issue(
+            "warning", "worker_offline", location_id, location, workers_text,
+            f"{workers_text} on {machines_text}: {named}. Each machine's own row "
+            "says why it is offline.",
+            "Fleet → Machines",
+        ))
+
     # A model is repeated once per machine. Conditions are OR-ed across its
     # machines first, then reported once per model — never once per row, and never
     # lost because the machine that stated it came second.
+    #
+    # **A model that could not be checked because the machine serving it is off is
+    # not a second fault.** `worker_unreachable` on an offline machine is the
+    # offline machine again — live, 98 model names produced 98 warnings beside the
+    # eight machine rows that explain all of them — so those rows are skipped. Any
+    # other catalog error is kept, including on an offline machine: a `401` from a
+    # node that answered is a different problem from a node that did not.
     model_conditions: dict[str, dict] = {}
     for model in row.get("local_models") or []:
         if not isinstance(model, dict):
+            continue
+        if (str(model.get("machine") or "") in offline_machines
+                and str(model.get("catalog_error") or "").strip() == "worker_unreachable"):
             continue
         name = str(model.get("model") or "")
         bucket = model_conditions.setdefault(

@@ -1234,7 +1234,21 @@ final class FleetMachinesTab: NSView {
                 },
                 sortValue: { .text(machine($0)?.state ?? "") },
                 colour: { machine($0)?.reachable == false ? .systemOrange : .labelColor },
-                tooltip: { machine($0)?.limitation }
+                // **The reason, not just the verdict.** The Hub distinguishes a
+                // node it cannot reach from one whose Hub is not running, and the
+                // controller writes its own sentence about it; both sit here so
+                // "offline" is actionable. The Limitation column keeps its own
+                // tooltip, so this one only speaks for state and health.
+                tooltip: { row in
+                    let limitation = machine(row)?.limitation
+                    let reason = machine(row)?.stateReason
+                    switch (reason, limitation) {
+                    case let (reason?, limitation?): return reason + "\n\n" + limitation
+                    case let (reason?, nil): return reason
+                    case let (nil, limitation?): return limitation
+                    default: return nil
+                    }
+                }
             ),
             FleetColumn(
                 id: "machine", title: "Machine", width: 170,
@@ -1272,7 +1286,16 @@ final class FleetMachinesTab: NSView {
                     guard let row = machine(row) else { return "—" }
                     var parts: [String] = []
                     if let chip = row.chip, !chip.isEmpty { parts.append(chip) }
-                    if let memory = row.memoryGb { parts.append(FleetFormat.gb(memory)) }
+                    // **Total and free are two numbers, and the column says which
+                    // is which.** It read "Apple M4 · 17.18 GB · 118.11 GB free" —
+                    // the disk labelled and the memory not — so a machine with
+                    // 7.14 GB actually available looked as though all 17.18 GB
+                    // were free. The Hub states both; this draws both.
+                    if let memory = row.memoryGb {
+                        parts.append(row.availableGb.map {
+                            "\(FleetFormat.gb(memory)) (\(FleetFormat.gb($0)) free)"
+                        } ?? FleetFormat.gb(memory))
+                    }
                     if let free = row.diskFreeGb { parts.append(FleetFormat.gb(free) + " free") }
                     return parts.isEmpty ? "—" : parts.joined(separator: " · ")
                 },
