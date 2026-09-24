@@ -466,6 +466,30 @@ def _validate_address(url: str) -> str:
     return candidate.rstrip("/")
 
 
+#: Studio Hub's default `site_id` for a Hub that was never assigned one
+#: (`components/hub/backend/control_plane.py::defaults`). **Every** such Hub answers
+#: this same string, so it is not an identity: matching a new controller on it
+#: collapsed every freshly added location onto the first row, and "Add a location"
+#: replaced an existing site instead of appending. The Hub's `controller_id` is
+#: per machine (`<hostname>-hub`), so it is used whenever the site id is the default.
+_DEFAULT_SITE_ID = "local-site"
+
+
+def _stable_identity(probed: dict) -> str:
+    """The controller's own id, preferring a real site over the Hub's shared default.
+
+    A controller that has been assigned a `site_id` keeps it — that is what
+    survives a new address. A Hub that still answers the default has no such
+    identity, so its per-machine `controller_id` stands in; without that, two
+    different controllers read as one and the second add overwrites the first.
+    """
+    site_id = str(probed.get("site_id") or "").strip()
+    controller_id = str(probed.get("controller_id") or "").strip()
+    if site_id and site_id != _DEFAULT_SITE_ID:
+        return site_id
+    return controller_id or site_id
+
+
 def add_controller(label: str, url: str, token: str) -> dict:
     """Remember a location controller. Re-adding the same *controller* updates it.
 
@@ -489,7 +513,7 @@ def add_controller(label: str, url: str, token: str) -> dict:
             probed = _probe(url, clean_token)
         except Exception:  # noqa: BLE001 - the address is still a usable answer
             probed = {}
-        stable_id = str(probed.get("site_id") or probed.get("controller_id") or "")
+        stable_id = _stable_identity(probed)
     if stable_id:
         existing = next(
             (row for row in rows if str(row.get("site_id") or "") == stable_id), None

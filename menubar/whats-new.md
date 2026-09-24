@@ -4,6 +4,16 @@ Newest first. This is the same list the **What's New** link in the app shows.
 
 ---
 
+## Adding a location no longer replaces one
+
+Every Studio Hub that has never been given a site id answers the **same** one —
+`local-site`. The gateway had started identifying a controller by that value, so
+adding a second such controller matched the first row and overwrote it: the roster
+looked like it could only hold so many locations.
+
+Add as many controllers as you like now. A Hub with its own site id keeps it, and a
+Hub still answering the default is told apart by its per-machine id instead.
+
 ## The gateway stops offering a knob the model won't take
 
 The last release made a refused temperature survive; this one stops asking for it.
