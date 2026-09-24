@@ -15,16 +15,30 @@ project does not say why, and nobody should guess.
 | Branch | `main` = `origin/main`, clean tree; remote `github.com/theng12/gateway-kh` |
 | Running build | `/Applications/gateway-kh.app`, port **8787**, stamp `3e254c4-202609241623` (`/health` and `…/Resources/gateway/BUILD`) |
 | Distribution | DMG in `repository/dist/` (`gateway-kh-0.2.22.dmg`), named by version alone |
-| SSD/setup kit | `repository/dist/setup-kit/` — "copy this whole folder to each SSD/Mac" |
+| SSD/setup kit | `repository/dist/setup-kit/` — "copy this whole folder to each SSD/Mac"; current at **0.2.22**, and copied to all four `KH-STUDIO-*` drives 2026-09-24 |
 
 - **Versions are patch-only for now:** `0.2.1`, `0.2.2`, … up to `0.2.1000`. Increment the
   third number by one per shipped change; never roll to `0.3.x`/`1.0.0` until the owner says so.
 - **Finished work is committed and pushed, and a release carries a DMG.** Do not call work
   done while uncommitted, unpushed, or without an installable artifact. `dist/` stays out of Git.
-- **The setup kit is a snapshot, not a build output.** It currently pins GatewayKH **0.2.1**
-  and Studio Hub **0.6.39** `[MEASURED]` — both far behind the current release. Rebuild it
-  deliberately for a rollout; do not hand-edit it. `[reason not recorded]` for why it has not
-  been refreshed.
+- **The setup kit is a snapshot, not a build output — and it is current as of 0.2.22.**
+  `repository/dist/setup-kit/` pins GatewayKH **0.2.22** (`installers/gateway-kh-0.2.22.dmg`,
+  sha256 `8446db07de94b397…` in `SHA256SUMS.txt`) and its `06-troubleshooting.md` gained the
+  two sections this release needs: **"A node shows offline"** (the Hub's `no_hub` /
+  `unreachable` / `unauthorized`, read from the installed Hub's own `peers.py` and
+  `fleet_nodes.py`) and **"A job says Manual recovery required"** (discard vs close).
+  Rebuild it deliberately for a rollout; never hand-edit a copy on a drive.
+- **The four SSDs were refreshed from it on 2026-09-24** `[MEASURED]`:
+  `/Volumes/KH-STUDIO-{ATLAS,NOVA,ORICO,UGREEN}/Video Generation Kit/GatewayKH/`, each
+  verified with `shasum -a 256 -c SHA256SUMS.txt` and each keeping the superseded kit in
+  `<drive>/_trash/superseded-kit-2026-09-24/` (the only place a superseded installer lives;
+  the repo's `dist/gateway-kh-*.dmg` is the build output, not an archive).
+- **Two kit indexes exist on each drive and both name every app's version** — the top-level
+  `Video Generation Kit/README.md` and the copy beside the Hub kit, `Studio Hub KH/README.md`.
+  They had drifted (top said Studio Hub 0.6.54 and GatewayKH 0.2.21; the Hub copy said
+  GatewayKH 0.2.2 and Studio Hub 0.6.57, while the bundle in the folder reported **0.6.60**).
+  Both now read the version each bundle actually reports. **Update both on every kit refresh**,
+  or the drive's front page lies about one of the three apps.
 - The port is **8787** everywhere that matters: the default in `gateway/config.py`
   and the app's `AppConfig`, this Mac's `.env`/`menubar.json`, and `README.md`'s
   "Why port 8787". It was 8000 until the owner moved it (2026-09-21, `Project
@@ -76,7 +90,7 @@ Run everything from `repository/`. Python tooling is the checkout venv `.venv/bi
 | Gateway source | `repository/gateway/` |
 | Tests | `repository/tests/` |
 | Build output / DMGs | `repository/dist/` (gitignored); container-root `dist` is a symlink to it |
-| SSD setup kit | `repository/dist/setup-kit/` |
+| SSD setup kit | `repository/dist/setup-kit/` — copied to `/Volumes/KH-STUDIO-*/Video Generation Kit/GatewayKH/` |
 | Release notes | `repository/menubar/whats-new.md` (newest first; shown by the app's What's New) |
 | Live data dir | `~/Library/Application Support/gateway-kh/` (`.env`, `data/`) |
 | Release publisher / state | `~/Library/Application Support/gateway-kh/data/release-publisher.pem` (0600), `release-state.json` |
