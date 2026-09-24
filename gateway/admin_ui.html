@@ -1241,6 +1241,19 @@ function providerCard(p) {
   }
   badges.push(p.configured ? '<span class="badge ok">key set</span>' : '<span class="badge bad">no key</span>');
   if (p.last_error) badges.push(`<span class="badge bad" title="${esc(p.last_error)}">discovery error</span>`);
+  // **What the provider listed that discovery could not place at all.** A Studio
+  // Hub gains lanes — and engines — on its own schedule, so a package nothing
+  // here can classify is a normal event rather than a fault; but it used to
+  // produce no row anywhere, which made it indistinguishable from a Hub with no
+  // models. The engine names are the point: they are what a gateway release has
+  // to learn next.
+  if (p.skipped && p.skipped.length) {
+    const detail = p.skipped.map(s =>
+      `${s.engine}: ${s.count} package${s.count === 1 ? '' : 's'} — ${s.reason}` +
+      ((s.model_ids || []).length ? `\n  e.g. ${s.model_ids.join(', ')}` : '')
+    ).join('\n');
+    badges.push(`<span class="badge warn" title="${esc(detail)}">${p.skipped.length} unrecognised engine${p.skipped.length === 1 ? '' : 's'}</span>`);
+  }
   badges.push(`<span class="badge">${p.publishable_model_count}/${p.model_count} supported</span>`);
   badges.push(privacyBadge(p.data_use, p.free_tier));
 
@@ -1315,6 +1328,7 @@ function providerModelList(p, models) {
       </div>
       <span class="badge">${esc(m.modality)}</span>
       <span class="badge">${esc(m.source)}</span>
+      ${m.publishable ? '' : `<span class="badge warn" title="${esc(m.withheld_reason || '')}">withheld</span>`}
       ${m.source === 'user' ? `<button class="sm" onclick="removeModel('${esc(p.id)}','${esc(m.model_id)}')">remove</button>` : ''}
     </div>`).join('') + '</div>';
 }

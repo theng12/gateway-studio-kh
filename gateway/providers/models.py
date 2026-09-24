@@ -119,6 +119,11 @@ class ModelInventory:
                     }
                     for m in result.models
                 ]
+            # What the provider listed that this gateway could not classify at
+            # all. Kept beside the models rather than folded into `error`: the
+            # discovery itself succeeded, and one unrecognised engine must not
+            # make a working provider read as broken.
+            entry["skipped"] = list(result.skipped)
         self._save()
         return result
 

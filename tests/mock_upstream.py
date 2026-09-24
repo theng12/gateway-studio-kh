@@ -474,11 +474,34 @@ class Handler(BaseHTTPRequestHandler):
                 {"package_id": "capability-only-model", "model_id": "mock-hub/capability-only-model",
                  "engine": "voice-mlx", "files_state": "files_verified",
                  "dispatch_state": "eligible", "revision": "e" * 40},
+                # Two shapes the gateway has never seen before, because the Hub
+                # gains lanes on its own schedule — an image engine today, an LLM
+                # or video lane later.
+                #
+                # `video-model` runs on an engine this gateway has no table entry
+                # for, **and says what it is**: the stated modality is what places
+                # it, so it is discovered (and then withheld, because the
+                # `studio_hub` adapter serves no video lane) rather than vanishing.
+                {"package_id": "video-model", "model_id": "mock-hub/video-model",
+                 "engine": "video-mlx", "files_state": "files_verified",
+                 "dispatch_state": "eligible", "revision": "f" * 40},
+                # `unplaceable-model` is the one case nothing can place: an unknown
+                # engine **and** no statement anywhere. It must be *reported*, not
+                # silently dropped — "I could not work out what this is" and "there
+                # is nothing here" are different answers.
+                {"package_id": "unplaceable-model", "model_id": "mock-hub/unplaceable-model",
+                 "engine": "mystery-mlx", "files_state": "files_verified",
+                 "dispatch_state": "eligible", "revision": "0" * 40},
             ] + FLEET_PACKAGES})
             return
         if path == "/api/hub/catalog":
             self._json(200, {"models": [
                 {"repo": "mock-hub/clone-model", "family": "mock-clone",
+                 # The Hub **states** what each model is; that statement is what
+                 # places a row. Measured live on 0.6.60: every catalogue row
+                 # carries `hub_modality` (`voice` 197, `transcription` 65,
+                 # `music` 10, `image` 5).
+                 "hub_modality": "voice",
                  "capabilities": ["tts", "voice-cloning", "multilingual"],
                  "min_unified_memory_gb": 8, "memory_eligible": True,
                  "reference_audio": {
@@ -492,12 +515,14 @@ class Handler(BaseHTTPRequestHandler):
                          "required_when_model_specific_selection_is_needed",
                  }},
                 {"repo": "mock-hub/preset-model", "family": "mock-preset",
+                 "hub_modality": "voice",
                  "capabilities": ["tts", "expressive"],
                  "min_unified_memory_gb": 8, "memory_eligible": True,
                  "reference_audio": {"declared": False, "supported": False,
                                      "profile_audited": False,
                                      "profile_source": "unverified"}},
                 {"repo": "mock-hub/toobig-model", "family": "mock-toobig",
+                 "hub_modality": "voice",
                  "capabilities": ["tts", "voice-cloning", "multilingual"],
                  "min_unified_memory_gb": 64, "memory_eligible": False,
                  "reference_audio": {"declared": True, "supported": True,
@@ -506,8 +531,19 @@ class Handler(BaseHTTPRequestHandler):
                 # No `reference_audio` key at all. `capabilities` is the only
                 # statement, and it does not name cloning.
                 {"repo": "mock-hub/capability-only-model", "family": "mock-caps",
+                 "hub_modality": "voice",
                  "capabilities": ["tts", "multilingual"],
                  "min_unified_memory_gb": 8, "memory_eligible": True},
+                # A lane this gateway has no table entry for, **stated by the
+                # Hub**. The stated modality places it, so it is discovered and
+                # then withheld (the `studio_hub` adapter serves no video) instead
+                # of disappearing the moment the Hub grows a new engine.
+                {"repo": "mock-hub/video-model", "family": "mock-video",
+                 "hub_modality": "video",
+                 "capabilities": ["video"],
+                 "min_unified_memory_gb": 32, "memory_eligible": True},
+                # `mock-hub/unplaceable-model` is deliberately absent: no
+                # statement anywhere, on an engine nothing knows.
             ]})
             return
 

@@ -255,12 +255,34 @@ def provider_models(provider_id: str) -> Any:
         # Whether each row could ever reach Story Studio. Without it the console
         # said "live" for models the catalogue silently drops — the same two
         # readers of one rule that `can_publish` exists to keep from drifting.
+        #
+        # **And why, when it cannot.** A Hub gains lanes on its own schedule, so a
+        # model in one this build has no lane for is discovered and withheld —
+        # and a tick box that changes nothing, with no sentence beside it, is the
+        # "control that does nothing" the console is supposed to have stopped
+        # shipping. `support_status` is the one place that sentence is written.
         "models": [
-            {**model, "publishable": registry.models.can_publish(definition, model)}
+            {
+                **model,
+                "publishable": registry.models.can_publish(definition, model),
+                "withheld_reason": (
+                    None if registry.models.can_publish(definition, model)
+                    else (
+                        support_status(definition, str(model.get("modality") or ""))[1]
+                        or "this model cannot be offered"
+                    )
+                ),
+            }
             for model in rows
         ],
         "last_refresh": cached.get("fetched_at"),
         "last_error": cached.get("error"),
+        # What this provider listed that discovery could not place at all, by
+        # engine. Published beside the models because the *models* list cannot
+        # answer it: an unrecognised engine produces no row here, so without this
+        # "the Hub has nothing" and "I did not understand what it sent" are the
+        # same answer.
+        "skipped": list(cached.get("skipped") or []),
     }
 
 

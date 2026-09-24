@@ -963,6 +963,70 @@ class UncertainIsARecoveryHoldTests(_HubCase):
             store.close()
 
 
+class HubVersionDriftTests(unittest.TestCase):
+    """The Hub this build targets is **declared**, and the declaration never gates.
+
+    Studio Hub auto-updates itself — this fleet has run 0.6.18, 0.6.23, 0.6.29,
+    0.6.31, 0.6.54 and 0.6.60 in a week — and gateway-kh moves on its own too. So
+    the pairing is stated rather than assumed: the relation is published per
+    controller and shown on the Fleet page, and **nothing refuses work on a
+    mismatch**, because a Hub updating itself must never take a fleet down with no
+    action by its owner (the owner's decision, 2026-09-24).
+    """
+
+    def test_a_version_compares_against_the_declared_one(self) -> None:
+        from gateway.adapters.studio_hub import (
+            HUB_VERSION_MATCH,
+            HUB_VERSION_NEWER,
+            HUB_VERSION_OLDER,
+            SUPPORTED_STUDIO_HUB_VERSION,
+            hub_version_relation,
+        )
+
+        self.assertEqual(hub_version_relation(SUPPORTED_STUDIO_HUB_VERSION), HUB_VERSION_MATCH)
+        self.assertEqual(hub_version_relation("0.6.59"), HUB_VERSION_OLDER)
+        self.assertEqual(hub_version_relation("0.6.61"), HUB_VERSION_NEWER)
+        self.assertEqual(hub_version_relation("0.7.0"), HUB_VERSION_NEWER)
+        # A shorter version is padded, not unreadable: 0.6 is older than 0.6.60.
+        self.assertEqual(hub_version_relation("0.6"), HUB_VERSION_OLDER)
+        # Pre-release and build suffixes do not change the ordering.
+        self.assertEqual(hub_version_relation("0.6.61-rc1"), HUB_VERSION_NEWER)
+
+    def test_an_absent_or_unreadable_version_is_not_a_match(self) -> None:
+        # "I could not read the version" must never render as "it matched" — the
+        # same rule every other field on this gateway follows.
+        from gateway.adapters.studio_hub import hub_version_relation
+
+        for value in (None, "", "   ", "unknown", "v0.6.60", "not-a-version"):
+            with self.subTest(value=value):
+                self.assertIsNone(hub_version_relation(value))
+
+    def test_the_declaration_lives_in_one_place(self) -> None:
+        """One source of truth, so the number and the verdict cannot disagree.
+
+        The constant is declared in the adapter that owns the wire contract, and
+        the two reports of it — the per-controller field and `/health` — read it
+        from there rather than spelling the version again.
+        """
+        from pathlib import Path
+
+        from gateway.adapters.studio_hub import SUPPORTED_STUDIO_HUB_VERSION
+
+        root = Path(__file__).resolve().parents[1]
+        for name in ("gateway/fleet.py", "gateway/api.py", "gateway/admin.py"):
+            source = (root / name).read_text()
+            self.assertNotIn(
+                f'"{SUPPORTED_STUDIO_HUB_VERSION}"', source,
+                f"{name} spells the supported Hub version instead of importing it",
+            )
+        # And the paths that decide what runs never mention the relation at all:
+        # routing, the catalogue and the worker ask capability questions.
+        for name in ("gateway/catalog.py", "gateway/worker.py"):
+            source = (root / name).read_text()
+            self.assertNotIn("hub_version_relation", source, name)
+            self.assertNotIn("SUPPORTED_STUDIO_HUB_VERSION", source, name)
+
+
 class DiscardRecoveryHoldTests(_HubCase):
     """The controller may now act on a hold — explicitly, and never on a timer."""
 

@@ -31,6 +31,76 @@ POLL_INTERVAL_S = 1.0
 # Aligned with the Hub's own claim TTL floor (request timeout 300s + margin).
 JOB_DEADLINE_S = 900.0
 
+#: The Studio Hub release this gateway is **built and verified against**.
+#:
+#: Studio Hub moves on its own schedule — it auto-updates itself, and this fleet
+#: has run 0.6.18, 0.6.23, 0.6.29, 0.6.31, 0.6.54 and 0.6.60 in a week — while
+#: this gateway moves on its own too. So the pairing is *declared* rather than
+#: assumed: this string is the version whose wire contract the code in this file
+#: was written and measured against, and it is the number the kit and the release
+#: notes state.
+#:
+#: **It is never a gate.** A controller on another version keeps working: the
+#: adapter reads what the Hub states instead of branching on a version number, so
+#: a newer Hub offering something new is a thing to *report*, not a thing to
+#: refuse. Refusing would turn Studio Hub's own auto-update into an outage on a
+#: fleet nobody touched (owner's decision, 2026-09-24: report drift, keep
+#: working). `hub_version_relation()` says how a controller's version compares,
+#: and the Fleet page shows it beside the Hub version.
+SUPPORTED_STUDIO_HUB_VERSION = "0.6.60"
+
+#: The answers `hub_version_relation` can give. `match` is the tested pairing; the
+#: other two are informational — a newer Hub may serve things this gateway has no
+#: lane for, and an older one may be missing a route this code knows how to read.
+HUB_VERSION_MATCH = "match"
+HUB_VERSION_OLDER = "older"
+HUB_VERSION_NEWER = "newer"
+
+
+def _version_tuple(value: object) -> tuple[int, ...] | None:
+    """A dotted version as comparable integers, or `None` if it is not one.
+
+    Deliberately forgiving about a trailing pre-release or build suffix
+    (`0.6.60`, `0.6.60-rc1`, `0.6.60+build`) and deliberately `None` rather than a
+    guess for anything else: "I could not read the version" must never render as
+    "the version matched".
+    """
+    text = str(value or "").strip()
+    if not text:
+        return None
+    head = text.split("+", 1)[0].split("-", 1)[0]
+    numbers: list[int] = []
+    for part in head.split("."):
+        digits = ""
+        for character in part:
+            if not character.isdigit():
+                break
+            digits += character
+        if not digits:
+            return None
+        numbers.append(int(digits))
+    return tuple(numbers) if numbers else None
+
+
+def hub_version_relation(version: object) -> str | None:
+    """How a controller's Hub version compares to the one this build targets.
+
+    `None` when the Hub stated no version, or stated one that is not a dotted
+    number — absence stays absence. A shorter version is padded (`0.6` reads as
+    `0.6.0`), so `0.6` is older than `0.6.60` rather than unreadable.
+    """
+    stated = _version_tuple(version)
+    if stated is None:
+        return None
+    supported = _version_tuple(SUPPORTED_STUDIO_HUB_VERSION) or ()
+    width = max(len(stated), len(supported))
+    left = stated + (0,) * (width - len(stated))
+    right = supported + (0,) * (width - len(supported))
+    if left == right:
+        return HUB_VERSION_MATCH
+    return HUB_VERSION_OLDER if left < right else HUB_VERSION_NEWER
+
+
 # Hub item states -> our terminal interpretation.
 _TERMINAL_OK = {"done", "succeeded", "complete", "completed"}
 _TERMINAL_BAD = {"error", "failed", "cancelled", "cancelled_items"}

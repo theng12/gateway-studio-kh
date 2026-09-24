@@ -100,6 +100,12 @@ struct FleetLocation: Decodable {
     var error: String?
     var role: String?
     var version: String?
+    /// How this controller's Studio Hub version compares to the release this
+    /// gateway build targets: `match`, `older`, `newer`, or `nil` when the Hub
+    /// stated no version. **It is never a gate** — a Hub on another version keeps
+    /// working (it auto-updates itself), and this is how the page says so instead
+    /// of leaving a drift invisible.
+    var hubVersionRelation: String?
     var providerId: String?
     var latencyMs: Int?
     var machines: [FleetMachine] = []
@@ -123,7 +129,8 @@ struct FleetLocation: Decodable {
     var trustedPublisher: FleetTrustedPublisher?
 
     private enum CodingKeys: String, CodingKey {
-        case id, label, url, local, reachable, error, role, version, providerId, latencyMs
+        case id, label, url, local, reachable, error, role, version, hubVersionRelation
+        case providerId, latencyMs
         case machines, workers, localModels, modelHealth, machineSummary, runningJobs
         case modelsDiscovered, modelsEnabled, modelsPublishable, release, trustedPublisher
     }
@@ -138,6 +145,7 @@ struct FleetLocation: Decodable {
         error = try? c.decode(String.self, forKey: .error)
         role = try? c.decode(String.self, forKey: .role)
         version = try? c.decode(String.self, forKey: .version)
+        hubVersionRelation = try? c.decode(String.self, forKey: .hubVersionRelation)
         providerId = try? c.decode(String.self, forKey: .providerId)
         latencyMs = try? c.decode(Int.self, forKey: .latencyMs)
         machines = lenientArray(c, forKey: .machines)

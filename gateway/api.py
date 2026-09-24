@@ -40,6 +40,7 @@ from fastapi.responses import JSONResponse
 from . import __version__
 from .build import build_id
 from .adapters import BackendError, BackendRequest, adapter_for
+from .adapters.studio_hub import SUPPORTED_STUDIO_HUB_VERSION
 from .catalog import MODALITIES, catalog, encode_model_id
 from .config import ARTIFACT_DIR, gateway_api_key, is_loopback, request_is_loopback
 from .constants import ADMISSION, CREDIT_BALANCE, ZERO_SETTLEMENT
@@ -677,6 +678,11 @@ def health() -> dict[str, Any]:
         },
         "models": registry.models.summary(),
         "jobs_processed": worker.processed,
+        # **The Studio Hub release this build targets.** Studio Hub moves on its
+        # own schedule and auto-updates itself, so the pairing is declared rather
+        # than assumed; the number is here so a rollout can assert it and the kit
+        # can state it. It is not a gate — see `adapters.studio_hub`.
+        "studio_hub": {"supported_version": SUPPORTED_STUDIO_HUB_VERSION},
     }
 
 

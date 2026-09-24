@@ -4,6 +4,39 @@ Newest first. This is the same list the **What's New** link in the app shows.
 
 ---
 
+## The gateway says which Studio Hub it is built for — and keeps working
+
+Studio Hub moves on its own schedule. It updates itself, and this fleet has run
+`0.6.18`, `0.6.23`, `0.6.29`, `0.6.31`, `0.6.54` and `0.6.60` in a week. So the
+pairing is now **declared** instead of assumed: this build targets **Studio Hub
+0.6.60**, says so on `/health`, and shows it beside each controller on
+Fleet → Locations — `0.6.60`, `0.6.54 · older`, `0.6.72 · newer`.
+
+**Nothing is refused on a mismatch.** A Hub that updated itself must never take
+your fleet down while nobody touched it. A drift is one line in the Fleet issues
+under "informational — nothing to fix", naming both versions.
+
+## A model you add on the Hub arrives here — even on an engine this build has never seen
+
+The gateway used to work out what a model *was* from its **engine name**, through
+a short list in its own code — `image-mflux`, `voice-mlx`, `music-mlx`,
+`subtitle-mlx`. A model on any other engine was skipped **in silence**: no row, no
+count, no reason. Your next image model would have landed on the Hub and simply
+not appeared, and an LLM or video lane would have been invisible by construction.
+
+- **The Hub's own word is what places a model now.** Every model it lists carries
+  `hub_modality`, and that is read — the engine list is only the fallback for a
+  Hub that says nothing.
+- **A lane this build can already run works immediately.** A new image, voice,
+  music or transcription engine needs no gateway release at all.
+- **A lane it cannot run is listed, not hidden.** A video or LLM model is
+  discovered, shown in Providers with a **withheld** badge and the reason, and
+  never offered to Story Studio — so you can see what the Hub has and what this
+  build would need to serve it.
+- **Anything nothing can place is reported by engine name** ("2 packages on
+  engine `fleet-mock`"), so "no models" can never be the answer while the Hub is
+  listing models.
+
 ## A dead node now says why, once
 
 The Fleet page could see *that* machines were down and never *why*, and it said the

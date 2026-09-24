@@ -3710,9 +3710,40 @@ def main() -> int:
             # check is what catches that: a location pointed at the mock must find
             # the mock's models, and this run has no local Hub at all.
             check("a location discovers its own Hub's models, not the local one",
-                  len(installed) == 5,
+                  len(installed) == 6,
                   f"{sorted(installed)} error="
                   f"{hub_payload.get('error') or hub_payload.get('discovery_error')}")
+            # **A lane the Hub gained on its own.** The gateway used to map a
+            # package to a modality by its *engine name* through a table in this
+            # repo, and `continue` past anything else — so the day the Hub served a
+            # model on a new engine it vanished, with no row, no count and no
+            # reason anywhere. The Hub **states** `hub_modality` per model; reading
+            # it is what lets a new image, LLM or video lane arrive here without a
+            # gateway release.
+            check("the Hub's own modality is what places a row",
+                  ((installed.get("mock-hub/clone-model") or {}).get("raw") or {})
+                  .get("modality_source") == "stated",
+                  f"{(installed.get('mock-hub/clone-model') or {}).get('raw')}")
+            check("a model on an engine this gateway has no table entry for is discovered, not dropped",
+                  (installed.get("mock-hub/video-model") or {}).get("modality") == "video",
+                  f"{sorted(installed)}")
+            check("and one nothing can place is reported by engine, not swallowed",
+                  hub_payload.get("skipped") == [
+                      # The fixture's own pair, on an engine the gateway has never
+                      # had a table entry for. They were dropped in silence before
+                      # this change too — which is the point: nobody could tell
+                      # "the Hub listed nothing usable" from "the gateway did not
+                      # understand what it listed".
+                      {"engine": "fleet-mock", "count": 2,
+                       "model_ids": ["vision-one-pkg", "voice-one-pkg"],
+                       "reason": ("this gateway has no lane for it: the package states no "
+                                  "modality and its engine is not in the engine table")},
+                      {"engine": "mystery-mlx", "count": 1,
+                       "model_ids": ["mock-hub/unplaceable-model"],
+                       "reason": ("this gateway has no lane for it: the package states no "
+                                  "modality and its engine is not in the engine table")},
+                  ],
+                  f"{hub_payload.get('skipped')}")
             check("a catalogued model carries the reference contract the Hub stated",
                   ((installed.get("mock-hub/clone-model") or {}).get("raw") or {})
                   .get("reference_audio", {}).get("maximum_duration_seconds") == 15,
@@ -3824,6 +3855,13 @@ def main() -> int:
                   f"{[k for k in published if 'mock-hub' in k]}")
             check("a preset-voice model is still published — not cloning is not the same as not being a model",
                   "studio-hub::mock-hub/preset-model" in published,
+                  f"{[k for k in published if 'mock-hub' in k]}")
+            # A model the Hub states it serves but this adapter has no lane for is
+            # **discovered and withheld**, not dropped: the owner sees the row and
+            # the reason, and the day the adapter gains the lane the same row
+            # starts publishing with no change to the discovery table.
+            check("a lane this adapter does not serve is discovered but withheld",
+                  "studio-hub::mock-hub/video-model" not in published,
                   f"{[k for k in published if 'mock-hub' in k]}")
 
             # The header count used to be the raw enabled count, so it read "live"

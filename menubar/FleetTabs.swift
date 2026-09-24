@@ -865,8 +865,44 @@ final class FleetLocationsTab: FleetTabView {
                 sortValue: { .text(location($0)?.role ?? "") }
             ),
             FleetColumn(
-                id: "lhub", title: "Hub", width: 80, sortable: false,
-                text: { FleetFormat.text(location($0)?.version) }
+                id: "lhub", title: "Hub", width: 110, sortable: false,
+                // **The version, and whether this gateway was built against it.**
+                // Studio Hub auto-updates itself, so a controller can move ahead
+                // of this app without anyone touching it; the relation is drawn
+                // rather than left in a tooltip, because "which of my Macs is on
+                // something this build has never seen?" is the question a drift
+                // raises. Nothing is refused on a mismatch — see
+                // `SUPPORTED_STUDIO_HUB_VERSION`.
+                text: { row in
+                    guard let row = location(row) else { return "—" }
+                    let stated = FleetFormat.text(row.version)
+                    switch row.hubVersionRelation {
+                    case "older": return "\(stated) · older"
+                    case "newer": return "\(stated) · newer"
+                    default: return stated
+                    }
+                },
+                colour: { row in
+                    let relation = location(row)?.hubVersionRelation
+                    return relation == "older" || relation == "newer"
+                        ? .systemOrange : .labelColor
+                },
+                tooltip: { row in
+                    guard let row = location(row) else { return nil }
+                    switch row.hubVersionRelation {
+                    case "older":
+                        return "Older than the Studio Hub this gateway build targets. "
+                            + "It keeps working; a route or field added since then is not read."
+                    case "newer":
+                        return "Newer than the Studio Hub this gateway build targets. It keeps "
+                            + "working; anything it serves in a lane this build does not know "
+                            + "is listed as unsupported rather than offered."
+                    case "match":
+                        return "The Studio Hub release this gateway build targets."
+                    default:
+                        return "The controller stated no Hub version."
+                    }
+                }
             ),
             FleetColumn(
                 id: "lmachines", title: "Machines", width: 90,

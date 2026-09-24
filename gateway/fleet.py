@@ -730,6 +730,19 @@ def _is_probe_machine(machine: dict) -> bool:
     return str(machine.get("machine") or "").startswith("probe-")
 
 
+def _hub_version_relation(version: object) -> str | None:
+    """How a controller's Hub version compares to the one this build targets.
+
+    Imported inside the function on purpose: `adapters` loads
+    `providers.definitions`, which loads *this* module for the fleet provider ids,
+    so a module-level import here is a circular import — the same reason every
+    other cross-module read in this file is local.
+    """
+    from .adapters.studio_hub import hub_version_relation
+
+    return hub_version_relation(version)
+
+
 def _probe(base: str, token: str, *, timeout: float = _TIMEOUT) -> dict:
     """Read one controller. Never raises: a failure *is* the result."""
     started = time.time()
@@ -738,6 +751,9 @@ def _probe(base: str, token: str, *, timeout: float = _TIMEOUT) -> dict:
         "error": None,
         "role": None,
         "version": None,
+        # How that version compares to the one this build targets; `None` until a
+        # Hub answers, and `None` again if it refuses to state a version.
+        "hub_version_relation": None,
         "machines": [],
         "machine_summary": None,
         "nodes": [],
@@ -916,6 +932,12 @@ def _probe(base: str, token: str, *, timeout: float = _TIMEOUT) -> dict:
         # it is unavailable, so a Hub that does not serve capabilities still works.
         "role": controller.get("role") or nodes.get("role"),
         "version": controller.get("studiohub_version") or _version_from(overview),
+        # **How that version compares to the one this gateway targets.** Read from
+        # the same string, in the same `update`, so the number and its verdict can
+        # never describe different releases. `None` when the Hub stated none.
+        "hub_version_relation": _hub_version_relation(
+            controller.get("studiohub_version") or _version_from(overview)
+        ),
         "site_id": capabilities.get("site_id") or controller.get("site_id"),
         "controller_id": controller.get("controller_id"),
         "ready": controller.get("ready"),
@@ -1282,7 +1304,8 @@ def locations() -> list[dict]:
             "provider_id": provider_id_for(LOCAL_ID),
             "reachable": False,
             "error": local_error or "Studio Hub is not running on this Mac.",
-            "role": None, "version": None, "machines": [], "machine_summary": None,
+            "role": None, "version": None, "hub_version_relation": None,
+            "machines": [], "machine_summary": None,
             "nodes": [], "node_summary": None, "running_jobs": [],
             "activity": {"pulse": {}, "machines": [], "observed_at": None},
             "by_machine": {}, "matrix": [], "jobs_total": None, "latency_ms": None,
@@ -1685,6 +1708,35 @@ def _issues_for(row: dict) -> list[dict]:
             "warning", "controller_drained", location_id, location, address,
             "The controller reports itself drained and will not accept new work.",
             "Studio Hub on that Mac",
+        ))
+
+    # **A Hub on another version keeps working, and is named.** Studio Hub
+    # auto-updates itself, so a fleet can move a version ahead of this gateway
+    # without anyone touching it. Refusing would turn that into an outage; saying
+    # nothing would hide the one fact that explains a lane this build has never
+    # heard of. `info`, deliberately: it is a statement of fact, not a fault, and
+    # `summary.issues` counts only errors and warnings.
+    relation = str(row.get("hub_version_relation") or "")
+    if row.get("reachable") and relation in {"older", "newer"}:
+        from .adapters.studio_hub import SUPPORTED_STUDIO_HUB_VERSION
+
+        version = str(row.get("version") or "an unstated version")
+        if relation == "newer":
+            detail = (
+                f"This controller runs Studio Hub {version}; gateway build targets "
+                f"{SUPPORTED_STUDIO_HUB_VERSION}. It keeps working — anything the newer "
+                "Hub serves in a lane this gateway does not know is listed as "
+                "unsupported rather than offered."
+            )
+        else:
+            detail = (
+                f"This controller runs Studio Hub {version}; gateway build targets "
+                f"{SUPPORTED_STUDIO_HUB_VERSION}. It keeps working, but a route or field "
+                "added after that release is not read here."
+            )
+        out.append(_issue(
+            "info", "hub_version_drift", location_id, location, version, detail,
+            "Fleet → Locations",
         ))
 
     # **A Hub condition repeated per machine is one issue, not one per machine.**

@@ -165,6 +165,12 @@ class ProviderRegistry:
             )
             item["last_refresh"] = cached.get("fetched_at")
             item["last_error"] = cached.get("error")
+            # **What the provider listed that this gateway could not place.**
+            # Published so "it has no models" and "I did not understand what it
+            # sent" cannot render the same: a Studio Hub serving a lane this
+            # gateway has never heard of used to discover zero models in silence,
+            # with nothing anywhere naming the engine.
+            item["skipped"] = list(cached.get("skipped") or [])
             output.append(item)
         return output
 

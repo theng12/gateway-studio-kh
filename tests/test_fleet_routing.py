@@ -672,6 +672,79 @@ class OneFaultOneRowTests(unittest.TestCase):
         self.assertIn("All connection attempts failed", node["node_detail"])
 
 
+class HubVersionReportTests(unittest.TestCase):
+    """A Studio Hub on another version is **named**, never refused.
+
+    Studio Hub auto-updates itself, so a controller can move ahead of this
+    gateway without anyone touching it. Refusing would turn that into an outage;
+    saying nothing would hide the one fact that explains a lane this build has
+    never heard of. So the drift is an `info` — a statement of fact — and every
+    gate stays a capability question.
+    """
+
+    def test_a_newer_hub_is_reported_with_both_versions(self) -> None:
+        from gateway.adapters.studio_hub import SUPPORTED_STUDIO_HUB_VERSION
+
+        row = _node_site()
+        row["version"] = "0.6.99"
+        row["hub_version_relation"] = "newer"
+        drift = [i for i in fleet._issues([row]) if i["code"] == "hub_version_drift"]
+        self.assertEqual(len(drift), 1, drift)
+        self.assertEqual(drift[0]["severity"], "info")
+        self.assertEqual(drift[0]["subject"], "0.6.99")
+        self.assertIn(SUPPORTED_STUDIO_HUB_VERSION, drift[0]["message"])
+        self.assertIn("keeps working", drift[0]["message"])
+
+    def test_an_older_hub_is_reported_too(self) -> None:
+        row = _node_site()
+        row["version"] = "0.6.18"
+        row["hub_version_relation"] = "older"
+        drift = [i for i in fleet._issues([row]) if i["code"] == "hub_version_drift"]
+        self.assertEqual(len(drift), 1, drift)
+        self.assertIn("not read here", drift[0]["message"])
+
+    def test_a_matching_or_unstated_version_raises_nothing(self) -> None:
+        for relation in ("match", None, ""):
+            with self.subTest(relation=relation):
+                row = _node_site()
+                row["version"] = "0.6.60"
+                row["hub_version_relation"] = relation
+                codes = {i["code"] for i in fleet._issues([row])}
+                self.assertNotIn("hub_version_drift", codes, codes)
+
+    def test_drift_never_moves_the_headline_or_a_route(self) -> None:
+        # Not counted: `summary.issues` counts errors and warnings, and an
+        # informational note must not make a healthy fleet look wrong. Compared
+        # against the same fleet whose Hub matches, so the assertion is about the
+        # drift and about nothing else.
+        matched = _node_site()
+        matched["version"] = "0.6.60"
+        matched["hub_version_relation"] = "match"
+        ahead = _node_site()
+        ahead["version"] = "0.6.99"
+        ahead["hub_version_relation"] = "newer"
+        self.assertEqual(
+            fleet._summarise([ahead])["issues"], fleet._summarise([matched])["issues"]
+        )
+
+        # Not gated: a controller ahead of this build is still a candidate, and
+        # `route` still chooses it. Refusing here is the outage the owner ruled
+        # out — the Hub would have updated itself, and nobody would have touched
+        # the fleet.
+        ahead_location = _location(
+            "ahead", machines=[{"machine": "local", "reachable": True, "health": "up"}],
+            version="0.6.99", hub_version_relation="newer",
+            capacity={"eligible_physical_machine_slots_total": 1, "queue_depth": 0},
+        )
+        self.assertEqual(len(_route_with([ahead_location])), 1)
+        with patch.object(fleet, "snapshot",
+                          lambda allow_stale=False: {"locations": [ahead_location]}), \
+                patch.object(registry.models, "enabled_models",
+                             lambda modality: [(_definition("ahead"), _model_row())]):
+            definition, note = fleet.route(MODEL, MODALITY)
+        self.assertIsNotNone(definition, note)
+
+
 class SummaryCountTests(unittest.TestCase):
     """The Models tile is one fraction, so both halves must count the same thing.
 
