@@ -509,10 +509,17 @@ Moved to [docs/audit-batch-4-2026-09-20.md](docs/audit-batch-4-2026-09-20.md).
 ## Verification
 
 ```bash
-.venv/bin/python tests/test_e2e.py              # 521 checks, isolated mock upstream
+.venv/bin/python tests/test_e2e.py              # 546 checks, isolated mock upstream
 .venv/bin/python tests/test_fleet_standalone.py # 50 checks, real Hub(s) as locations
-.venv/bin/python tests/test_ui.py               # 128 checks, drives the real app
+.venv/bin/python tests/test_ui.py               # 130 checks + 5 Hub-dependent skips, drives the real app
 ```
+
+**These three are the release gate, not the whole suite.** Every other
+`tests/test_*.py` is a focused suite that runs in a second or two against its own
+temp profile, and one of them went red for three days because it was not in this
+list: run them all before a release (`for f in tests/test_*.py; do .venv/bin/python
+"$f"; done`, skipping `test_e2e.py`, `test_ui.py` and `test_fleet_standalone.py`
+for the quick pass).
 
 `test_e2e.py` is isolated (`GATEWAY_DATA`/`GATEWAY_APP_SUPPORT` to a temp dir,
 `GATEWAY_NO_MIGRATE=1`, random port, own key), cannot touch the live config;

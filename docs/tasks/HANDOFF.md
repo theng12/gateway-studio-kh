@@ -1,7 +1,7 @@
 # HANDOFF — gateway-kh
 
-**Read this first.** Written 2026-09-24 against **VERSION `0.2.21`**, release commit
-`987721e`, running build `987721e-202609240234`.
+**Read this first.** Written 2026-09-24 against **VERSION `0.2.22`**, release commit
+`3e254c4`, running build `3e254c4-202609241623`.
 If this file disagrees with the code, **the code wins — fix this file in the same change**.
 Every path below is inside the Git checkout `repository/` unless it says otherwise.
 `[MEASURED]` = observed in the session that wrote this; `[reason not recorded]` = the
@@ -11,10 +11,10 @@ project does not say why, and nobody should guess.
 
 | Thing | Value |
 |---|---|
-| Current release | **0.2.21** — `repository/VERSION`, one line, the only place to bump |
+| Current release | **0.2.22** — `repository/VERSION`, one line, the only place to bump |
 | Branch | `main` = `origin/main`, clean tree; remote `github.com/theng12/gateway-kh` |
-| Running build | `/Applications/gateway-kh.app`, port **8787**, stamp `987721e-202609240234` (`/health` and `…/Resources/gateway/BUILD`) |
-| Distribution | DMG in `repository/dist/` (`gateway-kh-0.2.21.dmg`), named by version alone |
+| Running build | `/Applications/gateway-kh.app`, port **8787**, stamp `3e254c4-202609241623` (`/health` and `…/Resources/gateway/BUILD`) |
+| Distribution | DMG in `repository/dist/` (`gateway-kh-0.2.22.dmg`), named by version alone |
 | SSD/setup kit | `repository/dist/setup-kit/` — "copy this whole folder to each SSD/Mac" |
 
 - **Versions are patch-only for now:** `0.2.1`, `0.2.2`, … up to `0.2.1000`. Increment the
@@ -128,6 +128,18 @@ Run everything from `repository/`. Python tooling is the checkout venv `.venv/bi
   upgrade path, or the next reader cannot tell a trade-off from an oversight.
 - **`finish_reason` must be a clean stop** (`length` is read as truncated), and generation
   artifact URLs stay relative on the API origin.
+- **A field nothing draws is a defect, and so is a fault repeated once per consequence.** The
+  node roster's per-node `detail` and each machine's `health` and `available_gb` were fetched,
+  published and read by nobody, so eight dead nodes were eight identical "offline" rows; the
+  same fleet produced **148 issues for nine conditions** because one dead machine was reported
+  as state + health + one row per studio + one per unreachable model. Before adding a field,
+  name its reader; before emitting an issue, ask whether it is a *different* fault or the same
+  one in another vocabulary.
+- **A user-visible sentence is a contract when a test reads it.** `78fee1d` rewrote the Fleet
+  page and lowercased "Could not discover" while moving "Retry failed" into `FleetTabs.swift`;
+  `tests/test_task4_native.py` went red on 2026-09-23 and nobody noticed because that suite is
+  not in the documented verification list. **Run every `tests/test_*.py`, not only the three in
+  the table below**, or a red gate hides for days.
 
 ## DO NOT TOUCH
 
@@ -146,6 +158,50 @@ Run everything from `repository/`. Python tooling is the checkout venv `.venv/bi
 
 ## OPEN / IN FLIGHT
 
+- **Shipped in 0.2.22 (`3e254c4`):** a fleet/node and Jobs-window audit. Six defects:
+  1. `machines_flat` now joins the **node roster on the node id** and carries `available_gb`,
+     so a dead node's health word (`no_hub` / `unreachable`) and the controller's own
+     "could not reach the node: …" sentence reach the Machines tab, and memory reads
+     "17.18 GB (7.14 GB free)" rather than an unlabelled total.
+  2. `fleet._issues_for` no longer repeats one fault: the health row folds into the offline
+     row, workers on an already-offline machine are one counted line instead of four, and
+     `worker_unreachable` on an offline machine is left to that machine. Measured live:
+     **148 issues → 19**, and the 7 that survive are a genuine `401` fault, not the offline
+     machines. `tests/test_fleet_routing.py::OneFaultOneRowTests`.
+  3. `catalog._publish_lock` writes `locked` / `lock_reason` / `availability` together. The
+     merge updated only the first two, so a model offered by three locations with one
+     answering published `locked: false` beside `availability: "unavailable"`.
+     `tests/test_audit_regressions.py::CatalogueMergeTests`.
+  4. `summary.models_available` counts a model once per location, like its denominator — the
+     tile read **"175/102 local models available"** (rows over models) and now reads 60/102.
+  5. The `78fee1d` tabbed-Fleet rewrite lowercased "Could not discover" and moved
+     "Retry failed" into `FleetTabs.swift`, leaving `tests/test_task4_native.py` red since
+     2026-09-23. **A user-visible sentence this file or a test quotes is a contract: change
+     the check in the same commit.**
+  6. **The 0.2.19 gap is closed.** `store._recover_interrupted` records the upstream attempt
+     (`{upstream_job_id, upstream_item_index, recorded_by: "gateway_restart"}`), a lane with
+     no discard route is **closed locally** (`HOLD_CLOSED`, with a recorded sentence saying
+     the provider was not told), and `api.recovery_action` is published per job so the Jobs
+     window draws `Discard uncertain attempt…` / `Close this hold…` / nothing. Six holds
+     from before this release are in the live library — three OpenAI `gpt-6-luna` (created
+     2026-09-24 00:35, four minutes before `8bd434d`) and three provider/network holds; all
+     six now publish `close_hold` `[MEASURED]`. `tests/test_studio_hub_contract.py::DiscardActionTests`,
+     `tests/test_job_recovery.py`, `tests/test_jobs_outputs.swift`.
+  Verification for the release: `test_e2e.py` **546/546**, `test_ui.py` **130 passed /
+  5 skipped** (the skips are Hub-dependent and Studio Hub is not running on this Mac),
+  `check_native.py jobs-recovery` passes against the installed app, and `/v1/models`
+  publishes **0** `locked`/`availability` disagreements `[MEASURED]`.
+- **Newly known, not ours to fix:** the node `vengthengs-mac-studio-hub` answers the
+  controller's voice-transcribe availability route with **`401 Unauthorized`** (7 catalogue
+  errors on `terranash-1100-m4-16-256`). That is a credential question between that
+  controller and that node's voice studio, not a gateway defect — the gateway now reports it
+  instead of burying it, and it is the only non-offline fleet fault left.
+- **Both controllers are up; all 8 of their nodes are off** (measured 2026-09-24 ~23:00:
+  TCP to every node address times out or refuses from this Mac too, so the report is
+  accurate). The Hub says `health: unreachable` for site `terranash-1100-…` and `no_hub` for
+  `terranash-1200-…`. Node `vengthengs-mac-studio-hub`'s own `detail` is an empty reason
+  (`"could not reach the node: "`) while site 1200's says "All connection attempts failed" —
+  a Hub-side wording gap, recorded here rather than worked around.
 - **Shipped in 0.2.21 (`987721e`):** `fleet._stable_identity` — a location is keyed by the
   controller's real `site_id`, or its per-machine `controller_id` when the Hub still answers the
   shared default `"local-site"`. Before this, adding a controller updated the previous one.
@@ -157,15 +213,12 @@ Run everything from `repository/`. Python tooling is the checkout venv `.venv/bi
   that publishes `supported_parameters` is always believed. `tests/test_chat_controls.py`.
 - **Shipped in 0.2.19 (`8bd434d`):** a definite provider `4xx` settles as a failure instead of a
   durable unknown-outcome hold, and a model that refuses `temperature` is retried once without it
-  (`params_dropped`). Covered by `tests/test_job_recovery.py` and `tests/test_chat_temperature.py`;
-  `test_e2e.py` 546/546 `[MEASURED]`. **Gap it exposed:** a *cloud* recovery hold carries no
-  `recovery_context`, so `discard-uncertain` refuses it (`RECOVERY_CONTEXT_MISSING`) and the UI has
-  no way to clear one — a job lost to a gateway restart mid-flight (the OpenRouter
-  `deepseek-v4-flash` hold) stays a hold until someone edits the database or adds that action.
+  (`params_dropped`). Covered by `tests/test_job_recovery.py` and `tests/test_chat_temperature.py`.
+  **The gap it exposed — a cloud hold with no `recovery_context` could never be cleared — is
+  closed in 0.2.22; see above.**
 - **Shipped in 0.2.18 (`9b7876a`):** the gateway-side **downgrade guard** (refuse/warn when a
   controller already holds a newer version) and the per-controller **`trusted_publisher`** display
-  in Fleet → Locations → Release. The full `tests/test_ui.py` release gate passed **135/135** on
-  this build `[MEASURED]`. The guard is proven against the contract-enforcing mock only.
+  in Fleet → Locations → Release. The guard is proven against the contract-enforcing mock only.
 - **Unproven on a real controller:** the release push is proven only against the **local** Hub
   on 0.6.50. The two configured remote controllers were **off** (`LOCATION_UNREACHABLE`,
   ConnectTimeout), so a real remote push and the no-trusted-key (409) path are **not** verified.
