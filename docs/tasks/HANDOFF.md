@@ -1,7 +1,7 @@
 # HANDOFF — gateway-kh
 
-**Read this first.** Written 2026-09-23 against **VERSION `0.2.20`**, release commit
-`66e8afe`, running build `66e8afe-202609231758`.
+**Read this first.** Written 2026-09-24 against **VERSION `0.2.21`**, release commit
+`987721e`, running build `987721e-202609240234`.
 If this file disagrees with the code, **the code wins — fix this file in the same change**.
 Every path below is inside the Git checkout `repository/` unless it says otherwise.
 `[MEASURED]` = observed in the session that wrote this; `[reason not recorded]` = the
@@ -11,10 +11,10 @@ project does not say why, and nobody should guess.
 
 | Thing | Value |
 |---|---|
-| Current release | **0.2.20** — `repository/VERSION`, one line, the only place to bump |
+| Current release | **0.2.21** — `repository/VERSION`, one line, the only place to bump |
 | Branch | `main` = `origin/main`, clean tree; remote `github.com/theng12/gateway-kh` |
-| Running build | `/Applications/gateway-kh.app`, port **8787**, stamp `66e8afe-202609231758` (`/health` and `…/Resources/gateway/BUILD`) |
-| Distribution | DMG in `repository/dist/` (`gateway-kh-0.2.20.dmg`), named by version alone |
+| Running build | `/Applications/gateway-kh.app`, port **8787**, stamp `987721e-202609240234` (`/health` and `…/Resources/gateway/BUILD`) |
+| Distribution | DMG in `repository/dist/` (`gateway-kh-0.2.21.dmg`), named by version alone |
 | SSD/setup kit | `repository/dist/setup-kit/` — "copy this whole folder to each SSD/Mac" |
 
 - **Versions are patch-only for now:** `0.2.1`, `0.2.2`, … up to `0.2.1000`. Increment the
@@ -105,6 +105,10 @@ Run everything from `repository/`. Python tooling is the checkout venv `.venv/bi
   fire would disable every model on a stale inventory. `inventoryAgeMs` is the honest number.
 - **Never identify a machine, model, location or batch by its label.** Ids are identities;
   labels are the owner's to change. A location's provider id derives from its controller id.
+- **A Hub's `site_id` is not unique until it is assigned one.** Studio Hub defaults it to the
+  constant `"local-site"` (`components/hub/backend/control_plane.py::defaults`), so matching a
+  new controller on it made the second "Add a location" overwrite the first. `fleet._stable_identity`
+  falls back to the per-machine `controller_id`; do the same anywhere a controller is keyed.
 - **A definite 4xx from any provider is its own refusal, never an unknown-outcome hold;**
   only a 5xx may have been accepted. The worker enforces this centrally on `BackendError.status`,
   so every adapter inherits it. A **connect timeout/refusal** is an unreachable location, not a
@@ -142,6 +146,10 @@ Run everything from `repository/`. Python tooling is the checkout venv `.venv/bi
 
 ## OPEN / IN FLIGHT
 
+- **Shipped in 0.2.21 (`987721e`):** `fleet._stable_identity` — a location is keyed by the
+  controller's real `site_id`, or its per-machine `controller_id` when the Hub still answers the
+  shared default `"local-site"`. Before this, adding a controller updated the previous one.
+  `tests/test_fleet_identity.py`.
 - **Shipped in 0.2.20 (`66e8afe`):** `catalog._DEFAULT_TEMPERATURE_ONLY` withholds the
   `temperature` control from default-only reasoning families **on official OpenAI only** — so
   Story Studio stops sending the `0.7` it sends whenever the control is offered. Scoped that way
