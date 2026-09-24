@@ -1,7 +1,7 @@
 # HANDOFF — gateway-kh
 
-**Read this first.** Written 2026-09-24 against **VERSION `0.2.22`**, release commit
-`3e254c4`, running build `3e254c4-202609241623`.
+**Read this first.** Written 2026-09-24 against **VERSION `0.2.23`**, release commit
+`e42be96`, running build `e42be96-202609241741`.
 If this file disagrees with the code, **the code wins — fix this file in the same change**.
 Every path below is inside the Git checkout `repository/` unless it says otherwise.
 `[MEASURED]` = observed in the session that wrote this; `[reason not recorded]` = the
@@ -11,11 +11,12 @@ project does not say why, and nobody should guess.
 
 | Thing | Value |
 |---|---|
-| Current release | **0.2.22** — `repository/VERSION`, one line, the only place to bump |
+| Current release | **0.2.23** — `repository/VERSION`, one line, the only place to bump |
+| Declared Studio Hub | **0.6.60** — `adapters.studio_hub.SUPPORTED_STUDIO_HUB_VERSION`, published on `/health`; a controller on another version is reported, never refused |
 | Branch | `main` = `origin/main`, clean tree; remote `github.com/theng12/gateway-kh` |
-| Running build | `/Applications/gateway-kh.app`, port **8787**, stamp `3e254c4-202609241623` (`/health` and `…/Resources/gateway/BUILD`) |
-| Distribution | DMG in `repository/dist/` (`gateway-kh-0.2.22.dmg`), named by version alone |
-| SSD/setup kit | `repository/dist/setup-kit/` — "copy this whole folder to each SSD/Mac"; current at **0.2.22**, and copied to all four `KH-STUDIO-*` drives 2026-09-24 |
+| Running build | `/Applications/gateway-kh.app`, port **8787**, stamp `e42be96-202609241741` (`/health` and `…/Resources/gateway/BUILD`) |
+| Distribution | DMG in `repository/dist/` (`gateway-kh-0.2.23.dmg`), named by version alone |
+| SSD/setup kit | `repository/dist/setup-kit/` — "copy this whole folder to each SSD/Mac"; current at **0.2.23**, copied to all four `KH-STUDIO-*` drives 2026-09-24 |
 
 - **Versions are patch-only for now:** `0.2.1`, `0.2.2`, … up to `0.2.1000`. Increment the
   third number by one per shipped change; never roll to `0.3.x`/`1.0.0` until the owner says so.
@@ -154,6 +155,16 @@ Run everything from `repository/`. Python tooling is the checkout venv `.venv/bi
   `tests/test_task4_native.py` went red on 2026-09-23 and nobody noticed because that suite is
   not in the documented verification list. **Run every `tests/test_*.py`, not only the three in
   the table below**, or a red gate hides for days.
+- **A version is declared, never a gate — and read what the far side states.** Two rules
+  bought together on 2026-09-24. (1) Studio Hub auto-updates itself, so a runtime check on its
+  version would turn *its* update into *this* fleet's outage; the gateway names the release it
+  targets (one constant), reports a drift as information, and keeps every gate a capability
+  question. (2) The same instinct in discovery: keying a Hub package to a modality by its
+  **engine name** made a new engine invisible until this repo was edited, while the Hub was
+  already stating `hub_modality` on every model. **When the far side states a fact, read it and
+  keep your own table as the fallback** — the table's entries were guesses about a name, the
+  stated field is the Hub's own answer. Anything left over is *reported by name*, because "it
+  has nothing" and "I did not understand it" must never be the same answer.
 
 ## DO NOT TOUCH
 
@@ -172,6 +183,43 @@ Run everything from `repository/`. Python tooling is the checkout venv `.venv/bi
 
 ## OPEN / IN FLIGHT
 
+- **Shipped in 0.2.23 (`e42be96`):** a declared Studio Hub version, and discovery that reads
+  what the Hub states. Owner's decisions, 2026-09-24: **report drift, keep working**;
+  **adopt whatever the gateway can already serve**.
+  1. `adapters.studio_hub.SUPPORTED_STUDIO_HUB_VERSION = "0.6.60"` is the one declaration.
+     `/health` publishes it as `studio_hub.supported_version`; `fleet._probe` publishes
+     `hub_version_relation` (`match` / `older` / `newer` / null) per controller; Fleet →
+     Locations shows it in the Hub column; drift is one **info** issue, so it never moves
+     `summary.issues`. **No gate anywhere** — routing, the catalogue and the worker ask
+     capability questions only, asserted by
+     `test_studio_hub_contract.HubVersionDriftTests` and
+     `test_fleet_routing.HubVersionReportTests`.
+  2. **Discovery reads the Hub's stated `hub_modality` per model**, with
+     `_HUB_ENGINE_MODALITY` only as the fallback. Before this, a package on an engine not in
+     that table was `continue`d in silence — so a model added on the Hub on a new engine (the
+     owner is adding an image model now; LLM and video are being researched) produced no row,
+     no count and no reason. A lane this build serves arrives with no gateway release; a lane
+     it cannot serve (video, chat) is discovered and **withheld**, listed with the reason; a
+     package nothing can place is reported by engine (`DiscoveryResult.skipped` → the model
+     cache → `/admin/api/providers` and `/admin/api/providers/{id}/models`, drawn as an
+     "unrecognised engine" badge). Live: 35 models per controller, unchanged, **30 placed by
+     the Hub's statement** and 5 by the engine fallback `[MEASURED]`.
+  `test_e2e.py` **550/550**, console suites **35/35**, every focused suite green.
+- **The first true thing the declaration said:** both controllers run Studio Hub **0.6.54**
+  while this Mac and all four drives ship **0.6.60**, so both now read `0.6.54 · older`
+  `[MEASURED 2026-09-24]`. That is a report, not a fault — the controllers keep taking work.
+  Bringing them to 0.6.60 is `Studio Hub KH/1 - Install the app.command` on each controller.
+- **Newly known, not ours to fix:** the node `vengthengs-mac-studio-hub` answers the
+  controller's voice-transcribe availability route with **`401 Unauthorized`** (7 catalogue
+  errors on `terranash-1100-m4-16-256`). That is a credential question between that
+  controller and that node's voice studio, not a gateway defect — the gateway now reports it
+  instead of burying it, and it is the only non-offline fleet fault left.
+- **Both controllers are up; all 8 of their nodes are off** (measured 2026-09-24 ~23:00: TCP
+  to every node address times out or refuses from this Mac too, so the report is accurate).
+  The Hub says `health: unreachable` for site `terranash-1100-…` and `no_hub` for
+  `terranash-1200-…`. Node `vengthengs-mac-studio-hub`'s own `detail` is an empty reason
+  (`"could not reach the node: "`) while site 1200's says "All connection attempts failed" —
+  a Hub-side wording gap, recorded here rather than worked around.
 - **Shipped in 0.2.22 (`3e254c4`):** a fleet/node and Jobs-window audit. Six defects:
   1. `machines_flat` now joins the **node roster on the node id** and carries `available_gb`,
      so a dead node's health word (`no_hub` / `unreachable`) and the controller's own
