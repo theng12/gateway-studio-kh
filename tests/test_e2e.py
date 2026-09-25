@@ -804,11 +804,24 @@ def main() -> int:
             model_id = row["id"]
             r = req(client, "POST", "/v1/chat/responses",
                     json={"model_id": model_id, "input": [{"role": "user", "content": "hello"}]},
-                    headers={"Idempotency-Key": f"e2e-chat-{int(time.time())}"})
+                    headers={"Idempotency-Key": f"e2e-chat-{int(time.time())}",
+                             # Who asked. Asked live on 2026-09-25 and unanswerable:
+                             # forty-one jobs failed in a minute and nothing recorded
+                             # whether Story Studio or a script had sent them.
+                             "X-Caller": "end-to-end-suite"})
             check("chat submit returns 202", r.status_code == 202, f"got {r.status_code}")
             job = r.json()
             check("chat job carries balanced zero settlement",
                   (job["reserved_credits"], job["settled_credits"], job["released_credits"]) == (0, 0, 0))
+            # **The whole chain, on the surface the Jobs window actually reads.** A
+            # first cut stored the caller and published it nowhere: the store had it,
+            # `/admin/api/jobs` re-shapes every row by hand and left it out, so the
+            # field existed and no reader could see it.
+            listed = (req(client, "GET", "/admin/api/jobs?limit=5").json().get("jobs") or [])
+            mine = next((row for row in listed if row.get("id") == job["id"]), None)
+            check("the job the caller asked for is in the admin list", mine is not None)
+            check("and it says who asked", (mine or {}).get("caller") == "end-to-end-suite",
+                  repr((mine or {}).get("caller")))
             done = poll(client, f"/v1/chat/responses/{job['id']}")
             check("chat job succeeded", done["state"] == "succeeded", done.get("failure_reason", ""))
             check("chat output_text returned", "mock reply" in (done.get("output_text") or ""),

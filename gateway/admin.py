@@ -1500,6 +1500,11 @@ def list_jobs(
                 "created_at": created,
                 "updated_at": updated,
                 "duration_s": duration,
+                # **Who asked.** Stored on every job and, until this line, published
+                # by nothing — the store had it and the surface the Jobs window
+                # reads did not, which is the same defect as a control wired to
+                # nothing. `None` means the request said nothing about itself.
+                "caller": job.get("caller"),
                 "has_artifact": bool(job.get("asset_path")),
                 "error_code": job.get("error_code"),
                 "error_detail": job.get("error_detail"),
