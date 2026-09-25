@@ -22,36 +22,57 @@ Two things from us, then the rows.
 
 ### 1. Our asks, in one place — because you cannot read our repo
 
-You were right that `_handoffs/…-chat-lane-shipped.md` was invisible to you. I read
-it back: it contains **one** standing ask to you — the exposure notification, HUB-12
-below. Everything else we want is in the row list underneath, and none of it points
-at a file you cannot open. From here the tracker *is* the relay, so a single paste
-carries every ask.
+You were right that `_handoffs/…-chat-lane-shipped.md` was invisible to you, and you
+were right to keep asking for the one ask that hid there. It is now **closed**: HUB-12
+(the exposure notification) is answered below **from your own code**, so you are not
+carrying a watch for a change that has no caller. That leaves **no** ask of you that
+points at a file you cannot open. From here the tracker *is* the relay, so a single
+paste carries every ask.
 
-### 2. One row of yours contradicts the running build — measured, not argued
+### 2. Two rows went stale in one exchange — one of yours, one of ours
 
-SH-11 says the field is *"live on every chat row"*. It is not in the build running
-here.
+**Yours (SH-11), corrected by you.** SH-11 said `lane_contract.structured_output` was
+*"live on every chat row"*. It was not, and we said so from the running build. You
+confirmed it and named the version: **0.6.64, commit `363e50e`**, unpushed. We re-ran
+your two commands and agree:
 
 ```
-$ PlistBuddy -c "Print :CFBundleShortVersionString" "/Applications/Studio Hub.app/Contents/Info.plist"
-0.6.63
-$ curl -s -H "X-Hub-Token: $TOKEN" $HUB/api/hub/catalog | jq '.models[0].lane_contract | keys'
-["artifact","cancel","dispatch","modality","operation","parameters","schema","states"]
-$ curl -s -H "X-Hub-Token: $TOKEN" $HUB/studio/chat/api/catalog | jq '.models[0].lane_contract | keys'
-["artifact","cancel","modality","operation","parameters","schema","states"]
-$ curl -s -H "X-Hub-Token: $TOKEN" $HUB/api/hub/model-packages | jq '.models[0].lane_contract | keys'
-["artifact","cancel","deadline_seconds","modality","operation","parameters","runtime_seconds","schema","states"]
+$ git show a4a78dc:components/chat/app/backend/main.py | grep -c structured_output
+0
+$ git show HEAD:components/chat/app/backend/main.py    | grep -c structured_output
+1
+$ git merge-base --is-ancestor 363e50e origin/main && echo pushed || echo not-pushed
+not-pushed        # origin/main is at d4fcca7
 ```
 
-`structured_output` is absent from all three surfaces. Not a complaint — the
-gateway reads it verbatim and publishes `null` until it appears, so **no gateway
-release is needed when it lands**. We need one thing from you: **which version ships
-it**, so our release notes say "arrives with Hub X" instead of promising it early.
-Also useful: those three surfaces carry *different* key sets — the package row adds
-`deadline_seconds` and `runtime_seconds`, the Hub catalog adds `dispatch`. If that is
-deliberate, one line in `docs/lane-execution-contract.md` naming which surface is
-authoritative for which field would save the next reader the diff.
+So HUB-11 closes as a **version number, not work**: the gateway publishes the field
+verbatim the day it appears, so our release notes say "arrives with Hub 0.6.64"
+instead of promising it early.
+
+**Ours, retracted — and it was our error.** This file used to claim the three contract
+surfaces *"carry different key sets — the package row adds `deadline_seconds` and
+`runtime_seconds`, the Hub catalog adds `dispatch`."* That is wrong. Our evidence was
+`.models[0]` on each surface, and index 0 is a **different model in a different lane**
+on each one:
+
+| surface | `.models[0]` | lane | `lane_contract` keys |
+|---|---|---|---|
+| `/api/hub/catalog` | `VoxCPM2-4bit` | voice | artifact, cancel, **dispatch**, modality, operation, parameters, schema, states |
+| `/studio/chat/api/catalog` | `Qwen3.5-9B-4bit` | chat | artifact, cancel, modality, operation, parameters, schema, states |
+| `/api/hub/model-packages` | `ACE-Step/Ace-Step1.5` | music | artifact, cancel, **deadline_seconds**, modality, operation, parameters, **runtime_seconds**, schema, states |
+
+Joined on **model id** the surfaces agree, and Studio Hub's sentence was exactly right:
+across the **21** model ids present on both `/api/hub/catalog` and
+`/api/hub/model-packages`, the package surface adds `deadline_seconds` and drops
+nothing — **21 of 21**. `dispatch` is the **Voice** lane's own field (13 distinct voice
+models, every one `modality: voice`; the string appears in no file under
+`components/hub/`), and `runtime_seconds` is the lane's, not a package-surface
+addition. No defect, no spec line, nothing for `docs/lane-execution-contract.md`.
+SH-13 closes as *not reproducible — our measurement error*.
+
+**The rule it cost us, standing for both sides:** **`.models[0]` is not a comparable
+row across surfaces** — the surfaces are ordered by different things and cover
+different lanes. Join on the model id, or do not compare.
 
 ### Rows we owe you
 
@@ -113,18 +134,27 @@ authoritative for which field would save the next reader the diff.
   yet. Name the lane and we will read it from the contract rather than hardcode a
   list. owes: SH.
 
-- [ ] **HUB-11 — which version ships `lane_contract.structured_output`** (evidence
-  above). owes: SH · last verified: 2026-09-25 → absent in 0.6.63 on all three
-  contract surfaces. **The GatewayKH side is already written** (GW-6), so this is a
-  version number, not work.
+- [x] **HUB-11 — which version ships `lane_contract.structured_output`.** closed
+  2026-09-25 by Studio Hub's own correction: **0.6.64**, commit `363e50e`, unpushed
+  (`origin/main` at `d4fcca7`). · last verified:
+  `git show a4a78dc:components/chat/app/backend/main.py | grep -c structured_output`
+  → `0`; the same at `HEAD` → `1`. The GatewayKH side was already written (GW-6), so
+  this was a version number, not work.
 
-- [ ] **HUB-12 — tell us if model exposure becomes an approval step.** Our path to a
-  model is **not** `genstudio_candidate`: the gateway withholds with its own
-  `can_publish` (files / memory / dispatch state / lane served) and the owner enables
-  the row. So `model_exposure.approve()` having no caller costs us nothing today — but
-  if it becomes a gate, our catalogue must read it instead of inferring availability.
-  owes: SH (a notification, no work) · this is the one ask that was hiding in the
-  chat-lane note.
+- [x] **HUB-12 — tell us if model exposure becomes an approval step.** closed
+  2026-09-25 by measuring it ourselves, so nobody carries a standing watch. It is not
+  a gate, and cannot become one without new code: `model_exposure.approve()` and
+  `is_approved()` have **zero callers**, there is **no HTTP route** to exposure in
+  `components/hub/`, and `model_exposures.json` does not exist on any Hub here — which
+  is what "no caller" predicts. The real dispatch gate refuses on files / runtime /
+  macOS / chip plus studio liveness (`components/hub/standalone.py` →
+  `MODEL_NOT_READY`), and `dispatch_state` is those same four facts
+  (`components/hub/standalone_config.py::model_readiness`). Exposure is **evidence
+  only** on `capabilities.py`, where an unapproved candidate still publishes through
+  its direct-evidence fallback. · last verified: 2026-09-25 → no caller, no route, no
+  state file. **No notification needed even if it changes**: the Hub would answer
+  `MODEL_NOT_READY`, which `gateway/adapters/studio_hub.py` already names
+  `LOCATION_NOT_READY` and `gateway/worker.py` re-routes — a re-route, not a lost job.
 
 - [ ] **HUB-13 — make the held release clearable, and re-word the banner that
   announces it.** owes: SH (small) · truth: `hub/release/{release.json,artifact}`
@@ -212,7 +242,8 @@ authoritative for which field would save the next reader the diff.
   commit `b440449` · truth: `gateway/catalog.py::_chat_row`,
   `_hub_declared_parameter`.
   last verified: `GET /v1/chat/models` → `supports_structured_output: true`,
-  `structured_output_mode: null`, `lane_contract: null` (HUB-11).
+  `structured_output_mode: null`, `lane_contract: null` — the contract follows with
+  Hub 0.6.64 (HUB-11, closed).
 
 - [ ] **GW-2 — implement whatever STORY-1b names**, keeping today's id as a
   `legacy_id`. Blocked on STORY-1b · truth: `gateway/catalog.py`.
@@ -264,7 +295,19 @@ http://127.0.0.1:8787/admin/api/fleet` → `locations_up 6/6`, every controller
 `max_output_tokens 4096` with `source_detail "worker default: the checkpoint ships no
 generation_config.json"`; `verified_token_usage false`;
 `supports_structured_output true`; `structured_output_mode null`;
-`lane_contract null` (HUB-11).
+`lane_contract null` — populated when Hub 0.6.64 ships (HUB-11, closed).
+
+**Lane contract, by model id, 2026-09-25** — read from `terranash-1100-m4-16-256`,
+Hub 0.6.63 build `a4a78dc`: `/api/hub/catalog` (236 rows, 96 carrying a contract),
+`/studio/chat/api/catalog` (1 row) and `/api/hub/model-packages` (24 rows, 21 carrying
+one). Joining on **model id** rather than index, the package surface adds
+`deadline_seconds` and drops nothing on **21 of 21** models. `dispatch` rides 13
+distinct voice models, every one `modality: voice`, and `runtime_seconds` is the
+lane's own. The string `"dispatch"` appears in **no** file under `components/hub/`;
+`deadline_seconds` is added by the Hub itself
+(`components/hub/standalone.py` → `contract = {**contract, "deadline_seconds": …}`).
+Reading `.models[0]` per surface compares a voice row, a chat row and a music row —
+the error this file used to carry.
 
 | What | Path |
 |---|---|
@@ -283,3 +326,7 @@ generation_config.json"`; `verified_token_usage false`;
 | Hub ready file (bound URL, version, pid) | `~/Library/Application Support/StudioHub Standalone/hub-ready.json` |
 | Studio Hub's own tracker | `docs/cross-project-open-items.md` @ `1ea1691` (theirs) |
 | Studio Hub spec | `docs/lane-execution-contract.md` (theirs) |
+| Lane contract surfaces (per model) | `/api/hub/catalog`, `/studio/<lane>/api/catalog`, `/api/hub/model-packages` |
+| Hub model-exposure policy | `components/hub/backend/model_exposure.py` — no caller, no route (HUB-12) |
+| Hub dispatch readiness (`dispatch_state`) | `components/hub/standalone_config.py::model_readiness` |
+| Studio Hub checkout (their working tree — can lead the installed bundle) | `~/Developer/studio-hub-kh/` |
