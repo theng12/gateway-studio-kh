@@ -1051,14 +1051,24 @@ def _chat_body(request: BackendRequest) -> dict[str, Any]:
     # `failed` on `response_format.type: must be json_object or json_schema;
     # received str 'text'`, and this allowlist carried `"text"`.
     #
-    # Dropping `text` is a faithful translation rather than a silent loss, and the
-    # contract is what says so: there is no `parameters` block on this lane, so
-    # `response_format` is not an operator default, and `enforcement:
-    # prompt_validate_repair` requests a format **only when the caller names one**.
-    # Omitted therefore means unstructured here in exactly the way `text` does —
-    # which is this adapter's own rule: send only the parameters the lane honours,
+    # `text` is OpenAI's spelling for "unstructured, the default", and dropping it
+    # is equivalent on this lane **as it stands today**: the chat worker resolves
+    # `body.get("response_format", defaults.get("response_format"))`, `response_format`
+    # carries no `default` on the lane's parameter surface, and nothing has stored
+    # one — so omitted means no format is requested, which is what `text` means.
+    # That is this adapter's own rule: send only the parameters the lane honours,
     # because "sending one would be a promise made to the caller that the answer
     # does not keep".
+    #
+    # **The caveat, recorded rather than discovered later.** `response_format` *is*
+    # on that parameter surface, so an operator can store one (Models, per model per
+    # machine). If one is ever stored, omitting stops meaning "plain text" — the
+    # caller's explicit `text` would silently become that Mac's default — and the
+    # honest behaviour then is to **refuse** it, because the lane's validation
+    # accepts only `json_object`/`json_schema` and has no way to ask for plain text
+    # against a stored default. The check to add is "does this row publish a
+    # `response_format` default"; it is not needed while none is set, and this note
+    # is what makes it cheap when one is.
     if isinstance(response_format, dict) and response_format.get("type") in {
         "json_object", "json_schema",
     }:
