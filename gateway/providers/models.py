@@ -214,31 +214,43 @@ class ModelInventory:
                 output.append(item)
         return output
 
-    def can_publish(self, definition: Any, model: dict[str, Any]) -> bool:
-        """Whether this model could ever be offered to Story Studio.
+    def withhold_reason(self, definition: Any, model: dict[str, Any]) -> str | None:
+        """Why this model cannot be offered, or `None` when it can.
 
-        **One rule, two readers.** The catalogue asks it to decide what to publish,
-        and the console asks it to decide what to list — because a model that can
-        never run should not be shown as something to tick either. They were two
-        separate sets of conditions, and the console's was the weaker one, so it
-        advertised rows the catalogue would silently drop.
+        **One function, two answers.** `can_publish` is exactly
+        `withhold_reason(...) is None`, and the console prints what this returns.
+        They are not two readers of one rule by convention — they are one function,
+        because a separate "why?" explainer is free to disagree with the chooser the
+        first time either gains a step. That is how the console came to advertise
+        rows the catalogue silently dropped in the first place.
 
-        Three questions, finest last:
+        The sentence matters as much as the boolean. Measured 2026-09-25: eleven
+        enabled models on the local location were withheld, every one of them
+        **correctly** — nine because the Hub said `files_state: not_installed`, two
+        because the Hub said `catalogued: false` (a codec and a tokenizer, not
+        models) — and the console said *"this model cannot be offered"* eleven times.
+        The owner asked why, and the answer was already in the row.
+
+        Four questions, finest last:
 
           1. does the provider **declare** the modality at all;
           2. does its adapter **serve** that modality (a kind having an adapter is
              not the same claim — Google declares six and serves four);
           3. is there a **per-model** reason it cannot answer (OpenAI's newer
              transcription models cannot return the SRT this gateway must send;
-             Lyria's realtime model has no one-shot call).
+             Lyria's realtime model has no one-shot call);
+          4. does the Hub itself say the model is not runnable **there**.
         """
         from ..adapters import serves
 
         modality = str(model.get("modality") or "")
         if modality not in definition.modalities:
-            return False
+            return f"{definition.display_name} does not offer {modality or 'this modality'}"
         if not serves(definition, modality):
-            return False
+            return (
+                f"this gateway has no {modality} lane for {definition.display_name} — "
+                "it declares the modality but nothing here serves it"
+            )
         model_id = str(model.get("model_id") or "")
         if modality == "chat" and model_id.endswith(":batch"):
             base = self.credentials.resolved(definition.id).get("base_url") or definition.base_url
@@ -247,20 +259,20 @@ class ModelInventory:
             try:
                 host = urlsplit(base).hostname
             except ValueError:
-                return False
+                return "this model's batch route has no usable host"
             if host == "openrouter.ai":
-                return False
+                return "a batch-only route: half price, and it answers 404 to a normal request"
         if modality == "transcription" and not transcription_can_serve(model_id):
-            return False
+            return "this model cannot return the SRT this gateway must ask for"
         if modality == "music" and not music_can_serve(model_id):
-            return False
+            return "this model has no one-shot call this gateway can make"
         # A chat catalogue is not a list of chat models. NVIDIA NIM answers every
         # one of its 82 rows with only `{id, owned_by}`, so its embeddings, its
         # safety classifiers, its reward model, its OCR parsers and its translators
         # were all offered as chat and failed on use. This is the third instance of
         # the shape; see `chat_can_serve`.
         if modality == "chat" and not chat_can_serve(model_id):
-            return False
+            return "this id is not a chat model — the provider lists it beside its chat rows"
         # An image endpoint whose own classification requires a reference image,
         # on a kind whose image body cannot send one. fal's queue accepts the
         # body and validates at the worker, so this reads as a job that
@@ -272,7 +284,7 @@ class ModelInventory:
             if (image_reference_state(definition.kind, model_id, model.get("raw") or {})
                     is True
                     and definition.kind not in IMAGE_REFERENCE_CAPABLE_KINDS):
-                return False
+                return "this endpoint requires a reference image, and this lane cannot send one"
 
         # Two things a location's package list cannot tell you, which the Hub's
         # own catalogue can — both **read**, and only when it states them, so an
@@ -295,13 +307,31 @@ class ModelInventory:
         #    nothing.
         raw = model.get("raw") or {}
         if raw.get("catalogued") is False:
-            return False
+            return (
+                "the Hub does not catalogue this as a model — it is a companion its "
+                "models load, such as a codec or a tokenizer"
+            )
         if raw.get("memory_eligible") is False:
-            return False
+            return "this Mac does not have the memory the Hub says this model needs"
         dispatch_state = raw.get("dispatch_state")
         if dispatch_state is not None and dispatch_state != "eligible":
-            return False
-        return True
+            files = str(raw.get("files_state") or "").strip()
+            if files == "not_installed":
+                return "the model files are not installed on this Mac"
+            return f"the Hub reports it not ready to dispatch ({dispatch_state})"
+        return None
+
+    def can_publish(self, definition: Any, model: dict[str, Any]) -> bool:
+        """Whether this model could ever be offered to Story Studio.
+
+        **One rule, two readers** — and now one function. The catalogue asks it to
+        decide what to publish, and the console asks it to decide what to list,
+        because a model that can never run should not be shown as something to tick
+        either. They were two separate sets of conditions and the console's was the
+        weaker one, so it advertised rows the catalogue would silently drop; the
+        console now prints `withhold_reason`, so the two cannot come apart again.
+        """
+        return self.withhold_reason(definition, model) is None
 
     def enabled_models(self, modality: str) -> list[tuple[ProviderDefinition, dict[str, Any]]]:
         """Every enabled model of a modality across every enabled provider.

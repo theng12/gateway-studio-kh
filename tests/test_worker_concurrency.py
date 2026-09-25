@@ -399,5 +399,88 @@ class ConcurrencySettingsTest(unittest.TestCase):
         self.assertIsNone(rows["other"]["stated"], "an unset row must read as unset, not as 1")
 
 
+
+
+class TheReasonAndTheVerdictCannotPartTest(unittest.TestCase):
+    """`can_publish` is `withhold_reason(...) is None`, by construction.
+
+    Measured 2026-09-25: eleven enabled models on the local location were withheld,
+    every one of them correctly — nine with `files_state: not_installed`, two the
+    Hub does not catalogue as models at all (a codec and a tokenizer) — and the
+    console said "this model cannot be offered" eleven times. The owner asked why,
+    and the answer was already in the row.
+    """
+
+    def _inventory(self):
+        from gateway.providers.credentials import CredentialStore
+        from gateway.providers.models import ModelInventory
+
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name)
+        return ModelInventory(
+            CredentialStore(path=root / "credentials.json"),
+            path=root / "models-cache.json",
+        )
+
+    def _definition(self):
+        # A real definition rather than a hand-built one: `serves()` reads the
+        # adapter registry, so a fabricated provider would answer a question this
+        # gateway never actually asks.
+        from gateway.providers import registry
+
+        definition = registry.definition("studio-hub-local")
+        self.assertIsNotNone(definition, "the local location must stay a known provider")
+        return definition
+
+    def test_a_hub_row_that_is_not_ready_says_which_gate_held_it(self) -> None:
+        inventory = self._inventory()
+        definition = self._definition()
+        cases = [
+            ({"dispatch_state": "ineligible", "files_state": "not_installed"},
+             "not installed"),
+            ({"dispatch_state": "ineligible", "files_state": "files_verified"},
+             "not ready to dispatch"),
+            ({"catalogued": False}, "codec or a tokenizer"),
+            ({"memory_eligible": False}, "memory"),
+        ]
+        for raw, expected in cases:
+            model = {"model_id": "m", "modality": "image", "raw": raw}
+            reason = inventory.withhold_reason(definition, model)
+            self.assertIsNotNone(reason, f"{raw} was allowed through")
+            self.assertIn(expected, reason, f"{raw} gave an unhelpful sentence: {reason!r}")
+            self.assertFalse(inventory.can_publish(definition, model))
+
+    def test_a_ready_model_is_allowed_and_gives_no_reason(self) -> None:
+        inventory = self._inventory()
+        definition = self._definition()
+        model = {
+            "model_id": "m", "modality": "image",
+            "raw": {"dispatch_state": "eligible", "files_state": "files_verified"},
+        }
+        self.assertIsNone(inventory.withhold_reason(definition, model))
+        self.assertTrue(inventory.can_publish(definition, model))
+        # Absence stays unverified: a Hub that does not publish these withholds
+        # nothing, which is the rule the whole check is built on.
+        bare = {"model_id": "m", "modality": "image", "raw": {}}
+        self.assertIsNone(inventory.withhold_reason(definition, bare))
+        self.assertTrue(inventory.can_publish(definition, bare))
+
+    def test_the_two_answers_agree_for_every_shape(self) -> None:
+        # The invariant: one function, two answers. A separate "why?" reader is
+        # free to disagree with the chooser the first time either gains a step.
+        inventory = self._inventory()
+        definition = self._definition()
+        for modality in ("image", "chat", "video", "music"):
+            for raw in ({}, {"catalogued": False}, {"memory_eligible": False},
+                        {"dispatch_state": "ineligible"}, {"dispatch_state": "eligible"}):
+                model = {"model_id": "m", "modality": modality, "raw": raw}
+                self.assertEqual(
+                    inventory.can_publish(definition, model),
+                    inventory.withhold_reason(definition, model) is None,
+                    f"{modality} / {raw} disagreed",
+                )
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

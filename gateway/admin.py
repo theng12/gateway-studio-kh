@@ -264,18 +264,19 @@ def provider_models(provider_id: str) -> Any:
         # model in one this build has no lane for is discovered and withheld —
         # and a tick box that changes nothing, with no sentence beside it, is the
         # "control that does nothing" the console is supposed to have stopped
-        # shipping. `support_status` is the one place that sentence is written.
+        # shipping. `withhold_reason` is that sentence, and it is the same function
+        # `can_publish` is derived from, so the reason and the verdict cannot part.
         "models": [
             {
                 **model,
                 "publishable": registry.models.can_publish(definition, model),
-                "withheld_reason": (
-                    None if registry.models.can_publish(definition, model)
-                    else (
-                        support_status(definition, str(model.get("modality") or ""))[1]
-                        or "this model cannot be offered"
-                    )
-                ),
+                # **The reason, from the same function that decides.** It used to
+                # fall back to a lane-level sentence and then to a flat "this model
+                # cannot be offered", which printed eleven times on this Mac for
+                # eleven correctly-withheld models — nine with no files installed,
+                # two that are a codec and a tokenizer rather than models. The owner
+                # asked why, and the answer was already in the row.
+                "withheld_reason": registry.models.withhold_reason(definition, model),
             }
             for model in rows
         ],

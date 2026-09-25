@@ -774,12 +774,23 @@ def main() -> int:
             # And a stated image-to-image endpoint on a lane that cannot send an
             # image is withheld, because fal's queue accepts the body and only
             # fails at the worker — the `:batch` shape.
+            from gateway.providers.credentials import CredentialStore as _Credentials
             from gateway.providers.models import ModelInventory as _Inventory
+            # An inventory, **not** the bare class. This used to call
+            # `_Inventory.can_publish(None, definition, model)` under the note that
+            # "`can_publish` reads nothing off `self`" — which stopped being true
+            # when the reason and the verdict became one function: `withhold_reason`
+            # reads the credential store for the batch-route branch. That branch is
+            # not reached from an image row, which is the only reason the unbound
+            # call ever worked. Ask it the way the gateway asks it.
+            _inventory = _Inventory(
+                _Credentials(path=tmp / "credentials.json"),
+                path=tmp / "models-cache.json",
+            )
+
             def _can_publish(provider_id: str, model_id: str) -> bool:
-                # `can_publish` reads nothing off `self` — it is a pure rule over
-                # (definition, model) — so the isolated test can ask it directly.
-                return _Inventory.can_publish(
-                    None, _P_img[provider_id],
+                return _inventory.can_publish(
+                    _P_img[provider_id],
                     {"model_id": model_id, "modality": "image", "raw": {}})
 
             check("an image-to-image row on a lane that cannot send an image is not offered",
