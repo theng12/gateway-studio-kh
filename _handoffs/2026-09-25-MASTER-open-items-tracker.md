@@ -310,6 +310,29 @@ carefully.
   "Nothing is listening on that address" without ever naming the address. Fixed in
   0.2.29 (`menubar/FleetTabs.swift`): the cell now shows the address and the reason.
 
+- [ ] **HUB-17 — audio is placed on the *biggest* machines first, which spends the
+  machines a Z-Image job needs.** owes: SH (a policy answer, no work until decided) ·
+  truth: `components/hub/backend/broker.py::_placement_key` and its two keys.
+  last verified: 2026-09-25, read from the source. The rule is explicit and
+  deliberate — *"image and subtitle use the small Macs and leave the 16 GB+ machines
+  for audio"* — and it is right for the case it was written for. Two keys:
+  `_flexible_placement_key` (**smallest capable first**) for image and subtitle, and
+  `_audio_placement_key` (**high-memory first**) for anything whose artifact class is
+  audio or video, plus a chat/transcription model publishing a tier ≥16 GB (the 9B
+  Chat model does). Both are *preferences, never filters* — the model's own memory
+  floor already excludes a machine that cannot run it.
+  **So the owner's own example splits, and only half goes his way.** A FLUX.2 Klein
+  render goes to the smallest Mac that fits, leaving the 16 GB+ machine free — exactly
+  what he wants. A **Qwen TTS** job goes to the *biggest* Mac first, so it will take
+  the machine a Z-Image job needs, and an 8 GB-capable TTS model has no need of it.
+  His stated priority is the opposite: *reserve the machines only a big job can use*.
+  Ask: is "audio belongs on the high-memory machines" still the rule on a fleet whose
+  scarce machines are the big ones? If the placement followed **capability** rather
+  than artifact class, audio would land small-first wherever the model fits and the
+  16 GB+ Macs would stay free for Z-Image. No code needed until the owner and Studio
+  Hub agree which rule wins; recorded because his test will show it and the answer
+  should not be rediscovered from a queue.
+
 ### Rows you are waiting on us for
 
 - [x] **SH-10 — `_handoffs/2026-09-25-gateway-chat-lane-shipped.md` has never been read
