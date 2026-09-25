@@ -1,7 +1,7 @@
 # HANDOFF — gateway-kh
 
-**Read this first.** Written 2026-09-24 against **VERSION `0.2.23`**, release commit
-`e42be96`, running build `e42be96-202609241741`.
+**Read this first.** Written 2026-09-25 against **VERSION `0.2.24`**, release commit
+`18408cc`, running build `18408cc-202609250205`.
 If this file disagrees with the code, **the code wins — fix this file in the same change**.
 Every path below is inside the Git checkout `repository/` unless it says otherwise.
 `[MEASURED]` = observed in the session that wrote this; `[reason not recorded]` = the
@@ -11,12 +11,12 @@ project does not say why, and nobody should guess.
 
 | Thing | Value |
 |---|---|
-| Current release | **0.2.23** — `repository/VERSION`, one line, the only place to bump |
+| Current release | **0.2.24** — `repository/VERSION`, one line, the only place to bump |
 | Declared Studio Hub | **0.6.60** — `adapters.studio_hub.SUPPORTED_STUDIO_HUB_VERSION`, published on `/health`; a controller on another version is reported, never refused |
 | Branch | `main` = `origin/main`, clean tree; remote `github.com/theng12/gateway-kh` |
-| Running build | `/Applications/gateway-kh.app`, port **8787**, stamp `e42be96-202609241741` (`/health` and `…/Resources/gateway/BUILD`) |
-| Distribution | DMG in `repository/dist/` (`gateway-kh-0.2.23.dmg`), named by version alone |
-| SSD/setup kit | `repository/dist/setup-kit/` — "copy this whole folder to each SSD/Mac"; current at **0.2.23**, copied to all four `KH-STUDIO-*` drives 2026-09-24 |
+| Running build | `/Applications/gateway-kh.app`, port **8787**, stamp `18408cc-202609250205` (`/health` and `…/Resources/gateway/BUILD`) |
+| Distribution | DMG in `repository/dist/` (`gateway-kh-0.2.24.dmg`), named by version alone |
+| SSD/setup kit | `repository/dist/setup-kit/` — "copy this whole folder to each SSD/Mac"; current at **0.2.24**, copied to all four `KH-STUDIO-*` drives 2026-09-25 |
 
 - **Versions are patch-only for now:** `0.2.1`, `0.2.2`, … up to `0.2.1000`. Increment the
   third number by one per shipped change; never roll to `0.3.x`/`1.0.0` until the owner says so.
@@ -183,6 +183,65 @@ Run everything from `repository/`. Python tooling is the checkout venv `.venv/bi
 
 ## OPEN / IN FLIGHT
 
+- **Shipped in 0.2.24 (`18408cc`):** the lane contract Studio Hub 0.6.61 published
+  (`f20fd1a`, spec `docs/lane-execution-contract.md`) is read, and the one thing it
+  does not yet give us is reported back in
+  `_handoffs/2026-09-25-gateway-lane-contract-reply.md`.
+  1. **Three readers place a model, strongest first** — the package row's own
+     `modality` (0.6.61; present whenever the engine is registered, independent of
+     the best-effort catalogue read), the catalogue's `hub_modality`, then
+     `_HUB_ENGINE_MODALITY` in `providers/discovery.py`. Which reader placed the row
+     is published as `raw.modality_source` (`package` / `stated` / `engine`), and a
+     package the Hub itself refuses to place is reported **in the Hub's own words**
+     — the sentence naming `_ENGINE_ROUTE`.
+  2. **`lane_contract` is carried verbatim** on the model's cached row, and two
+     fields are read: `deadline_seconds` (`adapters/studio_hub.lane_deadline_seconds`,
+     replacing the flat 900 s poll ceiling for that model) and
+     `states.discard_supported` (`api._lane_discard_state`). The Hub's chat lane says
+     `false`, so a hold on it now publishes `close_hold` and `discard-uncertain`
+     closes the record locally — before, the Jobs window offered a discard the Hub
+     would refuse.
+  3. **`model_limits` on chat rows** are published as the model's own numbers, with
+     the Hub's provenance sentence in a new `*_source_detail` beside the value
+     (`catalog._hub_stated_limit`). A Hub chat row no longer wears the owner's
+     curated flat `1,000,000`: measured live, the Hub states **262,144** read from
+     `model/config.json text_config.max_position_embeddings`, and **4096** as a
+     labelled worker default.
+  Not adopted, deliberately: `parameters`, `artifact`, `cancel.semantics`,
+  `runtime_seconds` — on the row, consumed by nothing yet, and said out loud in the
+  reply so the Hub session knows which half landed.
+  `test_e2e.py` **552/552**, `tests/test_hub_lane_contract.py` (new, 10 checks),
+  `test_studio_hub_contract.py` 54, every focused suite green.
+- **The live 0.6.61 verification `[MEASURED 2026-09-25]`:** this Mac's Hub came up on
+  0.6.61 mid-session, so the reads were measured against a real one and not only the
+  mock — **23 models discovered, all 23 placed by `package`, 21 carrying a lane
+  contract** with the canonical operation tokens and `deadline_seconds: 900.0`. The
+  chat model `mlx-community/Qwen3.5-9B-4bit` arrives with `operation:
+  chat.completion` and `discard_supported: false`, is **withheld** with the reason
+  "the studio_hub adapter does not serve chat…", and carries both `model_limits`
+  provenance sentences verbatim. Two new image models (`AITRADER/FLUX2-klein-4B-mlx-4bit`,
+  `filipstrand/Z-Image-Turbo-mflux-4bit`) flow through as `image.text_to_image` — the
+  owner's new models arriving with no gateway change.
+- **The chat lane cannot be dispatched, and that is not a gateway defect.** The
+  contract names the studio's `POST /v1/chat/completions`; on 0.6.61 the Hub serves it
+  only at `/api/hub/chat/completions`, whose own docstring says it is for "this app's
+  own Chat page" and which proxies to **this Mac's** worker. Nothing calls
+  `chat_jobs.create_batch` (`transcription_jobs.create_batch` *is* called from
+  `standalone.py`), so no chat batch can be created, polled or collected by a
+  coordinator. Until the Hub exposes submit/status/artifact for chat, Hub chat models
+  are **discovered, listed and withheld** — never dropped, never offered and then
+  failed. The four routes we need are named in the reply note.
+- **Declared Hub version stays `0.6.60`, deliberately.** 0.6.61 is installed here and
+  staged on all four drives, but it is **not pushed to GitHub** and no *controller*
+  runs it, so declaring it would be a claim we have not measured against — the exact
+  thing this exchange exists to avoid. The local location reads `newer` today, which
+  is the report doing its job. Raise the constant when 0.6.61 lands and a controller
+  runs it.
+- **The 401 on `/studio/voice/api/transcribe/availability` is ours to fix**, per the
+  Hub session's trace: that node must be **re-joined with the controller's current
+  Fleet token**. An owner action on that Mac. The refusal is now self-describing on
+  their side (method, path, credential presented, credential required), which is what
+  turned it from a mystery into a one-line fix.
 - **Shipped in 0.2.23 (`e42be96`):** a declared Studio Hub version, and discovery that reads
   what the Hub states. Owner's decisions, 2026-09-24: **report drift, keep working**;
   **adopt whatever the gateway can already serve**.
