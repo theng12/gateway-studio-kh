@@ -4,6 +4,17 @@ Newest first. This is the same list the **What's New** link in the app shows.
 
 ---
 
+## The Fleet page updates when you come back to it
+
+It read the fleet when you opened the page and then never again on its own, so the
+loop this fleet is actually built around — walk to a Mac, fix it, come back to the
+window that was already open on **Fleet** — showed the fleet as it was *before*
+your fix. Green machines still read red, and it looked like the fix had failed.
+
+Now the page re-reads when you return to the app (or switch back from another of
+its windows). It is one read, the same one the **Refresh** button makes, and only
+for pages that are read-only — a page with a form open is never re-read behind you.
+
 ## Local LLMs now run through the gateway
 
 Studio Hub 0.6.63 opened its chat lane to a Fleet credential, so a Hub LLM is now

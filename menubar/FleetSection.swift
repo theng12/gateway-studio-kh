@@ -27,6 +27,12 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
     /// The gateway polls every controller for this page, so it is refreshed on
     /// demand rather than on the host's timer.
     let refreshesAutomatically = false
+    /// **But it re-reads when the owner comes back to the window.** This page is
+    /// the one the owner leaves open while he walks to another Mac and fixes
+    /// something; a page that kept showing the fleet from before that fix read as
+    /// though the fix had not worked. It is read-only, so re-reading costs him
+    /// nothing but the request.
+    let refreshesOnReturn = true
 
     // MARK: State
 

@@ -102,6 +102,28 @@ tailnet, start services at login, do not sleep — with the OS-level parts
 (`pmset`) either applied or listed for the installer. One switch to document
 instead of five.
 
+### 6. Show what it actually bound, not what was ticked
+
+This is the one that cost the owner a trip. He checked every Mac and reported
+"they all have Tailscale ticked, but the gateway still shows red — it might be a
+bug". On the gateway's side nothing was wrong: each Mac answered SSH and refused
+`:47873`, so the Mac was up and its Hub was not listening on that interface; the
+red rows went green one by one as he worked, and the gateway tracked every one the
+moment it started listening.
+
+What he could not see is the difference between **the preference** and **the
+socket**. Please surface the bind itself — the addresses actually listening, from
+the running process, on the Settings/Connections page and over
+`GET /api/hub/settings`. "Ticked" and "listening" are two facts, and today only the
+first is visible; the second is the one that decides whether anything can reach
+that Mac. A Hub whose services are stopped, or whose bind failed on one address,
+should say so where the tick is, rather than looking identical to a healthy one.
+
+Related, and worth a guard: if `listenHost` holds an address that is **not on this
+Mac any more** (a LAN address it left, a tailnet address from before a re-auth),
+does the bind fail loudly, fall back, or silently bind the rest? Whichever it is,
+the page should say which addresses it got.
+
 ## What GatewayKH already does about it, so we are not asking you to fix our half
 
 - A refusal and a silence are reported as different faults with different fixes

@@ -19,7 +19,25 @@ protocol AppSection: AnyObject {
     /// Whether the host should re-poll this section on a timer. Voice browsing
     /// must not: a refresh mid-interaction fights the checkbox being clicked.
     var refreshesAutomatically: Bool { get }
+    /// Whether the host should re-read this section when the owner comes **back**
+    /// to the window. Opt-in, and only for read-only pages.
+    ///
+    /// The two are different questions. A timer re-reads while the page is in
+    /// front of you — wrong for anything you are part-way through, which is why
+    /// Fleet and Voices decline it. Coming back is the moment a stale page is
+    /// actively misleading: the owner fixed something on a Mac, returned to the
+    /// window that was already open on Fleet, and read the fleet as it was before
+    /// his fix. But it is opt-in for the same reason: `SettingsSection.refresh()`
+    /// writes the stored key back into the field, so a page that re-read on return
+    /// would discard a half-typed key the moment he switched to `.env` to copy it.
+    var refreshesOnReturn: Bool { get }
     func activated()
+}
+
+extension AppSection {
+    /// Off unless a page says otherwise: a section that has not thought about it
+    /// must not start discarding what someone is typing.
+    var refreshesOnReturn: Bool { false }
 }
 
 // MARK: - Provider console sections
@@ -647,6 +665,34 @@ final class MainWindow: NSObject, NSTableViewDataSource, NSTableViewDelegate {
         }
         RunLoop.main.add(tick, forMode: .common)
         timer = tick
+
+        // **Coming back to the app re-reads the page you are looking at.**
+        //
+        // Only for sections that opt in (`refreshesOnReturn`): a read-only page
+        // like Fleet is *misleading* when stale — the owner fixes a Mac, comes
+        // back to the window that was already open on that page, and reads the
+        // fleet as it was before the fix, which looks like the fix failed. A page
+        // with a form in it must not be re-read behind the typist, which is why
+        // the default is off and Settings leaves it off.
+        //
+        // One read per return is not polling: it is what pressing Refresh would
+        // have done. Both notifications are observed because they cover different
+        // returns — switching back from another app, and switching between this
+        // app's own windows (the Jobs window is separate).
+        for name in [NSApplication.didBecomeActiveNotification,
+                     NSWindow.didBecomeKeyNotification] {
+            NotificationCenter.default.addObserver(
+                forName: name, object: nil, queue: .main
+            ) { [weak self] note in
+                guard let self, self.window?.isVisible == true else { return }
+                if let became = note.object as? NSWindow, became != self.window { return }
+                guard self.currentIndex >= 0, self.currentIndex < self.sections.count
+                else { return }
+                let section = self.sections[self.currentIndex]
+                guard section.refreshesOnReturn else { return }
+                section.activated()
+            }
+        }
 
         startStatusUpdates()
     }
