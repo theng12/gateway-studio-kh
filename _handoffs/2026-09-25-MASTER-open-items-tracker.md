@@ -310,28 +310,41 @@ carefully.
   "Nothing is listening on that address" without ever naming the address. Fixed in
   0.2.29 (`menubar/FleetTabs.swift`): the cell now shows the address and the reason.
 
-- [ ] **HUB-17 — audio is placed on the *biggest* machines first, which spends the
-  machines a Z-Image job needs.** owes: SH (a policy answer, no work until decided) ·
-  truth: `components/hub/backend/broker.py::_placement_key` and its two keys.
-  last verified: 2026-09-25, read from the source. The rule is explicit and
-  deliberate — *"image and subtitle use the small Macs and leave the 16 GB+ machines
-  for audio"* — and it is right for the case it was written for. Two keys:
-  `_flexible_placement_key` (**smallest capable first**) for image and subtitle, and
-  `_audio_placement_key` (**high-memory first**) for anything whose artifact class is
-  audio or video, plus a chat/transcription model publishing a tier ≥16 GB (the 9B
-  Chat model does). Both are *preferences, never filters* — the model's own memory
-  floor already excludes a machine that cannot run it.
-  **So the owner's own example splits, and only half goes his way.** A FLUX.2 Klein
-  render goes to the smallest Mac that fits, leaving the 16 GB+ machine free — exactly
-  what he wants. A **Qwen TTS** job goes to the *biggest* Mac first, so it will take
-  the machine a Z-Image job needs, and an 8 GB-capable TTS model has no need of it.
-  His stated priority is the opposite: *reserve the machines only a big job can use*.
-  Ask: is "audio belongs on the high-memory machines" still the rule on a fleet whose
-  scarce machines are the big ones? If the placement followed **capability** rather
-  than artifact class, audio would land small-first wherever the model fits and the
-  16 GB+ Macs would stay free for Z-Image. No code needed until the owner and Studio
-  Hub agree which rule wins; recorded because his test will show it and the answer
-  should not be rediscovered from a queue.
+- [ ] **HUB-17 — placement follows the *modality*, not the model's own memory
+  requirement, so an 8 GB voice model is sent to the biggest Mac in the group.**
+  owes: SH (a policy answer; no code until decided) ·
+  truth: `components/hub/backend/broker.py::_placement_key`.
+  last verified: 2026-09-25, read from the source **and** from the floors the Hub
+  publishes. `_placement_key` decides by artifact class: anything whose class is
+  audio or video gets `_audio_placement_key` (**high-memory first**), image and
+  subtitle get `_flexible_placement_key` (**smallest capable first**), and only
+  chat/transcription consult the model's published tier. Both are *preferences,
+  never filters* — the model's own floor already excludes a machine that cannot run
+  it.
+  **The floors the Hub already publishes make the case by themselves**
+  (`min_unified_memory_gb`, per model, measured here):
+  `Qwen3-TTS-12Hz-0.6B-Base-8bit` **8 GB**, `chatterbox-4bit` **8 GB**,
+  `OmniVoice-bfloat16` **8 GB**, `Qwen3-TTS-12Hz-1.7B-Base-4bit` **12 GB**,
+  `VoxCPM2-*` **16 GB**, `fish-audio-s2-pro-8bit` **24 GB**, `-bf16` **32 GB**.
+  So the 0.6B voice model fits an 8 GB Mac and is still placed on the **largest**
+  machine in the group, while the 1.7B and the 16 GB VoxCPM models — which genuinely
+  need the big ones — queue behind it.
+  **The ask, in the owner's words and stated precisely:** *"this should be model‑RAM
+  requirement specific… qwen3 tts 0.6 can run on 8gb machine so it must take up the
+  small ones first. but qwen3 tts 1.7b needs [more] so it will wait for freed up
+  [bigger] machines."* Not "audio should go small" — **capability should decide for
+  every lane**, which the model's published floor already answers.
+  **And that collapses to one rule**: "smallest capable first, everywhere" gives him
+  exactly this, because *capable* is already defined by the model's own floor — a
+  16 GB model cannot land on an 8 GB Mac whichever key is used. The only thing the
+  audio key still buys is **latency** on big machines, and the question is whether
+  that is still worth spending the machines only a Z-Image-class job can use.
+  Recorded because his test will show it, and the answer should not be rediscovered
+  from a queue.
+  *Correction to an earlier note in this file:* it framed the owner's position as
+  "audio belongs on the small machines". That was imprecise and it was ours to get
+  right, not his — the ask is capability-based placement, and the two concrete
+  models above are the example.
 
 ### Rows you are waiting on us for
 
