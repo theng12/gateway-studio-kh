@@ -695,6 +695,32 @@ def set_retention(payload: dict[str, Any]) -> Any:
     return {**saved, "usage": retention.usage()}
 
 
+@router.get("/api/settings/concurrency", dependencies=[Depends(require_admin)])
+def get_concurrency() -> dict[str, Any]:
+    """How many jobs may run at once — the pool, each lane, and each provider.
+
+    Every row carries the `source` of its number, so the page can say *why* a lane
+    is running at one rather than leaving the owner to guess. The provider list is
+    seeded from the providers this gateway actually knows about, because a
+    provider missing from the settings file is the row that most needs a control.
+    """
+    from . import concurrency
+
+    known = [definition.id for definition in registry.definitions()]
+    return concurrency.settings_view(known)
+
+
+@router.put("/api/settings/concurrency", dependencies=[Depends(require_admin)])
+def set_concurrency(payload: dict[str, Any]) -> Any:
+    """Change the ceilings. A key that is absent is left alone, never cleared."""
+    from . import concurrency
+
+    try:
+        return concurrency.save_settings(payload)
+    except concurrency.SettingsRefused as exc:
+        return _error(422, exc.message, "SETTINGS_REFUSED")
+
+
 @router.post("/api/artifacts/prune", dependencies=[Depends(require_admin)])
 def prune_artifacts() -> dict[str, Any]:
     """Run the policy now, and report what it did rather than that it ran."""

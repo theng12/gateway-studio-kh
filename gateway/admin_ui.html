@@ -408,6 +408,18 @@
     </div>
     <div id="providers-msg" class="msg" role="alert" aria-live="polite"></div>
     <div id="providers"></div>
+
+    <h2 style="margin:28px 0 4px">Concurrency</h2>
+    <p class="hint" style="margin:0 0 12px">
+      How much work the gateway runs at once. The <b>pool</b> is its total; a
+      <b>provider</b> limit is what that lane will accept, so a cloud tier that
+      unlocks with payment — or a bigger fleet — is a number here rather than a
+      code change. A Studio Hub location sizes itself from the free workers it
+      reports and is not set here. A blank box means <b>not set</b>, which is not
+      the same as a limit of one.
+    </p>
+    <div id="concurrency-msg" class="msg" role="alert" aria-live="polite"></div>
+    <div id="concurrency"></div>
   </section>
   <!-- CREATE -->
   <section id="view-create" style="display:none">
@@ -606,7 +618,7 @@ function setView(view) {
   document.getElementById('view-create').style.display = view === 'create' ? '' : 'none';
   document.getElementById('view-packs').style.display = view === 'packs' ? '' : 'none';
   if (view === 'models') loadModels();
-  else if (view === 'providers') loadProviders();
+  else if (view === 'providers') { loadProviders(); loadConcurrency(); }
   else if (view === 'packs') loadContentShelf();
   else loadCreate();
 }
@@ -1155,6 +1167,97 @@ function restoreProviderDrafts(drafts) {
     const value = drafts[input.dataset.provider]?.[input.dataset.field];
     if (value !== undefined) input.value = value;
   });
+}
+
+// -- concurrency -----------------------------------------------------------
+// Three ceilings the owner supplies: the pool, each lane, each provider. Every
+// row shows the number *in force* and where it came from, because "1" and "nobody
+// said" are different answers and only one of them is worth acting on.
+function concurrencyMessage(text, failed=false) {
+  const node = document.getElementById('concurrency-msg');
+  if (!node) return;
+  node.textContent = text || '';
+  node.className = failed ? 'msg bad' : 'msg';
+}
+
+async function loadConcurrency() {
+  const target = document.getElementById('concurrency');
+  if (!target) return;
+  try {
+    renderConcurrency(await api('/settings/concurrency'));
+  } catch (e) {
+    target.innerHTML = '';
+    concurrencyMessage(e.message || 'could not load the concurrency settings', true);
+  }
+}
+
+function renderConcurrency(data) {
+  const target = document.getElementById('concurrency');
+  if (!target) return;
+  const pool = data.global || {};
+  const providers = Array.isArray(data.providers) ? data.providers : [];
+  const rows = providers.map(p => `
+      <tr>
+        <td>${esc(p.provider_id)}</td>
+        <td><input type="number" min="1" step="1" style="max-width:110px"
+                   id="conc-p-${esc(p.provider_id)}"
+                   value="${p.stated == null ? '' : esc(p.stated)}"
+                   placeholder="${esc(p.limit)}"></td>
+        <td>${esc(p.limit)} <span class="muted">${esc(p.source)}</span></td>
+        <td class="muted">${esc(p.detail || '')}</td>
+      </tr>`).join('');
+  target.innerHTML = `
+    <div style="padding:12px;margin-bottom:14px;border:1px solid var(--line);border-radius:8px">
+      <label for="conc-global"><b>Jobs running at once</b></label>
+      <input type="number" min="1" step="1" id="conc-global"
+             style="max-width:110px;margin-left:10px"
+             value="${pool.stated == null ? '' : esc(pool.stated)}"
+             placeholder="${esc(pool.limit)}">
+      <div class="hint" style="margin-top:6px">${esc(pool.detail || '')}</div>
+    </div>
+    <table class="grid">
+      <thead><tr><th>Provider</th><th>Limit</th><th>In force</th><th>Where it came from</th></tr></thead>
+      <tbody>${rows || '<tr><td colspan="4" class="muted">No providers.</td></tr>'}</tbody>
+    </table>
+    <div class="row" style="margin-top:12px">
+      <button class="sm" type="button" onclick="saveConcurrency()">Save concurrency</button>
+    </div>
+    <div class="hint" style="margin-top:6px">${esc(data.path || '')}</div>`;
+}
+
+// Blank means "not set" and is sent as null so the file key is cleared, rather
+// than being sent as 0 or left out — an absent key is a key left alone, and this
+// page edits one row at a time.
+function concurrencyPayload() {
+  const body = {};
+  const pool = document.getElementById('conc-global');
+  if (pool) {
+    const value = String(pool.value == null ? '' : pool.value).trim();
+    body.global = value === '' ? null : Number(value);
+  }
+  const providers = {};
+  const boxes = document.querySelectorAll('[id^="conc-p-"]');
+  for (let i = 0; i < (boxes ? boxes.length : 0); i += 1) {
+    const box = boxes[i];
+    const value = String(box.value == null ? '' : box.value).trim();
+    providers[String(box.id).slice('conc-p-'.length)] = value === '' ? null : Number(value);
+  }
+  if (Object.keys(providers).length) body.providers = providers;
+  return body;
+}
+
+async function saveConcurrency() {
+  concurrencyMessage('Saving…');
+  try {
+    renderConcurrency(await api('/settings/concurrency', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(concurrencyPayload()),
+    }));
+    concurrencyMessage('Saved. New work follows these limits immediately.');
+  } catch (e) {
+    concurrencyMessage(e.message || 'could not save the concurrency settings', true);
+  }
 }
 
 async function loadProviders() {

@@ -21,22 +21,36 @@ questions and all three have to pass:
     cloud lane answer 429, and a 429 mid-flight is a job that has to be held
     rather than retried blindly.
 
-**Where a provider's number comes from, best first — and the answer says which.**
-This is the same triad the catalogue already uses for token limits, and for the
-same reason: *"I could not work out the answer"* and *"there is no limit"* must
-never look the same.
+**One file, and it is the owner's.** `provider-concurrency.local.json` under the
+data directory holds all three, the same `*.local.json` convention as
+`model-limits.local.json`: user-owned, never shipped, survives a reinstall. It is
+hand-editable *and* writable from the Providers page in the console, because a
+number only the owner can supply (a cloud tier, a bigger fleet) should not need a
+terminal:
+
+    {
+      "global": 8,
+      "lanes": {"image": 2},
+      "providers": {"openai-direct": {"limit": 4, "note": "tier 4"}}
+    }
+
+**Where each number comes from, best first — and the answer says which.** This is
+the same triad the catalogue already uses for token limits, and for the same
+reason: *"I could not work out the answer"* and *"there is no limit"* must never
+look the same.
 
   1. `hub` — a Studio Hub location states its own free slots on
      `capacity.by_operation`. It is the only source that is a live measurement
      rather than a belief, and it is what lets a five-Mac site take five jobs.
-  2. `curated` — the owner's file, for a cloud provider that publishes nothing
-     machine-readable. Most do: OpenAI and OpenRouter send `x-ratelimit-*`
-     headers describing request *rate*, not concurrency, and ElevenLabs publishes
-     a concurrency figure in prose on a pricing page. None of that is a number
-     this gateway can read, so a person puts it here.
-  3. `gateway` — a labelled default of 1. Deliberately the safe direction, and
-     deliberately visible: a lane running at the default is under-used, and the
-     source field is how a reader knows to go and curate it.
+  2. `curated` — the owner's file above.
+  3. `gateway` — a labelled default of 1 for a provider, naming the file to edit.
+     Deliberately the safe direction, and deliberately visible: a lane running at
+     the default is under-used, and the source field is how a reader knows.
+
+**Two sources must never disagree in silence.** The file is the explicit,
+UI-editable setting, so it wins; `GATEWAY_JOB_CONCURRENCY` and
+`GATEWAY_LANE_CONCURRENCY` remain as scripted-setup fallbacks, and every answer's
+`detail` names which of the two answered.
 """
 
 from __future__ import annotations
@@ -47,11 +61,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .config import DATA_DIR
+from .config import DATA_DIR, write_secret
 
-#: The owner's curated per-provider concurrency. Same `*.local.json` convention as
-#: `model-limits.local.json`: user-owned, never shipped, survives a reinstall.
-CURATED_PATH = Path(
+#: The owner's concurrency settings — all three ceilings in one file. Same
+#: `*.local.json` convention as `model-limits.local.json`.
+SETTINGS_PATH = Path(
     os.environ.get("GATEWAY_PROVIDER_CONCURRENCY")
     or (DATA_DIR / "provider-concurrency.local.json")
 )
@@ -65,8 +79,7 @@ SOURCE_GATEWAY = "gateway"
 #: The pool's size when nothing says otherwise. Four because it is what Story Studio
 #: had already been told (`paid_concurrency_limit: 4`) while the gateway ran one job
 #: at a time — so this is the number that finally makes the published figure true
-#: rather than a new figure to justify. `constants.admission()` derives what it
-#: publishes from here, so the two cannot drift.
+#: rather than a new figure to justify.
 DEFAULT_GLOBAL = 4
 
 #: What a cloud provider gets when neither its own answer nor the owner's file says
@@ -105,35 +118,90 @@ def _positive_int(value: Any) -> int | None:
             return None
     if not isinstance(value, (int, float)):
         return None
+    # A fraction is not a number of jobs. Truncating `0.5` to `0` would write a
+    # limit that means "nobody said" — the one outcome this module exists to keep
+    # distinguishable from a real answer.
+    if float(value) != int(value):
+        return None
     if value <= 0:
         return None
     return int(value)
 
 
-def global_limit() -> int:
-    """How many jobs this gateway runs at once.
+# -- the settings file ------------------------------------------------------
+_settings_cache: dict[str, Any] = {"stamp": None, "value": {}}
 
-    `GATEWAY_JOB_CONCURRENCY` overrides. An unreadable or non-positive value falls
-    back to the default rather than to zero — a typo in an environment variable
-    must not stop the gateway taking work at all.
+
+def _path() -> Path:
+    return SETTINGS_PATH if SETTINGS_PATH.exists() else LEGACY_PATH
+
+
+def _read_file() -> dict[str, Any]:
+    """The settings file, re-read when it changes.
+
+    Cached on `(path, mtime, size)` like `.env` is: this sits on the admission
+    path, and a fix to a rate limit should take effect without a restart while a
+    stat per admitted job stays cheap.
     """
-    return _positive_int(os.environ.get("GATEWAY_JOB_CONCURRENCY")) or DEFAULT_GLOBAL
+    path = _path()
+    try:
+        stat = path.stat()
+        stamp = (str(path), stat.st_mtime_ns, stat.st_size)
+    except OSError:
+        stamp = None
+    if stamp == _settings_cache["stamp"]:
+        return dict(_settings_cache["value"])
+
+    value: dict[str, Any] = {}
+    try:
+        parsed = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        parsed = None
+    if isinstance(parsed, dict):
+        value = parsed
+    _settings_cache["stamp"] = stamp
+    _settings_cache["value"] = value
+    return dict(value)
 
 
-_lane_cache: dict[str, Any] = {"raw": None, "limits": {}}
+def reset_for_tests() -> None:
+    _settings_cache["stamp"] = None
+    _settings_cache["value"] = {}
 
 
-def _lane_limits() -> dict[str, int]:
-    """Per-modality caps from `GATEWAY_LANE_CONCURRENCY`, e.g. `image=2,chat=3`.
+def _settings_lanes() -> dict[str, int]:
+    raw = _read_file().get("lanes")
+    if not isinstance(raw, dict):
+        return {}
+    limits: dict[str, int] = {}
+    for name, value in raw.items():
+        limit = _positive_int(value)
+        if limit is not None:
+            limits[str(name).strip().lower()] = limit
+    return limits
 
-    Deliberately empty by default: every lane may use the whole pool, so the
-    shipped behaviour is FIFO across everything and nothing is reserved for a lane
-    that has no work. A site that wants a slot always free for chat sets
-    `GATEWAY_LANE_CONCURRENCY=image=1`.
-    """
+
+def _settings_providers() -> dict[str, dict[str, Any]]:
+    raw = _read_file().get("providers")
+    if not isinstance(raw, dict):
+        return {}
+    entries: dict[str, dict[str, Any]] = {}
+    for provider_id, value in raw.items():
+        if not isinstance(value, dict):
+            continue
+        limit = _positive_int(value.get("limit"))
+        if limit is None:
+            continue
+        entries[str(provider_id)] = {
+            "limit": limit,
+            "note": str(value.get("note") or "").strip()[:200],
+        }
+    return entries
+
+
+def _env_lanes() -> dict[str, int]:
+    """`GATEWAY_LANE_CONCURRENCY=image=2,chat=3`, the scripted-setup fallback."""
     raw = os.environ.get("GATEWAY_LANE_CONCURRENCY") or ""
-    if raw == _lane_cache["raw"]:
-        return dict(_lane_cache["limits"])
     limits: dict[str, int] = {}
     for part in raw.split(","):
         name, _, value = part.partition("=")
@@ -141,93 +209,58 @@ def _lane_limits() -> dict[str, int]:
         limit = _positive_int(value.strip())
         if name and limit is not None:
             limits[name] = limit
-    _lane_cache["raw"] = raw
-    _lane_cache["limits"] = limits
-    return dict(limits)
+    return limits
+
+
+# -- the three ceilings -----------------------------------------------------
+def global_budget() -> Budget:
+    """How many jobs this gateway runs at once, and which source said so."""
+    stated = _positive_int(_read_file().get("global"))
+    if stated is not None:
+        return Budget(limit=stated, source=SOURCE_CURATED,
+                      detail=f"{SETTINGS_PATH.name} sets global to {stated}")
+    env = _positive_int(os.environ.get("GATEWAY_JOB_CONCURRENCY"))
+    if env is not None:
+        return Budget(limit=env, source=SOURCE_CURATED,
+                      detail=f"GATEWAY_JOB_CONCURRENCY is set to {env}")
+    return Budget(limit=DEFAULT_GLOBAL, source=SOURCE_GATEWAY,
+                  detail=f"nothing set it, so {DEFAULT_GLOBAL}; edit it on Providers")
+
+
+def global_limit() -> int:
+    """The pool size. Kept as a function of its own because callers are many."""
+    return global_budget().limit
 
 
 def lane_budget(modality: str) -> Budget:
     """How much of the pool one modality may hold."""
     name = str(modality or "").strip().lower()
-    stated = _lane_limits().get(name)
+    stated = _settings_lanes().get(name)
     if stated is not None:
-        return Budget(
-            limit=stated,
-            source=SOURCE_CURATED,
-            detail=f"GATEWAY_LANE_CONCURRENCY says {name}={stated}",
-        )
-    return Budget(
-        limit=global_limit(),
-        source=SOURCE_GATEWAY,
-        detail="no lane cap set, so this lane may use the whole pool",
-    )
-
-
-_curated_cache: dict[str, Any] = {"stamp": None, "entries": {}}
-
-
-def _curated() -> dict[str, dict[str, Any]]:
-    """The owner's file, re-read when it changes.
-
-    Cached on `(mtime, size)` like `.env` is, because this sits on the admission
-    path: a fix to a rate limit should take effect without a restart, and a
-    stat per admitted job is cheap.
-    """
-    path = CURATED_PATH if CURATED_PATH.exists() else LEGACY_PATH
-    try:
-        stat = path.stat()
-        stamp = (str(path), stat.st_mtime_ns, stat.st_size)
-    except OSError:
-        stamp = None
-    if stamp == _curated_cache["stamp"]:
-        return dict(_curated_cache["entries"])
-
-    entries: dict[str, dict[str, Any]] = {}
-    try:
-        parsed = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        parsed = None
-    raw = parsed.get("providers") if isinstance(parsed, dict) else None
-    if isinstance(raw, dict):
-        for provider_id, value in raw.items():
-            if not isinstance(value, dict):
-                continue
-            limit = _positive_int(value.get("limit"))
-            if limit is None:
-                continue
-            entries[str(provider_id)] = {
-                "limit": limit,
-                "note": str(value.get("note") or "").strip()[:200],
-            }
-    _curated_cache["stamp"] = stamp
-    _curated_cache["entries"] = entries
-    return dict(entries)
-
-
-def reset_for_tests() -> None:
-    _lane_cache["raw"] = None
-    _lane_cache["limits"] = {}
-    _curated_cache["stamp"] = None
-    _curated_cache["entries"] = {}
+        return Budget(limit=stated, source=SOURCE_CURATED,
+                      detail=f"{SETTINGS_PATH.name} caps {name} at {stated}")
+    env = _env_lanes().get(name)
+    if env is not None:
+        return Budget(limit=env, source=SOURCE_CURATED,
+                      detail=f"GATEWAY_LANE_CONCURRENCY caps {name} at {env}")
+    return Budget(limit=global_limit(), source=SOURCE_GATEWAY,
+                  detail="no lane cap set, so this lane may use the whole pool")
 
 
 def cloud_budget(provider_id: str) -> Budget:
     """A cloud provider's concurrency: curated if the owner said, else the default.
 
-    The `detail` on the default names the file to edit, because a lane running at
-    1 is under-used and the reader should not have to go looking for why.
+    The `detail` on the default names where to set it, because a lane running at 1
+    is under-used and the reader should not have to go looking for why.
     """
-    entry = _curated().get(str(provider_id or ""))
+    entry = _settings_providers().get(str(provider_id or ""))
     if entry is not None:
-        note = entry.get("note") or "the owner's file"
+        note = entry.get("note") or f"{SETTINGS_PATH.name}"
         return Budget(limit=entry["limit"], source=SOURCE_CURATED, detail=note)
     return Budget(
         limit=DEFAULT_PROVIDER,
         source=SOURCE_GATEWAY,
-        detail=(
-            "no stated or curated concurrency, so one at a time; set it in "
-            f"{CURATED_PATH.name} under providers.{provider_id}.limit"
-        ),
+        detail=f"no limit set, so one at a time; set it on the Providers page ({provider_id})",
     )
 
 
@@ -258,3 +291,132 @@ def hub_budget(slots: Any, *, operation: str = "") -> Budget:
             f"{'' if limit == 1 else 's'}" + (f" for {operation}" if operation else "")
         ),
     )
+
+
+# -- the settings surface ---------------------------------------------------
+def settings_view(provider_ids: list[str] | None = None) -> dict[str, Any]:
+    """Everything the console needs to show and edit the three ceilings.
+
+    `provider_ids` is the providers the caller knows about, so the page can list a
+    row for one that has no limit yet — a provider missing from the file is the
+    case that most needs a control, and a page that only drew what was already set
+    would hide exactly the ones still running at the default.
+    """
+    known = {str(pid) for pid in (provider_ids or []) if pid}
+    known.update(_settings_providers())
+    providers = []
+    for provider_id in sorted(known):
+        budget = cloud_budget(provider_id)
+        providers.append({
+            "provider_id": provider_id,
+            **budget.as_dict(),
+            # What is written down, as opposed to what is in force — the page needs
+            # both to show an unset row as unset rather than as "1".
+            "stated": _settings_providers().get(provider_id, {}).get("limit"),
+        })
+    return {
+        "path": str(SETTINGS_PATH),
+        "global": {**global_budget().as_dict(),
+                   "stated": _positive_int(_read_file().get("global"))},
+        "lanes": {**lane_budget("").as_dict(), "values": _settings_lanes()},
+        "providers": providers,
+    }
+
+
+class SettingsRefused(Exception):
+    """A settings write the caller can act on."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message)
+        self.message = message
+
+
+def save_settings(payload: dict[str, Any]) -> dict[str, Any]:
+    """Write the ceilings the caller named, leaving everything else alone.
+
+    **A key that is absent is not a key to clear.** The same rule the retention
+    settings follow: a page that sends only what it changed must not erase the
+    rest, and a provider removed from the file silently returns to the default
+    rather than being deleted from a fleet.
+
+    `limit: null` (or 0) *is* how a value is cleared — stated explicitly, never
+    inferred from silence.
+    """
+    if not isinstance(payload, dict):
+        raise SettingsRefused("expected a settings object")
+
+    current = dict(_read_file())
+
+    if "global" in payload:
+        value = payload["global"]
+        if value in (None, "", 0):
+            current.pop("global", None)
+        else:
+            limit = _positive_int(value)
+            if limit is None:
+                raise SettingsRefused(
+                    f"the pool size must be a whole number of jobs, not {value!r}"
+                )
+            current["global"] = limit
+
+    if "lanes" in payload:
+        lanes = payload["lanes"]
+        if lanes in (None, {}):
+            current.pop("lanes", None)
+        elif not isinstance(lanes, dict):
+            raise SettingsRefused("lanes must be an object of modality -> limit")
+        else:
+            merged = dict(current.get("lanes") or {})
+            for name, value in lanes.items():
+                key = str(name).strip().lower()
+                if value in (None, "", 0):
+                    merged.pop(key, None)
+                    continue
+                limit = _positive_int(value)
+                if limit is None:
+                    raise SettingsRefused(
+                        f"the {key} lane limit must be a whole number, not {value!r}"
+                    )
+                merged[key] = limit
+            if merged:
+                current["lanes"] = merged
+            else:
+                current.pop("lanes", None)
+
+    if "providers" in payload:
+        providers = payload["providers"]
+        if providers in (None, {}):
+            current.pop("providers", None)
+        elif not isinstance(providers, dict):
+            raise SettingsRefused("providers must be an object of provider_id -> limit")
+        else:
+            merged = dict(current.get("providers") or {})
+            for provider_id, value in providers.items():
+                key = str(provider_id).strip()
+                if value in (None, "", 0):
+                    merged.pop(key, None)
+                    continue
+                if isinstance(value, dict):
+                    limit = _positive_int(value.get("limit"))
+                    note = str(value.get("note") or "").strip()[:200]
+                else:
+                    limit = _positive_int(value)
+                    note = ""
+                if not key or limit is None:
+                    raise SettingsRefused(
+                        f"the limit for {key or '(unnamed)'} must be a whole number, "
+                        f"not {value!r}"
+                    )
+                entry: dict[str, Any] = {"limit": limit}
+                if note:
+                    entry["note"] = note
+                merged[key] = entry
+            if merged:
+                current["providers"] = merged
+            else:
+                current.pop("providers", None)
+
+    SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    write_secret(SETTINGS_PATH, json.dumps(current, indent=2) + "\n")
+    reset_for_tests()
+    return settings_view()

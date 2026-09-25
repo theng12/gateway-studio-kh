@@ -348,3 +348,64 @@ test('polling uses serialized reads, ignores stale jobs, and treats cancellation
   assert.match(harness.result.innerHTML, /stopped by user/);
   assert.doesNotMatch(harness.result.innerHTML, /spinner|succeeded|generated|job-a/);
 });
+
+// -- concurrency settings ---------------------------------------------------
+function concurrencyContext(nodes, boxes) {
+  const context = vm.createContext({
+    document: {
+      getElementById: id => nodes.get(id),
+      querySelectorAll: selector => selector === '[id^="conc-p-"]' ? boxes : [],
+    },
+    console,
+  });
+  vm.runInContext([
+    'const esc = s => String(s ?? "");',
+    section('function concurrencyMessage(', 'async function loadProviders()'),
+  ].join('\n'), context);
+  return context;
+}
+
+function providerBox(id, value) {
+  const box = element(value);
+  box.id = id;
+  return box;
+}
+
+test('a blank concurrency box is sent as null, which clears the setting', () => {
+  // Blank and 0 are different: 0 would be written as a limit nobody can run, and
+  // omitting the key would leave the old value in place. Only null clears.
+  const context = concurrencyContext(
+    new Map([['conc-global', element('')]]),
+    [providerBox('conc-p-openai-direct', '4'), providerBox('conc-p-other', '')],
+  );
+  const payload = vm.runInContext('concurrencyPayload()', context);
+  assert.equal(payload.global, null);
+  assert.equal(payload.providers['openai-direct'], 4);
+  assert.equal(payload.providers.other, null);
+});
+
+test('a typed concurrency is sent as a number', () => {
+  const context = concurrencyContext(new Map([['conc-global', element(' 8 ')]]), []);
+  const payload = vm.runInContext('concurrencyPayload()', context);
+  assert.equal(payload.global, 8);
+  assert.equal('providers' in payload, false, 'no provider rows means no provider key at all');
+});
+
+test('the panel shows the limit in force and where it came from', () => {
+  // "1" and "nobody said" are different answers, and only one is worth acting on.
+  const target = element();
+  const context = concurrencyContext(new Map([['concurrency', target]]), []);
+  vm.runInContext(`renderConcurrency(${JSON.stringify({
+    global: { limit: 4, source: 'gateway', detail: 'nothing set it', stated: null },
+    providers: [{
+      provider_id: 'openai-direct', limit: 1, source: 'gateway',
+      detail: 'no limit set, so one at a time', stated: null,
+    }],
+    path: '/tmp/provider-concurrency.local.json',
+  })})`, context);
+  assert.match(target.innerHTML, /openai-direct/);
+  assert.match(target.innerHTML, /no limit set/);
+  assert.match(target.innerHTML, /id="conc-p-openai-direct"/);
+  assert.match(target.innerHTML, /placeholder="1"/, 'the unset row must show what is in force');
+  assert.match(target.innerHTML, /value=""/, 'and must not look like a row somebody set');
+});

@@ -208,7 +208,7 @@ class ProviderBudgetsTest(unittest.TestCase):
             path.write_text(json.dumps({
                 "providers": {"openai-direct": {"limit": 3, "note": "tier 4"}}
             }), encoding="utf-8")
-            with patch.object(concurrency, "CURATED_PATH", path):
+            with patch.object(concurrency, "SETTINGS_PATH", path):
                 concurrency.reset_for_tests()
                 jobs = [_job(f"job-{n}") for n in range(4)]
                 with _Harness(jobs, pool_size=4, hold=0.25) as h:
@@ -313,6 +313,90 @@ class ThePublishedLimitIsTheRealOneTest(unittest.TestCase):
         published = constants.admission()
         self.assertIn("max_queued_jobs", published)
         self.assertIn("generation_submissions_per_minute", published)
+
+
+class ConcurrencySettingsTest(unittest.TestCase):
+    """The owner supplies these numbers, so the file has to behave like a setting."""
+
+    def setUp(self) -> None:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.path = Path(tmp.name) / "provider-concurrency.local.json"
+        patcher = patch.object(concurrency, "SETTINGS_PATH", self.path)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        concurrency.reset_for_tests()
+        self.addCleanup(concurrency.reset_for_tests)
+
+    def test_all_three_ceilings_round_trip(self) -> None:
+        concurrency.save_settings({
+            "global": 8,
+            "lanes": {"image": 2},
+            "providers": {"openai-direct": {"limit": 4, "note": "tier 4"}},
+        })
+        self.assertEqual(concurrency.global_limit(), 8)
+        self.assertEqual(concurrency.lane_budget("image").limit, 2)
+        budget = concurrency.cloud_budget("openai-direct")
+        self.assertEqual(budget.limit, 4)
+        self.assertEqual(budget.source, "curated")
+        self.assertEqual(budget.detail, "tier 4")
+
+    def test_the_file_beats_the_environment_and_says_so(self) -> None:
+        # Two sources must never disagree in silence: the editable file wins, and
+        # the answer names which one answered.
+        with patch.dict(os.environ, {"GATEWAY_JOB_CONCURRENCY": "99"}):
+            self.assertEqual(concurrency.global_budget().detail, "GATEWAY_JOB_CONCURRENCY is set to 99")
+            concurrency.save_settings({"global": 6})
+            budget = concurrency.global_budget()
+            self.assertEqual(budget.limit, 6)
+            self.assertIn("provider-concurrency.local.json", budget.detail)
+
+    def test_a_key_left_out_is_left_alone(self) -> None:
+        # The page edits one row at a time; a write that names only the pool must
+        # not erase every provider limit with it.
+        concurrency.save_settings({"global": 8, "providers": {"a": 3}})
+        concurrency.save_settings({"global": 5})
+        self.assertEqual(concurrency.cloud_budget("a").limit, 3,
+                         "writing one setting cleared another")
+        self.assertEqual(concurrency.global_limit(), 5)
+
+    def test_clearing_is_explicit_and_returns_to_the_default(self) -> None:
+        concurrency.save_settings({"providers": {"a": 3}})
+        self.assertEqual(concurrency.cloud_budget("a").source, "curated")
+        concurrency.save_settings({"providers": {"a": None}})
+        self.assertEqual(concurrency.cloud_budget("a").source, "gateway")
+        self.assertEqual(concurrency.cloud_budget("a").limit, 1)
+
+    def test_a_fraction_is_refused_rather_than_truncated(self) -> None:
+        # 0.5 must not become 0: a written 0 means "nobody said", which is the one
+        # answer this module exists to keep distinct from a real one.
+        for bad in ("lots", -1, 0.5, True):
+            with self.assertRaises(concurrency.SettingsRefused, msg=f"{bad!r} was accepted"):
+                concurrency.save_settings({"global": bad})
+        self.assertNotIn("global", concurrency._read_file(), "a refused write reached the file")
+
+    def test_zero_clears_rather_than_stopping_the_gateway(self) -> None:
+        # The same "0 is not a stop" rule the worker follows for a busy site.
+        concurrency.save_settings({"global": 6})
+        concurrency.save_settings({"global": 0})
+        self.assertEqual(concurrency.global_limit(), concurrency.DEFAULT_GLOBAL)
+
+    def test_the_view_lists_a_provider_that_has_no_limit_yet(self) -> None:
+        # A page that drew only what was already set would hide exactly the rows
+        # that still need a number.
+        view = concurrency.settings_view(["openai-direct", "brand-new"])
+        rows = {row["provider_id"]: row for row in view["providers"]}
+        self.assertIn("brand-new", rows)
+        self.assertIsNone(rows["brand-new"]["stated"])
+        self.assertEqual(rows["brand-new"]["limit"], 1)
+        self.assertEqual(rows["brand-new"]["source"], "gateway")
+
+    def test_the_view_reports_what_is_stated_separately_from_what_is_in_force(self) -> None:
+        concurrency.save_settings({"providers": {"openai-direct": 4}})
+        rows = {row["provider_id"]: row
+                for row in concurrency.settings_view(["openai-direct", "other"])["providers"]}
+        self.assertEqual(rows["openai-direct"]["stated"], 4)
+        self.assertIsNone(rows["other"]["stated"], "an unset row must read as unset, not as 1")
 
 
 if __name__ == "__main__":
