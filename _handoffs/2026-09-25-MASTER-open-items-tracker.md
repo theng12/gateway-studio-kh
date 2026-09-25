@@ -459,6 +459,52 @@ stop reading its silence as an answer. That line is worth more than the four row
   the controller-mirror the design already names, or for the few nodes a site actually
   needs current. Blocked on their answer to HUB-15.
 
+- [ ] **GW-8 — the gateway runs one job at a time, for every lane, and publishes a
+  concurrency limit of 4.** Found 2026-09-25 from the owner's own question — *"if I
+  have 20 machines and 19 sit idle it's useless to me"* — and it is the single
+  biggest thing between this fleet and working like one fleet.
+  truth: `gateway/worker.py::_loop` (`for job in due(): execute_job(job)`, one
+  thread), `store.due()` (no modality filter), `constants.ADMISSION`
+  (`paid_concurrency_limit: 4`), `api.acquire_permit` (grants unconditionally).
+  last verified: 2026-09-25 → 5 chat jobs, **1 running and 3 accepted at once**; two
+  jobs sent to 1500 in the same second took 172.3 s and 312.4 s, and 312.4 − 172.3 is
+  the second one *waiting*. **It is not one lane per modality — it is one lane
+  total**: an image job blocks chat, TTS, subtitle and music.
+  **And the number we publish is not the number we enforce**: Story Studio is told it
+  may run 4 at once and `/v1/images/admission/permits` always grants, so its admission
+  check cannot catch this. A published figure that does not describe the system is the
+  defect this project keeps fixing.
+  **The premise is written down and the fleet invalidates it** — `store.py`: *"fencing
+  tokens, lease expiry, admission permits and failover columns because multiple
+  replicas and a fleet of sites must be safe. None of that applies here."* With ~20
+  Macs, a fleet of sites is exactly what applies.
+  **Scoped, and the scary half is already done:**
+  1. N workers instead of one — the claim is **already atomic** (`mark_running` is a
+     conditional `UPDATE … WHERE state = 'accepted'` returning `rowcount == 1`), so
+     double-claiming is handled.
+  2. **Per-lane budgets**, not one global N, or eight image jobs starve chat.
+  3. **Per-provider budgets.** Sites sized from the `by_operation` capacity the
+     gateway already reads (`available_worker_slots`, `available_physical_machine_slots`);
+     cloud lanes from stated or curated limits — see the note below.
+  4. `paid_concurrency_limit` must become the sum of what is actually run, or the
+     permits route must start refusing. Today it is a lie in a field Story Studio reads.
+  5. **Artifact path — smaller than the code comment claims.** Paths are per job
+     (`{job_id}.{ext}`, `{job_id}-{index}.{ext}`), so concurrent jobs cannot collide;
+     retention has a one-hour floor so nothing fresh is pruned; `record_artifacts`
+     merges into the job row, which is safe with one worker per job.
+  6. Cancel and dispatch-window semantics per job (`begin_dispatch`,
+     `cancel_requested`), and holds — an unknown-outcome job must not be re-claimed.
+  Note on per-provider concurrency, which the owner raised and `catalog.py` already
+  flagged: *"ponytail: a conservative concurrency of 1 for every TTS lane. Ceiling — a
+  provider that accepts several submissions at once is under-used… Upgrade path —
+  per-provider values once stated."* (`provider_submit_concurrency: 1`). **We read no
+  rate-limit headers at all** — OpenAI and OpenRouter return `x-ratelimit-*` on every
+  response and we ignore them, reacting only to 429s (every adapter marks 429
+  retryable; several have bespoke branches). The honest sources are the same three this
+  project already uses for limits: **stated** (headers, where a provider sends them),
+  **curated** (`data/model-limits.local.json` pattern), **labelled default** — each
+  carrying which of the three it is.
+
 ---
 
 ## C. Owner
