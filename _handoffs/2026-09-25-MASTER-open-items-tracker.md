@@ -126,6 +126,22 @@ authoritative for which field would save the next reader the diff.
   owes: SH (a notification, no work) · this is the one ask that was hiding in the
   chat-lane note.
 
+- [ ] **HUB-13 — make the held release clearable, and re-word the banner that
+  announces it.** owes: SH (small) · truth: `hub/release/{release.json,artifact}`
+  under the Hub's data dir; `POST /api/hub/release` stores one and there is no route
+  or control to clear it.
+  last verified: 2026-09-25 on this Mac → the controller holds a real 1.28 GB
+  `StudioHub-0.6.50-d6bc438.dmg` (pushed 2026-09-23, signed by the trusted gateway
+  key) while running 0.6.63, so the Connections page shows **"Older release
+  available — this Mac is on a newer version"**. The guard is working exactly as
+  designed — nothing is offered, nothing rolls back — but the owner read it as *"did
+  I install the latest one? should I stop and start the service?"*, and the only way
+  to clear it is to delete two files in the Hub's data directory by hand. A "clear
+  held release" action, and a heading that says what it is (a **mirror for nodes**,
+  not an update waiting to be applied), would each have saved that.
+  Note for our side, not yours: that artifact is also the only rollback copy on
+  disk, so clearing it is a decision, not housekeeping.
+
 ### Rows you closed, recorded so we stop asking
 
 - ~~`modality` on `/api/hub/model-packages`~~ — closed 2026-09-25 by Hub 0.6.63.
