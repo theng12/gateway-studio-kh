@@ -119,6 +119,23 @@ first is visible; the second is the one that decides whether anything can reach
 that Mac. A Hub whose services are stopped, or whose bind failed on one address,
 should say so where the tick is, rather than looking identical to a healthy one.
 
+**And it was proved, not guessed, within the hour.** One controller
+(`terranash-1200`) read red for a whole session while its Settings showed Tailscale
+ticked, identical to the Macs that worked. The owner stopped its services and
+started them again — nothing else, no setting changed — and it came up green in
+9 ms and has stayed up. So the preference was already correct and the *running
+process* was still on loopback: the tick had never been applied to a socket.
+
+Two consequences worth your consideration:
+
+- **Apply the change when it is made**, or say so at the moment of ticking
+  ("restart services to apply"). A preference that silently does nothing until an
+  unrelated restart is indistinguishable from a broken one — which is exactly how
+  it was reported to us: *"they all have Tailscale ticked, but it's still red. it
+  might possibly be a bug."*
+- **Show the live bind**, so the page can never again show a tick that is not a
+  socket.
+
 Related, and worth a guard: if `listenHost` holds an address that is **not on this
 Mac any more** (a LAN address it left, a tailnet address from before a re-auth),
 does the bind fail loudly, fall back, or silently bind the rest? Whichever it is,
