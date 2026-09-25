@@ -3710,23 +3710,32 @@ def main() -> int:
             # check is what catches that: a location pointed at the mock must find
             # the mock's models, and this run has no local Hub at all.
             check("a location discovers its own Hub's models, not the local one",
-                  len(installed) == 6,
+                  len(installed) == 7,
                   f"{sorted(installed)} error="
                   f"{hub_payload.get('error') or hub_payload.get('discovery_error')}")
             # **A lane the Hub gained on its own.** The gateway used to map a
             # package to a modality by its *engine name* through a table in this
             # repo, and `continue` past anything else — so the day the Hub served a
             # model on a new engine it vanished, with no row, no count and no
-            # reason anywhere. The Hub **states** `hub_modality` per model; reading
-            # it is what lets a new image, LLM or video lane arrive here without a
-            # gateway release.
-            check("the Hub's own modality is what places a row",
+            # reason anywhere. Three readers now exist, strongest first: the Hub's
+            # `modality` on the package row (0.6.61 — no second read, and it cannot
+            # fail because a worker is down), then its per-model `hub_modality`,
+            # then that engine table as the fallback for a Hub that says nothing.
+            check("the Hub's own modality on the package row is what places a row",
                   ((installed.get("mock-hub/clone-model") or {}).get("raw") or {})
-                  .get("modality_source") == "stated",
+                  .get("modality_source") == "package",
                   f"{(installed.get('mock-hub/clone-model') or {}).get('raw')}")
+            check("and a row that predates it falls back to the catalogue's statement",
+                  ((installed.get("mock-hub/video-model") or {}).get("raw") or {})
+                  .get("modality_source") == "stated",
+                  f"{(installed.get('mock-hub/video-model') or {}).get('raw')}")
             check("a model on an engine this gateway has no table entry for is discovered, not dropped",
                   (installed.get("mock-hub/video-model") or {}).get("modality") == "video",
                   f"{sorted(installed)}")
+            check("the lane's own contract is carried verbatim, deadline included",
+                  (((installed.get("mock-hub/clone-model") or {}).get("raw") or {})
+                   .get("lane_contract") or {}).get("deadline_seconds") == 900.0,
+                  f"{((installed.get('mock-hub/clone-model') or {}).get('raw') or {}).get('lane_contract')}")
             check("and one nothing can place is reported by engine, not swallowed",
                   hub_payload.get("skipped") == [
                       # The fixture's own pair, on an engine the gateway has never
@@ -3738,10 +3747,15 @@ def main() -> int:
                        "model_ids": ["vision-one-pkg", "voice-one-pkg"],
                        "reason": ("this gateway has no lane for it: the package states no "
                                   "modality and its engine is not in the engine table")},
+                      # This one the **Hub itself** refused to place, so its own
+                      # sentence is reported — the one that names the allowlist a
+                      # person has to edit.
                       {"engine": "mystery-mlx", "count": 1,
                        "model_ids": ["mock-hub/unplaceable-model"],
-                       "reason": ("this gateway has no lane for it: the package states no "
-                                  "modality and its engine is not in the engine table")},
+                       "reason": ("the manifest engine 'mystery-mlx' has no worker or "
+                                  "modality; add it to _ENGINE_ROUTE in "
+                                  "components/hub/standalone.py and to the engine "
+                                  "allowlist in components/model_packages.py")},
                   ],
                   f"{hub_payload.get('skipped')}")
             check("a catalogued model carries the reference contract the Hub stated",

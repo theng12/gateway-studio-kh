@@ -248,6 +248,45 @@ def _named_attempt(job: dict[str, Any]) -> tuple[str, int] | None:
     return batch, index
 
 
+def _lane_contract(job: dict[str, Any]) -> dict[str, Any]:
+    """The job's lane contract, as the model's own studio published it.
+
+    Read from the cached discovery row rather than re-fetched: the contract is a
+    property of the model build, not of this moment, and an operator action must
+    not depend on a network read. `{}` when the lane published none — an older
+    Hub, or a lane with no studio up — which every caller treats as "unstated".
+    """
+    provider_id = str(job.get("provider_id") or "")
+    model_id = str(job.get("model_id") or "")
+    if not provider_id or not model_id:
+        return {}
+    try:
+        for model in registry.models.models_for(provider_id, include_disabled=True):
+            if str(model.get("model_id") or "") != model_id:
+                continue
+            raw = model.get("raw") or {}
+            contract = raw.get("lane_contract")
+            return contract if isinstance(contract, dict) else {}
+    except Exception:  # noqa: BLE001 - an unreadable contract is "unstated", not a crash
+        return {}
+    return {}
+
+
+def _lane_discard_state(job: dict[str, Any]) -> bool | None:
+    """Whether the job's lane says it can discard: `True`, `False`, or unstated.
+
+    Hub 0.6.61 states it per lane in `lane_contract.states.discard_supported` —
+    chat says `false`, because a synchronous completion has no queued attempt to
+    abandon. Without reading it the operator is offered a discard the Hub will
+    refuse, which is a button that fails on press.
+    """
+    states = _lane_contract(job).get("states")
+    if not isinstance(states, dict) or "discard_supported" not in states:
+        return None
+    value = states.get("discard_supported")
+    return value if isinstance(value, bool) else None
+
+
 def recovery_action(job: dict[str, Any]) -> str | None:
     """What an operator can do about this hold, decided by the lane that owns it.
 
@@ -255,14 +294,13 @@ def recovery_action(job: dict[str, Any]) -> str | None:
     `recovery_context`: only the gateway knows whether a lane has a discard route
     at all, and a button that fails on press is worse than no button.
 
-    * `"discard_upstream"` — the lane can discard (Studio Hub) **and** the hold
-      names the batch to abandon, so the Hub's own answer is the outcome.
-    * `"close_hold"` — no lane other than Studio Hub has a discard route, so
-      there is nothing upstream to tell and the operator is closing the gateway's
-      own record.
-    * `None` — not a hold, or a Hub hold that names no batch (recorded before the
-      gateway kept one): there is no honest action, and the job's own detail says
-      to reconcile it at the source.
+    * `"discard_upstream"` — the lane can discard **and** the hold names the batch
+      to abandon, so the Hub's own answer is the outcome.
+    * `"close_hold"` — there is nothing upstream to tell: no lane other than
+      Studio Hub has a discard route, Studio Hub says so per lane when its
+      contract states `discard_supported: false`, and a Hub hold that names no
+      batch has nothing to aim at.
+    * `None` — not a hold at all.
     """
     if not job.get("recovery_required"):
         return None
@@ -272,6 +310,10 @@ def recovery_action(job: dict[str, Any]) -> str | None:
         # still be closed by the person looking at it.
         return "close_hold"
     if getattr(adapter_for(definition), "discard", None) is None:
+        return "close_hold"
+    if _lane_discard_state(job) is False:
+        # The lane's own statement outranks the adapter's capability: the adapter
+        # has a discard call, and this lane's contract says it does not apply.
         return "close_hold"
     return "discard_upstream" if _named_attempt(job) else None
 
@@ -310,16 +352,24 @@ def _discard_recovery_hold(job_id: str) -> dict[str, Any]:
     provider_id = str(job.get("provider_id") or "")
     definition = registry.definition(provider_id)
     discard = getattr(adapter_for(definition), "discard", None) if definition else None
+    lane_declined = discard is not None and _lane_discard_state(job) is False
+    if lane_declined:
+        # The lane's own contract says it has no discard route (Hub 0.6.61,
+        # `states.discard_supported: false` — a synchronous chat completion has no
+        # queued attempt). Calling anyway would get a refusal and leave the hold,
+        # so it takes the same path as a lane with no discard call at all.
+        discard = None
     if discard is None:
         # **Nothing upstream can be told, so the record is closed here and the
-        # sentence says so.** Either the lane has no discard route at all (every
-        # cloud lane) or the provider is no longer configured; in both cases the
+        # sentence says so.** The lane either has no discard route, says the one it
+        # has does not apply here, or is no longer configured; in every case the
         # gateway would be quoting a discard that never happened if it claimed one.
-        lane = (
-            f"The {definition.kind} lane has no discard route"
-            if definition is not None
-            else f"Provider '{provider_id}' is no longer configured"
-        )
+        if lane_declined:
+            lane = "This lane's own contract states it has no discard route"
+        elif definition is not None:
+            lane = f"The {definition.kind} lane has no discard route"
+        else:
+            lane = f"Provider '{provider_id}' is no longer configured"
         detail = (
             f"An operator closed this unknown-outcome hold. {lane}, so the provider was not "
             "told and cannot be: the attempt stays abandoned, and a result it may still "

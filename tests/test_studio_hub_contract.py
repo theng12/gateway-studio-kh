@@ -1238,6 +1238,74 @@ class DiscardActionTests(_HubCase):
         # And a settled job is not a hold at all.
         self.assertIsNone(api_module.recovery_action(dict(job, recovery_required=False)))
 
+    def test_a_lane_that_says_it_cannot_discard_is_closed_here(self) -> None:
+        """**The lane's own contract outranks the adapter's capability.**
+
+        Hub 0.6.61 states `lane_contract.states.discard_supported` per lane, and
+        its chat lane says `false` — a synchronous completion has no queued attempt
+        to abandon. The adapter has a discard call, so before this the operator was
+        offered "Discard uncertain attempt…" for a lane that would refuse it: a
+        button that fails on press. Now the action published for the job is
+        `close_hold`, and the endpoint takes the same local path as a lane with no
+        discard route at all.
+        """
+        from gateway import api as api_module
+
+        hub = _Hub()
+        job_id = self._hold()
+        job = self.api.store.get(job_id)
+        definition = SimpleNamespace(
+            id="studio-hub-test", kind="studio_hub", base_url=HUB, display_name="Hub"
+        )
+        chat_lane = {
+            "model_id": "model/test",
+            "raw": {
+                "lane_contract": {
+                    "schema": "studiohub.lane-contract.v1",
+                    "modality": "chat",
+                    "states": {"uncertain": "uncertain", "discard_supported": False},
+                }
+            },
+        }
+        with patch.object(self.api.registry, "definition", return_value=definition):
+            # A lane that states nothing keeps the discard it has always had.
+            self.assertEqual(api_module.recovery_action(job), "discard_upstream")
+            with patch.object(
+                self.api.registry.models, "models_for", return_value=[chat_lane]
+            ):
+                self.assertEqual(api_module.recovery_action(job), "close_hold")
+                with patch.object(
+                    self.api.registry.credentials, "resolved", return_value={"hub_token": "t"}
+                ), self.hub_client(hub):
+                    response = self.client.post(
+                        f"/admin/api/jobs/{job_id}/discard-uncertain"
+                    )
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["closed"], "local")
+        self.assertEqual(hub.discards, [], "a lane that says it cannot discard is not asked")
+        closed = self.api.store.get(job_id)
+        self.assertFalse(closed["recovery_required"])
+        self.assertEqual(closed["error_code"], "HOLD_CLOSED")
+        # The recorded sentence says *why* nothing was sent, in the lane's terms.
+        self.assertIn("own contract", closed["error_detail"])
+        self.assertIn("not told", closed["error_detail"])
+
+    def test_a_lane_that_states_nothing_keeps_its_discard(self) -> None:
+        from gateway import api as api_module
+
+        hub = _Hub()
+        job_id = self._hold()
+        job = self.api.store.get(job_id)
+        definition = SimpleNamespace(
+            id="studio-hub-test", kind="studio_hub", base_url=HUB, display_name="Hub"
+        )
+        with patch.object(self.api.registry, "definition", return_value=definition), \
+                patch.object(self.api.registry.models, "models_for", return_value=[]):
+            self.assertEqual(api_module.recovery_action(job), "discard_upstream")
+        response = self._discard(job_id, hub)
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(hub.discards, [f"/api/hub/jobs/{BATCH}/items/0/discard"])
+
     def test_nothing_discards_on_its_own(self) -> None:
         """An uncertain outcome must not walk itself into a discard."""
         hub = _Hub(

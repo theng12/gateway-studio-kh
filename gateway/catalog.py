@@ -770,6 +770,41 @@ def _first_stated(raw: dict[str, Any], keys: tuple[str, ...]) -> Any:
     return None
 
 
+def _hub_stated_limit(raw: dict[str, Any], field: str) -> tuple[int | None, str | None]:
+    """A Hub chat model's own limit, with the sentence saying where it read it.
+
+    Hub 0.6.61 publishes `model_limits` on chat rows, one object per limit:
+
+        {"context_window_tokens": {"value": 262144,
+                                   "source": "model/config.json text_config.max_position_embeddings"},
+         "max_output_tokens": {"value": 4096,
+                               "source": "worker default: the checkpoint ships no generation_config.json"}}
+
+    **A `value` of `null` beside a `source` is the Hub stating that it does not
+    know**, so it reads as unstated — the same rule as everywhere else: "the answer
+    is none" and "I could not work it out" must not share a value. The sentence is
+    carried through rather than replaced, because it says *which* number this is:
+    a checkpoint's own window and a worker's fallback are both worth publishing and
+    are not the same claim.
+    """
+    limits = raw.get("model_limits")
+    if not isinstance(limits, dict):
+        return None, None
+    entry = limits.get(field)
+    if isinstance(entry, (int, float)) and not isinstance(entry, bool):
+        # A Hub that publishes the bare number rather than the object: still its
+        # own statement, just without the sentence.
+        return int(entry), None
+    if not isinstance(entry, dict):
+        return None, None
+    value = entry.get("value")
+    source = entry.get("source")
+    source = str(source).strip() if isinstance(source, str) and source.strip() else None
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None, source
+    return int(value), source
+
+
 def _chat_row(model_id: str, definition: ProviderDefinition, model: dict[str, Any]) -> dict[str, Any]:
     raw = model.get("raw") or {}
     # Providers spell the same two figures differently: OpenRouter uses
@@ -866,6 +901,21 @@ def _chat_row(model_id: str, definition: ProviderDefinition, model: dict[str, An
     # Where the provider published nothing, the owner's curated file may know.
     # Gap-filling only: a live provider value always wins, because a file goes
     # stale and a provider does not.
+    #
+    # **A Hub states its own limits first.** It publishes `model_limits` per chat
+    # model with the sentence saying where each number came from, and reading it
+    # is the difference between a model's real window and this gateway's curated
+    # flat `1,000,000` wearing the model's name — measured on 2026-09-24: the Hub
+    # states 262,144 for Qwen3.5-9B-4bit while the curated file said 1,000,000,
+    # two orders of magnitude out. The Hub's sentence travels beside the number in
+    # `*_source_detail`, so a worker's fallback (its own words) is never mistaken
+    # for the checkpoint's fact.
+    hub_context, hub_context_detail = _hub_stated_limit(raw, "context_window_tokens")
+    if hub_context is not None:
+        context = hub_context
+    hub_output, hub_output_detail = _hub_stated_limit(raw, "max_output_tokens")
+    if hub_output is not None:
+        completion = hub_output
     context_window, context_source = _limit_with_source(
         "context_window_tokens", _stated(context), None, definition.id, model_id
     )
@@ -877,8 +927,13 @@ def _chat_row(model_id: str, definition: ProviderDefinition, model: dict[str, An
         "queue_class": "direct",
         "context_window_tokens": context_window,
         "context_window_tokens_source": context_source,
+        # The provider's own sentence about where the number came from, when it
+        # gave one (`null` otherwise) — additive, so a reader that only knows the
+        # three classes above is unaffected.
+        "context_window_tokens_source_detail": hub_context_detail,
         "max_output_tokens": max_output,
         "max_output_tokens_source": output_source,
+        "max_output_tokens_source_detail": hub_output_detail,
         "controls": controls,
         "input_modalities": inputs,
         "supports_vision": ("image" in inputs) if inputs else None,

@@ -215,6 +215,42 @@ def _headers(request: BackendRequest) -> dict[str, str]:
     )
 
 
+def lane_deadline_seconds(request: BackendRequest | None) -> float:
+    """How long to poll this job, as the **lane that enforces it** states it.
+
+    Hub 0.6.61 puts `deadline_seconds` inside each model's `lane_contract` — its
+    own peer-proxy timeout, "one number, owned by the party that enforces it".
+    Reading it is what stops this gateway from cutting a lane short at its own flat
+    `JOB_DEADLINE_S` after the Hub has raised its ceiling, which would fail a job
+    that was about to succeed.
+
+    Falls back to `JOB_DEADLINE_S` whenever nothing states one: an older Hub, a
+    lane with no contract, or a job whose model is not in the cache. The read is
+    from the cached discovery row, so it costs no network time on the poll path.
+    """
+    if request is None:
+        return JOB_DEADLINE_S
+    try:
+        from ..providers import registry  # local import: avoids a cycle
+
+        for model in registry.models.models_for(request.provider_id, include_disabled=True):
+            if str(model.get("model_id") or "") != str(request.model_id or ""):
+                continue
+            raw = model.get("raw") or {}
+            contract = raw.get("lane_contract")
+            if not isinstance(contract, dict):
+                return JOB_DEADLINE_S
+            stated = contract.get("deadline_seconds")
+            if isinstance(stated, bool) or not isinstance(stated, (int, float)):
+                return JOB_DEADLINE_S
+            # A stated deadline of zero or less is not a deadline; keep ours rather
+            # than failing every poll instantly on a nonsensical number.
+            return float(stated) if float(stated) > 0 else JOB_DEADLINE_S
+    except Exception:  # noqa: BLE001 - an unreadable contract is "unstated"
+        return JOB_DEADLINE_S
+    return JOB_DEADLINE_S
+
+
 def _poll_batch(
     client: httpx.Client,
     base: str,
@@ -222,6 +258,7 @@ def _poll_batch(
     batch_id: str,
     item_index: int,
     jobs_path: str = "/api/hub/jobs",
+    deadline_seconds: float | None = None,
 ) -> dict[str, Any]:
     """Poll a Hub batch to a terminal state.
 
@@ -229,8 +266,12 @@ def _poll_batch(
     while transcription batches live under `/api/hub/transcription/jobs` and
     are *not* visible from the other route -- polling the wrong one returns 404
     rather than a useful error.
+
+    `deadline_seconds` is the lane's own ceiling when it published one (see
+    `lane_deadline_seconds`), and this gateway's flat fallback otherwise.
     """
-    deadline = time.monotonic() + JOB_DEADLINE_S
+    limit = float(deadline_seconds) if deadline_seconds else JOB_DEADLINE_S
+    deadline = time.monotonic() + limit
     last: dict[str, Any] = {}
     while time.monotonic() < deadline:
         response = client.get(f"{base}{jobs_path}/{batch_id}", headers=headers)
@@ -271,7 +312,7 @@ def _poll_batch(
         time.sleep(POLL_INTERVAL_S)
 
     raise BackendError(
-        f"hub job did not finish within {int(JOB_DEADLINE_S)}s",
+        f"hub job did not finish within {int(limit)}s",
         code="PROVIDER_SUBMISSION_UNCERTAIN",
         retryable=True,
     )
@@ -792,7 +833,10 @@ def _generate_image_or_voice(request: BackendRequest) -> BackendResult:
         if request.checkpoint is not None:
             request.checkpoint(batch_id)
 
-        outcome = _poll_batch(client, base, headers, batch_id, 0)
+        outcome = _poll_batch(
+            client, base, headers, batch_id, 0,
+            deadline_seconds=lane_deadline_seconds(request),
+        )
 
         artifact = client.get(
             _artifact_url(base, batch_id, 0, request.modality),
@@ -912,7 +956,9 @@ def _generate_transcription(request: BackendRequest) -> BackendResult:
             request.checkpoint(batch_id)
 
         outcome = _poll_batch(
-            client, base, headers, batch_id, 0, jobs_path="/api/hub/transcription/jobs"
+            client, base, headers, batch_id, 0,
+            jobs_path="/api/hub/transcription/jobs",
+            deadline_seconds=lane_deadline_seconds(request),
         )
 
         artifact = client.get(

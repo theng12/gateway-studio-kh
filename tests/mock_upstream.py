@@ -461,19 +461,71 @@ class Handler(BaseHTTPRequestHandler):
             self._json(200, {"models": [
                 {"package_id": "clone-model", "model_id": "mock-hub/clone-model",
                  "engine": "voice-mlx", "files_state": "files_verified",
-                 "dispatch_state": "eligible", "revision": "a" * 40},
+                 "dispatch_state": "eligible", "revision": "a" * 40,
+                 # Hub 0.6.61 puts the lane on the row itself, from its own engine
+                 # table, "so a scheduler does not have to make a second,
+                 # best-effort catalog read and join on model id" — and so does the
+                 # contract, verbatim except for the Hub's own `deadline_seconds`.
+                 "modality": "voice",
+                 "lane_contract": {
+                     "schema": "studiohub.lane-contract.v1",
+                     "modality": "voice",
+                     "operation": "voice.tts",
+                     "parameters": [
+                         {"name": "text", "type": "string", "required": True},
+                         {"name": "speed", "type": "number", "required": False,
+                          "minimum": 0.7, "maximum": 1.2, "default": 1.0},
+                     ],
+                     "artifact": {"modality": "voice", "media_type": "audio/wav",
+                                  "extension": "wav", "per_item": 1},
+                     "states": {"accepted": ["queued"], "active": ["running"],
+                                "terminal": ["done", "error", "cancelled"],
+                                "uncertain": "uncertain", "uncertain_is_terminal": False,
+                                "discard_supported": True},
+                     "cancel": {"supported": True,
+                                "request": "DELETE /api/hub/jobs/{batch_id}"},
+                     "deadline_seconds": 900.0,
+                 }},
                 {"package_id": "preset-model", "model_id": "mock-hub/preset-model",
                  "engine": "voice-mlx", "files_state": "files_verified",
-                 "dispatch_state": "eligible", "revision": "b" * 40},
+                 "dispatch_state": "eligible", "revision": "b" * 40,
+                 "modality": "voice", "lane_contract": None},
                 {"package_id": "uncatalogued-model", "model_id": "mock-hub/uncatalogued-model",
                  "engine": "voice-mlx", "files_state": "files_verified",
-                 "dispatch_state": "eligible", "revision": "c" * 40},
+                 "dispatch_state": "eligible", "revision": "c" * 40,
+                 "modality": "voice", "lane_contract": None},
                 {"package_id": "toobig-model", "model_id": "mock-hub/toobig-model",
                  "engine": "voice-mlx", "files_state": "files_verified",
-                 "dispatch_state": "eligible", "revision": "d" * 40},
+                 "dispatch_state": "eligible", "revision": "d" * 40,
+                 "modality": "voice", "lane_contract": None},
                 {"package_id": "capability-only-model", "model_id": "mock-hub/capability-only-model",
                  "engine": "voice-mlx", "files_state": "files_verified",
-                 "dispatch_state": "eligible", "revision": "e" * 40},
+                 "dispatch_state": "eligible", "revision": "e" * 40,
+                 "modality": "voice", "lane_contract": None},
+                # A **chat** package: the lane exists, so the row states it and
+                # carries a contract whose `discard_supported` is false, exactly as
+                # the Hub's own chat lane does (a synchronous completion has no
+                # queued attempt to abandon).
+                {"package_id": "chat-model", "model_id": "mock-hub/chat-model",
+                 "engine": "chat-mlx", "files_state": "files_verified",
+                 "dispatch_state": "eligible", "revision": "1" * 40,
+                 "modality": "chat",
+                 "lane_contract": {
+                     "schema": "studiohub.lane-contract.v1",
+                     "modality": "chat",
+                     "operation": "chat.completion",
+                     "parameters": [
+                         {"name": "messages", "type": "array", "required": True},
+                         {"name": "max_tokens", "type": "integer", "required": False},
+                     ],
+                     "artifact": {"modality": "chat", "media_type": "application/json",
+                                  "per_item": 1},
+                     "states": {"accepted": ["queued"], "active": ["running"],
+                                "terminal": ["done", "error", "cancelled"],
+                                "uncertain": "uncertain", "uncertain_is_terminal": False,
+                                "discard_supported": False},
+                     "deadline_seconds": 600.0,
+                 }},
                 # Two shapes the gateway has never seen before, because the Hub
                 # gains lanes on its own schedule — an image engine today, an LLM
                 # or video lane later.
@@ -484,14 +536,23 @@ class Handler(BaseHTTPRequestHandler):
                 # `studio_hub` adapter serves no video lane) rather than vanishing.
                 {"package_id": "video-model", "model_id": "mock-hub/video-model",
                  "engine": "video-mlx", "files_state": "files_verified",
-                 "dispatch_state": "eligible", "revision": "f" * 40},
+                 "dispatch_state": "eligible", "revision": "f" * 40,
+                 # No `modality` key: this row predates 0.6.61, so the catalogue's
+                 # `hub_modality` is what places it.
+                 "lane_contract": None},
                 # `unplaceable-model` is the one case nothing can place: an unknown
                 # engine **and** no statement anywhere. It must be *reported*, not
                 # silently dropped — "I could not work out what this is" and "there
-                # is nothing here" are different answers.
+                # is nothing here" are different answers. The Hub names the engine
+                # allowlist in `reason`, and that sentence is what the gateway
+                # reports.
                 {"package_id": "unplaceable-model", "model_id": "mock-hub/unplaceable-model",
                  "engine": "mystery-mlx", "files_state": "files_verified",
-                 "dispatch_state": "eligible", "revision": "0" * 40},
+                 "dispatch_state": "eligible", "revision": "0" * 40,
+                 "modality": None, "lane_contract": None, "manifest_error": True,
+                 "reason": ("the manifest engine 'mystery-mlx' has no worker or modality; add "
+                            "it to _ENGINE_ROUTE in components/hub/standalone.py and to the "
+                            "engine allowlist in components/model_packages.py")},
             ] + FLEET_PACKAGES})
             return
         if path == "/api/hub/catalog":
@@ -542,6 +603,24 @@ class Handler(BaseHTTPRequestHandler):
                  "hub_modality": "video",
                  "capabilities": ["video"],
                  "min_unified_memory_gb": 32, "memory_eligible": True},
+                # A chat model: the Hub states the lane, its own limits — with the
+                # sentence saying where each number came from — and its runtime
+                # stays unmeasured.
+                {"repo": "mock-hub/chat-model", "family": "qwen3_5",
+                 "hub_modality": "chat",
+                 "capabilities": ["chat"],
+                 "min_unified_memory_gb": 8, "memory_eligible": True,
+                 "model_limits": {
+                     "context_window_tokens": {
+                         "value": 262144,
+                         "source": "model/config.json text_config.max_position_embeddings",
+                     },
+                     "max_output_tokens": {
+                         "value": 4096,
+                         "source": ("worker default: the checkpoint ships no "
+                                    "generation_config.json"),
+                     },
+                 }},
                 # `mock-hub/unplaceable-model` is deliberately absent: no
                 # statement anywhere, on an engine nothing knows.
             ]})

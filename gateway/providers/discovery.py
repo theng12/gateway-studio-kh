@@ -480,6 +480,17 @@ _HUB_ENGINE_MODALITY = {
 #: that states nothing (an older build, or a catalogue read that failed), because
 #: keying on the engine name means a new engine is invisible here until this file
 #: is edited — which is what a model the owner adds on the Hub would hit.
+#: The Hub's **stated** modality for a model, in this gateway's vocabulary.
+#:
+#: Two Hub routes state it and both are read: `modality` on each
+#: `/api/hub/model-packages` row (Hub 0.6.61+, from its own `_ENGINE_ROUTE` table,
+#: "so a scheduler does not have to make a second, best-effort catalog read and
+#: join on model id") and `hub_modality` on `/api/hub/catalog` and
+#: `/api/hub/models` (measured live on 0.6.54: `voice` 197, `transcription` 65,
+#: `music` 10, `image` 5). Either statement beats `_HUB_ENGINE_MODALITY` below,
+#: which is only the fallback for a Hub that says nothing — keying on the engine
+#: name means a new engine is invisible here until this file is edited, which is
+#: what a model the owner adds on the Hub would hit.
 #:
 #: `subtitle` is the node roster's spelling of the Subtitle studio and
 #: `transcription` is the capability roster's; both are the same studio.
@@ -550,12 +561,27 @@ def _hub_catalog(base: str, token: str, *, local: bool = False) -> dict[str, dic
     return indexed
 
 
-def _stated_hub_modality(facts: dict[str, Any] | None) -> str | None:
-    """The Hub's own modality for a model, in this gateway's vocabulary.
+def _package_stated_modality(package: dict[str, Any]) -> str | None:
+    """What the **package row itself** declares, in this gateway's vocabulary.
 
-    `None` when the Hub stated nothing this gateway names, so the caller falls
-    back to the engine table and the published `modality_source` says which
-    reader placed the row.
+    Hub 0.6.61 puts `modality` on every `/api/hub/model-packages` row, read from
+    its own engine table. It is present whenever the engine is registered — even
+    on a row whose manifest is unusable — and absent (or `null`) when the engine
+    is not, which the Hub states rather than guesses. `None` here therefore means
+    "the Hub did not place it", never "it has no modality".
+    """
+    if "modality" not in package:
+        return None
+    stated = str(package.get("modality") or "").strip().lower()
+    return _HUB_STATED_MODALITY.get(stated) if stated else None
+
+
+def _stated_hub_modality(facts: dict[str, Any] | None) -> str | None:
+    """The catalogue's modality for a model, in this gateway's vocabulary.
+
+    `None` when the catalogue said nothing this gateway names, so the caller
+    falls back to the package row and then to the engine table, and the published
+    `modality_source` says which reader placed the row.
     """
     if not isinstance(facts, dict):
         return None
@@ -563,20 +589,35 @@ def _stated_hub_modality(facts: dict[str, Any] | None) -> str | None:
     return _HUB_STATED_MODALITY.get(stated) if stated else None
 
 
-def _hub_modality(package: dict[str, Any], facts: dict[str, Any] | None) -> str | None:
-    """Which of this gateway's modalities a Hub package belongs to.
+def _hub_modality(
+    package: dict[str, Any], facts: dict[str, Any] | None
+) -> tuple[str | None, str | None]:
+    """Which of this gateway's modalities a Hub package belongs to, and who said so.
 
-    **What the Hub states first, the engine table only as the fallback.** The
-    Hub publishes `hub_modality` per model, and reading it is what lets a model
-    the owner adds on the Hub — a new image engine today, an LLM or video lane
-    later — arrive here without a gateway release. The engine name is a weaker
-    signal that only this file knows about, so it is used when the Hub says
-    nothing: an older Hub, a package the catalogue does not describe, or a
-    catalogue read that failed. `None` means neither reader could place it.
+    Three readers, strongest first — each one added because the one below it was a
+    guess that went stale:
+
+      1. **`package["modality"]`** — the Hub's own answer on the row (0.6.61+),
+         placed from its engine table and never dependent on a second call;
+      2. **the catalogue's `hub_modality`** — the Hub's per-model statement
+         (0.6.54+, and what discovery used before 1 existed);
+      3. **`_HUB_ENGINE_MODALITY`** — this repo's table, keyed on the engine name.
+         Only for a Hub that says nothing: an older build, a catalogue read that
+         failed, or a package the catalogue does not describe.
+
+    `(None, None)` means nothing could place it, and the caller reports it by name
+    rather than dropping it.
     """
-    return _stated_hub_modality(facts) or _HUB_ENGINE_MODALITY.get(
-        str(package.get("engine") or "")
-    )
+    from_package = _package_stated_modality(package)
+    if from_package is not None:
+        return from_package, "package"
+    from_catalog = _stated_hub_modality(facts)
+    if from_catalog is not None:
+        return from_catalog, "stated"
+    from_engine = _HUB_ENGINE_MODALITY.get(str(package.get("engine") or ""))
+    if from_engine is not None:
+        return from_engine, "engine"
+    return None, None
 
 
 def _studio_hub(definition: ProviderDefinition, values: dict[str, str]) -> DiscoveryResult:
@@ -647,20 +688,24 @@ def _studio_hub(definition: ProviderDefinition, values: dict[str, str]) -> Disco
         # either from the engine name: Qwen3's Base tiers clone and its
         # CustomVoice tiers do not, and they share an engine.
         facts = catalog.get(model_id) or {}
-        modality = _hub_modality(package, facts)
+        modality, modality_source = _hub_modality(package, facts)
         if modality is None:
             # **Not silently.** This is the one case the gateway genuinely cannot
-            # place, and it is exactly what a Hub serving a new lane looks like
-            # from here: a package whose engine and stated modality are both
-            # unknown. Recorded with its engine and model ids so the inventory can
-            # say "5 packages on engine `video-mlx` were not recognised" instead of
-            # reporting no models at all.
+            # place: a package nothing could answer for. Recorded with its engine
+            # and model ids so the inventory can say "5 packages on engine
+            # `video-mlx` were not recognised" instead of reporting no models at
+            # all — and, when the Hub itself refused to place it, with **the Hub's
+            # own sentence**, which names the allowlist a person has to edit.
             bucket = unclassified.setdefault(
-                engine or "(no engine stated)", {"count": 0, "model_ids": []}
+                engine or "(no engine stated)",
+                {"count": 0, "model_ids": [], "reason": None},
             )
             bucket["count"] += 1
             if model_id and len(bucket["model_ids"]) < 5:
                 bucket["model_ids"].append(model_id)
+            hub_reason = str(package.get("reason") or "").strip()
+            if hub_reason and not bucket["reason"]:
+                bucket["reason"] = hub_reason
             continue
         if not model_id:
             continue
@@ -674,10 +719,24 @@ def _studio_hub(definition: ProviderDefinition, values: dict[str, str]) -> Disco
             "files_state": files_state,
             "dispatch_state": package.get("dispatch_state"),
             "revision": package.get("revision"),
-            # Which of the two readers placed this model, so a surprising
-            # classification is traceable rather than a mystery: `stated` is the
-            # Hub's own `hub_modality`, `engine` is the fallback table here.
-            "modality_source": "stated" if _stated_hub_modality(facts) else "engine",
+            # Which reader placed this model — `package` is the Hub's own row
+            # (0.6.61+), `stated` its per-model catalogue field, `engine` the
+            # fallback table in this file — so a surprising classification is
+            # traceable rather than a mystery.
+            "modality_source": modality_source,
+            # **The lane's dispatch contract, verbatim, when a studio published
+            # one.** Hub 0.6.61 joins it onto the package row (schema
+            # `studiohub.lane-contract.v1`) and adds its own `deadline_seconds`.
+            # It is the model's own answer about how to run it — operation,
+            # accepted parameters, artifact, terminal states including which one
+            # means *uncertain* and whether the lane can discard, cancel, and
+            # measured runtimes — so it is carried unread-but-available rather
+            # than paraphrased into this file's vocabulary.
+            "lane_contract": package.get("lane_contract"),
+            # `model` for something a person can pick; `dependency` for a package
+            # that only exists to serve another. The Hub's own answer to the
+            # question this gateway otherwise infers from the catalogue.
+            "package_type": package.get("type"),
         }
         # The Hub states these per model, so read them rather than deriving
         # either from the engine name: Qwen3's Base tiers clone and its
@@ -696,6 +755,19 @@ def _studio_hub(definition: ProviderDefinition, values: dict[str, str]) -> Disco
             raw["capabilities"] = facts.get("capabilities") or []
             raw["reference_audio"] = facts.get("reference_audio") or {}
             raw["family"] = facts.get("family")
+            # The Hub's own limit for a chat model, each value with the sentence
+            # saying where it came from (`model/config.json …` vs `worker
+            # default: …`). Carried so the catalogue publishes the model's number
+            # rather than this gateway's curated flat default.
+            raw["model_limits"] = facts.get("model_limits")
+            # The Hub builds a package row's `lane_contract` from the studios'
+            # catalogue rows, so a catalogue that carries one is the same fact —
+            # read it when the package row had none (an older package list, or a
+            # contract joined after this row was cached).
+            if not isinstance(raw.get("lane_contract"), dict) and isinstance(
+                facts.get("lane_contract"), dict
+            ):
+                raw["lane_contract"] = facts["lane_contract"]
             # Whether the Hub takes a **complete script** for this model and
             # sections it itself, and how. Read, never derived: `null` means it
             # does not long-form split this model at all, which is exactly the set
@@ -729,7 +801,10 @@ def _studio_hub(definition: ProviderDefinition, values: dict[str, str]) -> Disco
                 "engine": engine,
                 "count": bucket["count"],
                 "model_ids": bucket["model_ids"],
-                "reason": (
+                # The Hub's own sentence when it refused to place the package (it
+                # names the engine allowlist to edit); ours only when no statement
+                # existed at all.
+                "reason": bucket["reason"] or (
                     "this gateway has no lane for it: the package states no modality "
                     "and its engine is not in the engine table"
                 ),

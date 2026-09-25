@@ -4,6 +4,39 @@ Newest first. This is the same list the **What's New** link in the app shows.
 
 ---
 
+## Studio Hub now tells the gateway how to run each model — and the gateway reads it
+
+Studio Hub 0.6.61 answers the lane-contract request this gateway sent. Three of
+those answers are now in use:
+
+- **The Hub states each model's lane on the package row itself** (`modality`), so
+  placing a model no longer depends on a second call that could fail. The
+  per-model statement and the engine table remain as fallbacks, in that order.
+- **Each model carries its own dispatch contract** — operation, accepted
+  parameters, artifact, states, cancel — and the gateway reads two things from it
+  today: **the deadline the Hub enforces** (instead of this gateway's own flat
+  900 s, so a lane the Hub lets run longer is not cut short here) and **whether
+  the lane can discard**. That second one fixes a real button: a Studio Hub *chat*
+  hold now offers **Close this hold…**, because the Hub's own contract says that
+  lane has no discard route. Before, it offered a discard that would have been
+  refused.
+- **A Hub chat model's limits are published as the Hub's own numbers.** It states
+  the context window it read from the checkpoint and the max output its worker
+  falls back to, each with the sentence saying which is which — so a Hub LLM row
+  no longer wears your curated flat `1,000,000` as if it were the model's. The
+  sentence travels in a new `*_source_detail` field beside the value.
+
+A package the Hub itself cannot place is now reported **in the Hub's own words**
+(the sentence naming the engine allowlist a person has to edit), rather than this
+gateway's generic one.
+
+**Still withheld:** Hub LLMs. The lane contract says chat dispatches to
+`/v1/chat/completions`, but on 0.6.61 that route exists only *inside* the chat
+worker — the Hub's own `/api/hub/chat/completions` forwards to this Mac's worker,
+and nothing creates a schedulable chat batch. So there is no fleet route for the
+gateway to submit to yet: chat models are discovered, listed, and withheld with
+the reason. That question is with the Hub session.
+
 ## The gateway says which Studio Hub it is built for — and keeps working
 
 Studio Hub moves on its own schedule. It updates itself, and this fleet has run
