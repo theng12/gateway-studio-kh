@@ -74,6 +74,58 @@ def check_content_packs_page() -> tuple[bool, str]:
     return title == "gateway-kh — Content Packs", f"window is {title!r}"
 
 
+def check_fleet_unreachable_address() -> tuple[bool, str]:
+    """An unreachable location still shows WHICH address the gateway dialled.
+
+    The Locations Status cell used to *replace* the address with the reason, so
+    three rows read "Nothing is listening on that address" without ever naming the
+    address — and the only branch that printed it was the one you could reach. The
+    owner asked what those rows were even connected to, which is the question the
+    cell was supposed to answer.
+
+    The invariant: **wherever a reason is shown, the address is shown with it.**
+    When every location happens to be answering there is nothing to prove, and the
+    detail says so rather than reporting a silent pass.
+    """
+    title = open_section("Fleet")
+    if title != "gateway-kh — Fleet":
+        return False, f"Fleet did not open (window is {title!r})"
+    # Locations is radio button 2 of the page's tab group — the order of `FleetTab`.
+    # The page remembers the last tab, so a check that assumes it is already there
+    # reads whichever tab the owner left open.
+    osa(
+        f'tell {MAIN_WINDOW} to tell splitter group 1 to tell radio group 1 '
+        f'to click radio button 2'
+    )
+    time.sleep(0.8)
+    table = "table 1 of scroll area 1 of scroll area 2"
+    rows = int(
+        osa(f"tell {MAIN_WINDOW} to tell splitter group 1 to tell {table} to return (count of rows)")
+        or 0
+    )
+    if rows == 0:
+        return False, "the Locations table drew no rows"
+    checked = 0
+    for row in range(1, rows + 1):
+        # Eight columns today; read one past so a new column cannot hide a cell.
+        for column in range(1, 10):
+            try:
+                value = osa(
+                    f"tell {MAIN_WINDOW} to tell splitter group 1 to tell {table} "
+                    f"to return (value of static text 1 of UI element {column} of row {row})"
+                )
+            except RuntimeError:
+                continue
+            if "Nothing is listening" not in value and "not reachable" not in value.lower():
+                continue
+            checked += 1
+            if "http" not in value:
+                return False, f"row {row} gives a reason but names no address: {value!r}"
+    if checked == 0:
+        return True, f"{rows} locations, all answering — nothing unreachable to prove"
+    return True, f"{checked} unreachable row(s), each naming its address"
+
+
 def check_jobs_recovery() -> tuple[bool, str]:
     """The recovery action appears only on a job that is actually a recovery hold.
 
@@ -115,6 +167,10 @@ CHECKS = {
     "sidebar": ("sidebar footer shows the app version and the What's New link", check_sidebar),
     "jobs-provider": ("Jobs table has a Provider column and a real value", check_jobs_provider),
     "content-packs": ("Content Packs opens the embedded page in this window", check_content_packs_page),
+    "fleet-unreachable-address": (
+        "an unreachable location names the address as well as the reason",
+        check_fleet_unreachable_address,
+    ),
     "jobs-recovery": (
         "the discard action is offered only for a recovery hold",
         check_jobs_recovery,
