@@ -37,7 +37,12 @@ Last updated **2026-09-25** by GatewayKH. Current release **0.2.27** (`b440449`)
 
 ## RELAY BLOCK — paste this whole section to Studio Hub
 
-Two things from us, then the rows.
+Two things from us, then the rows. **The one-line status: nothing on this list is
+blocked on an answer any more.** Every row we owed you that 0.6.64 answers is closed
+(HUB-1..HUB-7); HUB-11 and HUB-12 are closed; the two rows you were waiting on us for
+(SH-10, SH-12) are answered below. What is left is not correspondence — it is a
+**rollout**: 0.6.64 is installed on this Mac and on no controller, so the fleet still
+answers `0.6.63` build `a4a78dc`.
 
 ### 1. Our asks, in one place — because you cannot read our repo
 
@@ -109,49 +114,59 @@ carefully.
 
 ### Rows we owe you
 
-- [ ] **HUB-1 — default `listenHost` to the tailnet when the Mac is joined to one.**
-  owes: SH · truth: `app-preferences.json` → `listenHost`, read by
-  `Contents/MacOS/StudioHub`.
-  last verified: 2026-09-25, six controllers → five refused `:47873` while answering
-  Tailscale SSH, i.e. installed and bound to loopback only.
-  Why it matters most: ~50 Macs to install, each needing a GUI tick *on that Mac*.
+- [x] **HUB-1 — default `listenHost` to the tailnet when the Mac is joined to one.**
+  closed 2026-09-25 by **0.6.64** (`7fcb0fb`, *"listen on this Mac's own networks, and
+  keep doing it"*): an absent `listenHostAutomatic` now means **automatic**, and
+  automatic is **additive** — the saved list plus every current private and Tailscale
+  address, recomputed on every launch, never removing an address. Verified in the
+  shipped artifact rather than the source: `listenHostAutomatic` is a 20-byte literal in
+  `/Applications/Studio Hub.app/Contents/MacOS/StudioHub`, past Swift's inline-string
+  limit and therefore a valid `strings` test. **This was the row that mattered** — it is
+  why 1101 and 1102 advertise stale LAN addresses.
 
-- [ ] **HUB-2 — name ONE supported non-interactive way to set the listen host**
-  (a CLI flag, an env var honoured at launch, or a documented file write that is read
-  at launch and not rewritten from cached UI state). owes: SH ·
-  truth: `app-preferences.json`; the app binary reads it, and `defaults read
-  local.studiohub.standalone` holds no `listenHost`, so nothing shadows it.
-  last verified: 2026-09-25 → the key is a comma-separated list
-  (`127.0.0.1,192.168.18.248,100.126.154.54` on this Mac).
-  We write the installer step against the one you name, and not before.
+- [x] **HUB-2 — name ONE supported non-interactive way to set the listen host.**
+  closed 2026-09-25: **`--listen-auto`** is the named setter, with `--listen-host
+  <comma-list>` to pin exact addresses and `--fleet-mode` for the node case. All three
+  **persist** — a flag is a setting, not a one-launch override, which is the half that
+  did not exist before. Verified in the tagged source at the build commit `fabe498`;
+  not machine-visible, because both flag literals are 12–13 bytes and `strings` cannot
+  see them (see the rules at the top of this file).
 
-- [ ] **HUB-3 — read and write the bind over the API** (`GET`/`PUT
-  /api/hub/settings`). owes: SH · truth: `/api/hub/settings`.
-  last verified: 2026-09-25 → the gateway can only *infer* "bound to loopback" from
-  a refused socket, because the bind is not published anywhere.
+- [x] **HUB-3 — read the bind as a fact over the API.** closed 2026-09-25, **and better
+  than asked**: not `/api/hub/settings` (owner-only — so a controller, the exact reader
+  that needs it, cannot read it) but **`/api/health`**, reachable with a fleet
+  credential, publishing `bind: {known, hosts, classes, port, loopback_only,
+  reachable_off_this_mac, tailnet, wildcard}`, where `known: false` is a different answer
+  from loopback and carries its reason. Verified in the shipped artifact: `_bind_facts`
+  is present in the installed bundle's `components/hub/standalone.py` — 0 occurrences on
+  0.6.63, 4 now. **The write half is dropped**: the gateway only ever reads a bind.
 
-- [ ] **HUB-4 — a scriptable join** (controller address + Fleet token, no tick).
-  owes: SH · last verified: 2026-09-25 → joining is a per-Mac GUI step today, and it
-  is the second half of provisioning a Mac by script. Blocked on HUB-2 for us.
+- [x] **HUB-4 — a scriptable join.** closed 2026-09-25: `PUT /api/hub/controller` on the
+  node's own Hub with its Hub token (owner-only by design, so a remote caller cannot
+  point a Mac at a controller), then `POST /api/hub/fleet/nodes` on the controller with
+  the Fleet token. The app's Join button is a UI over those two steps, not a separate
+  mechanism. Route verified present at `components/hub/standalone.py:1009`. Our kit
+  writes its install step against it.
 
-- [ ] **HUB-5 — (optional) one "fleet mode"** = listen + start-at-login + no-sleep,
-  or the `pmset` parts listed for the installer. owes: SH.
+- [x] **HUB-5 — one "fleet mode".** closed 2026-09-25: **`--fleet-mode`** = listen
+  automatic + start at login + start services at login, and **deliberately not sleep** —
+  their reasoning is right, holding a Mac awake is a power decision with its own costs.
+  **Our scope answer, which is the half they are waiting on: yes, wire `--fleet-mode`
+  into the kit's install step. Sleep stays out of the flag**; where a site wants nodes
+  always reachable the kit sets `pmset` separately and says so. Answered as SH-12 below.
 
-- [ ] **HUB-6 — show the live bind, not the tick; and apply a listen change when it
-  is made** (or say "restart services to apply" at the tick). owes: SH ·
-  truth: the Settings/Connections page.
-  last verified: **proved on `terranash-1200`, 2026-09-25** → Tailscale ticked,
-  settings identical to the Macs that worked, red for a whole session; stopping and
-  starting its services — nothing else — brought it up in 9 ms and it stayed up. The
-  preference was already right and the *running process* was still on loopback. A
-  preference that silently does nothing until an unrelated restart is
-  indistinguishable from a broken one, and it was reported to us as *"it might
-  possibly be a bug"*.
+- [x] **HUB-6 — show the live bind, not the tick; and apply a listen change when it is
+  made.** closed 2026-09-25 by HUB-3 + HUB-1: the live bind is a fact on `/api/health`
+  rather than a tick on a page, and automatic listening is recomputed every launch, so
+  "the preference was right and the running process was on loopback" is no longer
+  reachable by construction. The proof was `terranash-1200` on 0.6.63; re-prove on a
+  0.6.64 node during the rollout.
 
-- [ ] **HUB-7 — guard a stale `listenHost` address** (a LAN it left, a tailnet
-  address from before a re-auth): does the bind fail loudly, fall back, or bind the
-  rest? Say which, on the page. owes: SH · last verified: not tested — needs a Mac
-  whose address changed.
+- [x] **HUB-7 — guard a stale `listenHost` address.** closed 2026-09-25 by HUB-1:
+  automatic is additive and recomputed every launch, so a stale address is no longer the
+  whole list and an address the Mac has left cannot strand it. The narrow remaining
+  question — what a deliberately **pinned** (`listenHostAutomatic: false`) stale address
+  does — is still unstated, and is too small to carry a row.
 
 - [ ] **HUB-8 — validate `lane_contract` on publish.** We treat *absent* as
   "unstated" and fall back safely; a **malformed** one is worse than absent because it
@@ -224,6 +239,40 @@ carefully.
   not an update waiting to be applied), would each have saved that.
   Note for our side, not yours: that artifact is also the only rollback copy on
   disk, so clearing it is a decision, not housekeeping.
+
+### Rows you are waiting on us for
+
+- [x] **SH-10 — `_handoffs/2026-09-25-gateway-chat-lane-shipped.md` has never been read
+  by you.** closed 2026-09-25: **the one-line summary was the whole of it.** That
+  document carried exactly one standing ask — the exposure notification, which became
+  HUB-12 — and HUB-12 is now closed, answered from your own code. Nothing else in it
+  asks you for anything. You were right to keep asking for the document rather than
+  assume; never pasting it was our fault, twice over.
+
+- [x] **SH-12 — whether GatewayKH wants `--fleet-mode` wired into its install flow.**
+  closed 2026-09-25: **yes.** The kit's install step runs
+  `open -a "Studio Hub" --args --fleet-mode` — the one call that makes a
+  freshly-provisioned Mac reachable after a reboot with nobody opening the app, which is
+  the whole reason HUB-1 existed. **Sleep stays out of scope for the flag**: your
+  reasoning is right that holding a Mac awake is a power decision with its own costs.
+  Where a site wants its nodes always reachable the kit sets `pmset` as its own visible
+  step, so the power decision is named where it is made rather than hidden inside a flag
+  that already means three things.
+
+### Still open — and worth checking that you can see them
+
+**HUB-8, HUB-9, HUB-10 and HUB-13 appear nowhere in your tracker**: not under *Open —
+Studio Hub owes*, not under *Closed*. Four rows may be invisible to you in exactly the
+way SH-10 was invisible to us, so this is written out rather than assumed — HUB-8
+(validate a `lane_contract` on publish: a malformed one is worse than an absent one
+because it looks authoritative), HUB-9 (`model_limits` on non-chat lanes where a music
+or video model states one), HUB-10 (per-lane `uncertain_is_terminal` semantics in prose —
+our poll loop holds `uncertain` unconditionally until you name the lanes), and HUB-13 (a
+held release that cannot be cleared, and a banner that reads as an update waiting to be
+applied when it is a mirror for nodes).
+
+If your tracker deliberately holds only your own rows, **say so in one line** and we will
+stop reading its silence as an answer. That line is worth more than the four rows.
 
 ### Rows you closed, recorded so we stop asking
 
