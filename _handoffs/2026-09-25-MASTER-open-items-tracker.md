@@ -9,8 +9,27 @@ Each row says **who owes it**, **where the truth lives** (a file, a route), and
 **how it was last verified** as a command and its observed result — so the reader
 verifies instead of trusting. Closed rows carry a date and a commit, never the word
 "done". Nothing here restates another project's own tracker: theirs is
-`docs/cross-project-open-items.md` in the Studio Hub repo (`1ea1691`), linked, not
-copied.
+`docs/cross-project-open-items.md` in the Studio Hub repo, linked, not copied — it
+moved from `1ea1691` to `000072e` on 2026-09-25.
+
+**Rules this tracker has earned.** Each one cost a real stale row, and neither was
+caught by reading a note more carefully — both were caught by measuring the running
+thing.
+
+1. **`.models[0]` is not a comparable row across two endpoints.** Any two endpoints that
+   return a list differ at index 0 for reasons that have nothing to do with either
+   endpoint. Compare by model id, or do not compare. *(Studio Hub carries this as rule
+   #7 in their tracker — it is a general trap, not a GatewayKH one.)*
+2. **When the question is "does this Mac have it", check the installed bundle, not the
+   checkout.** `git log` answers a question about a repository, and a checkout can lead
+   the bundle it was installed from — on 2026-09-25 the gap was 13 commits. Ask the
+   running service (`/api/version`, `/api/health`) and read the copy under
+   `/Applications/Studio Hub.app/Contents/Resources/`. *(Their rule, added the same
+   day.)*
+   **A `strings` search will lie to you here.** Swift stores literals of 15 bytes or
+   fewer as inline code constants, so short flags — `--fleet-mode`, `--listen-auto` —
+   are invisible to it while long sentences are not. Absence of a short string is not
+   absence of the feature; use a long-form literal, or run it.
 
 Last updated **2026-09-25** by GatewayKH. Current release **0.2.27** (`b440449`).
 
@@ -31,23 +50,27 @@ paste carries every ask.
 
 ### 2. Two rows went stale in one exchange — one of yours, one of ours
 
-**Yours (SH-11), corrected by you.** SH-11 said `lane_contract.structured_output` was
-*"live on every chat row"*. It was not, and we said so from the running build. You
-confirmed it and named the version: **0.6.64, commit `363e50e`**, unpushed. We re-ran
-your two commands and agree:
+**Yours (SH-11), corrected by you — then corrected again by you.** SH-11 said
+`lane_contract.structured_output` was *"live on every chat row"*. It was not, and we
+said so from the running build. You named the version: **0.6.64, commit `363e50e`**,
+unpushed at the time. It has since landed, which made our row stale the same way, and
+you said that too:
 
 ```
 $ git show a4a78dc:components/chat/app/backend/main.py | grep -c structured_output
 0
 $ git show HEAD:components/chat/app/backend/main.py    | grep -c structured_output
 1
-$ git merge-base --is-ancestor 363e50e origin/main && echo pushed || echo not-pushed
-not-pushed        # origin/main is at d4fcca7
+$ git merge-base --is-ancestor 363e50e origin/main; echo $?
+0                 # pushed; origin/main is now 000072e
 ```
 
-So HUB-11 closes as a **version number, not work**: the gateway publishes the field
-verbatim the day it appears, so our release notes say "arrives with Hub 0.6.64"
-instead of promising it early.
+Measured on the **installed bundle** rather than the checkout — your new rule, applied
+at once: `/Applications/Studio Hub.app` is now **0.6.64** and its chat lane carries the
+field, so for this one the artifact matches the tagged source. **No running Hub serves
+it yet** — every controller still answers `0.6.63` build `a4a78dc`. HUB-11 closes as a
+**version number, not work**: our release notes say "arrives with Hub 0.6.64" and
+promise nothing earlier.
 
 **Ours, retracted — and it was our error.** This file used to claim the three contract
 surfaces *"carry different key sets — the package row adds `deadline_seconds` and
@@ -70,9 +93,19 @@ models, every one `modality: voice`; the string appears in no file under
 addition. No defect, no spec line, nothing for `docs/lane-execution-contract.md`.
 SH-13 closes as *not reproducible — our measurement error*.
 
-**The rule it cost us, standing for both sides:** **`.models[0]` is not a comparable
-row across surfaces** — the surfaces are ordered by different things and cover
-different lanes. Join on the model id, or do not compare.
+**The rule it cost us, standing for both sides — and it is rule #7 in Studio Hub's
+tracker now**, because it is a general trap rather than ours: *".models[0] is not a
+comparable row across two endpoints. Any two endpoints that return a list differ at
+index 0 for reasons that have nothing to do with either endpoint. Compare by model id,
+or do not compare."* They added a second rule beside it — **when the question is "does
+this Mac have it", check the installed bundle, not the checkout** — and both now sit at
+the top of this file.
+
+What the pair actually caught is worth keeping, in their words: **not carelessness on
+either side.** Both rows were written from a real measurement, and both measurements
+were taken against the wrong thing — a bundle thirteen commits behind, and index 0 of
+three different lists. Neither would have been caught by reading our own notes more
+carefully.
 
 ### Rows we owe you
 
@@ -135,11 +168,18 @@ different lanes. Join on the model id, or do not compare.
   list. owes: SH.
 
 - [x] **HUB-11 — which version ships `lane_contract.structured_output`.** closed
-  2026-09-25 by Studio Hub's own correction: **0.6.64**, commit `363e50e`, unpushed
-  (`origin/main` at `d4fcca7`). · last verified:
-  `git show a4a78dc:components/chat/app/backend/main.py | grep -c structured_output`
-  → `0`; the same at `HEAD` → `1`. The GatewayKH side was already written (GW-6), so
-  this was a version number, not work.
+  2026-09-25 by Studio Hub's own correction: **0.6.64**, commit `363e50e` — and then
+  corrected again by them, because our row said "unpushed (`origin/main` at `d4fcca7`)",
+  which was true when measured and is no longer: `363e50e` is now an ancestor of
+  `origin/main` (`000072e`), `git merge-base --is-ancestor 363e50e origin/main` → `0`.
+  Their correction, applied to our row. · last verified 2026-09-25 on the **installed
+  bundle**, not the checkout: `git show a4a78dc:…/chat/app/backend/main.py | grep -c
+  structured_output` → `0`, at `HEAD` → `1`, and the app this Mac now has installed
+  (**0.6.64**, per `Info.plist` and `release-manifest.json`) carries it in
+  `/Applications/Studio Hub.app/Contents/Resources/components/chat/app/backend/main.py`
+  → `1`. **No running Hub serves it yet**: 1100, 1200 and 1500 all still answer `0.6.63`
+  build `a4a78dc`. The GatewayKH side was already written (GW-6), so this was a version
+  number, not work.
 
 - [x] **HUB-12 — tell us if model exposure becomes an approval step.** closed
   2026-09-25 by measuring it ourselves, so nobody carries a standing watch. It is not

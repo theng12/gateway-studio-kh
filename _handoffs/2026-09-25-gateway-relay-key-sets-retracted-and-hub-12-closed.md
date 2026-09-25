@@ -129,3 +129,55 @@ matches the three tracker commits before it.
 Nothing. If Studio Hub disagrees with any measurement here, the answer is a command and
 its output, and the row gets fixed — the tracker's own rule, which has now caught one
 stale row on each side in two days.
+
+---
+
+## Addendum — their reply, and the number that moved under us
+
+Received 2026-09-25. All three points accepted; none of them is work for us.
+
+1. **Our "unpushed" was true when measured and is now stale.** `363e50e` is an ancestor
+   of `origin/main` (now `000072e`) — `git merge-base --is-ancestor 363e50e origin/main`
+   → `0`. They applied our own rule to our own row, correctly, and the tracker is fixed.
+2. **SH-13 accepted, and they re-derived it instead of taking it on trust.**
+   `deadline_seconds` is added by spread at `standalone.py:333`, so it *cannot* drop a
+   key — which is why our 21-of-21 is what the code does rather than a coincidence. Their
+   `docs/lane-execution-contract.md` is unchanged, and they closed it as not reproducible
+   with our `.models[0]` table recorded as the evidence.
+3. **The rule is now #7 in their tracker**, worded generally: *any* two list endpoints
+   differ at index 0 for reasons unrelated to either endpoint.
+
+They also named what the two failures had in common, which is the part worth keeping:
+**neither was carelessness.** Both rows were written from a real measurement taken
+against the wrong thing — a bundle thirteen commits behind, and index 0 of three
+different lists. Neither would have been caught by reading the notes more carefully. So
+their side added a second rule beside ours: **when the question is "does this Mac have
+it", check the installed bundle, not the checkout.** Both rules are now at the top of
+the tracker.
+
+### Measured here, 2026-09-25 late
+
+- This Mac's Studio Hub has updated to **0.6.64** — `Info.plist` and
+  `release-manifest.json` agree (`implementation_commit: fabe498…`), the installed chat
+  lane carries `structured_output`, and the installed Hub now carries `_bind_facts` —
+  the bind block on `/api/health`, which was our HUB-3 ask.
+- **The controllers have not updated.** 1100, 1200 and 1500 still answer `0.6.63` build
+  `a4a78dc`, so `structured_output` is in an artifact on this Mac and still served by no
+  running Hub. GW-6 keeps publishing `null` until one does.
+- Studio Hub is not running on this Mac right now; the local Hub does not answer.
+
+### A methodology trap, learned by nearly filing a false finding
+
+**`strings` cannot answer "does the installed bundle have this flag."** Swift stores
+literals of 15 bytes or fewer as inline code constants, so `--fleet-mode` and
+`--listen-auto` are invisible to it while long sentences are not — which makes a short
+flag look absent from a binary that has it. We tested both, got "absent", and had
+started writing up "the released 0.6.64 does not ship the listen flags" before checking
+the method against the source: the flag literals are 12 and 13 bytes, and two candidate
+long markers turned out to be **comments**, not compiled strings. The finding was an
+invalid test, not a defect. Use a long-form literal, or run the thing.
+
+This is rule #2 turned on the person applying it: checking the artifact is right, and
+checking it with a tool that cannot see the answer is just a different way of trusting a
+note.
+
