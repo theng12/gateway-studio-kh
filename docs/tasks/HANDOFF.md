@@ -1,7 +1,7 @@
 # HANDOFF — gateway-kh
 
-**Read this first.** Written 2026-09-25 against **VERSION `0.2.24`**, release commit
-`18408cc`, running build `18408cc-202609250205`.
+**Read this first.** Written 2026-09-25 against **VERSION `0.2.25`**, release commit
+`0b03441`, running build `0b03441-202609250835`.
 If this file disagrees with the code, **the code wins — fix this file in the same change**.
 Every path below is inside the Git checkout `repository/` unless it says otherwise.
 `[MEASURED]` = observed in the session that wrote this; `[reason not recorded]` = the
@@ -11,12 +11,12 @@ project does not say why, and nobody should guess.
 
 | Thing | Value |
 |---|---|
-| Current release | **0.2.24** — `repository/VERSION`, one line, the only place to bump |
-| Declared Studio Hub | **0.6.60** — `adapters.studio_hub.SUPPORTED_STUDIO_HUB_VERSION`, published on `/health`; a controller on another version is reported, never refused |
+| Current release | **0.2.25** — `repository/VERSION`, one line, the only place to bump |
+| Declared Studio Hub | **0.6.63** — `adapters.studio_hub.SUPPORTED_STUDIO_HUB_VERSION`, published on `/health`; a controller on another version is reported, never refused (chat needs 0.6.63 *on that controller*; every other lane does not) |
 | Branch | `main` = `origin/main`, clean tree; remote `github.com/theng12/gateway-kh` |
-| Running build | `/Applications/gateway-kh.app`, port **8787**, stamp `18408cc-202609250205` (`/health` and `…/Resources/gateway/BUILD`) |
-| Distribution | DMG in `repository/dist/` (`gateway-kh-0.2.24.dmg`), named by version alone |
-| SSD/setup kit | `repository/dist/setup-kit/` — "copy this whole folder to each SSD/Mac"; current at **0.2.24**, copied to all four `KH-STUDIO-*` drives 2026-09-25 |
+| Running build | `/Applications/gateway-kh.app`, port **8787**, stamp `0b03441-202609250835` (`/health` and `…/Resources/gateway/BUILD`) |
+| Distribution | DMG in `repository/dist/` (`gateway-kh-0.2.25.dmg`), named by version alone |
+| SSD/setup kit | `repository/dist/setup-kit/` — "copy this whole folder to each SSD/Mac"; current at **0.2.25**. **The four `KH-STUDIO-*` drives were unmounted when 0.2.25 shipped** (the owner had ejected them for the 50-Mac rollout), so they still carry **0.2.24**; re-run the refresh when they are mounted |
 
 - **Versions are patch-only for now:** `0.2.1`, `0.2.2`, … up to `0.2.1000`. Increment the
   third number by one per shipped change; never roll to `0.3.x`/`1.0.0` until the owner says so.
@@ -183,6 +183,56 @@ Run everything from `repository/`. Python tooling is the checkout venv `.venv/bi
 
 ## OPEN / IN FLIGHT
 
+- **Shipped in 0.2.25 (`0b03441`): the Hub chat lane is dispatchable, proved live on
+  0.6.63.** Studio Hub 0.6.63 opened `POST /studio/chat/v1/chat/completions` to a
+  **Fleet** credential, which is what made a Hub LLM possible here at all — before
+  it, every chat route refused a fleet token. Reply:
+  `_handoffs/2026-09-25-gateway-chat-lane-shipped.md`.
+  1. `chat` is declared in all three places: `adapters._MODALITIES_BY_KIND[KIND_STUDIO_HUB]`,
+     the `studio-hub-local` definition, and the **per-controller** definitions the
+     roster derives (`providers/registry.py`) — the third is what lets a *remote*
+     controller serve chat.
+  2. `adapters/studio_hub._generate_chat` posts the OpenAI body to the **peer**
+     surface through the Hub (admission, machine lease, worker signing), never a
+     worker's own route and never the Hub-token-only `/api/hub/chat/completions`.
+     `stream: false`; only the lane's honoured parameters are sent (asserted on the
+     wire); `MODEL_NOT_PACKAGED`/`MODEL_NOT_READY` → `LOCATION_NOT_READY` so the
+     worker re-routes; a `422` is a definite refusal, never an unknown-outcome hold;
+     an empty answer is a failure.
+  3. The catalogue publishes the Hub's own `model_limits` (262,144 read from the
+     checkpoint, 4096 as a labelled worker default) with `*_source_detail` carrying
+     the Hub's provenance sentence; `verified_token_usage: false` on every chat row
+     (we validate what a provider states, we do not re-measure); and
+     `generation_seconds` on the job envelope — the worker's own number, never
+     derived from our round trip.
+  `tests/test_hub_chat_lane.py` (7 checks, **wire** assertions),
+  `tests/test_fleet_routing.py::HubChatRoutingTests`, `test_e2e.py` **555/555**.
+- **Live, on this Mac's 0.6.63 Hub `[MEASURED 2026-09-25]`:** a real completion
+  through the gateway — `succeeded`, `output_text: "Red, Blue, Green"`,
+  `finish_reason: stop`, `usage 22/5/27`, `generation_seconds 0.573`,
+  `verified_token_usage: false` — and the Hub's own `GET /api/hub/jobs` records
+  those runs as `"modality": "chat"`. A `json_object` request returned parseable
+  JSON first try, with the Hub's caveat recorded: **no grammar-constrained
+  decoding**, so a strict-JSON call site is prompting plus validation.
+- **The published model id is undecided on purpose.** The Hub's handoff says Story
+  Studio's `lmstudio:` two-pass behaviour is keyed on an id **we** control and their
+  tracked source has no code selecting two-pass from a model id, so they asked us to
+  ask the Story session rather than guess. It publishes as
+  `studio-hub::mlx-community/Qwen3.5-9B-4bit` (the normal Hub namespace) meanwhile —
+  nothing is blocked. **Open question for the Story session.**
+- **The remote chat proof (their test-plan item 4) is blocked on our side:** both
+  controllers are on **0.6.54**, which refuses the chat lane to a Fleet credential.
+  Bringing one controller to 0.6.63 proves it — and that is why the declared version
+  moved to 0.6.63: a controller reads `older` until it can serve the lane.
+- **A stale `dispatch_state` reads as "not installed".** The first live chat attempt
+  was withheld because the cached package row said `files_state: not_installed` /
+  `dispatch_state: ineligible` while the Hub answered a completion perfectly; a
+  discovery refresh cleared it. Recorded as a property of the cache, not a defect on
+  either side — but worth knowing before believing a withheld chat row.
+- **Memory policy (Hub §3) is untouched by this gateway** — not read, not written,
+  not on any page — so the five-mode change and the `auto` skew cannot break us. When
+  it is surfaced: show `resolved_mode` and the resolved `idle_seconds`, never `mode`,
+  because a null idle threshold renders as "kept loaded" — the opposite.
 - **Shipped in 0.2.24 (`18408cc`):** the lane contract Studio Hub 0.6.61 published
   (`f20fd1a`, spec `docs/lane-execution-contract.md`) is read, and the one thing it
   does not yet give us is reported back in

@@ -552,6 +552,20 @@ def _job_envelope(job: dict[str, Any]) -> dict[str, Any]:
             # consumer refuses them. Marked rather than silent because it is the
             # one place here that chooses a useful value over a strictly-known one.
             body["finish_reason"] = payload.get("finish_reason") or "stop"
+            # **Two facts about the numbers, kept apart.** `generation_seconds` is
+            # the worker's *own* generation time when the lane states one (Hub
+            # 0.6.63 measures it after the model is resident, so it excludes a cold
+            # turn's load) — a different fact from this gateway's round trip, and
+            # the Hub asks that a rate be derived from this rather than from ours.
+            # `verified_token_usage` is `false` for the same reason the catalogue
+            # says so: the counts were passed through, not re-measured. Both are
+            # `null` when the lane stated neither, because "unstated" and "zero"
+            # must not render alike.
+            if payload.get("generation_seconds") is not None:
+                body["generation_seconds"] = payload.get("generation_seconds")
+            usage = payload.get("usage")
+            if isinstance(usage, dict) and usage:
+                body["verified_token_usage"] = False
         elif modality == "image":
             url = f"/v1/images/{job['id']}/file"
             body["image_url"] = url

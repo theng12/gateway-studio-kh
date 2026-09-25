@@ -34,7 +34,7 @@ JOB_DEADLINE_S = 900.0
 #: The Studio Hub release this gateway is **built and verified against**.
 #:
 #: Studio Hub moves on its own schedule — it auto-updates itself, and this fleet
-#: has run 0.6.18, 0.6.23, 0.6.29, 0.6.31, 0.6.54 and 0.6.60 in a week — while
+#: has run 0.6.18, 0.6.23, 0.6.29, 0.6.31, 0.6.54, 0.6.60 and 0.6.63 — while
 #: this gateway moves on its own too. So the pairing is *declared* rather than
 #: assumed: this string is the version whose wire contract the code in this file
 #: was written and measured against, and it is the number the kit and the release
@@ -47,7 +47,7 @@ JOB_DEADLINE_S = 900.0
 #: fleet nobody touched (owner's decision, 2026-09-24: report drift, keep
 #: working). `hub_version_relation()` says how a controller's version compares,
 #: and the Fleet page shows it beside the Hub version.
-SUPPORTED_STUDIO_HUB_VERSION = "0.6.60"
+SUPPORTED_STUDIO_HUB_VERSION = "0.6.63"
 
 #: The answers `hub_version_relation` can give. `match` is the tested pairing; the
 #: other two are informational — a newer Hub may serve things this gateway has no
@@ -991,8 +991,153 @@ def _generate_transcription(request: BackendRequest) -> BackendResult:
     )
 
 
+def _chat_body(request: BackendRequest) -> dict[str, Any]:
+    """The OpenAI-shaped body the Hub's chat lane accepts.
+
+    **Only the parameters that lane honours.** Hub 0.6.63 trims its own allowlist
+    to `temperature`, `top_p`, `max_tokens`/`max_completion_tokens`, `seed`,
+    `thinking` and `response_format`, and states it in the lane contract; a
+    parameter outside it is dropped at the far end, so sending one would be a
+    promise made to the caller that the answer does not keep. `stream` is sent
+    explicitly as `false`: this adapter's contract is one request for one answer,
+    and the Hub accepts the flag.
+
+    Messages go through the **same normaliser the OpenAI-compatible lane uses**
+    (Story Studio sends `input`, older callers send `messages`, content may be a
+    string or a list of parts) — one implementation, so a shape change lands in
+    both lanes rather than in whichever one was edited.
+    """
+    from .openai_compat import _messages  # one message normaliser, two lanes
+
+    body: dict[str, Any] = {
+        "model": request.model_id,
+        "messages": _messages(request.params),
+        "stream": False,
+    }
+    for key in ("temperature", "top_p", "seed", "thinking"):
+        if request.params.get(key) is not None:
+            body[key] = request.params[key]
+    max_tokens = (
+        request.params.get("max_completion_tokens")
+        or request.params.get("max_output_tokens")
+        or request.params.get("max_tokens")
+    )
+    if max_tokens:
+        body["max_tokens"] = max_tokens
+    response_format = request.params.get("response_format")
+    if isinstance(response_format, dict) and response_format.get("type") in {
+        "json_object", "json_schema", "text",
+    }:
+        body["response_format"] = response_format
+    return body
+
+
+def _generate_chat(request: BackendRequest) -> BackendResult:
+    """Run one chat completion on a Hub location.
+
+    **Through the Hub, never straight to a worker.** The route is the Hub's peer
+    surface — `POST {base}/studio/chat/v1/chat/completions` — so admission, the
+    machine lease and the worker's token signing all apply exactly as they do for a
+    request the Hub's own app makes. Hub 0.6.63 opened that route to a Fleet
+    credential; before it, every chat route refused a Fleet token, which is why
+    this lane did not exist here (and why the Hub's own `/api/hub/chat/completions`
+    is deliberately not used — it is Hub-token only, and a second spelling of one
+    operation is a second vocabulary).
+
+    The answer **is** the artifact for this lane: a synchronous completion has no
+    batch to poll, which is why its contract states `discard_supported: false`.
+    `finish_reason` and `usage` pass through as the worker stated them — a gateway
+    that rewrote `length` into a clean stop would be hiding a truncated answer from
+    the one reader that refuses those.
+    """
+    base = _resolve_base(request)
+    headers = {**_headers(request), "Content-Type": "application/json"}
+    # The lane's own ceiling applies to the call itself, as it does to a poll: the
+    # Hub holds this request open while the model runs.
+    timeout = httpx.Timeout(lane_deadline_seconds(request), connect=10.0)
+    try:
+        response = httpx.post(
+            f"{base}/studio/chat/v1/chat/completions",
+            headers=headers,
+            json=_chat_body(request),
+            timeout=timeout,
+        )
+    except httpx.ConnectError as exc:
+        # Nothing accepted the connection: an unreachable location, not a job
+        # failure, so the worker may try the next site that offers the model.
+        raise BackendError(
+            f"could not reach the Hub at {base} ({type(exc).__name__})",
+            code="LOCATION_UNREACHABLE",
+            retryable=True,
+            upstream_accepted=False,
+        ) from exc
+    except httpx.HTTPError as exc:
+        # A read timeout *after* the request left is ambiguous: the model may have
+        # run and been recorded as a job on that node with nobody to collect it.
+        raise BackendError(
+            f"hub chat failed: {exc}", code="SITE_CAPACITY_UNAVAILABLE", retryable=True
+        ) from exc
+
+    if response.status_code >= 400:
+        code = _hub_refusal_code(response)
+        if code in _LOCATION_REFUSAL_CODES:
+            raise BackendError(
+                f"the location cannot serve this model right now ({code})",
+                code="LOCATION_NOT_READY",
+                status=response.status_code,
+                retryable=True,
+                upstream_accepted=False,
+            )
+        raise BackendError(
+            # A 422 here is the Hub's own validation — a prompt past the model's
+            # stated context, or a non-boolean `thinking` — and its sentence names
+            # the field and the measured count, so it is quoted, not replaced.
+            f"hub chat HTTP {response.status_code}: {response.text[:200]}",
+            code="PROVIDER_FAILED",
+            status=response.status_code,
+            retryable=response.status_code >= 500,
+            upstream_accepted=None if response.status_code >= 500 else False,
+        )
+
+    payload = response.json() or {}
+    choices = payload.get("choices") or []
+    if not choices:
+        raise BackendError(
+            "the Hub returned no choices for a chat completion", code="PROVIDER_FAILED"
+        )
+    choice = choices[0] if isinstance(choices[0], dict) else {}
+    message = choice.get("message") if isinstance(choice.get("message"), dict) else {}
+    text = message.get("content")
+    if isinstance(text, list):
+        text = "".join(part.get("text", "") for part in text if isinstance(part, dict))
+    text = text if isinstance(text, str) else ""
+    if not text.strip():
+        # The Hub has its own code for this (`CHAT_EMPTY_ANSWER`), so an empty
+        # answer is a failure here too rather than a successful blank job.
+        raise BackendError(
+            "the Hub returned an empty chat answer",
+            code="PROVIDER_FAILED",
+            upstream_accepted=True,
+        )
+    hub = payload.get("studio_hub") if isinstance(payload.get("studio_hub"), dict) else {}
+    return BackendResult(
+        text=text,
+        payload={
+            "finish_reason": choice.get("finish_reason"),
+            "usage": payload.get("usage"),
+            "model": payload.get("model") or request.model_id,
+            # The worker's **own** generation time, measured after the model is
+            # resident — it excludes a cold turn's model load, so it is neither
+            # this gateway's round trip nor a substitute for one.
+            "generation_seconds": hub.get("elapsed_seconds"),
+        },
+    )
+
+
 class StudioHubBackend:
     def generate(self, request: BackendRequest) -> BackendResult:
+        if request.modality == "chat":
+            return _generate_chat(request)
         if request.modality in {"image", "tts", "music"}:
             return _generate_image_or_voice(request)
         if request.modality == "transcription":

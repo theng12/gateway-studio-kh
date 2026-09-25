@@ -558,6 +558,9 @@ class IssueDerivationTests(unittest.TestCase):
         self.assertIsNone(flat["limitation_code"])
 
 
+from gateway.adapters.studio_hub import SUPPORTED_STUDIO_HUB_VERSION  # noqa: E402
+
+
 def _node_site() -> dict:
     """One controller: its own Mac up, one node dead three different ways.
 
@@ -683,8 +686,6 @@ class HubVersionReportTests(unittest.TestCase):
     """
 
     def test_a_newer_hub_is_reported_with_both_versions(self) -> None:
-        from gateway.adapters.studio_hub import SUPPORTED_STUDIO_HUB_VERSION
-
         row = _node_site()
         row["version"] = "0.6.99"
         row["hub_version_relation"] = "newer"
@@ -707,7 +708,7 @@ class HubVersionReportTests(unittest.TestCase):
         for relation in ("match", None, ""):
             with self.subTest(relation=relation):
                 row = _node_site()
-                row["version"] = "0.6.60"
+                row["version"] = SUPPORTED_STUDIO_HUB_VERSION
                 row["hub_version_relation"] = relation
                 codes = {i["code"] for i in fleet._issues([row])}
                 self.assertNotIn("hub_version_drift", codes, codes)
@@ -718,7 +719,7 @@ class HubVersionReportTests(unittest.TestCase):
         # against the same fleet whose Hub matches, so the assertion is about the
         # drift and about nothing else.
         matched = _node_site()
-        matched["version"] = "0.6.60"
+        matched["version"] = SUPPORTED_STUDIO_HUB_VERSION
         matched["hub_version_relation"] = "match"
         ahead = _node_site()
         ahead["version"] = "0.6.99"
@@ -743,6 +744,34 @@ class HubVersionReportTests(unittest.TestCase):
                              lambda modality: [(_definition("ahead"), _model_row())]):
             definition, note = fleet.route(MODEL, MODALITY)
         self.assertIsNotNone(definition, note)
+
+
+class HubChatRoutingTests(unittest.TestCase):
+    """A Hub location serving chat is a route, like any other lane.
+
+    Hub 0.6.63 made its chat lane reachable with a Fleet credential. The gateway's
+    routing asks the same question for every modality — is this a model the
+    catalogue would offer, is the location answering, can it take customer work —
+    so the only thing that had to change for chat was `serves()`. This pins that:
+    a chat model on a Hub location is a candidate, and its weight is the site's own
+    capacity for it, not a special case.
+    """
+
+    def test_a_hub_location_is_a_candidate_for_a_chat_model(self) -> None:
+        row = _location(
+            "site",
+            capacity={"eligible_physical_machine_slots_total": 1, "queue_depth": 0},
+            model_supply={"mock-hub/chat-model": {"eligible": 1, "available": 1}},
+        )
+        definition = _definition("site")
+        with patch.object(fleet, "snapshot", lambda allow_stale=False: {"locations": [row]}), \
+                patch.object(registry.models, "enabled_models",
+                             lambda modality: [(definition, {
+                                 "model_id": "mock-hub/chat-model", "modality": "chat",
+                                 "enabled": True, "raw": {},
+                             })]):
+            candidates = fleet.routing_candidates("mock-hub/chat-model", "chat")
+        self.assertEqual([c["location_id"] for c in candidates], ["site"], candidates)
 
 
 class SummaryCountTests(unittest.TestCase):

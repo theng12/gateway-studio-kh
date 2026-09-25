@@ -47,6 +47,25 @@ SHARED_TOKENS: list[str] = []
 #: was built. Reset by `POST /__test__/reset`.
 HUB_TOKENS: list[dict] = []
 
+#: Every call this mock received on the Hub's **chat peer route**, path plus the
+#: body it carried.
+#:
+#: The lane's contract is a *wire* fact: which route the gateway posts to (the
+#: Hub's peer surface, not a worker's own and not the Hub-token-only spelling),
+#: whether it asks for a stream it cannot consume, and whether it sends a
+#: parameter the Hub would silently drop. Asserting the adapter's return value
+#: would prove none of that. Reset by `POST /__test__/reset`.
+CHAT_CALLS: list[dict] = []
+
+#: Knobs for the chat lane's failure shapes, so a test can ask for one without a
+#: second server: a status to answer with, a `code` to refuse under (the Hub's own
+#: vocabulary, e.g. `MODEL_NOT_PACKAGED`), a sentence for the body, and whether to
+#: answer 200 with an empty choice. Reset by `POST /__test__/reset`.
+CHAT_STATUS: int = 200
+CHAT_REFUSAL_CODE: str | None = None
+CHAT_DETAIL: str = ""
+CHAT_EMPTY: bool = False
+
 #: Every body this mock was sent on Kie's `jobs/createTask`, in order.
 #:
 #: Music and images share that route, so the *body* is the only thing that says
@@ -719,6 +738,9 @@ class Handler(BaseHTTPRequestHandler):
             SHARED_TOKENS.clear()
             HUB_TOKENS.clear()
             KIE_TASKS.clear()
+            CHAT_CALLS.clear()
+            global CHAT_STATUS, CHAT_REFUSAL_CODE, CHAT_DETAIL, CHAT_EMPTY
+            CHAT_STATUS, CHAT_REFUSAL_CODE, CHAT_DETAIL, CHAT_EMPTY = 200, None, "", False
             self._json(200, {"ok": True})
             return
         # ---- Kie's unified task route. Images, videos and music all land here;
@@ -783,6 +805,50 @@ class Handler(BaseHTTPRequestHandler):
 
         if path.endswith("/v2/video_generation"):
             self._json(200, {"task_id": "mm-video-1", "base_resp": {"status_code": 0}})
+            return
+
+        # The Hub's chat **peer** route (0.6.63). This is the lane the gateway
+        # dispatches on: a Fleet credential may run a completion here, through the
+        # Hub, so admission and the machine lease apply. Its answer carries the
+        # worker's **own** generation time — measured after the model is resident,
+        # so it is deliberately not the round trip — which the gateway publishes
+        # as `generation_seconds` and must not present as its own latency.
+        if path == "/studio/chat/v1/chat/completions":
+            CHAT_CALLS.append({
+                "path": path,
+                "token": self.headers.get("X-Hub-Token"),
+                "body": body,
+            })
+            if CHAT_STATUS >= 400:
+                payload: dict = {"detail": CHAT_DETAIL or "refused"}
+                if CHAT_REFUSAL_CODE:
+                    payload["code"] = CHAT_REFUSAL_CODE
+                self._json(CHAT_STATUS, payload)
+                return
+            if CHAT_EMPTY:
+                self._json(200, {
+                    "id": "chatcmpl-hub-mock", "object": "chat.completion",
+                    "model": model or "mock-hub/chat-model",
+                    "choices": [{"index": 0, "finish_reason": "stop",
+                                 "message": {"role": "assistant", "content": ""}}],
+                    "usage": {"prompt_tokens": 1, "completion_tokens": 0, "total_tokens": 1},
+                    "studio_hub": {"elapsed_seconds": 0.1},
+                })
+                return
+            self._json(200, {
+                "id": "chatcmpl-hub-mock",
+                "object": "chat.completion",
+                "created": 1790300000,
+                "model": model or "mock-hub/chat-model",
+                "choices": [{
+                    "index": 0,
+                    "message": {"role": "assistant",
+                                "content": f"mock hub reply from {model or 'the model'}"},
+                    "finish_reason": "stop",
+                }],
+                "usage": {"prompt_tokens": 11, "completion_tokens": 13, "total_tokens": 24},
+                "studio_hub": {"elapsed_seconds": 2.5},
+            })
             return
 
         if path.endswith("/chat/completions"):

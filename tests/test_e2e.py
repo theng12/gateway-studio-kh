@@ -243,7 +243,10 @@ def main() -> int:
                 "category": "multi",
                 "kind": "studio_hub",
                 "base_url": f"http://127.0.0.1:{MOCK_PORT}",
-                "modalities": ["tts"],
+                # `chat` is declared because Hub 0.6.63 opened its chat peer route
+                # to a Fleet credential, so this location serves the lane — which is
+                # what makes the dispatch below reachable at all.
+                "modalities": ["tts", "chat"],
                 "discovery": "studio_hub",
                 "description": "Test location.",
                 # Declared, and optional, exactly as the built-in local provider
@@ -3877,6 +3880,37 @@ def main() -> int:
             check("a lane this adapter does not serve is discovered but withheld",
                   "studio-hub::mock-hub/video-model" not in published,
                   f"{[k for k in published if 'mock-hub' in k]}")
+
+            # ── the Hub chat lane, end to end ──────────────────────────────
+            #
+            # Hub 0.6.63 opened `POST /studio/chat/v1/chat/completions` to a Fleet
+            # credential, which is what makes a Hub LLM dispatchable at all: the
+            # gateway posts **through the Hub** (admission, machine lease and worker
+            # signing all apply), not to a worker's own route and not to the Hub's
+            # Hub-token-only spelling. `finish_reason` and `usage` travel as the
+            # worker stated them, and the worker's own generation time is published
+            # as `generation_seconds` — never as this gateway's round trip.
+            hub_chat = "studio-hub::mock-hub/chat-model"
+            chat_rows = req(client, "GET", "/v1/chat/models").json()["models"]
+            chat_listed = {row["id"] for row in chat_rows}
+            check("the Hub's chat model is offered once the lane is served",
+                  hub_chat in chat_listed, str(sorted(i for i in chat_listed if "hub" in i)))
+            hub_row = next((row for row in chat_rows if row["id"] == hub_chat), {})
+            check("and it publishes the Hub's own limits, not a curated default",
+                  hub_row.get("context_window_tokens") == 262144
+                  and hub_row.get("context_window_tokens_source") == "provider",
+                  f"{hub_row.get('context_window_tokens')} "
+                  f"{hub_row.get('context_window_tokens_source')}")
+            check("and it says the token counts are passed through, not re-measured",
+                  hub_row.get("verified_token_usage") is False,
+                  f"{hub_row.get('verified_token_usage')}")
+
+            # The dispatch path itself is proved in
+            # `tests/test_hub_chat_lane.py`, against the wire: a *custom* provider
+            # of kind `studio_hub` is not a location on the fleet roster, so a job
+            # sent to it cannot route — correctly, since locations come from the
+            # roster. That file drives `StudioHubBackend.generate` directly and
+            # asserts the path, the token and the body the mock received.
 
             # The header count used to be the raw enabled count, so it read "live"
             # for models the gate withholds. Two questions, two numbers, and the

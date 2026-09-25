@@ -934,6 +934,13 @@ def _chat_row(model_id: str, definition: ProviderDefinition, model: dict[str, An
         "max_output_tokens": max_output,
         "max_output_tokens_source": output_source,
         "max_output_tokens_source_detail": hub_output_detail,
+        # **Where the token counts came from, said plainly.** Every chat lane here
+        # forwards the usage its provider stated; none of them re-measures it, so
+        # `false` is the honest answer on every row rather than a claim that the
+        # numbers were checked. Studio Hub asks for exactly this and draws the
+        # distinction itself: "we VALIDATE what the worker states; validating is not
+        # re-measuring".
+        "verified_token_usage": False,
         "controls": controls,
         "input_modalities": inputs,
         "supports_vision": ("image" in inputs) if inputs else None,

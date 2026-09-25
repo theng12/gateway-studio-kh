@@ -4,6 +4,29 @@ Newest first. This is the same list the **What's New** link in the app shows.
 
 ---
 
+## Local LLMs now run through the gateway
+
+Studio Hub 0.6.63 opened its chat lane to a Fleet credential, so a Hub LLM is now
+a real lane here: enable it on **Models** and Story Studio can use it like any
+other chat model.
+
+- **It dispatches through the Hub**, not straight to a worker, so admission, the
+  machine lease and worker signing all apply exactly as they do for the Hub's own
+  Chat page.
+- **Only the parameters that lane honours are sent** — a parameter it would
+  silently drop is never offered to a caller as if it worked.
+- **The worker's own generation time is published as its own number**
+  (`generation_seconds`), never as this gateway's round trip, and `finish_reason`
+  and token counts travel exactly as the worker stated them.
+- **Token counts are labelled as passed-through, not re-measured**
+  (`verified_token_usage: false`): the gateway validates what the worker states, it
+  does not independently recount, and the catalogue now says so.
+
+Two limits worth knowing before you rely on it: the lane has **no
+grammar-constrained decoding**, so a strict-JSON call site depends on prompting
+plus validation; and a prompt past the model's stated context is refused by name
+rather than silently truncated.
+
 ## Studio Hub now tells the gateway how to run each model — and the gateway reads it
 
 Studio Hub 0.6.61 answers the lane-contract request this gateway sent. Three of

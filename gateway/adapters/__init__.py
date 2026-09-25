@@ -179,7 +179,7 @@ _MODALITIES_BY_KIND: dict[str, frozenset[str]] = {
     KIND_ELEVENLABS: frozenset({"tts"}),
     # Music is a real Hub lane (engine `music-mlx`, two engines, WAV artifacts),
     # so a location's music rows are offerable rather than published and refused.
-    KIND_STUDIO_HUB: frozenset({"image", "tts", "music", "transcription"}),
+    KIND_STUDIO_HUB: frozenset({"chat", "image", "tts", "music", "transcription"}),
     # Chat is delegated to the OpenAI shim; image and video are native.
     KIND_XAI: frozenset({"chat", "image", "video"}),
 }

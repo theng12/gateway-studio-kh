@@ -984,13 +984,13 @@ class HubVersionDriftTests(unittest.TestCase):
         )
 
         self.assertEqual(hub_version_relation(SUPPORTED_STUDIO_HUB_VERSION), HUB_VERSION_MATCH)
-        self.assertEqual(hub_version_relation("0.6.59"), HUB_VERSION_OLDER)
-        self.assertEqual(hub_version_relation("0.6.61"), HUB_VERSION_NEWER)
+        self.assertEqual(hub_version_relation("0.6.62"), HUB_VERSION_OLDER)
+        self.assertEqual(hub_version_relation("0.6.64"), HUB_VERSION_NEWER)
         self.assertEqual(hub_version_relation("0.7.0"), HUB_VERSION_NEWER)
         # A shorter version is padded, not unreadable: 0.6 is older than 0.6.60.
         self.assertEqual(hub_version_relation("0.6"), HUB_VERSION_OLDER)
         # Pre-release and build suffixes do not change the ordering.
-        self.assertEqual(hub_version_relation("0.6.61-rc1"), HUB_VERSION_NEWER)
+        self.assertEqual(hub_version_relation("0.6.64-rc1"), HUB_VERSION_NEWER)
 
     def test_an_absent_or_unreadable_version_is_not_a_match(self) -> None:
         # "I could not read the version" must never render as "it matched" — the
