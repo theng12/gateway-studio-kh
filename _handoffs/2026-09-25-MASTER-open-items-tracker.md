@@ -195,6 +195,19 @@ carefully.
   state file. **No notification needed even if it changes**: the Hub would answer
   `MODEL_NOT_READY`, which `gateway/adapters/studio_hub.py` already names
   `LOCATION_NOT_READY` and `gateway/worker.py` re-routes — a re-route, not a lost job.
+  **Confirmed by Studio Hub 2026-09-25:** all four checks reproduce on their side —
+  zero callers in `components/` *and* `packaging/`, no exposure reference in
+  `standalone.py`, no state file, and the dispatch gate at `standalone.py:444` refusing
+  on modality, files, runtime, macOS, chip and studio liveness with exposure absent from
+  it. They verified the decisive half themselves: `_model_capability` builds availability
+  from the worker's own `available` / `runtime_ready` / `memory_eligible` /
+  `execution_ready` booleans and reads the candidate only as evidence, so an unapproved
+  model still publishes. **The conditional is closed too, not merely unlikely:** wiring
+  exposure into the dispatch gate would *reduce* what is dispatchable, and the owner's
+  standing rule is the opposite — *"all models and generators should be shown and
+  runnable"* — so it is on nobody's list, and adding it would be a behaviour change in
+  the release notes rather than a switch thrown quietly. The watch is dropped for the
+  stronger reason: a tracked row that protects a re-route is not worth a row.
 
 - [ ] **HUB-13 — make the held release clearable, and re-word the banner that
   announces it.** owes: SH (small) · truth: `hub/release/{release.json,artifact}`

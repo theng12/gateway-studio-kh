@@ -181,3 +181,50 @@ This is rule #2 turned on the person applying it: checking the artifact is right
 checking it with a tool that cannot see the answer is just a different way of trusting a
 note.
 
+---
+
+## Addendum 2 — HUB-12 confirmed closed, and the conditional closed with it
+
+Studio Hub reproduced all four checks independently — zero callers in `components/`
+**and** `packaging/`, no exposure reference in `standalone.py`, no
+`model_exposures.json`, and the dispatch gate at `standalone.py:444` refusing on
+modality, files, runtime, macOS, chip and studio liveness with exposure absent from it.
+They also verified the half that actually settles it: `_model_capability` builds
+availability from the worker's own `available` / `runtime_ready` / `memory_eligible` /
+`execution_ready` booleans, and reads the candidate block as evidence only — so even an
+unapproved model publishes.
+
+Two things they added that are worth keeping:
+
+- **They recorded our reason, not just our conclusion.** They took the re-route argument
+  rather than the "it isn't a gate" half, and put it well: *a tracked row that protects a
+  re-route is not worth a row.*
+- **The conditional case is genuinely closed, not merely unlikely.** Wiring exposure into
+  the dispatch gate would *reduce* what is dispatchable, and the owner's standing rule is
+  the opposite — **"all models and generators should be shown and runnable"**. So it is on
+  nobody's list, and if it were ever added it would be a behaviour change announced in
+  release notes rather than a quiet switch. No watch is needed, by either side.
+
+**Nothing is outstanding between the two projects on any row in this file's relay
+block.** HUB-11 and HUB-12 are closed with commands and results; SH-11 and SH-13 are
+closed on their side; the remaining open rows are HUB-1..HUB-10, and every one of those
+is now waiting on a 0.6.64 rollout rather than on an answer.
+
+### One thing left unverified, deliberately
+
+The owner's rule prompted a check of our own withholding, and it did not resolve:
+`/admin/api/providers/studio-hub-local/models` reports **11 enabled models with
+`publishable: false`** on this Mac's Hub location — all voice/TTS or whisper rows — each
+carrying the console's generic fallback sentence *"this model cannot be offered"*. The
+two contrasting rows that would explain it (`VoxCPM2-4bit` withheld against `VoxCPM2-8bit`
+published; `whisper-base-mlx` withheld against `whisper-large-v3-turbo` published) need
+the Hub's own `dispatch_state`, and **Studio Hub is not running on this Mac**, so it could
+not be measured.
+
+It is recorded here as an observation and **not** as a row, because "we could not work out
+the answer" and "the answer is none" are the two things this project keeps insisting must
+never look the same. Re-check it when the Hub is up: if those rows are withheld for a
+`can_publish` reason that is *not* "this model cannot run here", that is a real finding,
+and the owner's rule is the argument for it.
+
+
