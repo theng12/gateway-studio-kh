@@ -288,6 +288,28 @@ carefully.
   countersigning under its own key, keeps that consistent — but if the intent is that a
   node pins the **controller's** key, the forwarding half has to say so.
 
+- [ ] **HUB-16 — a manual listen tick silently drops every address you did not
+  tick, and nothing on the page says so.** owes: SH (small) · truth:
+  `native/StudioViews.swift::pinListenHosts` — *"A manual address choice — ticking
+  one, unticking one, or the wildcard — **ends automatic mode**… a manual choice
+  pins exactly what is ticked at that moment."*
+  last verified: **2026-09-25, on three controllers at once.** The owner ticked a
+  Mac's LAN address; that ended automatic mode and the list froze to loopback + LAN,
+  so the **tailnet address was gone**. The gateway dials what the location was added
+  with — all five are stored as `100.x` (`fleet.json`), e.g. 1200 at
+  `http://100.114.4.52:47873` — so three locations read
+  *"Nothing is listening on that address"*, and `locations_up` fell to 3/6.
+  **The behaviour is deliberate** (an untick that silently undoes itself is worse),
+  and the checkbox does show that automatic is off. What is missing is the
+  *consequence*: nothing says "you just dropped the tailnet", and the failure is
+  invisible from our end — the gateway only knows nothing answered.
+  Ask: when a manual tick turns automatic off, say which addresses that pins, and
+  name any that were dropped. One sentence at the control.
+  Note for our side: **the address is what a reader needs most when a location is
+  down**, and our Status cell replaced it with the reason — three rows said
+  "Nothing is listening on that address" without ever naming the address. Fixed in
+  0.2.29 (`menubar/FleetTabs.swift`): the cell now shows the address and the reason.
+
 ### Rows you are waiting on us for
 
 - [x] **SH-10 — `_handoffs/2026-09-25-gateway-chat-lane-shipped.md` has never been read

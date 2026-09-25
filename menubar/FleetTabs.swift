@@ -971,9 +971,16 @@ final class FleetLocationsTab: FleetTabView {
                 id: "lstatus", title: "Status", width: 240, sortable: false,
                 text: { row in
                     guard let row = location(row) else { return "—" }
-                    return row.reachable == true
-                        ? FleetFormat.text(row.url)
-                        : (row.error ?? "Not reachable")
+                    let address = FleetFormat.text(row.url)
+                    if row.reachable == true { return address }
+                    // **The address is what you need most when it is not answering.** This cell
+                    // used to *replace* the address with the reason, so "Nothing is listening on
+                    // that address" never said which address — and the only place the address was
+                    // ever printed was the branch you could not reach. The owner read three rows
+                    // saying exactly that and could not tell what the gateway had dialled.
+                    // `row.url` is present for an unreachable location too; it was simply dropped.
+                    let reason = row.error ?? "Not reachable"
+                    return address.isEmpty ? reason : "\(address)\n\(reason)"
                 },
                 colour: { row in
                     location(row)?.reachable == true ? .secondaryLabelColor : .systemOrange
