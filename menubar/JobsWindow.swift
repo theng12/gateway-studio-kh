@@ -444,6 +444,15 @@ final class JobsSection: NSObject, AppSection, NSTableViewDataSource, NSTableVie
         detailStack.addArrangedSubview(PageKit.sectionTitle("\(model) · \(provider)"))
         detailStack.addArrangedSubview(PageKit.help("Job \(jobID) · \(displayState(job))"))
 
+        // **Who asked.** Not an identity — one API key, shared by every caller — but
+        // the difference between Story Studio and a script, which is the question
+        // actually asked when a batch fails. Omitted when the request said nothing,
+        // rather than drawn as an empty row: "the caller said nothing" and "the
+        // caller called itself something" must not look alike here either.
+        if let caller = string(job["caller"]), !caller.isEmpty {
+            detailStack.addArrangedSubview(PageKit.help("Requested by \(caller)"))
+        }
+
         let lifecycle = lifecycleText(job)
         if !lifecycle.isEmpty {
             let lifecycleLabel = PageKit.help(lifecycle)

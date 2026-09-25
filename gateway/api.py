@@ -176,6 +176,34 @@ def require_auth(request: Request, authorization: str | None = Header(default=No
         raise GatewayError(403, "Invalid API key.", "FORBIDDEN")
 
 
+#: A header a caller may set to name itself. **A hint, never a credential** —
+#: there is one API key and every caller shares it, so this answers "which of my
+#: tools sent this?" and never "is it allowed?". A caller that omits it is not
+#: refused, and a caller that lies is not caught; it is not that kind of field.
+CALLER_HEADER = "X-Caller"
+
+
+def caller_hint(request: Request) -> str | None:
+    """Who asked, as far as the request can say. Never refuses, never guesses.
+
+    Recorded on the job so the question an operator actually asks at 2am — *"was
+    that Story Studio, or a script I left running?"* — is answerable from the row
+    instead of from memory. Asked on 2026-09-25 and unanswerable: forty-one chat
+    jobs failed in one minute and the records could not say who sent them.
+
+    The declared header wins, because a caller that names itself means it. The
+    `User-Agent` is the fallback that needs no cooperation from the caller. `None`
+    when the request says neither, so **"the caller said nothing" stays different
+    from "the caller called itself something"** — the rule every other field here
+    follows.
+    """
+    declared = (request.headers.get(CALLER_HEADER) or "").strip()
+    if declared:
+        return declared[:200]
+    agent = (request.headers.get("user-agent") or "").strip()
+    return agent[:200] or None
+
+
 def require_content_auth(authorization: str | None = Header(default=None)) -> str:
     """Content authority never inherits the loopback placeholder-key exception."""
     configured = gateway_api_key()
@@ -669,6 +697,7 @@ def _submit(
     compound_id: str,
     params: dict[str, Any],
     idempotency_key: str,
+    caller: str | None = None,
 ) -> tuple[dict[str, Any], bool]:
     """Resolve a catalogue id and queue a job.
 
@@ -716,6 +745,7 @@ def _submit(
         provider_id=definition.id,
         params=params,
         idempotency_key=idempotency_key,
+        caller=caller,
     )
 
 
@@ -896,10 +926,11 @@ def create_chat_response(
     payload: dict[str, Any],
     response: Response,
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+    caller: str | None = Depends(caller_hint),
 ) -> dict[str, Any]:
     key = _require_idempotency_key(idempotency_key)
     model_id = str(payload.get("model_id") or payload.get("model") or "")
-    job, created = _submit("chat", model_id, payload, key)
+    job, created = _submit("chat", model_id, payload, key, caller=caller)
     if created:
         response.status_code = 202
         response.headers["Location"] = f"/v1/chat/responses/{job['id']}"
@@ -1009,10 +1040,11 @@ def create_image(
     payload: dict[str, Any],
     response: Response,
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+    caller: str | None = Depends(caller_hint),
 ) -> dict[str, Any]:
     key = _require_idempotency_key(idempotency_key)
     model_id = str(payload.get("model_id") or payload.get("model") or "")
-    job, created = _submit("image", model_id, payload, key)
+    job, created = _submit("image", model_id, payload, key, caller=caller)
     if created:
         response.status_code = 202
         response.headers["Location"] = f"/v1/images/{job['id']}"
@@ -1091,10 +1123,11 @@ def create_video(
     payload: dict[str, Any],
     response: Response,
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+    caller: str | None = Depends(caller_hint),
 ) -> dict[str, Any]:
     key = _require_idempotency_key(idempotency_key)
     model_id = str(payload.get("model_id") or payload.get("model") or "")
-    job, created = _submit("video", model_id, payload, key)
+    job, created = _submit("video", model_id, payload, key, caller=caller)
     if created:
         response.status_code = 202
         response.headers["Location"] = f"/v1/videos/{job['id']}"
@@ -1207,10 +1240,11 @@ def create_tts_job(
     payload: dict[str, Any],
     response: Response,
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+    caller: str | None = Depends(caller_hint),
 ) -> dict[str, Any]:
     key = _require_idempotency_key(idempotency_key)
     model_id = str(payload.get("model_id") or payload.get("model") or "")
-    job, created = _submit("tts", model_id, payload, key)
+    job, created = _submit("tts", model_id, payload, key, caller=caller)
     if created:
         response.status_code = 202
         response.headers["Location"] = f"/v1/jobs/{job['id']}"
@@ -1284,10 +1318,11 @@ def create_music(
     payload: dict[str, Any],
     response: Response,
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+    caller: str | None = Depends(caller_hint),
 ) -> dict[str, Any]:
     key = _require_idempotency_key(idempotency_key)
     model_id = str(payload.get("model_id") or payload.get("model") or "")
-    job, created = _submit("music", model_id, payload, key)
+    job, created = _submit("music", model_id, payload, key, caller=caller)
     if created:
         response.status_code = 202
         response.headers["Location"] = f"/v1/music/jobs/{job['id']}"
@@ -1418,6 +1453,7 @@ async def confirm_transcription(
     request: Request,
     response: Response,
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+    caller: str | None = Depends(caller_hint),
     model: str | None = Form(default=None),
 ) -> dict[str, Any]:
     key = _require_idempotency_key(idempotency_key)
@@ -1488,7 +1524,7 @@ async def confirm_transcription(
         "_upload_name": name,
         "_upload_type": content_type,
     }
-    job, created = _submit("transcription", model_id, payload, key)
+    job, created = _submit("transcription", model_id, payload, key, caller=caller)
     if created:
         response.status_code = 202
         response.headers["Location"] = f"/v1/transcriptions/{job['id']}"

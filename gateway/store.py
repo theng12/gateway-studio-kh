@@ -61,7 +61,8 @@ CREATE TABLE IF NOT EXISTS jobs (
     upstream_job_id  TEXT,
     late_result_state TEXT,
     late_error_code  TEXT,
-    late_error_detail TEXT
+    late_error_detail TEXT,
+    caller           TEXT
 );
 CREATE INDEX IF NOT EXISTS jobs_state_next ON jobs(state, next_action_at);
 """
@@ -96,6 +97,12 @@ _ADDED_COLUMNS: tuple[tuple[str, str], ...] = (
     ("recovery_context", "TEXT"),
     # What the upstream answered when an operator resolved a recovery hold.
     ("discard_remote", "TEXT"),
+    # Who asked for the job, as far as the request could say. Not an identity —
+    # there is one API key and every caller shares it — but the difference between
+    # Story Studio and a shell loop, which is the question an operator actually
+    # asks at 2am when a batch failed. Absent means the caller said nothing, and
+    # that stays distinguishable from a caller that named itself.
+    ("caller", "TEXT"),
 )
 
 
@@ -263,6 +270,7 @@ class JobStore:
         params: dict[str, Any],
         idempotency_key: str | None,
         provider_id: str | None = None,
+        caller: str | None = None,
     ) -> tuple[dict[str, Any], bool]:
         """Create a job, or return the existing one for a repeated key.
 
@@ -283,8 +291,8 @@ class JobStore:
             self._conn.execute(
                 """
                 INSERT INTO jobs (id, idempotency_key, modality, model_id, provider_id,
-                                  state, params, created_at, updated_at, next_action_at)
-                VALUES (?, ?, ?, ?, ?, 'accepted', ?, ?, ?, ?)
+                                  state, params, created_at, updated_at, next_action_at, caller)
+                VALUES (?, ?, ?, ?, ?, 'accepted', ?, ?, ?, ?, ?)
                 """,
                 (
                     job_id,
@@ -296,6 +304,7 @@ class JobStore:
                     now,
                     now,
                     now + 0.8,
+                    (caller or "").strip()[:200] or None,
                 ),
             )
             self._conn.commit()
