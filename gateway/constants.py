@@ -153,9 +153,22 @@ ZERO_PURCHASE: dict[str, Any] = {
 #
 # Therefore: never return 402 from this gateway. Ever.
 # --------------------------------------------------------------------------
+#: The parts of the admission record that really are constant.
+#:
+#: **`paid_concurrency_limit` deliberately moved out of here.** It was the literal
+#: `4` while the worker ran exactly one job at a time — a published number that did
+#: not describe the system, in a field Story Studio reads and acts on. It now comes
+#: from `concurrency.global_limit()`, so the figure the caller is given is the figure
+#: the gateway enforces. Leaving it here would drift the moment the pool is resized.
 ADMISSION: dict[str, int] = {
-    "paid_concurrency_limit": 4,
     "max_queued_jobs": 32,
     "generation_submissions_per_minute": 60,
 }
 CREDIT_BALANCE = 0
+
+
+def admission() -> dict[str, int]:
+    """The admission record as published, with the concurrency actually in force."""
+    from . import concurrency
+
+    return {**ADMISSION, "paid_concurrency_limit": concurrency.global_limit()}

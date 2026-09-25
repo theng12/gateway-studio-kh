@@ -1,6 +1,6 @@
 # HANDOFF — gateway-kh
 
-**Read this first.** Written 2026-09-25 against **VERSION `0.2.28`**. The running build
+**Read this first.** Written 2026-09-25 against **VERSION `0.2.30`**. The running build
 stamp is on `/health` and in `/Applications/gateway-kh.app/Contents/Resources/gateway/BUILD`.
 If this file disagrees with the code, **the code wins — fix this file in the same change**.
 Every path below is inside the Git checkout `repository/` unless it says otherwise.
@@ -11,11 +11,11 @@ project does not say why, and nobody should guess.
 
 | Thing | Value |
 |---|---|
-| Current release | **0.2.28** — `repository/VERSION`, one line, the only place to bump |
+| Current release | **0.2.30** — `repository/VERSION`, one line, the only place to bump |
 | Declared Studio Hub | **0.6.65** — `adapters.studio_hub.SUPPORTED_STUDIO_HUB_VERSION`, published on `/health`; a controller on another version is reported, never refused. Set on 2026-09-25 from a **running** Hub (`/api/version` → `0.6.65` build `37cb07b`), not a changelog `[MEASURED]` |
 | Branch | `main` = `origin/main`, clean tree; remote `github.com/theng12/gateway-kh` |
 | Running build | `/Applications/gateway-kh.app`, port **8787**, stamp `08a4831-202609251515` (`/health` and `…/Resources/gateway/BUILD`) — the gateway must be **respawned**, not adopted, to carry a new stamp: with *Keep the gateway running after I quit* on, quitting the app leaves the old process holding 8787 and the new app adopts it, so `/health` keeps reporting the old build while serving new code `[MEASURED 2026-09-25]` |
-| Distribution | DMG in `repository/dist/` (`gateway-kh-0.2.28.dmg`), named by version alone |
+| Distribution | DMG in `repository/dist/` (`gateway-kh-0.2.30.dmg`), named by version alone |
 | SSD/setup kit | `repository/dist/setup-kit/`. **The four `KH-STUDIO-*` drives now carry Studio Hub 0.6.65** `[MEASURED 2026-09-25]`, refreshed 21:34–21:40; the GatewayKH side on them is older — check before a rollout |
 
 - **Versions are patch-only for now:** `0.2.1`, `0.2.2`, … up to `0.2.1000`. Increment the
@@ -45,6 +45,44 @@ project does not say why, and nobody should guess.
   "Why port 8787". It was 8000 until the owner moved it (2026-09-21, `Project
   Status.md` §10h: 8000 is the most contested dev port and Story Studio's own
   default). Every Story Studio client points at `http://<host>:8787`.
+
+## WHAT 0.2.30 CHANGED — the gateway stops running one job at a time
+
+**This is the change that makes a fleet worth owning.** The worker ran exactly one
+job at a time — chat, image, TTS, subtitle and music all shared a single slot — so
+nineteen Macs sat idle behind one render. It was deliberate, and the reason is
+still recorded in the file it was written in: *"a second thread would add
+concurrency bugs (double-claiming, artifact races) for no benefit."* Both risks
+were re-checked and both are smaller than that note claims; the cost of the old
+shape is not.
+
+- **Three ceilings**, in `gateway/concurrency.py`, all of which must pass before a
+  job is admitted: the **pool** (`GATEWAY_JOB_CONCURRENCY`, default 4), the
+  **lane** (`GATEWAY_LANE_CONCURRENCY=image=1,chat=4`, empty by default), and the
+  **provider**. Each answer carries its `source` — `hub` (a site's own
+  `available_worker_slots`), `curated` (`data/provider-concurrency.local.json`), or
+  `gateway` (a labelled default of 1, naming the file to edit).
+- **`paid_concurrency_limit` is now derived, not written.** It was the literal `4`
+  while one job ran at a time: a published number that did not describe the system,
+  in a field Story Studio reads. It now comes from the same function that sizes the
+  pool, so the two cannot drift.
+- **Daemon threads, not a `ThreadPoolExecutor`.** An executor joins its threads at
+  interpreter exit, so quitting during a two-minute render would hang the process
+  instead of stopping it. The dispatcher is single-threaded and is the only
+  admitter; correctness of the claim does not depend on that, only tidiness of the
+  counters.
+- **A limit of zero is not a stop.** A Hub reporting no free slots is busy right
+  now, not closed; treating `0` as a cap would leave jobs due for ever with nothing
+  wrong and nothing to see. Zero falls back to 1, and there is a test for it.
+- **Two bugs the new tests caught**, both of the "setting that silently does
+  nothing" shape this project keeps finding: `_positive_int` rejected numeric
+  **strings**, so `GATEWAY_JOB_CONCURRENCY=7` and `GATEWAY_LANE_CONCURRENCY=image=1`
+  were ignored and fell back to the default; and `test_job_claim`'s *"the loop
+  returned, therefore the job ran"* became a race the moment `_loop` stopped
+  executing inline. `Worker.wait_idle()` exists for the second one.
+
+`tests/test_worker_concurrency.py` → 13 checks, stable over five runs. Focused
+suites 30/30, `test_e2e.py` 555/555.
 
 ## WHAT 0.2.28 CHANGED — and the three things it cost to learn
 

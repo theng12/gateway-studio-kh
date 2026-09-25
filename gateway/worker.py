@@ -4,12 +4,23 @@ Why this exists rather than generating inline: a local FLUX image on a busy Mac
 can take minutes, and Studio Hub jobs are themselves asynchronous. If the
 gateway generated inside the HTTP handler, every Story Studio poll would block
 for the duration and its own timeouts would fire. So the request path only ever
-*accepts* and *reads*; a single worker thread does the waiting.
+*accepts* and *reads*; the worker does the waiting.
 
-One worker thread, deliberately. The gateway serves one owner, and a second
-thread would add concurrency bugs (double-claiming, artifact races) for no
-benefit. If that ever changes, the claim in `JobStore.mark_running` is the
-place to add real locking.
+**It used to be one thread, deliberately.** That was right for one owner and one
+Mac, and the reason is recorded verbatim: *"a second thread would add concurrency
+bugs (double-claiming, artifact races) for no benefit."* Both named risks were
+re-checked before this changed, and both are smaller than the note claims:
+
+  * **double-claiming** — `mark_running` is a conditional `UPDATE … WHERE state =
+    'accepted'` returning `rowcount == 1`, so two threads racing cannot both win;
+  * **artifact races** — paths are per job (`{job_id}.{ext}`,
+    `{job_id}-{index}.{ext}`), retention has a one-hour floor, and
+    `record_artifacts` merges into the job row, which is safe with one worker per
+    job.
+
+What is *not* smaller is the cost of the old shape: with a fleet, one slot means
+nineteen idle Macs. Concurrency is now bounded rather than absent — see
+`gateway/concurrency.py` for the three ceilings and where each number comes from.
 """
 
 from __future__ import annotations
@@ -21,11 +32,26 @@ import time
 from pathlib import Path
 from typing import Any
 
+from . import concurrency
 from .adapters import BackendError, BackendRequest, adapter_for
 from .config import ARTIFACT_DIR
 from .providers import registry
 from .store import RECOVERY_UNKNOWN, JobStore
 from . import fleet
+
+#: Modality → the Hub's own operation name, for reading a site's per-operation
+#: capacity. The Hub spells these differently from the catalogue (`chat.completion`
+#: where the catalogue says `chat.response`), so the translation is explicit rather
+#: than assumed — a wrong key reads as "the site said nothing" and silently falls
+#: back to one at a time.
+_HUB_OPERATION_BY_MODALITY = {
+    "chat": "chat.completion",
+    "image": "image.text_to_image",
+    "music": "music.generation",
+    "tts": "voice.tts",
+    "transcription": "audio.transcription",
+    "video": "video.generation",
+}
 
 log = logging.getLogger("gateway.worker")
 
@@ -324,13 +350,46 @@ def execute_job(job: dict[str, Any], store: JobStore) -> None:
 
 
 class Worker:
-    """Polls the store for due jobs and executes them."""
+    """Dispatches due jobs to bounded concurrency, respecting three ceilings.
 
-    def __init__(self, store: JobStore, interval_s: float = 0.4) -> None:
+    **One thread dispatched; several ran.** The previous shape executed each job
+    on the poller itself, so exactly one job was ever in flight — correct while
+    this gateway served one Mac, and the thing that makes a fleet useless when it
+    serves twenty.
+
+    The dispatcher stays single-threaded and that is deliberate: it is the only
+    thing that admits work, so the budget arithmetic needs no lock of its own
+    beyond the counter it already takes. Each admitted job gets its own daemon
+    thread. **Daemon, not a `ThreadPoolExecutor`** — an executor's threads join at
+    interpreter exit, so a quit during a two-minute render would hang the process
+    instead of stopping it, and this gateway is killed and restarted often.
+
+    Admission checks, in order, all of which must pass:
+
+      * the pool is not full (`concurrency.global_limit`);
+      * the lane is not at its cap (`concurrency.lane_budget`);
+      * the provider is not at *its* limit (`concurrency.cloud_budget` for a cloud
+        lane, or the site's own `available_worker_slots` for a Studio Hub one).
+
+    The claim is still `store.mark_running`, which is a conditional UPDATE and so
+    is safe against a second dispatcher. Nothing here relies on the single
+    dispatcher for correctness of the claim — only for tidiness of the counters.
+    """
+
+    def __init__(self, store: JobStore, interval_s: float = 0.4,
+                 pool_size: int | None = None) -> None:
         self.store = store
         self.interval_s = interval_s
+        self.pool_size = pool_size or concurrency.global_limit()
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
+        self._budget_lock = threading.Lock()
+        self._in_flight: dict[str, int] = {}
+        self._lane_in_flight: dict[str, int] = {}
+        #: The last budget resolved per provider, so the console can say what is
+        #: bounding a lane and where the number came from rather than leaving a
+        #: reader to guess why their fleet is idle.
+        self.budgets: dict[str, dict[str, Any]] = {}
         self.processed = 0
 
     def start(self) -> None:
@@ -345,6 +404,111 @@ class Worker:
             self._thread.join(timeout=5.0)
             self._thread = None
 
+    # -- admission ---------------------------------------------------------
+    def _provider_budget(self, provider_id: str, modality: str) -> concurrency.Budget:
+        """What bounds one provider, from the best source that has an answer."""
+        operation = _HUB_OPERATION_BY_MODALITY.get(modality, "")
+        try:
+            from . import fleet
+
+            for row in fleet.snapshot(allow_stale=True).get("locations") or []:
+                if str(row.get("provider_id") or "") != provider_id:
+                    continue
+                entry = ((row.get("capacity") or {}).get("by_operation") or {}).get(
+                    operation
+                )
+                slots = entry.get("available_worker_slots") if isinstance(entry, dict) else None
+                return concurrency.hub_budget(slots, operation=operation or modality)
+        except Exception:  # noqa: BLE001 - an unreadable fleet is not a reason to stall
+            pass
+        return concurrency.cloud_budget(provider_id)
+
+    def active(self) -> int:
+        with self._budget_lock:
+            return sum(self._in_flight.values())
+
+    def wait_idle(self, timeout: float = 30.0) -> bool:
+        """Block until nothing is in flight; `False` if it did not settle in time.
+
+        Needed because `_loop` now returns as soon as it has *dispatched*. A caller
+        that requires the work to be finished has to say so — a test asserting "the
+        loop returned, therefore the job ran" silently became a race when the pool
+        landed, and that is the kind of gate people learn to re-run.
+
+        Deliberately **not** folded into `stop()`: stopping the poller must stay
+        fast, because the app quits by stopping this process and a two-minute
+        render must not hold the quit open.
+        """
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            if self.active() == 0:
+                return True
+            time.sleep(0.02)
+        return self.active() == 0
+
+    def _admit(self, job: dict[str, Any]) -> bool:
+        """Reserve room for one job, or refuse it this pass.
+
+        Refusing is not failing: the job stays due and the next pass tries again,
+        which is what keeps a busy provider from turning into a crash.
+        """
+        provider_id = str(job.get("provider_id") or "")
+        modality = str(job.get("modality") or "")
+        provider_budget = self._provider_budget(provider_id, modality)
+        lane_budget = concurrency.lane_budget(modality)
+        with self._budget_lock:
+            if sum(self._in_flight.values()) >= self.pool_size:
+                return False
+            if self._lane_in_flight.get(modality, 0) >= lane_budget.limit:
+                return False
+            if self._in_flight.get(provider_id, 0) >= provider_budget.limit:
+                return False
+            self._in_flight[provider_id] = self._in_flight.get(provider_id, 0) + 1
+            self._lane_in_flight[modality] = self._lane_in_flight.get(modality, 0) + 1
+            self.budgets[provider_id] = provider_budget.as_dict()
+        return True
+
+    def _release(self, job: dict[str, Any]) -> None:
+        provider_id = str(job.get("provider_id") or "")
+        modality = str(job.get("modality") or "")
+        with self._budget_lock:
+            for book, key in ((self._in_flight, provider_id),
+                              (self._lane_in_flight, modality)):
+                if book.get(key):
+                    book[key] -= 1
+                if book.get(key, 0) <= 0:
+                    book.pop(key, None)
+
+    # -- running -----------------------------------------------------------
+    def _run(self, job: dict[str, Any]) -> None:
+        """One job on its own thread. Never raises."""
+        try:
+            execute_job(job, self.store)
+            self.processed += 1
+        except Exception:  # noqa: BLE001
+            log.exception("worker failed to execute %s", job.get("id"))
+            getter = getattr(self.store, "get", None)
+            current = getter(job["id"]) if getter is not None else job
+            current = current or {}
+            unknown = bool(
+                current.get("dispatch_started_at") or current.get("upstream_job_id")
+            )
+            detail = (
+                _unknown_detail("internal worker error")
+                if unknown
+                else "internal worker error"
+            )
+            _fail(
+                self.store,
+                job["id"],
+                code="PROVIDER_FAILED",
+                detail=detail,
+                recovery_state=RECOVERY_UNKNOWN if unknown else None,
+                recovery_detail=detail if unknown else None,
+            )
+        finally:
+            self._release(job)
+
     def _loop(self) -> None:
         while not self._stop.is_set():
             try:
@@ -356,34 +520,17 @@ class Worker:
             for job in due:
                 if self._stop.is_set():
                     return
-                # Claim before executing so a second pass cannot re-enter.
+                # Reserve first, then claim: a claim that fails must not leave the
+                # budget holding a slot nobody will ever release.
+                if not self._admit(job):
+                    continue
                 if not self.store.mark_running(job["id"]):
+                    self._release(job)
                     continue
                 job["state"] = "running"
-                try:
-                    execute_job(job, self.store)
-                    self.processed += 1
-                except Exception:  # noqa: BLE001
-                    log.exception("worker failed to execute %s", job.get("id"))
-                    getter = getattr(self.store, "get", None)
-                    current = getter(job["id"]) if getter is not None else job
-                    current = current or {}
-                    unknown = bool(
-                        current.get("dispatch_started_at") or current.get("upstream_job_id")
-                    )
-                    detail = (
-                        _unknown_detail("internal worker error")
-                        if unknown
-                        else "internal worker error"
-                    )
-                    _fail(
-                        self.store,
-                        job["id"],
-                        code="PROVIDER_FAILED",
-                        detail=detail,
-                        recovery_state=RECOVERY_UNKNOWN if unknown else None,
-                        recovery_detail=detail if unknown else None,
-                    )
-                time.sleep(0)  # yield between jobs
+                threading.Thread(
+                    target=self._run, args=(job,),
+                    name=f"gateway-job-{job['id'][:8]}", daemon=True,
+                ).start()
 
             self._stop.wait(self.interval_s)

@@ -129,6 +129,12 @@ class JobClaimTests(unittest.TestCase):
             finally:
                 worker_module.execute_job = old_execute
 
+            # **`_loop` dispatches; it no longer executes.** It returns as soon as
+            # the job is on its own thread, so this has to wait for the work rather
+            # than read the loop's return as "it ran" — that assertion became a race
+            # the moment the pool landed, and a gate that fails occasionally is one
+            # people learn to re-run.
+            self.assertTrue(worker.wait_idle(timeout=5.0), "the dispatched job never finished")
             self.assertEqual(executed, [first["id"]])
             self.assertEqual(store.get(cancelled["id"])["state"], "cancelled")
         finally:

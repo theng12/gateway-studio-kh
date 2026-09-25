@@ -459,8 +459,10 @@ stop reading its silence as an answer. That line is worth more than the four row
   the controller-mirror the design already names, or for the few nodes a site actually
   needs current. Blocked on their answer to HUB-15.
 
-- [ ] **GW-8 — the gateway runs one job at a time, for every lane, and publishes a
-  concurrency limit of 4.** Found 2026-09-25 from the owner's own question — *"if I
+- [x] **GW-8 — the gateway runs one job at a time, for every lane, and publishes a
+  concurrency limit of 4.** closed 2026-09-25 in **0.2.30** — every item below is
+  done, and the numbers are the ones the tests hold.
+  Found 2026-09-25 from the owner's own question — *"if I
   have 20 machines and 19 sit idle it's useless to me"* — and it is the single
   biggest thing between this fleet and working like one fleet.
   truth: `gateway/worker.py::_loop` (`for job in due(): execute_job(job)`, one
@@ -479,6 +481,25 @@ stop reading its silence as an answer. That line is worth more than the four row
   replicas and a fleet of sites must be safe. None of that applies here."* With ~20
   Macs, a fleet of sites is exactly what applies.
   **Scoped, and the scary half is already done:**
+  0. **Shipped in 0.2.30.** `gateway/concurrency.py` resolves three ceilings;
+     `worker.Worker` is now a single dispatcher feeding **daemon threads** — daemon
+     on purpose, because a `ThreadPoolExecutor` joins its threads at interpreter
+     exit and a quit during a two-minute render would hang the process instead of
+     stopping it. `store.due()` never returns a running job (`mark_running` clears
+     `next_action_at`), so the reserve-then-claim order cannot wedge on its own
+     work. `Worker.wait_idle()` exists because `_loop` now returns on *dispatch*.
+     `tests/test_worker_concurrency.py` → 13 checks, stable over five runs:
+     concurrency proven with a `Barrier` (a serial worker cannot open it), the pool
+     size as a real ceiling, a cloud lane at 1 by default, a curated limit honoured,
+     a Hub site sized from its own `available_worker_slots`, **a Hub reporting zero
+     slots still running one** (a limit of 0 must never wedge the queue), a lane
+     cap honoured, a failed claim releasing its reservation, and the published
+     `paid_concurrency_limit` equal to the pool size.
+     Two bugs the tests caught, both worth naming: `_positive_int` rejected numeric
+     **strings**, so `GATEWAY_JOB_CONCURRENCY=7` and `GATEWAY_LANE_CONCURRENCY=image=1`
+     were silently ignored and fell back to the default — and `test_job_claim`'s
+     "the loop returned, therefore the job ran" became a race the moment `_loop`
+     stopped executing inline. Both fixed in the same change.
   1. N workers instead of one — the claim is **already atomic** (`mark_running` is a
      conditional `UPDATE … WHERE state = 'accepted'` returning `rowcount == 1`), so
      double-claiming is handled.

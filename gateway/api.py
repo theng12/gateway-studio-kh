@@ -43,7 +43,7 @@ from .adapters import BackendError, BackendRequest, adapter_for
 from .adapters.studio_hub import SUPPORTED_STUDIO_HUB_VERSION
 from .catalog import MODALITIES, catalog, encode_model_id
 from .config import ARTIFACT_DIR, gateway_api_key, is_loopback, request_is_loopback
-from .constants import ADMISSION, CREDIT_BALANCE, ZERO_SETTLEMENT
+from .constants import CREDIT_BALANCE, ZERO_SETTLEMENT, admission
 from .providers import registry
 from . import fleet
 from . import retention
@@ -761,14 +761,14 @@ def version() -> dict[str, Any]:
 @app.get("/v1/account/overview", dependencies=[Depends(require_auth)])
 def account_overview() -> dict[str, Any]:
     return {
-        **ADMISSION,
+        **admission(),
         "credit_balance": CREDIT_BALANCE,
         "credits_used_30d": 0,
         "currency": "credits",
         "tier": "owner",
         "lifetime_paid_cents": 0,
         "service_tier": "owner",
-        "admission": dict(ADMISSION),
+        "admission": admission(),
         "capacity_verified": True,
         "limit_source": "gateway",
     }
