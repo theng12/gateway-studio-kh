@@ -98,15 +98,27 @@ class PackageRowTests(_MockHub):
         self.assertEqual(clone.modality, "tts")
         self.assertEqual(clone.raw["modality_source"], "package")
 
-    def test_a_lane_the_gateway_cannot_serve_is_discovered_and_withheld(self) -> None:
-        # Chat is stated by the Hub (engine `chat-mlx`), so it arrives as a row —
-        # and `serves` is what withholds it, not a silent drop in discovery.
+    def test_a_lane_the_gateway_serves_is_discovered_and_publishable(self) -> None:
+        # Chat became a served lane in 0.6.63 (a Fleet credential may now run a
+        # completion through the Hub), so it is discovered **and** offerable — the
+        # row that used to be withheld with a reason is now the row that runs.
         definition, result = self._discover()
         by_id = {m.model_id: m for m in result.models}
         chat = by_id.get("mock-hub/chat-model")
         self.assertIsNotNone(chat, sorted(by_id))
         self.assertEqual(chat.modality, "chat")
-        self.assertFalse(serves(definition, "chat"))
+        self.assertTrue(serves(definition, "chat"))
+
+    def test_a_lane_the_gateway_cannot_serve_is_discovered_and_withheld(self) -> None:
+        # Video is shelved by the owner on the Hub side and this adapter has no
+        # lane for it, so it arrives as a row — and `serves` is what withholds it,
+        # not a silent drop in discovery.
+        definition, result = self._discover()
+        by_id = {m.model_id: m for m in result.models}
+        video = by_id.get("mock-hub/video-model")
+        self.assertIsNotNone(video, sorted(by_id))
+        self.assertEqual(video.modality, "video")
+        self.assertFalse(serves(definition, "video"))
 
     def test_the_lane_contract_is_carried_verbatim(self) -> None:
         _definition, result = self._discover()
