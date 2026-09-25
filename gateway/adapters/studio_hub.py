@@ -126,7 +126,16 @@ _TERMINAL_UNCERTAIN = {"uncertain"}
 #: "the job is broken". The Hub itself said so with a 409; the worker may try
 #: another location that offers the same model. `MODEL_MODALITY_MISMATCH` is
 #: deliberately not here — that is a routing bug, not a site property.
-_LOCATION_REFUSAL_CODES = {"MODEL_NOT_READY", "MODEL_NOT_PACKAGED"}
+#:
+#: **`MACHINE_BUSY` belongs here and did not used to be.** Measured 2026-09-25:
+#: **twenty-seven** chat jobs settled `failed` on
+#: `409 {"detail":"local is reserved for other work on this Mac","code":"MACHINE_BUSY"}`.
+#: A busy machine is the plainest site property there is — it is true for a minute
+#: and false the next — and it became common rather than rare the moment the worker
+#: started dispatching to a pool, because we now ask a site for more than one job at
+#: a time. Failing the caller's job for it is the same mistake the 409 in agent mode
+#: used to make, in the other direction.
+_LOCATION_REFUSAL_CODES = {"MODEL_NOT_READY", "MODEL_NOT_PACKAGED", "MACHINE_BUSY"}
 
 
 def _hub_refusal_code(response: httpx.Response) -> str | None:
@@ -1036,8 +1045,22 @@ def _chat_body(request: BackendRequest) -> dict[str, Any]:
     if max_tokens:
         body["max_tokens"] = max_tokens
     response_format = request.params.get("response_format")
+    # **Exactly the two the lane publishes.** The Hub's contract states
+    # `structured_output.formats: ["json_object", "json_schema"]` and it refuses
+    # anything else with 422 — measured 2026-09-25: **fourteen** jobs settled
+    # `failed` on `response_format.type: must be json_object or json_schema;
+    # received str 'text'`, and this allowlist carried `"text"`.
+    #
+    # Dropping `text` is a faithful translation rather than a silent loss, and the
+    # contract is what says so: there is no `parameters` block on this lane, so
+    # `response_format` is not an operator default, and `enforcement:
+    # prompt_validate_repair` requests a format **only when the caller names one**.
+    # Omitted therefore means unstructured here in exactly the way `text` does —
+    # which is this adapter's own rule: send only the parameters the lane honours,
+    # because "sending one would be a promise made to the caller that the answer
+    # does not keep".
     if isinstance(response_format, dict) and response_format.get("type") in {
-        "json_object", "json_schema", "text",
+        "json_object", "json_schema",
     }:
         body["response_format"] = response_format
     return body

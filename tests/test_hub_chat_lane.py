@@ -136,6 +136,50 @@ class ChatLaneTests(unittest.TestCase):
         self.assertNotIn("frequency_penalty", body, "a parameter the lane drops is not sent")
         self.assertIn("mock hub reply", result.text)
 
+    def test_the_one_format_the_lane_refuses_is_not_sent(self) -> None:
+        # Measured 2026-09-25: **fourteen** jobs settled `failed` on
+        # `response_format.type: must be json_object or json_schema; received str
+        # 'text'`. The lane publishes exactly two formats, and this adapter's
+        # allowlist also carried `"text"` — OpenAI's spelling for "unstructured".
+        #
+        # Dropping it is a faithful translation and the contract is what says so:
+        # there is no `parameters` block on this lane, so `response_format` is not
+        # an operator default, and `enforcement: prompt_validate_repair` requests a
+        # format only when the caller names one. Omitted means unstructured here in
+        # exactly the way `text` does.
+        StudioHubBackend().generate(_request({
+            "input": [{"role": "user", "content": "hello"}],
+            "response_format": {"type": "text"},
+        }))
+        body = CHAT_CALLS[-1]["body"]
+        self.assertNotIn("response_format", body,
+                         "a format the lane refuses must not be forwarded")
+
+    def test_the_two_formats_the_lane_publishes_are_still_sent(self) -> None:
+        for wanted in ({"type": "json_object"}, {"type": "json_schema"}):
+            StudioHubBackend().generate(_request({
+                "input": [{"role": "user", "content": "hello"}],
+                "response_format": wanted,
+            }))
+            self.assertEqual(CHAT_CALLS[-1]["body"].get("response_format"), wanted)
+
+    def test_a_busy_machine_is_a_location_refusal(self) -> None:
+        # Measured 2026-09-25: **twenty-seven** chat jobs settled `failed` on
+        # `409 MACHINE_BUSY`, "local is reserved for other work on this Mac". A
+        # busy machine is the plainest site property there is — true for a minute
+        # and false the next — and it became common the moment the worker began
+        # dispatching to a pool. It must re-route, not fail the caller's job.
+        with patch.object(mock_upstream, "CHAT_STATUS", 409), \
+                patch.object(mock_upstream, "CHAT_REFUSAL_CODE", "MACHINE_BUSY"), \
+                patch.object(mock_upstream, "CHAT_DETAIL",
+                             "local is reserved for other work on this Mac"):
+            with self.assertRaises(BackendError) as caught:
+                StudioHubBackend().generate(_request())
+        self.assertEqual(caught.exception.code, "LOCATION_NOT_READY")
+        self.assertTrue(caught.exception.retryable)
+        self.assertIs(caught.exception.upstream_accepted, False,
+                      "a refusal accepted nothing, so another location may be tried")
+
     def test_the_answer_is_passed_through_as_the_worker_stated_it(self) -> None:
         result = StudioHubBackend().generate(_request())
         # `finish_reason` travels: rewriting `length` into a clean stop would hide
