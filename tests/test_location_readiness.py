@@ -158,8 +158,18 @@ class RerouteTests(unittest.TestCase):
     def test_a_voice_is_not_re_routed_to_a_location_without_the_clip(self) -> None:
         adapter, settled = self._run({"prompt": "a cat", "voice_id": "studio-hub-a::voice-1"})
         self.assertEqual(adapter.tried, ["studio-hub-a"], "a pinned voice must stay put")
-        self.assertEqual(settled["state"], "failed")
-        self.assertEqual(settled["error_code"], "LOCATION_NOT_READY")
+        # **And then it waits, rather than failing.** This asserted `failed` until
+        # the queue learned to hold transient site refusals — which is what a busy
+        # controller is. The subject of this test is that a pinned voice is never
+        # sent to a location without its reference clip, and that is still exactly
+        # what it checks: one location was tried. The outcome moved because the
+        # honest one for "that site is busy right now" is to wait, not to report the
+        # caller's work as broken.
+        self.assertEqual(settled["state"], "accepted", settled)
+        # The reason is the sentence the Jobs window shows, not the code — which is
+        # the point of storing it: a reader should not have to know the vocabulary.
+        self.assertIn("cannot serve this model right now", settled["defer_reason"] or "")
+        self.assertIsNone(settled.get("error_code"), "a waiting job carries no failure")
 
 
 if __name__ == "__main__":

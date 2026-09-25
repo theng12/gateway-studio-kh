@@ -392,6 +392,24 @@
       <p>Where work can run: cloud APIs and your own Studio Hub locations, each with its key and
          the models it offers.</p>
     </div>
+
+    <!-- **First, not last.** This was below the provider list, which is twenty-three
+         cards long, so the only way to find the concurrency settings was to scroll
+         past all of them — and the owner went looking and could not find them. A
+         setting nobody can reach is the same defect as a control that does nothing. -->
+    <h2 style="margin:18px 0 4px">Concurrency</h2>
+    <p class="hint" style="margin:0 0 12px">
+      How much work the gateway runs at once. The <b>pool</b> is its total; a
+      <b>provider</b> limit is what that lane will accept, so a cloud tier that
+      unlocks with payment — or a bigger fleet — is a number here rather than a
+      code change. A Studio Hub location sizes itself from the free workers it
+      reports and is not set here. A blank box means <b>not set</b>, which is not
+      the same as a limit of one.
+    </p>
+    <div id="concurrency-msg" class="msg" role="alert" aria-live="polite"></div>
+    <div id="concurrency"></div>
+
+    <h2 style="margin:26px 0 4px">Where work can run</h2>
     <div id="local-note" class="hint" style="margin:10px 0 0"></div>
     <div id="skipped-note" class="hint" style="margin:10px 0 0"></div>
     <div class="row" style="margin:14px 0">
@@ -408,18 +426,6 @@
     </div>
     <div id="providers-msg" class="msg" role="alert" aria-live="polite"></div>
     <div id="providers"></div>
-
-    <h2 style="margin:28px 0 4px">Concurrency</h2>
-    <p class="hint" style="margin:0 0 12px">
-      How much work the gateway runs at once. The <b>pool</b> is its total; a
-      <b>provider</b> limit is what that lane will accept, so a cloud tier that
-      unlocks with payment — or a bigger fleet — is a number here rather than a
-      code change. A Studio Hub location sizes itself from the free workers it
-      reports and is not set here. A blank box means <b>not set</b>, which is not
-      the same as a limit of one.
-    </p>
-    <div id="concurrency-msg" class="msg" role="alert" aria-live="polite"></div>
-    <div id="concurrency"></div>
   </section>
   <!-- CREATE -->
   <section id="view-create" style="display:none">

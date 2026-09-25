@@ -453,6 +453,16 @@ final class JobsSection: NSObject, AppSection, NSTableViewDataSource, NSTableVie
             detailStack.addArrangedSubview(PageKit.help("Requested by \(caller)"))
         }
 
+        // **Waiting, not failed.** A job the fleet could not take yet goes back in
+        // our own queue rather than being reported as broken, and saying so is the
+        // whole point — `accepted` alone reads as "not started", which is a
+        // different thing from "the machine was busy and we are trying again".
+        if let waiting = string(job["defer_reason"]), !waiting.isEmpty {
+            let label = PageKit.help("Waiting for a free machine — \(waiting)")
+            label.textColor = .systemOrange
+            detailStack.addArrangedSubview(label)
+        }
+
         let lifecycle = lifecycleText(job)
         if !lifecycle.isEmpty {
             let lifecycleLabel = PageKit.help(lifecycle)

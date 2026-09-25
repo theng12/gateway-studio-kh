@@ -1505,6 +1505,11 @@ def list_jobs(
                 # reads did not, which is the same defect as a control wired to
                 # nothing. `None` means the request said nothing about itself.
                 "caller": job.get("caller"),
+                # Why a job is queued rather than running. `accepted` alone cannot
+                # tell "not dispatched yet" from "the fleet was busy and we are
+                # waiting", and only one of those is worth the owner's attention.
+                "defer_reason": job.get("defer_reason"),
+                "next_action_at": job.get("next_action_at"),
                 "has_artifact": bool(job.get("asset_path")),
                 "error_code": job.get("error_code"),
                 "error_detail": job.get("error_detail"),

@@ -53,6 +53,64 @@ _HUB_OPERATION_BY_MODALITY = {
     "video": "video.generation",
 }
 
+#: "Not now" rather than "not ever" — the site could not take this job *this time*.
+#: **Exactly the set the worker already re-routes on**, which is the point: if a
+#: condition is worth trying another location for, it is worth waiting for this one.
+#: Both prove the upstream accepted nothing, which is what makes a retry safe;
+#: `SITE_CAPACITY_UNAVAILABLE` is deliberately absent because a submit that may have
+#: left the building is an unknown outcome, and those get a recovery hold instead.
+_TRANSIENT_SITE_CODES = {"LOCATION_NOT_READY", "LOCATION_UNREACHABLE"}
+
+#: How long a job will wait for a busy fleet before it is reported as failed.
+#: ponytail: a flat eight deferrals with a backoff capped at a minute — about four
+#: minutes in total, and nine dispatch attempts. Ceiling — a fleet busy for longer
+#: than that still fails work it would eventually have run. Upgrade path — make both
+#: numbers settings beside the pool size, which is where an owner would look.
+_MAX_DEFERRALS = 8
+_DEFER_CAP_S = 60.0
+
+
+def _defer_delay(attempts: int) -> float:
+    """2s, 4s, 8s … capped. Long enough not to hammer a busy machine."""
+    return min(2.0 ** max(int(attempts), 0), _DEFER_CAP_S)
+
+
+def _defer_if_transient(
+    store: JobStore, job_id: str, exc: BackendError, current: dict[str, Any], *,
+    unknown: bool,
+) -> bool:
+    """Put the job back in our own queue when the fleet is merely busy.
+
+    Returns `True` when it deferred, so the caller returns instead of failing.
+
+    **A busy fleet is not a broken job.** Every location that offers this model just
+    refused it, or could not be reached, and both of those are facts about *now*.
+    The caller asked for work, not for a verdict on the fleet's occupancy. The old
+    GenStudio held work this way; this gateway failed it — measured 2026-09-25:
+    ninety-three of a hundred and thirty-five chat jobs failed inside half an hour,
+    most of them `MACHINE_BUSY` against the single location that had the model.
+
+    Four conditions, each load-bearing:
+
+      * the code is transient (`_TRANSIENT_SITE_CODES`);
+      * **`upstream_accepted is False`** — nothing was dispatched, so a retry cannot
+        duplicate work. A request that may have reached a worker is a durable
+        recovery hold and must never come through here;
+      * `unknown` is false, which is the same rule stated for a job that already
+        carries an upstream id;
+      * we have not already waited `_MAX_DEFERRALS` times, because a job that is
+        never reported is worse than one reported honestly.
+    """
+    defer = getattr(store, "defer", None)
+    if defer is None or exc.code not in _TRANSIENT_SITE_CODES:
+        return False
+    if exc.upstream_accepted is not False or unknown:
+        return False
+    attempts = int(current.get("attempt_count") or 0)
+    if attempts > _MAX_DEFERRALS:
+        return False
+    return bool(defer(job_id, delay_s=_defer_delay(attempts), reason=str(exc)[:300]))
+
 log = logging.getLogger("gateway.worker")
 
 _EXT_BY_MEDIA = {
@@ -268,6 +326,15 @@ def execute_job(job: dict[str, Any], store: JobStore) -> None:
             if exc.code == "PROVIDER_SUBMISSION_UNCERTAIN":
                 unknown = True
             detail = _unknown_detail(str(exc)) if unknown else str(exc)[:500]
+            # **A busy fleet is not a broken job** — see `_defer_if_transient` for
+            # the whole rule and why each of its conditions is load-bearing.
+            if _defer_if_transient(store, job_id, exc, current, unknown=unknown):
+                log.warning(
+                    "job %s: %s cannot take it yet (%s); waiting, attempt %s of %s",
+                    job_id, provider_id, exc.code,
+                    current.get("attempt_count"), _MAX_DEFERRALS,
+                )
+                return
             # A durable recovery hold keeps the upstream's own identifiers, so the
             # operator has the batch, item, worker and the routes that resolve it
             # rather than a failure they have to reconstruct.

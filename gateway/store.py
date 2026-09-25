@@ -62,7 +62,8 @@ CREATE TABLE IF NOT EXISTS jobs (
     late_result_state TEXT,
     late_error_code  TEXT,
     late_error_detail TEXT,
-    caller           TEXT
+    caller           TEXT,
+    defer_reason     TEXT
 );
 CREATE INDEX IF NOT EXISTS jobs_state_next ON jobs(state, next_action_at);
 """
@@ -103,6 +104,11 @@ _ADDED_COLUMNS: tuple[tuple[str, str], ...] = (
     # asks at 2am when a batch failed. Absent means the caller said nothing, and
     # that stays distinguishable from a caller that named itself.
     ("caller", "TEXT"),
+    # Why a job is back in the queue instead of running. **A busy fleet is not a
+    # broken job**: a site with no free machine right now will have one shortly,
+    # and the caller asked for work rather than for a verdict on the fleet's
+    # occupancy. Cleared on dispatch, because a running job is not waiting.
+    ("defer_reason", "TEXT"),
 )
 
 
@@ -458,6 +464,7 @@ class JobStore:
                 """UPDATE jobs SET state = 'running', next_action_at = NULL,
                                    dispatch_started_at = NULL,
                                    attempt_count = attempt_count + 1,
+                                   defer_reason = NULL,
                                    updated_at = ?
                    WHERE id = ? AND state = 'accepted'
                      AND cancel_requested_at IS NULL""",
@@ -465,6 +472,42 @@ class JobStore:
             )
             self._conn.commit()
             return result.rowcount == 1
+
+    def defer(self, job_id: str, *, delay_s: float, reason: str) -> bool:
+        """Put an accepted-nothing job back in the queue instead of failing it.
+
+        **A busy fleet is not a broken job.** A site with no free machine right now
+        will have one shortly, and the caller asked for work — not for a verdict on
+        the fleet's occupancy. Measured 2026-09-25: ninety-three of a hundred and
+        thirty-five chat jobs failed inside half an hour, most of them
+        `MACHINE_BUSY` against the one location that had the model. The gateway had
+        nowhere else to route and settled each one as a failure, which is a lie
+        about the work rather than a report about the fleet.
+
+        `next_action_at` is the whole mechanism — it is the scheduling primitive
+        `due()` already reads — so a deferred job comes back on its own.
+
+        **The caller must only use this when the upstream accepted nothing.** A
+        request that may have reached a worker is a durable recovery hold and never
+        an automatic retry; this method has no opinion on that, which is why it is
+        not called from the unknown-outcome path.
+        """
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT state FROM jobs WHERE id = ?", (job_id,)
+            ).fetchone()
+            if row is None or row["state"] in TERMINAL_STATES:
+                return False
+            self._update_locked(
+                job_id,
+                {
+                    "state": "accepted",
+                    "next_action_at": time.time() + max(float(delay_s), 0.0),
+                    "defer_reason": reason[:300],
+                },
+            )
+            self._conn.commit()
+            return True
 
     def begin_dispatch(self, job_id: str) -> bool:
         """Open the dispatch window only while a running job has no cancel request."""
