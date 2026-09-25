@@ -228,15 +228,18 @@ carefully.
   announces it.** owes: SH (small) · truth: `hub/release/{release.json,artifact}`
   under the Hub's data dir; `POST /api/hub/release` stores one and there is no route
   or control to clear it.
-  last verified: 2026-09-25 on this Mac → the controller holds a real 1.28 GB
-  `StudioHub-0.6.50-d6bc438.dmg` (pushed 2026-09-23, signed by the trusted gateway
-  key) while running 0.6.63, so the Connections page shows **"Older release
-  available — this Mac is on a newer version"**. The guard is working exactly as
-  designed — nothing is offered, nothing rolls back — but the owner read it as *"did
-  I install the latest one? should I stop and start the service?"*, and the only way
-  to clear it is to delete two files in the Hub's data directory by hand. A "clear
-  held release" action, and a heading that says what it is (a **mirror for nodes**,
-  not an update waiting to be applied), would each have saved that.
+  last verified: 2026-09-25, and the **evidence has moved** — this row has now gone
+  stale once, so both states are kept. **Then:** the controller held a real 1.28 GB
+  `StudioHub-0.6.50-d6bc438.dmg` (pushed 2026-09-23, signed by the trusted gateway key)
+  while running 0.6.63, so Connections read **"Older release available — this Mac is on a
+  newer version"**. The guard worked exactly as designed — nothing offered, nothing
+  rolled back — but the owner read it as *"did I install the latest one? should I stop
+  and start the service?"*, which is the whole reason this row exists. **Now:** the same
+  five controllers hold **0.6.64** while running 0.6.63, so the same banner should read
+  "Update available" instead. **The ask is unchanged** — there is still no route or
+  control to clear a held release, and the heading still does not say it is a *mirror for
+  nodes*; only the example moved. Clearing is still two files deleted by hand, and still
+  a decision rather than housekeeping, because that artifact is the rollback copy.
   Note for our side, not yours: that artifact is also the only rollback copy on
   disk, so clearing it is a decision, not housekeeping.
 
@@ -269,6 +272,8 @@ carefully.
   **Two ways, and one of them is ours.**
   **(a)** You wire the reconciler: the controller forwards the same gateway-signed
   descriptor to each node's `POST /api/hub/release`, which is already fleet-reachable.
+  The mirror half is now **live on all five controllers** (appendix, 2026-09-25), so
+  option (a) has something real to hand out — this is no longer a design on paper.
   **(b)** **We push to the nodes directly.** The gateway already reads every node's
   address from `/api/hub/fleet/nodes` and holds the group's Fleet token, and
   `POST /api/hub/release` is in your fleet allowlist — so this needs nothing from you
@@ -451,6 +456,19 @@ http://127.0.0.1:8787/admin/api/fleet` → `locations_up 6/6`, every controller
 generation_config.json"`; `verified_token_usage false`;
 `supports_structured_output true`; `structured_output_mode null`;
 `lane_contract null` — populated when Hub 0.6.64 ships (HUB-11, closed).
+
+**Release push, 2026-09-25 — the first fleet-wide one.** `POST
+/admin/api/release/publish` with `StudioHub-0.6.64-fabe498.dmg` (1 336 353 020 bytes,
+sha256 `528ebadc…`): **5 of 5 controllers accepted, HTTP 200 in 2563 s (42.7 min)**,
+about 8.5 min each at ~1.6 MB/s (12.6 Mbps) on this Mac's uplink. Re-read from each
+controller afterwards rather than trusting the push's own answer: identical bytes and
+digest on all five, and **each `controller_key_id` different** — `e93de129`,
+`35f3ae97`, `e2d837fc`, `f94424d2`, `2ce2a568` — so every controller countersigned
+under its own key instead of copying ours. All five then held 0.6.64 **while still
+running 0.6.63**, which is the mirror doing its job and explicitly not an install.
+Cost on the gateway: RSS peaked at **8.0 GB** while the 1.34 GB artifact was base64'd
+into a single 1.79 GB body — the ceiling to watch on a smaller host, and the reason a
+controller-mirror beats pushing to every node.
 
 **Lane contract, by model id, 2026-09-25** — read from `terranash-1100-m4-16-256`,
 Hub 0.6.63 build `a4a78dc`: `/api/hub/catalog` (236 rows, 96 carrying a contract),
