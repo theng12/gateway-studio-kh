@@ -240,6 +240,49 @@ carefully.
   Note for our side, not yours: that artifact is also the only rollback copy on
   disk, so clearing it is a decision, not housekeeping.
 
+- [ ] **HUB-14 — install a pushed release without a click, once the Mac is safely
+  drained.** owes: SH · truth: `StudioViews.releaseUpdateSection` (the Install button)
+  and `ReleaseInstaller.live.install`.
+  Why: the **push** half works and needs nobody — the gateway signs an artifact and the
+  Hub verifies, stores and countersigns it on receipt. The **install** half is a button
+  on Connections, on every Mac, for ~50 Macs.
+  What we would build against if you name it: a per-Mac **opt-in** ("install releases
+  from the trusted publisher automatically") and a state machine that (1) marks itself
+  `drained`, (2) waits for in-flight work, with a stated ceiling, (3) installs the
+  verified artifact, (4) restarts services, (5) clears the drain and takes work again.
+  **Our side of step (1) already exists**: the gateway routes nothing to a controller
+  whose `capabilities.controller.drained` is true (`gateway/fleet.py` →
+  `row.get("drained") is not True`) and raises a `controller_drained` issue naming it.
+  No second flag is needed from you.
+  The part we will not guess: installing restarts the services and stops work in
+  progress, which is *why* the click exists. We are asking for the **drain-and-wait**
+  half to be explicit, not for the warning to shrink.
+
+- [ ] **HUB-15 — get a held release onto the nodes.** owes: SH, or us — see (b) ·
+  truth: `peers.release_reconciler`, a module global that nothing ever assigns.
+  last verified: 2026-09-25 in **0.6.64** → a node's `GET /api/hub/release` returns
+  `app_release.load_release()`, which reads **its own local files**, and the app reads
+  `api/hub/release`, `release/identity` and `release/artifact` through `makeRequest`,
+  which targets its **own** Hub. So a node shows nothing, and the `wake_peer` call in
+  `peers.py` is dead code. Your own handoff already says it: *"built on both sides …
+  never exercised across a real fleet."*
+  **Two ways, and one of them is ours.**
+  **(a)** You wire the reconciler: the controller forwards the same gateway-signed
+  descriptor to each node's `POST /api/hub/release`, which is already fleet-reachable.
+  **(b)** **We push to the nodes directly.** The gateway already reads every node's
+  address from `/api/hub/fleet/nodes` and holds the group's Fleet token, and
+  `POST /api/hub/release` is in your fleet allowlist — so this needs nothing from you
+  but a yes and a sanity check. See GW-7.
+  **What both need first:** every node must have the **gateway's** publisher key
+  installed (`POST /api/hub/release/trust`, Hub-token only, UI under Connections → App
+  updates), or `accept_release` refuses with 409. Only the five controllers have it
+  today.
+  One question we would rather ask than assume: the app pins the key its **own** Hub
+  reports on `release/identity`, and refuses a descriptor whose `controller_key_id` is a
+  different key. Sending the *same* descriptor to every Mac, with each Hub
+  countersigning under its own key, keeps that consistent — but if the intent is that a
+  node pins the **controller's** key, the forwarding half has to say so.
+
 ### Rows you are waiting on us for
 
 - [x] **SH-10 — `_handoffs/2026-09-25-gateway-chat-lane-shipped.md` has never been read
@@ -361,6 +404,16 @@ stop reading its silence as an answer. That line is worth more than the four row
   before the update, so **the chat model was invisible until Refresh was pressed** —
   the gateway knew the version had changed and did nothing with it. Until it exists,
   OWNER-5 is the manual step.
+
+- [ ] **GW-7 — offer a pushed release to the node roster too, if Studio Hub prefers
+  HUB-15(b).** truth: `gateway/release_publisher.publish`, which walks `fleet._read()`
+  — the **controller** roster — and stops there. The node addresses already arrive on
+  `/api/hub/fleet/nodes` and the group's Fleet token already opens
+  `POST /api/hub/release`, so the pieces are in hand.
+  ceiling, and it is a real one: a 1.34 GB artifact per node over the tailnet, and this
+  push was ~19 min **per controller** at the measured rate. Worth doing only alongside
+  the controller-mirror the design already names, or for the few nodes a site actually
+  needs current. Blocked on their answer to HUB-15.
 
 ---
 
