@@ -4,6 +4,27 @@ Newest first. This is the same list the **What's New** link in the app shows.
 
 ---
 
+## The local model says how it keeps a JSON promise
+
+A chat row now carries its lane's own statement about structured output, at the path
+Studio Hub named — `lane_contract.structured_output`: which formats it takes, how
+the guarantee is kept (**prompt, validate, repair** — not a grammar), and how many
+repairs it costs.
+
+Two things this deliberately is not. It is **not** a `two_pass` flag: asking twice
+is a caller's technique, and a model cannot know whether the caller wants it — the
+row states the facts that decide it. And it is **not** guessed from the model's
+name: the gateway reads the lane's declared parameters, because three defects in
+this project came from matching a name where a fact could have been published.
+
+Relatedly, a lane that declares a `response_format` parameter now publishes
+`supports_structured_output: true`. The *mode* stays `null` until the producer says
+which one machine-readably, rather than this gateway picking for it.
+
+Note Studio Hub's own caveat, kept rather than smoothed over: **no
+grammar-constrained decoding**, so a strict-JSON call site relies on prompting plus
+validation.
+
 ## The Fleet page updates when you come back to it
 
 It read the fleet when you opened the page and then never again on its own, so the

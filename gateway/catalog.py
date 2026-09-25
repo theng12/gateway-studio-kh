@@ -770,6 +770,30 @@ def _first_stated(raw: dict[str, Any], keys: tuple[str, ...]) -> Any:
     return None
 
 
+def _hub_declared_parameter(contract: dict[str, Any], name: str) -> dict[str, Any] | None:
+    """The lane's own declaration of one parameter, or `None` when it lists none.
+
+    Studio Hub's `lane_contract.parameters` is a list of what the lane **accepts**,
+    each entry `{"name", "type", "required", …}` and — where it applies — the
+    allowed values. "If you send something we list, it is validated, not ignored",
+    which is what makes the *presence of a name* a fact worth publishing rather
+    than a hint: a lane that declares `response_format` takes one, and a lane that
+    does not will refuse it.
+
+    Deliberately keyed on the parameter's **name and declared type**, never on the
+    prose in its `note`: the Hub session asked us not to match on names-in-strings
+    where a fact could be published, and three defects on their side came from
+    doing exactly that.
+    """
+    declared = contract.get("parameters")
+    if not isinstance(declared, list):
+        return None
+    for entry in declared:
+        if isinstance(entry, dict) and str(entry.get("name") or "") == name:
+            return entry
+    return None
+
+
 def _hub_stated_limit(raw: dict[str, Any], field: str) -> tuple[int | None, str | None]:
     """A Hub chat model's own limit, with the sentence saying where it read it.
 
@@ -883,6 +907,26 @@ def _chat_row(model_id: str, definition: ProviderDefinition, model: dict[str, An
             controls = [c for c in controls if c != "temperature"]
 
     structured = _supports("structured_outputs", "response_format")
+    # **A Studio Hub lane states the same fact in its own contract**, and the Hub
+    # session asked for it to be read rather than inferred: a lane that declares a
+    # `response_format` parameter accepts one, which is exactly what this field
+    # means. Read from the parameter's **name and declared presence**, never from
+    # its prose — matching a word in a sentence is what they asked us not to do
+    # (three defects on their side came from matching a name where a fact could
+    # have been published).
+    #
+    # The *mode* stays unstated until the producer says it machine-readably:
+    # `lane_contract.structured_output.formats` is their field for that, and it is
+    # not in the running 0.6.63 (measured: the contract's keys are schema,
+    # modality, operation, parameters, artifact, states, cancel,
+    # deadline_seconds), so a Hub row publishes `structured_output_mode: null` —
+    # "it takes a response_format, the choice of mode is unstated" — rather than
+    # this gateway guessing which of the two the note meant.
+    lane_contract = raw.get("lane_contract")
+    lane_contract = lane_contract if isinstance(lane_contract, dict) else {}
+    hub_response_format = _hub_declared_parameter(lane_contract, "response_format")
+    if structured is None and hub_response_format is not None:
+        structured = True
     # **The mode comes from the parameter that states it.** This published a flat
     # `"json_object"` for every model whose provider listed *either* parameter, so
     # a model offering only `json_schema` (OpenRouter states that as
@@ -941,6 +985,25 @@ def _chat_row(model_id: str, definition: ProviderDefinition, model: dict[str, An
         # distinction itself: "we VALIDATE what the worker states; validating is not
         # re-measuring".
         "verified_token_usage": False,
+        # **The producer's own statement about the JSON guarantee**, at the path it
+        # named (`lane_contract.structured_output`), carried verbatim and `null`
+        # when no lane stated one.
+        #
+        # What goes here is the *fact* — which formats are accepted, how the
+        # guarantee is kept (prompt + validate + repair, or a grammar), and what it
+        # costs — never a technique: two-pass is a Story Studio decision, and a
+        # model cannot know whether a caller wants it. The Hub session was explicit
+        # that this is deliberately not a `two_pass` flag, and they were right.
+        #
+        # Not in the running 0.6.63 (measured: the contract has no such key), so
+        # this publishes `null` today and fills itself the day their build ships
+        # it — no gateway release, which is the point of reading a producer's field
+        # rather than matching an id.
+        "lane_contract": (
+            {"structured_output": lane_contract["structured_output"]}
+            if isinstance(lane_contract.get("structured_output"), (dict, list))
+            else None
+        ),
         "controls": controls,
         "input_modalities": inputs,
         "supports_vision": ("image" in inputs) if inputs else None,

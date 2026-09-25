@@ -536,6 +536,7 @@ class Handler(BaseHTTPRequestHandler):
                      "parameters": [
                          {"name": "messages", "type": "array", "required": True},
                          {"name": "max_tokens", "type": "integer", "required": False},
+                         {"name": "response_format", "type": "object", "required": False},
                      ],
                      "artifact": {"modality": "chat", "media_type": "application/json",
                                   "per_item": 1},
@@ -544,6 +545,17 @@ class Handler(BaseHTTPRequestHandler):
                                 "uncertain": "uncertain", "uncertain_is_terminal": False,
                                 "discard_supported": False},
                      "deadline_seconds": 600.0,
+                     # The producer's statement about the JSON guarantee, at the
+                     # path the Hub session named. Note what it is *not*: there is
+                     # no `two_pass` here, because whether to ask twice is the
+                     # caller's technique and a model cannot know it.
+                     "structured_output": {
+                         "formats": ["json_object", "json_schema"],
+                         "enforcement": "prompt_validate_repair",
+                         "grammar_constrained": False,
+                         "repair_attempts": 1,
+                         "note": "no grammar-constrained decoding; JSON is asked for and validated",
+                     },
                  }},
                 # Two shapes the gateway has never seen before, because the Hub
                 # gains lanes on its own schedule — an image engine today, an LLM

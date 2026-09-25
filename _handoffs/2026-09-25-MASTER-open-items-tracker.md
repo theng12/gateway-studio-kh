@@ -15,11 +15,11 @@ remembered; where a number is a measurement it is marked `[M]`.
 
 | Thing | State |
 |---|---|
-| GatewayKH release | **0.2.26** (`/Applications/gateway-kh.app`, port 8787) |
+| GatewayKH release | **0.2.27** (`/Applications/gateway-kh.app`, port 8787) |
 | Studio Hub on the fleet | **0.6.63** on all six locations `[M]` |
 | Fleet | **6 of 6 locations up**, all reading `match`; 9 nodes still offline `[M]` |
 | Local LLM | runs through the gateway, **local and remote both proved** `[M]` |
-| Drives | four `KH-STUDIO-*` SSDs **unmounted**, so they still carry kit **0.2.24** |
+| Drives | four `KH-STUDIO-*` SSDs carry kit **0.2.27**, verified with `SHA256SUMS.txt` `[M]` |
 
 ### Already shipped by GatewayKH — do not re-ask for these
 
@@ -35,6 +35,11 @@ remembered; where a number is a measurement it is marked `[M]`.
   envelope. Declared Hub version raised to `0.6.63`.
 - **0.2.26** — the Fleet page re-reads when you return to the app (it only read on
   entry before, which made a fixed Mac look unfixed).
+- **0.2.27** — the chat row publishes the producer's JSON guarantee at the path the
+  Hub named (`lane_contract.structured_output`, verbatim, `null` until their build
+  ships it) and now says `supports_structured_output: true` when the lane's contract
+  **declares a `response_format` parameter** — read from the declared parameter, not
+  from prose, per HUB-13.
 
 ### Already answered by Studio Hub — recorded so nobody repeats it
 
@@ -120,6 +125,18 @@ Detail for A1–A7 is in
   becomes an approval step, tell us, because our catalogue would have to read it
   instead of inferring availability.
 
+- [ ] **HUB-13 — say which build ships `lane_contract.structured_output`.** You
+  described it as live; it is **not in the running 0.6.63** `[M]`. Measured on this
+  Mac's Hub, both `GET /api/hub/catalog` and `GET /studio/chat/api/catalog` return a
+  contract whose keys are exactly: `schema`, `modality`, `operation`, `parameters`,
+  `artifact`, `states`, `cancel`, `deadline_seconds` — no `structured_output`, and
+  the chat store is not in this repo's handoff either. The gateway publishes the
+  field **verbatim when present and `null` when absent**, so the day your build
+  ships it the row fills itself with no gateway release; we only need to know which
+  version to expect, so we can say so in the release notes rather than promising it
+  early.
+  **(GatewayKH side done — this is only the version question.)**
+
 Files on our side, if you want the detail:
 `repository/_handoffs/2026-09-25-gateway-chat-lane-shipped.md` (what we built and
 what we verified), `repository/_handoffs/2026-09-25-gateway-lane-contract-reply.md`
@@ -132,16 +149,39 @@ what we verified), `repository/_handoffs/2026-09-25-gateway-lane-contract-reply.
 Detail in
 `/build/Developer/gateway-kh/repository/_handoffs/2026-09-25-story-studio-model-id-prompt.md`.
 
-- [ ] **STORY-1 — the published id, and what triggers two-pass.** Studio Hub raised
-  this and would not decide it for us: *"Story Studio's `lmstudio:` two-pass
-  behaviour is keyed on an id YOU control, and the tracked Story source has no code
-  that selects two-pass from a model id."* Questions: what is the behaviour; is the
-  trigger an id shape, a provider setting, a capability field, or nothing yet; and
-  if it is an id, **what exactly should we publish?** We publish
-  `studio-hub::mlx-community/Qwen3.5-9B-4bit` today (the normal Hub namespace) and
-  will add today's id to `legacy_ids` in the same change, so nothing saved now
-  breaks. **Nothing is blocked by this** — the model runs; this only decides whether
-  it switches on two-pass.
+- [x] **STORY-1 — ANSWERED (by Studio Hub, 2026-09-25), and the decision is now
+  Story's, not an id question.** They checked the tracked Story source: the only
+  `lmstudio:` strings are comments in `types.ts` and two frontend fixtures, so
+  **nothing selects two-pass from a model id** — the trigger is planned, not landed.
+  Their ruling, which we have adopted: **do not use an id shape** (three defects in
+  this project came from matching a name where a fact could be published), and
+  publish a field instead — `lane_contract.structured_output`. It is deliberately
+  **not** a `two_pass` flag: two-pass is a Story technique and a model cannot know
+  whether a caller wants it; the row states the **facts that decide it**.
+  **→ The open question is now STORY-1b below.**
+- [ ] **STORY-1b — do you want two-pass for the local model, and is the row enough
+  to decide it at runtime?** The facts you would decide from are published now `[M]`:
+  `context_window_tokens 262144` (the checkpoint's own, source named),
+  `max_output_tokens 4096` (a labelled worker fallback — see STORY-4),
+  `verified_token_usage false`, `supports_structured_output true` (the lane declares
+  `response_format`), `structured_output_mode null` (the producer has not yet stated
+  the mode machine-readably), and `lane_contract.structured_output` as soon as the
+  Hub build carrying it is running. If two-pass needs another fact on the row, name
+  it and we will publish it from the producer's statement.
+- [ ] **STORY-4 — label a limit from `*_source_detail`, and say if you want a
+  machine-readable discriminator.** Studio Hub's caveat: `max_output_tokens: 4096`
+  is **their worker's fallback**, not the model's limit (the checkpoint ships no
+  `generation_config.json`; the *context window* is the model's own). We publish the
+  value with `max_output_tokens_source: provider` **and**
+  `max_output_tokens_source_detail: "worker default: …"`. If your UI shows a limit,
+  label it from the detail. If you would rather branch on a field than a sentence,
+  name it and we will add exactly one (we will not parse prose, and we will not
+  invent a name you have not agreed to).
+- [ ] **STORY-5 — an omitted parameter is not "the model's default".** Studio Hub:
+  a request that omits a field gets **this Mac's operator setting** for that model,
+  not the model's default. The gateway forwards only what the caller sets (it
+  invents nothing), so the choice is yours: send a value explicitly when you need to
+  pin it. Tell us if the row should carry a statement about this.
 
 - [ ] **STORY-2 — the acceptance run on the local model.** Generate an outline, a
   chapter, a thumbnail prompt set and metadata **from the local Hub model** and
@@ -166,10 +206,16 @@ Detail in
   was the last blocked item of Studio Hub's test plan.
 - [ ] **GW-2 — implement whatever STORY-1 names** (an id map, or a row field on
   every chat row), with the current id kept as a `legacy_id`.
-- [ ] **GW-3 — push kit 0.2.26 to the four SSDs** once they are mounted.
-  Kit source: `repository/dist/setup-kit/`.
+- [x] **GW-3 — kit pushed to the four SSDs.** Done 2026-09-25 `[M]`: each drive
+  carries kit **0.2.27**, byte-identical to `repository/dist/setup-kit/`, verified
+  with `SHA256SUMS.txt`, with the superseded kits (0.2.23/0.2.24/0.2.25) in that
+  drive's `_trash/superseded-kit-2026-09-25/`.
 - [ ] **GW-4 — re-declare the target Hub version** when a controller runs something
   newer than `0.6.63` (one constant, one release).
+- [x] **GW-6 — publish the producer's structured-output facts.** Done in **0.2.27**
+  `[M]`: `lane_contract.structured_output` verbatim (null until the Hub build ships
+  it) and `supports_structured_output: true` read from the lane's **declared
+  `response_format` parameter**. Live on the local chat row now.
 - [ ] **GW-5 — (proposed) refresh a location's models automatically when its Hub
   version changes.** Found today: the controllers' cached model lists predated their
   0.6.63 install, so the **chat model was invisible until someone pressed Refresh**
@@ -186,8 +232,8 @@ Detail in
   `/studio/voice/api/transcribe/availability` (Studio Hub traced it: the node
   accepts only its own tokens, and the two Macs hold different Fleet tokens). The
   node is off at the moment, so the error is stale — fix it when it is next on.
-- [ ] **OWNER-2 — mount the four `KH-STUDIO-*` SSDs** so the kit can be refreshed
-  from 0.2.24 to 0.2.26.
+- [x] **OWNER-2 — SSDs mounted and the kit refreshed to 0.2.27.** Done 2026-09-25.
+  Re-mount them whenever a new release ships and the same refresh runs again.
 - [ ] **OWNER-3 — the 9 nodes are still offline** (6 machines online, 9 offline `[M]`).
 - [ ] **OWNER-4 — controllers before nodes** for Studio Hub's memory-policy change:
   a Hub older than 0.6.63 rejects `auto`, so either update controllers first or keep
@@ -231,6 +277,9 @@ studio-hub::mlx-community/Qwen3.5-9B-4bit
   max_output_tokens      4096     source=provider
     detail "worker default: the checkpoint ships no generation_config.json"
   verified_token_usage   false
+  supports_structured_output  true   (the lane declares a `response_format` parameter)
+  structured_output_mode      null   (mode not stated machine-readably yet)
+  lane_contract               null   (the Hub's `structured_output` is not in 0.6.63 — HUB-13)
   controls               ["temperature", "max_output_tokens"]
 ```
 

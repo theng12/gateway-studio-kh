@@ -180,6 +180,36 @@ class ChatLimitTests(_MockHub):
         self.assertEqual(row["max_output_tokens_source"], "provider")
         self.assertIn("worker default", row["max_output_tokens_source_detail"])
 
+    def test_the_producers_json_guarantee_is_published_at_its_own_path(self) -> None:
+        # `lane_contract.structured_output`, verbatim, because the Hub named that
+        # path and the fact is the producer's: which formats are accepted, how the
+        # guarantee is kept, and what it costs. Note what it is **not** — a
+        # `two_pass` flag. Two-pass is a caller's technique; the row states the
+        # facts that decide it.
+        row = self._chat_row("mock-hub/chat-model")
+        structured = (row.get("lane_contract") or {}).get("structured_output") or {}
+        self.assertEqual(structured.get("formats"), ["json_object", "json_schema"])
+        self.assertEqual(structured.get("enforcement"), "prompt_validate_repair")
+        self.assertIs(structured.get("grammar_constrained"), False)
+        self.assertIsNone(structured.get("two_pass"), "a technique is not a model fact")
+
+    def test_a_lane_that_declares_response_format_supports_structured_output(self) -> None:
+        # Read from the parameter's **declared presence**, not from the prose in
+        # its note: the Hub asked us not to match on names inside strings where a
+        # fact could be published.
+        row = self._chat_row("mock-hub/chat-model")
+        self.assertIs(row.get("supports_structured_output"), True)
+        # The mode is unstated until the producer says it machine-readably, so it
+        # is null rather than this gateway picking one of the two.
+        self.assertIsNone(row.get("structured_output_mode"))
+
+    def test_a_lane_with_no_contract_publishes_no_structured_output(self) -> None:
+        # `mock-hub/video-model` carries no lane contract at all, so the field is
+        # null — "unstated" — rather than an invented capability.
+        row = self._chat_row("mock-hub/video-model")
+        self.assertIsNone(row.get("lane_contract"))
+        self.assertIsNone(row.get("supports_structured_output"))
+
     def test_nothing_stated_still_reads_as_curated_or_gateway(self) -> None:
         # A model with no `model_limits` at all keeps the existing behaviour: the
         # curated gap-fill, labelled as curated. The Hub's arrival did not change
