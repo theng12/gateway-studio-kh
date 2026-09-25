@@ -1,7 +1,7 @@
 # HANDOFF — gateway-kh
 
-**Read this first.** Written 2026-09-25 against **VERSION `0.2.25`**, release commit
-`0b03441`, running build `0b03441-202609250835`.
+**Read this first.** Written 2026-09-25 against **VERSION `0.2.28`**. The running build
+stamp is on `/health` and in `/Applications/gateway-kh.app/Contents/Resources/gateway/BUILD`.
 If this file disagrees with the code, **the code wins — fix this file in the same change**.
 Every path below is inside the Git checkout `repository/` unless it says otherwise.
 `[MEASURED]` = observed in the session that wrote this; `[reason not recorded]` = the
@@ -11,12 +11,12 @@ project does not say why, and nobody should guess.
 
 | Thing | Value |
 |---|---|
-| Current release | **0.2.25** — `repository/VERSION`, one line, the only place to bump |
-| Declared Studio Hub | **0.6.63** — `adapters.studio_hub.SUPPORTED_STUDIO_HUB_VERSION`, published on `/health`; a controller on another version is reported, never refused (chat needs 0.6.63 *on that controller*; every other lane does not) |
+| Current release | **0.2.28** — `repository/VERSION`, one line, the only place to bump |
+| Declared Studio Hub | **0.6.65** — `adapters.studio_hub.SUPPORTED_STUDIO_HUB_VERSION`, published on `/health`; a controller on another version is reported, never refused. Set on 2026-09-25 from a **running** Hub (`/api/version` → `0.6.65` build `37cb07b`), not a changelog `[MEASURED]` |
 | Branch | `main` = `origin/main`, clean tree; remote `github.com/theng12/gateway-kh` |
-| Running build | `/Applications/gateway-kh.app`, port **8787**, stamp `0b03441-202609250835` (`/health` and `…/Resources/gateway/BUILD`) |
-| Distribution | DMG in `repository/dist/` (`gateway-kh-0.2.25.dmg`), named by version alone |
-| SSD/setup kit | `repository/dist/setup-kit/` — "copy this whole folder to each SSD/Mac"; current at **0.2.25**. **The four `KH-STUDIO-*` drives were unmounted when 0.2.25 shipped** (the owner had ejected them for the 50-Mac rollout), so they still carry **0.2.24**; re-run the refresh when they are mounted |
+| Running build | `/Applications/gateway-kh.app`, port **8787** (`/health` and `…/Resources/gateway/BUILD`) |
+| Distribution | DMG in `repository/dist/` (`gateway-kh-0.2.28.dmg`), named by version alone |
+| SSD/setup kit | `repository/dist/setup-kit/`. **The four `KH-STUDIO-*` drives now carry Studio Hub 0.6.65** `[MEASURED 2026-09-25]`, refreshed 21:34–21:40; the GatewayKH side on them is older — check before a rollout |
 
 - **Versions are patch-only for now:** `0.2.1`, `0.2.2`, … up to `0.2.1000`. Increment the
   third number by one per shipped change; never roll to `0.3.x`/`1.0.0` until the owner says so.
@@ -45,6 +45,36 @@ project does not say why, and nobody should guess.
   "Why port 8787". It was 8000 until the owner moved it (2026-09-21, `Project
   Status.md` §10h: 8000 is the most contested dev port and Story Studio's own
   default). Every Story Studio client points at `http://<host>:8787`.
+
+## WHAT 0.2.28 CHANGED — and the three things it cost to learn
+
+- **GW-5: a location's models are re-read when its Hub changes build.** The refresher
+  already probed every location and already knew the version, and did nothing with a
+  change; discovery ran only when somebody pressed Refresh. `fleet.refresh_models_when_hub_changes`
+  now compares the probed version against **the discovery cache's own `hub_version`** —
+  not memory, because the gateway restart usually follows the update — and re-discovers
+  on a difference. A location with no record is refreshed once, so it seeds itself. A
+  **failed** discovery records nothing, so the next pass retries instead of marking
+  stale rows current. The manual Refresh records the same baseline, so it is not redone.
+  `tests/test_fleet_hub_version_refresh.py` → 10 checks. Retires OWNER-5.
+- **GW-4: the declared Studio Hub is `0.6.65`**, set from a running Hub rather than a
+  changelog. It was deliberately **not** set to `0.6.64` while that build was only held
+  by controllers and running nowhere: the constant means *measured against*, and that is
+  a claim a version nobody has run cannot support.
+- **A test is a row, and it lies the same way.** `test_studio_hub_contract.py` asserted
+  `hub_version_relation("0.6.64") == newer` with the numbers written in by hand. Bumping
+  the declaration turned it red — correctly. It now derives every comparison from
+  `SUPPORTED_STUDIO_HUB_VERSION`, so the next bump cannot break it. **When you move the
+  declaration, grep the tests for the old number.**
+- **The first fleet-wide release push, and what it found** `[MEASURED 2026-09-25]`:
+  `POST /admin/api/release/publish` → **5 of 5 controllers accepted**, HTTP 200 in
+  2563 s, and every controller countersigned with a **different** key, so each mirror is
+  its own. Two things to carry forward:
+  - **The request body is base64**, so a 1.34 GB artifact becomes 1.79 GB in one body and
+    the gateway's RSS peaked at **8.0 GB**. That is the ceiling to watch on a smaller
+    host, and the reason the controller-mirror beats pushing to every node.
+  - **What is held and what the kit has are different facts.** The push landed 0.6.64
+    while all four kit drives already carried **0.6.65**. Check both before aiming a push.
 
 ## THE WORKING LOOP
 

@@ -34,11 +34,22 @@ JOB_DEADLINE_S = 900.0
 #: The Studio Hub release this gateway is **built and verified against**.
 #:
 #: Studio Hub moves on its own schedule — it auto-updates itself, and this fleet
-#: has run 0.6.18, 0.6.23, 0.6.29, 0.6.31, 0.6.54, 0.6.60 and 0.6.63 — while
-#: this gateway moves on its own too. So the pairing is *declared* rather than
-#: assumed: this string is the version whose wire contract the code in this file
-#: was written and measured against, and it is the number the kit and the release
-#: notes state.
+#: has run 0.6.18, 0.6.23, 0.6.29, 0.6.31, 0.6.54, 0.6.60, 0.6.63, 0.6.64 and
+#: 0.6.65 — while this gateway moves on its own too. So the pairing is *declared*
+#: rather than assumed: this string is the version whose wire contract the code in
+#: this file was written and measured against, and it is the number the kit and
+#: the release notes state.
+#:
+#: **Measured, not assumed.** 0.6.65 was set on 2026-09-25 from a running Hub
+#: (`/api/version` → `0.6.65`, build `37cb07b`), not from a changelog: the chat
+#: lane's `lane_contract` was read live and carries `structured_output`
+#: (`formats: [json_object, json_schema]`, `enforcement: prompt_validate_repair`,
+#: `grammar_constrained: false`) beside the keys this file already read, and
+#: `/api/health` publishes the `bind` block with `loopback_only` and
+#: `reachable_off_this_mac`. Both are read verbatim where this code reads them, and
+#: nothing here branches on the number. It was deliberately **not** bumped to
+#: 0.6.64 when that build was only *held* by the controllers and running nowhere —
+#: "measured against" is a claim, and a version nobody had run could not support it.
 #:
 #: **It is never a gate.** A controller on another version keeps working: the
 #: adapter reads what the Hub states instead of branching on a version number, so
@@ -47,7 +58,7 @@ JOB_DEADLINE_S = 900.0
 #: fleet nobody touched (owner's decision, 2026-09-24: report drift, keep
 #: working). `hub_version_relation()` says how a controller's version compares,
 #: and the Fleet page shows it beside the Hub version.
-SUPPORTED_STUDIO_HUB_VERSION = "0.6.63"
+SUPPORTED_STUDIO_HUB_VERSION = "0.6.65"
 
 #: The answers `hub_version_relation` can give. `match` is the tested pairing; the
 #: other two are informational — a newer Hub may serve things this gateway has no

@@ -983,14 +983,25 @@ class HubVersionDriftTests(unittest.TestCase):
             hub_version_relation,
         )
 
+        # **Derived from the declaration, never written in.** These assertions used
+        # to name 0.6.62 and 0.6.64 by hand, and they went stale the moment the
+        # declared version moved to 0.6.65 — `hub_version_relation("0.6.64")` then
+        # answered `older`, correctly, and the test called it a failure. A test is
+        # a row: one that quotes a version instead of reading it lies the same way
+        # a tracker row does, and the fix is the same one — read the source.
+        parts = [int(part) for part in SUPPORTED_STUDIO_HUB_VERSION.split(".")[:3]]
+        major, minor, patch = (parts + [0, 0, 0])[:3]
+        older = f"{major}.{minor}.{patch - 1}" if patch > 0 else f"{major}.{minor - 1}.99"
+        newer = f"{major}.{minor}.{patch + 1}"
+
         self.assertEqual(hub_version_relation(SUPPORTED_STUDIO_HUB_VERSION), HUB_VERSION_MATCH)
-        self.assertEqual(hub_version_relation("0.6.62"), HUB_VERSION_OLDER)
-        self.assertEqual(hub_version_relation("0.6.64"), HUB_VERSION_NEWER)
-        self.assertEqual(hub_version_relation("0.7.0"), HUB_VERSION_NEWER)
+        self.assertEqual(hub_version_relation(older), HUB_VERSION_OLDER)
+        self.assertEqual(hub_version_relation(newer), HUB_VERSION_NEWER)
+        self.assertEqual(hub_version_relation(f"{major}.{minor + 1}.0"), HUB_VERSION_NEWER)
         # A shorter version is padded, not unreadable: 0.6 is older than 0.6.60.
-        self.assertEqual(hub_version_relation("0.6"), HUB_VERSION_OLDER)
+        self.assertEqual(hub_version_relation(f"{major}.{minor}"), HUB_VERSION_OLDER)
         # Pre-release and build suffixes do not change the ordering.
-        self.assertEqual(hub_version_relation("0.6.64-rc1"), HUB_VERSION_NEWER)
+        self.assertEqual(hub_version_relation(f"{newer}-rc1"), HUB_VERSION_NEWER)
 
     def test_an_absent_or_unreadable_version_is_not_a_match(self) -> None:
         # "I could not read the version" must never render as "it matched" — the

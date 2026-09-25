@@ -90,8 +90,18 @@ class ModelInventory:
                 return found
         return PROVIDERS_BY_ID.get(provider_id)
 
-    def refresh(self, provider_id: str, *, force: bool = True) -> DiscoveryResult:
-        """Run live discovery for one provider and cache the result."""
+    def refresh(self, provider_id: str, *, force: bool = True,
+                hub_version: str | None = None) -> DiscoveryResult:
+        """Run live discovery for one provider and cache the result.
+
+        `hub_version` is the Studio Hub build whose answers produced this list,
+        recorded **beside** it so a later reader can answer "do these rows still
+        describe the Hub that is running?" without discovering again. It is
+        written only when discovery succeeded: a failed fetch learned nothing
+        about the Hub, and a version recorded beside stale rows would claim they
+        are current. `None` leaves any previous record alone, which is what every
+        provider that cannot name a version needs.
+        """
         definition = self._definition(provider_id)
         if definition is None:
             raise KeyError(provider_id)
@@ -124,6 +134,11 @@ class ModelInventory:
             # discovery itself succeeded, and one unrecognised engine must not
             # make a working provider read as broken.
             entry["skipped"] = list(result.skipped)
+        if result.error is None and hub_version is not None:
+            # The build this list came from. Not on failure: a fetch that did not
+            # answer tells us nothing about the Hub, and recording a version
+            # beside rows we could not refresh would mark them current.
+            entry["hub_version"] = str(hub_version).strip()
         self._save()
         return result
 

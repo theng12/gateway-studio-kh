@@ -198,8 +198,8 @@ class ProviderRegistry:
     def clear_credentials(self, provider_id: str) -> None:
         self.credentials.clear(provider_id)
 
-    def refresh(self, provider_id: str) -> DiscoveryResult:
-        return self.models.refresh(provider_id)
+    def refresh(self, provider_id: str, *, hub_version: str | None = None) -> DiscoveryResult:
+        return self.models.refresh(provider_id, hub_version=hub_version)
 
     # -- dependency -------------------------------------------------------
     def resolver(self, modality: str, model_id: str):

@@ -31,7 +31,7 @@ thing.
    are invisible to it while long sentences are not. Absence of a short string is not
    absence of the feature; use a long-form literal, or run it.
 
-Last updated **2026-09-25** by GatewayKH. Current release **0.2.27** (`b440449`).
+Last updated **2026-09-25** by GatewayKH. Current release **0.2.28**.
 
 ---
 
@@ -398,17 +398,34 @@ stop reading its silence as an answer. That line is worth more than the four row
 - [ ] **GW-2 — implement whatever STORY-1b names**, keeping today's id as a
   `legacy_id`. Blocked on STORY-1b · truth: `gateway/catalog.py`.
 
-- [ ] **GW-4 — re-declare the target Hub version** when a controller runs something
-  newer than `0.6.63`. truth:
-  `gateway/adapters/studio_hub.py::SUPPORTED_STUDIO_HUB_VERSION`.
+- [x] **GW-4 — re-declare the target Hub version.** closed 2026-09-25 in **0.2.28** ·
+  `SUPPORTED_STUDIO_HUB_VERSION = "0.6.65"`.
+  **Set from a running Hub, not a changelog** — which is the whole point of the row.
+  `/api/version` → `0.6.65` build `37cb07b` on this Mac, and the contract was read live:
+  the chat lane's `lane_contract` carries `structured_output` (`formats: [json_object,
+  json_schema]`, `enforcement: prompt_validate_repair`, `grammar_constrained: false`)
+  beside the keys this file already read, and `/api/health` publishes `bind` with
+  `loopback_only: false` and `reachable_off_this_mac: true`.
+  **It was deliberately not set to 0.6.64** while that build was only *held* by the
+  controllers and running nowhere — "measured against" is a claim, and nobody had run
+  it. The row that forced this also caught a stale test: `test_studio_hub_contract.py`
+  asserted `hub_version_relation("0.6.64") == newer` with the numbers written in by
+  hand, so it went red the moment the declaration moved. It now derives them from the
+  constant, because a test that quotes a version is a row that lies the same way.
 
-- [ ] **GW-5 — refresh a location's models automatically when its Hub version
-  changes.** Found 2026-09-25 · truth: `gateway/fleet.py` (probe) +
-  `gateway/providers/registry.py`.
-  last verified: a controller updated to 0.6.63 still had a cached model list from
-  before the update, so **the chat model was invisible until Refresh was pressed** —
-  the gateway knew the version had changed and did nothing with it. Until it exists,
-  OWNER-5 is the manual step.
+- [x] **GW-5 — refresh a location's models automatically when its Hub version
+  changes.** closed 2026-09-25 in **0.2.28** · truth: `gateway/fleet.py`
+  (`refresh_models_when_hub_changes`, `hub_version_for`) + `gateway/providers/models.py`
+  (`entry["hub_version"]`) + `gateway/providers/registry.py` + the Refresh route.
+  The baseline is the **discovery cache**, not memory, so it survives the gateway
+  restart that usually follows an update; a location with no record is refreshed once
+  and then recorded, so it seeds itself instead of staying inert. A **failed** discovery
+  records nothing about the build, so the next pass retries rather than marking stale
+  rows current.
+  last verified: `tests/test_fleet_hub_version_refresh.py` → 10 checks, covering the
+  change, the repeat (no discovery loop), the unstated version (a Hub that is down must
+  not trigger), the failed fetch, and one bad location not stopping the others; plus the
+  write path itself. OWNER-5 is retired by this.
 
 - [ ] **GW-7 — offer a pushed release to the node roster too, if Studio Hub prefers
   HUB-15(b).** truth: `gateway/release_publisher.publish`, which walks `fleet._read()`
@@ -433,8 +450,10 @@ stop reading its silence as an answer. That line is worth more than the four row
 - [ ] **OWNER-4 — controllers before nodes** for Studio Hub's memory-policy change (a
   Hub older than 0.6.63 rejects `auto`). The gateway does not read or write memory
   policy, so nothing here breaks us.
-- [ ] **OWNER-5 — after a Hub update on a controller, press Refresh for that
-  location** so its new models are discovered. Retired by GW-5.
+- [x] **OWNER-5 — after a Hub update on a controller, press Refresh for that
+  location.** retired 2026-09-25 by GW-5 in 0.2.28 — the refresher now re-discovers a
+  location by itself when the Hub behind it changes build, and the manual Refresh still
+  works and records the same baseline.
 
 ---
 
@@ -469,6 +488,16 @@ running 0.6.63**, which is the mirror doing its job and explicitly not an instal
 Cost on the gateway: RSS peaked at **8.0 GB** while the 1.34 GB artifact was base64'd
 into a single 1.79 GB body — the ceiling to watch on a smaller host, and the reason a
 controller-mirror beats pushing to every node.
+
+**The pushed build was superseded within the hour — check this before the SSD run.**
+While verifying GW-4, the local Hub answered `/api/version` → **0.6.65** build
+`37cb07b`, and all four kit drives carry `Studio Hub.app` **0.6.65** (refreshed
+21:34–21:40, `release-manifest.json` → `37cb07b`). So the 1.34 GB now mirrored on the
+five controllers is **0.6.64, one release behind what the kits install**. The SSD-first
+plan therefore lands 0.6.65, not 0.6.64 — and any future gateway push should be aimed
+at 0.6.65. Nothing is broken by the skew; it is recorded because "what is held" and
+"what the kit has" are two different facts and only one of them was checked at push
+time.
 
 **Lane contract, by model id, 2026-09-25** — read from `terranash-1100-m4-16-256`,
 Hub 0.6.63 build `a4a78dc`: `/api/hub/catalog` (236 rows, 96 carrying a contract),

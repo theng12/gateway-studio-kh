@@ -2361,6 +2361,72 @@ def route(
     return chosen["definition"], note
 
 
+def hub_version_for(provider_id: str) -> str:
+    """The Hub build behind a provider id, from the warm snapshot, or `""`.
+
+    For a caller that is about to discover a location and wants to record which
+    build answered. `allow_stale` because this must never be the reason a page
+    waits: a version one refresher interval old is exactly as good for this, and
+    the alternative is probing every controller again just to label a list.
+    """
+    if not provider_id:
+        return ""
+    try:
+        for row in snapshot(allow_stale=True).get("locations") or []:
+            if str(row.get("provider_id") or "") == provider_id:
+                return str(row.get("version") or "").strip()
+    except Exception:  # noqa: BLE001 - an unreadable snapshot means "unstated"
+        return ""
+    return ""
+
+
+def refresh_models_when_hub_changes(rows: list[dict]) -> dict[str, str]:
+    """Re-discover a location's models when the Hub behind it changes build.
+
+    A Hub updates itself, and its model list is this gateway's memory of what it
+    serves. Nothing re-read that memory on its own: the refresher below already
+    probes every location and already knows the version, and it did nothing with
+    a change — so a Hub that gained a lane kept being described from a cached
+    list until somebody pressed Refresh. Measured 2026-09-25 on a controller that
+    had updated: the new contract stayed invisible.
+
+    **The baseline is the discovery cache, not memory.** `hub_version` is stored
+    beside the rows it describes, so it survives a gateway restart — the common
+    case, because an update and the restart that follows it are usually the same
+    event. A location with no record yet is refreshed once and then recorded, so
+    the feature seeds itself rather than staying quietly inert.
+
+    Returns `{provider_id: version}` for what it refreshed, so a caller can log
+    it and a test can assert it. Never raises: one location that cannot be
+    discovered must not stop the others, and nothing here may kill the poller.
+    """
+    try:
+        from .providers import registry
+    except Exception:  # noqa: BLE001 - no registry means there is nothing to refresh
+        return {}
+
+    refreshed: dict[str, str] = {}
+    for row in rows or []:
+        provider_id = str(row.get("provider_id") or "").strip()
+        version = str(row.get("version") or "").strip()
+        # An unstated version is not a change. A Hub that is down, or one too old
+        # to publish `capabilities.controller.studiohub_version`, must not make
+        # this re-discover on every pass — that would be a discovery loop, not a
+        # trigger.
+        if not provider_id or not version:
+            continue
+        try:
+            recorded = str(registry.models.cached(provider_id).get("hub_version") or "").strip()
+            if recorded == version:
+                continue
+            result = registry.refresh(provider_id, hub_version=version)
+        except Exception:  # noqa: BLE001 - one bad location is not a failed pass
+            continue
+        if result.error is None:
+            refreshed[provider_id] = version
+    return refreshed
+
+
 _refresher: threading.Thread | None = None
 
 
@@ -2383,10 +2449,20 @@ def start_refresher(interval: float = 15.0) -> None:
 
     def loop() -> None:
         while True:
+            value = None
             try:
-                snapshot(force=True)
+                value = snapshot(force=True)
             except Exception:  # noqa: BLE001 - the poller must outlive any one site
                 pass
+            if value is not None:
+                # **After** the snapshot is cached, never before. Discovery talks
+                # to the Hub and can take seconds; the page must never wait on it.
+                # This thread is the only caller, so a slow discovery delays the
+                # next pass rather than piling up behind it.
+                try:
+                    refresh_models_when_hub_changes(value.get("locations") or [])
+                except Exception:  # noqa: BLE001 - discovery must not kill the poller
+                    pass
             time.sleep(interval)
 
     _refresher = threading.Thread(target=loop, name="fleet-refresh", daemon=True)

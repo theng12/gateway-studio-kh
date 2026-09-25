@@ -228,7 +228,11 @@ def clear_credentials(provider_id: str) -> Any:
 def refresh_provider(provider_id: str) -> Any:
     if registry.definition(provider_id) is None:
         return _error(404, f"unknown provider '{provider_id}'")
-    result = registry.refresh(provider_id)
+    # Which Hub build is answering, so the manual path records the same baseline
+    # the automatic one does. Without it a manual Refresh would be redone by the
+    # next refresher pass — one wasted discovery per press, and a cache that
+    # cannot say what it describes.
+    result = registry.refresh(provider_id, hub_version=fleet.hub_version_for(provider_id) or None)
     return {
         "provider_id": provider_id,
         "discovered": len(result.models),
