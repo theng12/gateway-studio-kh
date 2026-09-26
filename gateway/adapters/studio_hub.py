@@ -58,7 +58,19 @@ JOB_DEADLINE_S = 900.0
 #: fleet nobody touched (owner's decision, 2026-09-24: report drift, keep
 #: working). `hub_version_relation()` says how a controller's version compares,
 #: and the Fleet page shows it beside the Hub version.
-SUPPORTED_STUDIO_HUB_VERSION = "0.6.65"
+#:
+#: **Bumped 0.6.65 → 0.6.72 on 2026-09-26 at the owner's decision (DECIDE-1)**, and the
+#: claim is earned rather than assumed: this whole session's work — the fleet reads, the
+#: `model_limits` relay, `source_kind` end to end, the stall fields — ran against a **0.6.72**
+#: Hub, and 0.6.72 is installed on this Mac and answering. The rule the paragraph above sets
+#: is that a bump means *measured against*, not *available*, and that holds here.
+#:
+#: **Expect every other controller to read `older` on the Fleet page, and that is the point.**
+#: Four sit at 0.6.65 and one at 0.6.64; the page saying so is a true and useful prompt to
+#: roll them forward, not a fault. **It is still never a gate** — they keep working exactly as
+#: they did, which is the owner's 2026-09-24 decision and the reason this number is a label
+#: and not a check.
+SUPPORTED_STUDIO_HUB_VERSION = "0.6.72"
 
 #: The answers `hub_version_relation` can give. `match` is the tested pairing; the
 #: other two are informational — a newer Hub may serve things this gateway has no
