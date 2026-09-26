@@ -104,12 +104,13 @@ reports the largest that *ran*, not the largest that is *allowed* — and it is 
 that the raise failed.
 
 **And it is not all of their side.** HUB-19 is the ceiling and the deadline, and it is
-answered. **HUB-18, HUB-20, HUB-21 and HUB-22 are explicitly "not yet looked at" by
-them**, and three of the four are things Story Studio is waiting on: the `*_source` enum
-they want in order to *label* a number rather than print a sentence (HUB-20),
-`max_structured_items_per_request`, which they already read and nobody publishes
-(HUB-21), and the omitted-parameter statement (HUB-22). The ceiling was the big one; it
-was not the only one.
+answered. **HUB-18, HUB-21 and HUB-22 are still open with them**, and two of the three
+are things Story Studio is waiting on: `max_structured_items_per_request`, which they
+already read and nobody publishes (HUB-21), and the omitted-parameter statement
+(HUB-22). **HUB-20 is closed** — Studio Hub 0.6.72 publishes `source_kind` and this
+gateway 0.2.48 relays it as `max_output_tokens_source`, so the `*_source` enum Story
+Studio wanted in order to *label* a number rather than print a sentence is on the wire.
+The ceiling was the big one; it was not the only one.
 
 ### Our framing was wrong, and their correction lowers the cost we accepted
 
@@ -600,12 +601,16 @@ carefully.
 - [ ] **HUB-18 — a completion cut off at your worker default still reports
   `finish_reason: "stop"`, so a truncated answer is indistinguishable from a finished
   one.** owes: SH (a statement, or a change) · truth: the chat lane's response on
-  `/api/hub/chat`, and `max_output_tokens: 4096` in the local model row this gateway
-  publishes from your own facts.
+  `/api/hub/chat`, and `max_output_tokens` in the local model row this gateway
+  publishes from your own facts — **the worker's `FALLBACK_MAX_OUTPUT_TOKENS`
+  (`llm_engine.py:39`), not a number the model states.** It is **16,384** today
+  (raised from 4,096 by HUB-19, shipped in Hub 0.6.70); it read 4,096 when the
+  measurement below was taken.
   Measured 2026-09-26 while building GW-9, from this gateway's own job store — real
   jobs, not a synthetic probe: **4 of 13 `mlx-community/Qwen3.5-9B-4bit` jobs stopped
   at exactly 4,096 completion tokens, and all 13 reported `finish_reason: "stop"`**,
-  including those four. Your row states `max_output_tokens 4096` with
+  including those four. Your row then stated `max_output_tokens 4096` — the worker's
+  own fallback, not the model's limit — with
   `source_detail "worker default: the checkpoint ships no generation_config.json"`,
   so the cap was hit exactly and the answer still read as a clean stop.
   **Why this matters to you specifically:** the wire contract this gateway must honour
@@ -621,9 +626,9 @@ carefully.
   — the owner's own count of his machines, which this gateway's per-location medians
   (16.8, 16.6, 14.2, 11.6) independently corroborate. **Size a ceiling against the
   slowest, not the median**, because the caller does not choose the Mac: 8,192 takes
-  **683 s on an M1** against the lane's stated 900 s (1.32×), and 16,384 times out on
-  every chip in the fleet. A 1,200-word chapter is ~1,740 output tokens, ~145 s on an
-  M1.
+  **683 s on an M1**, and 16,384 takes **1,365 s** — 38 % and 76 % of the chat lane's
+  **1,800 s** floor since Hub 0.6.70; under the old 900 s only 8,192 fitted. A
+  1,200-word chapter is ~1,740 output tokens, ~145 s on an M1.
   **RESOLVED ON THEIR SIDE, 2026-09-26.** Story Studio shipped a completeness guard:
   *"a completion that used its entire requested ceiling is treated as incomplete,
   whatever `finish_reason` claims."* That is the correct fix and it is better than
@@ -733,13 +738,21 @@ carefully.
   re-read; until then a build change is self-propagating and needs no action from
   anyone.
 
-- [ ] **HUB-20 — publish the limit's *source* as a stable token, not as a sentence.**
-  owes: SH (a small change) · truth: `components/chat/app/backend/main.py`
-  (`_published_max_output_tokens` returns `entry.get("source")`) and the
-  `model_limits` block you already put on the wire, read from the installed bundle
-  running **0.6.69** build `49792c4`.
-  You already publish this, structurally, and it is exactly what Story Studio is
-  asking for:
+- [x] **HUB-20 — publish the limit's *source* as a stable token, not as a sentence.**
+  **CLOSED 2026-09-26 — shipped by Studio Hub in 0.6.72 and relayed by this gateway in 0.2.48.**
+  owes: SH (a small change) · truth: `components/chat/app/backend/llm_engine.py::model_limits`
+  (`source_kind` beside every `source`) and `gateway/catalog.py::_hub_stated_limit`.
+  `[CODE + TEST]` `llm_engine.model_limits()` returns `source_kind` beside every `source`
+  (`worker_default` on the branch that substitutes `FALLBACK_MAX_OUTPUT_TOKENS`), and
+  `tests/test_chat_worker.py` pins both branches; this gateway relays the token unchanged as
+  `max_output_tokens_source` (`tests/test_hub_limit_provenance.py`, 9 tests green). The local
+  chat row's `max_output_tokens: 16384` therefore reaches Story Studio as `worker_default`
+  rather than `provider` — the machine-readable field no longer contradicts the sentence
+  beside it. Story Studio's consumer half is still theirs to land.
+  The row below is the record of what was asked, kept because it is why the token exists:
+
+  Read from the installed bundle running **0.6.69** build `49792c4` when the ask was written,
+  the `model_limits` block was already on the wire but only as a sentence:
 
   ```json
   "model_limits": {
@@ -771,9 +784,10 @@ carefully.
   **It is not in your installed bundle at all** — `grep -r` over
   `/Applications/Studio Hub.app/Contents/Resources` returns nothing, and it is not in
   this gateway either. So it is a field **nobody has ever published**, not one we are
-  dropping, and it is on Story Studio's side that the consequence lands: their
-  scene-plan generator **throws** when it is absent (see STORY-10, which has the code
-  path and is the half that unblocks the owner).
+  dropping. **The consequence that made this urgent is gone:** Story's scene-plan
+  generator used to **throw** when the field was absent (STORY-10), and that half is
+  fixed and shipped (v1.4.225) — so publishing this field is now an **improvement** that
+  would let a lane state a real bound, not the thing unblocking a customer.
   **Where it has to appear is the top level of the model row, not inside the
   contract.** `genstudio-client.ts:4866` reads `value?.max_structured_items_per_request`
   — a sibling of `max_output_tokens`, not a path inside `lane_contract`. A value
@@ -798,7 +812,7 @@ carefully.
   here:** a caller does not choose the Mac. Six locations serve every local model and
   the gateway picks the site at dispatch, so *"that Mac's setting"* is not
   determinable from the caller's side at all — the same request can omit `max_tokens`
-  and be served 4,096 at one site and a different number at another. Today all six
+  and be served 16,384 at one site and a different number at another. Today all six
   locations publish an identical surface so the answer is the same everywhere and
   nothing is wrong; **the moment one operator changes a default, our merged catalogue
   row would publish one site's value while routing to any**, which is the "a published
@@ -918,11 +932,18 @@ stop reading its silence as an answer. That line is worth more than the four row
   replace every estimate here with a measurement; the machinery for it now exists, and
   this field is where the answer will appear.
 
-- [ ] **STORY-10 — your two consumers of `max_structured_items_per_request` disagree
+- [x] **STORY-10 — your two consumers of `max_structured_items_per_request` disagree
   about what its absence means, and one of them throws.** found 2026-09-26 by reading
   your source while answering the owner · owes: Story (a decision) · truth:
-  `electron/server/generators/scene-plan.ts:496-510` and
+  `electron/server/generators/scene-plan.ts:505-535` and
   `electron/server/services/contextual-cues.ts:132-143`.
+  **CLOSED 2026-09-26 — fixed and shipped by Story Studio, first half in v1.4.224 and the
+  scene-plan half in v1.4.225 (`38b87ae3`, installed).** The two consumers now agree:
+  an unpublished item limit is not a limit of zero, so the assertion returns instead of
+  throwing, and the pack is bounded by the model's published output tokens. The gateway's
+  half stands as written — if Studio Hub ever states such a limit we will publish it, and
+  it must be lifted to the top level of the model row.
+  The row below is the record of what was found, kept because it is why the fix exists:
   **The field is unpublished — by everybody.** It is not in Studio Hub's installed
   bundle, not in their `lane_contract.structured_output`, and not in this gateway. Your
   `genstudio-client.ts:4866` parses it from the model row and correctly yields `null`.
@@ -974,8 +995,10 @@ stop reading its silence as an answer. That line is worth more than the four row
   | **text** — prose, a chapter | 10 | **1.26** | 1.14–1.78 | n=7, **1.21** |
   | **structured** — a JSON contract, a scene pack | 30 | **3.15** | 1.39–25.23 | n=10, **1.50** |
 
-  **Your `OUTPUT_TOKENS_PER_WORD = 1.3` is right, and our 1.45 was wrong.** Prose on
-  this model measures **1.21–1.26**; your constant sits inside that and our blend sat
+  **Your `OUTPUT_TOKENS_PER_WORD = 1.3` was the right prose figure, and our 1.45 was
+  wrong** — though you moved it to **1.6** later the same day; see the update at the end
+  of this row. Prose on
+  this model measures **1.21–1.26**; your constant sat inside that and our blend sat
   above it. **Your settled 1,700–3,000 per 1,200 words (1.42–2.50) is above the prose
   measurement too** — so if that range came from mixed work, the prose end is lower
   than you think and the safe direction is unchanged: a chunking threshold that
@@ -992,6 +1015,15 @@ stop reading its silence as an answer. That line is worth more than the four row
   the failure is a retry rather than a lost chapter — but on a model whose chapters run
   long, 3-per-call will degrade toward 2-per-call and the "10 calls instead of 30"
   figure will drift up. Worth knowing before you size the plan on it.
+  **UPDATE 2026-09-26 — Story moved the constant anyway, and the arithmetic above is
+  against a ceiling the Hub has since doubled.** Their reply
+  (`2026-09-26_story-reply-tokens-per-word.md`) settles on **1.6**: they held 1.3 only
+  until our 17-sample 1.45 and their own two samples (1.38, 2.52) arrived, and at 1.3 a
+  three-chapter batch passed their budget guard by twelve tokens. The split measurement
+  above is unchanged and still the honest prose number; 1.6 sits above its 1.21–1.26
+  median, so it only ever *shrinks* a batch. Their threshold table at the live ceilings
+  is **372 / 2,932 / 8,052** words, and 3 × 3,000 = 9,000 fits the 16,384 the Hub ships
+  today.
 
 - [ ] **STORY-9 — the deadline you do not read is one this gateway enforces, and that
   bounds the ceiling from above.** owes: Story (nothing — a fact to hold) · truth:
@@ -1006,17 +1038,17 @@ stop reading its silence as an answer. That line is worth more than the four row
   11.6) independently corroborate — that puts a hard lid on the ask. Sized against the
   **slowest** chip, because the caller does not choose the Mac:
 
-  | ceiling | M1 (12/s) | M2 (14/s) | M4 (18/s) | against the Hub's stated 900 s |
+  | ceiling | M1 (12/s) | M2 (14/s) | M4 (18/s) | against the Hub's stated 1,800 s (chat, since 0.6.70) |
   |---|---|---|---|---|
   | 4,096 | 341 s | 293 s | 228 s | fits |
-  | **8,192** | **683 s** | 585 s | 455 s | **fits, 1.32× on the slowest** |
-  | 16,384 | 1,365 s | 1,170 s | 910 s | **times out on every chip** |
+  | 8,192 | 683 s | 585 s | 455 s | fits, 2.6× on the slowest |
+  | **16,384** | **1,365 s** | 1,170 s | 910 s | **fits, 1.32× on the slowest — the ceiling the Hub publishes today** |
 
-  So 8,192 is the largest value that works today, and **if anyone ever wants more, the
-  ceiling and the deadline have to move together** — raising one alone produces jobs
-  that die at our hop for no visible reason. That is the whole reason HUB-19 asks for
-  8,192 and not 16,384. Recorded here because "nothing changes on our side" is the kind
-  of true statement that gets read as "nothing changes anywhere".
+  So 16,384 is the largest value tested that works, and it is what HUB-19 shipped:
+  **the ceiling and the deadline had to move together**, because raising the ceiling
+  alone produces jobs that die at our hop for no visible reason. Recorded here because
+  "nothing changes on our side" is the kind of true statement that gets read as
+  "nothing changes anywhere".
 
   **Corollary worth keeping, and it is why publishing the median alone was not
   enough:** the number a ceiling must be safe against is the **slowest** machine's,
@@ -1024,10 +1056,14 @@ stop reading its silence as an answer. That line is worth more than the four row
   carries `slowest_site_tokens_per_second` beside the median for exactly that reason.
 
   **SIZING APPENDIX — what each ceiling actually buys, and the M1-safe number.**
-  Asked by the owner 2026-09-26. **`PEER_PROXY_TIMEOUT_S = 900.0` is the Hub's own
-  "one request timeout enforced on a job request it proxies to a worker"
-  (`components/hub/standalone.py`), so it covers LOAD + PREFILL + GENERATION** — the
-  generation budget is not the whole 900 s. That is the fact that decides the answer.
+  Asked by the owner 2026-09-26, when the chat lane's deadline was the single
+  `PEER_PROXY_TIMEOUT_S = 900.0`. **That constant no longer exists**: since Hub 0.6.70
+  the floor is per generator — `standalone.deadline_floor_seconds(modality)`, from
+  `MODALITY_DEADLINE_FLOOR_S` — and chat is **1,800 s**. It still covers
+  LOAD + PREFILL + GENERATION, so the generation budget is not the whole window; only
+  the window is longer. The tables below are the sizing done against the old 900 s and
+  are kept because they are how the decision was reached; **HUB-19's decision below —
+  16,384 with the chat deadline at 1,800 s — is the pair that shipped.**
 
   What a ceiling carries, at the measured **prose** ratio for the local model —
   **1.26 tokens/word**, 10 samples, 1.78 worst (see STORY-8: the 1.45 formerly quoted
@@ -1119,6 +1155,14 @@ stop reading its silence as an answer. That line is worth more than the four row
 - [ ] **STORY-6 — do NOT remove the chunker. It is right, and the constant behind it
   is yours to keep.** owes: Story (nothing, if you read this) · truth:
   `electron/server/lib/chunked-narration.ts`.
+  **UPDATE 2026-09-26 — the figures below are the 1.3-era record; both constants have
+  moved since.** Story raised `OUTPUT_TOKENS_PER_WORD` to **1.6**, and Hub 0.6.70 raised
+  `FALLBACK_MAX_OUTPUT_TOKENS` to **16,384** with the chat deadline at 1,800 s (HUB-19,
+  closed). The live thresholds are therefore **372 / 2,932 / 8,052** words at 4,096 /
+  8,192 / 16,384, and the Hub no longer refuses `max_tokens` above 4,096. The conclusion
+  is unchanged and the fix landed exactly where this row said it had to: upstream, with
+  no Story Studio change. The arithmetic below is kept because it is *why* that was the
+  fix.
   Written 2026-09-26 because the owner was about to ask for exactly the removal, on a
   number that came from us and was **wrong**. Correcting it before it costs a chapter.
   What we said: that 458 words per 4,096-token call was ~7× more conservative than the
@@ -1149,28 +1193,59 @@ stop reading its silence as an answer. That line is worth more than the four row
   clears a 1,200-word chapter by 10%, so the next slightly-longer chapter chunks
   again, whereas 8,192 clears it by 3× and needs nothing from you at all.
 
-- [ ] **STORY-1b — do you want two-pass for the local model, and is the row enough
+- [x] **STORY-1b — do you want two-pass for the local model, and is the row enough
   to decide it at runtime?** owes: Story · truth: the `GET /v1/models` chat row.
+  **CLOSED 2026-09-26 — answered by Story Studio: no id shape, and GW-2 needs no
+  gateway change** (`story-studio-kh/_handoffs/2026-09-26_story-response-four-rows.md`;
+  the comment on their side that said an id selects two-pass was corrected, `c7c31282`).
+  Two-pass is their planning algorithm, not a model property, and the row already
+  carries every input the decision needs.
   last verified: 2026-09-25 → the row publishes `context_window_tokens 262144`
-  (the checkpoint's own, source named), `max_output_tokens 4096` (a labelled worker
-  fallback), `verified_token_usage false`, `supports_structured_output true`,
-  `structured_output_mode null`, and `lane_contract.structured_output` as soon as the
-  Hub build carrying it runs. If two-pass needs another fact, name it and we publish
-  it from the producer's statement.
+  (the checkpoint's own, source named), `max_output_tokens 16384` (a labelled worker
+  fallback — `FALLBACK_MAX_OUTPUT_TOKENS` since Hub 0.6.70, with
+  `source_kind: worker_default` since 0.6.72), `verified_token_usage false`,
+  `supports_structured_output true`, `structured_output_mode null` (the gateway's
+  rule: the mode is unstated until the producer states it machine-readably), and
+  `lane_contract` relayed key for key (Hub 0.6.64+). If two-pass needs another fact,
+  name it and we publish it from the producer's statement.
 
-- [ ] **STORY-2 — the acceptance run on the local model**: an outline, a chapter, a
+- [x] **STORY-2 — the acceptance run on the local model**: an outline, a chapter, a
   thumbnail prompt set and metadata, with receipts. owes: Story ·
-  last verified: not run. This is item 5 of Studio Hub's test plan; items 1–4 are done
-  (GW-1).
+  **CLOSED 2026-09-26 — ran against this gateway's live chat lane on
+  `studio-hub::mlx-community/Qwen3.5-9B-4bit`** (free at the lane, 0 credits):
+  outline ✅, chapter ✅ (after Story fixed a `response_format` bug on their side),
+  thumbnail prompt set ✅, metadata reached-but-blocked with the block explained.
+  Two defects found, one Story's (fixed and proven live) and one named here.
+  Receipts: `story-studio-kh/_handoffs/2026-09-26_story-response-story-2-acceptance-run.md`
+  and `/tmp/ssk-live/receipts.json`; harness
+  `scripts/developer/story-2-local-model-run.ts`. This was item 5 of Studio Hub's
+  test plan; items 1–4 are done (GW-1).
 
-- [ ] **STORY-4 — label a limit from `*_source_detail`**, and tell us if you want a
+- [x] **STORY-4 — label a limit from `*_source_detail`**, and tell us if you want a
   machine-readable discriminator instead of a sentence. Studio Hub's caveat: the `4096`
-  is **their worker's fallback**, not the model's limit — the context window is the
-  model's own. owes: Story · truth: `max_output_tokens_source_detail`.
+  was **their worker's fallback**, not the model's limit — the context window is the
+  model's own. owes: Story · truth: `max_output_tokens_source_detail` and
+  `max_output_tokens_source`.
+  **CLOSED 2026-09-26 — Story asked for the enum, and the producer and relay halves
+  shipped** (the `operator_default` value waits on HUB-22, which is why that row exists).
+  Their answer (`2026-09-26_story-response-four-rows.md`, §2): an enum named
+  `model` / `worker_default` / `operator_default` / `curated` / `gateway` / `unknown`,
+  with `*_source_detail` kept as the sentence to display and never parse. Studio Hub
+  **0.6.72** publishes `source_kind` on every `model_limits` entry; this gateway
+  **0.2.48** relays it as `max_output_tokens_source` / `context_window_tokens_source`
+  (pinned by `tests/test_hub_limit_provenance.py`, 9 tests green — the relay of
+  `worker_default` included). The remaining half is Story's own consumer — their
+  ingestion does not copy the fields yet.
 
-- [ ] **STORY-5 — an omitted parameter is that Mac's operator setting**, not the
+- [x] **STORY-5 — an omitted parameter is that Mac's operator setting**, not the
   model's default (Studio Hub, 2026-09-25). The gateway forwards only what the caller
-  sets. Tell us if the row should carry a statement about it. owes: Story/GatewayKH.
+  sets. **CLOSED 2026-09-26 — Story answered: yes, publish it, scoped.** They asked for
+  a machine-readable `defaults_scope` (`per_site` | `fleet` | `unset`) beside the
+  resolved defaults, because six studio-hub providers here already serve that one model
+  and a single row value would describe one machine, a fleet default, or nothing
+  (`2026-09-26_story-response-four-rows.md`, §3). The statement is now Studio Hub's to
+  publish — **HUB-22** — and this gateway carries it when it does; the merge-scope
+  hazard is recorded as GW-11.
 
 ---
 
@@ -1195,8 +1270,11 @@ stop reading its silence as an answer. That line is worth more than the four row
   `structured_output_mode: null`, `lane_contract: null` — the contract follows with
   Hub 0.6.64 (HUB-11, closed).
 
-- [ ] **GW-2 — implement whatever STORY-1b names**, keeping today's id as a
-  `legacy_id`. Blocked on STORY-1b · truth: `gateway/catalog.py`.
+- [x] **GW-2 — implement whatever STORY-1b names**, keeping today's id as a
+  `legacy_id`. **CLOSED 2026-09-26 — STORY-1b named "no change":** two-pass is Story's
+  planning algorithm, not a model property, so no id marker is wanted and this gateway
+  has nothing to build (`2026-09-26_story-response-four-rows.md`). truth:
+  `gateway/catalog.py`.
 
 - [x] **GW-4 — re-declare the target Hub version.** closed 2026-09-25 in **0.2.28** ·
   `SUPPORTED_STUDIO_HUB_VERSION = "0.6.65"`.
@@ -1266,7 +1344,8 @@ stop reading its silence as an answer. That line is worth more than the four row
      stopping it. `store.due()` never returns a running job (`mark_running` clears
      `next_action_at`), so the reserve-then-claim order cannot wedge on its own
      work. `Worker.wait_idle()` exists because `_loop` now returns on *dispatch*.
-     `tests/test_worker_concurrency.py` → 13 checks, stable over five runs:
+     `tests/test_worker_concurrency.py` → 13 checks then (**45 tests today**), stable
+     over five runs:
      concurrency proven with a `Barrier` (a serial worker cannot open it), the pool
      size as a real ceiling, a cloud lane at 1 by default, a curated limit honoured,
      a Hub site sized from its own `available_worker_slots`, **a Hub reporting zero
@@ -1481,14 +1560,18 @@ stop reading its silence as an answer. That line is worth more than the four row
   **The arithmetic that goes with it, so the decision is not made blind.** Same model,
   measured 2026-09-26: **17.3 tokens/second** (489 tokens in 28.2 s), 1.22
   tokens/word, 7.0 characters/word, 5.7 characters/token. Against the chat lane's
-  stated **900 s** deadline (`PEER_PROXY_TIMEOUT_S`): 4,096 → 236 s, 8,192 → 472 s,
-  **16,384 → 945 s and does not fit**, 32,768 → 1,890 s. A **1,200-word chapter** is
-  about 1,467 tokens / 8,358 characters / ~85 s. Story Studio's chunker sends **458
-  words per 4,096-token call**, so one chapter is ~2.6 calls — that is the round trip
-  the ceiling ask is really about. Highest completion seen on each cloud lane, for
-  comparison: openrouter `deepseek-v4-flash` **15,139**, experiential-labs
-  `deepseek-v4.1-flash` 8,483, openai `gpt-6-luna` 6,221, tokenharbor
-  `mimo-v2.5:free` 5,045.
+  stated **900 s** deadline then in force (`PEER_PROXY_TIMEOUT_S`, since replaced — the
+  chat floor is 1,800 s): 4,096 → 236 s, 8,192 → 472 s, **16,384 → 945 s, which did not
+  fit**, 32,768 → 1,890 s. A **1,200-word chapter** is about 1,467 tokens / 8,358
+  characters / ~85 s. Story Studio's chunker then sent **458 words per 4,096-token
+  call**, so one chapter was ~2.6 calls — that is the round trip the ceiling ask is
+  really about. Highest completion seen on each cloud lane, for comparison: openrouter
+  `deepseek-v4-flash` **15,139**, experiential-labs `deepseek-v4.1-flash` 8,483, openai
+  `gpt-6-luna` 6,221, tokenharbor `mimo-v2.5:free` 5,045.
+  **What changed since:** Hub 0.6.70 set the chat floor to **1,800 s** and
+  `FALLBACK_MAX_OUTPUT_TOKENS` to **16,384**, so 945 s now fits with room; Story's
+  1.6 tokens/word moves the per-call threshold to **372 / 2,932 / 8,052** words at
+  4,096 / 8,192 / 16,384, and a 1,200-word chapter is one call at the published ceiling.
 
 ---
 

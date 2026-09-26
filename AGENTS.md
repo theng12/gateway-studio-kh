@@ -125,8 +125,10 @@ gets the whole script, so an engine cliff applies:
 **only while `long_form_delivery` is absent** for that model, read from the Hub's
 own table. So Orpheus
 publishes 170 today and **becomes 15,000 automatically** the moment the Hub
-starts sectioning it — no gateway change, no coordination. Handoff:
-`_handoffs/2026-09-20-gateway-local-tts-limit-15000-and-chunking-ownership.md`.
+starts sectioning it — no gateway change, no coordination. The rule is one constant,
+`catalog._TTS_CHARACTERS_LOCAL` (15,000), beside `catalog._HARD_CAP_CHARACTERS`; the
+handoff that recorded the decision was removed from `_handoffs/`, so this file names the
+code rather than a dead pointer.
 `spark-tts-mlx` is *deliberately absent* from that table despite the Hub's 750:
 as `auto-split`, 750 is where quality is best, not a limit on what may be sent.
 
@@ -509,8 +511,8 @@ Moved to [docs/audit-batch-4-2026-09-20.md](docs/audit-batch-4-2026-09-20.md).
 ## Verification
 
 ```bash
-.venv/bin/python tests/test_e2e.py              # 546 checks, isolated mock upstream
-.venv/bin/python tests/test_fleet_standalone.py # 50 checks, real Hub(s) as locations
+.venv/bin/python tests/test_e2e.py              # 570 checks, isolated mock upstream
+.venv/bin/python tests/test_fleet_standalone.py # ~50 checks (54 sites; the suite prints its own total), real Hub(s) as locations
 .venv/bin/python tests/test_ui.py               # 130 checks + 5 Hub-dependent skips, drives the real app
 ```
 

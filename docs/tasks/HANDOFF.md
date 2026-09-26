@@ -135,7 +135,7 @@ said in the row that the control was not read. Making the control **real** is th
 - **Guard:** `AHubLocationsNumberIsACapNotALicenceTest` (6) and
   `DispatchReadsTheOperatorsNumberForALocationTest` (3). **Proved to fail on the defect** — restoring
   the old call fails with `6 != 2`, the operator's number ignored.
-- **Verified:** `tests/test_e2e.py` **570/570** · `tests/test_fleet_standalone.py` **47/47** · all
+- **Verified:** `tests/test_e2e.py` **570/570** · `tests/test_fleet_standalone.py` **green** (54 check sites; the suite prints the total it executed) · all
   **36** focused suites.
 
 **Still open, and named rather than implied:** the console renders the pool and the per-provider rows,
@@ -178,7 +178,7 @@ wrong.
 - **Guard:** `tests/test_hub_limit_provenance.py`, 9 tests, **proved to fail on the defect (9 of 9,
   `'provider' != 'worker_default'`)**. `LIMIT_SOURCES`' comment now names the relayed vocabulary, and
   the test reads it, so the constant is load-bearing rather than decorative.
-- **Verified:** `tests/test_e2e.py` **570/570** · `tests/test_fleet_standalone.py` **47/47** against the
+- **Verified:** `tests/test_e2e.py` **570/570** · `tests/test_fleet_standalone.py` **green** (54 check sites; the suite prints the total it executed) against the
   owner's real Hub · all **36** focused suites green.
 
 **Also fixed, and found by this change rather than looked for.** `ThePublishedLimitIsTheRealOneTest`
@@ -212,8 +212,9 @@ console said **1** for it. Two defects in one row:
   **it is not a setting**, because the old sentence said the opposite.
 - **Cloud providers are untouched**: they keep the settings-file answer they are governed by.
 - Failure is swallowed on purpose — an unreadable fleet must not stop the page drawing.
-- **Guard:** `tests/test_worker_concurrency.py::TheConsoleReportsWhatWillActuallyRunTest`, 6 tests.
-  **Proved to fail on the defect: 4 of 6**, with `1 != 4 : the widest lane is the headline number`.
+- **Guard:** `tests/test_worker_concurrency.py::TheConsoleReportsWhatWillActuallyRunTest`, **8 tests
+  today** (6 when this was written). **Proved to fail on the defect: 4 of the 6 there were**, with
+  `1 != 4 : the widest lane is the headline number`.
 - **Verified:** `tests/test_e2e.py` **570/570** · `tests/test_fleet_standalone.py` · all **35**
   focused suites.
 
@@ -251,10 +252,13 @@ for, where a model *"complied for two packs of forty scenes and wrote prose for 
   focused suites green.
 
 **Still open, and named here so it is not read as fixed.** Story Studio reads **25** chat fields this
-gateway never publishes — `max_structured_items_per_request` among them — and every `*_source`
-provenance field the gateway *does* publish has **no Story Studio consumer at all**. That is Hub row
-**HUB-20**, and it is a three-repo chain whose **middle link is the only one built**. Neither is a
-vocabulary bug of this kind; both need work on the Story side or a producer change on the Hub's.
+gateway never publishes — `max_structured_items_per_request` among them. That is Hub row **HUB-21**:
+the field is in no installed bundle and no gateway, so the producer change is Studio Hub's. And every
+`*_source` provenance field the gateway *does* publish had, when this section was written, **no Story
+Studio consumer at all** — that is Hub row **HUB-20**, whose producer half has since shipped (Studio
+Hub **0.6.72** publishes `source_kind`, this gateway **0.2.48** relays it as
+`max_output_tokens_source`), leaving the consumer half on Story's side. Neither is a vocabulary bug of
+this kind; both need work on the Story side.
 
 ## WHAT 0.2.45 CHANGED — the global cap moves without a restart
 
@@ -277,7 +281,7 @@ check since it was written; now the code does too.
   *and* lowering the setting against a **live Worker that is never restarted**, plus the pin. **Proved
   to fail on the old behaviour:** restoring the capture fails 2 of its 3 tests, and the failure
   message names the promise that was broken.
-- **Verified:** `tests/test_e2e.py` **570/570** · `tests/test_fleet_standalone.py` **47/47** against
+- **Verified:** `tests/test_e2e.py` **570/570** · `tests/test_fleet_standalone.py` **green** (54 check sites; the suite prints the total it executed) against
   the owner's real Hub · all **34** focused suites green · `test_ui.py` **not** run (release-gate
   only; it takes over the owner's screen).
 
@@ -385,8 +389,11 @@ same.
 ### The fleet gate ran for the first time in fifteen releases — and the gateway was right
 
 `test_fleet_standalone.py` had not run since 0.2.28 because it needs a live Hub and an
-explicit opt-in. Run on 2026-09-26 against Hub **0.6.70**: **47/47**, including a real
-transcription end to end and the artifact returning through the gateway.
+explicit opt-in. Run on 2026-09-26 against Hub **0.6.70**: **green — 47 checks in that
+run**, including a real transcription end to end and the artifact returning through the
+gateway. **The suite's total follows what the live Hub reports** (this checkout now has
+**54 check sites**, some in mutually exclusive branches), and it prints the count it
+actually executed; quote that, not this number.
 
 **Three defects, all in the test, none in the product.** Worth recording because each
 would have made the gate unrun or dishonest:
@@ -611,17 +618,18 @@ Read off the **running** 0.2.39 gateway, `GET /admin/api/qualification`:
   dominate it. Use this one; earlier notes here said 16.8 (the best-sampled single
   location) and an even earlier one said 17.3 (**one 489-token sample**, retracted).
   Also measured: 1.22 tokens/word, 7.0 characters/word, 5.7 characters/token. Against
-  the chat lane's own stated 900 s deadline: 4,096 → 266 s, 8,192 → **532 s**, 16,384
-  → **1,064 s and does not fit**.
+  the chat lane's own stated deadline — **900 s then, 1,800 s since Hub 0.6.70**:
+  4,096 → 266 s, 8,192 → **532 s**, 16,384 → **1,064 s, and it now fits the window
+  rather than dying at it**.
 - **The round trip is the Hub's `FALLBACK_MAX_OUTPUT_TOKENS`, and Story Studio's
   chunker is not the defect.** An earlier version of this file implied the chunker was
   over-tuned. **That was wrong and is retracted** — see HUB-19. Their
-  `OUTPUT_TOKENS_PER_WORD = 1.3` is within 6.5% of our measured 1.22, and their
-  458-word threshold is `chunkThresholdWords(4096)` computed live from the ceiling
-  **we** publish. Raising the Hub's fallback to 8,192 makes their threshold 3,609
-  words and a 1,200-word chapter one call, with **no Story Studio change at all**.
-  Removing the chunker instead would lose chapters silently, because the Hub refuses
-  `max_tokens > 4096` and a generation cut off there still reports
+  `OUTPUT_TOKENS_PER_WORD` was 1.3 then and is **1.6** today (raised 2026-09-26 on both
+  sides' measurements), and their threshold is `chunkThresholdWords(cap)` computed live
+  from the ceiling **we** publish: **372 words** at 4,096, **2,932** at 8,192, **8,052**
+  at the **16,384** the Hub now ships. At 16,384 a 1,200-word chapter is one call, with
+  **no Story Studio change at all**. Removing the chunker instead would lose chapters
+  silently, because a generation cut off at the ceiling still reports
   `finish_reason: "stop"`.
 - **A source can arrive with no number.** `openai-direct::gpt-6-luna` publishes
   `max_output_tokens: null` **with** `max_output_tokens_source: "gateway"` — that is
@@ -668,8 +676,8 @@ shape is not.
   returned, therefore the job ran"* became a race the moment `_loop` stopped
   executing inline. `Worker.wait_idle()` exists for the second one.
 
-`tests/test_worker_concurrency.py` → 13 checks, stable over five runs. Focused
-suites 30/30, `test_e2e.py` 555/555.
+`tests/test_worker_concurrency.py` → 13 checks then (**45 tests today**), stable over
+five runs. Focused suites 30/30, `test_e2e.py` 555/555.
 
 ## WHAT 0.2.28 CHANGED — and the three things it cost to learn
 
@@ -850,7 +858,7 @@ Run everything from `repository/`. Python tooling is the checkout venv `.venv/bi
 > | "Studio Hub is not running on this Mac" | it is running, and all four workers report ready |
 > | the chat lane publishes `max_output_tokens: 4096` | **16384**, and `deadline_seconds` **1800** |
 > | `test_e2e.py` **546–555/555** | **570/570** |
-> | the remote chat proof "blocked on our side" | **closed** — GW-1, and the fleet gate passes 47/47 with a real remote dispatch |
+> | the remote chat proof "blocked on our side" | **closed** — GW-1, and the fleet gate is green (54 check sites; it prints its own total) with a real remote dispatch |
 >
 > **A stale handoff is worse than none, because it is trusted.** If a number here
 > disagrees with the table at the top of this file, the top of the file was measured.
@@ -896,7 +904,7 @@ Run everything from `repository/`. Python tooling is the checkout venv `.venv/bi
   controllers are on **0.6.54**, which refuses the chat lane to a Fleet credential.~~
   **CLOSED 2026-09-25 (GW-1) and re-proved 2026-09-26.** The controllers are on
   `0.6.65`/`0.6.64` and the fleet gate runs a real remote dispatch end to end —
-  `tests/test_fleet_standalone.py` **47/47** against Hub `0.6.70`, including a
+  `tests/test_fleet_standalone.py` **green** (54 check sites; the suite prints the total it executed) against Hub `0.6.70`, including a
   transcription and the artifact returning through the gateway. Struck through rather
   than deleted because it was the reason the declared version moved at all.
 - **A stale `dispatch_state` reads as "not installed".** The first live chat attempt

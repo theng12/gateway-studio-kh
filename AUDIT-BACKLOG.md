@@ -981,8 +981,10 @@ favour of a simpler rule the owner set**: the local lane presents **one** number
 (15,000) and **chunking is Studio Hub's job**, so the gateway never has to model a
 per-engine limit at all. An engine the Hub does not yet section keeps its cliff as a
 ceiling and joins the lane at 15,000 automatically once the Hub publishes
-`long_form_delivery` for it. See
-`_handoffs/2026-09-20-gateway-local-tts-limit-15000-and-chunking-ownership.md`.
+`long_form_delivery` for it. The rule is one constant — `catalog._TTS_CHARACTERS_LOCAL`
+(15,000) beside `catalog._HARD_CAP_CHARACTERS` — and the handoff this paragraph used to
+point at (`_handoffs/2026-09-20-gateway-local-tts-limit-15000-and-chunking-ownership.md`)
+is gone from `_handoffs/`, so the file points at the code instead.
 
 Still open on the Hub's side, and now the only row where the uniform limit is a
 claim rather than a consequence: **`voxtral-tts` has no section budget, no cliff and

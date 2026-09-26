@@ -813,6 +813,8 @@ worktree: `graphify extract . --update --code-only`, then `graphify cluster-only
 --no-label` (the `--no-label` keeps `Community N` placeholders instead of paying for
 LLM naming). **2785 nodes / 7008 edges / 154 communities**, with
 `GRAPH_REPORT.md`, `graph.json` and `graph.html` all written at 2026-09-22 02:01.
+**It is gitignored and rebuildable, and a fresh checkout will not have it** — the two
+commands above recreate it; do not treat its absence as a missing artefact.
 
 It carries this session's additions — `tests/check_admin_keyboard.mjs` is a node
 with 9 edges, and `tests/check_native.py`,

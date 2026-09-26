@@ -69,7 +69,9 @@ for d in /Volumes/KH-STUDIO-*; do echo "$(basename $d): $(ls "$d/Video Generatio
   per-generator deadlines (chat/voice 1800 s; image/transcription/music 900 s; video
   7200 s). **The chain carried it automatically inside ~35 s** — Hub restart → fleet
   refresher → GW-5 → catalogue → Story Studio. **HUB-19 is closed.**
-- **The fleet gate ran again — it had not run since `0.2.28`: 47/47**, including a real
+- **The fleet gate ran again — it had not run since `0.2.28`: green, 47 checks in that
+  run** (the suite's total follows what the live Hub reports; this checkout has **54
+  check sites** now and the suite prints the total it executed), including a real
   transcription end to end. Three defects were found and all three were **in the test**.
 - **Two corrections were issued to both teams**, both retractions of our own numbers:
   the chunker was never over-tuned, and a tokens-per-word figure of `1.45` was a blend
@@ -103,11 +105,15 @@ on evidence — which is worth saying plainly rather than inventing work.
 
 **Theirs — the two that matter most:**
 
-- **STORY-10** — Story's two consumers of `max_structured_items_per_request` disagree
-  about what an unpublished value means: `contextual-cues` proceeds, `scene-plan`
-  **throws**. **This is what gates the 30-scene pack.** Prompt written and unrelayed:
-  `_handoffs/2026-09-26-story-studio-scene-pack-item-limit-prompt.md`
-- **HUB-21 / HUB-20 / HUB-22 / HUB-18** — four small Studio Hub asks, none blocking.
+- **STORY-10 — closed 2026-09-26.** Story's two consumers of
+  `max_structured_items_per_request` disagreed about what an unpublished value means:
+  `contextual-cues` proceeded, `scene-plan` **threw** — and that is what gated the
+  30-scene pack. Both halves are fixed and shipped (v1.4.224, then v1.4.225 `38b87ae3`,
+  installed), so an unpublished item limit is no longer a limit of zero. The prompt at
+  `_handoffs/2026-09-26-story-studio-scene-pack-item-limit-prompt.md` is the record.
+- **HUB-21 / HUB-22 / HUB-18** — three small Studio Hub asks, none blocking.
+  **HUB-20 is closed** — Studio Hub 0.6.72 publishes `source_kind`, this gateway 0.2.48
+  relays it as `max_output_tokens_source`; Story's consumer half is still theirs.
 
 **Owner:**
 
@@ -178,7 +184,7 @@ Full list in `docs/tasks/HANDOFF.md`; these are the ones you will hit today.
 .venv/bin/python tests/test_e2e.py                 # 570/570, isolated, uses the mock
 .venv/bin/python tests/<the one focused file>.py   # seconds, own temp profile
 node --test tests/<file>.js                        # console/HTML changes
-GATEWAY_ALLOW_LIVE_GENERATION=1 .venv/bin/python tests/test_fleet_standalone.py   # 47/47, HIS REAL HUB
+GATEWAY_ALLOW_LIVE_GENERATION=1 .venv/bin/python tests/test_fleet_standalone.py   # green, HIS REAL HUB (54 check sites; it prints its own total)
 .venv/bin/python tests/test_ui.py                  # release gate, TAKES OVER HIS APP — ask first
 ```
 
