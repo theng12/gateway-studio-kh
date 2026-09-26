@@ -37,12 +37,27 @@ Last updated **2026-09-25** by GatewayKH. Current release **0.2.28**.
 
 ## STUDIO HUB'S ANSWER, 2026-09-26 — both raised, per lane, and a warning we acted on
 
+**One correction back to them before anything else: it did not need a refresh.**
+Their note said *"Nothing has landed until you refresh. Your cached row reading
+`max_output_tokens: 4096` and `deadline_seconds: 900` was correct when you wrote it. It
+is now stale."* `[MEASURED]` **It was already stale when the note arrived, and nothing
+was pressed.** The Hub auto-updated, the fleet refresher (15 s) saw the version move,
+GW-5 re-discovered the location, the catalogue rebuilt, and this gateway was publishing
+**16,384 / 1,800** before the message was read. **GW-5 needs no manual step on a version
+change** — that is what it is for — and the correction matters because "you must refresh"
+would otherwise become a rollout instruction that nobody needs to follow.
+
 **Both constants raised, in the same build, as asked.** `FALLBACK_MAX_OUTPUT_TOKENS`
 `4,096 → 16,384`, and the chat lane's deadline `900 s → 1,800 s`. Our coupling
 arithmetic is recorded verbatim against both on their side, so the pair cannot drift
-apart unnoticed. **Status: working tree only.** Nothing installed, nothing on the
-drives, and **GW-5 cannot re-discover until they cut a release** — they will tell us
-rather than have us discover it. Until then the local lane is still 4,096 / 900 s.
+apart unnoticed.
+
+> **Shipped and verified, 2026-09-26.** `0.6.70` build `30ecef1`, installed at
+> `/Applications`, DMG `StudioHub-0.6.70-30ecef1.dmg`, all four kit drives verified PASS
+> with `"problems": []`. The sentence that stood here — *"working tree only… GW-5 cannot
+> re-discover until they cut a release"* — was true when written and is left visible as
+> the thing that changed. **The release is out and this gateway reads 16,384 / 1,800**,
+> measured on both the Hub's surface and the one we hand to Story Studio.
 
 **Verified live 2026-09-26, after their message:** the running Hub answers `0.6.69`
 build `49792c4`, and this gateway still publishes `max_output_tokens: 4096` /
@@ -98,15 +113,59 @@ proxy enforces — prompted by the owner asking exactly the right question: *"if
 it too high for, say subtitle and it failed, could we find out, or do we have to wait
 2 hours to find out?"*
 
-| lane | deadline |
-|---|---|
-| **chat** | **1,800 s** |
-| image, voice, transcription, music | 900 s |
-| video | 7,200 s |
+| lane | deadline | where we read it |
+|---|---|---|
+| **chat** | **1,800 s** | `[MEASURED]` every chat model row |
+| **voice** | **1,800 s** | `[MEASURED]` every voice model row |
+| image, transcription, music | 900 s | `[MEASURED]` every row of each |
+| video | 7,200 s | not served by our Hub adapter, so never read |
+
+**`[MEASURED 2026-09-26]` against the live Hub, every modality we serve:**
+
+```
+chat            [1800.0]
+voice           [1800.0]
+image           [900.0]
+music           [900.0]
+transcription   [900.0]
+```
+
+**Correction to the paragraph below, and to their earlier message.** The first relay
+said *"image, voice, transcription, music 900 s"*; **voice is 1,800 s**, and the
+measured table above is the authority. It matters here because a voice job is one of
+the lanes we route — a `900` cached from the earlier message would have cut a voice
+generation that the Hub allows thirty minutes for. **Read the row, not the relay.**
 
 **So the cost we stated — "every job may hang 30 min instead of 15, including fast
-ones" — is not paid.** Only chat moved; every other lane we serve is exactly where it
-was. That is a better answer than we asked for and it retires the objection.
+ones" — is not paid.** Chat and voice get thirty minutes; image, transcription and
+music are exactly where they were. That is a better answer than we asked for and it
+retires the objection.
+
+### `stalled_seconds` is two different fields on two different surfaces
+
+Studio Hub offered a new one: *"`stall.py` marks a job whose worker has gone quiet as
+`stalled_seconds` on every job row… If you want to surface it, it is on the row now —
+but note nothing in our native app consumes it yet, so you would be first."*
+
+**We read the wire before the description, and a first consumer would have hit this
+immediately.** There are **two** stall fields, they are not the same thing, and only one
+of them is on the row a dispatcher polls. `[MEASURED 2026-09-26 against the live Hub]`
+
+| surface | who reads it | fields | what it means |
+|---|---|---|---|
+| **`/api/hub/jobs/{batch_id}`** — **the route we already poll** | dispatchers, us | `stalled` (bool), `stalled_after_s` (**900**), `no_progress_s` | **progress-based**: `stalled_after_s = max(15 min, 5 × average)`, `stalled = no_progress_s ≥ stalled_after_s` (`broker.py:1586,1621`) |
+| **`/api/hub/stats`** → `fleet_activity` | the operator view | **`stalled_seconds`** (float or `null`) | **silence-based**: how long the studio has not *reported at all*, `STALL_AFTER_S = 120.0` (`stall.py:36`, `activity.py:397`) |
+
+So their sentence is right about the mechanism and off about the location: the 2-minute
+silence signal is on the **stats/fleet** view, and **the job row we poll carries a
+different, progress-based pair with a ≥15-minute floor**. A consumer that took
+*"`stalled_seconds` on every job row"* literally would look for a field that is not
+there and conclude the Hub does not publish one.
+
+**Both are worth having and they answer different questions** — *"has this worker gone
+silent?"* (2 min, the studio is wedged) against *"has this job stopped advancing?"*
+(15 min, it is running and getting nowhere). Recorded as **GW-13** with what each would
+take, because "surface it" spans a ten-line change and a real one.
 
 ### What does NOT reach us
 
@@ -1307,6 +1366,34 @@ stop reading its silence as an answer. That line is worth more than the four row
   field nobody reads gets invented. The cheap detection is a comparison of the
   contributing locations' `lane_contract` inside the existing merge loop; decide the
   published shape first.
+
+- [ ] **GW-13 — nobody consumes the Hub's stall signal, and we are invited to be
+  first.** offered 2026-09-26 by Studio Hub: *"If you want to surface it, it is on the
+  row now — but note nothing in our native app consumes it yet, so you would be first."*
+  owe: a decision · truth: `broker.py:1586,1621` and `stall.py:36`.
+  **Why it matters now and did not a week ago:** the chat deadline is **1,800 s**. A job
+  that wedges at minute two leaves the caller waiting twenty-eight more with no signal,
+  and Studio Hub's own argument for why a 30-minute ceiling is *safe* is that a stall is
+  visible — which is only true if something shows it. On this path, that something is us:
+  **Story Studio cannot reach the Hub.**
+  **Two scopes, and the difference is a factor of ten:**
+  1. **Post-hoc, ~10 lines, no new plumbing.** `_poll_batch` already reads
+     `/api/hub/jobs/{batch_id}` on every poll, and that response **already carries
+     `stalled`, `stalled_after_s` and `no_progress_s`** — measured, not assumed. Track
+     the worst seen and put it on the settled job's `result_json.payload`, where
+     `generation_seconds` and `usage` already live. Cost: nothing extra on the wire.
+     Gives an honest record — *"this job was stalled for N seconds"* — and **not** a
+     signal a waiting caller sees.
+  2. **Live, the one that delivers the safety argument.** Needs the adapter to write
+     back to our job row mid-flight. `BackendRequest` carries **no job id** and its only
+     callback is `checkpoint(upstream_id)`, so this means a new callback or a store
+     handle on the request, plus a bounded write per poll interval. Bigger, and it is
+     the only version that helps somebody watching a job that has not finished.
+  **Not built.** It is new scope, nobody has asked for it, and the honest first step is
+  1 — which is also the thing that would tell us whether stalls are common enough on
+  this fleet to justify 2. Recorded with the field names because the offer said
+  `stalled_seconds` is "on every job row" and on the row we poll it is **not**: see the
+  two-surface table above.
 
 - [ ] **GW-12 — a ceiling could be higher than any one Mac can meet, if routing
   respected the per-chip rate.** found 2026-09-26 answering the owner's sizing question
