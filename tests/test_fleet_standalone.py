@@ -33,6 +33,35 @@ PY = str(ROOT / ".venv" / "bin" / "python")
 GW_KEY = "fleet-standalone-test"
 READY = Path.home() / "Library/Application Support/StudioHub Standalone/hub-ready.json"
 
+#: Every audio type the gateway or the Hub actually writes. **The old search accepted
+#: only `.mp3` under the artifacts dir, and this gateway writes `.wav` for every TTS
+#: artifact** — measured 2026-09-26: 4 `.wav`, 0 `.mp3`. That half of the search could
+#: never match, so this gate only ever ran when somebody had hand-placed a fixture in
+#: `repository/data/`, and on a machine without one it stopped at section 3 with
+#: `a real clip is available to transcribe — None`. A release gate that silently
+#: cannot find its own input is a gate that stops being run.
+_CLIP_SUFFIXES = (".wav", ".mp3", ".m4a", ".flac", ".aiff", ".aif")
+
+
+def find_transcription_clip() -> Path | None:
+    """The **smallest** real clip available, or `None`.
+
+    Smallest rather than first, and that is the second half of the same defect:
+    `next(glob(...))` returned whatever the filesystem happened to order first, and
+    this artifacts dir holds a 298-second render beside a 3-second one. The gate's
+    runtime was therefore a lottery decided by directory order, and a gate whose
+    duration varies by two orders of magnitude is one people stop running. Size is
+    also the honest metric here — it is the bytes that get uploaded and transcribed.
+    """
+    candidates: list[Path] = []
+    for folder in (ROOT / "data",
+                   Path.home() / "Library/Application Support/gateway-kh/data/artifacts"):
+        if folder.is_dir():
+            candidates.extend(p for p in folder.iterdir()
+                              if p.is_file() and p.suffix.lower() in _CLIP_SUFFIXES)
+    return min(candidates, key=lambda p: p.stat().st_size) if candidates else None
+
+
 failures: list[str] = []
 checks = 0
 
@@ -300,12 +329,11 @@ def main() -> int:
         # cannot run (a missing Subtitle Studio snapshot config, say) is the
         # Hub's problem, not the routing's — so the test looks for one that
         # works rather than blaming the first failure on the fleet path.
-        clip = next((p for p in (ROOT / "data").glob("*.wav")), None)
-        clip = clip or next(Path.home().joinpath(
-            "Library/Application Support/gateway-kh/data/artifacts").glob("*.mp3"), None)
+        clip = find_transcription_clip()
         check("a real clip is available to transcribe", clip is not None, str(clip))
         if not clip:
             return 1
+        print(f"       using {clip.name} ({clip.stat().st_size:,} bytes)")
 
         client.post(f"{base}/admin/api/providers/{provider_id}/models/enabled",
                     json={"model_ids": stt_models, "enabled": True})
@@ -381,35 +409,51 @@ def main() -> int:
         check("no published id names either location",
               not any(provider_id in m["id"] or second_provider in m["id"] for m in catalogue),
               f"{[m['id'] for m in catalogue if provider_id in m['id'] or second_provider in m['id']][:3]}")
-        dupes = [m["id"] for m in catalogue if "mlx-community/whisper-base-mlx" in m["id"]]
-        if no_models:
+        # **Derived from what the Hub actually offers, never named.** This asked for
+        # `mlx-community/whisper-base-mlx` by name, and on 2026-09-26 that model was
+        # `not_installed` on the running Hub — so the gateway **correctly** withheld it
+        # as unservable, `dupes` came back empty, and one absent model cascaded into
+        # five failures: a transcription that never ran, and three checks that passed
+        # **vacuously** because `all(...)` over an empty set is `True`. The test was
+        # quoting a moving part; the Hub was telling the truth. This is the same defect
+        # the tracker already records for a hardcoded Hub version — *"a test is a row,
+        # and it lies the same way"* — and the remedy is the same: read the fixture.
+        dupes = [m["id"] for m in catalogue
+                 if m["id"].startswith("studio-hub::") and "whisper" in m["id"].lower()]
+        if no_models or not dupes:
             # The merge itself is proven above by "no published id names either
             # location" — these three name the specific Whisper row, which cannot
-            # exist on a Hub with no packages installed.
-            skip("a model offered by two locations is published once",
-                 "this Hub reports 0 model packages installed")
-            skip("the row is attributed to the maker, not the site",
-                 "this Hub reports 0 model packages installed")
-            skip("a superseded site-scoped id survives as an alias, from every location",
-                 "this Hub reports 0 model packages installed")
+            # exist on a Hub that offers no dispatchable one.
+            for label in ("a model offered by two locations is published once",
+                          "the row is attributed to the maker, not the site",
+                          "a superseded site-scoped id survives as an alias, from every location"):
+                skip(label, "this Hub reports 0 model packages installed" if no_models
+                     else "this Hub offers no dispatchable speech-to-text model")
             check("no model reaches Story Studio from an empty Hub", not dupes, f"{dupes}")
         else:
+            # The property is *one row per model*, so asserting it means no id appears
+            # twice — not that exactly one Whisper exists. The old `len(dupes) == 1`
+            # would go red the moment a second Whisper was installed, which is a
+            # change on the Hub and not a defect here.
             check("a model offered by two locations is published once",
-                  len(dupes) == 1, f"{dupes}")
+                  bool(dupes) and len(dupes) == len(set(dupes)), f"{dupes}")
             check("the row is attributed to the maker, not the site",
-                  all(m.get("provider_name") == "Studio Hub"
-                      for m in catalogue if m["id"] in dupes),
+                  bool(dupes) and all(m.get("provider_name") == "Studio Hub"
+                                      for m in catalogue if m["id"] in dupes),
                   f"{[(m['id'], m.get('provider_name')) for m in catalogue if m['id'] in dupes]}")
             # The id genuinely changed (`studio-hub-local::X` -> `studio-hub::X`), and
             # Story Studio matches a stored selection against every legacy id, so
             # carrying the superseded ones is what stops a saved preset reading as
-            # `vanished` across this change. BOTH locations' old ids must survive.
-            merged_row = next((m for m in catalogue if m["id"] in dupes), {})
-            aliases = [str(a) for a in (merged_row.get("legacy_ids") or [])]
+            # `vanished` across this change. BOTH locations' old ids must survive —
+            # **on every merged row**, not on whichever one happened to be looked at.
+            missing = {
+                m["id"]: [str(a) for a in (m.get("legacy_ids") or [])]
+                for m in catalogue if m["id"] in dupes
+                and not (any(a.startswith(f"{provider_id}::") for a in (m.get("legacy_ids") or []))
+                         and any(a.startswith(f"{second_provider}::") for a in (m.get("legacy_ids") or [])))
+            }
             check("a superseded site-scoped id survives as an alias, from every location",
-                  any(a.startswith(f"{provider_id}::") for a in aliases)
-                  and any(a.startswith(f"{second_provider}::") for a in aliases),
-                  f"{aliases}")
+                  not missing, f"{missing}")
 
         story_ids = [m["id"] for m in catalogue
                      if m["id"].startswith("studio-hub::") and m["id"] in dupes]
@@ -479,8 +523,14 @@ def main() -> int:
                       f"HTTP {srt.status_code}")
             else:
                 # Not a pass, and not silently skipped: say whose fault it is.
-                print("       the Hub refused every transcription model it offers:"
-                      f" {' | '.join(hub_errors)[:200]}")
+                # **"the Hub refused every model" is only true if there were models to
+                # refuse.** With `story_ids` empty this printed a colon and nothing
+                # after it, which read as a Hub refusal and was actually "nothing was
+                # ever submitted" — the two must not share a sentence.
+                print(("       the Hub refused every transcription model it offers: "
+                       if story_ids else
+                       "       no transcription model reached the catalogue, so nothing was submitted: ")
+                      + (" | ".join(hub_errors)[:300] or f"(no attempts; story_ids={story_ids})"))
                 check("the artifact comes back through the gateway", False, "no job succeeded")
 
         print("\n\033[1m5. Nothing was gated on the role\033[0m")

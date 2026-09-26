@@ -61,6 +61,24 @@ def _token(value: Any) -> int | None:
     return int(value)
 
 
+#: The two kinds of work this record tells apart, and both are always published.
+#: `text` is prose — a chapter — and `structured` is a JSON contract — a scene-prompt
+#: pack. They are **not interchangeable**: measured on the local model 2026-09-26,
+#: prose runs 1.21 tokens per word and structured output 1.50, and one rate over both
+#: is a number that describes neither.
+SHAPES = ("text", "structured")
+
+
+def output_shape(response_format: Any) -> str:
+    """`text` or `structured`, from the `response_format` the caller sent.
+
+    `json_object` and `json_schema` are the two the lanes publish; **anything else is
+    prose**, including absent — a caller that asked for nothing asked for text.
+    """
+    return ("structured" if str(response_format or "").lower() in {"json_object", "json_schema"}
+            else "text")
+
+
 def _rows_from_samples(samples: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
     """One row per settled job that stated a usage, from `store.usage_samples`."""
     rows: list[dict[str, Any]] = []
@@ -85,6 +103,7 @@ def _rows_from_samples(samples: Iterable[dict[str, Any]]) -> list[dict[str, Any]
             "completion": completion,
             "rate": rate,
             "machine": machine.strip() if isinstance(machine, str) and machine.strip() else None,
+            "shape": output_shape(sample.get("response_format")),
             "at": sample.get("updated_at") or sample.get("created_at") or 0.0,
         })
     return rows
@@ -167,6 +186,22 @@ def published_index(
             # job may not land on.
             "slowest_site_tokens_per_second": _min_of(rows, "median_tokens_per_second"),
             "machines": {name: info for row in rows for name, info in row["machines"].items()},
+            # **The shape split rolls up with the rest.** Merging locations must not be
+            # the step that quietly re-blends prose and structured work — that would
+            # leave the split correct per location and wrong on the one row Story
+            # Studio actually reads. Summed samples, a maximum, and a median of the
+            # per-location medians, exactly as the top-level figures are.
+            "by_output_shape": {
+                shape: {
+                    "samples": sum(row["by_output_shape"][shape]["samples"] for row in rows),
+                    "max_completion_tokens": _max_of(
+                        [row["by_output_shape"][shape] for row in rows], "max_completion_tokens"),
+                    "median_tokens_per_second": _median_of(
+                        [row["by_output_shape"][shape] for row in rows],
+                        "median_tokens_per_second"),
+                }
+                for shape in SHAPES
+            },
             "first_seen": min(row["first_seen"] for row in rows),
             "last_seen": max(row["last_seen"] for row in rows),
             "source": "gateway",
@@ -192,6 +227,20 @@ def _median_of(rows: list[dict[str, Any]], field: str) -> Any:
     return round(value, 1) if field.endswith("per_second") else int(value)
 
 
+def _shape_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """One output shape's own figures. `samples: 0` with nulls is a real answer.
+
+    Kept deliberately to the three numbers a ceiling and a time estimate are sized
+    against, so this cannot drift into a second copy of the whole row.
+    """
+    completions = [r["completion"] for r in rows if r["completion"] is not None]
+    rates = [r["rate"] for r in rows if r["rate"] is not None]
+    return {
+        "samples": len(rows),
+        "max_completion_tokens": max(completions) if completions else None,
+        "median_tokens_per_second": round(statistics.median(rates), 1) if rates else None,
+    }
+
 
 def _summarise(rows: list[dict[str, Any]]) -> dict[str, Any]:
     """One (provider, model) from the jobs that ran it."""
@@ -205,13 +254,23 @@ def _summarise(rows: list[dict[str, Any]]) -> dict[str, Any]:
     return {
         "samples": len(rows),
         "with_usage": len(completions),
-        # **The largest that actually ran**, which is the only figure that answers
-        # "can this lane do it" — a stated maximum answers "may I ask".
+        # **The figures above are the whole envelope — both shapes, deliberately.**
+        # "Can this lane carry N tokens" is answered by the largest that ran whatever
+        # it was, and splitting the headline would hide the very case a ceiling
+        # decision is about. `by_output_shape` below is what tells a reader the
+        # largest did not all come from the same kind of work.
         "max_prompt_tokens": max(prompts) if prompts else None,
         "max_completion_tokens": max(completions) if completions else None,
         "median_completion_tokens": (
             int(statistics.median(completions)) if completions else None
         ),
+        # **Both shapes always present, `samples: 0` when one has never run.** A key
+        # that appears only once there is data is a key a reader has to guess at, and
+        # this is the field whose absence caused the problem it exists to fix.
+        "by_output_shape": {
+            shape: _shape_summary([r for r in rows if r["shape"] == shape])
+            for shape in SHAPES
+        },
         # Median rather than mean: one cold or contended run must not move the rate
         # a ceiling is sized against.
         "median_tokens_per_second": round(statistics.median(rates), 1) if rates else None,

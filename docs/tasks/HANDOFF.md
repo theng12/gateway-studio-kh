@@ -1,6 +1,6 @@
 # HANDOFF — gateway-kh
 
-**Read this first.** Written 2026-09-26 against **VERSION `0.2.42`**. The running build
+**Read this first.** Written 2026-09-26 against **VERSION `0.2.43`**. The running build
 stamp is on `/health` and in `/Applications/gateway-kh.app/Contents/Resources/gateway/BUILD`.
 If this file disagrees with the code, **the code wins — fix this file in the same change**.
 Every path below is inside the Git checkout `repository/` unless it says otherwise.
@@ -11,11 +11,11 @@ project does not say why, and nobody should guess.
 
 | Thing | Value |
 |---|---|
-| Current release | **0.2.42** — `repository/VERSION`, one line, the only place to bump |
+| Current release | **0.2.43** — `repository/VERSION`, one line, the only place to bump |
 | Declared Studio Hub | **0.6.65** — `adapters.studio_hub.SUPPORTED_STUDIO_HUB_VERSION`, published on `/health`; a controller on another version is reported, never refused. Set on 2026-09-25 from a **running** Hub (`/api/version` → `0.6.65` build `37cb07b`), not a changelog `[MEASURED]` |
 | Branch | `main` = `origin/main`, clean tree; remote `github.com/theng12/gateway-kh` |
 | Running build | `/Applications/gateway-kh.app`, port **8787**, stamp `9607395-202609260239` (`/health` and `…/Resources/gateway/BUILD`) — **this stamp is one commit behind `main` by construction**: `build.sh` stamps `git rev-parse --short HEAD`, so building before committing always leaves the tree one commit ahead of the stamp. Every release in this file has that shape; the deployed *code* is the whole change. The gateway must be **respawned**, not adopted, to carry a new stamp: with *Keep the gateway running after I quit* on, quitting the app leaves the old process holding 8787 and the new app adopts it, so `/health` keeps reporting the old build while serving new code `[MEASURED 2026-09-26]` |
-| Distribution | DMG in `repository/dist/` (`gateway-kh-0.2.42.dmg`), named by version alone |
+| Distribution | DMG in `repository/dist/` (`gateway-kh-0.2.43.dmg`), named by version alone |
 | SSD/setup kit | `repository/dist/setup-kit/`. **The four `KH-STUDIO-*` drives now carry Studio Hub 0.6.65** `[MEASURED 2026-09-25]`, refreshed 21:34–21:40; the GatewayKH side on them is older — check before a rollout |
 
 - **Versions are patch-only for now:** `0.2.1`, `0.2.2`, … up to `0.2.1000`. Increment the
@@ -45,6 +45,70 @@ project does not say why, and nobody should guess.
   "Why port 8787". It was 8000 until the owner moved it (2026-09-21, `Project
   Status.md` §10h: 8000 is the most contested dev port and Story Studio's own
   default). Every Story Studio client points at `http://<host>:8787`.
+
+## WHAT 0.2.43 CHANGED — the record was blending prose with JSON, and the fleet gate had never run
+
+Two things, and the first one is a correction to a number we published to both projects.
+
+### The qualification record now says which kind of work it measured
+
+`measured` published **one** median over every job, and the jobs are not all the same
+kind of work. `[MEASURED 2026-09-26, from the live job store]` Of 48 settled chat jobs,
+**31 asked for `json_object`** and 17 were prose — and the two measure differently:
+
+| output shape | samples | median tokens/word | range |
+|---|---|---|---|
+| **text** (prose, a chapter) | 10 | **1.26** | 1.14–1.78 |
+| **structured** (a JSON contract, a scene-prompt pack) | 30 | **3.15** | 1.39–25.23 |
+
+Local model alone: prose **1.21**, structured **1.50**. **The 1.45 this gateway
+published to Story Studio and to Studio Hub was a blend of the two and described
+neither** — and it is the number a chunking threshold gets sized against. The single
+sample we retracted earlier (1.22) was *closer to right for prose* than the better-sampled
+blend that replaced it, which is a lesson about averaging across things that are not the
+same.
+
+- **`by_output_shape`** now sits on every row: `text` and `structured`, each with
+  `samples`, `max_completion_tokens` and `median_tokens_per_second`. **Both keys are
+  always present**, `samples: 0` when one has never run — a key that appears only once
+  there is data is a key a reader has to guess at, and a missing shape split is exactly
+  the state this replaced.
+- **The headline figures stay whole-envelope, deliberately.** "Can this lane carry N
+  tokens" is answered by the largest that ran whatever it was; splitting the headline
+  would hide the case a ceiling decision is about.
+- **The shape comes from the request**, read in SQL from `params.response_format`:
+  `json_object` and `json_schema` are structured, **anything else including absent is
+  prose** — a caller that asked for nothing asked for text.
+- **The fleet merge carries the split**, or the fix would be right per location and
+  wrong on the one row Story Studio reads.
+
+`tests/test_qualification.py` → **38 checks** (5 new); `test_e2e.py` → 2 new.
+
+### The fleet gate ran for the first time in fifteen releases — and the gateway was right
+
+`test_fleet_standalone.py` had not run since 0.2.28 because it needs a live Hub and an
+explicit opt-in. Run on 2026-09-26 against Hub **0.6.70**: **47/47**, including a real
+transcription end to end and the artifact returning through the gateway.
+
+**Three defects, all in the test, none in the product.** Worth recording because each
+would have made the gate unrun or dishonest:
+
+- **It could not find its own input.** The clip search accepted only `.mp3` under the
+  artifacts dir and this gateway writes **`.wav`** for every TTS artifact — 4 `.wav`,
+  0 `.mp3`, measured — so that half could never match and the gate stopped at section 3
+  with `a real clip is available to transcribe — None`. It also took `next(glob(...))`,
+  i.e. whatever the directory happened to order first, with a 298-second render sitting
+  beside a 3-second one: **the gate's runtime was a lottery**. Now the smallest real
+  clip, any audio type.
+- **It named a model instead of reading the fixture** — `mlx-community/whisper-base-mlx`,
+  which on this Hub is `not_installed`, so the gateway **correctly** withheld it as
+  unservable. One absent model cascaded into **five** failures, and **three of them
+  passed vacuously** because `all(...)` over an empty set is `True`. This is the defect
+  the tracker already records for a hardcoded Hub version — *"a test is a row, and it
+  lies the same way"* — and the fix is the same: derive it from what the Hub offers.
+- **`the Hub refused every transcription model it offers:` printed with nothing after
+  it**, because nothing had been submitted. A refusal and an empty list must not share a
+  sentence.
 
 ## WHAT 0.2.42 CHANGED — the Hub moved its numbers, and we moved our mock first
 

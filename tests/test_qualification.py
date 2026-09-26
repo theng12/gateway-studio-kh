@@ -450,5 +450,85 @@ class TheStoreReadsItsOwnNumbersTest(unittest.TestCase):
         self.assertEqual(sample["completion_tokens"], 7)
 
 
+class TheOutputShapeTest(unittest.TestCase):
+    """Prose and structured work are told apart, because they are not interchangeable.
+
+    Measured on the local model 2026-09-26 the two differ by a quarter — 1.21 tokens
+    per word for prose against 1.50 for a JSON contract — and this record published one
+    blended median over both, which described neither. These checks exist so the
+    headline cannot quietly become a blend again.
+    """
+
+    def setUp(self) -> None:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.store = JobStore(Path(tmp.name) / "jobs.sqlite3")
+        self.addCleanup(self.store.close)
+        self._n = 0
+
+    def _ran(self, completion, seconds, *, response_format="__absent__", model="m"):
+        self._n += 1
+        params = {} if response_format == "__absent__" else {"response_format": response_format}
+        row, _ = self.store.submit(
+            modality="chat", model_id=model, params=params,
+            idempotency_key=f"s{self._n}", provider_id="cloud-a",
+        )
+        self.store.succeed(row["id"], result={"text": "x", "payload": {
+            "usage": {"completion_tokens": completion}, "generation_seconds": seconds}})
+
+    def _row(self):
+        return qualification.envelope(self.store)[0]
+
+    def test_an_absent_response_format_is_prose(self) -> None:
+        # A caller that asked for nothing asked for text. Reading absent as anything
+        # else would make the commonest case the unknown one.
+        self._ran(100, 10)
+        self.assertEqual(self._row()["by_output_shape"]["text"]["samples"], 1)
+        self.assertEqual(self._row()["by_output_shape"]["structured"]["samples"], 0)
+
+    def test_both_json_spellings_count_as_structured(self) -> None:
+        for fmt in ({"type": "json_object"}, {"type": "json_schema"}):
+            with self.subTest(fmt=fmt):
+                self._ran(100, 10, response_format=fmt)
+        self.assertEqual(self._row()["by_output_shape"]["structured"]["samples"], 2)
+
+    def test_the_twelve_thousand_token_pack_does_not_become_the_prose_rate(self) -> None:
+        # The case that caused this: a scene-prompt pack and a chapter in one row. The
+        # headline still reports the largest that ran — that is what a ceiling decision
+        # reads — but each shape keeps its own rate beside it.
+        self._ran(1500, 100)                                    # prose, 15 tok/s
+        self._ran(12090, 900, response_format={"type": "json_object"})   # structured, 13.4
+        row = self._row()
+        self.assertEqual(row["max_completion_tokens"], 12090)
+        self.assertEqual(row["by_output_shape"]["text"]["median_tokens_per_second"], 15.0)
+        self.assertEqual(row["by_output_shape"]["structured"]["median_tokens_per_second"], 13.4)
+        self.assertEqual(row["by_output_shape"]["text"]["max_completion_tokens"], 1500)
+
+    def test_both_shapes_are_always_present(self) -> None:
+        # A key that appears only once there is data is a key a reader has to guess at,
+        # and a missing `by_output_shape` is exactly the state this field replaced.
+        self._ran(100, 10)
+        shapes = self._row()["by_output_shape"]
+        self.assertEqual(sorted(shapes), ["structured", "text"])
+        empty = shapes["structured"]
+        self.assertEqual(empty["samples"], 0)
+        self.assertIsNone(empty["max_completion_tokens"])
+        self.assertIsNone(empty["median_tokens_per_second"])
+
+    def test_a_shape_rolls_up_across_locations_too(self) -> None:
+        # The fleet merge must carry the split, not just the per-location envelope.
+        for provider in ("studio-hub-aaa", "studio-hub-bbb"):
+            self._n += 1
+            row, _ = self.store.submit(
+                modality="chat", model_id="m", params={"response_format": {"type": "json_object"}},
+                idempotency_key=f"m{self._n}", provider_id=provider)
+            self.store.succeed(row["id"], result={"text": "x", "payload": {
+                "usage": {"completion_tokens": 100}, "generation_seconds": 10.0}})
+        merged = qualification.published_index(self.store)[("studio-hub", "m")]
+        self.assertEqual(merged["samples"], 2)
+        self.assertEqual(merged["by_output_shape"]["structured"]["samples"], 2)
+        self.assertEqual(merged["by_output_shape"]["text"]["samples"], 0)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

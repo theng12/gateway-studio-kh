@@ -551,10 +551,37 @@ carefully.
   `max_output_tokens`, so **we must keep publishing the number the lane actually
   enforces.** We do — it is read live from the Hub's `model_limits`, not chosen.
 
-- [ ] **HUB-19 — raise `FALLBACK_MAX_OUTPUT_TOKENS`, and that one number is the whole
-  of the round-trip problem.** owes: SH (a change) · truth: the installed Hub's own
-  `components/chat/app/backend/llm_engine.py` line 26 and `main.py::_lane_output_budget`,
-  read from the bundle running **0.6.69** build `49792c4`.
+- [x] **HUB-19 — raise `FALLBACK_MAX_OUTPUT_TOKENS`, and that one number is the whole
+  of the round-trip problem.** **CLOSED 2026-09-26 — shipped by Studio Hub in 0.6.70 and
+  carried end to end with nobody doing anything.**
+  `[MEASURED live]` The Hub auto-updated this Mac from `0.6.69` to **`0.6.70`** build
+  `30ecef1` when it was restarted, and the installed bundle now carries
+  `FALLBACK_MAX_OUTPUT_TOKENS = 16384` (`llm_engine.py:39`) with the deadline **per
+  generator** (`standalone.py:101`, `deadline_floor_seconds`) instead of the single
+  `PEER_PROXY_TIMEOUT_S`.
+  **The propagation nobody had to touch, in order, inside about 35 seconds:**
+  1. The Hub restarted onto `0.6.70`.
+  2. The fleet refresher (15 s) saw the version move; GW-5 re-discovered the location.
+  3. `models_cache.json` recorded `hub_version: "0.6.70"` with
+     `max_output_tokens: {"value": 16384, "source": "worker default: …"}` and
+     `lane_contract.deadline_seconds: 1800.0`.
+  4. The catalogue rebuilt and republished.
+  5. **Story Studio now reads `max_output_tokens: 16384` and
+     `deadline_seconds: 1800.0`** on `studio-hub::mlx-community/Qwen3.5-9B-4bit`.
+  **No release from this gateway and none from Story Studio.** The prediction in this
+  file was that a Hub constant moves every downstream number by itself; it did.
+  **One transient worth knowing about, seen while measuring:** the first read of the
+  Hub's `model-packages` returned `max_output_tokens: null` for a few seconds because the
+  chat worker had not finished loading. The Hub was telling the truth, not regressing,
+  and it resolved on its own.
+  **`measured.max_completion_tokens` still reads 4096**, correctly — it reports the
+  largest that **ran**, not the largest that is allowed, and it moves when jobs run at
+  the new ceiling.
+  *The sizing and reasoning below is kept as the record of how the number was chosen.*
+
+  **Original row:** owes: SH (a change) · truth: the installed Hub's own
+  `components/chat/app/backend/llm_engine.py` and `main.py::_lane_output_budget`,
+  read from the bundle running **0.6.69** build `49792c4` at the time.
   **Stack Studio's chunker is not the defect and must not be removed.** Written here
   because an earlier version of this file said the opposite and it was wrong — the
   correction is the point of the row.
@@ -845,27 +872,35 @@ stop reading its silence as an answer. That line is worth more than the four row
   that lift because the field does not exist yet and inventing a key path for it would
   be guessing; tell us where it will live, or have Studio Hub name it.
 
-- [ ] **STORY-8 — your tokens-per-word number is better than ours, and we retract
-  ours.** owes: Story (nothing — this is a correction and one number to check) ·
-  truth: recomputed from **17 real local completions** in this gateway's own job
-  store, text against `usage.completion_tokens`.
-  **We said 1.22 tokens/word. That was one sample**, which is the same error we had
-  just finished warning you about, made in the same message. Measured properly on
-  `mlx-community/Qwen3.5-9B-4bit`:
+- [ ] **STORY-8 — the tokens-per-word figure, corrected twice, and the second
+  correction is the one that matters.** owes: Story (nothing — read the table) ·
+  truth: recomputed from this gateway's own job store, `$.text` against
+  `usage.completion_tokens`, **split by output shape**.
+  **We have now published two different wrong numbers for one ratio, and the reason is
+  the same both times: averaging across things that are not the same.**
+  1. **1.22 — one sample.** Right by luck for prose, and retracted for the right reason.
+  2. **1.45 — seventeen samples, and a blend of prose and JSON.** Better sampled and
+     *further from the truth*. Of 48 settled chat jobs here, **31 asked for
+     `json_object`** and 17 were prose; the two do not share a ratio.
+  3. **Now, split:**
 
-  | | tokens/word |
-  |---|---|
-  | **your settled range** (1,700–3,000 per 1,200 words) | **1.42 – 2.50** |
-  | **local model, 17 samples, measured here** | **1.14 – 1.88, median 1.45** |
-  | our earlier claim | 1.22 *(one sample — retracted)* |
-  | cloud lanes, 23 samples, for contrast | 1.34 – 25.23, median 3.95 |
+  | output shape | samples | median tokens/word | range | local model only |
+  |---|---|---|---|---|
+  | **text** — prose, a chapter | 10 | **1.26** | 1.14–1.78 | n=7, **1.21** |
+  | **structured** — a JSON contract, a scene pack | 30 | **3.15** | 1.39–25.23 | n=10, **1.50** |
 
-  **Your range brackets the measurement and ours did not.** A 1,200-word chapter on
-  the local model is **~1,740 output tokens** at the measured median — at your lower
-  bound, not below it. Your `OUTPUT_TOKENS_PER_WORD = 1.3` and your 1,560 estimate are
-  both slightly optimistic against this data, which is the safe direction for a
-  chunking threshold and we are not asking you to move either. Publish 1,700–3,000
-  with confidence.
+  **Your `OUTPUT_TOKENS_PER_WORD = 1.3` is right, and our 1.45 was wrong.** Prose on
+  this model measures **1.21–1.26**; your constant sits inside that and our blend sat
+  above it. **Your settled 1,700–3,000 per 1,200 words (1.42–2.50) is above the prose
+  measurement too** — so if that range came from mixed work, the prose end is lower
+  than you think and the safe direction is unchanged: a chunking threshold that
+  over-estimates truncates less. **We are not asking you to move it.**
+  **And this is the number the record now keeps apart**, which is the real fix: every
+  `measured` row carries `by_output_shape` with `text` and `structured` separately, so
+  neither project has to guess which kind of work a rate came from. See `GW-9`'s
+  addendum for the shipped field.
+  **The lesson, stated because we made it twice:** *a better-sampled average of two
+  different things is worse than a badly-sampled one of the right thing.*
   **And one consequence to check, because it is arithmetic you can act on:**
   **3 chapters per call at an 8,192 ceiling only fits at the low end.** 3 × 1,700 =
   5,100 fits; 3 × 3,000 = **9,000 does not**. Your completeness guard catches it, so
@@ -909,14 +944,15 @@ stop reading its silence as an answer. That line is worth more than the four row
   (`components/hub/standalone.py`), so it covers LOAD + PREFILL + GENERATION** — the
   generation budget is not the whole 900 s. That is the fact that decides the answer.
 
-  What a ceiling carries, at the measured 1.45 tokens/word (median, local model,
-  17 samples; 1.88 worst):
+  What a ceiling carries, at the measured **prose** ratio for the local model —
+  **1.26 tokens/word**, 10 samples, 1.78 worst (see STORY-8: the 1.45 formerly quoted
+  here was a blend of prose and JSON and described neither):
 
   | ceiling | script | chapters (1,200 w) | scene prompts (~403 tok each) |
   |---|---|---|---|
-  | 4,096 | 2,180–2,830 words | 1.8–2.4 | ~10 |
-  | 8,192 | 4,360–5,650 words | 3.6–4.7 | ~20 |
-  | 16,384 | 8,715–11,299 words | 7.3–9.4 | ~41 |
+  | 4,096 | 2,301–3,251 words | 1.9–2.7 | ~10 |
+  | 8,192 | 4,602–6,502 words | 3.8–5.4 | ~20 |
+  | 16,384 | 9,204–13,003 words | 7.7–10.8 | ~41 |
 
   **For chapters, 16,384 buys nothing that 8,192 does not.** Story caps narrative
   batches at **3 chapters by choice, for coherence — not by tokens**, and 3 × 1,200

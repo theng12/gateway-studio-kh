@@ -781,7 +781,18 @@ class JobStore:
                        AS generation_seconds,
                    CASE WHEN json_valid(result_json)
                         THEN json_extract(result_json, '$.payload.hub_machine') END
-                       AS hub_machine
+                       AS hub_machine,
+                   -- **What kind of work this was**, from the request the caller sent.
+                   -- `response_format` is on every job's `params`; `json_object` and
+                   -- `json_schema` mean structured, anything else (including absent)
+                   -- means prose. Without this the record blends a 1,500-token chapter
+                   -- with a 12,000-token scene pack and publishes one median over two
+                   -- different things — which it did, and the blend was 1.45 where
+                   -- prose alone measures 1.21.
+                   CASE WHEN json_valid(params)
+                         AND json_type(params, '$.response_format.type') = 'text'
+                        THEN json_extract(params, '$.response_format.type') END
+                       AS response_format
               FROM jobs
              WHERE result_json IS NOT NULL AND result_json != ''
              ORDER BY created_at DESC

@@ -1691,6 +1691,18 @@ def main() -> int:
             check("a model nobody has run publishes measured: null, not zeros",
                   all(r.get("measured") is None for r in published
                       if "mock-chat-1" not in str(r.get("id"))))
+            # **Prose and structured work are not blended.** Measured on the local
+            # model 2026-09-26: prose 1.21 tokens/word against 1.50 for a JSON
+            # contract. The headline is still the whole envelope — a ceiling decision
+            # reads the largest that ran, whatever it was — and this says which kind
+            # of work produced it.
+            shapes = (measured_row.get("measured") or {}).get("by_output_shape")
+            check("the measurement says which kind of work produced it",
+                  isinstance(shapes, dict) and sorted(shapes) == ["structured", "text"],
+                  f"{shapes}")
+            check("and both shapes are present whether or not one has ever run",
+                  all(isinstance(v, dict) and "samples" in v for v in (shapes or {}).values()),
+                  f"{shapes}")
 
 
             # The rest of the app-facing routes, each of which the Voices or Jobs
