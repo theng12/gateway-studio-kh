@@ -366,12 +366,56 @@ carefully.
   `completion_tokens == max_output_tokens`? Either works; today neither happens, and
   nobody has decided. Recorded rather than guessed.
   **The numbers to size a decision with** (same model, same session, measured):
-  17.3 tokens/second, 1.22 tokens/word. Against the chat lane's stated 900 s deadline:
-  4,096 → 236 s, 8,192 → 472 s, **16,384 → 945 s and does not fit**. A 1,200-word
-  chapter is ~1,467 tokens / ~85 s. **Your chunker sends 458 words per 4,096-token
-  call**, so one chapter is ~2.6 calls — measured prose says 4,096 carries ~3,351
-  words, so the chunker is roughly 7× more conservative than the lane requires. That
-  gap, not the ceiling alone, is the round trip worth removing.
+  **16.8 tokens/second** — the median over 13 real jobs, which is the figure to use;
+  a single 489-token job measured 17.3 and is quoted elsewhere in this file, and the
+  median is the better-sampled number. **1.22 tokens/word.** Against the chat lane's
+  own stated 900 s `deadline_seconds`: 4,096 → 244 s, **8,192 → 488 s**, 16,384 →
+  975 s and does not fit. A 1,200-word chapter is ~1,467 tokens / ~87 s.
+
+- [ ] **HUB-19 — raise `FALLBACK_MAX_OUTPUT_TOKENS`, and that one number is the whole
+  of the round-trip problem.** owes: SH (a change) · truth: the installed Hub's own
+  `components/chat/app/backend/llm_engine.py` line 26 and `main.py::_lane_output_budget`,
+  read from the bundle running **0.6.69** build `49792c4`.
+  **Stack Studio's chunker is not the defect and must not be removed.** Written here
+  because an earlier version of this file said the opposite and it was wrong — the
+  correction is the point of the row.
+  The chain, every link of which is correct on its own:
+  1. `mlx-community/Qwen3.5-9B-4bit` ships no `generation_config.json`, so the Hub has
+     no model-stated output limit and falls back to `FALLBACK_MAX_OUTPUT_TOKENS = 4096`.
+     It publishes that as **both `default` and `maximum`** on `max_tokens`, and the route
+     **refuses a larger value by name** (`main.py` line 284).
+  2. This gateway republishes it as `max_output_tokens: 4096`, `source: provider`.
+  3. Story Studio reads that live and computes its own chunk threshold —
+     `chunkThresholdWords(4096)` = `floor((4096 − 2000 prompt − 1500 safety) / 1.3)` =
+     **458 words**.
+  4. A 1,200-word chapter ÷ 458 = **2.6 calls**. That is the round trip.
+  **Story Studio's ratio is right.** Their `OUTPUT_TOKENS_PER_WORD` is **1.3**; this
+  gateway measured **1.22** on the same model — 6.5% apart. Their constant is not
+  over-tuned, and 458 is not a hardcoded guess: it is derived live from the ceiling we
+  publish. **The 458 is small because of the reserves, not the ratio** — 2,000 tokens
+  of prompt allowance plus a 1,500-token safety floor is 3,500 of a 4,096 cap (85%).
+  That floor is 37% of the cap at 4,096 and 18% at 8,192, so a small cap is exactly
+  where a proportional margin stops being absorbable.
+  **And removing the chunker would be actively dangerous**, which is why this row
+  exists: the Hub refuses anything above 4,096, and a generation cut off at that
+  ceiling reports `finish_reason: "stop"` — measured, 4 of 13 jobs stopped at exactly
+  4,096 and all 13 said `stop` (HUB-18). Remove the chunker and every chapter past
+  ~458 words silently loses its ending instead of costing a second call.
+  **The ask: raise `FALLBACK_MAX_OUTPUT_TOKENS` to 8,192.** It is one constant, and
+  everything downstream follows with **zero Story Studio changes** — this gateway
+  re-reads your `max_output_tokens` on discovery, and their chunk threshold recomputes
+  from it. At 8,192 their threshold becomes `floor((8192 − 2000 − 1500) / 1.3)` =
+  **3,609 words**, so a 1,200-word chapter is **one call**.
+  **Why 8,192 and not 16,384** — 16,384 was this gateway's earlier suggestion and it
+  does not fit the hardware: at the measured 16.8 tokens/second it takes 975 s, past
+  your own stated 900 s `deadline_seconds`, and the slowest well-sampled location
+  (14.2 tokens/second) would need 1,154 s. 8,192 takes **472–577 s**, inside the
+  deadline with 1.6× headroom. **8,192 is the largest value that is safe on the
+  machines actually in this fleet**, and it already removes the round trip entirely.
+  If a checkpoint ever *does* state its own limit, none of this is needed — the
+  fallback is only consulted when the model says nothing, and a model that states less
+  than 8,192 still wins (`min(FALLBACK_MAX_OUTPUT_TOKENS, output_limit)`).
+
 
 ### Rows you are waiting on us for
 - [x] **SH-10 — `_handoffs/2026-09-25-gateway-chat-lane-shipped.md` has never been read
@@ -432,6 +476,39 @@ stop reading its silence as an answer. That line is worth more than the four row
 ---
 
 ## A. Story Studio owes / we ask
+
+- [ ] **STORY-6 — do NOT remove the chunker. It is right, and the constant behind it
+  is yours to keep.** owes: Story (nothing, if you read this) · truth:
+  `electron/server/lib/chunked-narration.ts`.
+  Written 2026-09-26 because the owner was about to ask for exactly the removal, on a
+  number that came from us and was **wrong**. Correcting it before it costs a chapter.
+  What we said: that 458 words per 4,096-token call was ~7× more conservative than the
+  lane needs. **That was our error and it is retracted.** Read from your own source:
+  `OUTPUT_TOKENS_PER_WORD = 1.3` is your tokens-per-word figure, and this gateway
+  measured **1.22** on the same model — 6.5% apart. 458 is not a hardcoded guess
+  either: it is `chunkThresholdWords(4096)` = `floor((4096 − 2000 prompt − 1500 safety)
+  / 1.3)`, computed live from the `max_output_tokens` **we** publish. Your chunker is
+  correctly tuned to the ceiling it was handed; a small cap is simply where your 1,500
+  safety floor stops being absorbable (37% of 4,096, 18% of 8,192).
+  **And removing it would lose chapters silently.** Studio Hub refuses `max_tokens`
+  above 4,096 by name, and a generation cut off at that ceiling reports
+  `finish_reason: "stop"` — measured from real jobs: 4 of 13 stopped at exactly 4,096
+  and all 13 said `stop` (HUB-18). Without the chunker, every chapter past ~458 words
+  is truncated and reported as finished.
+  **The fix is upstream and needs nothing from you**: raise the Hub's
+  `FALLBACK_MAX_OUTPUT_TOKENS` and your threshold recomputes from the new ceiling
+  automatically — at 8,192 it becomes **3,609 words** and a 1,200-word chapter is
+  **one call** instead of 2.6. That is HUB-19.
+  **If you do want a change on your side, it is the margin, not the ratio.**
+  `SAFETY_MARGIN_FLOOR_TOKENS = 1500` is 37% of a 4,096-token cap, where
+  `SAFETY_MARGIN_FRACTION = 0.09` alone would be 369 — so at that cap the floor, not
+  the fraction, is what binds: `floor((4096 − 2000 − 369) / 1.3)` = **1,328 words**
+  instead of 458, and a 1,200-word chapter fits one call at the *current* ceiling.
+  That is a real second option and it is yours to weigh, because the floor exists to
+  keep small products protected and dropping it spends exactly that protection.
+  **We are not asking for it**, and it is strictly worse than HUB-19: 1,328 words
+  clears a 1,200-word chapter by 10%, so the next slightly-longer chapter chunks
+  again, whereas 8,192 clears it by 3× and needs nothing from you at all.
 
 - [ ] **STORY-1b — do you want two-pass for the local model, and is the row enough
   to decide it at runtime?** owes: Story · truth: the `GET /v1/models` chat row.

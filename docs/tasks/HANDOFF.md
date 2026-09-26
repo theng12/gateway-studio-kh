@@ -118,9 +118,20 @@ Read off the **running** 0.2.39 gateway, `GET /admin/api/qualification`:
   *"finish_reason must be a clean stop"* does not, on its own, detect truncation.
   Only the measured maximum next to the stated ceiling shows it. This is HUB-18 and
   GW-10 in the master tracker, with the arithmetic below.
-- **The same model measured 16.8–17.3 tokens/second**, 1.22 tokens/word, 7.0
-  characters/word, 5.7 characters/token. At that rate **16,384 tokens does not fit a
-  900-second deadline** (945 s) and 8,192 does (472 s).
+- **The same model measured 16.8 tokens/second** (median over 13 real jobs — use this
+  one; a single 489-token job measured 17.3), 1.22 tokens/word, 7.0 characters/word,
+  5.7 characters/token. Against the chat lane's own stated 900 s deadline: 4,096 →
+  244 s, 8,192 → **488 s**, 16,384 → **975 s and does not fit**.
+- **The round trip is the Hub's `FALLBACK_MAX_OUTPUT_TOKENS`, and Story Studio's
+  chunker is not the defect.** An earlier version of this file implied the chunker was
+  over-tuned. **That was wrong and is retracted** — see HUB-19. Their
+  `OUTPUT_TOKENS_PER_WORD = 1.3` is within 6.5% of our measured 1.22, and their
+  458-word threshold is `chunkThresholdWords(4096)` computed live from the ceiling
+  **we** publish. Raising the Hub's fallback to 8,192 makes their threshold 3,609
+  words and a 1,200-word chapter one call, with **no Story Studio change at all**.
+  Removing the chunker instead would lose chapters silently, because the Hub refuses
+  `max_tokens > 4096` and a generation cut off there still reports
+  `finish_reason: "stop"`.
 - **A source can arrive with no number.** `openai-direct::gpt-6-luna` publishes
   `max_output_tokens: null` **with** `max_output_tokens_source: "gateway"` — that is
   `_limit_with_source`'s `if fallback is None: return None, "gateway"` branch, and it
