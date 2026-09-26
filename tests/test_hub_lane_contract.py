@@ -193,6 +193,34 @@ class ChatLimitTests(_MockHub):
         self.assertIs(structured.get("grammar_constrained"), False)
         self.assertIsNone(structured.get("two_pass"), "a technique is not a model fact")
 
+    def test_the_whole_contract_is_relayed_not_a_whitelist_of_one(self) -> None:
+        # **The regression.** This published `{"structured_output": ...}` and nothing
+        # else, so every other key the producer states was dropped — `deadline_seconds`
+        # among them. The number sat in the row's `raw`, the adapter read it to size
+        # its own poll, and the caller could not see it: Story Studio found the
+        # 900-second window by hitting it.
+        #
+        # Withholding a stated fact is as wrong as inventing one, and it costs the
+        # caller the same way.
+        row = self._chat_row("mock-hub/chat-model")
+        contract = row.get("lane_contract") or {}
+        self.assertIn("deadline_seconds", contract,
+                      "the lane's own timeout must reach the caller")
+        # **The fixture's own number, not this gateway's.** The mock states 600 and
+        # the gateway's fallback is 900, so asserting 600 is what proves the value is
+        # relayed rather than restated.
+        self.assertEqual(contract["deadline_seconds"], 600.0)
+        # **Every key the fixture states, and the set exactly.** Asserting a hand-
+        # written list is how the last version of this test over-claimed; the
+        # invariant is that nothing the producer sends is dropped, so the comparison
+        # is against the fixture's own key set.
+        self.assertEqual(
+            set(contract),
+            {"schema", "modality", "operation", "parameters", "artifact", "states",
+             "deadline_seconds", "structured_output"},
+            "the published contract must relay the producer's, key for key",
+        )
+
     def test_a_lane_that_declares_response_format_supports_structured_output(self) -> None:
         # Read from the parameter's **declared presence**, not from the prose in
         # its note: the Hub asked us not to match on names inside strings where a

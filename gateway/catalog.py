@@ -995,15 +995,20 @@ def _chat_row(model_id: str, definition: ProviderDefinition, model: dict[str, An
         # model cannot know whether a caller wants it. The Hub session was explicit
         # that this is deliberately not a `two_pass` flag, and they were right.
         #
-        # Not in the running 0.6.63 (measured: the contract has no such key), so
-        # this publishes `null` today and fills itself the day their build ships
-        # it — no gateway release, which is the point of reading a producer's field
-        # rather than matching an id.
-        "lane_contract": (
-            {"structured_output": lane_contract["structured_output"]}
-            if isinstance(lane_contract.get("structured_output"), (dict, list))
-            else None
-        ),
+        # **The lane's own contract, as the producer states it.** This published a
+        # one-key whitelist — `structured_output` and nothing else — so every other
+        # fact the Hub sends was dropped on the floor. `deadline_seconds` was one of
+        # them: the number was in this row's `raw` the whole time, the adapter read
+        # it to size its own poll, and the caller could not see it. Measured
+        # 2026-09-26: Story Studio **discovered the 900-second window by hitting
+        # it**, because a stated fact was being withheld.
+        #
+        # That is the "publish what is known, and nothing else" rule inverted.
+        # Withholding what a producer states is as wrong as inventing what it does
+        # not, and it costs the caller the same way — they find out by failing.
+        # Anything the Hub adds later arrives with no gateway release, which is the
+        # point of relaying a contract rather than restating one.
+        "lane_contract": dict(lane_contract) or None,
         "controls": controls,
         "input_modalities": inputs,
         "supports_vision": ("image" in inputs) if inputs else None,
