@@ -11,11 +11,11 @@ project does not say why, and nobody should guess.
 
 | Thing | Value |
 |---|---|
-| Current release | **0.2.47** — `repository/VERSION`, one line, the only place to bump |
+| Current release | **0.2.48** — `repository/VERSION`, one line, the only place to bump |
 | Declared Studio Hub | **0.6.65** — `adapters.studio_hub.SUPPORTED_STUDIO_HUB_VERSION`, published on `/health`; a controller on another version is reported, never refused. Set on 2026-09-25 from a **running** Hub (`/api/version` → `0.6.65` build `37cb07b`), not a changelog `[MEASURED]` |
 | Branch | `main` = `origin/main`, clean tree; remote `github.com/theng12/gateway-kh` |
 | Running build | `/Applications/gateway-kh.app`, port **8787**, stamp `2da713b-202609260646` (`/health` and `…/Resources/gateway/BUILD`) — **this stamp is one commit behind `main` by construction**: `build.sh` stamps `git rev-parse --short HEAD`, so building before committing always leaves the tree one commit ahead of the stamp. Every release in this file has that shape; the deployed *code* is the whole change. The gateway must be **respawned**, not adopted, to carry a new stamp: with *Keep the gateway running after I quit* on, quitting the app leaves the old process holding 8787 and the new app adopts it, so `/health` keeps reporting the old build while serving new code `[MEASURED 2026-09-26]` |
-| Distribution | DMG in `repository/dist/` (`gateway-kh-0.2.47.dmg`), named by version alone |
+| Distribution | DMG in `repository/dist/` (`gateway-kh-0.2.48.dmg`), named by version alone |
 | SSD/setup kit | `repository/dist/setup-kit/`, **pinned to GatewayKH 0.2.44** and refreshed onto all four `KH-STUDIO-*` drives on **2026-09-26**, `shasum -a 256 -c` OK on every one. The drives also carry `Studio Hub.app` **0.6.70**. Superseded kits are in each drive's `_trash/superseded-kit-2026-09-26/` (`GatewayKH-0.2.27`, `GatewayKH-0.2.43`) |
 
 - **Versions are patch-only for now:** `0.2.1`, `0.2.2`, … up to `0.2.1000`. Increment the
@@ -46,6 +46,51 @@ project does not say why, and nobody should guess.
   "Why port 8787". It was 8000 until the owner moved it (2026-09-21, `Project
   Status.md` §10h: 8000 is the most contested dev port and Story Studio's own
   default). Every Story Studio client points at `http://<host>:8787`.
+
+## WHAT 0.2.48 CHANGED — a Hub's number arrives with the Hub's own token (HUB-20)
+
+`_chat_row` has published `*_source` beside every limit since 2026-09-24, precisely so Story Studio
+can tell a model's own figure from somebody's fallback. For a **Studio Hub location** the value is
+relayed from the Hub, and `_limit_with_source` answers `provider` for *any* stated value. So the live
+row published:
+
+```
+max_output_tokens: 16384
+max_output_tokens_source: "provider"
+max_output_tokens_source_detail: "worker default: the checkpoint ships no generation_config.json"
+```
+
+**The token said the model stated it; the sentence directly beside it said the opposite.** Story Studio
+reads the token. Its own row says what that costs — *"16,384 currently renders as if the model stated
+it"* — and 16,384 is the Hub's `FALLBACK_MAX_OUTPUT_TOKENS`, the number a checkpoint that states
+nothing is given. Two published fields disagreeing about one number, with the machine-readable one
+wrong.
+
+- **The Hub now states `source_kind`** (Studio Hub 0.6.72): `model` — the checkpoint's own file states
+  it; `worker_default` — the Hub's own fallback; `curated` — the Hub's packaged metadata rather than
+  the checkpoint's word; `unknown` — nothing states it, and the value travels as `null`.
+- **This gateway relays it and never parses the sentence.** Matching a word in a sentence is what the
+  Hub asked us not to do, and three of their defects came from exactly that.
+- **A kind travels only beside a value the Hub supplied.** When the Hub states `null` this gateway
+  publishes one of its **own** (nulling the field is a breaking change for the reader, which
+  substitutes 8,192 and prints it as the model's), and the honest token for *that* number is
+  `gateway` — not `unknown`, which would say "nobody stated this" while the row carries a number we
+  chose.
+- **An older Hub that states no token behaves exactly as before.** The change is additive, and the
+  absent case is pinned so it cannot become a new guess.
+- **Guard:** `tests/test_hub_limit_provenance.py`, 9 tests, **proved to fail on the defect (9 of 9,
+  `'provider' != 'worker_default'`)**. `LIMIT_SOURCES`' comment now names the relayed vocabulary, and
+  the test reads it, so the constant is load-bearing rather than decorative.
+- **Verified:** `tests/test_e2e.py` **570/570** · `tests/test_fleet_standalone.py` **47/47** against the
+  owner's real Hub · all **36** focused suites green.
+
+**Also fixed, and found by this change rather than looked for.** `ThePublishedLimitIsTheRealOneTest`
+read the **live** `provider-concurrency.local.json` instead of isolating it, so it passed only while
+that file had no `global` key. Setting one — which is 0.2.45's entire point — made two of its tests
+fail **on this Mac and nowhere else**: `global_budget()` consults the file *before* the environment, so
+the operator's 12 beat the `GATEWAY_JOB_CONCURRENCY` the test had just set. A test that depends on the
+operator's own configuration is not measuring the code. It now patches `SETTINGS_PATH`, and a new test
+states the precedence explicitly so the rule is not rediscovered.
 
 ## WHAT 0.2.47 CHANGED — the console reports the concurrency that actually runs
 

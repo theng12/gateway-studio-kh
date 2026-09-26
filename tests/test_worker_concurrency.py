@@ -291,9 +291,26 @@ class SlotsAreNeverLeakedTest(unittest.TestCase):
 
 
 class ThePublishedLimitIsTheRealOneTest(unittest.TestCase):
+    """The env var and the default, **not** whatever this Mac's settings file happens to say.
+
+    These two tests asserted the environment and the fallback while reading the LIVE
+    `provider-concurrency.local.json`, so they passed only while that file had no `global` key.
+    The owner set one (`global: 12`, 2026-09-26) and both began failing on his machine and
+    nowhere else: `global_budget()` consults the file **before** the environment, so 12 beat the
+    `GATEWAY_JOB_CONCURRENCY` the test had just set. A test that depends on the operator's own
+    configuration is not measuring the code.
+    """
+
     def setUp(self) -> None:
         concurrency.reset_for_tests()
         self.addCleanup(concurrency.reset_for_tests)
+        # An empty settings file, so the environment and the default are what is under test.
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.path = Path(tmp.name) / "provider-concurrency.local.json"
+        patcher = patch.object(concurrency, "SETTINGS_PATH", self.path)
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     def test_paid_concurrency_limit_is_the_pool_size(self) -> None:
         # It was the literal 4 while the worker ran one job at a time — a published
@@ -308,6 +325,14 @@ class ThePublishedLimitIsTheRealOneTest(unittest.TestCase):
         for bad in ("0", "-2", "many", ""):
             with patch.dict(os.environ, {"GATEWAY_JOB_CONCURRENCY": bad}):
                 self.assertEqual(concurrency.global_limit(), concurrency.DEFAULT_GLOBAL)
+
+    def test_a_stated_setting_beats_the_environment(self) -> None:
+        # The precedence the two tests above depend on, stated rather than assumed: the file is
+        # read first, so an operator's own number wins over an exported one. This is the rule
+        # that made them fail on a configured Mac.
+        self.path.write_text(json.dumps({"global": 5}), encoding="utf-8")
+        with patch.dict(os.environ, {"GATEWAY_JOB_CONCURRENCY": "7"}):
+            self.assertEqual(concurrency.global_limit(), 5)
 
     def test_the_admission_record_still_carries_the_other_limits(self) -> None:
         published = constants.admission()

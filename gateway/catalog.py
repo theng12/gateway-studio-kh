@@ -354,9 +354,18 @@ def _video_row(model_id: str, definition: ProviderDefinition, model: dict[str, A
 #: Where a published limit came from. The values are deliberately dull, and
 #: `provider` is the only one that means "the model's own figure".
 #:
-#:   provider — the provider (or the Hub, for a location) stated it.
+#:   provider — the provider stated it. A **cloud** lane's class.
 #:   curated  — the owner's `model-limits.local.json` filled a silence.
 #:   gateway  — our own documented default or recorded table.
+#:
+#: **A Studio Hub location brings its own vocabulary, and it is relayed rather than
+#: reinterpreted** (HUB-20): `model` — the checkpoint's own file states it;
+#: `worker_default` — the Hub's own fallback; `unknown` — nothing states it, and the
+#: value travels as `null`. `curated` is the Hub's packaged metadata rather than the
+#: checkpoint's word: the same token as above for a different producer, deliberately,
+#: because it makes the same claim (*somebody chose this; the model did not say it*).
+#: The tuple below is the set **this gateway** chooses. A Hub row's kind is the Hub's
+#: answer, and `worker_default` is the one that used to arrive here as `provider`.
 LIMIT_SOURCES = ("provider", "curated", "gateway")
 
 
@@ -810,23 +819,34 @@ def _hub_stated_limit(raw: dict[str, Any], field: str) -> tuple[int | None, str 
     carried through rather than replaced, because it says *which* number this is:
     a checkpoint's own window and a worker's fallback are both worth publishing and
     are not the same claim.
+
+    **`source_kind` is the Hub's own token for that same decision (HUB-20), and this
+    gateway relays it rather than interpreting it.** It used to have no choice: the
+    Hub published only the sentence, and `_limit_with_source` labels any stated value
+    `provider`, so the live row told Story Studio that `max_output_tokens: 16384` was a
+    number the *model* stated while the Hub's own sentence beside it said *"worker
+    default: the checkpoint ships no generation_config.json"*. Two published fields
+    disagreeing about one number, with the machine-readable one wrong. Matching a word
+    in the sentence is what the Hub asked us not to do, so the token comes from them.
     """
     limits = raw.get("model_limits")
     if not isinstance(limits, dict):
-        return None, None
+        return None, None, None
     entry = limits.get(field)
     if isinstance(entry, (int, float)) and not isinstance(entry, bool):
         # A Hub that publishes the bare number rather than the object: still its
         # own statement, just without the sentence.
-        return int(entry), None
+        return int(entry), None, None
     if not isinstance(entry, dict):
-        return None, None
+        return None, None, None
     value = entry.get("value")
     source = entry.get("source")
     source = str(source).strip() if isinstance(source, str) and source.strip() else None
+    kind = entry.get("source_kind")
+    kind = str(kind).strip() if isinstance(kind, str) and kind.strip() else None
     if isinstance(value, bool) or not isinstance(value, (int, float)):
-        return None, source
-    return int(value), source
+        return None, source, kind
+    return int(value), source, kind
 
 
 def _chat_row(model_id: str, definition: ProviderDefinition, model: dict[str, Any]) -> dict[str, Any]:
@@ -972,10 +992,12 @@ def _chat_row(model_id: str, definition: ProviderDefinition, model: dict[str, An
     # two orders of magnitude out. The Hub's sentence travels beside the number in
     # `*_source_detail`, so a worker's fallback (its own words) is never mistaken
     # for the checkpoint's fact.
-    hub_context, hub_context_detail = _hub_stated_limit(raw, "context_window_tokens")
+    hub_context, hub_context_detail, hub_context_kind = _hub_stated_limit(
+        raw, "context_window_tokens")
     if hub_context is not None:
         context = hub_context
-    hub_output, hub_output_detail = _hub_stated_limit(raw, "max_output_tokens")
+    hub_output, hub_output_detail, hub_output_kind = _hub_stated_limit(
+        raw, "max_output_tokens")
     if hub_output is not None:
         completion = hub_output
     context_window, context_source = _limit_with_source(
@@ -985,6 +1007,15 @@ def _chat_row(model_id: str, definition: ProviderDefinition, model: dict[str, An
         "max_output_tokens", _stated(completion), _output_default(definition),
         definition.id, model_id,
     )
+    # **The Hub's own token wins when the Hub supplied the value.** `_limit_with_source` knows
+    # three classes — provider, curated, gateway — and a value relayed from a Hub is none of
+    # them, so it answered `provider`: a worker's fallback published to Story Studio as a number
+    # the model stated. When the Hub names the kind, that is the honest answer and this gateway
+    # has nothing to add to it.
+    if hub_context is not None and hub_context_kind:
+        context_source = hub_context_kind
+    if hub_output is not None and hub_output_kind:
+        output_source = hub_output_kind
     return {
         "queue_class": "direct",
         "context_window_tokens": context_window,
