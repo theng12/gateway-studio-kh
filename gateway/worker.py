@@ -476,7 +476,14 @@ class Worker:
 
     # -- admission ---------------------------------------------------------
     def _provider_budget(self, provider_id: str, modality: str) -> concurrency.Budget:
-        """What bounds one provider, from the best source that has an answer."""
+        """What bounds one provider, from the best source that has an answer.
+
+        A Studio Hub location is bounded by **both** its own published slots and the
+        operator's number for it, and `hub_budget` takes the smaller — see there for why the
+        operator's figure is a cap and never a licence to over-schedule a site. Passing it
+        here is the whole fix: this path used to ignore the settings file entirely, so a
+        number typed against a location in the console did nothing at all.
+        """
         operation = _HUB_OPERATION_BY_MODALITY.get(modality, "")
         try:
             from . import fleet
@@ -488,7 +495,11 @@ class Worker:
                     operation
                 )
                 slots = entry.get("available_worker_slots") if isinstance(entry, dict) else None
-                return concurrency.hub_budget(slots, operation=operation or modality)
+                return concurrency.hub_budget(
+                    slots,
+                    operation=operation or modality,
+                    stated=concurrency.stated_provider_limit(provider_id),
+                )
         except Exception:  # noqa: BLE001 - an unreadable fleet is not a reason to stall
             pass
         return concurrency.cloud_budget(provider_id)

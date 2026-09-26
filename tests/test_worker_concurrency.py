@@ -347,20 +347,35 @@ class TheConsoleReportsWhatWillActuallyRunTest(unittest.TestCase):
     published four free image slots was rendered as *"no limit set, so one at a time; set
     it on the Providers page"*. Two defects in one row: the number did not describe the
     system — the same shape as the `paid_concurrency_limit` literal that once read 4 while
-    the worker ran one job — and the advice does nothing, because `Worker._provider_budget`
-    reads the Hub's `available_worker_slots` and never consults the settings file for a Hub
+    the worker ran one job — and the advice did nothing, because `Worker._provider_budget`
+    read the Hub's `available_worker_slots` and never consulted the settings file for a Hub
     location.
 
-    Measured live before the fix: dispatch allowed **4** for `studio-hub-9701220bf30f`
+    Measured live before the first fix: dispatch allowed **4** for `studio-hub-9701220bf30f`
     while the console said **1** for it.
+
+    **The second half is now fixed too, and this class was written against the first.** The
+    page was corrected to *report* the site's slots and to say the control was not read; the
+    better answer was to make the control real. An operator's number for a location is now a
+    **cap** — `min(site, stated)` — so it can throttle a busy site but can never push more
+    concurrent work at it than the site says it has free workers. These tests cover both.
     """
 
-    def _view_with(self, by_operation, provider_ids=("studio-hub-test",)):
+    def _view_with(self, by_operation, provider_ids=("studio-hub-test",), stated=None):
         snap = {"locations": [{
             "provider_id": "studio-hub-test",
             "capacity": {"by_operation": by_operation},
         }]}
-        with patch("gateway.fleet.snapshot", lambda **_: snap):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        path = Path(tmp.name) / "provider-concurrency.local.json"
+        path.write_text(json.dumps(
+            {"providers": {"studio-hub-test": {"limit": stated}}} if stated is not None else {}
+        ), encoding="utf-8")
+        concurrency.reset_for_tests()
+        self.addCleanup(concurrency.reset_for_tests)
+        with patch.object(concurrency, "SETTINGS_PATH", path), \
+                patch("gateway.fleet.snapshot", lambda **_: snap):
             return concurrency.settings_view(list(provider_ids))
 
     def _row(self, view, provider_id):
@@ -372,13 +387,28 @@ class TheConsoleReportsWhatWillActuallyRunTest(unittest.TestCase):
         self.assertEqual(row["limit"], 4)
         self.assertEqual(row["source"], concurrency.SOURCE_HUB)
 
-    def test_a_hub_row_says_the_number_is_not_a_setting(self) -> None:
-        # The old detail told the owner to set it on the Providers page. For a Hub
-        # location that control is not read, so the sentence has to stop saying it.
-        view = self._view_with({"image.text_to_image": {"available_worker_slots": 2}})
-        detail = self._row(view, "studio-hub-test")["detail"]
-        self.assertNotIn("set it on the Providers page", detail)
-        self.assertIn("not read for a Hub location", detail)
+    def test_the_operators_number_caps_the_site(self) -> None:
+        # The control is real now: setting 2 against a site offering 4 means 2 run.
+        view = self._view_with({"image.text_to_image": {"available_worker_slots": 4}}, stated=2)
+        row = self._row(view, "studio-hub-test")
+        self.assertEqual(row["limit"], 2)
+        self.assertIn("You set 2", row["detail"])
+        self.assertIn("Raise it to use the site's full 4", row["detail"])
+
+    def test_the_operators_number_can_never_raise_a_site_above_what_it_offers(self) -> None:
+        # The rule the `min` exists for: a number typed into a form is not licence to send a
+        # site more concurrent work than it says it has free workers.
+        view = self._view_with({"image.text_to_image": {"available_worker_slots": 4}}, stated=99)
+        row = self._row(view, "studio-hub-test")
+        self.assertEqual(row["limit"], 4, "the site's own count is the ceiling")
+        self.assertIn("never over-schedules", row["detail"])
+
+    def test_a_looser_cap_does_not_tell_you_to_raise_it(self) -> None:
+        # The first version of this sentence said "raise it to use the rest" whichever way the
+        # comparison fell, which is advice that does nothing when the site is already smaller —
+        # the same defect as the sentence this row was fixed for in the first place.
+        view = self._view_with({"image.text_to_image": {"available_worker_slots": 4}}, stated=99)
+        self.assertNotIn("Raise it", self._row(view, "studio-hub-test")["detail"])
 
     def test_a_lane_spread_is_named_rather_than_flattened(self) -> None:
         # One row per provider, one budget per operation: the honest answer names both.
@@ -413,6 +443,82 @@ class TheConsoleReportsWhatWillActuallyRunTest(unittest.TestCase):
             view = concurrency.settings_view(["studio-hub-test", "openai-direct"])
         self.assertEqual(len(view["providers"]), 2)
         self.assertEqual(self._row(view, "studio-hub-test")["limit"], concurrency.DEFAULT_PROVIDER)
+
+
+class AHubLocationsNumberIsACapNotALicenceTest(unittest.TestCase):
+    """`hub_budget` takes the smaller of the site's slots and the operator's number.
+
+    The site's count is a live measurement of what it can physically take; the operator's
+    number is policy. Policy may throttle; it may not over-schedule, because that is how a
+    queue becomes a crash.
+    """
+
+    def test_no_cap_uses_the_site(self) -> None:
+        budget = concurrency.hub_budget(4, operation="image.text_to_image")
+        self.assertEqual(budget.limit, 4)
+        self.assertEqual(budget.source, concurrency.SOURCE_HUB)
+
+    def test_a_tighter_cap_wins(self) -> None:
+        budget = concurrency.hub_budget(4, operation="image.text_to_image", stated=2)
+        self.assertEqual(budget.limit, 2)
+        self.assertEqual(budget.source, concurrency.SOURCE_CURATED)
+
+    def test_a_looser_cap_does_not_raise_the_site(self) -> None:
+        budget = concurrency.hub_budget(4, operation="image.text_to_image", stated=99)
+        self.assertEqual(budget.limit, 4)
+        self.assertEqual(budget.source, concurrency.SOURCE_HUB)
+
+    def test_a_cap_with_no_answer_from_the_site_is_still_the_cap(self) -> None:
+        budget = concurrency.hub_budget(None, operation="image.text_to_image", stated=3)
+        self.assertEqual(budget.limit, 3)
+        self.assertEqual(budget.source, concurrency.SOURCE_CURATED,
+                         "a number the operator set must not be published as the site's answer")
+
+    def test_neither_stated_stays_one_and_says_why(self) -> None:
+        budget = concurrency.hub_budget(None, operation="image.text_to_image")
+        self.assertEqual(budget.limit, concurrency.DEFAULT_PROVIDER)
+        self.assertIn("did not state free slots", budget.detail)
+
+    def test_an_equally_sized_cap_reports_your_limit_as_the_live_one(self) -> None:
+        # A tie is not interesting numerically, but the source must still be honest about
+        # which of the two is binding.
+        budget = concurrency.hub_budget(3, operation="x", stated=3)
+        self.assertEqual(budget.limit, 3)
+        self.assertEqual(budget.source, concurrency.SOURCE_CURATED)
+
+
+class DispatchReadsTheOperatorsNumberForALocationTest(unittest.TestCase):
+    """The half that was missing: `_provider_budget` never read the settings file for a Hub."""
+
+    def setUp(self) -> None:
+        concurrency.reset_for_tests()
+        self.addCleanup(concurrency.reset_for_tests)
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.path = Path(tmp.name) / "provider-concurrency.local.json"
+
+    def _budget(self, slots: int, stated: int | None):
+        self.path.write_text(json.dumps(
+            {"providers": {"studio-hub-test": {"limit": stated}}} if stated is not None else {}
+        ), encoding="utf-8")
+        snap = {"locations": [{
+            "provider_id": "studio-hub-test",
+            "capacity": {"by_operation": {"image.text_to_image": {"available_worker_slots": slots}}},
+        }]}
+        worker = Worker(_FakeStore([], claim_always_fails=False), interval_s=10.0)
+        with patch.object(concurrency, "SETTINGS_PATH", self.path), \
+                patch("gateway.fleet.snapshot", lambda **_: snap):
+            concurrency.reset_for_tests()
+            return worker._provider_budget("studio-hub-test", "image")
+
+    def test_without_a_number_the_site_decides(self) -> None:
+        self.assertEqual(self._budget(6, None).limit, 6)
+
+    def test_with_a_tighter_number_the_operator_decides(self) -> None:
+        self.assertEqual(self._budget(6, 2).limit, 2)
+
+    def test_with_a_looser_number_the_site_still_decides(self) -> None:
+        self.assertEqual(self._budget(6, 50).limit, 6)
 
 
 class TheGlobalLimitMovesWithoutARestartTest(unittest.TestCase):

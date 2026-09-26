@@ -11,11 +11,11 @@ project does not say why, and nobody should guess.
 
 | Thing | Value |
 |---|---|
-| Current release | **0.2.48** — `repository/VERSION`, one line, the only place to bump |
+| Current release | **0.2.49** — `repository/VERSION`, one line, the only place to bump |
 | Declared Studio Hub | **0.6.65** — `adapters.studio_hub.SUPPORTED_STUDIO_HUB_VERSION`, published on `/health`; a controller on another version is reported, never refused. Set on 2026-09-25 from a **running** Hub (`/api/version` → `0.6.65` build `37cb07b`), not a changelog `[MEASURED]` |
 | Branch | `main` = `origin/main`, clean tree; remote `github.com/theng12/gateway-kh` |
 | Running build | `/Applications/gateway-kh.app`, port **8787**, stamp `2da713b-202609260646` (`/health` and `…/Resources/gateway/BUILD`) — **this stamp is one commit behind `main` by construction**: `build.sh` stamps `git rev-parse --short HEAD`, so building before committing always leaves the tree one commit ahead of the stamp. Every release in this file has that shape; the deployed *code* is the whole change. The gateway must be **respawned**, not adopted, to carry a new stamp: with *Keep the gateway running after I quit* on, quitting the app leaves the old process holding 8787 and the new app adopts it, so `/health` keeps reporting the old build while serving new code `[MEASURED 2026-09-26]` |
-| Distribution | DMG in `repository/dist/` (`gateway-kh-0.2.48.dmg`), named by version alone |
+| Distribution | DMG in `repository/dist/` (`gateway-kh-0.2.49.dmg`), named by version alone |
 | SSD/setup kit | `repository/dist/setup-kit/`, **pinned to GatewayKH 0.2.44** and refreshed onto all four `KH-STUDIO-*` drives on **2026-09-26**, `shasum -a 256 -c` OK on every one. The drives also carry `Studio Hub.app` **0.6.70**. Superseded kits are in each drive's `_trash/superseded-kit-2026-09-26/` (`GatewayKH-0.2.27`, `GatewayKH-0.2.43`) |
 
 - **Versions are patch-only for now:** `0.2.1`, `0.2.2`, … up to `0.2.1000`. Increment the
@@ -46,6 +46,47 @@ project does not say why, and nobody should guess.
   "Why port 8787". It was 8000 until the owner moved it (2026-09-21, `Project
   Status.md` §10h: 8000 is the most contested dev port and Story Studio's own
   default). Every Story Studio client points at `http://<host>:8787`.
+
+## WHAT 0.2.49 CHANGED — a Studio Hub location's number is a cap, and now it is read
+
+The owner, planning for ~50 Macs: *"it can't be just 12. It must be a UI editable number… i want the
+concurrency for local to be able to util more."* He is right, and the box he means has existed since
+0.2.37 — the Providers page renders **one row per provider with an editable limit**, plus a "Jobs
+running at once" box for the pool. There is **no upper bound** in the code:
+
+```python
+def _positive_int(value): ...   # any positive integer; 50, 200, whatever the fleet is
+```
+
+**The defect was that the control lied for local locations.** `Worker._provider_budget` returned
+`hub_budget(slots)` and **never consulted the settings file**, so a number typed against a Studio Hub
+row described nothing. 0.2.47 fixed the *display* of that (the page stopped showing a fake `1`) and
+said in the row that the control was not read. Making the control **real** is the better answer.
+
+- **`hub_budget(slots, operation, stated)` now takes the smaller of the two.** The site's count is a
+  live measurement of what it can physically take; the operator's number is policy. Policy may
+  **throttle** a site below what it offers; it may **never over-schedule** one, because that is how a
+  queue becomes a crash. So it is a `min`, not a substitution.
+- **A tie and an absent side are both labelled honestly.** `stated` with no answer from the site
+  publishes `curated`, not `hub` — a number the operator set must never be dressed as the site's.
+- **The console shows what will run, not what was offered**, and says which of the two is binding —
+  including, when the operator's number is the *looser* one, that raising it would change nothing.
+  The first version of that sentence said "raise it to use the rest" whichever way the comparison
+  fell: advice that does nothing, which is the same defect as the sentence this row was fixed for.
+- **The pool can be set to any number**, and since 0.2.45 a change to it takes effect without a
+  restart. It is now **60**, chosen so a fleet growing past today's nine online machines never meets
+  it; the per-location budgets are what actually bound each site.
+- **Guard:** `AHubLocationsNumberIsACapNotALicenceTest` (6) and
+  `DispatchReadsTheOperatorsNumberForALocationTest` (3). **Proved to fail on the defect** — restoring
+  the old call fails with `6 != 2`, the operator's number ignored.
+- **Verified:** `tests/test_e2e.py` **570/570** · `tests/test_fleet_standalone.py` **47/47** · all
+  **36** focused suites.
+
+**Still open, and named rather than implied:** the console renders the pool and the per-provider rows,
+but **not the per-lane (per-modality) ceilings** — `settings_view` publishes `lanes` and the page
+ignores it, so those have an API and no UI. Nothing needs them today (no lane cap is set), and the
+next person to want "images may use at most N of the pool" should build the control rather than
+assume it is there.
 
 ## WHAT 0.2.48 CHANGED — a Hub's number arrives with the Hub's own token (HUB-20)
 

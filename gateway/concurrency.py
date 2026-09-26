@@ -264,16 +264,28 @@ def cloud_budget(provider_id: str) -> Budget:
     )
 
 
-def hub_budget(slots: Any, *, operation: str = "") -> Budget:
-    """A Studio Hub location's concurrency, from what the site itself published.
+def hub_budget(slots: Any, *, operation: str = "", stated: Any = None) -> Budget:
+    """A Studio Hub location's concurrency, from the site's own slots and your cap.
 
-    `slots` is `available_worker_slots` from that site's `capacity.by_operation`
-    — the site's own count of free workers for this operation, which is the only
-    live measurement in this module. A site that states nothing gets the default:
-    absence is not a claim that it can take several.
+    `slots` is `available_worker_slots` from that site's `capacity.by_operation` — the
+    site's own count of free workers for this operation, and the only live measurement in
+    this module. `stated` is the operator's number for this location, when they set one.
+
+    **The smaller of the two wins, and they stay distinguishable.** The site's count is what
+    it can physically take; the operator's number is policy, and an operator must be able to
+    throttle a busy site below what it offers. The converse must not hold: a number typed
+    into a form is not licence to send a site more concurrent work than it says it has free
+    workers — that is how a queue becomes a crash, and it is why this is a `min` rather than
+    a substitution.
+
+    **Before this, the operator's number was not read at all on this path.** A Studio Hub row
+    in the console was editable and ignored, so a number typed for a location described
+    nothing; the page only ever showed the site's own count. Reading it as a cap is what makes
+    that control mean what it looks like it means.
     """
-    limit = _positive_int(slots)
-    if limit is None:
+    site = _positive_int(slots)
+    cap = _positive_int(stated)
+    if site is None and cap is None:
         return Budget(
             limit=DEFAULT_PROVIDER,
             source=SOURCE_GATEWAY,
@@ -283,14 +295,39 @@ def hub_budget(slots: Any, *, operation: str = "") -> Budget:
                 + ", so one at a time"
             ),
         )
+    if site is None:
+        # The operator's number is all there is. Say that, rather than dressing it as the
+        # site's answer — a value and its source come from one place or they disagree.
+        return Budget(
+            limit=cap,
+            source=SOURCE_CURATED,
+            detail=(
+                f"you set {cap}; the site states no free slots"
+                + (f" for {operation}" if operation else "")
+            ),
+        )
+    if cap is None:
+        return Budget(
+            limit=site,
+            source=SOURCE_HUB,
+            detail=(
+                f"the site reports {site} available worker slot"
+                f"{'' if site == 1 else 's'}" + (f" for {operation}" if operation else "")
+            ),
+        )
+    limit = min(site, cap)
+    tighter = "your limit is tighter" if cap <= site else "the site's count is tighter"
     return Budget(
         limit=limit,
-        source=SOURCE_HUB,
-        detail=(
-            f"the site reports {limit} available worker slot"
-            f"{'' if limit == 1 else 's'}" + (f" for {operation}" if operation else "")
-        ),
+        source=SOURCE_CURATED if cap <= site else SOURCE_HUB,
+        detail=f"the site reports {site} free and you set {cap}, so {limit} runs — {tighter}",
     )
+
+
+def stated_provider_limit(provider_id: str) -> int | None:
+    """The operator's own number for this provider, or `None` when they have set none."""
+    entry = _settings_providers().get(str(provider_id or ""))
+    return entry["limit"] if entry else None
 
 
 # -- the settings surface ---------------------------------------------------
@@ -338,24 +375,40 @@ def _hub_provider_budget(provider_id: str) -> Budget | None:
     uniform — a site whose image lane takes four and whose voice lane takes one is not
     described by either number alone. Returns `None` for anything that is not a Hub
     location, so cloud rows keep the settings-file answer they are governed by.
+
+    **The operator's number is a cap here too**, so the page shows what will run rather than
+    what the site offered: a location reporting eight free slots with a limit of three drawn
+    as eight would be the same defect this row was fixed for, one layer along.
     """
     slots = _hub_operation_slots(provider_id)
     if not slots:
         return None
+    site_slots = dict(slots)
+    cap = stated_provider_limit(provider_id)
+    if cap is not None:
+        slots = {op: min(n, cap) for op, n in slots.items()}
     widest = max(slots, key=lambda op: slots[op])
     limit = slots[widest]
-    # Said in both branches: the old detail told the owner to set this on the Providers
-    # page, and for a Hub location that control is not read on the dispatch path.
-    not_a_setting = (" It is not a setting: a limit written on the Providers page is not "
-                     "read for a Hub location.")
+    capped = ""
+    if cap is not None:
+        # Two different situations, two different sentences. The first version said "raise it to
+        # use the rest" in both, which is advice that does nothing when the site's own count is
+        # already the smaller of the two — the same defect as the sentence this row was fixed for.
+        if cap < site_slots[widest]:
+            capped = (f" You set {cap} for this location, tighter than the site's own count, so "
+                      f"{limit} runs. Raise it to use the site's full {site_slots[widest]}.")
+        else:
+            capped = (f" You set {cap} for this location, and the site's own count is already "
+                      f"smaller, so that binds. A number here throttles a location; it never "
+                      f"over-schedules one.")
     if len(set(slots.values())) == 1:
         detail = (f"the site reports {limit} available worker slot"
                   f"{'' if limit == 1 else 's'}, the same for every lane it serves."
-                  + not_a_setting)
+                  + capped)
     else:
         spread = ", ".join(f"{op} {n}" for op, n in sorted(slots.items()))
         detail = (f"the site reports its own free slots per lane and this gateway follows "
-                  f"them, so this is the widest — {spread}." + not_a_setting)
+                  f"them, so this is the widest — {spread}." + capped)
     return Budget(limit=limit, source=SOURCE_HUB, detail=detail)
 
 
