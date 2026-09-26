@@ -11,12 +11,50 @@ project does not say why, and nobody should guess.
 
 | Thing | Value |
 |---|---|
-| Current release | **0.2.51** — `repository/VERSION`, one line, the only place to bump |
+| Current release | **0.2.52** — `repository/VERSION`, one line, the only place to bump. **A settled Hub item no longer becomes a recovery hold, and the gateway's own queue is published** (see *What 0.2.52 changes* below) |
 | Declared Studio Hub | **0.6.65** — `adapters.studio_hub.SUPPORTED_STUDIO_HUB_VERSION`, published on `/health`; a controller on another version is reported, never refused. Set on 2026-09-25 from a **running** Hub (`/api/version` → `0.6.65` build `37cb07b`), not a changelog `[MEASURED]` |
 | Branch | `main` = `origin/main`, clean tree; remote `github.com/theng12/gateway-kh` |
-| Running build | `/Applications/gateway-kh.app`, port **8787**, stamp `2da713b-202609260646` (`/health` and `…/Resources/gateway/BUILD`) — **this stamp is one commit behind `main` by construction**: `build.sh` stamps `git rev-parse --short HEAD`, so building before committing always leaves the tree one commit ahead of the stamp. Every release in this file has that shape; the deployed *code* is the whole change. The gateway must be **respawned**, not adopted, to carry a new stamp: with *Keep the gateway running after I quit* on, quitting the app leaves the old process holding 8787 and the new app adopts it, so `/health` keeps reporting the old build while serving new code `[MEASURED 2026-09-26]` |
-| Distribution | DMG in `repository/dist/` (`gateway-kh-0.2.51.dmg`), named by version alone |
+| Running build | `/Applications/gateway-kh.app`, port **8787**, stamp `abe4c3f-202609261215` — measured on `/health` after respawning the process by **PID** under the newly built app; the app's `Info.plist` carries the same stamp, so **Check Gateway** agrees. The old stamp was `2da713b-202609260646`, and it survived a rebuild plus a gateway kill until the *app* was replaced too: the app passes its own `GatewayBuild` on spawn `[MEASURED 2026-09-26]` |
+| Distribution | DMG in `repository/dist/` (`gateway-kh-0.2.52.dmg`), named by version alone; the previous one moved to `_trash/dist/` |
 | SSD/setup kit | `repository/dist/setup-kit/`, **pinned to GatewayKH 0.2.44** and refreshed onto all four `KH-STUDIO-*` drives on **2026-09-26**, `shasum -a 256 -c` OK on every one. The drives also carry `Studio Hub.app` **0.6.70**. Superseded kits are in each drive's `_trash/superseded-kit-2026-09-26/` (`GatewayKH-0.2.27`, `GatewayKH-0.2.43`) |
+
+## What 0.2.52 changes
+
+Two things, both measured live on 2026-09-26.
+
+**A Hub batch id is a container, not a promise that work is pending.** Studio Hub creates a batch and
+only *then* validates the item, so a refused or failed item leaves an upstream id on the job — and
+`worker.py` treated a recorded id as ambiguity. Every ordinary item failure therefore became a durable
+`unknown_outcome` hold: *"reconcile the provider request before retrying; the gateway will not resubmit
+it automatically."* Reproduced twice: a **422 `Choose a qualified 1K aspect ratio`** (a caller's
+geometry mistake) and a **409 `local is reserved for other work on this Mac`** (a busy machine). On a
+fleet of ~50 small Macs, every engine OOM would land in the operator's recovery queue for work that
+never ran.
+
+`BackendError` gains **`upstream_settled`**, which an adapter sets only after polling its own upstream
+identifier to a terminal answer. The worker lets it outrank **every** heuristic — including the
+`dispatch_started_at` one, which also fired on this case and defeated the first attempt at the fix. The
+paths that are genuinely ambiguous do not set it and keep their hold: an item the Hub calls `uncertain`,
+a poll that hits its deadline, and a failure **fetching an artifact for an item that succeeded**. All
+six are pinned in `tests/test_hub_item_settles.py` and `tests/test_job_recovery.py`.
+
+**The gateway has had a queue since 2026-09-25 and published nothing about it.** `store.defer()` puts a
+job back with a `next_action_at` and a reason when every location offering the model is merely busy; the
+envelope hardcoded `queue_position`, `queue_eta_seconds` and `queue_reason` to `null`, so a queued job
+and a slow one were identical to the caller. Story reads all three — its contract types `queue_reason`
+as exactly `provider_pace | null`, and its Jobs page renders *"Waiting in the GenStudio provider
+queue… position N… about 2 minutes… pacing new requests"* — so this fills **Story's** vocabulary rather
+than inventing a second one. `queue_position` counts waiting jobs of the same modality (1 is next);
+`queue_eta_seconds` is **when this gateway will try again**, never a claim about when the provider will
+finish; a job that is not waiting publishes nothing at all.
+
+The two `ponytail:` constants that bounded the wait — eight deferrals, backoff capped at a minute,
+about four minutes in total — are now settings beside the pool size (`queue.max_deferrals`,
+`queue.defer_cap_seconds`), read live with the same defaults. That ceiling is why a fleet busy for
+longer failed work it would eventually have run, which is the owner's own requirement inverted.
+
+**Verified live after the rebuild**, on the very request that used to hold: `recovery_required: false`,
+`recovery_state: null`, and the batch id still recorded for the operator.
 
 - **Versions are patch-only for now:** `0.2.1`, `0.2.2`, … up to `0.2.1000`. Increment the
   third number by one per shipped change; never roll to `0.3.x`/`1.0.0` until the owner says so.
