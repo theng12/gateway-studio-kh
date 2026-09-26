@@ -1399,6 +1399,20 @@ stop reading its silence as an answer. That line is worth more than the four row
   fresh poll must not erase it. The timeout message now carries it:
   *"did not finish within 1800s; the Hub reported it stalled, with no progress for 1700s
   against a 900s threshold."* `tests/test_hub_progress.py` → 11 checks.
+  **PROVEN LIVE 2026-09-26, and it found an asymmetry worth telling them about.** A
+  voice job through the running gateway settled with
+  `hub_progress: {"stalled": false, "worst_no_progress_s": 19.2, "stalled_after_s": 900,
+  "samples": 22}`, and the Hub's own `/api/hub/jobs` showed that batch climbing
+  `no_progress_s` 4.4 → 19.2 while active — 22 of our polls carried a figure.
+  **But only on `/api/hub/jobs`.** `[MEASURED]` A transcription on the same build
+  published `hub_progress: null`, because
+  `/api/hub/transcription/jobs/{id}` returns `transcription_jobs.py::summary`, which
+  carries **none** of `no_progress_s`, `stalled_after_s` or `stalled`. So `null` there
+  means *"this route publishes no progress"* — the honest answer, and not the same as
+  the field being broken. **Their offer said the signal is on the job row; it is on the
+  `/api/hub/jobs` family only**, and a transcription is a job. Worth asking whether the
+  transcription summary should carry it, since subtitles are the lane most likely to
+  wedge on a long clip.
   **Step 2 is still open and still unbuilt** — a caller watching an unfinished job sees
   `running` throughout, and the live half needs what is described above. **What step 1
   buys is the evidence for deciding on step 2:** `hub_progress` now records on every

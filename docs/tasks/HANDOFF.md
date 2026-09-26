@@ -83,6 +83,22 @@ rather than merely long is that a stall is visible. On this path, that something
   second as being "on every job row"; on the row we poll it is **not there**, and a first
   consumer would have gone looking for it.
 
+- **Proven live, not just unit-tested.** `[MEASURED 2026-09-26]` A voice job through
+  the running gateway settled with
+  `hub_progress: {"stalled": false, "worst_no_progress_s": 19.2, "stalled_after_s": 900,
+  "samples": 22}` — and the Hub's own `/api/hub/jobs` reported that same batch climbing
+  `no_progress_s` 4.4 → 19.2 while it was active. **22 of our polls carried a figure**,
+  which is the field working rather than the plumbing merely compiling.
+- **It covers image, voice and music, and NOT transcription — measured, not assumed.**
+  `/api/hub/transcription/jobs/{id}` returns a different summary
+  (`transcription_jobs.py::summary`) that carries **none** of `no_progress_s`,
+  `stalled_after_s` or `stalled`. So a transcription job publishes `hub_progress: null`
+  for ever, and that `null` means *"the Hub publishes no progress on this route"* — the
+  honest answer, and **not** the same as the field being broken. Confirmed against a real
+  transcription before and a real voice job after, on the same build.
+  **Told to Studio Hub:** their offer described the signal as being on the job row
+  generally; it is on the `/api/hub/jobs` family only.
+
 `tests/test_hub_progress.py` → **11 checks**.
 
 ## WHAT 0.2.43 CHANGED — the record was blending prose with JSON, and the fleet gate had never run
