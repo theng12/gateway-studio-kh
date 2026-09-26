@@ -44,6 +44,51 @@ apart unnoticed. **Status: working tree only.** Nothing installed, nothing on th
 drives, and **GW-5 cannot re-discover until they cut a release** — they will tell us
 rather than have us discover it. Until then the local lane is still 4,096 / 900 s.
 
+**Verified live 2026-09-26, after their message:** the running Hub answers `0.6.69`
+build `49792c4`, and this gateway still publishes `max_output_tokens: 4096` /
+`deadline_seconds: 900.0` for `studio-hub::mlx-community/Qwen3.5-9B-4bit`. **Nothing has
+moved on this Mac yet, and that is expected rather than a fault.**
+
+### There is nothing for us to raise — asked and answered 2026-09-26
+
+The owner asked whether it is now this gateway's turn to raise something. **It is not,
+and nothing is outstanding on our side for the ceiling.** The gateway holds **no output
+ceiling of its own**: it reads the Hub's `model_limits.max_output_tokens` and republishes
+it, which is the whole reason a Hub constant moves every downstream number by itself.
+There is no number here to change and no release of ours to cut.
+
+**Our side is already done, and already proven rather than merely reasoned about.**
+0.2.42 is installed, and the entire suite — `test_e2e.py` 568/568 included — passes
+against a mock Hub **already modelling the new values**. The change has been rehearsed
+here.
+
+**What happens when they ship, with nothing for anyone to remember:**
+
+1. Studio Hub cuts the release and it is installed on a Hub. *(theirs — not yet)*
+2. The fleet refresher probes every location every **15 s** and notices the version
+   change. *(ours, already running)*
+3. GW-5 re-discovers that location's models, `model_limits` and `lane_contract` with
+   them. *(ours, already running)*
+4. The catalogue republishes **16,384** and **1,800**. *(automatic)*
+5. Story Studio reads them on its next selection. *(automatic)*
+
+The baselines that make step 2 work are already recorded per location in the discovery
+cache — `studio-hub-local` `0.6.69`, the controllers `0.6.64`/`0.6.65` — so the
+comparison has something to compare against.
+
+**One expectation to set:** `measured.max_completion_tokens` will keep reading **4,096**
+until jobs have actually run at the new ceiling. That is the record being honest — it
+reports the largest that *ran*, not the largest that is *allowed* — and it is not a sign
+that the raise failed.
+
+**And it is not all of their side.** HUB-19 is the ceiling and the deadline, and it is
+answered. **HUB-18, HUB-20, HUB-21 and HUB-22 are explicitly "not yet looked at" by
+them**, and three of the four are things Story Studio is waiting on: the `*_source` enum
+they want in order to *label* a number rather than print a sentence (HUB-20),
+`max_structured_items_per_request`, which they already read and nobody publishes
+(HUB-21), and the omitted-parameter statement (HUB-22). The ceiling was the big one; it
+was not the only one.
+
 ### Our framing was wrong, and their correction lowers the cost we accepted
 
 We wrote that `PEER_PROXY_TIMEOUT_S` was *"the one constant that drives the whole
