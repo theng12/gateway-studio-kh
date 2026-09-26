@@ -630,7 +630,16 @@ Moved to [docs/giving-the-app-away.md](docs/giving-the-app-away.md).
   a note under `_trash/` before deleting it, and never rewrite published history.
   `_trash/` is outside Git and nothing in it is read by the app, tests or build; see
   `_trash/README.md` for what is in it.
-- **Finished work is committed and pushed, and a release carries a DMG in `dist/`.** Do not call work stable, done or shipped while it is uncommitted, unpushed, or has no installable artifact. Commit and push through the project's normal flow, landing it in `main` unless the owner says otherwise; for a release, build the DMG into that project's `dist/` folder so it is ready to hand to another Mac with no further steps. A project that ships a Mac app but has no DMG step gains one rather than being exempt. Keep `dist/` out of Git.
+- **Every change is merged, committed, pushed, and built into a DMG — and the previous DMG moves
+  to `_trash/dist/` automatically.** The owner's rule, 2026-09-26, and it is **the whole cycle every
+  time**, not only for something you would call a release: a fix, a doc, a test, a one-line constant.
+  Land it in `main`, push it, and leave an installable artefact in `dist/` so it can be handed to
+  another Mac with no further steps. **Do not call work stable, done or shipped while any of those
+  is missing.** `menubar/build.sh` moves the previous DMG aside itself — that line used to be
+  `rm -f "$DMG"`, so a rebuild destroyed the previous artefact of the same version — which means
+  `dist/` holds exactly the build you just made and `_trash/dist/` holds the history, with no
+  tidy-up step for anyone to remember. Keep `dist/` out of Git. A project that ships a Mac app but
+  has no DMG step gains one rather than being exempt.
 - **Version bumps are patch-only for now: `0.2.1`, `0.2.2`, … up to `0.2.1000`.** The owner asked for this (2026-09-22). `VERSION` at the repo root is the one place to bump; `menubar/build.sh` reads it for `CFBundleShortVersionString` and the DMG name, and the sidebar shows it beside the build stamp. Increment the **third** number by one per shipped change — do not roll to `0.3.x` or `1.0.0` until the owner says so.
 - **Test narrowly, and off the owner's screen. The full `tests/test_ui.py` is a
   release gate, not a routine check.** It walks every section, forces the window

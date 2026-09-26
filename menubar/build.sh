@@ -230,13 +230,25 @@ codesign --verify --deep --strict --verbose=2 "$APP"
 DIST="$ROOT/dist"
 DMG="$DIST/gateway-kh-${MARKETING_VERSION}.dmg"
 mkdir -p "$DIST"
-rm -f "$DMG"
+# **The owner's rule, 2026-09-26: an old DMG moves to `_trash/dist/`; it is never `rm`d.**
+# This line was `rm -f "$DMG"`, which destroyed the previous artefact of the same version on a
+# rebuild. Everything moves aside now — including the same-version file about to be rewritten —
+# so `_trash/dist/` is the complete history and a rebuild costs nothing. It is also what stops
+# `dist/` accumulating one file per release: it held four (0.2.47 through 0.2.50) before this.
+TRASH_DIST="$ROOT/_trash/dist"
+mkdir -p "$TRASH_DIST"
+DMG_STAMP="$(date -u +%Y%m%d%H%M%S)"
+for OLD_DMG in "$DIST"/gateway-kh-*.dmg; do
+  [ -e "$OLD_DMG" ] || continue
+  mv "$OLD_DMG" "$TRASH_DIST/$(basename "${OLD_DMG%.dmg}")-${DMG_STAMP}.dmg"
+done
 DMG_STAGE="$(mktemp -d)"
 cp -R "$APP" "$DMG_STAGE/"
 ln -s /Applications "$DMG_STAGE/Applications"
 hdiutil create -volname "gateway-kh" -srcfolder "$DMG_STAGE" -ov -format UDZO "$DMG" >/dev/null
 rm -rf "$DMG_STAGE"
 echo "DMG: $DMG"
+echo "     (the previous DMG(s) moved to _trash/dist/)"
 
 if [ "$INSTALL" = "1" ]; then
   # Prefer the system /Applications folder. `~/Applications` is hidden by
