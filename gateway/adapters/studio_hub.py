@@ -436,9 +436,20 @@ def _poll_batch(
         if state in _TERMINAL_BAD:
             error = (item or {}).get("error") or summary.get("error") or {}
             message = error.get("message") if isinstance(error, dict) else str(error)
+            # **The Hub has finished this item, it produced nothing, and nothing is pending.**
+            # The batch id recorded at submit does not contradict that: a batch is a container the
+            # Hub creates *before* it validates the item, so a refused or failed item leaves an id
+            # behind with no work running. Saying so explicitly is what stops the worker from
+            # turning an ordinary item failure — a validation refusal, a model error, an engine out
+            # of memory — into a durable `unknown_outcome` hold that asks the operator to reconcile
+            # work that never ran. Measured live 2026-09-26: a 422 geometry refusal came back as
+            # "Upstream outcome is unknown; reconcile the provider request before retrying; the
+            # gateway will not resubmit it automatically". The artifact-fetch path below does *not*
+            # set this, so a failure after a successful item keeps its hold.
             raise BackendError(
                 f"hub item {state}: {message or 'no detail'}",
                 code="IMAGE_FAILED" if item is None else "PROVIDER_FAILED",
+                upstream_settled=True,
             )
         time.sleep(POLL_INTERVAL_S)
 

@@ -101,6 +101,7 @@ class BackendError(Exception):
         retryable: bool = False,
         upstream_accepted: bool | None = None,
         recovery: dict[str, Any] | None = None,
+        upstream_settled: bool = False,
     ) -> None:
         super().__init__(message)
         self.code = code
@@ -109,6 +110,13 @@ class BackendError(Exception):
         # `None` means the adapter did not establish whether the remote accepted
         # work; the worker must not infer that a retry is safe from `retryable`.
         self.upstream_accepted = upstream_accepted
+        # **The adapter followed its own upstream identifier to a terminal state**: the work is
+        # finished, it produced no artifact, and nothing is pending. A *recorded* upstream id
+        # cannot say that — an id only proves a container was created — which is why a
+        # deferred-endpoint adapter that creates one before validating anything (Studio Hub
+        # creates a batch, then checks the item) left every ordinary failure looking ambiguous.
+        # Set it only where the adapter has polled that identifier to a terminal answer.
+        self.upstream_settled = upstream_settled
         # The upstream's own identifiers for work whose outcome is unknown — the
         # batch, the item, the worker it went to, and the routes that reconcile or
         # discard it. Carried so a recovery hold is actionable rather than a

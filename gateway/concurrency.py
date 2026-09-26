@@ -82,6 +82,13 @@ SOURCE_GATEWAY = "gateway"
 #: rather than a new figure to justify.
 DEFAULT_GLOBAL = 4
 
+#: `ponytail:` a flat eight deferrals with a backoff capped at a minute - about four minutes in
+#: total, and nine dispatch attempts. **Now editable** (`queue_wait_budget`); these are only the
+#: defaults a fresh profile starts from. The ceiling they encode is unchanged: a fleet busy for
+#: longer than the configured window still fails work it would eventually have run.
+DEFAULT_MAX_DEFERRALS = 8
+DEFAULT_DEFER_CAP_S = 60.0
+
 #: What a cloud provider gets when neither its own answer nor the owner's file says
 #: anything. One, because over-scheduling is what produces 429s, and a 429 on a
 #: submitted job is a durable unknown-outcome hold rather than a clean retry.
@@ -230,6 +237,33 @@ def global_budget() -> Budget:
 def global_limit() -> int:
     """The pool size. Kept as a function of its own because callers are many."""
     return global_budget().limit
+
+
+def queue_wait_budget() -> dict[str, Any]:
+    """How long a job waits for a busy fleet, and where each number came from.
+
+    **These were two constants with a `ponytail:` note naming this exact upgrade path** — *"make
+    both numbers settings beside the pool size, which is where an owner would look"* — and the note
+    was right about the ceiling: eight deferrals with a backoff capped at a minute is about four
+    minutes and nine dispatch attempts, so a fleet busy for longer than that fails work it would
+    eventually have run. On a fleet of ~50 Macs that is the difference between "it queued" and "it
+    reported an error", which is the owner's own requirement.
+
+    Read live from the same file as the pool size (`global`), so a change lands without a restart:
+
+        {"global": 60, "queue": {"max_deferrals": 24, "defer_cap_seconds": 120}}
+    """
+    wording = _read_file().get("queue")
+    entry = wording if isinstance(wording, dict) else {}
+    attempts = _positive_int(entry.get("max_deferrals"))
+    cap = entry.get("defer_cap_seconds")
+    cap_seconds = float(cap) if isinstance(cap, (int, float)) and not isinstance(cap, bool) and cap > 0 else None
+    return {
+        "max_deferrals": attempts if attempts is not None else DEFAULT_MAX_DEFERRALS,
+        "defer_cap_seconds": cap_seconds if cap_seconds is not None else DEFAULT_DEFER_CAP_S,
+        "source": SOURCE_CURATED if (attempts is not None or cap_seconds is not None) else SOURCE_GATEWAY,
+        "path": str(SETTINGS_PATH),
+    }
 
 
 def lane_budget(modality: str) -> Budget:

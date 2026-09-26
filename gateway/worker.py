@@ -66,13 +66,17 @@ _TRANSIENT_SITE_CODES = {"LOCATION_NOT_READY", "LOCATION_UNREACHABLE"}
 #: minutes in total, and nine dispatch attempts. Ceiling — a fleet busy for longer
 #: than that still fails work it would eventually have run. Upgrade path — make both
 #: numbers settings beside the pool size, which is where an owner would look.
-_MAX_DEFERRALS = 8
-_DEFER_CAP_S = 60.0
+#: **Editable now** — `concurrency.queue_wait_budget()` reads `queue.max_deferrals` and
+#: `queue.defer_cap_seconds` from the same settings file as the pool size, live, without a restart.
+#: These two names remain as the defaults a fresh profile starts from, because tests and callers
+#: refer to them.
+_MAX_DEFERRALS = concurrency.DEFAULT_MAX_DEFERRALS
+_DEFER_CAP_S = concurrency.DEFAULT_DEFER_CAP_S
 
 
-def _defer_delay(attempts: int) -> float:
+def _defer_delay(attempts: int, cap_s: float | None = None) -> float:
     """2s, 4s, 8s … capped. Long enough not to hammer a busy machine."""
-    return min(2.0 ** max(int(attempts), 0), _DEFER_CAP_S)
+    return min(2.0 ** max(int(attempts), 0), _DEFER_CAP_S if cap_s is None else float(cap_s))
 
 
 def _defer_if_transient(
@@ -106,10 +110,15 @@ def _defer_if_transient(
         return False
     if exc.upstream_accepted is not False or unknown:
         return False
+    wait = concurrency.queue_wait_budget()
     attempts = int(current.get("attempt_count") or 0)
-    if attempts > _MAX_DEFERRALS:
+    if attempts > int(wait["max_deferrals"]):
         return False
-    return bool(defer(job_id, delay_s=_defer_delay(attempts), reason=str(exc)[:300]))
+    return bool(defer(
+        job_id,
+        delay_s=_defer_delay(attempts, wait["defer_cap_seconds"]),
+        reason=str(exc)[:300],
+    ))
 
 log = logging.getLogger("gateway.worker")
 
@@ -314,15 +323,31 @@ def execute_job(job: dict[str, Any], store: JobStore) -> None:
             # A 5xx, or a failure carrying no status at all after dispatch, stays
             # ambiguous because the request may have arrived.
             definite_refusal = isinstance(exc.status, int) and 400 <= exc.status < 500
-            unknown = bool(current.get("upstream_job_id")) or exc.upstream_accepted is True
-            if not definite_refusal:
-                # Once dispatch began, an adapter that cannot prove pre-acceptance
-                # must be treated as ambiguous even when it calls the failure
-                # retryable.
-                unknown = unknown or (
-                    current.get("dispatch_started_at") is not None
-                    and exc.upstream_accepted is None
-                )
+            # **An adapter that followed its own upstream id to a terminal answer has settled the
+            # question every heuristic below is guessing at, so it outranks all of them.** The id
+            # itself proves only that a container was created: Studio Hub creates a batch and
+            # validates the item afterwards, so a refused or failed item leaves an id behind with
+            # nothing running. Without this, every ordinary Hub item failure — a validation refusal,
+            # a model error, an engine out of memory — became a durable `unknown_outcome` hold
+            # asking the operator to reconcile work that never ran. Measured live 2026-09-26: a 422
+            # geometry refusal and a 409 "machine busy" refusal both read "reconcile the provider
+            # request before retrying; the gateway will not resubmit it automatically".
+            #
+            # Only an adapter that polled its id to a terminal state sets this. Every path that may
+            # still be running leaves it false — including a failure fetching an artifact for an
+            # item that succeeded — and those keep the hold.
+            if exc.upstream_settled:
+                unknown = False
+            else:
+                unknown = bool(current.get("upstream_job_id")) or exc.upstream_accepted is True
+                if not definite_refusal:
+                    # Once dispatch began, an adapter that cannot prove pre-acceptance
+                    # must be treated as ambiguous even when it calls the failure
+                    # retryable.
+                    unknown = unknown or (
+                        current.get("dispatch_started_at") is not None
+                        and exc.upstream_accepted is None
+                    )
             if exc.code == "PROVIDER_SUBMISSION_UNCERTAIN":
                 unknown = True
             detail = _unknown_detail(str(exc)) if unknown else str(exc)[:500]

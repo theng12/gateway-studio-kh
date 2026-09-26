@@ -657,7 +657,41 @@ def _job_envelope(job: dict[str, Any]) -> dict[str, Any]:
         body["failure_class"] = "provider_error"
         body["failure_reason"] = job.get("error_detail") or "generation failed"
 
+    _publish_queue_evidence(body, job)
+
     return body
+
+
+def _publish_queue_evidence(body: dict[str, Any], job: dict[str, Any]) -> None:
+    """Say when a job is waiting in the gateway's own queue, in the words Story already reads.
+
+    `store.defer()` puts a job back with a `next_action_at` and a reason when every location that
+    offers the model is merely busy, and this envelope published `null` for all three queue fields —
+    so a queued job and a slow one looked identical to the caller, and Story's Jobs page (which has
+    read these fields all along, and renders *"Waiting in the GenStudio provider queue… position N…
+    about 2 minutes… pacing new requests"*) could never show the queue the owner asked for.
+
+    The vocabulary is Story's own: `queue_reason` is exactly `provider_pace | null` in its contract,
+    so this fills that field rather than inventing a second one.
+
+    `queue_eta_seconds` is **when this gateway will try again**, which is the only figure it can
+    honestly give: it is not a prediction of when the provider will finish, and it is not published
+    as one.
+    """
+    if not job.get("defer_reason"):
+        return
+    body["queue_reason"] = "provider_pace"
+    next_action = job.get("next_action_at")
+    if isinstance(next_action, (int, float)):
+        body["queue_eta_seconds"] = max(0, int(round(next_action - time.time())))
+    position_of = getattr(store, "queue_position", None)
+    if position_of is not None:
+        try:
+            position = position_of(job["id"])
+        except Exception:  # noqa: BLE001 - a queue figure must never fail a job response
+            position = None
+        if isinstance(position, int) and position >= 1:
+            body["queue_position"] = position
 
 
 def catalog_encode(job: dict[str, Any]) -> str:

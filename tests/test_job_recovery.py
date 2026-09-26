@@ -47,6 +47,7 @@ class _RetryingAdapter:
         status: int | None = None,
         retryable: bool = True,
         code: str = "PROVIDER_UNAVAILABLE",
+        upstream_settled: bool = False,
     ) -> None:
         self.calls = 0
         self.checkpoint = checkpoint
@@ -54,6 +55,7 @@ class _RetryingAdapter:
         self.status = status
         self.retryable = retryable
         self.code = code
+        self.upstream_settled = upstream_settled
 
     def generate(self, request):
         self.calls += 1
@@ -65,6 +67,7 @@ class _RetryingAdapter:
             status=self.status,
             retryable=self.retryable,
             upstream_accepted=self.upstream_accepted,
+            upstream_settled=self.upstream_settled,
         )
 
 
@@ -302,6 +305,37 @@ class JobRecoveryTests(unittest.TestCase):
             self.assertEqual(failed["state"], "failed")
             self.assertEqual(failed["error_code"], "PROVIDER_FAILED")
             self.assertNotEqual(failed["recovery_state"], "unknown_outcome")
+            self.assertIsNone(failed["recovery_state"])
+        finally:
+            store.close()
+
+    def test_a_settled_upstream_failure_is_not_an_unknown_hold(self) -> None:
+        """A batch id is a container, not a promise that work is pending.
+
+        Studio Hub creates a batch and only then validates the item, so every refused or failed
+        item leaves an upstream id on the job. Treating that id as ambiguity turned ordinary
+        failures — a validation refusal, a model error, an engine out of memory — into durable
+        `unknown_outcome` holds asking the operator to reconcile work that never ran. Measured
+        live 2026-09-26 on a 422 geometry refusal and a 409 "machine busy" refusal.
+        """
+        store = self.make_store("settled")
+        adapter = _RetryingAdapter(
+            checkpoint=True, upstream_settled=True, retryable=False, code="PROVIDER_FAILED"
+        )
+        row = self.submit(store, "settled-item-failure")
+        self.assertTrue(store.mark_running(row["id"]))
+        try:
+            with patch.object(worker_module, "registry", _Registry()), patch.object(
+                worker_module, "adapter_for", return_value=adapter
+            ):
+                worker_module.execute_job(row, store)
+            failed = store.get(row["id"])
+            self.assertEqual(adapter.calls, 1)
+            self.assertEqual(failed["state"], "failed")
+            self.assertEqual(failed["error_code"], "PROVIDER_FAILED")
+            # The id is still recorded — it is how the operator finds the batch — but it no longer
+            # implies that something may be running.
+            self.assertEqual(failed["upstream_job_id"], "upstream-123")
             self.assertIsNone(failed["recovery_state"])
         finally:
             store.close()

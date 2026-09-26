@@ -509,6 +509,38 @@ class JobStore:
             self._conn.commit()
             return True
 
+    def queue_position(self, job_id: str) -> int | None:
+        """Where this job sits in the gateway's own queue, 1-based, or `None`.
+
+        **The gateway has had a queue since 2026-09-25 and published nothing about it.** `defer()`
+        puts a job back with a `next_action_at` and a reason, and the caller could not tell a queued
+        job from a slow one: Story's Jobs page reads `queue_position`, `queue_eta_seconds` and
+        `queue_reason` — it renders *"Waiting in the GenStudio provider queue… position N… about 2
+        minutes… pacing new requests"* — and the job envelope hardcoded all three to `null`, so none
+        of that could ever appear.
+
+        Position counts the **deferred** jobs of the same modality created before this one, so 1 is
+        next. It is a position among waiting jobs, not a promise about machines: a job that has been
+        dispatched is not in this queue at all.
+        """
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT modality, created_at, defer_reason FROM jobs WHERE id = ?", (job_id,)
+            ).fetchone()
+            # A job that is not waiting has no position. Returning 1 for a freshly submitted job
+            # would read as "you are next" to a caller that is simply running.
+            if row is None or not row["defer_reason"]:
+                return None
+            # Ties are broken by id, so two jobs created in the same microsecond still have an
+            # order rather than both being told they are next.
+            ahead = self._conn.execute(
+                "SELECT COUNT(*) FROM jobs "
+                " WHERE state = 'accepted' AND defer_reason IS NOT NULL AND modality = ? "
+                "   AND (created_at < ? OR (created_at = ? AND id < ?))",
+                (row["modality"], row["created_at"], row["created_at"], job_id),
+            ).fetchone()[0]
+        return int(ahead) + 1
+
     def begin_dispatch(self, job_id: str) -> bool:
         """Open the dispatch window only while a running job has no cancel request."""
         with self._lock:
