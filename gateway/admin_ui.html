@@ -1301,11 +1301,17 @@ function renderMeasured(data) {
   if (!target) return;
   const rows = (Array.isArray(data.rows) ? data.rows : []).map(r => {
     const stated = r.stated || {};
-    // A model that is not in the catalogue reads as unknown, not as unlimited — the
-    // same distinction the API makes with `null`.
-    const ceiling = stated.max_output_tokens == null
+    // **Three states, not two**, and the live record is what showed the difference:
+    // `stated: null` is a model the catalogue does not carry (disabled, or withheld),
+    // while a stated row whose `max_output_tokens` is `null` *is* in the catalogue and
+    // simply declares no ceiling — `openai-direct::gpt-6-luna` is exactly that.
+    // Rendering both as "not in catalogue" told a reader a model was missing when it
+    // was present. `null` means unknown either way, never unlimited.
+    const ceiling = r.stated == null
       ? '<span class="muted">not in catalogue</span>'
-      : `${esc(stated.max_output_tokens)} <span class="muted">${esc(stated.max_output_tokens_source || '')}</span>`;
+      : (stated.max_output_tokens == null
+        ? '<span class="muted">none stated</span>'
+        : `${esc(stated.max_output_tokens)} <span class="muted">${esc(stated.max_output_tokens_source || '')}</span>`);
     const machines = Object.keys(r.machines || {});
     return `
       <tr>

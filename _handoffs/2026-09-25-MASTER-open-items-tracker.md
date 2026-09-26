@@ -610,12 +610,23 @@ stop reading its silence as an answer. That line is worth more than the four row
   (`bool` is an `int` in Python, and read as a number it entered the record as a
   one-token completion until a test caught it).
   last verified: `tests/test_qualification.py` → 21 checks; `test_console_actions.js`
-  → 5 new; `test_e2e.py` → 7 new, **557/557**; focused suites all green.
+  → 5 new; `test_e2e.py` → 7 new, **564/564**; focused suites all green. Read live off
+  the **running** 0.2.39 gateway — 10 measured rows, and the local lane reads
+  `studio-hub-9701220bf30f / Qwen3.5-9B-4bit` **13 jobs, largest that ran 4,096,
+  stated 4,096 by `provider`** (the other three locations: 2,350 / 841 / 27).
   One defect the tests caught and it is worth naming because it will recur:
   `limit: int = Query(50, ge=1, le=500)` makes the **default a `Query` object**, so a
   direct call reaches SQLite as `type 'Query' is not supported` and the route is
   reachable only over HTTP. This route declares it with `Annotated`;
   `/admin/api/jobs` still has the old shape.
+  And one defect the **live data** caught that no fixture would have: the panel
+  collapsed *"not in the catalogue"* and *"in the catalogue, but it states no
+  ceiling"* into one string — `openai-direct::gpt-6-luna` publishes
+  `max_output_tokens: null` **with** `max_output_tokens_source: "gateway"` — so it
+  told the reader a model was missing when it was present. Three states now, and a
+  test. The `null`-with-a-source is deliberate (`_limit_with_source`: the three-word
+  `provider`/`curated`/`gateway` vocabulary has no word for "nobody said", and adding
+  one breaks readers that know only three) and is left exactly as it is.
 
 - [ ] **GW-10 — nothing yet tells a caller that a completion was truncated at the
   cap.** found 2026-09-26 while building GW-9, owe: whoever wants it ·

@@ -92,26 +92,45 @@ change is a reader, not a schema.
   call it directly.
 
 `tests/test_qualification.py` → 21 checks; `test_console_actions.js` → 5 new;
-`test_e2e.py` → 7 new, **557/557**.
+`test_e2e.py` → 7 new, **564/564**.
 
 ### What it measured, while it was being built `[MEASURED 2026-09-26]`
+
+Read off the **running** 0.2.39 gateway, `GET /admin/api/qualification`:
+
+| lane / model | jobs | largest that ran | stated | stated by | tok/s |
+|---|---|---|---|---|---|
+| `openrouter-main` deepseek-v4-flash | 1 | 15,139 | 384,000 | provider | — |
+| `experiential-labs` deepseek-v4.1-flash | 1 | 8,483 | *(not catalogued)* | — | — |
+| `openai-direct` gpt-6-luna | 19 | 6,221 | null | gateway | — |
+| `tokenharbor` mimo-v2.5:free | 1 | 5,045 | 128,000 | curated | — |
+| **`studio-hub-9701220bf30f` Qwen3.5-9B-4bit** | **13** | **4,096** | **4,096** | **provider** | **16.8** |
+| `studio-hub-b8ccda585b97` Qwen3.5-9B-4bit | 2 | 2,350 | 4,096 | provider | 16.6 |
+| `studio-hub-de7250e146a7` Qwen3.5-9B-4bit | 5 | 841 | 4,096 | provider | 14.2 |
+| `studio-hub-local` Qwen3.5-9B-4bit | 3 | 27 | 4,096 | provider | 11.6 |
 
 - The **chat lane names no machine.** Its payload carries `finish_reason`, `model`,
   `usage` and `generation_seconds` and nothing that identifies a Mac, so a chat
   model's envelope is per location until Studio Hub names one. The image, voice and
   music lanes do name one.
-- **4 of 13 `Qwen3.5-9B-4bit` jobs stopped at exactly 4,096 completion tokens, and all
-  13 reported `finish_reason: "stop"`.** The cap is being hit and reported as a clean
-  stop — so *"finish_reason must be a clean stop"* does not, on its own, detect
-  truncation. Only the measured maximum next to the stated ceiling shows it. **This
-  is the finding to carry to Studio Hub**, and it is exactly what this record exists
-  to make visible.
-- **The same model measured 17.3 tokens/second** (489 tokens in 28.2 s), 1.22
-  tokens/word, 7.0 characters/word, 5.7 characters/token. At that rate **16,384
-  tokens does not fit a 900-second deadline** (945 s) and 8,192 does (472 s).
-- Highest completion seen per cloud lane: openrouter `deepseek-v4-flash` 15,139;
-  experiential-labs `deepseek-v4.1-flash` 8,483; openai `gpt-6-luna` 6,221;
-  tokenharbor `mimo-v2.5:free` 5,045.
+- **4 of the 13 stopped at exactly 4,096 completion tokens, and all 13 reported
+  `finish_reason: "stop"`.** The cap is being hit and reported as a clean stop — so
+  *"finish_reason must be a clean stop"* does not, on its own, detect truncation.
+  Only the measured maximum next to the stated ceiling shows it. This is HUB-18 and
+  GW-10 in the master tracker, with the arithmetic below.
+- **The same model measured 16.8–17.3 tokens/second**, 1.22 tokens/word, 7.0
+  characters/word, 5.7 characters/token. At that rate **16,384 tokens does not fit a
+  900-second deadline** (945 s) and 8,192 does (472 s).
+- **A source can arrive with no number.** `openai-direct::gpt-6-luna` publishes
+  `max_output_tokens: null` **with** `max_output_tokens_source: "gateway"` — that is
+  `_limit_with_source`'s `if fallback is None: return None, "gateway"` branch, and it
+  is deliberate: the three-word vocabulary (`provider`/`curated`/`gateway`) has no
+  fourth word for "nobody said", and adding one is a breaking change for a reader that
+  knows only three. **Left exactly as it is.** What it did cost was a bug in the new
+  console panel, which collapsed *"not in the catalogue"* and *"in the catalogue, but
+  it states no ceiling"* into one string and so told the reader a model was missing
+  when it was present. The panel now has **three** states, and there is a test.
+  The live record is what showed it; a fixture would not have.
 
 
 **This is the change that makes a fleet worth owning.** The worker ran exactly one

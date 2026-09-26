@@ -471,6 +471,21 @@ test('a model outside the catalogue reads as unknown, not as unlimited', () => {
   assert.match(target.innerHTML, /4096/, 'its measured maximum is still published');
 });
 
+test('a model that IS catalogued but states no ceiling is not called missing', () => {
+  // Found by reading the live record: `openai-direct::gpt-6-luna` is in the catalogue
+  // with `max_output_tokens: null` (it declares no output limit). Rendering that as
+  // "not in catalogue" told the reader a model was absent when it was present — two
+  // different facts collapsed into one string.
+  const target = element();
+  const context = measuredContext(target);
+  vm.runInContext(`renderMeasured(${JSON.stringify({
+    rows: [measuredRow({ stated: { max_output_tokens: null, max_output_tokens_source: 'gateway' } })],
+    window: 500, note: '',
+  })})`, context);
+  assert.match(target.innerHTML, /none stated/);
+  assert.doesNotMatch(target.innerHTML, /not in catalogue/);
+});
+
 test('a chat model names no machine and the cell says so rather than guessing', () => {
   const target = element();
   const context = measuredContext(target);
