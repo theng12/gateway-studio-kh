@@ -457,8 +457,21 @@ final class JobsSection: NSObject, AppSection, NSTableViewDataSource, NSTableVie
         // our own queue rather than being reported as broken, and saying so is the
         // whole point — `accepted` alone reads as "not started", which is a
         // different thing from "the machine was busy and we are trying again".
+        // **The reason is not the whole answer.** "The machine is busy" leaves the two questions
+        // the owner actually has — *how far back am I* and *when will it try again* — and the
+        // gateway publishes both: `queue_position` is a real rank among the waiting jobs of the same
+        // modality, and `retry_in_s` is when this gateway makes its next attempt (not a promise about
+        // the provider). Each is drawn only when present, so a queue the gateway cannot count does
+        // not read as "position zero".
         if let waiting = string(job["defer_reason"]), !waiting.isEmpty {
-            let label = PageKit.help("Waiting for a free machine — \(waiting)")
+            var line = "Waiting for a free machine"
+            if let position = integer(job["queue_position"]), position > 0 {
+                line += " — position \(position)"
+            }
+            if let retry = integer(job["retry_in_s"]), retry > 0 {
+                line += ", trying again in \(Self.shortDuration(retry))"
+            }
+            let label = PageKit.help("\(line). \(waiting)")
             label.textColor = .systemOrange
             detailStack.addArrangedSubview(label)
         }
@@ -926,6 +939,14 @@ final class JobsSection: NSObject, AppSection, NSTableViewDataSource, NSTableVie
 
     private func outputKey(jobID: String, assetID: String) -> String {
         "\(jobID)\u{001F}\(assetID)"
+    }
+
+    /// "45s" / "3m 20s" — for a countdown the owner reads at a glance, not a wall clock.
+    static func shortDuration(_ seconds: Int) -> String {
+        if seconds < 60 { return "\(seconds)s" }
+        let minutes = seconds / 60
+        let rest = seconds % 60
+        return rest == 0 ? "\(minutes)m" : "\(minutes)m \(rest)s"
     }
 
     private func integer(_ value: Any?) -> Int? {

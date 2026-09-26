@@ -11,14 +11,14 @@ project does not say why, and nobody should guess.
 
 | Thing | Value |
 |---|---|
-| Current release | **0.2.52** — `repository/VERSION`, one line, the only place to bump. **A settled Hub item no longer becomes a recovery hold, and the gateway's own queue is published** (see *What 0.2.52 changes* below) |
+| Current release | **0.2.53** — `repository/VERSION`, one line, the only place to bump. **A settled Hub item no longer becomes a recovery hold, the queue is published, and the Jobs window now shows your place in it** (see *What 0.2.52/0.2.53 change* below) |
 | Declared Studio Hub | **0.6.65** — `adapters.studio_hub.SUPPORTED_STUDIO_HUB_VERSION`, published on `/health`; a controller on another version is reported, never refused. Set on 2026-09-25 from a **running** Hub (`/api/version` → `0.6.65` build `37cb07b`), not a changelog `[MEASURED]` |
 | Branch | `main` = `origin/main`, clean tree; remote `github.com/theng12/gateway-kh` |
 | Running build | `/Applications/gateway-kh.app`, port **8787**, stamp `abe4c3f-202609261215` — measured on `/health` after respawning the process by **PID** under the newly built app; the app's `Info.plist` carries the same stamp, so **Check Gateway** agrees. The old stamp was `2da713b-202609260646`, and it survived a rebuild plus a gateway kill until the *app* was replaced too: the app passes its own `GatewayBuild` on spawn `[MEASURED 2026-09-26]` |
-| Distribution | DMG in `repository/dist/` (`gateway-kh-0.2.52.dmg`), named by version alone; the previous one moved to `_trash/dist/` |
+| Distribution | DMG in `repository/dist/` (`gateway-kh-0.2.53.dmg`), named by version alone; the previous one moved to `_trash/dist/` |
 | SSD/setup kit | `repository/dist/setup-kit/`, **pinned to GatewayKH 0.2.44** and refreshed onto all four `KH-STUDIO-*` drives on **2026-09-26**, `shasum -a 256 -c` OK on every one. The drives also carry `Studio Hub.app` **0.6.70**. Superseded kits are in each drive's `_trash/superseded-kit-2026-09-26/` (`GatewayKH-0.2.27`, `GatewayKH-0.2.43`) |
 
-## What 0.2.52 changes
+## What 0.2.52/0.2.53 change
 
 Two things, both measured live on 2026-09-26.
 
@@ -52,6 +52,22 @@ The two `ponytail:` constants that bounded the wait — eight deferrals, backoff
 about four minutes in total — are now settings beside the pool size (`queue.max_deferrals`,
 `queue.defer_cap_seconds`), read live with the same defaults. That ceiling is why a fleet busy for
 longer failed work it would eventually have run, which is the owner's own requirement inverted.
+
+**0.2.53 answers the other half of the queue: showing it.** Publishing the three fields was only
+useful where something draws them, and the surface the owner actually watches is the menu-bar app's
+Jobs window — which showed *"Waiting for a free machine — <reason>"* and nothing about **how far back**
+the job was or **when** it would be tried again. `/admin/api/jobs` now carries `queue_position` (a real
+rank among the waiting jobs of the same modality, and only when the job *is* waiting) and `retry_in_s`
+(seconds to this gateway's next attempt — never a prediction about the provider), and the Jobs window
+renders them as *"Waiting for a free machine — position 2, trying again in 45s"*. Each part is drawn
+only when present, so a queue the gateway cannot count does not read as *position zero*. The console's
+recent-jobs list carries a `waiting #N` badge for the same reason.
+
+**One caveat worth keeping.** `store.defer()` and its wait have still never fired in live traffic —
+zero jobs with a `defer_reason` since 2026-09-25. Everything above is therefore verified by tests and
+by construction, not by a queue the owner has seen fill. The first real busy-fleet refusal will be the
+first live evidence, and `tests/test_queue_visibility.py` plus `tests/test_job_deferral.py` are what
+stand in for it until then.
 
 **Verified live after the rebuild**, on the very request that used to hold: `recovery_required: false`,
 `recovery_state: null`, and the batch id still recorded for the operator.

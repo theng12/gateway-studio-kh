@@ -1580,6 +1580,19 @@ def list_jobs(
                 # waiting", and only one of those is worth the owner's attention.
                 "defer_reason": job.get("defer_reason"),
                 "next_action_at": job.get("next_action_at"),
+                # **How far back in the queue this job is, and when it will be tried again.**
+                # `defer_reason` alone says *why* it is waiting and leaves the two questions the
+                # owner actually has — "am I next?" and "when?" — to be guessed at. The position is
+                # a real rank among the waiting jobs of the same modality, and `retry_in_s` is when
+                # this gateway will make its next attempt, not a prediction about the provider.
+                "queue_position": (
+                    store.queue_position(job["id"]) if job.get("defer_reason") else None
+                ),
+                "retry_in_s": (
+                    max(0, int(round(float(job["next_action_at"]) - time.time())))
+                    if job.get("defer_reason") and job.get("next_action_at") is not None
+                    else None
+                ),
                 "has_artifact": bool(job.get("asset_path")),
                 "error_code": job.get("error_code"),
                 "error_detail": job.get("error_detail"),

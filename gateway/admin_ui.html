@@ -2089,6 +2089,7 @@ async function renderCreateRecent() {
       rows.map(j => `<div class="item">
         <span class="mid">${esc(j.short_id || j.id.slice(0, 8))}</span>
         <span class="badge ${j.state === 'succeeded' ? 'ok' : (j.state === 'failed' ? 'bad' : '')}">${esc(j.state)}</span>
+        ${j.defer_reason ? `<span class="badge" title="${esc(j.defer_reason)}">waiting${j.queue_position ? ' #' + j.queue_position : ''}</span>` : ''}
         <span class="hint">${esc(j.model_name || j.model_id || '')}</span>
         <button class="sm" onclick="openCreateJob('${j.id}')">Open</button>
       </div>`).join('');
