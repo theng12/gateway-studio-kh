@@ -720,22 +720,62 @@ stop reading its silence as an answer. That line is worth more than the four row
   | 12,288 | 1,024 s | 878 s | 683 s | **over** | — |
   | 16,384 | 1,365 s | 1,170 s | 910 s | **over** | — |
 
-  **The recommendation is 8,192**, and the reasoning is the table above rather than a
-  round number: it is where narrative work is **fully served** — 3 chapters per call,
-  Story's own coherence cap, so a larger ceiling cannot improve it — while an M1's
-  worst case still leaves **217 s** for model load and prefill, which a warm worker
-  covers comfortably. **7,168 is the more conservative choice and costs nothing**:
-  66 % of the deadline, 303 s of slack, and 3 chapters per call still fit. **Anything
-  above 9,216 excludes the M1 from the fleet entirely**, because the gateway routes to
-  any location and a job that lands on the slow one dies at our hop.
+  **At the 900 s proxy, 8,192 is the largest value that keeps every Mac in the fleet
+  usable**, and the reasoning is the table above rather than a round number: it is
+  where narrative work is **fully served** — 3 chapters per call, Story's own coherence
+  cap, so a larger ceiling cannot improve it — while an M1's worst case still leaves
+  **217 s** for model load and prefill. **7,168 is the more conservative choice and
+  costs nothing**: 66 % of the deadline, 303 s of slack, and 3 chapters per call still
+  fit. **Above 9,216 the M1 is excluded at this proxy** (12,288 = 1,024 s), because the
+  gateway routes to any location and a job that lands on the slow one dies at our hop.
+  **The owner's decision below resolves that by raising the proxy with the ceiling**,
+  which is the better answer and supersedes this recommendation.
 
   **If you want 16,384, it takes two constants and not one.** `PEER_PROXY_TIMEOUT_S`
   must go **900 → 1,800** alongside the ceiling: 16,384 on an M1 is 1,365 s, which
   against an 1,800 s proxy is **76 %** — precisely the margin 8,192 has against 900 s
   today. The price is that a hung job holds a worker for thirty minutes instead of
-  fifteen, which is a real cost at a site with more work than machines. Our ask stays
-  **8,192**: it removes the round trip, needs one constant, and lands inside the
-  deadline on every Mac in the fleet. See GW-12 for the route-aware alternative.
+  fifteen, which is a real cost at a site with more work than machines. See GW-12 for
+  the route-aware alternative.
+
+  **DECISION — the owner's, 2026-09-26: raise BOTH, ceiling 16,384 and proxy 1,800.**
+  Ask for **both constants in the same build.** Verified before it was recorded:
+
+  - **It is margin-neutral, exactly.** 16,384 against 1,800 s gives a worst case of
+    **76 % on M1, 65 % on M2, 51 % on M4** — the *identical* percentages that 8,192
+    against 900 s gives today. No chip loses headroom and every chip doubles capacity.
+  - **One constant drives the whole ceiling, confirmed in your code rather than
+    assumed.** `llm_engine.py` sets `self.max_output_tokens =
+    FALLBACK_MAX_OUTPUT_TOKENS` when the checkpoint states nothing; `model_limits`
+    returns that as `max_output_tokens.value`; that value becomes the `max_tokens`
+    `maximum` on the parameter surface. Raising the fallback therefore raises the
+    ceiling, our published figure and Story Studio's chunk threshold together —
+    **nothing else needs coordinating.**
+  - **Nothing on our side caps it.** `lane_deadline_seconds` returns your stated number
+    unchanged and the chat lane's HTTP timeout *is* that number; the 600 s and 300 s
+    timeouts in that adapter are artifact downloads on the image and transcription
+    paths and do not apply.
+  - **The workload fits with slack.** 30 scene prompts × your ~403 tokens per scene =
+    **12,090 tokens**, 74 % of the ceiling, leaving **546 tokens per scene against your
+    403 estimate — 36 % of room** before a scene is lost. On an M1 that is **1,008 s of
+    the 1,800 s**.
+
+  **One correction to the reasoning, so the expectation is right: this buys the scene
+  prompts, not the script.** Story caps narrative batches at **3 chapters for
+  coherence**, and 3 × 1,200 words is only ~5,220 tokens — already comfortably inside
+  8,192. Raising to 16,384 does **not** put more chapters in a call. What it buys is
+  the **30-scene prompt request in one go**, which 8,192 cannot carry (it holds ~20),
+  and room to grow to ~40.
+  **The one unverified input is the ~403 tokens per scene.** That is Story's figure,
+  we have no local measurement of it, and the whole plan rests on it. The 36 % slack
+  absorbs a fair amount of error, and `measured.max_completion_tokens` on
+  `GET /v1/models` will show the real figure once scene jobs have run at the new
+  ceiling — worth a look after the first batch rather than assuming.
+  **And a cost to accept knowingly:** every chat job, including a two-minute one, may
+  now hang for thirty minutes before being declared dead instead of fifteen. That is
+  the price of the larger ceiling, and the fast jobs pay it too. A timeout scaling with
+  the request's own `max_tokens` would pay it only where it is earned — worth doing on
+  your side if it is cheap, and not something we need.
 
 
 - [ ] **STORY-6 — do NOT remove the chunker. It is right, and the constant behind it
