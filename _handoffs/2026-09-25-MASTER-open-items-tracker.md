@@ -1389,11 +1389,22 @@ stop reading its silence as an answer. That line is worth more than the four row
      callback is `checkpoint(upstream_id)`, so this means a new callback or a store
      handle on the request, plus a bounded write per poll interval. Bigger, and it is
      the only version that helps somebody watching a job that has not finished.
-  **Not built.** It is new scope, nobody has asked for it, and the honest first step is
-  1 — which is also the thing that would tell us whether stalls are common enough on
-  this fleet to justify 2. Recorded with the field names because the offer said
-  `stalled_seconds` is "on every job row" and on the row we poll it is **not**: see the
-  two-surface table above.
+  **STEP 1 BUILT, 2026-09-26 in 0.2.44.** `HubProgress` in
+  `gateway/adapters/studio_hub.py` collects the worst figure across the poll and the
+  image, voice and transcription lanes publish it as **`hub_progress`** on the settled
+  job: `{stalled, worst_no_progress_s, stalled_after_s, samples}`, or **`None`** when the
+  Hub stated no figure at all — *"we were not told"* and *"we were told it did not
+  stall"* must not share a value. The worst is kept rather than the last, and `stalled`
+  **latches**, because one poll past the threshold is a fact about the run and a later
+  fresh poll must not erase it. The timeout message now carries it:
+  *"did not finish within 1800s; the Hub reported it stalled, with no progress for 1700s
+  against a 900s threshold."* `tests/test_hub_progress.py` → 11 checks.
+  **Step 2 is still open and still unbuilt** — a caller watching an unfinished job sees
+  `running` throughout, and the live half needs what is described above. **What step 1
+  buys is the evidence for deciding on step 2:** `hub_progress` now records on every
+  routed job whether stalls happen here at all, and how long they last. If they are rare,
+  step 2 is machinery for a case that does not occur; if they are common, it is the
+  difference between a 30-minute deadline being safe and merely long.
 
 - [ ] **GW-12 — a ceiling could be higher than any one Mac can meet, if routing
   respected the per-chip rate.** found 2026-09-26 answering the owner's sizing question

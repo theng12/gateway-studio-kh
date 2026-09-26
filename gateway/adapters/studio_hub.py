@@ -285,6 +285,82 @@ def lane_deadline_seconds(request: BackendRequest | None) -> float:
     return JOB_DEADLINE_S
 
 
+class HubProgress:
+    """The worst progress the Hub reported while this gateway polled one batch.
+
+    **The first consumer of a field Studio Hub added and nothing reads yet** — their
+    own words, 2026-09-26: *"it is on the row now… nothing in our native app consumes
+    it yet, so you would be first."* It is collected here because the chat and voice
+    deadlines are now **1,800 s**, and the Hub's argument for why a thirty-minute
+    ceiling is *safe* rather than merely long is that a stall is visible — which is
+    only true if something shows it. On this path that something is us: Story Studio
+    cannot reach a Hub.
+
+    **Every poll's figure is already in the response we read** — `/api/hub/jobs/{id}`
+    carries `stalled`, `no_progress_s` and `stalled_after_s` — so this costs no extra
+    request. It is a **record**, not a live signal: a caller watching an unfinished job
+    still sees `running` until it settles. That half needs a write back to our own job
+    row mid-flight and is deliberately not built; see GW-13.
+
+    **The two stall vocabularies are close enough to be confused, and are not the same
+    field.** These are the *progress-based* ones (`broker.py`: `stalled_after_s =
+    max(15 min, 5 × average)`, `stalled = no_progress_s >= stalled_after_s`). The
+    *silence-based* `stalled_seconds` (120 s, `stall.py`) lives on `/api/hub/stats` →
+    `fleet_activity`, a surface we do not poll for a job.
+    """
+
+    __slots__ = ("stalled", "worst_no_progress_s", "stalled_after_s", "samples")
+
+    def __init__(self) -> None:
+        self.stalled = False
+        self.worst_no_progress_s: float | None = None
+        self.stalled_after_s: int | None = None
+        self.samples = 0
+
+    def note(self, summary: dict[str, Any]) -> None:
+        """Record one poll's figure, if it stated one."""
+        seconds = summary.get("no_progress_s")
+        # **`None` is "not applicable", never zero.** The Hub sets it only while a
+        # batch is active — a queued or finished job has no progress to be missing —
+        # and folding that in as `0.0` would make every completed job look like it had
+        # the best possible progress and drag the worst-case figure down.
+        if isinstance(seconds, bool) or not isinstance(seconds, (int, float)):
+            return
+        self.samples += 1
+        self.worst_no_progress_s = max(self.worst_no_progress_s or 0.0, float(seconds))
+        after = summary.get("stalled_after_s")
+        if isinstance(after, int) and not isinstance(after, bool):
+            self.stalled_after_s = after
+        if summary.get("stalled") is True:
+            self.stalled = True
+
+    def as_payload(self) -> dict[str, Any] | None:
+        """What to publish, or `None` when the Hub never stated a figure at all.
+
+        **"The Hub said nothing" and "the Hub said it never stalled" are different
+        answers and must not share a value.** An older Hub, or a lane that reports no
+        progress, gets `None` — not a reassuring `stalled: false` this gateway invented
+        out of silence.
+        """
+        if not self.samples:
+            return None
+        return {
+            "stalled": self.stalled,
+            "worst_no_progress_s": self.worst_no_progress_s,
+            "stalled_after_s": self.stalled_after_s,
+            "samples": self.samples,
+        }
+
+    def why(self) -> str:
+        """One clause for an error message, or `""` when it adds nothing."""
+        if not self.stalled:
+            return ""
+        against = (f" against a {self.stalled_after_s}s threshold"
+                   if self.stalled_after_s is not None else "")
+        return (f"; the Hub reported it stalled, with no progress for "
+                f"{self.worst_no_progress_s:.0f}s{against}")
+
+
 def _poll_batch(
     client: httpx.Client,
     base: str,
@@ -293,6 +369,7 @@ def _poll_batch(
     item_index: int,
     jobs_path: str = "/api/hub/jobs",
     deadline_seconds: float | None = None,
+    progress: HubProgress | None = None,
 ) -> dict[str, Any]:
     """Poll a Hub batch to a terminal state.
 
@@ -303,6 +380,12 @@ def _poll_batch(
 
     `deadline_seconds` is the lane's own ceiling when it published one (see
     `lane_deadline_seconds`), and this gateway's flat fallback otherwise.
+
+    `progress` is filled in as we go and read by the caller afterwards. It is passed
+    in rather than returned because the interesting case is the one that **raises**:
+    a job that times out after being stalled for most of its window is exactly what
+    `HubProgress.why()` exists to explain, and a return value never reaches the caller
+    on that path.
     """
     limit = float(deadline_seconds) if deadline_seconds else JOB_DEADLINE_S
     deadline = time.monotonic() + limit
@@ -318,6 +401,8 @@ def _poll_batch(
             )
         summary = response.json() or {}
         last = summary
+        if progress is not None:
+            progress.note(summary)
 
         items = summary.get("items") or []
         item = items[item_index] if item_index < len(items) else None
@@ -346,7 +431,8 @@ def _poll_batch(
         time.sleep(POLL_INTERVAL_S)
 
     raise BackendError(
-        f"hub job did not finish within {int(limit)}s",
+        f"hub job did not finish within {int(limit)}s"
+        + (progress.why() if progress is not None else ""),
         code="PROVIDER_SUBMISSION_UNCERTAIN",
         retryable=True,
     )
@@ -867,9 +953,11 @@ def _generate_image_or_voice(request: BackendRequest) -> BackendResult:
         if request.checkpoint is not None:
             request.checkpoint(batch_id)
 
+        progress = HubProgress()
         outcome = _poll_batch(
             client, base, headers, batch_id, 0,
             deadline_seconds=lane_deadline_seconds(request),
+            progress=progress,
         )
 
         artifact = client.get(
@@ -898,6 +986,10 @@ def _generate_image_or_voice(request: BackendRequest) -> BackendResult:
         "resolved_seed": terminal.get("resolved_seed"),
         "sha256": terminal.get("sha256"),
         "bytes": terminal.get("bytes"),
+        # **How the job went, not just that it finished** — `None` when the Hub
+        # reported no progress figure, which is a different answer from "it never
+        # stalled". See `HubProgress`.
+        "hub_progress": progress.as_payload(),
     }
 
     def deliver() -> dict[str, Any]:
@@ -989,10 +1081,12 @@ def _generate_transcription(request: BackendRequest) -> BackendResult:
         if request.checkpoint is not None:
             request.checkpoint(batch_id)
 
+        progress = HubProgress()
         outcome = _poll_batch(
             client, base, headers, batch_id, 0,
             jobs_path="/api/hub/transcription/jobs",
             deadline_seconds=lane_deadline_seconds(request),
+            progress=progress,
         )
 
         artifact = client.get(
@@ -1007,7 +1101,12 @@ def _generate_transcription(request: BackendRequest) -> BackendResult:
                 status=artifact.status_code,
             )
 
-    payload: dict[str, Any] = {"hub_batch_id": batch_id}
+    payload: dict[str, Any] = {
+        "hub_batch_id": batch_id,
+        # Same record as the image and voice lanes: `None` when the Hub reported no
+        # progress figure, never a reassuring `false` we invented from silence.
+        "hub_progress": progress.as_payload(),
+    }
 
     def deliver() -> dict[str, Any]:
         # Subtitle has its own receipt route; the SRT is only really delivered

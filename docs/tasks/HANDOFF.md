@@ -1,6 +1,6 @@
 # HANDOFF — gateway-kh
 
-**Read this first.** Written 2026-09-26 against **VERSION `0.2.43`**. The running build
+**Read this first.** Written 2026-09-26 against **VERSION `0.2.44`**. The running build
 stamp is on `/health` and in `/Applications/gateway-kh.app/Contents/Resources/gateway/BUILD`.
 If this file disagrees with the code, **the code wins — fix this file in the same change**.
 Every path below is inside the Git checkout `repository/` unless it says otherwise.
@@ -11,11 +11,11 @@ project does not say why, and nobody should guess.
 
 | Thing | Value |
 |---|---|
-| Current release | **0.2.43** — `repository/VERSION`, one line, the only place to bump |
+| Current release | **0.2.44** — `repository/VERSION`, one line, the only place to bump |
 | Declared Studio Hub | **0.6.65** — `adapters.studio_hub.SUPPORTED_STUDIO_HUB_VERSION`, published on `/health`; a controller on another version is reported, never refused. Set on 2026-09-25 from a **running** Hub (`/api/version` → `0.6.65` build `37cb07b`), not a changelog `[MEASURED]` |
 | Branch | `main` = `origin/main`, clean tree; remote `github.com/theng12/gateway-kh` |
 | Running build | `/Applications/gateway-kh.app`, port **8787**, stamp `9607395-202609260239` (`/health` and `…/Resources/gateway/BUILD`) — **this stamp is one commit behind `main` by construction**: `build.sh` stamps `git rev-parse --short HEAD`, so building before committing always leaves the tree one commit ahead of the stamp. Every release in this file has that shape; the deployed *code* is the whole change. The gateway must be **respawned**, not adopted, to carry a new stamp: with *Keep the gateway running after I quit* on, quitting the app leaves the old process holding 8787 and the new app adopts it, so `/health` keeps reporting the old build while serving new code `[MEASURED 2026-09-26]` |
-| Distribution | DMG in `repository/dist/` (`gateway-kh-0.2.43.dmg`), named by version alone |
+| Distribution | DMG in `repository/dist/` (`gateway-kh-0.2.44.dmg`), named by version alone |
 | SSD/setup kit | `repository/dist/setup-kit/`. **The four `KH-STUDIO-*` drives now carry Studio Hub 0.6.65** `[MEASURED 2026-09-25]`, refreshed 21:34–21:40; the GatewayKH side on them is older — check before a rollout |
 
 - **Versions are patch-only for now:** `0.2.1`, `0.2.2`, … up to `0.2.1000`. Increment the
@@ -45,6 +45,45 @@ project does not say why, and nobody should guess.
   "Why port 8787". It was 8000 until the owner moved it (2026-09-21, `Project
   Status.md` §10h: 8000 is the most contested dev port and Story Studio's own
   default). Every Story Studio client points at `http://<host>:8787`.
+
+## WHAT 0.2.44 CHANGED — the first consumer of the Hub's stall signal
+
+Studio Hub added a progress signal to their job rows and offered it, 2026-09-26: *"it is
+on the row now… nothing in our native app consumes it yet, so you would be first."*
+This is that first consumer. It exists because of a number we asked for — the chat and
+voice deadlines are **1,800 s**, and the Hub's argument for why thirty minutes is *safe*
+rather than merely long is that a stall is visible. On this path, that something is us:
+**Story Studio cannot reach a Hub.**
+
+- **`HubProgress`** collects what the poll already returns — `/api/hub/jobs/{id}` carries
+  `stalled`, `no_progress_s` and `stalled_after_s` — and the image, voice and
+  transcription lanes publish it as `hub_progress` on the settled job. **No extra
+  request**: the figures were already in the response we read.
+- **A record, not a live signal.** A caller watching an unfinished job still sees
+  `running` until it settles. The live half needs a write back to our own job row while
+  the poll is in flight, and `BackendRequest` carries no job id — deliberately not built;
+  see GW-13.
+- **What silence must not be read as**, which is most of what the tests pin:
+  * `no_progress_s: None` is the Hub saying *not applicable* — a queued or finished job
+    has no progress to be missing — and folding it in as `0.0` would make every
+    completed job look perfect and drag the worst case down with it;
+  * a Hub that never states a figure publishes **`None`**, never a reassuring
+    `stalled: false` invented out of our own silence;
+  * **`stalled` latches** — one poll past the threshold is a fact about the run, and a
+    later fresh poll must not erase it. The **worst** figure is kept, not the last.
+- **The timeout message now says whether it had stalled.** A job that dies at 1,800 s
+  having reported no progress for 1,700 of them reads as *"did not finish within 1800s;
+  the Hub reported it stalled, with no progress for 1700s against a 900s threshold"*.
+  That is the case the whole feature is for, and it is the one that **raises** — which is
+  why `HubProgress` is passed in rather than returned.
+- **Two stall vocabularies, and they are not the same field.** These are the
+  *progress-based* ones (`broker.py`: threshold `max(15 min, 5 × average)`). The
+  *silence-based* `stalled_seconds` (120 s, `stall.py`) is on `/api/hub/stats` →
+  `fleet_activity`, a surface we do not poll for a job. Studio Hub's note described the
+  second as being "on every job row"; on the row we poll it is **not there**, and a first
+  consumer would have gone looking for it.
+
+`tests/test_hub_progress.py` → **11 checks**.
 
 ## WHAT 0.2.43 CHANGED — the record was blending prose with JSON, and the fleet gate had never run
 
