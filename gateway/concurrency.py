@@ -412,14 +412,27 @@ def _hub_provider_budget(provider_id: str) -> Budget | None:
     return Budget(limit=limit, source=SOURCE_HUB, detail=detail)
 
 
-def settings_view(provider_ids: list[str] | None = None) -> dict[str, Any]:
+def settings_view(provider_ids: list[str] | None = None,
+                  provider_scopes: dict[str, str] | None = None) -> dict[str, Any]:
     """Everything the console needs to show and edit the three ceilings.
 
     `provider_ids` is the providers the caller knows about, so the page can list a
     row for one that has no limit yet — a provider missing from the file is the
     case that most needs a control, and a page that only drew what was already set
     would hide exactly the ones still running at the default.
+
+    `provider_scopes` is `{id: "cloud" | "local"}` from `registry.describe_all()`, passed in
+    rather than derived here because the derivation already exists in one place —
+    `credentials.py` reads it off the provider's **kind**, `studio_hub` being the only local
+    one. A second copy of that rule is free to disagree with the first.
+
+    The scope is on every row because **the two kinds are governed by different rules and the
+    page draws them as separate tabs**: a cloud limit is a number the owner chooses, and a
+    location's is a cap on what the site reports for itself. One list mixing eighteen vendors
+    with six controllers, under one column heading, was the thing the owner asked to have
+    taken apart.
     """
+    scopes = provider_scopes or {}
     known = {str(pid) for pid in (provider_ids or []) if pid}
     known.update(_settings_providers())
     providers = []
@@ -429,6 +442,9 @@ def settings_view(provider_ids: list[str] | None = None) -> dict[str, Any]:
         budget = _hub_provider_budget(provider_id) or cloud_budget(provider_id)
         providers.append({
             "provider_id": provider_id,
+            # `None` rather than a guess when the caller did not say: an unknown scope must not
+            # silently land in the cloud tab, where its limit would be described by the wrong rule.
+            "scope": scopes.get(provider_id),
             **budget.as_dict(),
             # What is written down, as opposed to what is in force — the page needs
             # both to show an unset row as unset rather than as "1".

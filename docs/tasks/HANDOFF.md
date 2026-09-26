@@ -11,11 +11,11 @@ project does not say why, and nobody should guess.
 
 | Thing | Value |
 |---|---|
-| Current release | **0.2.50** — `repository/VERSION`, one line, the only place to bump |
+| Current release | **0.2.51** — `repository/VERSION`, one line, the only place to bump |
 | Declared Studio Hub | **0.6.65** — `adapters.studio_hub.SUPPORTED_STUDIO_HUB_VERSION`, published on `/health`; a controller on another version is reported, never refused. Set on 2026-09-25 from a **running** Hub (`/api/version` → `0.6.65` build `37cb07b`), not a changelog `[MEASURED]` |
 | Branch | `main` = `origin/main`, clean tree; remote `github.com/theng12/gateway-kh` |
 | Running build | `/Applications/gateway-kh.app`, port **8787**, stamp `2da713b-202609260646` (`/health` and `…/Resources/gateway/BUILD`) — **this stamp is one commit behind `main` by construction**: `build.sh` stamps `git rev-parse --short HEAD`, so building before committing always leaves the tree one commit ahead of the stamp. Every release in this file has that shape; the deployed *code* is the whole change. The gateway must be **respawned**, not adopted, to carry a new stamp: with *Keep the gateway running after I quit* on, quitting the app leaves the old process holding 8787 and the new app adopts it, so `/health` keeps reporting the old build while serving new code `[MEASURED 2026-09-26]` |
-| Distribution | DMG in `repository/dist/` (`gateway-kh-0.2.50.dmg`), named by version alone |
+| Distribution | DMG in `repository/dist/` (`gateway-kh-0.2.51.dmg`), named by version alone |
 | SSD/setup kit | `repository/dist/setup-kit/`, **pinned to GatewayKH 0.2.44** and refreshed onto all four `KH-STUDIO-*` drives on **2026-09-26**, `shasum -a 256 -c` OK on every one. The drives also carry `Studio Hub.app` **0.6.70**. Superseded kits are in each drive's `_trash/superseded-kit-2026-09-26/` (`GatewayKH-0.2.27`, `GatewayKH-0.2.43`) |
 
 - **Versions are patch-only for now:** `0.2.1`, `0.2.2`, … up to `0.2.1000`. Increment the
@@ -46,6 +46,44 @@ project does not say why, and nobody should guess.
   "Why port 8787". It was 8000 until the owner moved it (2026-09-21, `Project
   Status.md` §10h: 8000 is the most contested dev port and Story Studio's own
   default). Every Story Studio client points at `http://<host>:8787`.
+
+## WHAT 0.2.51 CHANGED — the two kinds of provider are separate tabs
+
+The owner, looking at the page: *"please make this into tabs for each function it's too spread
+out… and also why is studio hub showing as several providers?"*
+
+**The second question is the reason for the first, and both have the same answer.** A Studio Hub
+location **is** a separate provider — six controllers, each with its own fleet of Macs, each sized
+on its own — but the page drew eighteen cloud vendors and six controllers in **one list under one
+column heading**, where the two are governed by **opposite** rules: a cloud limit is a number the
+owner chooses, while a location's is a **cap on what the site reports for itself**. So the same
+column meant two different things, and you had to read each row's sentence to know which.
+
+- **`scope` is now on every concurrency row** (`cloud` | `local`), from the same
+  `registry.describe_all()` the rest of this console reads. The derivation itself stays in one
+  place — `credentials.py` reads it off the provider's **kind**, `studio_hub` being the only local
+  one — and the admin route passes it in rather than `settings_view` re-deriving it.
+- **The page draws two tabs, with counts**: *Cloud APIs* and *Your fleet*. The pool box stays above
+  them, because it is scope-independent.
+- **An unclassified provider gets its own tab, never Cloud.** `scope: null` means the caller did
+  not say, and folding it into Cloud would explain its limit by a rule that does not apply to it.
+- **A row the page cannot classify is worth looking at**, so that tab's hint says so rather than
+  inviting a number.
+
+**The one design decision that is not cosmetic: a tab HIDES rows, it does not re-render them.**
+`concurrencyPayload()` reads the inputs that are in the document, so a switch that re-rendered would
+drop the other tab's unsaved number — type a cloud limit, glance at the fleet tab, save, and it is
+gone. Every row is in the HTML at all times and the inactive ones carry `display:none`.
+`tests/test_concurrency_tabs.js` fails if that changes: **proved 3 of 6 on a simulated re-render.**
+
+**Also fixed: a sentence this session's own work made false.** The page's hint read *"A Studio Hub
+location sizes itself from the free workers it reports and **is not set here**."* That was true
+until 0.2.49 made the control a real cap; it now says a number here caps the site and can never
+raise it. A page whose explanation contradicts its behaviour is worse than a page with no
+explanation.
+
+- **Verified:** `tests/test_e2e.py` **570/570** · all **36** focused suites · all **5** console
+  (Node VM) suites, including the new one.
 
 ## WHAT 0.2.50 CHANGED — the declared Studio Hub is 0.6.72 (DECIDE-1)
 

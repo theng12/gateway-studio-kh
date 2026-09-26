@@ -705,11 +705,19 @@ def get_concurrency() -> dict[str, Any]:
     is running at one rather than leaving the owner to guess. The provider list is
     seeded from the providers this gateway actually knows about, because a
     provider missing from the settings file is the row that most needs a control.
+
+    Each row also carries its **`scope`** (`cloud` | `local`), taken from the same
+    `describe_all()` the rest of this console reads, so the page can draw the two kinds as
+    separate tabs. They are governed by different rules — a cloud limit is a number the owner
+    chooses, a location's is a cap on what the site reports — and one list mixing them put
+    eighteen vendors and six controllers under a single heading.
     """
     from . import concurrency
 
-    known = [definition.id for definition in registry.definitions()]
-    return concurrency.settings_view(known)
+    described = registry.describe_all()
+    known = [row["id"] for row in described if row.get("id")]
+    scopes = {str(row["id"]): row.get("scope") for row in described if row.get("id")}
+    return concurrency.settings_view(known, scopes)
 
 
 @router.put("/api/settings/concurrency", dependencies=[Depends(require_admin)])

@@ -399,12 +399,14 @@
          setting nobody can reach is the same defect as a control that does nothing. -->
     <h2 style="margin:18px 0 4px">Concurrency</h2>
     <p class="hint" style="margin:0 0 12px">
-      How much work the gateway runs at once. The <b>pool</b> is its total; a
-      <b>provider</b> limit is what that lane will accept, so a cloud tier that
-      unlocks with payment — or a bigger fleet — is a number here rather than a
-      code change. A Studio Hub location sizes itself from the free workers it
-      reports and is not set here. A blank box means <b>not set</b>, which is not
-      the same as a limit of one.
+      How much work the gateway runs at once. The <b>pool</b> is its total. A
+      <b>cloud</b> provider's limit is what that lane will accept, so a tier that
+      unlocks with payment is a number here rather than a code change. A
+      <b>Studio Hub location</b> sizes itself from the free workers it reports, and a
+      number here <b>caps</b> that: it can throttle a busy site, and can never push
+      more work at one than the site says it has free. The two are separate tabs
+      because they are governed by different rules. A blank box means <b>not set</b>,
+      which is not the same as a limit of one.
     </p>
     <div id="concurrency-msg" class="msg" role="alert" aria-live="polite"></div>
     <div id="concurrency"></div>
@@ -1208,13 +1210,41 @@ async function loadConcurrency() {
   }
 }
 
+// The two kinds of provider this page manages, in the gateway's own vocabulary — `credentials.py`
+// derives `scope` from the provider's **kind**, `studio_hub` being the only local one.
+//
+// **They are tabs and not one list because they are governed by different rules**, and the row's
+// own sentence is written to one of them: a cloud limit is a number the owner chooses, while a
+// location's is a cap on what the site reports for itself. Eighteen vendors and six controllers
+// under one column heading was the thing the owner asked to have taken apart.
+const CONCURRENCY_SCOPES = [
+  { key: 'cloud', title: 'Cloud APIs',
+    hint: 'Keyed APIs. The limit is how many jobs this gateway will send that lane at once.' },
+  { key: 'local', title: 'Your fleet',
+    hint: 'Studio Hub locations. Each reports its own free workers, and the gateway follows them; a number here caps that, and can never raise it above what the site says it has.' },
+  { key: 'unclassified', title: 'Unclassified',
+    hint: 'This gateway could not tell whether these are cloud or local, so neither rule explains their limit. That is worth looking at rather than setting.' },
+];
+let concurrencyTab = 'cloud';
+
 function renderConcurrency(data) {
   const target = document.getElementById('concurrency');
   if (!target) return;
   const pool = data.global || {};
   const providers = Array.isArray(data.providers) ? data.providers : [];
-  const rows = providers.map(p => `
-      <tr>
+  const scopeOf = p => (p.scope === 'cloud' || p.scope === 'local') ? p.scope : 'unclassified';
+  const counts = {};
+  providers.forEach(p => { const k = scopeOf(p); counts[k] = (counts[k] || 0) + 1; });
+  const tabs = CONCURRENCY_SCOPES.filter(g => counts[g.key]);
+  if (!tabs.some(g => g.key === concurrencyTab)) concurrencyTab = tabs.length ? tabs[0].key : 'cloud';
+  const active = CONCURRENCY_SCOPES.find(g => g.key === concurrencyTab) || { hint: '' };
+  // **Every row is rendered; a tab only hides rows.** `concurrencyPayload()` reads the inputs that
+  // are in the document, so re-rendering on a switch would drop the other tab's unsaved number —
+  // type a limit, glance at the other tab, save, and it is gone.
+  const rows = providers.map(p => {
+    const scope = scopeOf(p);
+    return `
+      <tr data-scope="${scope}"${scope === concurrencyTab ? '' : ' style="display:none"'}>
         <td>${esc(p.provider_id)}</td>
         <td><input type="number" min="1" step="1" style="max-width:110px"
                    id="conc-p-${esc(p.provider_id)}"
@@ -1222,7 +1252,8 @@ function renderConcurrency(data) {
                    placeholder="${esc(p.limit)}"></td>
         <td>${esc(p.limit)} <span class="muted">${esc(p.source)}</span></td>
         <td class="muted">${esc(p.detail || '')}</td>
-      </tr>`).join('');
+      </tr>`;
+  }).join('');
   target.innerHTML = `
     <div style="padding:12px;margin-bottom:14px;border:1px solid var(--line);border-radius:8px">
       <label for="conc-global"><b>Jobs running at once</b></label>
@@ -1232,6 +1263,11 @@ function renderConcurrency(data) {
              placeholder="${esc(pool.limit)}">
       <div class="hint" style="margin-top:6px">${esc(pool.detail || '')}</div>
     </div>
+    <div class="tabs" id="conc-tabs" role="group" aria-label="Provider kind">
+      ${tabs.map(g => `<button data-tab="${g.key}" aria-pressed="${g.key === concurrencyTab}"
+             onclick="showConcurrencyTab('${g.key}')">${esc(g.title)} (${counts[g.key]})</button>`).join('')}
+    </div>
+    <p class="hint" id="conc-hint" style="margin:0 0 12px">${esc(active.hint)}</p>
     <table class="grid">
       <thead><tr><th>Provider</th><th>Limit</th><th>In force</th><th>Where it came from</th></tr></thead>
       <tbody>${rows || '<tr><td colspan="4" class="muted">No providers.</td></tr>'}</tbody>
@@ -1240,6 +1276,21 @@ function renderConcurrency(data) {
       <button class="sm" type="button" onclick="saveConcurrency()">Save concurrency</button>
     </div>
     <div class="hint" style="margin-top:6px">${esc(data.path || '')}</div>`;
+}
+
+function showConcurrencyTab(key) {
+  concurrencyTab = key;
+  const target = document.getElementById('concurrency');
+  if (!target) return;
+  target.querySelectorAll('tr[data-scope]').forEach(tr => {
+    tr.style.display = tr.getAttribute('data-scope') === key ? '' : 'none';
+  });
+  target.querySelectorAll('#conc-tabs button').forEach(b => {
+    b.setAttribute('aria-pressed', String(b.getAttribute('data-tab') === key));
+  });
+  const active = CONCURRENCY_SCOPES.find(g => g.key === key);
+  const hint = document.getElementById('conc-hint');
+  if (hint && active) hint.textContent = active.hint;
 }
 
 // Blank means "not set" and is sent as null so the file key is cleared, rather
