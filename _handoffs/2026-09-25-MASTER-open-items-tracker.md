@@ -686,6 +686,58 @@ stop reading its silence as an answer. That line is worth more than the four row
   and 15.4 — the median this gateway published first — hides the 12. `measured` now
   carries `slowest_site_tokens_per_second` beside the median for exactly that reason.
 
+  **SIZING APPENDIX — what each ceiling actually buys, and the M1-safe number.**
+  Asked by the owner 2026-09-26. **`PEER_PROXY_TIMEOUT_S = 900.0` is the Hub's own
+  "one request timeout enforced on a job request it proxies to a worker"
+  (`components/hub/standalone.py`), so it covers LOAD + PREFILL + GENERATION** — the
+  generation budget is not the whole 900 s. That is the fact that decides the answer.
+
+  What a ceiling carries, at the measured 1.45 tokens/word (median, local model,
+  17 samples; 1.88 worst):
+
+  | ceiling | script | chapters (1,200 w) | scene prompts (~403 tok each) |
+  |---|---|---|---|
+  | 4,096 | 2,180–2,830 words | 1.8–2.4 | ~10 |
+  | 8,192 | 4,360–5,650 words | 3.6–4.7 | ~20 |
+  | 16,384 | 8,715–11,299 words | 7.3–9.4 | ~41 |
+
+  **For chapters, 16,384 buys nothing that 8,192 does not.** Story caps narrative
+  batches at **3 chapters by choice, for coherence — not by tokens**, and 3 × 1,200
+  words is only **~5,220 tokens actually generated**. Every ceiling at or above
+  ~5,300 therefore yields the same 3 chapters per call, so both 8,192 and 16,384 give
+  **10 calls for a 30-chapter episode**. The one thing 16,384 uniquely buys is
+  **listicle mode's 8-chapter batch** (`LISTICLE_BATCH_SIZE = 8`, ~13,920 tokens),
+  which 8,192 truncates. For **scene prompts** 16,384 reaches ~41 scenes, so it clears
+  neither of Story's stated thresholds (50 scenes ≈ 20k, 100 ≈ 40k).
+
+  | ceiling | M1 (12/s) | M2 (14/s) | M4 (18/s) | M1 % of the 900 s | left for load+prefill on M1 |
+  |---|---|---|---|---|---|
+  | 4,096 | 341 s | 293 s | 228 s | 38 % | 559 s |
+  | 6,144 | 512 s | 439 s | 341 s | 57 % | 388 s |
+  | **7,168** | **597 s** | 512 s | 398 s | **66 %** | **303 s** |
+  | **8,192** | **683 s** | 585 s | 455 s | **76 %** | **217 s** |
+  | 9,216 | 768 s | 658 s | 512 s | 85 % | 132 s |
+  | 12,288 | 1,024 s | 878 s | 683 s | **over** | — |
+  | 16,384 | 1,365 s | 1,170 s | 910 s | **over** | — |
+
+  **The recommendation is 8,192**, and the reasoning is the table above rather than a
+  round number: it is where narrative work is **fully served** — 3 chapters per call,
+  Story's own coherence cap, so a larger ceiling cannot improve it — while an M1's
+  worst case still leaves **217 s** for model load and prefill, which a warm worker
+  covers comfortably. **7,168 is the more conservative choice and costs nothing**:
+  66 % of the deadline, 303 s of slack, and 3 chapters per call still fit. **Anything
+  above 9,216 excludes the M1 from the fleet entirely**, because the gateway routes to
+  any location and a job that lands on the slow one dies at our hop.
+
+  **If you want 16,384, it takes two constants and not one.** `PEER_PROXY_TIMEOUT_S`
+  must go **900 → 1,800** alongside the ceiling: 16,384 on an M1 is 1,365 s, which
+  against an 1,800 s proxy is **76 %** — precisely the margin 8,192 has against 900 s
+  today. The price is that a hung job holds a worker for thirty minutes instead of
+  fifteen, which is a real cost at a site with more work than machines. Our ask stays
+  **8,192**: it removes the round trip, needs one constant, and lands inside the
+  deadline on every Mac in the fleet. See GW-12 for the route-aware alternative.
+
+
 - [ ] **STORY-6 — do NOT remove the chunker. It is right, and the constant behind it
   is yours to keep.** owes: Story (nothing, if you read this) · truth:
   `electron/server/lib/chunked-narration.ts`.
@@ -936,6 +988,29 @@ stop reading its silence as an answer. That line is worth more than the four row
   field nobody reads gets invented. The cheap detection is a comparison of the
   contributing locations' `lane_contract` inside the existing merge loop; decide the
   published shape first.
+
+- [ ] **GW-12 — a ceiling could be higher than any one Mac can meet, if routing
+  respected the per-chip rate.** found 2026-09-26 answering the owner's sizing question
+  · owe: whoever wants a ceiling above 9,216 · truth: `gateway/fleet.py::route`
+  (ranks by pressure and fitting-machine count; **it does not read the request's
+  `max_tokens`**) and `measured.slowest_site_tokens_per_second`.
+  **The problem this solves:** a lane ceiling is one number for the whole fleet, so it
+  is bounded by the slowest Mac — anything above 9,216 makes an M1 job die at the
+  gateway's own poll deadline. The owner measured his fleet at **M1 12, M2 14, M4 18
+  tokens/second**, so a 16,384 ask is 1,365 s on an M1 and 910 s on an M4: the ceiling
+  that is unusable on one machine is comfortable on another.
+  **The shape of the fix:** `route` already ranks candidate locations and already knows
+  each one's `measured` rate; a request declaring a large `max_tokens` could be offered
+  only to sites whose measured rate finishes it inside the lane's stated deadline, and
+  fall back rather than fail when none can. That is capability-based placement applied
+  to time instead of memory — the same rule HUB-17 asks for on the Hub's side, and the
+  same reason the small-Mac-first question exists.
+  **Why it is not built now:** it is only worth anything above 9,216, and the
+  recommended ceiling is 8,192 — where every Mac in the fleet qualifies, so a
+  route-aware rule would change nothing. Building it would be inventing a mechanism for
+  a ceiling nobody has asked for yet. Recorded because it is the honest answer to
+  *"could we just raise it higher"*, and because it is the only path to 16,384 that
+  does not either raise the proxy timeout or strand the slow Macs.
 
 - [ ] **GW-10 — nothing yet tells a caller that a completion was truncated at the
 
