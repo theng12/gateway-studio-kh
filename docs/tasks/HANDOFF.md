@@ -1,6 +1,6 @@
 # HANDOFF — gateway-kh
 
-**Read this first.** Written 2026-09-25 against **VERSION `0.2.38`**. The running build
+**Read this first.** Written 2026-09-26 against **VERSION `0.2.39`**. The running build
 stamp is on `/health` and in `/Applications/gateway-kh.app/Contents/Resources/gateway/BUILD`.
 If this file disagrees with the code, **the code wins — fix this file in the same change**.
 Every path below is inside the Git checkout `repository/` unless it says otherwise.
@@ -11,11 +11,11 @@ project does not say why, and nobody should guess.
 
 | Thing | Value |
 |---|---|
-| Current release | **0.2.38** — `repository/VERSION`, one line, the only place to bump |
+| Current release | **0.2.39** — `repository/VERSION`, one line, the only place to bump |
 | Declared Studio Hub | **0.6.65** — `adapters.studio_hub.SUPPORTED_STUDIO_HUB_VERSION`, published on `/health`; a controller on another version is reported, never refused. Set on 2026-09-25 from a **running** Hub (`/api/version` → `0.6.65` build `37cb07b`), not a changelog `[MEASURED]` |
 | Branch | `main` = `origin/main`, clean tree; remote `github.com/theng12/gateway-kh` |
 | Running build | `/Applications/gateway-kh.app`, port **8787**, stamp `08a4831-202609251515` (`/health` and `…/Resources/gateway/BUILD`) — the gateway must be **respawned**, not adopted, to carry a new stamp: with *Keep the gateway running after I quit* on, quitting the app leaves the old process holding 8787 and the new app adopts it, so `/health` keeps reporting the old build while serving new code `[MEASURED 2026-09-25]` |
-| Distribution | DMG in `repository/dist/` (`gateway-kh-0.2.38.dmg`), named by version alone |
+| Distribution | DMG in `repository/dist/` (`gateway-kh-0.2.39.dmg`), named by version alone |
 | SSD/setup kit | `repository/dist/setup-kit/`. **The four `KH-STUDIO-*` drives now carry Studio Hub 0.6.65** `[MEASURED 2026-09-25]`, refreshed 21:34–21:40; the GatewayKH side on them is older — check before a rollout |
 
 - **Versions are patch-only for now:** `0.2.1`, `0.2.2`, … up to `0.2.1000`. Increment the
@@ -46,7 +46,73 @@ project does not say why, and nobody should guess.
   Status.md` §10h: 8000 is the most contested dev port and Story Studio's own
   default). Every Story Studio client points at `http://<host>:8787`.
 
-## WHAT 0.2.30 CHANGED — the gateway stops running one job at a time
+## WHAT 0.2.39 CHANGED — a model is qualified by what it has really carried
+
+Asked 2026-09-26: *"we need to keep these for that when I want to qualify a new LLM,
+we can apply the same parameter check too."* Before this the figures were read once by
+hand and lost, so every question about a ceiling was answered from a producer's
+advertisement. `gateway/qualification.py` reads them back off the work itself.
+
+**Nothing new is recorded for it.** Every figure was already in
+`result_json.payload` on each settled job: `usage.{prompt,completion}_tokens`, the
+worker's own `generation_seconds` (after the model is resident, so it excludes a cold
+turn's load), and `hub_machine`/`hub_worker` on the image, voice and music lanes. The
+change is a reader, not a schema.
+
+- **`GET /admin/api/qualification`** — per (provider, model): samples, the largest
+  prompt and completion **that actually ran**, the median rate, per-machine splits,
+  first/last seen. `?provider_id=`, `?model_id=`, `?limit=` (1–500, default 500).
+- **The measured maximum is the headline, not the stated one.** "Can this lane carry
+  8,000 tokens" is answered by the biggest it has carried; "may I ask" is a different
+  question with a different owner.
+- **`stated` is joined on the *published* namespace.** A job routed to
+  `studio-hub-9701220bf30f` is catalogue row `studio-hub::~<model>`; comparing raw ids
+  made every local row read as unknown, which is the one lane the ceiling question is
+  about. `stated: null` means *not in the catalogue* (disabled or withheld) —
+  unknown, never unlimited.
+- **`source: "gateway"` on every row, and the stated figures sit beside it, never
+  merged into it.** This is the rule the whole feature rests on, and it has its own
+  test.
+- **The console draws it** — Providers → **Measured**, under Concurrency. A field
+  nothing draws is the same defect as a control that does nothing. An unmeasured
+  figure renders as a dash, never a zero; a chat model's machine column reads
+  **not named** rather than guessing.
+- **What is deliberately *not* counted**: a queued job is not a sample; a lane that
+  states no `usage` is skipped rather than folded in as zero tokens; a missing
+  `generation_seconds` is an absent rate, never `0`; `True` is not a token count
+  (`bool` is an `int` in Python, and read as a number it would enter the record as a
+  one-token completion). Each of those turns a record of real work into a
+  plausible-looking invention.
+- **`limit` is declared with `Annotated`, and that is load-bearing.** Written the
+  usual way — `limit: int = Query(50, ge=1, le=500)` — the default *is* a `Query`
+  object, so calling the function directly handed it to SQLite:
+  `type 'Query' is not supported`. The route was reachable **only** over HTTP, which
+  is a worse test surface and a trap for the next in-process caller. The focused
+  suite caught it. `/admin/api/jobs` still has the old shape; nobody has needed to
+  call it directly.
+
+`tests/test_qualification.py` → 21 checks; `test_console_actions.js` → 5 new;
+`test_e2e.py` → 7 new, **557/557**.
+
+### What it measured, while it was being built `[MEASURED 2026-09-26]`
+
+- The **chat lane names no machine.** Its payload carries `finish_reason`, `model`,
+  `usage` and `generation_seconds` and nothing that identifies a Mac, so a chat
+  model's envelope is per location until Studio Hub names one. The image, voice and
+  music lanes do name one.
+- **4 of 13 `Qwen3.5-9B-4bit` jobs stopped at exactly 4,096 completion tokens, and all
+  13 reported `finish_reason: "stop"`.** The cap is being hit and reported as a clean
+  stop — so *"finish_reason must be a clean stop"* does not, on its own, detect
+  truncation. Only the measured maximum next to the stated ceiling shows it. **This
+  is the finding to carry to Studio Hub**, and it is exactly what this record exists
+  to make visible.
+- **The same model measured 17.3 tokens/second** (489 tokens in 28.2 s), 1.22
+  tokens/word, 7.0 characters/word, 5.7 characters/token. At that rate **16,384
+  tokens does not fit a 900-second deadline** (945 s) and 8,192 does (472 s).
+- Highest completion seen per cloud lane: openrouter `deepseek-v4-flash` 15,139;
+  experiential-labs `deepseek-v4.1-flash` 8,483; openai `gpt-6-luna` 6,221;
+  tokenharbor `mimo-v2.5:free` 5,045.
+
 
 **This is the change that makes a fleet worth owning.** The worker ran exactly one
 job at a time — chat, image, TTS, subtitle and music all shared a single slot — so

@@ -346,8 +346,34 @@ carefully.
   right, not his — the ask is capability-based placement, and the two concrete
   models above are the example.
 
-### Rows you are waiting on us for
+- [ ] **HUB-18 — a completion cut off at your worker default still reports
+  `finish_reason: "stop"`, so a truncated answer is indistinguishable from a finished
+  one.** owes: SH (a statement, or a change) · truth: the chat lane's response on
+  `/api/hub/chat`, and `max_output_tokens: 4096` in the local model row this gateway
+  publishes from your own facts.
+  Measured 2026-09-26 while building GW-9, from this gateway's own job store — real
+  jobs, not a synthetic probe: **4 of 13 `mlx-community/Qwen3.5-9B-4bit` jobs stopped
+  at exactly 4,096 completion tokens, and all 13 reported `finish_reason: "stop"`**,
+  including those four. Your row states `max_output_tokens 4096` with
+  `source_detail "worker default: the checkpoint ships no generation_config.json"`,
+  so the cap was hit exactly and the answer still read as a clean stop.
+  **Why this matters to you specifically:** the wire contract this gateway must honour
+  refuses `length` as truncated and requires a clean stop, so the one signal a caller
+  has cannot see this. Story Studio reads a cut-off chapter as a finished one.
+  **The question, and it is yours to answer because the cap is yours:** when the worker
+  stops at its own default, should the Hub say so — `length`, or a `truncated` flag
+  beside the usage — or should this gateway infer it from
+  `completion_tokens == max_output_tokens`? Either works; today neither happens, and
+  nobody has decided. Recorded rather than guessed.
+  **The numbers to size a decision with** (same model, same session, measured):
+  17.3 tokens/second, 1.22 tokens/word. Against the chat lane's stated 900 s deadline:
+  4,096 → 236 s, 8,192 → 472 s, **16,384 → 945 s and does not fit**. A 1,200-word
+  chapter is ~1,467 tokens / ~85 s. **Your chunker sends 458 words per 4,096-token
+  call**, so one chapter is ~2.6 calls — measured prose says 4,096 carries ~3,351
+  words, so the chunker is roughly 7× more conservative than the lane requires. That
+  gap, not the ceiling alone, is the round trip worth removing.
 
+### Rows you are waiting on us for
 - [x] **SH-10 — `_handoffs/2026-09-25-gateway-chat-lane-shipped.md` has never been read
   by you.** closed 2026-09-25: **the one-line summary was the whole of it.** That
   document carried exactly one standing ask — the exposure notification, which became
@@ -561,6 +587,62 @@ stop reading its silence as an answer. That line is worth more than the four row
   project already uses for limits: **stated** (headers, where a provider sends them),
   **curated** (`data/model-limits.local.json` pattern), **labelled default** — each
   carrying which of the three it is.
+
+- [x] **GW-9 — a per-model qualification record, built from work that really ran.**
+  closed 2026-09-26 in **0.2.39** · asked as *"we need to keep these for that when I
+  want to qualify a new LLM, we can apply the same parameter check too."*
+  truth: `gateway/qualification.py::envelope`, `GET /admin/api/qualification`,
+  Providers → **Measured** in the console.
+  **Nothing new is recorded for it** — every figure was already in
+  `result_json.payload` on each settled job: `usage.{prompt,completion}_tokens`, the
+  worker's own `generation_seconds`, and `hub_machine`/`hub_worker` on the image,
+  voice and music lanes. The change is a reader, not a schema.
+  Per (provider, model) it publishes samples, the largest prompt and completion
+  **that actually ran**, the **median** rate (a mean lets one cold turn move a number
+  a ceiling gets sized against), per-machine splits, and first/last seen — each row
+  carrying `source: "gateway"`. The **stated** ceiling is joined on the **published**
+  namespace (`studio-hub-9701220bf30f` → catalogue row `studio-hub::~<model>`) and
+  published *beside* the measured figures, never merged into them; `stated: null`
+  means not in the catalogue — unknown, not unlimited.
+  Deliberately **not** counted: a queued job is not a sample; a lane stating no
+  `usage` is skipped rather than folded in as zero tokens; a missing
+  `generation_seconds` is an absent rate, never `0`; `True` is not a token count
+  (`bool` is an `int` in Python, and read as a number it entered the record as a
+  one-token completion until a test caught it).
+  last verified: `tests/test_qualification.py` → 21 checks; `test_console_actions.js`
+  → 5 new; `test_e2e.py` → 7 new, **557/557**; focused suites all green.
+  One defect the tests caught and it is worth naming because it will recur:
+  `limit: int = Query(50, ge=1, le=500)` makes the **default a `Query` object**, so a
+  direct call reaches SQLite as `type 'Query' is not supported` and the route is
+  reachable only over HTTP. This route declares it with `Annotated`;
+  `/admin/api/jobs` still has the old shape.
+
+- [ ] **GW-10 — nothing yet tells a caller that a completion was truncated at the
+  cap.** found 2026-09-26 while building GW-9, owe: whoever wants it ·
+  truth: `gateway/adapters/studio_hub.py::_generate_chat` (passes the Hub's
+  `finish_reason` through) and `gateway/catalog.py` (publishes `max_output_tokens`).
+  Measured: **4 of 13 `Qwen3.5-9B-4bit` jobs stopped at exactly 4,096 completion
+  tokens, and all 13 reported `finish_reason: "stop"`.** The published
+  `max_output_tokens` for that model is 4,096, so the cap was hit exactly and the
+  answer still read as a clean stop — which is the one value the contract *requires*
+  to be clean (`length` is refused as truncated). So the existing guard cannot see
+  this, and a caller has no way to tell a finished answer from a cut-off one.
+  The record in GW-9 is what makes it visible at all: **stated 4,096 next to measured
+  4,096**. Not a gateway defect on its own — whether the Hub should report the cap as
+  `length`, or this gateway should infer it from `completion_tokens ==
+  max_output_tokens`, is a decision nobody has made. Recorded rather than guessed.
+
+  **The arithmetic that goes with it, so the decision is not made blind.** Same model,
+  measured 2026-09-26: **17.3 tokens/second** (489 tokens in 28.2 s), 1.22
+  tokens/word, 7.0 characters/word, 5.7 characters/token. Against the chat lane's
+  stated **900 s** deadline (`PEER_PROXY_TIMEOUT_S`): 4,096 → 236 s, 8,192 → 472 s,
+  **16,384 → 945 s and does not fit**, 32,768 → 1,890 s. A **1,200-word chapter** is
+  about 1,467 tokens / 8,358 characters / ~85 s. Story Studio's chunker sends **458
+  words per 4,096-token call**, so one chapter is ~2.6 calls — that is the round trip
+  the ceiling ask is really about. Highest completion seen on each cloud lane, for
+  comparison: openrouter `deepseek-v4-flash` **15,139**, experiential-labs
+  `deepseek-v4.1-flash` 8,483, openai `gpt-6-luna` 6,221, tokenharbor
+  `mimo-v2.5:free` 5,045.
 
 ---
 

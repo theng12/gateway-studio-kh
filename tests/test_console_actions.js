@@ -409,3 +409,80 @@ test('the panel shows the limit in force and where it came from', () => {
   assert.match(target.innerHTML, /placeholder="1"/, 'the unset row must show what is in force');
   assert.match(target.innerHTML, /value=""/, 'and must not look like a row somebody set');
 });
+
+// -- measured ---------------------------------------------------------------
+function measuredContext(target) {
+  const context = vm.createContext({
+    document: { getElementById: id => (id === 'measured' ? target : undefined) },
+    console,
+  });
+  vm.runInContext([
+    'const esc = s => String(s ?? "");',
+    section('function measuredCell(', 'async function loadProviders()'),
+  ].join('\n'), context);
+  return context;
+}
+
+function measuredRow(overrides = {}) {
+  return {
+    provider_id: 'studio-hub', model_id: 'Qwen3.5-9B-4bit', samples: 13,
+    max_prompt_tokens: 120, max_completion_tokens: 4096,
+    median_tokens_per_second: 17.3, machines: {},
+    stated: { max_output_tokens: 4096, max_output_tokens_source: 'gateway' },
+    source: 'gateway', ...overrides,
+  };
+}
+
+test('the measured panel puts the stated ceiling beside what really ran', () => {
+  // The whole point of the feature: 4096 stated and 4096 measured, adjacent, so a
+  // cap being hit is visible without anyone having to remember to compare them.
+  const target = element();
+  const context = measuredContext(target);
+  vm.runInContext(`renderMeasured(${JSON.stringify({
+    rows: [measuredRow()], window: 500, note: 'measured by us',
+  })})`, context);
+  assert.match(target.innerHTML, /Qwen3\.5-9B-4bit/);
+  assert.match(target.innerHTML, /4096/);
+  assert.match(target.innerHTML, /gateway/, 'the stated source must travel with the number');
+  assert.match(target.innerHTML, /17\.3/);
+  assert.match(target.innerHTML, /measured by us/);
+});
+
+test('an unmeasured figure is a dash and never a zero', () => {
+  // A rate nobody measured and a rate of zero tokens/second are different facts,
+  // and only one of them means the lane is unusable.
+  const target = element();
+  const context = measuredContext(target);
+  vm.runInContext(`renderMeasured(${JSON.stringify({
+    rows: [measuredRow({ median_tokens_per_second: null, max_prompt_tokens: null })],
+    window: 500, note: '',
+  })})`, context);
+  assert.match(target.innerHTML, /—/);
+  assert.doesNotMatch(target.innerHTML, />0</, 'an absent figure must not render as zero');
+});
+
+test('a model outside the catalogue reads as unknown, not as unlimited', () => {
+  const target = element();
+  const context = measuredContext(target);
+  vm.runInContext(`renderMeasured(${JSON.stringify({
+    rows: [measuredRow({ stated: null })], window: 500, note: '',
+  })})`, context);
+  assert.match(target.innerHTML, /not in catalogue/);
+  assert.match(target.innerHTML, /4096/, 'its measured maximum is still published');
+});
+
+test('a chat model names no machine and the cell says so rather than guessing', () => {
+  const target = element();
+  const context = measuredContext(target);
+  vm.runInContext(`renderMeasured(${JSON.stringify({
+    rows: [measuredRow()], window: 500, note: '',
+  })})`, context);
+  assert.match(target.innerHTML, /not named/);
+});
+
+test('nothing measured is said in words, not shown as an empty table', () => {
+  const target = element();
+  const context = measuredContext(target);
+  vm.runInContext(`renderMeasured(${JSON.stringify({ rows: [], window: 500, note: '' })})`, context);
+  assert.match(target.innerHTML, /Nothing has run yet/);
+});

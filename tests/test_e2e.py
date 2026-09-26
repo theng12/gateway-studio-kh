@@ -1635,6 +1635,42 @@ def main() -> int:
                   400 <= req(client, "GET",
                              "/admin/api/models?limit=99999999999999999999999").status_code < 500)
 
+            # **The measured record, over the wire.** Its bound lives in `Annotated`
+            # rather than in a `Query(...)` default, because a `Query` default is what
+            # the object *is* when the function is called directly — it reached SQLite
+            # as `type 'Query' is not supported` and the route was reachable only
+            # through HTTP.
+            measured = req(client, "GET", "/admin/api/qualification")
+            check("the measured record answers", measured.status_code == 200,
+                  f"{measured.status_code} {measured.text[:140]}")
+            check("and its window is bounded",
+                  400 <= req(client, "GET",
+                             "/admin/api/qualification?limit=0").status_code < 500)
+            measured_body = measured.json()
+            measured_rows = measured_body.get("rows") or []
+            # The lane that has really run here. `test_e2e.py` has **no local Hub**
+            # (`STUDIOHUB_READY_FILE` points into the temp dir), so the measured rows
+            # are the mock cloud provider's — naming the Hub's own model id here was
+            # the first version of this check, and it failed against correct code.
+            check("a model that has really run is in it",
+                  any(r.get("model_id") == "mock-chat-1" for r in measured_rows),
+                  f"{[r.get('model_id') for r in measured_rows]}")
+            a_measured = next(
+                (r for r in measured_rows if r.get("model_id") == "mock-chat-1"), {})
+            check("with the completion the worker actually reported",
+                  a_measured.get("max_completion_tokens") == 7,
+                  f"{a_measured.get('max_completion_tokens')} "
+                  "(the mock's OpenAI-compatible lane answers completion_tokens 7)")
+            check("and it is labelled as ours, never as the provider's",
+                  a_measured.get("source") == "gateway", f"{a_measured.get('source')}")
+            check("while the stated ceiling travels beside it, not merged into it",
+                  isinstance(a_measured.get("stated"), dict)
+                  and a_measured["stated"].get("max_output_tokens") is not None,
+                  f"{a_measured.get('stated')}")
+            check("a model that has never run is absent rather than zeroed",
+                  all(r.get("samples") for r in measured_rows))
+
+
             # The rest of the app-facing routes, each of which the Voices or Jobs
             # window calls on a click.
             a_voice = (req(client, "GET", "/v1/voices").json().get("voices") or [{}])[0].get("id", "")

@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import time
 from pathlib import Path
-from typing import Any
+from typing import Annotated, Any
 from uuid import uuid4
 
 import httpx
@@ -34,8 +34,9 @@ from starlette.concurrency import run_in_threadpool
 
 from .activity import story_activity
 from .adapters import BackendError, BackendRequest, adapter_for, serves, support_status
-from .catalog import MODALITIES, catalog
+from .catalog import MODALITIES, catalog, decode_model_id
 from . import fleet
+from . import qualification
 from . import release_publisher
 from .config import is_loopback, request_is_loopback
 from .hub import hub_status
@@ -1427,6 +1428,67 @@ def catalog_preview(modality: str | None = None) -> dict[str, Any]:
             for m in ("chat", "image", "video", "tts", "transcription", "music")
         },
         "freshness": catalog.freshness(),
+    }
+
+
+@router.get("/api/qualification", dependencies=[Depends(require_admin)])
+def qualification_envelope(
+    provider_id: str | None = None,
+    model_id: str | None = None,
+    limit: Annotated[int, Query(ge=1, le=500)] = qualification.DEFAULT_WINDOW,
+) -> dict[str, Any]:
+    """What each model has **actually been measured doing**, beside what was stated.
+
+    The catalogue answers "what may I ask"; this answers "what has this lane really
+    carried", which is the only figure that qualifies a model for a bigger ask. The
+    two are published **side by side and never merged**: `stated` is the producer's
+    number with its own `*_source`, every figure on the measured row is ours and the
+    row says `source: "gateway"`.
+
+    The join is on the **published** namespace, not the job's provider id, because a
+    job routed to `studio-hub-9701220bf30f` is catalogue row `studio-hub::~<model>`.
+    Comparing raw ids made every local row read as unknown, which is exactly the lane
+    the ceiling question is about.
+
+    `stated: null` means the model is not in the catalogue (disabled, or withheld) —
+    *unknown*, not unlimited. A model that has never run is **absent from `rows`**
+    rather than present with zeros.
+
+    **The bound lives in `Annotated`, and the default is a real int.** Written the
+    usual way — `limit: int = Query(50, ge=1, le=500)` — the default *is* a `Query`
+    object, so calling the function directly (a test, or any later caller inside the
+    process) hands that object to SQLite and raises `type 'Query' is not supported`.
+    The route was reachable only over HTTP. `/api/jobs` above still has the old
+    shape; this one does not, and the constraint is identical over the wire.
+    """
+    stated: dict[tuple[str, str], dict[str, Any]] = {}
+    for row in catalog.all_rows():
+        key = decode_model_id(str(row.get("id", "")))
+        if key[0]:
+            stated[key] = {
+                "max_output_tokens": row.get("max_output_tokens"),
+                "max_output_tokens_source": row.get("max_output_tokens_source"),
+                "context_window_tokens": row.get("context_window_tokens"),
+                "context_window_tokens_source": row.get("context_window_tokens_source"),
+            }
+
+    rows = qualification.envelope(
+        store, provider_id=provider_id, model_id=model_id, limit=limit,
+    )
+    for row in rows:
+        row["stated"] = stated.get(
+            (fleet.publish_id(row["provider_id"]), row["model_id"])
+        )
+    return {
+        "rows": rows,
+        "window": limit,
+        "measured_rows": len(rows),
+        "note": (
+            "Every figure on a row is this gateway's own measurement of real work, "
+            "labelled source: gateway. `stated` is what the producer declares, with "
+            "its own source; stated: null means the model is not in the catalogue, "
+            "which is unknown rather than unlimited."
+        ),
     }
 
 

@@ -409,6 +409,17 @@
     <div id="concurrency-msg" class="msg" role="alert" aria-live="polite"></div>
     <div id="concurrency"></div>
 
+    <h2 style="margin:26px 0 4px">Measured</h2>
+    <p class="hint" style="margin:0 0 12px">
+      What each model has <b>actually carried</b>, from real jobs this gateway has run —
+      not what its maker advertises. The largest completion that really ran is the only
+      figure that answers "can this lane take a bigger ask", so it is shown next to the
+      <b>stated</b> ceiling, which is the maker's number and says whose it is. A dash is
+      <b>unknown</b>, never zero. Nothing here is a guess: a model that has never run is
+      not listed at all.
+    </p>
+    <div id="measured"></div>
+
     <h2 style="margin:26px 0 4px">Where work can run</h2>
     <div id="local-note" class="hint" style="margin:10px 0 0"></div>
     <div id="skipped-note" class="hint" style="margin:10px 0 0"></div>
@@ -624,7 +635,7 @@ function setView(view) {
   document.getElementById('view-create').style.display = view === 'create' ? '' : 'none';
   document.getElementById('view-packs').style.display = view === 'packs' ? '' : 'none';
   if (view === 'models') loadModels();
-  else if (view === 'providers') { loadProviders(); loadConcurrency(); }
+  else if (view === 'providers') { loadProviders(); loadConcurrency(); loadMeasured(); }
   else if (view === 'packs') loadContentShelf();
   else loadCreate();
 }
@@ -1264,6 +1275,60 @@ async function saveConcurrency() {
   } catch (e) {
     concurrencyMessage(e.message || 'could not save the concurrency settings', true);
   }
+}
+
+// -- measured --------------------------------------------------------------
+// Real work only. Every number in this table is this gateway's own measurement and
+// the panel says so, because the one thing both projects refuse is a number of ours
+// that reads as a figure the producer declared. The stated ceiling sits beside the
+// measured maximum and is never folded into it.
+function measuredCell(value) {
+  return value == null ? '<span class="muted">—</span>' : esc(value);
+}
+
+async function loadMeasured() {
+  const target = document.getElementById('measured');
+  if (!target) return;
+  try {
+    renderMeasured(await api('/qualification'));
+  } catch (e) {
+    target.innerHTML = `<div class="msg bad">${esc(e.message || 'could not read the measurements')}</div>`;
+  }
+}
+
+function renderMeasured(data) {
+  const target = document.getElementById('measured');
+  if (!target) return;
+  const rows = (Array.isArray(data.rows) ? data.rows : []).map(r => {
+    const stated = r.stated || {};
+    // A model that is not in the catalogue reads as unknown, not as unlimited — the
+    // same distinction the API makes with `null`.
+    const ceiling = stated.max_output_tokens == null
+      ? '<span class="muted">not in catalogue</span>'
+      : `${esc(stated.max_output_tokens)} <span class="muted">${esc(stated.max_output_tokens_source || '')}</span>`;
+    const machines = Object.keys(r.machines || {});
+    return `
+      <tr>
+        <td>${esc(r.provider_id)}<div class="muted">${esc(r.model_id)}</div></td>
+        <td>${measuredCell(r.samples)}</td>
+        <td><b>${measuredCell(r.max_completion_tokens)}</b>
+            <div class="muted">prompt ${measuredCell(r.max_prompt_tokens)}</div></td>
+        <td>${ceiling}</td>
+        <td>${measuredCell(r.median_tokens_per_second)}<div class="muted">tokens/s</div></td>
+        <td class="muted">${machines.length ? esc(machines.join(', ')) : 'not named'}</td>
+      </tr>`;
+  }).join('');
+  target.innerHTML = `
+    <table class="grid">
+      <thead><tr>
+        <th>Model</th><th>Jobs</th><th>Largest that ran</th><th>Stated ceiling</th>
+        <th>Rate</th><th>Machine</th>
+      </tr></thead>
+      <tbody>${rows || '<tr><td colspan="6" class="muted">Nothing has run yet, so nothing is measured.</td></tr>'}</tbody>
+    </table>
+    <div class="hint" style="margin-top:6px">
+      Measured over the last ${esc(data.window)} jobs · ${esc(data.note || '')}
+    </div>`;
 }
 
 async function loadProviders() {
