@@ -37,6 +37,22 @@ Last updated **2026-09-25** by GatewayKH. Current release **0.2.28**.
 
 ## RELAY BLOCK — paste this whole section to Studio Hub
 
+> **2026-09-26 — the two paste-ready messages are now separate files, and they
+> supersede the ceiling ask in this block:**
+> - **Studio Hub:** `_handoffs/2026-09-26-studio-hub-two-constants-prompt.md`
+> - **Story Studio:** `_handoffs/2026-09-26-story-studio-ceiling-and-scenes-prompt.md`
+>
+> **The one-line version:** the owner has decided to raise **both** Hub constants —
+> `FALLBACK_MAX_OUTPUT_TOKENS` `4096 → 16384` and `PEER_PROXY_TIMEOUT_S` `900 → 1800` —
+> in the same build, because it is **exactly margin-neutral** with today (76 % on M1,
+> 65 % on M2, 51 % on M4, the identical percentages) and it is what carries a
+> **30-scene prompt request** that 8,192 cannot. **Nothing is needed from this gateway
+> or from Story Studio** — the Hub build change re-discovers, republishes and
+> recomputes every downstream threshold by itself. The earlier ask of 8,192 was the
+> largest value that worked at a 900 s proxy; raising the proxy makes the larger
+> ceiling the better answer, and this block's ceiling row is superseded by HUB-19.
+> It is on HUB-19, HUB-20, HUB-21, HUB-22 and HUB-18.
+
 Two things from us, then the rows. **The one-line status: nothing on this list is
 blocked on an answer any more.** Every row we owed you that 0.6.64 answers is closed
 (HUB-1..HUB-7); HUB-11 and HUB-12 are closed; the two rows you were waiting on us for
