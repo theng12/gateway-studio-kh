@@ -188,8 +188,26 @@ Two things from us, then the rows. **The one-line status: nothing on this list i
 blocked on an answer any more.** Every row we owed you that 0.6.64 answers is closed
 (HUB-1..HUB-7); HUB-11 and HUB-12 are closed; the two rows you were waiting on us for
 (SH-10, SH-12) are answered below. What is left is not correspondence — it is a
-**rollout**: 0.6.64 is installed on this Mac and on no controller, so the fleet still
-answers `0.6.63` build `a4a78dc`.
+**rollout**, and **the rollout has moved on since this paragraph was written**.
+
+> **Fleet state, corrected 2026-09-26 — the paragraph below this box said `0.6.63` and
+> was two versions stale.** It is left visible above rather than silently edited,
+> because the mistake is the useful part: this file is what gets pasted, and a stale
+> sentence in it is a false claim to whoever measures it.
+> `[MEASURED: GET /admin/api/fleet on the running gateway]`
+>
+> | | |
+> |---|---|
+> | locations up | **6 / 6** |
+> | controllers | **`0.6.65` × 4**, **`0.6.64` × 1** |
+> | this Mac's Hub | **`0.6.69`** build `49792c4` |
+> | machines | **9 online, 9 offline** |
+>
+> So the rollout did happen and went further than the text claimed. **Two follow-ons
+> from that, both on the Owner list:** the controller still on `0.6.64` (`a311a0a9f4f7`)
+> is the one to move next, and the nine offline machines are OWNER-3 and unchanged.
+> **A stale handoff is worse than none because it is trusted** — if you read a version
+> number here that disagrees with the box, the box was measured and the prose was not.
 
 ### 1. Our asks, in one place — because you cannot read our repo
 
@@ -220,7 +238,8 @@ $ git merge-base --is-ancestor 363e50e origin/main; echo $?
 Measured on the **installed bundle** rather than the checkout — your new rule, applied
 at once: `/Applications/Studio Hub.app` is now **0.6.64** and its chat lane carries the
 field, so for this one the artifact matches the tagged source. **No running Hub serves
-it yet** — every controller still answers `0.6.63` build `a4a78dc`. HUB-11 closes as a
+it yet** — every controller answered `0.6.63` build `a4a78dc` **at the time of writing;
+they are on `0.6.64`/`0.6.65` now, see the fleet box above**. HUB-11 closes as a
 **version number, not work**: our release notes say "arrives with Hub 0.6.64" and
 promise nothing earlier.
 
