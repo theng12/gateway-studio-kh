@@ -294,6 +294,71 @@ def hub_budget(slots: Any, *, operation: str = "") -> Budget:
 
 
 # -- the settings surface ---------------------------------------------------
+def _hub_operation_slots(provider_id: str) -> dict[str, int] | None:
+    """The free worker slots a Studio Hub location published, per operation.
+
+    A Hub's concurrency is **its own live number**, not a setting: `Worker._provider_budget`
+    reads `capacity.by_operation[<operation>].available_worker_slots` and never consults the
+    settings file, and there is one budget per operation (`image.text_to_image`,
+    `voice.tts`, …) rather than one per provider. That is why the console needs this: it
+    drew every provider from `cloud_budget`, so a location running four image jobs at once
+    was shown as "no limit set, so one at a time; set it on the Providers page" — a number
+    that did not describe the system, and advice that does nothing, because setting a limit
+    there is not read on this path.
+
+    Imported lazily and swallowed on failure on purpose: `fleet` imports this module, so the
+    import has to happen inside the call, and an unreadable fleet must not stop the console
+    from drawing the rest of the page.
+    """
+    try:
+        from . import fleet
+
+        for row in fleet.snapshot(allow_stale=True).get("locations") or []:
+            if str(row.get("provider_id") or "") != provider_id:
+                continue
+            by_operation = (row.get("capacity") or {}).get("by_operation") or {}
+            slots: dict[str, int] = {}
+            for operation, entry in by_operation.items():
+                if not isinstance(entry, dict):
+                    continue
+                stated = _positive_int(entry.get("available_worker_slots"))
+                if stated is not None:
+                    slots[str(operation)] = stated
+            return slots or None
+    except Exception:  # noqa: BLE001 - the console must draw even with no fleet
+        return None
+    return None
+
+
+def _hub_provider_budget(provider_id: str) -> Budget | None:
+    """What a Studio Hub location will actually run, in the console's words.
+
+    The page draws ONE row per provider while the Hub publishes one budget per operation,
+    so this reports the largest and names the spread rather than implying the number is
+    uniform — a site whose image lane takes four and whose voice lane takes one is not
+    described by either number alone. Returns `None` for anything that is not a Hub
+    location, so cloud rows keep the settings-file answer they are governed by.
+    """
+    slots = _hub_operation_slots(provider_id)
+    if not slots:
+        return None
+    widest = max(slots, key=lambda op: slots[op])
+    limit = slots[widest]
+    # Said in both branches: the old detail told the owner to set this on the Providers
+    # page, and for a Hub location that control is not read on the dispatch path.
+    not_a_setting = (" It is not a setting: a limit written on the Providers page is not "
+                     "read for a Hub location.")
+    if len(set(slots.values())) == 1:
+        detail = (f"the site reports {limit} available worker slot"
+                  f"{'' if limit == 1 else 's'}, the same for every lane it serves."
+                  + not_a_setting)
+    else:
+        spread = ", ".join(f"{op} {n}" for op, n in sorted(slots.items()))
+        detail = (f"the site reports its own free slots per lane and this gateway follows "
+                  f"them, so this is the widest — {spread}." + not_a_setting)
+    return Budget(limit=limit, source=SOURCE_HUB, detail=detail)
+
+
 def settings_view(provider_ids: list[str] | None = None) -> dict[str, Any]:
     """Everything the console needs to show and edit the three ceilings.
 
@@ -306,7 +371,9 @@ def settings_view(provider_ids: list[str] | None = None) -> dict[str, Any]:
     known.update(_settings_providers())
     providers = []
     for provider_id in sorted(known):
-        budget = cloud_budget(provider_id)
+        # A Studio Hub location is governed by its own published slots, so reporting the
+        # settings-file answer for it would be a number that does not describe the system.
+        budget = _hub_provider_budget(provider_id) or cloud_budget(provider_id)
         providers.append({
             "provider_id": provider_id,
             **budget.as_dict(),

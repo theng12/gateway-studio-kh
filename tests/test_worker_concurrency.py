@@ -315,6 +315,81 @@ class ThePublishedLimitIsTheRealOneTest(unittest.TestCase):
         self.assertIn("generation_submissions_per_minute", published)
 
 
+class TheConsoleReportsWhatWillActuallyRunTest(unittest.TestCase):
+    """A Studio Hub location's concurrency is the site's own number, and the page shows it.
+
+    `settings_view` drew EVERY provider from `cloud_budget`, so a location whose Hub
+    published four free image slots was rendered as *"no limit set, so one at a time; set
+    it on the Providers page"*. Two defects in one row: the number did not describe the
+    system — the same shape as the `paid_concurrency_limit` literal that once read 4 while
+    the worker ran one job — and the advice does nothing, because `Worker._provider_budget`
+    reads the Hub's `available_worker_slots` and never consults the settings file for a Hub
+    location.
+
+    Measured live before the fix: dispatch allowed **4** for `studio-hub-9701220bf30f`
+    while the console said **1** for it.
+    """
+
+    def _view_with(self, by_operation, provider_ids=("studio-hub-test",)):
+        snap = {"locations": [{
+            "provider_id": "studio-hub-test",
+            "capacity": {"by_operation": by_operation},
+        }]}
+        with patch("gateway.fleet.snapshot", lambda **_: snap):
+            return concurrency.settings_view(list(provider_ids))
+
+    def _row(self, view, provider_id):
+        return next(p for p in view["providers"] if p["provider_id"] == provider_id)
+
+    def test_a_hub_row_reports_the_sites_own_slots(self) -> None:
+        view = self._view_with({"image.text_to_image": {"available_worker_slots": 4}})
+        row = self._row(view, "studio-hub-test")
+        self.assertEqual(row["limit"], 4)
+        self.assertEqual(row["source"], concurrency.SOURCE_HUB)
+
+    def test_a_hub_row_says_the_number_is_not_a_setting(self) -> None:
+        # The old detail told the owner to set it on the Providers page. For a Hub
+        # location that control is not read, so the sentence has to stop saying it.
+        view = self._view_with({"image.text_to_image": {"available_worker_slots": 2}})
+        detail = self._row(view, "studio-hub-test")["detail"]
+        self.assertNotIn("set it on the Providers page", detail)
+        self.assertIn("not read for a Hub location", detail)
+
+    def test_a_lane_spread_is_named_rather_than_flattened(self) -> None:
+        # One row per provider, one budget per operation: the honest answer names both.
+        view = self._view_with({
+            "image.text_to_image": {"available_worker_slots": 4},
+            "voice.tts": {"available_worker_slots": 1},
+        })
+        row = self._row(view, "studio-hub-test")
+        self.assertEqual(row["limit"], 4, "the widest lane is the headline number")
+        self.assertIn("voice.tts 1", row["detail"])
+        self.assertIn("image.text_to_image 4", row["detail"])
+
+    def test_a_uniform_site_says_so_instead_of_listing_itself(self) -> None:
+        view = self._view_with({
+            "image.text_to_image": {"available_worker_slots": 3},
+            "voice.tts": {"available_worker_slots": 3},
+        })
+        self.assertIn("the same for every lane", self._row(view, "studio-hub-test")["detail"])
+
+    def test_a_cloud_provider_keeps_the_settings_file_answer(self) -> None:
+        # The Hub path must not leak onto providers it does not govern.
+        with patch("gateway.fleet.snapshot", lambda **_: {"locations": []}):
+            view = concurrency.settings_view(["openai-direct"])
+        row = self._row(view, "openai-direct")
+        self.assertEqual(row["source"], concurrency.SOURCE_GATEWAY)
+        self.assertEqual(row["limit"], concurrency.DEFAULT_PROVIDER)
+
+    def test_an_unreadable_fleet_does_not_stop_the_page_drawing(self) -> None:
+        def boom(**_):
+            raise RuntimeError("no fleet")
+        with patch("gateway.fleet.snapshot", boom):
+            view = concurrency.settings_view(["studio-hub-test", "openai-direct"])
+        self.assertEqual(len(view["providers"]), 2)
+        self.assertEqual(self._row(view, "studio-hub-test")["limit"], concurrency.DEFAULT_PROVIDER)
+
+
 class TheGlobalLimitMovesWithoutARestartTest(unittest.TestCase):
     """The global cap is read at admission, not captured when the worker starts.
 

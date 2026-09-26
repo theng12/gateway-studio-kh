@@ -11,11 +11,11 @@ project does not say why, and nobody should guess.
 
 | Thing | Value |
 |---|---|
-| Current release | **0.2.46** — `repository/VERSION`, one line, the only place to bump |
+| Current release | **0.2.47** — `repository/VERSION`, one line, the only place to bump |
 | Declared Studio Hub | **0.6.65** — `adapters.studio_hub.SUPPORTED_STUDIO_HUB_VERSION`, published on `/health`; a controller on another version is reported, never refused. Set on 2026-09-25 from a **running** Hub (`/api/version` → `0.6.65` build `37cb07b`), not a changelog `[MEASURED]` |
 | Branch | `main` = `origin/main`, clean tree; remote `github.com/theng12/gateway-kh` |
 | Running build | `/Applications/gateway-kh.app`, port **8787**, stamp `2da713b-202609260646` (`/health` and `…/Resources/gateway/BUILD`) — **this stamp is one commit behind `main` by construction**: `build.sh` stamps `git rev-parse --short HEAD`, so building before committing always leaves the tree one commit ahead of the stamp. Every release in this file has that shape; the deployed *code* is the whole change. The gateway must be **respawned**, not adopted, to carry a new stamp: with *Keep the gateway running after I quit* on, quitting the app leaves the old process holding 8787 and the new app adopts it, so `/health` keeps reporting the old build while serving new code `[MEASURED 2026-09-26]` |
-| Distribution | DMG in `repository/dist/` (`gateway-kh-0.2.46.dmg`), named by version alone |
+| Distribution | DMG in `repository/dist/` (`gateway-kh-0.2.47.dmg`), named by version alone |
 | SSD/setup kit | `repository/dist/setup-kit/`, **pinned to GatewayKH 0.2.44** and refreshed onto all four `KH-STUDIO-*` drives on **2026-09-26**, `shasum -a 256 -c` OK on every one. The drives also carry `Studio Hub.app` **0.6.70**. Superseded kits are in each drive's `_trash/superseded-kit-2026-09-26/` (`GatewayKH-0.2.27`, `GatewayKH-0.2.43`) |
 
 - **Versions are patch-only for now:** `0.2.1`, `0.2.2`, … up to `0.2.1000`. Increment the
@@ -46,6 +46,40 @@ project does not say why, and nobody should guess.
   "Why port 8787". It was 8000 until the owner moved it (2026-09-21, `Project
   Status.md` §10h: 8000 is the most contested dev port and Story Studio's own
   default). Every Story Studio client points at `http://<host>:8787`.
+
+## WHAT 0.2.47 CHANGED — the console reports the concurrency that actually runs
+
+`settings_view` drew **every** provider from `cloud_budget`, Studio Hub locations included. A
+location is governed by its own Hub's live `available_worker_slots` — `Worker._provider_budget`
+reads `capacity.by_operation[<operation>].available_worker_slots` and **never consults the settings
+file** — so the console showed *"no limit set, so one at a time; set it on the Providers page"* for
+sites running several at once.
+
+**Measured live before the fix:** dispatch allowed **4** for `studio-hub-9701220bf30f` while the
+console said **1** for it. Two defects in one row:
+
+- the number did not describe the system — the same shape as the `paid_concurrency_limit` literal
+  that once read 4 while the worker ran one job at a time; and
+- **the advice does nothing.** A limit written on the Providers page is *not read* for a Hub
+  location, so the page was inviting the owner to set a number that would never take effect.
+
+- **`settings_view`** now asks the same question dispatch asks. A Hub row reports the site's own
+  slots with `source: hub`, and **names the spread** when the lanes disagree — the page draws one row
+  per provider while the Hub publishes one budget per operation, so a site whose image lane takes four
+  and whose voice lane takes one is not described by either number alone. Both branches now end with
+  **it is not a setting**, because the old sentence said the opposite.
+- **Cloud providers are untouched**: they keep the settings-file answer they are governed by.
+- Failure is swallowed on purpose — an unreadable fleet must not stop the page drawing.
+- **Guard:** `tests/test_worker_concurrency.py::TheConsoleReportsWhatWillActuallyRunTest`, 6 tests.
+  **Proved to fail on the defect: 4 of 6**, with `1 != 4 : the widest lane is the headline number`.
+- **Verified:** `tests/test_e2e.py` **570/570** · `tests/test_fleet_standalone.py` · all **35**
+  focused suites.
+
+**The fleet's real ceiling, measured while doing this — this is the number that matters for the
+~50-Mac rollout.** The global cap is **4**. The six locations together publish **10 free image
+slots**, and `9701220bf30f` alone declares 4 (its busiest lane 8, `audio.transcription`). So the
+binding constraint is **`global`**, not any one site — and since 0.2.45 it can be raised from the
+console without a restart. Nothing else in the dispatch path under-uses the fleet.
 
 ## WHAT 0.2.46 CHANGED — the mode we publish is one Story Studio can read
 
