@@ -1140,6 +1140,18 @@ class Catalog:
         self._built_at = 0.0
         self._inventory_oldest: tuple[str, float] | None = None
         self._signature: tuple = ()
+        # **Injected, never imported.** `runtime` imports this module at its own module
+        # level, so a module-level `from .runtime import store` here would be a cycle —
+        # and the lazy-import version silently produced no measurement at all, because
+        # `catalog = Catalog()` runs during this module's import, before `runtime` has
+        # built the store. Explicit attachment after construction is the only shape
+        # that is both cycle-free and actually wired.
+        self._store: Any = None
+        self.rebuild(force=True)
+
+    def attach_store(self, store: Any) -> None:
+        """Give the catalogue the job store it measures from, and rebuild once."""
+        self._store = store
         self.rebuild(force=True)
 
     # -- building ---------------------------------------------------------
@@ -1172,6 +1184,18 @@ class Catalog:
         # offered truthfully.
         from . import fleet
 
+        # **What the work itself measured, once per rebuild.** Read here rather than at
+        # request time because this is already the cached boundary — `REBUILD_TTL_S`
+        # is 20 s — and because the read is a single SQL query that extracts four
+        # numbers and leaves the generated prose in the file. `{}` when no store is
+        # attached: a model with no measurement publishes `measured: null`, which is
+        # unknown and not zero.
+        measured: dict[tuple[str, str], dict[str, Any]] = {}
+        if self._store is not None:
+            from . import qualification
+
+            measured = qualification.published_index(self._store)
+
         usable = fleet.usable_location_ids()
         contributed: dict[str, float] = {}
         for modality in MODALITIES:
@@ -1191,6 +1215,16 @@ class Catalog:
                     if isinstance(fetched, (int, float)) and fetched > 0:
                         contributed[definition.id] = float(fetched)
                 row = self._story_row(modality, definition, model, usable=usable)
+                # **The publisher's number and ours, side by side and never merged.**
+                # `max_output_tokens` above stays exactly what the producer states;
+                # `measured` is this gateway's own record of what the lane has really
+                # carried, labelled `source: "gateway"` inside it. A reader that only
+                # wants the ceiling is unaffected — the key is additive — and a reader
+                # that wants to know whether the ceiling is real can now see how close
+                # the work has actually come to it.
+                row["measured"] = measured.get(
+                    (fleet.publish_id(definition.id), model["model_id"])
+                )
                 existing = merged.get(row["id"])
                 if existing is None:
                     merged[row["id"]] = row

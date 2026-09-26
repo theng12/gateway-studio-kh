@@ -477,6 +477,49 @@ stop reading its silence as an answer. That line is worth more than the four row
 
 ## A. Story Studio owes / we ask
 
+- [ ] **STORY-7 — the measurement is now published to you, on the row you already
+  read. Use it to stop estimating.** owes: Story (a read, when you want it) · truth:
+  `GET /v1/models` and `GET /v1/chat/models`, the new `measured` key per row.
+  Shipped 2026-09-26 in **0.2.40**. Every catalogue row now carries:
+
+  ```json
+  "measured": {
+    "provider_id": "studio-hub", "model_id": "mlx-community/Qwen3.5-9B-4bit",
+    "sites": ["studio-hub-9701220bf30f", "studio-hub-de7250e146a7"],
+    "modalities": ["chat"],
+    "samples": 20, "with_usage": 20,
+    "max_prompt_tokens": 1827, "max_completion_tokens": 4096,
+    "median_completion_tokens": 1603, "median_tokens_per_second": 16.8,
+    "machines": {}, "first_seen": 1790354352.3, "last_seen": 1790389046.5,
+    "source": "gateway"
+  }
+  ```
+
+  **It is ours and it says so.** `source: "gateway"` is inside the object, so the
+  label cannot drift from the numbers it describes. **`max_output_tokens` is
+  untouched** — still exactly what the producer states, with its own `*_source`,
+  beside this and never merged into it. A model nobody has run publishes
+  `measured: null`: unknown, not zero.
+  **What it is for.** `max_completion_tokens` is the largest completion that has
+  **actually run** on that model, across every location offering it — so
+  `measured.max_completion_tokens == max_output_tokens` means the ceiling is real and
+  **being hit**, which is exactly the local lane today (4,096 against 4,096).
+  `median_tokens_per_second` is a measured rate, so a time estimate stops being a
+  guess. `sites` is how many locations contributed, and `machines` splits it per Mac
+  where the lane names one — **the chat lane does not**, so a chat model's envelope is
+  per location until Studio Hub names a machine.
+  **What it is not.** Not a ceiling, not a target, and not a licence to raise
+  `max_tokens` — the Hub still refuses above its own stated maximum (HUB-19). It is a
+  record of what happened, and the only honest answer to "can this lane take a bigger
+  ask".
+  **A caveat we owe you, because it was in an earlier message of ours:** the 17.3
+  tokens/second figure we quoted was **one 489-token sample on one Mac, plain prose, no
+  JSON**. The number to use is **16.8**, the median over 13 real jobs, and this gateway
+  publishes the median rather than the mean for exactly that reason. Three machines ×
+  three models × a real run each is still the thing that would replace every estimate
+  here with a measurement; the machinery for it now exists, and this field is where the
+  answer will appear.
+
 - [ ] **STORY-6 — do NOT remove the chunker. It is right, and the constant behind it
   is yours to keep.** owes: Story (nothing, if you read this) · truth:
   `electron/server/lib/chunked-narration.ts`.

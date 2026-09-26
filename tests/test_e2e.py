@@ -1670,6 +1670,28 @@ def main() -> int:
             check("a model that has never run is absent rather than zeroed",
                   all(r.get("samples") for r in measured_rows))
 
+            # **The same record, on the surface Story Studio actually reads.** The
+            # admin route proves the measurement exists; this proves it is published
+            # where a caller can act on it, and that it stays out of the ceiling it
+            # sits beside.
+            published = req(client, "GET", "/v1/chat/models").json().get("models") or []
+            measured_row = next(
+                (r for r in published if "mock-chat-1" in str(r.get("id"))), {})
+            check("the catalogue row carries the measurement to Story Studio",
+                  isinstance(measured_row.get("measured"), dict)
+                  and measured_row["measured"].get("max_completion_tokens") == 7,
+                  f"{measured_row.get('measured')}")
+            check("and it says the number is ours, not the producer's",
+                  (measured_row.get("measured") or {}).get("source") == "gateway")
+            check("while max_output_tokens stays exactly what the producer stated",
+                  measured_row.get("max_output_tokens") == 8192
+                  and measured_row.get("max_output_tokens_source") == "provider",
+                  f"{measured_row.get('max_output_tokens')} "
+                  f"{measured_row.get('max_output_tokens_source')}")
+            check("a model nobody has run publishes measured: null, not zeros",
+                  all(r.get("measured") is None for r in published
+                      if "mock-chat-1" not in str(r.get("id"))))
+
 
             # The rest of the app-facing routes, each of which the Voices or Jobs
             # window calls on a click.

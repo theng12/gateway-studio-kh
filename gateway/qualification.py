@@ -27,7 +27,6 @@ is resident, so it excludes a cold turn's load and is the rate a scheduler wants
 
 from __future__ import annotations
 
-import json
 import statistics
 from typing import Any, Iterable
 
@@ -38,31 +37,147 @@ from typing import Any, Iterable
 #: rollup per (model, machine), maintained as jobs settle.
 DEFAULT_WINDOW = 500
 
-#: Which key on a payload names the machine that did the work. The image, voice and
-#: music lanes set `hub_machine`; **the chat lane does not**, so a chat model's
-#: envelope is per location rather than per Mac until Studio Hub names one.
-MACHINE_KEYS = ("hub_machine", "machine")
+#: ponytail: **one envelope per (provider, model), whatever the work was.** A prose
+#: chapter and a scene-plan JSON body go through the same lane and land in the same
+#: row, so `max_completion_tokens` is the largest of *either* and the median rate mixes
+#: them. That is a real limit and it is stated rather than hidden, because JSON is
+#: denser in tokens per word than the prose the ratios were measured on, so a reader
+#: comparing that maximum to a ceiling should know which work produced it.
+#: Ceiling — no split by output shape. Upgrade path — every job already stores its
+#: `params`, so `json_extract(params, '$.response_format.type')` is a read change and
+#: not a schema change; split the row when a lane has run enough of both to be worth
+#: telling apart.
 
 
-def _tokens(payload: dict[str, Any]) -> tuple[int | None, int | None]:
-    """`(prompt, completion)` as the worker stated them, or `None` each."""
-    usage = payload.get("usage")
-    if not isinstance(usage, dict):
-        return None, None
-    def one(key: str) -> int | None:
-        value = usage.get(key)
-        if isinstance(value, bool) or not isinstance(value, (int, float)):
-            return None
-        return int(value)
-    return one("prompt_tokens"), one("completion_tokens")
+def _token(value: Any) -> int | None:
+    """A stated token count, or `None`.
+
+    **`bool` is an `int` in Python**, so `True` read as a number would enter the record
+    as a one-token completion — a fabricated sample, and the kind this module exists to
+    refuse. `False` is worse: it is a zero.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return int(value)
 
 
-def _machine(payload: dict[str, Any]) -> str | None:
-    for key in MACHINE_KEYS:
-        value = payload.get(key)
-        if isinstance(value, str) and value.strip():
-            return value.strip()
-    return None
+def _rows_from_samples(samples: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
+    """One row per settled job that stated a usage, from `store.usage_samples`."""
+    rows: list[dict[str, Any]] = []
+    for sample in samples:
+        prompt = _token(sample.get("prompt_tokens"))
+        completion = _token(sample.get("completion_tokens"))
+        if prompt is None and completion is None:
+            # A lane that states no usage is not measured by this. Counting it as a
+            # zero would drag every envelope toward "this lane does nothing".
+            continue
+        seconds = sample.get("generation_seconds")
+        rate = None
+        if (completion and isinstance(seconds, (int, float))
+                and not isinstance(seconds, bool) and seconds > 0):
+            rate = completion / float(seconds)
+        machine = sample.get("hub_machine")
+        rows.append({
+            "provider_id": str(sample.get("provider_id") or ""),
+            "model_id": str(sample.get("model_id") or ""),
+            "modality": str(sample.get("modality") or ""),
+            "prompt": prompt,
+            "completion": completion,
+            "rate": rate,
+            "machine": machine.strip() if isinstance(machine, str) and machine.strip() else None,
+            "at": sample.get("updated_at") or sample.get("created_at") or 0.0,
+        })
+    return rows
+
+
+def envelope(
+    store: Any, *, provider_id: str | None = None, model_id: str | None = None,
+    limit: int = DEFAULT_WINDOW,
+) -> list[dict[str, Any]]:
+    """The measured envelope per (provider, model), newest work first.
+
+    Reads what is already stored — no schema, no extra call, no cost. A model that
+    has never run is **absent** rather than present with zeros: "no measurement" and
+    "measured at nothing" are different answers, and only one of them is a reason to
+    go and run something.
+    """
+    rows = _rows_from_samples(store.usage_samples(limit=limit))
+    if provider_id:
+        rows = [r for r in rows if r["provider_id"] == provider_id]
+    if model_id:
+        rows = [r for r in rows if r["model_id"] == model_id]
+
+    grouped: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    for row in rows:
+        grouped.setdefault((row["provider_id"], row["model_id"]), []).append(row)
+
+    out = [
+        {"provider_id": key[0], "model_id": key[1],
+         "modalities": sorted({r["modality"] for r in group if r["modality"]}),
+         **_summarise(group)}
+        for key, group in grouped.items()
+    ]
+    out.sort(key=lambda row: (row["provider_id"], row["model_id"]))
+    return out
+
+
+def published_index(
+    store: Any, *, limit: int = DEFAULT_WINDOW,
+) -> dict[tuple[str, str], dict[str, Any]]:
+    """The same record keyed by the id a caller sees, for the catalogue to join on.
+
+    **A location's jobs are keyed by the location, but its models are published by the
+    maker.** A job routed to `studio-hub-9701220bf30f` is catalogue row
+    `studio-hub::~<model>`, and the same model at six sites is **one** catalogue entry
+    with six sites' work behind it — so the envelope Story Studio reads is the fleet's,
+    not the first site's. Keying on the raw provider id left every local row reading as
+    unmeasured, which is the one lane the question is about.
+
+    Every row has the same keys whether one site contributed or six: a shape that
+    changes with the number of contributors is a shape a reader has to guess at.
+    """
+    from .fleet import publish_id
+
+    groups: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    for row in envelope(store, limit=limit):
+        groups.setdefault((publish_id(row["provider_id"]), row["model_id"]), []).append(row)
+
+    index: dict[tuple[str, str], dict[str, Any]] = {}
+    for key, rows in groups.items():
+        index[key] = {
+            "provider_id": key[0],
+            "model_id": key[1],
+            "sites": sorted({row["provider_id"] for row in rows}),
+            "modalities": sorted({m for row in rows for m in row["modalities"]}),
+            "samples": sum(row["samples"] for row in rows),
+            "with_usage": sum(row["with_usage"] for row in rows),
+            # **Across the fleet, not first-row-wins.** A model offered by six
+            # locations has six machines' work behind it; one Mac's slowest run is not
+            # the fleet's envelope and one Mac's fastest is not either.
+            "max_prompt_tokens": _max_of(rows, "max_prompt_tokens"),
+            "max_completion_tokens": _max_of(rows, "max_completion_tokens"),
+            "median_completion_tokens": _median_of(rows, "median_completion_tokens"),
+            "median_tokens_per_second": _median_of(rows, "median_tokens_per_second"),
+            "machines": {name: info for row in rows for name, info in row["machines"].items()},
+            "first_seen": min(row["first_seen"] for row in rows),
+            "last_seen": max(row["last_seen"] for row in rows),
+            "source": "gateway",
+        }
+    return index
+
+
+def _max_of(rows: list[dict[str, Any]], field: str) -> Any:
+    values = [row[field] for row in rows if row.get(field) is not None]
+    return max(values) if values else None
+
+
+def _median_of(rows: list[dict[str, Any]], field: str) -> Any:
+    values = [row[field] for row in rows if row.get(field) is not None]
+    if not values:
+        return None
+    value = statistics.median(values)
+    return round(value, 1) if field.endswith("per_second") else int(value)
+
 
 
 def _summarise(rows: list[dict[str, Any]]) -> dict[str, Any]:
@@ -109,74 +224,6 @@ def _summarise(rows: list[dict[str, Any]]) -> dict[str, Any]:
         # it.
         "source": "gateway",
     }
-
-
-def _rows_from_jobs(jobs: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
-    rows: list[dict[str, Any]] = []
-    for job in jobs:
-        raw = job.get("result_json")
-        if not raw:
-            continue
-        try:
-            result = json.loads(raw)
-        except (TypeError, ValueError):
-            continue
-        payload = result.get("payload") if isinstance(result, dict) else None
-        if not isinstance(payload, dict):
-            continue
-        prompt, completion = _tokens(payload)
-        if prompt is None and completion is None:
-            # A lane that states no usage is not measured by this. Counting it as a
-            # zero would drag every envelope toward "this lane does nothing".
-            continue
-        seconds = payload.get("generation_seconds")
-        rate = None
-        if (completion and isinstance(seconds, (int, float))
-                and not isinstance(seconds, bool) and seconds > 0):
-            rate = completion / float(seconds)
-        rows.append({
-            "provider_id": str(job.get("provider_id") or ""),
-            "model_id": str(job.get("model_id") or ""),
-            "modality": str(job.get("modality") or ""),
-            "prompt": prompt,
-            "completion": completion,
-            "rate": rate,
-            "machine": _machine(payload),
-            "at": job.get("updated_at") or job.get("created_at") or 0.0,
-        })
-    return rows
-
-
-def envelope(
-    store: Any, *, provider_id: str | None = None, model_id: str | None = None,
-    limit: int = DEFAULT_WINDOW,
-) -> list[dict[str, Any]]:
-    """The measured envelope per (provider, model), newest work first.
-
-    Reads what is already stored — no schema, no extra call, no cost. A model that
-    has never run is **absent** rather than present with zeros: "no measurement" and
-    "measured at nothing" are different answers, and only one of them is a reason to
-    go and run something.
-    """
-    jobs = store.list_jobs(limit=limit)
-    rows = _rows_from_jobs(jobs)
-    if provider_id:
-        rows = [r for r in rows if r["provider_id"] == provider_id]
-    if model_id:
-        rows = [r for r in rows if r["model_id"] == model_id]
-
-    grouped: dict[tuple[str, str], list[dict[str, Any]]] = {}
-    for row in rows:
-        grouped.setdefault((row["provider_id"], row["model_id"]), []).append(row)
-
-    out = [
-        {"provider_id": key[0], "model_id": key[1],
-         "modalities": sorted({r["modality"] for r in group if r["modality"]}),
-         **_summarise(group)}
-        for key, group in grouped.items()
-    ]
-    out.sort(key=lambda row: (row["provider_id"], row["model_id"]))
-    return out
 
 
 def qualification_for(

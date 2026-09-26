@@ -29,4 +29,9 @@ STARTED_AT = time.time()
 store = JobStore(DB_PATH)
 worker = Worker(store)
 
+# The catalogue publishes a `measured` block per row, read from settled jobs, so it
+# needs the store — and it cannot import it without a cycle (this module imports the
+# catalogue). Attached explicitly, after both exist.
+catalog.attach_store(store)
+
 __all__ = ["STARTED_AT", "catalog", "registry", "store", "worker"]

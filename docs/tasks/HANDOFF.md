@@ -1,6 +1,6 @@
 # HANDOFF — gateway-kh
 
-**Read this first.** Written 2026-09-26 against **VERSION `0.2.39`**. The running build
+**Read this first.** Written 2026-09-26 against **VERSION `0.2.40`**. The running build
 stamp is on `/health` and in `/Applications/gateway-kh.app/Contents/Resources/gateway/BUILD`.
 If this file disagrees with the code, **the code wins — fix this file in the same change**.
 Every path below is inside the Git checkout `repository/` unless it says otherwise.
@@ -11,11 +11,11 @@ project does not say why, and nobody should guess.
 
 | Thing | Value |
 |---|---|
-| Current release | **0.2.39** — `repository/VERSION`, one line, the only place to bump |
+| Current release | **0.2.40** — `repository/VERSION`, one line, the only place to bump |
 | Declared Studio Hub | **0.6.65** — `adapters.studio_hub.SUPPORTED_STUDIO_HUB_VERSION`, published on `/health`; a controller on another version is reported, never refused. Set on 2026-09-25 from a **running** Hub (`/api/version` → `0.6.65` build `37cb07b`), not a changelog `[MEASURED]` |
 | Branch | `main` = `origin/main`, clean tree; remote `github.com/theng12/gateway-kh` |
 | Running build | `/Applications/gateway-kh.app`, port **8787**, stamp `9607395-202609260239` (`/health` and `…/Resources/gateway/BUILD`) — **this stamp is one commit behind `main` by construction**: `build.sh` stamps `git rev-parse --short HEAD`, so building before committing always leaves the tree one commit ahead of the stamp. Every release in this file has that shape; the deployed *code* is the whole change. The gateway must be **respawned**, not adopted, to carry a new stamp: with *Keep the gateway running after I quit* on, quitting the app leaves the old process holding 8787 and the new app adopts it, so `/health` keeps reporting the old build while serving new code `[MEASURED 2026-09-26]` |
-| Distribution | DMG in `repository/dist/` (`gateway-kh-0.2.39.dmg`), named by version alone |
+| Distribution | DMG in `repository/dist/` (`gateway-kh-0.2.40.dmg`), named by version alone |
 | SSD/setup kit | `repository/dist/setup-kit/`. **The four `KH-STUDIO-*` drives now carry Studio Hub 0.6.65** `[MEASURED 2026-09-25]`, refreshed 21:34–21:40; the GatewayKH side on them is older — check before a rollout |
 
 - **Versions are patch-only for now:** `0.2.1`, `0.2.2`, … up to `0.2.1000`. Increment the
@@ -46,7 +46,62 @@ project does not say why, and nobody should guess.
   Status.md` §10h: 8000 is the most contested dev port and Story Studio's own
   default). Every Story Studio client points at `http://<host>:8787`.
 
+## WHAT 0.2.40 CHANGED — the measurement reaches Story Studio, and it is read in SQL
+
+Two changes, both about the same record. `measured` is now on **every catalogue row**,
+so Story Studio reads it from `/v1/models` and `/v1/chat/models` — the surface it
+already polls — instead of the admin route it cannot reach. The shape, and what it is
+and is not for, is STORY-7 in the master tracker.
+
+- **`max_output_tokens` is untouched.** Still exactly what the producer states, with
+  its own `*_source`; `measured` sits beside it and `source: "gateway"` is **inside**
+  the object, so the label cannot drift from the numbers it describes. A model nobody
+  has run publishes `measured: null` — unknown, not zero — and there is an e2e check
+  for each half.
+- **A location's work is published under the maker.** A job routed to
+  `studio-hub-9701220bf30f` is catalogue row `studio-hub::~<model>`, and the same
+  model at six sites is one row summarised **across all six** — `samples` summed, the
+  maximum taken as a maximum, the rate as a median of medians. Keying the join on the
+  raw provider id left every local row reading as unmeasured, which is the one lane
+  the question is about. `published_index` always emits the same keys whether one
+  location contributed or six: a shape that changes with the number of contributors is
+  a shape a reader has to guess at.
+- **The read moved into SQL, and that is the second change.** `store.usage_samples`
+  extracts four numbers with `json_extract` and leaves the generated prose in the file.
+  `result_json` holds the *whole* completion — ~16 KB on a 4,096-token answer — so
+  pulling `SELECT *` over 500 jobs to read four fields would materialise megabytes
+  every rebuild, which is every 20 s on a path Story Studio polls. Measured: the query
+  returns 54 rows in **0.4 ms** on the live store.
+- **Two guards, both of which a test forced, and both of which would have shipped
+  silently:**
+  * `CASE WHEN json_valid(...)` rather than `WHERE json_valid(...)` — a WHERE clause is
+    not a promise about evaluation order, SQLite may evaluate `json_extract` first, and
+    it *raises* `malformed JSON` rather than returning NULL. One unreadable row would
+    have taken every other row's measurement with it.
+  * `json_type(...) IN ('integer','real')` — **`json_extract` returns `1` for a JSON
+    `true`**, so the `bool` guard that rejected `{"completion_tokens": true}` stopped
+    working the moment the read moved into SQL, and `True` re-entered the record as a
+    one-token completion. The focused suite caught it. The type has to be checked where
+    it is still a JSON type; a stringified `"7"` is refused by the same clause.
+- **The catalogue never imports the store.** `runtime` imports `catalog` at its own
+  module level, so a module-level import here is a cycle — and the lazy-import version
+  produced **no measurement at all**, silently, because `catalog = Catalog()` runs
+  during that module's import, before `runtime` has built the store. It is
+  `attach_store(store)`, called explicitly after both exist.
+- **Known limit, stated rather than hidden:** one envelope per (provider, model)
+  whatever the work was, so a prose chapter and a scene-plan JSON body share a row and
+  `max_completion_tokens` is the largest of either. That matters because JSON is denser
+  in tokens per word than the prose the ratios were measured on. Every job already
+  stores its `params`, so splitting on `json_extract(params, '$.response_format.type')`
+  is a read change and not a schema change — do it when a lane has run enough of both
+  to be worth telling apart. `ponytail:` in `qualification.py` names this.
+
+`tests/test_qualification.py` → **31 checks** (10 new); `test_e2e.py` → 4 new,
+**568/568**.
+
 ## WHAT 0.2.39 CHANGED — a model is qualified by what it has really carried
+
+
 
 Asked 2026-09-26: *"we need to keep these for that when I want to qualify a new LLM,
 we can apply the same parameter check too."* Before this the figures were read once by

@@ -290,5 +290,142 @@ class TheRoutePublishesBothNumbersTest(unittest.TestCase):
         self.assertIn("unknown rather than unlimited", body["note"])
 
 
+class ThePublishedRecordTest(unittest.TestCase):
+    """What the catalogue hands Story Studio: keyed by the id a caller sees."""
+
+    def setUp(self) -> None:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.store = JobStore(Path(tmp.name) / "jobs.sqlite3")
+        self.addCleanup(self.store.close)
+        self._n = 0
+
+    def _ran(self, provider, model, completion, seconds, prompt=None, machine=None):
+        self._n += 1
+        row, _ = self.store.submit(
+            modality="chat", model_id=model, params={},
+            idempotency_key=f"p{self._n}", provider_id=provider,
+        )
+        payload = {"usage": {"completion_tokens": completion},
+                   "generation_seconds": seconds}
+        if prompt is not None:
+            payload["usage"]["prompt_tokens"] = prompt
+        if machine:
+            payload["hub_machine"] = machine
+        self.store.succeed(row["id"], result={"text": "x", "payload": payload})
+
+    def test_a_locations_work_is_published_under_the_maker(self) -> None:
+        # The join that matters. A job routed to one controller is catalogue row
+        # `studio-hub::~<model>`; keying on the raw provider id left every local row
+        # reading as unmeasured, which is the one lane the question is about.
+        self._ran("studio-hub-9701220bf30f", "Qwen3.5-9B-4bit", 4096, 244.0)
+        index = qualification.published_index(self.store)
+        self.assertIn(("studio-hub", "Qwen3.5-9B-4bit"), index)
+        self.assertNotIn(("studio-hub-9701220bf30f", "Qwen3.5-9B-4bit"), index)
+
+    def test_six_locations_are_one_row_summarised_across_all_of_them(self) -> None:
+        # One Mac's slowest run is not the fleet's envelope, and one Mac's fastest is
+        # not either. The largest that ran and the sample count are both fleet facts.
+        self._ran("studio-hub-aaa", "m", 841, 59.2)
+        self._ran("studio-hub-bbb", "m", 2350, 141.6)
+        self._ran("studio-hub-ccc", "m", 100, 8.6)
+        row = qualification.published_index(self.store)[("studio-hub", "m")]
+        self.assertEqual(row["samples"], 3)
+        self.assertEqual(row["max_completion_tokens"], 2350)
+        self.assertEqual(row["sites"], ["studio-hub-aaa", "studio-hub-bbb", "studio-hub-ccc"])
+        self.assertEqual(row["source"], "gateway")
+
+    def test_a_cloud_lane_keeps_its_own_namespace(self) -> None:
+        self._ran("openrouter-main", "deepseek/deepseek-v4-flash", 15139, 800.0)
+        index = qualification.published_index(self.store)
+        self.assertIn(("openrouter-main", "deepseek/deepseek-v4-flash"), index)
+        self.assertEqual(index[("openrouter-main", "deepseek/deepseek-v4-flash")]["sites"],
+                         ["openrouter-main"])
+
+    def test_the_shape_does_not_change_with_the_number_of_contributors(self) -> None:
+        # A reader that has to guess whether `sites` is present is a reader that will
+        # guess wrong. One contributor and three publish the same keys.
+        self._ran("studio-hub-aaa", "m", 100, 10.0)
+        one = set(qualification.published_index(self.store)[("studio-hub", "m")])
+        self._ran("studio-hub-bbb", "m", 200, 10.0)
+        three = set(qualification.published_index(self.store)[("studio-hub", "m")])
+        self.assertEqual(one, three)
+
+    def test_a_machine_named_by_any_location_survives_the_merge(self) -> None:
+        # The image, voice and music lanes do name a Mac; merging locations must not
+        # drop the per-machine split, which is the whole point for those lanes.
+        self._ran("studio-hub-aaa", "img", 10, 5.0, machine="mac-a")
+        self._ran("studio-hub-bbb", "img", 20, 5.0, machine="mac-b")
+        row = qualification.published_index(self.store)[("studio-hub", "img")]
+        self.assertEqual(sorted(row["machines"]), ["mac-a", "mac-b"])
+
+    def test_a_model_with_no_work_is_absent_from_the_index(self) -> None:
+        # Which is how the catalogue publishes `measured: null` — unknown, not zero.
+        self._ran("studio-hub-aaa", "m", 100, 10.0)
+        index = qualification.published_index(self.store)
+        self.assertIsNone(index.get(("studio-hub", "never-run")))
+
+
+class TheStoreReadsItsOwnNumbersTest(unittest.TestCase):
+    """`usage_samples` is the one reader, and it is read in SQL."""
+
+    def setUp(self) -> None:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.store = JobStore(Path(tmp.name) / "jobs.sqlite3")
+        self.addCleanup(self.store.close)
+
+    def _job(self, result: str | None) -> str:
+        row, _ = self.store.submit(modality="chat", model_id="m", params={},
+                                   idempotency_key=f"k{result}", provider_id="cloud-a")
+        if result is not None:
+            self.store._conn.execute(
+                "UPDATE jobs SET result_json = ? WHERE id = ?", (result, row["id"]))
+            self.store._conn.commit()
+        return row["id"]
+
+    def test_a_malformed_row_does_not_take_the_record_with_it(self) -> None:
+        # `json_extract` raises `malformed JSON` rather than returning NULL, and a
+        # WHERE guard is not a promise about evaluation order. One unreadable row must
+        # not cost every other row its measurement.
+        self._job(json.dumps({"payload": {"usage": {"completion_tokens": 7},
+                                          "generation_seconds": 1.0}}))
+        self._job("{not json")
+        self._job("[]")
+        samples = self.store.usage_samples()
+        self.assertEqual(len(samples), 3)
+        self.assertEqual(sorted(s["completion_tokens"] for s in samples
+                                if s["completion_tokens"] is not None), [7])
+
+    def test_a_json_boolean_is_not_a_token_count(self) -> None:
+        # `json_extract` returns 1 for `true`, so the boolean-ness is gone by the time
+        # Python sees it — the guard that used to catch this in Python stopped working
+        # the moment the read moved into SQL. The type is checked where it is still a
+        # JSON type.
+        self._job(json.dumps({"payload": {"usage": {"prompt_tokens": 30,
+                                                    "completion_tokens": True}}}))
+        sample = self.store.usage_samples()[0]
+        self.assertIsNone(sample["completion_tokens"])
+        self.assertEqual(sample["prompt_tokens"], 30)
+
+    def test_a_stringified_number_is_not_a_token_count(self) -> None:
+        self._job(json.dumps({"payload": {"usage": {"completion_tokens": "7"},
+                                          "generation_seconds": "1.0"}}))
+        sample = self.store.usage_samples()[0]
+        self.assertIsNone(sample["completion_tokens"])
+        self.assertIsNone(sample["generation_seconds"])
+
+    def test_the_whole_generated_text_is_never_read(self) -> None:
+        # The reason this query exists rather than `list_jobs`: `result_json` holds the
+        # full completion, so materialising 500 of them to read four numbers would pull
+        # megabytes of prose through Python on a path Story Studio polls.
+        self._job(json.dumps({"text": "x" * 200000,
+                              "payload": {"usage": {"completion_tokens": 7}}}))
+        sample = self.store.usage_samples()[0]
+        self.assertNotIn("result_json", sample)
+        self.assertNotIn("text", sample)
+        self.assertEqual(sample["completion_tokens"], 7)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

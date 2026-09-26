@@ -734,6 +734,63 @@ class JobStore:
         ).fetchall()
         return [self._row_dict(r) for r in rows]
 
+    def usage_samples(self, *, limit: int = 500) -> list[dict[str, Any]]:
+        """What each settled job measured, for the qualification record.
+
+        **Read in SQL, not in Python, and that is the point.** `result_json` holds the
+        *whole* generated text — up to ~16 KB on a 4,096-token completion — so pulling
+        `SELECT *` over 500 recent jobs to read four numbers would materialise megabytes
+        of prose every time the catalogue is rebuilt, which is every 20 seconds on a
+        path Story Studio polls. `json_extract` reads the four fields and leaves the
+        prose in the file.
+
+        **`CASE WHEN json_valid(...)` rather than `WHERE json_valid(...)`.** A WHERE
+        clause is not a guarantee about evaluation order: SQLite is free to evaluate
+        `json_extract` first, and it raises `malformed JSON` on a row the filter would
+        have removed. One unreadable row must not take the whole record with it — the
+        CASE yields `NULL` for it and every other row is still published.
+
+        **`json_type(...) IN ('integer', 'real')`, not a Python `isinstance` check, and
+        the tests are why.** `json_extract` returns `1` for a JSON `true` and `0` for
+        `false` — the boolean-ness is gone by the time Python sees it, so the `bool`
+        guard that used to reject `{"completion_tokens": true}` in Python stopped
+        working the moment the read moved into SQL, and `True` re-entered the record as
+        a one-token completion. The type has to be checked where it is still a JSON
+        type. A stringified `"7"` is refused by the same clause.
+
+        Only the fields a job actually states come back; a row with no `usage` returns
+        `NULL`s and is dropped by the reader rather than counted as zero.
+        """
+        rows = self._conn.execute(
+            """
+            SELECT provider_id, model_id, modality, created_at, updated_at,
+                   CASE WHEN json_valid(result_json)
+                         AND json_type(result_json, '$.payload.usage.prompt_tokens')
+                             IN ('integer', 'real')
+                        THEN json_extract(result_json, '$.payload.usage.prompt_tokens') END
+                       AS prompt_tokens,
+                   CASE WHEN json_valid(result_json)
+                         AND json_type(result_json, '$.payload.usage.completion_tokens')
+                             IN ('integer', 'real')
+                        THEN json_extract(result_json, '$.payload.usage.completion_tokens') END
+                       AS completion_tokens,
+                   CASE WHEN json_valid(result_json)
+                         AND json_type(result_json, '$.payload.generation_seconds')
+                             IN ('integer', 'real')
+                        THEN json_extract(result_json, '$.payload.generation_seconds') END
+                       AS generation_seconds,
+                   CASE WHEN json_valid(result_json)
+                        THEN json_extract(result_json, '$.payload.hub_machine') END
+                       AS hub_machine
+              FROM jobs
+             WHERE result_json IS NOT NULL AND result_json != ''
+             ORDER BY created_at DESC
+             LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
     def protected_input_paths(self) -> set[str]:
         """Inputs held by queued, running, or explicitly recoverable jobs."""
         rows = self._conn.execute(
