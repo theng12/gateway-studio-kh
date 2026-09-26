@@ -934,12 +934,30 @@ def _chat_row(model_id: str, definition: ProviderDefinition, model: dict[str, An
     # never made. `response_format` is JSON-object mode; `structured_outputs` is
     # JSON-schema mode. When both are stated, `json_object` is still true and is
     # the value this field has always carried, so it stays.
+    # **THE STRONG MODE IS SPELT `request_json_schema`, AND THE SPELLING IS LOAD-BEARING.**
+    # The distinction above was correct and was being *erased on the wire*: this used to
+    # publish `"json_schema"`, Story Studio's union is
+    # `'none' | 'json_object' | 'request_json_schema'`, and its parser maps anything that is
+    # neither of those onto `'json_object'`. So the stronger mode arrived as the weaker one
+    # and the provider's claim was lost again, one layer further out.
+    #
+    # It costs behaviour, not a label. `productResponseFormat` in Story Studio sends a
+    # provider-native `json_schema` with `strict: true` **only** when the product publishes
+    # `request_json_schema`; read as `json_object`, the same request falls through to an
+    # instruction that *describes* the schema and asks the model to comply — which is how a
+    # model "complied for two packs of forty scenes and wrote prose for the third".
+    #
+    # This gateway is Story Studio's only language surface, and its contract is that Story
+    # needs **zero code changes** to talk to it — so the published vocabulary is GenStudio's,
+    # not ours. `json_schema` stays correct on the *request* side, where it is the provider's
+    # own `response_format.type` (`adapters/studio_hub.py`, `adapters/openai_compat.py`).
+    # The two spellings are not interchangeable in either place.
     if parameters is None or not structured:
         structured_mode = None
     elif "response_format" in parameters:
         structured_mode = "json_object"
     elif "structured_outputs" in parameters:
-        structured_mode = "json_schema"
+        structured_mode = "request_json_schema"
     else:
         structured_mode = None
     # Where the provider published nothing, the owner's curated file may know.
