@@ -447,7 +447,10 @@ class Worker:
                  pool_size: int | None = None) -> None:
         self.store = store
         self.interval_s = interval_s
-        self.pool_size = pool_size or concurrency.global_limit()
+        # An explicit size PINS the pool; `None` means "ask the live limit", resolved per
+        # admission by `_global_limit`. This used to be captured here, which broke the
+        # promise `concurrency` makes about a settings edit — see that method.
+        self.pool_size = pool_size
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
         self._budget_lock = threading.Lock()
@@ -513,6 +516,23 @@ class Worker:
             time.sleep(0.02)
         return self.active() == 0
 
+    def _global_limit(self) -> int:
+        """The live global admission cap.
+
+        An explicit ``pool_size`` pins it — the tests use that, and so would any caller
+        that means to hold a fixed size. With no pin, this is read AT ADMISSION rather
+        than captured in ``__init__``, because ``global_budget()`` re-reads the settings
+        file whenever it changes and ``concurrency`` states the consequence in as many
+        words: *"a fix to a rate limit should take effect without a restart."*
+
+        That promise held for lanes and providers, which were always read per admission,
+        and **not for this one**: the value was frozen when the worker started, so raising
+        `global` on the Providers page changed what the API reported and nothing about how
+        many jobs actually ran. The class docstring has named `concurrency.global_limit`
+        as this check since it was written; now the code does too.
+        """
+        return self.pool_size if self.pool_size else concurrency.global_limit()
+
     def _admit(self, job: dict[str, Any]) -> bool:
         """Reserve room for one job, or refuse it this pass.
 
@@ -524,7 +544,7 @@ class Worker:
         provider_budget = self._provider_budget(provider_id, modality)
         lane_budget = concurrency.lane_budget(modality)
         with self._budget_lock:
-            if sum(self._in_flight.values()) >= self.pool_size:
+            if sum(self._in_flight.values()) >= self._global_limit():
                 return False
             if self._lane_in_flight.get(modality, 0) >= lane_budget.limit:
                 return False

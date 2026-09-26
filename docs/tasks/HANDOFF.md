@@ -11,11 +11,11 @@ project does not say why, and nobody should guess.
 
 | Thing | Value |
 |---|---|
-| Current release | **0.2.44** — `repository/VERSION`, one line, the only place to bump |
+| Current release | **0.2.45** — `repository/VERSION`, one line, the only place to bump |
 | Declared Studio Hub | **0.6.65** — `adapters.studio_hub.SUPPORTED_STUDIO_HUB_VERSION`, published on `/health`; a controller on another version is reported, never refused. Set on 2026-09-25 from a **running** Hub (`/api/version` → `0.6.65` build `37cb07b`), not a changelog `[MEASURED]` |
 | Branch | `main` = `origin/main`, clean tree; remote `github.com/theng12/gateway-kh` |
 | Running build | `/Applications/gateway-kh.app`, port **8787**, stamp `2da713b-202609260646` (`/health` and `…/Resources/gateway/BUILD`) — **this stamp is one commit behind `main` by construction**: `build.sh` stamps `git rev-parse --short HEAD`, so building before committing always leaves the tree one commit ahead of the stamp. Every release in this file has that shape; the deployed *code* is the whole change. The gateway must be **respawned**, not adopted, to carry a new stamp: with *Keep the gateway running after I quit* on, quitting the app leaves the old process holding 8787 and the new app adopts it, so `/health` keeps reporting the old build while serving new code `[MEASURED 2026-09-26]` |
-| Distribution | DMG in `repository/dist/` (`gateway-kh-0.2.44.dmg`), named by version alone |
+| Distribution | DMG in `repository/dist/` (`gateway-kh-0.2.45.dmg`), named by version alone |
 | SSD/setup kit | `repository/dist/setup-kit/`, **pinned to GatewayKH 0.2.44** and refreshed onto all four `KH-STUDIO-*` drives on **2026-09-26**, `shasum -a 256 -c` OK on every one. The drives also carry `Studio Hub.app` **0.6.70**. Superseded kits are in each drive's `_trash/superseded-kit-2026-09-26/` (`GatewayKH-0.2.27`, `GatewayKH-0.2.43`) |
 
 - **Versions are patch-only for now:** `0.2.1`, `0.2.2`, … up to `0.2.1000`. Increment the
@@ -46,6 +46,39 @@ project does not say why, and nobody should guess.
   "Why port 8787". It was 8000 until the owner moved it (2026-09-21, `Project
   Status.md` §10h: 8000 is the most contested dev port and Story Studio's own
   default). Every Story Studio client points at `http://<host>:8787`.
+
+## WHAT 0.2.45 CHANGED — the global cap moves without a restart
+
+`Worker.__init__` captured `concurrency.global_limit()` once into `self.pool_size`, and `_admit`
+gated on that captured number. Lanes and providers were always read **per admission**; the global
+cap was the one that was not. So raising `global` on the Providers page changed what
+`/admin/api/settings/concurrency` reported and **nothing about how many jobs actually ran** — the
+new number would not bite until the gateway restarted, which is exactly the restart `concurrency`
+promises is unnecessary: *"a fix to a rate limit should take effect without a restart while a stat
+per admitted job stays cheap."* The class docstring had named `concurrency.global_limit` as this
+check since it was written; now the code does too.
+
+- **`Worker._global_limit()`** resolves it per admission. An explicit `pool_size` stays a **pin** —
+  the tests pass one, and so would any caller that means to hold a fixed size.
+- **Why this is the fleet's throughput and not a tidy-up.** `DEFAULT_GLOBAL` is **4**. Measured on
+  the running gateway before the change: `global: {limit: 4, source: gateway, detail: "nothing set
+  it, so 4; edit it on Providers"}`. Four concurrent jobs is the whole fleet's ceiling, and until
+  this release the console could not move it.
+- **Guard:** `tests/test_worker_concurrency.py::TheGlobalLimitMovesWithoutARestartTest` — raising
+  *and* lowering the setting against a **live Worker that is never restarted**, plus the pin. **Proved
+  to fail on the old behaviour:** restoring the capture fails 2 of its 3 tests, and the failure
+  message names the promise that was broken.
+- **Verified:** `tests/test_e2e.py` **570/570** · `tests/test_fleet_standalone.py` **47/47** against
+  the owner's real Hub · all **34** focused suites green · `test_ui.py` **not** run (release-gate
+  only; it takes over the owner's screen).
+
+**The related finding, and the one that is *not* a defect.** While measuring this, the RAM
+admission path was re-read end to end. `memory_admission`'s total-memory floor is **deliberately
+never in force** — *"no dispatch is refused for the size of the machine"* (`:140-142`), *"never
+enforced"* (`:163`) — because FLUX.2 Klein 4B MLX 4-bit *"has completed thousands of generations on
+the owner's 8 GB Apple-silicon nodes"* (`:33-36`). The **free-memory floor** is the live guard; the
+published tier **ranks** (HUB-17) and **warns**. A small Mac being offered a model above its
+published tier is intended, measured behaviour. Do not "fix" it.
 
 ## WHAT 0.2.44 CHANGED — the first consumer of the Hub's stall signal
 

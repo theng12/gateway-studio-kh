@@ -315,6 +315,68 @@ class ThePublishedLimitIsTheRealOneTest(unittest.TestCase):
         self.assertIn("generation_submissions_per_minute", published)
 
 
+class TheGlobalLimitMovesWithoutARestartTest(unittest.TestCase):
+    """The global cap is read at admission, not captured when the worker starts.
+
+    ``concurrency`` promises the owner that a settings edit takes effect without a
+    restart: *"a fix to a rate limit should take effect without a restart"*. That was
+    true of the lane and provider caps, which were always read per admission, and it was
+    **not** true of the global one — ``Worker.__init__`` froze it, so raising `global` on
+    the Providers page changed what ``/admin/api/settings/concurrency`` reported and
+    nothing about how many jobs ran. The class docstring had named
+    ``concurrency.global_limit`` as the check the whole time.
+
+    On the old code, ``test_raising_the_setting_raises_the_live_cap`` fails: the worker
+    keeps the value it captured. It is written against a *live* Worker that is never
+    restarted, because a restart is exactly what the promise says is unnecessary.
+    """
+
+    def setUp(self) -> None:
+        concurrency.reset_for_tests()
+        self.addCleanup(concurrency.reset_for_tests)
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.path = Path(self._tmp.name) / "provider-concurrency.local.json"
+        patcher = patch.object(concurrency, "SETTINGS_PATH", self.path)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _write_global(self, value: int) -> None:
+        # Different content each time so the mtime/size stamp cannot collide.
+        self.path.write_text(json.dumps({"global": value, "_pad": "x" * value}), encoding="utf-8")
+
+    def test_raising_the_setting_raises_the_live_cap(self) -> None:
+        self._write_global(1)
+        self.assertEqual(concurrency.global_limit(), 1)
+
+        # No pool_size: the worker must ask the live limit every time it admits.
+        w = Worker(_FakeStore([], claim_always_fails=False), interval_s=10.0)
+        self.assertEqual(w._global_limit(), 1, "the worker should read the file, not a captured value")
+
+        self._write_global(3)
+        self.assertEqual(concurrency.global_limit(), 3,
+                         "global_budget() must re-read the file it was pointed at")
+        self.assertEqual(w._global_limit(), 3,
+                         "the LIVE worker still gates at 1 — the setting did not take effect "
+                         "without a restart, which is the promise concurrency makes")
+
+    def test_lowering_the_setting_lowers_the_live_cap(self) -> None:
+        # The same rule in the other direction: turning the fleet down must bite at once.
+        self._write_global(5)
+        w = Worker(_FakeStore([], claim_always_fails=False), interval_s=10.0)
+        self.assertEqual(w._global_limit(), 5)
+        self._write_global(2)
+        self.assertEqual(w._global_limit(), 2)
+
+    def test_an_explicit_pool_size_is_still_a_pin(self) -> None:
+        # The tests and any deliberate caller pass a number and mean it — the live
+        # settings file must not override an explicit choice.
+        self._write_global(9)
+        w = Worker(_FakeStore([], claim_always_fails=False), interval_s=10.0, pool_size=2)
+        self.assertEqual(w._global_limit(), 2,
+                         "an explicit pool_size is a pin and outranks the settings file")
+
+
 class ConcurrencySettingsTest(unittest.TestCase):
     """The owner supplies these numbers, so the file has to behave like a setting."""
 
