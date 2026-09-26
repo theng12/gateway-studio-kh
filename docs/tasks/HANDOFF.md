@@ -1,6 +1,6 @@
 # HANDOFF — gateway-kh
 
-**Read this first.** Written 2026-09-26 against **VERSION `0.2.41`**. The running build
+**Read this first.** Written 2026-09-26 against **VERSION `0.2.42`**. The running build
 stamp is on `/health` and in `/Applications/gateway-kh.app/Contents/Resources/gateway/BUILD`.
 If this file disagrees with the code, **the code wins — fix this file in the same change**.
 Every path below is inside the Git checkout `repository/` unless it says otherwise.
@@ -11,11 +11,11 @@ project does not say why, and nobody should guess.
 
 | Thing | Value |
 |---|---|
-| Current release | **0.2.41** — `repository/VERSION`, one line, the only place to bump |
+| Current release | **0.2.42** — `repository/VERSION`, one line, the only place to bump |
 | Declared Studio Hub | **0.6.65** — `adapters.studio_hub.SUPPORTED_STUDIO_HUB_VERSION`, published on `/health`; a controller on another version is reported, never refused. Set on 2026-09-25 from a **running** Hub (`/api/version` → `0.6.65` build `37cb07b`), not a changelog `[MEASURED]` |
 | Branch | `main` = `origin/main`, clean tree; remote `github.com/theng12/gateway-kh` |
 | Running build | `/Applications/gateway-kh.app`, port **8787**, stamp `9607395-202609260239` (`/health` and `…/Resources/gateway/BUILD`) — **this stamp is one commit behind `main` by construction**: `build.sh` stamps `git rev-parse --short HEAD`, so building before committing always leaves the tree one commit ahead of the stamp. Every release in this file has that shape; the deployed *code* is the whole change. The gateway must be **respawned**, not adopted, to carry a new stamp: with *Keep the gateway running after I quit* on, quitting the app leaves the old process holding 8787 and the new app adopts it, so `/health` keeps reporting the old build while serving new code `[MEASURED 2026-09-26]` |
-| Distribution | DMG in `repository/dist/` (`gateway-kh-0.2.41.dmg`), named by version alone |
+| Distribution | DMG in `repository/dist/` (`gateway-kh-0.2.42.dmg`), named by version alone |
 | SSD/setup kit | `repository/dist/setup-kit/`. **The four `KH-STUDIO-*` drives now carry Studio Hub 0.6.65** `[MEASURED 2026-09-25]`, refreshed 21:34–21:40; the GatewayKH side on them is older — check before a rollout |
 
 - **Versions are patch-only for now:** `0.2.1`, `0.2.2`, … up to `0.2.1000`. Increment the
@@ -45,6 +45,53 @@ project does not say why, and nobody should guess.
   "Why port 8787". It was 8000 until the owner moved it (2026-09-21, `Project
   Status.md` §10h: 8000 is the most contested dev port and Story Studio's own
   default). Every Story Studio client points at `http://<host>:8787`.
+
+## WHAT 0.2.42 CHANGED — the Hub moved its numbers, and we moved our mock first
+
+Studio Hub raised `FALLBACK_MAX_OUTPUT_TOKENS` `4096 → 16384` and made the deadline
+**per lane** (chat 1,800 s; image/voice/transcription/music 900 s; video 7,200 s),
+replacing the single `PEER_PROXY_TIMEOUT_S = 900.0`. Their release is **not cut yet** —
+working tree only, nothing installed, nothing on the drives, and **GW-5 cannot
+re-discover until it is**. Until then the local lane is still 4,096 / 900 s.
+
+- **They warned that their own suite lost eight chat tests to it** — several asserting
+  the bare literal `4096`, several fixtures hand-tuned to sit *just above* the old
+  fallback, which **silently inverted** at 16,384: the fixture became the binding
+  constraint instead of the fallback. *"Any number of yours that is written as a
+  literal, or sized relative to our fallback, is exposed to the same inversion."*
+- **Answered empirically, not by inspection: our mock Hub was moved to the new values
+  first and the whole suite run against it.** Two tests went red, both quoting old
+  numbers rather than the fixture — `max_output_tokens == 4096` and
+  `deadline_seconds == 600.0`. **The gateway code was correct in both cases.** Every
+  other suite passed unchanged, e2e included.
+- `tests/mock_upstream.py` now **names** `HUB_CHAT_MAX_OUTPUT_TOKENS`,
+  `HUB_CHAT_CONTEXT_TOKENS`, `HUB_CHAT_DEADLINE_S`, `HUB_VOICE_DEADLINE_S`, and both
+  fixtures and assertions use them — the next move is one line and no test can quote a
+  stale number. That is the `AGENTS.md` rule (*"asserted a hand-written key list from
+  the live Hub, not the fixture"*) applied to a constant instead of a key set.
+- **The inversion is now impossible by construction**, with a test on the mechanism
+  rather than the value: *"a model that states less than the fallback keeps its own
+  number"* asserts whatever the Hub states reaches the row, so it stays true at 16,384,
+  at 32,768, and at whatever they pick next.
+- **Per-lane deadlines have a test too.** Two models, two deadlines, asked in one
+  process, plus a repeat of the first to catch a cache — because the hazard they named
+  is not reading the wrong field, it is reading it once and reusing it, which passes
+  every single-lane test there is.
+- **`JOB_DEADLINE_S` stays a flat 900, deliberately**, and its docstring now says why
+  so nobody "fixes" it to the largest lane. It is reached only when a lane states
+  nothing, and a Hub that states nothing is a Hub from *before* the change, whose one
+  proxy timeout *was* 900 for every lane. Per-modality numbers would be a second copy of
+  their table.
+- **Video's 7,200 s and its `NON_DURABLE → DURABLE_ASYNC` reclassification do not reach
+  us**: `KIND_STUDIO_HUB` serves `{chat, image, tts, music, transcription}` — no video.
+  Recorded so nobody goes looking for a lane we do not have.
+- **Our framing was wrong and their correction lowers the cost we had accepted.** We
+  said `PEER_PROXY_TIMEOUT_S` was *"the one constant that drives the whole ceiling"*; it
+  was, until they derived the deadline per generator. **The 30-minute hang on fast jobs
+  is not paid** — only chat moved.
+
+`test_hub_lane_contract.py` → **17 checks** (2 new); full sweep and `test_e2e.py`
+568/568 green against the new Hub values.
 
 ## WHAT 0.2.41 CHANGED — the median was hiding the slow machine
 

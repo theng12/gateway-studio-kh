@@ -272,6 +272,28 @@ FLEET_NODES = [
      "studios": [{"id": "image", "modality": "image"}]},
 ]
 
+#: **The real Hub's numbers, named, because the real Hub moves them.**
+#:
+#: On 2026-09-26 Studio Hub raised `FALLBACK_MAX_OUTPUT_TOKENS` `4096 → 16384` and
+#: made the deadline **per lane** (`PEER_PROXY_TIMEOUT_S` was one flat 900 s):
+#: chat 1,800 s; image, voice, transcription and music 900 s; video 7,200 s. This mock
+#: now models the **new** Hub, deliberately before their release is cut, so anything of
+#: ours that breaks on the change breaks here first.
+#:
+#: **Named rather than written inline, and that is the whole point.** Studio Hub's own
+#: suite had **eight chat tests go red** on the change: several asserted the bare
+#: literal `4096`, and several fixtures had been hand-tuned to sit *just above* the old
+#: fallback — one carrying the comment *"8192, not 4096: the request below asks for the
+#: worker's default output budget"*. At 16,384 those fixtures **silently inverted**:
+#: the fixture became the binding constraint instead of the fallback. A number written
+#: as a literal, or sized relative to somebody else's constant, is a number that turns
+#: into a lie without anything going red. Change these in one place; let the tests read
+#: them.
+HUB_CHAT_MAX_OUTPUT_TOKENS = 16_384
+HUB_CHAT_CONTEXT_TOKENS = 262_144
+HUB_CHAT_DEADLINE_S = 1800.0
+HUB_VOICE_DEADLINE_S = 900.0
+
 #: `dispatch_state`, joined by the `package_id` a model's `cache` names. The
 #: engine is deliberately one `_HUB_ENGINE_MODALITY` does not know, so the voice
 #: discovery path keeps seeing exactly the five packages `test_e2e` asserts while
@@ -503,7 +525,7 @@ class Handler(BaseHTTPRequestHandler):
                                 "discard_supported": True},
                      "cancel": {"supported": True,
                                 "request": "DELETE /api/hub/jobs/{batch_id}"},
-                     "deadline_seconds": 900.0,
+                     "deadline_seconds": HUB_VOICE_DEADLINE_S,
                  }},
                 {"package_id": "preset-model", "model_id": "mock-hub/preset-model",
                  "engine": "voice-mlx", "files_state": "files_verified",
@@ -544,7 +566,7 @@ class Handler(BaseHTTPRequestHandler):
                                 "terminal": ["done", "error", "cancelled"],
                                 "uncertain": "uncertain", "uncertain_is_terminal": False,
                                 "discard_supported": False},
-                     "deadline_seconds": 600.0,
+                     "deadline_seconds": HUB_CHAT_DEADLINE_S,
                      # The producer's statement about the JSON guarantee, at the
                      # path the Hub session named. Note what it is *not*: there is
                      # no `two_pass` here, because whether to ask twice is the
@@ -643,11 +665,11 @@ class Handler(BaseHTTPRequestHandler):
                  "min_unified_memory_gb": 8, "memory_eligible": True,
                  "model_limits": {
                      "context_window_tokens": {
-                         "value": 262144,
+                         "value": HUB_CHAT_CONTEXT_TOKENS,
                          "source": "model/config.json text_config.max_position_embeddings",
                      },
                      "max_output_tokens": {
-                         "value": 4096,
+                         "value": HUB_CHAT_MAX_OUTPUT_TOKENS,
                          "source": ("worker default: the checkpoint ships no "
                                     "generation_config.json"),
                      },

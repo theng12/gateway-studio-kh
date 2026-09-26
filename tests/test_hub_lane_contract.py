@@ -51,7 +51,14 @@ os.environ.update(
     }
 )
 
-from mock_upstream import Handler, Server  # noqa: E402
+from mock_upstream import (  # noqa: E402
+    HUB_CHAT_DEADLINE_S,
+    HUB_CHAT_CONTEXT_TOKENS,
+    HUB_CHAT_MAX_OUTPUT_TOKENS,
+    HUB_VOICE_DEADLINE_S,
+    Handler,
+    Server,
+)
 
 from gateway.adapters import serves  # noqa: E402
 from gateway.providers import discovery  # noqa: E402
@@ -127,7 +134,7 @@ class PackageRowTests(_MockHub):
         self.assertEqual(contract["schema"], "studiohub.lane-contract.v1")
         self.assertEqual(contract["operation"], "voice.tts")
         # The Hub adds the deadline it enforces; the studio's half stays verbatim.
-        self.assertEqual(contract["deadline_seconds"], 900.0)
+        self.assertEqual(contract["deadline_seconds"], HUB_VOICE_DEADLINE_S)
         self.assertTrue(contract["states"]["discard_supported"])
 
     def test_a_package_nothing_can_place_is_reported_with_the_hub_s_own_reason(self) -> None:
@@ -167,8 +174,16 @@ class ChatLimitTests(_MockHub):
         return _chat_row(model_id, definition, {"model_id": model_id, "raw": model.raw})
 
     def test_the_hub_s_window_is_published_as_the_model_s_own(self) -> None:
+        # **Read from the fixture, never restated.** These two tests asserted the bare
+        # literals `262144` and `4096`, and Studio Hub's own suite lost eight chat
+        # tests to exactly that when they moved `FALLBACK_MAX_OUTPUT_TOKENS`
+        # `4096 → 16384` on 2026-09-26. Ours went red the same way the moment this mock
+        # was pointed at the new value — the code was right and the test was quoting.
+        # The check that survives the constant moving is *"what the Hub stated reached
+        # the row"*, which is the mechanism; a number copied into an assertion tests
+        # only that nobody edited the fixture.
         row = self._chat_row("mock-hub/chat-model")
-        self.assertEqual(row["context_window_tokens"], 262144)
+        self.assertEqual(row["context_window_tokens"], HUB_CHAT_CONTEXT_TOKENS)
         self.assertEqual(row["context_window_tokens_source"], "provider")
         self.assertIn("max_position_embeddings", row["context_window_tokens_source_detail"])
 
@@ -176,9 +191,30 @@ class ChatLimitTests(_MockHub):
         # The Hub's fallback is published — and says in its own words that it is a
         # fallback, so nobody reads it as the checkpoint's fact.
         row = self._chat_row("mock-hub/chat-model")
-        self.assertEqual(row["max_output_tokens"], 4096)
+        self.assertEqual(row["max_output_tokens"], HUB_CHAT_MAX_OUTPUT_TOKENS)
         self.assertEqual(row["max_output_tokens_source"], "provider")
         self.assertIn("worker default", row["max_output_tokens_source_detail"])
+
+    def test_a_model_that_states_less_than_the_fallback_keeps_its_own_number(self) -> None:
+        # Studio Hub: *"the model's own stated ceiling still binds, and the fallback
+        # does not override it... a fallback can never raise a lane above the window its
+        # own model publishes."* Read as a mechanism rather than a value: whatever the
+        # Hub states is what we publish, so a raise on their side can never inflate a
+        # model that states less. This is the assertion that stays true at 16,384, at
+        # 32,768, and at any number they pick next.
+        from gateway.catalog import _chat_row
+
+        _definition, result = self._discover()
+        model = next(m for m in result.models if m.model_id == "mock-hub/chat-model")
+        smaller = 2048
+        raw = {**model.raw,
+               "model_limits": {**model.raw["model_limits"],
+                                "max_output_tokens": {"value": smaller,
+                                                      "source": "model/config.json max_tokens"}}}
+        row = _chat_row("mock-hub/chat-model", _definition,
+                        {"model_id": "mock-hub/chat-model", "raw": raw})
+        self.assertEqual(row["max_output_tokens"], smaller)
+        self.assertLess(row["max_output_tokens"], HUB_CHAT_MAX_OUTPUT_TOKENS)
 
     def test_the_producers_json_guarantee_is_published_at_its_own_path(self) -> None:
         # `lane_contract.structured_output`, verbatim, because the Hub named that
@@ -209,7 +245,7 @@ class ChatLimitTests(_MockHub):
         # **The fixture's own number, not this gateway's.** The mock states 600 and
         # the gateway's fallback is 900, so asserting 600 is what proves the value is
         # relayed rather than restated.
-        self.assertEqual(contract["deadline_seconds"], 600.0)
+        self.assertEqual(contract["deadline_seconds"], HUB_CHAT_DEADLINE_S)
         # **Every key the fixture states, and the set exactly.** Asserting a hand-
         # written list is how the last version of this test over-claimed; the
         # invariant is that nothing the producer sends is dropped, so the comparison
@@ -292,6 +328,49 @@ class LaneDeadlineTests(unittest.TestCase):
                 self.assertEqual(lane_deadline_seconds(self._request()), JOB_DEADLINE_S)
         # And a job with no request at all is the same answer, never a crash.
         self.assertEqual(lane_deadline_seconds(None), JOB_DEADLINE_S)
+
+    def test_a_deadline_is_read_per_model_and_never_reused(self) -> None:
+        """The deadline is now **per lane**, and that is a new shape.
+
+        Studio Hub, 2026-09-26: *"`deadline_seconds` now varies per lane. Your
+        `lane_deadline_seconds` adapter already reads it per model, which is right;
+        anything on your side that caches one number, or assumes every lane reports the
+        same, is now wrong."* Their table is chat 1,800 s and image / voice /
+        transcription / music 900 s, and this mock now carries both numbers.
+
+        **The hazard is not reading the wrong field — it is reading it once and reusing
+        it**, which passes every single-lane test there is. So: two models, two
+        numbers, asked in one process, plus a repeat of the first to catch a cache.
+        """
+        from unittest.mock import patch
+
+        from gateway.adapters.base import BackendRequest
+        from gateway.adapters.studio_hub import lane_deadline_seconds
+        from gateway.providers import registry
+
+        rows = [
+            {"model_id": "mock-hub/chat-model",
+             "raw": {"lane_contract": {"deadline_seconds": HUB_CHAT_DEADLINE_S}}},
+            {"model_id": "mock-hub/clone-model",
+             "raw": {"lane_contract": {"deadline_seconds": HUB_VOICE_DEADLINE_S}}},
+        ]
+
+        def request(model_id: str, modality: str):
+            return BackendRequest(
+                provider_id="studio-hub-mock", model_id=model_id, modality=modality,
+                params={}, values={}, base_url="http://127.0.0.1:1",
+            )
+
+        with patch.object(registry.models, "models_for", return_value=rows):
+            chat = lane_deadline_seconds(request("mock-hub/chat-model", "chat"))
+            voice = lane_deadline_seconds(request("mock-hub/clone-model", "voice"))
+            chat_again = lane_deadline_seconds(request("mock-hub/chat-model", "chat"))
+
+        self.assertEqual(chat, HUB_CHAT_DEADLINE_S)
+        self.assertEqual(voice, HUB_VOICE_DEADLINE_S)
+        self.assertNotEqual(chat, voice,
+                            "one number for every lane is the defect this guards")
+        self.assertEqual(chat_again, chat, "the first answer must not be cached")
 
 
 if __name__ == "__main__":

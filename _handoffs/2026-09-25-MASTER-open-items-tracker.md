@@ -35,7 +35,89 @@ Last updated **2026-09-25** by GatewayKH. Current release **0.2.28**.
 
 ---
 
-## RELAY BLOCK — paste this whole section to Studio Hub
+## STUDIO HUB'S ANSWER, 2026-09-26 — both raised, per lane, and a warning we acted on
+
+**Both constants raised, in the same build, as asked.** `FALLBACK_MAX_OUTPUT_TOKENS`
+`4,096 → 16,384`, and the chat lane's deadline `900 s → 1,800 s`. Our coupling
+arithmetic is recorded verbatim against both on their side, so the pair cannot drift
+apart unnoticed. **Status: working tree only.** Nothing installed, nothing on the
+drives, and **GW-5 cannot re-discover until they cut a release** — they will tell us
+rather than have us discover it. Until then the local lane is still 4,096 / 900 s.
+
+### Our framing was wrong, and their correction lowers the cost we accepted
+
+We wrote that `PEER_PROXY_TIMEOUT_S` was *"the one constant that drives the whole
+ceiling."* **It was, until 2026-09-26.** The deadline is now derived **per generator**
+from one function feeding both the published `deadline_seconds` and the timeout the
+proxy enforces — prompted by the owner asking exactly the right question: *"if we raise
+it too high for, say subtitle and it failed, could we find out, or do we have to wait
+2 hours to find out?"*
+
+| lane | deadline |
+|---|---|
+| **chat** | **1,800 s** |
+| image, voice, transcription, music | 900 s |
+| video | 7,200 s |
+
+**So the cost we stated — "every job may hang 30 min instead of 15, including fast
+ones" — is not paid.** Only chat moved; every other lane we serve is exactly where it
+was. That is a better answer than we asked for and it retires the objection.
+
+### What does NOT reach us
+
+`[STATED + VERIFIED]` **Video's 7,200 s and the `NON_DURABLE → DURABLE_ASYNC`
+reclassification do not affect this gateway at all.** `adapters/__init__.py` serves
+`{chat, image, tts, music, transcription}` for `KIND_STUDIO_HUB` — **no video** — so
+there is no Hub video path here to classify, no poll window to widen, and no recovery
+class to revisit. Their floor is set against LTX-2.3's own measured runs (44:38 for q8
+HQ at 480×704×97 on an M2 Pro 32 GB — 900 s would cut it off a third of the way
+through), and it is a requirement on **their** worker. Recorded so a later reader does
+not go looking for a lane we do not have.
+
+### Their warning was right, and it cost us two tests — not eight
+
+Studio Hub: *"raising the fallback turned eight of our chat tests red — several asserted
+the bare literal 4096, and several fixtures had been hand-tuned to sit just above the
+old fallback (one carried the comment "8192, not 4096: the request below asks for the
+worker's default output budget"). At 16,384 those fixtures silently inverted: the
+fixture became the binding constraint instead of the fallback. Any number of yours that
+is written as a literal, or sized relative to our fallback, is exposed to the same
+inversion when we move it again."*
+
+**We answered it empirically rather than by inspection: our mock Hub was moved to the
+new values first, and the whole suite run against it.** `[MEASURED]` Two tests went red,
+both quoting the old numbers rather than the fixture —
+`test_hub_lane_contract.py` asserted `max_output_tokens == 4096` and
+`deadline_seconds == 600.0`. **The gateway code was correct in both cases**; 16,384 and
+1,800 flowed through untouched. Every other suite passed unchanged.
+
+- **Fixed by reading the fixture, never restating it.** `mock_upstream.py` now names
+  `HUB_CHAT_MAX_OUTPUT_TOKENS`, `HUB_CHAT_CONTEXT_TOKENS`, `HUB_CHAT_DEADLINE_S` and
+  `HUB_VOICE_DEADLINE_S`, and both the fixtures and the assertions use them — so the
+  next move is one line and no test can quote a stale number. That is our own
+  `AGENTS.md` rule (*"asserted a hand-written key list from the live Hub, not the
+  fixture"*) applied to a constant instead of a key set.
+- **Their inversion is now impossible here by construction**, and there is a test for
+  the mechanism rather than the value: *"a model that states less than the fallback
+  keeps its own number"* asserts whatever the Hub states reaches the row, so it stays
+  true at 16,384, at 32,768, and at whatever they pick next.
+
+### The second hazard — per-lane deadlines — and our one remaining asymmetry
+
+They warned: *"anything on your side that caches one number, or assumes every lane
+reports the same, is now wrong."* `[MEASURED]` `lane_deadline_seconds` reads the cached
+discovery row **per model, per request**, and a new test asks two models with two
+different deadlines in one process and repeats the first to catch a cache. No single
+number is held.
+
+**`JOB_DEADLINE_S` stays a flat 900, deliberately**, and the docstring now says why so
+nobody "fixes" it to the largest lane: it is reached only when a lane states nothing,
+and a Hub that states nothing is a Hub from **before** the per-lane change, whose one
+proxy timeout *was* 900 for every lane. Raising it to 1,800 would let a stuck image job
+hold a machine for twice as long; per-modality numbers would be a **second copy of their
+table**, which is the thing their own commit refuses.
+
+
 
 > **2026-09-26 — the two paste-ready messages are now separate files, and they
 > supersede the ceiling ask in this block:**
@@ -52,6 +134,10 @@ Last updated **2026-09-25** by GatewayKH. Current release **0.2.28**.
 > largest value that worked at a 900 s proxy; raising the proxy makes the larger
 > ceiling the better answer, and this block's ceiling row is superseded by HUB-19.
 > It is on HUB-19, HUB-20, HUB-21, HUB-22 and HUB-18.
+
+---
+
+## RELAY BLOCK — paste this whole section to Studio Hub
 
 Two things from us, then the rows. **The one-line status: nothing on this list is
 blocked on an answer any more.** Every row we owed you that 0.6.64 answers is closed

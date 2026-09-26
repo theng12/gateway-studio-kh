@@ -247,6 +247,20 @@ def lane_deadline_seconds(request: BackendRequest | None) -> float:
     Falls back to `JOB_DEADLINE_S` whenever nothing states one: an older Hub, a
     lane with no contract, or a job whose model is not in the cache. The read is
     from the cached discovery row, so it costs no network time on the poll path.
+
+    **The fallback stays a flat 900, and it is not the number to "fix" when the Hub's
+    lanes diverge.** On 2026-09-26 Studio Hub made the deadline **per lane** — chat
+    1,800 s; image, voice, transcription and music 900 s; video 7,200 s — and the
+    previous single constant, `PEER_PROXY_TIMEOUT_S = 900.0`, no longer exists on their
+    side. A flat number therefore matches no Hub's table any more, which is exactly why
+    it must not be raised to the largest one: **900 is the correct answer for the only
+    condition that reaches it.** A Hub that states no deadline is a Hub from before
+    that change, whose one proxy timeout *was* 900 for every lane; a lane we cannot read
+    a contract for is a lane we know nothing about, and cutting it early fails loudly
+    while letting it run to the longest allowance fails by holding a machine for two
+    hours. Per-modality numbers here would be a **second copy of a Hub table** that
+    goes stale in silence — the thing their own commit message refuses ("a worker
+    restating it would be a second copy of a Hub number").
     """
     if request is None:
         return JOB_DEADLINE_S
