@@ -17,6 +17,7 @@ Studio's retry logic behaves identically regardless of where work ran.
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import time
@@ -66,11 +67,15 @@ JOB_DEADLINE_S = 900.0
 #: is that a bump means *measured against*, not *available*, and that holds here.
 #:
 #: **Expect every other controller to read `older` on the Fleet page, and that is the point.**
-#: Four sit at 0.6.65 and one at 0.6.64; the page saying so is a true and useful prompt to
-#: roll them forward, not a fault. **It is still never a gate** — they keep working exactly as
-#: they did, which is the owner's 2026-09-24 decision and the reason this number is a label
-#: and not a check.
-SUPPORTED_STUDIO_HUB_VERSION = "0.6.72"
+#: This Mac sits at 0.6.77 and the others at 0.6.64–0.6.72; the page saying so is a true and
+#: useful prompt to roll them forward, not a fault. **It is still never a gate** — they keep
+#: working exactly as they did, which is the owner's 2026-09-24 decision and the reason this
+#: number is a label and not a check.
+#:
+#: 0.6.76 declared on 2026-09-26 from the running Hub (`/api/version` → `0.6.76` build `1c0297b`),
+#: and 0.6.77 the same day from `0.6.77` build `ebbc757` — both measured, not read off a changelog.
+#: The video lane is why: a controller older than 0.6.76 serves no `video` worker at all.
+SUPPORTED_STUDIO_HUB_VERSION = "0.6.77"
 
 #: The answers `hub_version_relation` can give. `match` is the tested pairing; the
 #: other two are informational — a newer Hub may serve things this gateway has no
@@ -196,7 +201,54 @@ _HUB_MODALITY = {
     "image": "image",
     "tts": "voice",
     "music": "music",
+    "video": "video",
 }
+
+#: The video item keys the Hub's broker forwards to its Video worker.
+#:
+#: `duration` rather than `duration_seconds` in the *forwarded* body, because the broker's
+#: image-to-video door flattens form fields and only carries `duration`; the lane's own contract
+#: publishes `duration_seconds` and the worker accepts either spelling, so a text-to-video job
+#: (which goes as JSON) and an image-to-video job (multipart) resolve to the same request.
+#: `mode` is deliberately not sent: the broker sets `mode=img2video` for the reference path
+#: itself, and the worker derives text-to-video when no image is attached.
+_HUB_VIDEO_PARAMS = (
+    "duration",
+    "aspect_ratio",
+    "resolution",
+    "width",
+    "height",
+    "frames",
+    "fps",
+    "seed",
+)
+
+
+def _video_reference(request: BackendRequest) -> list[dict[str, Any]] | None:
+    """The uploaded scene image, as the Hub's reference-image item entry.
+
+    Story Studio uploads the exact scene image to this gateway and submits its id; the Hub's
+    broker resolves `reference_images[]` entries itself (`b64`, a tailnet `url`, or one of *its*
+    asset ids) and takes the img2video multipart door when one is present. Inline base64 is the
+    only one of the three that works across the two systems: the Hub has never seen this
+    gateway's asset ids, and handing it a URL would make the Hub fetch back from the gateway.
+
+    An id that has aged out is a caller problem and named as one, rather than silently becoming
+    a text-to-video job that animates nothing.
+    """
+    from .. import video_assets
+
+    asset_id = str(request.params.get("reference_asset_id") or "").strip()
+    if not asset_id:
+        return None
+    asset = video_assets.get(asset_id)
+    if asset is None:
+        raise BackendError(
+            "the source image for this video job is no longer held; upload it again and retry",
+            code="INVALID_PARAMS",
+        )
+    return [{"b64": base64.b64encode(asset["content"]).decode("ascii"),
+             "mime": asset["media_type"]}]
 
 #: What the Hub's Music item accepts, per its two engines.
 #:
@@ -883,18 +935,29 @@ def _generate_image_or_voice(request: BackendRequest) -> BackendResult:
             "'params' must be an object of Hub parameters.", code="INVALID_PARAMS"
         )
     item: dict[str, Any] = {"params": dict(supplied or {})}
-    if request.modality in {"image", "music"}:
-        # Both address the worker by `prompt`; Music then takes its own engine
-        # parameters and no image geometry.
+    if request.modality in {"image", "music", "video"}:
+        # All three address the worker by `prompt`; Music then takes its own engine
+        # parameters and no image geometry, and Video takes its geometry plus, for the
+        # image-to-video path, a reference image the broker turns into multipart.
         item["prompt"] = str(request.params.get("prompt") or "")
-        keys = (
-            ("seed", "width", "height", "aspect_ratio", "resolution")
-            if request.modality == "image"
-            else _HUB_MUSIC_PARAMS
-        )
+        if request.modality == "image":
+            keys = ("seed", "width", "height", "aspect_ratio", "resolution")
+        elif request.modality == "video":
+            keys = _HUB_VIDEO_PARAMS
+        else:
+            keys = _HUB_MUSIC_PARAMS
         for key in keys:
             if request.params.get(key) is not None:
                 item["params"][key] = request.params[key]
+        if request.modality == "video":
+            # `duration_seconds` is the lane's published name and the name Story sends; the
+            # broker forwards `duration`, so both travel and the worker's validator resolves
+            # them (and refuses if a caller ever sends a disagreeing pair).
+            if request.params.get("duration_seconds") is not None:
+                item["params"]["duration"] = request.params["duration_seconds"]
+            reference = _video_reference(request)
+            if reference is not None:
+                item["reference_images"] = reference
     else:
         item["text"] = str(request.params.get("text") or "")
         for key in ("speed", "voice_id", "language", "controls", "temperature", "seed"):
@@ -998,8 +1061,11 @@ def _generate_image_or_voice(request: BackendRequest) -> BackendResult:
 
     media_type = artifact.headers.get("content-type", "").split(";")[0].strip()
     if not media_type:
-        # Music comes back as WAV like voice, so only image differs.
-        media_type = "image/png" if request.modality == "image" else "audio/wav"
+        # Music comes back as WAV like voice, Image as PNG, and a local video as MP4 — the
+        # artifact route always states its type, so this only covers a Hub that answered
+        # without one.
+        media_type = {"image": "image/png", "video": "video/mp4"}.get(
+            request.modality, "audio/wav")
 
     terminal = (outcome.get("item") or {}).get("terminal_result") or {}
     payload: dict[str, Any] = {
@@ -1318,7 +1384,7 @@ class StudioHubBackend:
     def generate(self, request: BackendRequest) -> BackendResult:
         if request.modality == "chat":
             return _generate_chat(request)
-        if request.modality in {"image", "tts", "music"}:
+        if request.modality in {"image", "tts", "music", "video"}:
             return _generate_image_or_voice(request)
         if request.modality == "transcription":
             return _generate_transcription(request)

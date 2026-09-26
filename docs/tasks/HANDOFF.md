@@ -11,12 +11,49 @@ project does not say why, and nobody should guess.
 
 | Thing | Value |
 |---|---|
-| Current release | **0.2.53** — `repository/VERSION`, one line, the only place to bump. **A settled Hub item no longer becomes a recovery hold, the queue is published, and the Jobs window now shows your place in it** (see *What 0.2.52/0.2.53 change* below) |
-| Declared Studio Hub | **0.6.65** — `adapters.studio_hub.SUPPORTED_STUDIO_HUB_VERSION`, published on `/health`; a controller on another version is reported, never refused. Set on 2026-09-25 from a **running** Hub (`/api/version` → `0.6.65` build `37cb07b`), not a changelog `[MEASURED]` |
+| Current release | **0.2.54** — `repository/VERSION`, one line, the only place to bump. **The local video lane is published** — `/v1/videos/models` now carries Studio Hub rows built from the lane's own contract, and the `video` modality routes to the Hub's Video worker (see *What 0.2.54 changes* below) |
+| Declared Studio Hub | **0.6.77** — `adapters.studio_hub.SUPPORTED_STUDIO_HUB_VERSION`, published on `/health`; a controller on another version is reported, never refused. Set on 2026-09-26 from a **running** Hub (`/api/version` → `0.6.77` build `ebbc757`), not a changelog. 0.6.76 declared the same day from `0.6.76` build `1c0297b`; the video lane is why a controller older than 0.6.76 serves no `video` worker `[MEASURED]` |
 | Branch | `main` = `origin/main`, clean tree; remote `github.com/theng12/gateway-kh` |
 | Running build | `/Applications/gateway-kh.app`, port **8787**, stamp `abe4c3f-202609261215` — measured on `/health` after respawning the process by **PID** under the newly built app; the app's `Info.plist` carries the same stamp, so **Check Gateway** agrees. The old stamp was `2da713b-202609260646`, and it survived a rebuild plus a gateway kill until the *app* was replaced too: the app passes its own `GatewayBuild` on spawn `[MEASURED 2026-09-26]` |
 | Distribution | DMG in `repository/dist/` (`gateway-kh-0.2.53.dmg`), named by version alone; the previous one moved to `_trash/dist/` |
 | SSD/setup kit | `repository/dist/setup-kit/`, **pinned to GatewayKH 0.2.44** and refreshed onto all four `KH-STUDIO-*` drives on **2026-09-26**, `shasum -a 256 -c` OK on every one. The drives also carry `Studio Hub.app` **0.6.70**. Superseded kits are in each drive's `_trash/superseded-kit-2026-09-26/` (`GatewayKH-0.2.27`, `GatewayKH-0.2.43`) |
+
+## What 0.2.54 changes — the local video lane is published
+
+**Studio Hub 0.6.76 shipped a real Video worker, so this gateway now has a local video lane to
+carry.** Until today `video` was the one modality where every published row was a cloud one: the
+catalogue's `MODALITIES`, the `/v1/videos/models` route, the console's Create lanes and
+`fleet._HUB_OPERATION_BY_MODALITY` all knew the modality, and `adapters/__init__.py`'s kind table
+was the single switch that withheld every local row. That switch is on now, and four things follow
+from it:
+
+- **The lane's own vocabulary is relayed, not guessed.** A Studio Hub video row's `modes`,
+  `aspect_ratios` and `variants` come from the model's `lane_contract` — the worker's own published
+  answer — instead of the flat 5s/10s@720p ladder the cloud path uses. `_local_video_shape` reads
+  it, and `withhold_reason` refuses to publish a local video model whose contract cannot describe
+  what it accepts: a video row the gateway cannot describe is one Story Studio would offer a
+  control it cannot honour.
+- **The tier is the Hub's own verdict, read.** The worker publishes `memory_eligible: false` on a
+  machine below the model's qualified tier (LTX-2.3 22B is 24 GB, Lance 3B is 16 GB), and
+  `withhold_reason` already withholds on exactly that field. Asserted both ways in
+  `tests/test_hub_lane_contract.py::VideoPublicationTests`.
+- **Both of the adapter's video doors work.** Text-to-video goes through the existing
+  `_generate_image_or_voice` path (`modality: "video"`, `_HUB_VIDEO_PARAMS`); image-to-video sends
+  Story's uploaded scene as an inline-base64 `reference_images` entry, which is the only one of the
+  Hub's three reference forms that crosses two systems — the Hub has never seen this gateway's
+  asset ids, and a URL would make the Hub fetch back from here. A `reference_asset_id` that has
+  aged out is a named caller error, never a silent text-to-video job.
+- **`POST /v1/videos/source-images` exists**, because Story Studio's image-to-video flow uploads the
+  exact scene first and submits with the returned id. The bytes are held in
+  `gateway/video_assets.py` for 15 minutes and base64'd into the job at submit.
+
+**One thing this release deliberately does not do: publish Lance 3B.** The Hub offers the package,
+with `dispatch_state: ineligible` because its runner is not adopted and its files are not installed,
+so the existing gates withhold it and the reason is the Hub's. When the `lance-mlx` runner lands,
+the same row publishes with no gateway change.
+
+**Verified:** e2e **574/574**, the 38 focused suites green, and `test_hub_lane_contract.py`
+20/20 including the new video publication and tier tests.
 
 ## What 0.2.52/0.2.53 change
 

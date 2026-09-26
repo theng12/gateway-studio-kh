@@ -39,6 +39,7 @@ from .providers.definitions import (
     KIND_ANTHROPIC,
     KIND_KIE,
     KIND_MINIMAX,
+    KIND_STUDIO_HUB,
     KIND_XAI,
     ProviderDefinition,
     image_reference_state,
@@ -287,6 +288,37 @@ def _image_row(model_id: str, definition: ProviderDefinition, model: dict[str, A
     }
 
 
+#: The modes, canvases and durations a Studio Hub location's own lane contract publishes.
+#:
+#: The worker is the only thing that knows what its lane accepts, so the gateway relays what it
+#: said instead of restating it. `None` means the contract is absent or incomplete, and
+#: `providers.models.withhold_reason` refuses to publish such a row at all — a video model the
+#: gateway cannot describe is one Story Studio would offer a control it cannot honour.
+def _local_video_shape(raw: dict[str, Any]) -> dict[str, Any] | None:
+    contract = (raw or {}).get("lane_contract")
+    if not isinstance(contract, dict):
+        return None
+    parameters = {
+        str(entry.get("name")): entry
+        for entry in contract.get("parameters") or []
+        if isinstance(entry, dict) and entry.get("name")
+    }
+
+    def enum(name: str) -> list[Any]:
+        value = (parameters.get(name) or {}).get("enum")
+        return list(value) if isinstance(value, list) else []
+
+    modes = [mode for mode in contract.get("modes") or [] if isinstance(mode, str) and mode]
+    ratios = [ratio for ratio in enum("aspect_ratio") if isinstance(ratio, str) and ratio]
+    resolutions = [item for item in enum("resolution") if isinstance(item, str) and item]
+    durations = [item for item in enum("duration_seconds")
+                 if type(item) is int and item > 0]
+    if not modes or not resolutions or not durations:
+        return None
+    return {"modes": modes, "aspect_ratios": ratios, "resolutions": resolutions,
+            "durations": durations}
+
+
 def _video_row(model_id: str, definition: ProviderDefinition, model: dict[str, Any]) -> dict[str, Any]:
     # Story Studio accepts a video variant ONLY when all six fields are present
     # and valid, so a partially-described variant is worse than none.
@@ -314,6 +346,35 @@ def _video_row(model_id: str, definition: ProviderDefinition, model: dict[str, A
     #     offer this", so the honest answer for a silent provider is `null`.
     raw_id = str(model.get("model_id") or model_id or "").lower()
     raw = model.get("raw") or {}
+    local = _local_video_shape(raw) if definition.kind == KIND_STUDIO_HUB else None
+    if local is not None:
+        # A location's own lane states its modes, canvases and durations. That is a *provider*
+        # statement — the Studio produced it — and it is the only source for a local row: the
+        # model-id heuristic below is for cloud ids, and the flat 5s/10s@720p fallback is a
+        # gateway guess that would offer this lane work it refuses.
+        modes, modes_source = local["modes"], "provider"
+        aspect_ratios = local["aspect_ratios"]
+        variants = [
+            {
+                "operation": mode,
+                "duration_seconds": seconds,
+                "resolution": resolution,
+                "credits_per_video": 0,
+                "minimum_credits": 0,
+                "price_version": PRICE_VERSION,
+            }
+            for mode in modes
+            for seconds in local["durations"]
+            for resolution in local["resolutions"]
+        ]
+        stated_audio = raw.get("generates_audio") if isinstance(raw, dict) else None
+        return {
+            "modes": modes,
+            "modes_source": modes_source,
+            "aspect_ratios": aspect_ratios,
+            "generates_audio": stated_audio if isinstance(stated_audio, bool) else None,
+            "variants": variants,
+        }
     # **Read what the provider states, then our own adapter's knowledge, and
     # label which it was.** The id heuristic alone was the defect: fal's
     # `category` — which discovery stores — was never read, so `veo3.1`,

@@ -293,6 +293,10 @@ HUB_CHAT_MAX_OUTPUT_TOKENS = 16_384
 HUB_CHAT_CONTEXT_TOKENS = 262_144
 HUB_CHAT_DEADLINE_S = 1800.0
 HUB_VOICE_DEADLINE_S = 900.0
+#: The Hub's own per-modality floor, and the fixture reads it rather than restating 7,200: a
+#: video lane's deadline is a Hub number, and a test that hardcoded it would pass the day the
+#: Hub changed it.
+HUB_VIDEO_DEADLINE_S = 7200.0
 
 #: `dispatch_state`, joined by the `package_id` a model's `cache` names. The
 #: engine is deliberately one `_HUB_ENGINE_MODALITY` does not know, so the voice
@@ -579,20 +583,48 @@ class Handler(BaseHTTPRequestHandler):
                          "note": "no grammar-constrained decoding; JSON is asked for and validated",
                      },
                  }},
-                # Two shapes the gateway has never seen before, because the Hub
-                # gains lanes on its own schedule — an image engine today, an LLM
-                # or video lane later.
+                # **A video lane, on the Hub's own terms.** `video-model` runs on a
+                # registered video engine and carries the worker's own contract, so the
+                # gateway publishes it with the modes, canvases and durations the *lane*
+                # stated rather than a flat 5s/10s@720p guess.
                 #
-                # `video-model` runs on an engine this gateway has no table entry
-                # for, **and says what it is**: the stated modality is what places
-                # it, so it is discovered (and then withheld, because the
-                # `studio_hub` adapter serves no video lane) rather than vanishing.
+                # No `modality` key, deliberately: this row keeps the pre-0.6.61 shape so
+                # the catalogue's own `hub_modality` remains the thing that places it, and
+                # the package-stated path is pinned separately by `clone-model`.
                 {"package_id": "video-model", "model_id": "mock-hub/video-model",
-                 "engine": "video-mlx", "files_state": "files_verified",
+                 "engine": "video-ltx", "files_state": "files_verified",
                  "dispatch_state": "eligible", "revision": "f" * 40,
-                 # No `modality` key: this row predates 0.6.61, so the catalogue's
-                 # `hub_modality` is what places it.
-                 "lane_contract": None},
+                 "lane_contract": {
+                     "schema": "studiohub.lane-contract.v1",
+                     "modality": "video",
+                     "operation": "video.generation",
+                     "modes": ["image-to-video", "text-to-video"],
+                     "parameters": [
+                         {"name": "prompt", "type": "string", "required": True,
+                          "max_characters": 4000},
+                         {"name": "mode", "type": "string", "required": False,
+                          "enum": ["image-to-video", "text-to-video"],
+                          "default": "image-to-video"},
+                         {"name": "aspect_ratio", "type": "string", "required": False,
+                          "enum": ["16:9", "9:16"], "default": "16:9"},
+                         {"name": "resolution", "type": "string", "required": False,
+                          "enum": ["288p"], "default": "288p"},
+                         {"name": "duration_seconds", "type": "integer", "required": False,
+                          "enum": [2, 4], "default": 4},
+                         {"name": "seed", "type": "integer", "required": False,
+                          "minimum": -1, "maximum": 4294967295, "default": -1},
+                     ],
+                     "artifact": {"modality": "video", "media_type": "video/mp4",
+                                  "extension": "mp4", "per_item": 1},
+                     "states": {"accepted": ["queued"], "active": ["running",
+                                                                  "cancel_requested"],
+                                "terminal": ["done", "error", "cancelled"],
+                                "uncertain": "uncertain", "uncertain_is_terminal": False,
+                                "discard_supported": True},
+                     "cancel": {"supported": True,
+                                "request": "DELETE /api/hub/jobs/{batch_id}"},
+                     "deadline_seconds": HUB_VIDEO_DEADLINE_S,
+                 }},
                 # `unplaceable-model` is the one case nothing can place: an unknown
                 # engine **and** no statement anywhere. It must be *reported*, not
                 # silently dropped — "I could not work out what this is" and "there
@@ -648,14 +680,16 @@ class Handler(BaseHTTPRequestHandler):
                  "hub_modality": "voice",
                  "capabilities": ["tts", "multilingual"],
                  "min_unified_memory_gb": 8, "memory_eligible": True},
-                # A lane this gateway has no table entry for, **stated by the
-                # Hub**. The stated modality places it, so it is discovered and
-                # then withheld (the `studio_hub` adapter serves no video) instead
-                # of disappearing the moment the Hub grows a new engine.
+                # The Hub's **stated** modality, which is what places this row (its
+                # package row predates 0.6.61 and states none). The capabilities are the
+                # broker's own tokens — `img2video` is the one its reference-image gate
+                # reads — and `generates_audio` is tri-state: `true` here because the
+                # LTX pack's own runs carry an audio track.
                 {"repo": "mock-hub/video-model", "family": "mock-video",
                  "hub_modality": "video",
-                 "capabilities": ["video"],
-                 "min_unified_memory_gb": 32, "memory_eligible": True},
+                 "capabilities": ["img2video", "txt2video"],
+                 "generates_audio": True,
+                 "min_unified_memory_gb": 24, "memory_eligible": True},
                 # A chat model: the Hub states the lane, its own limits — with the
                 # sentence saying where each number came from — and its runtime
                 # stays unmeasured.

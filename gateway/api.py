@@ -1152,6 +1152,51 @@ def cancel_image_job(job_id: str) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 # Video
 # ---------------------------------------------------------------------------
+@app.post("/v1/videos/source-images", dependencies=[Depends(require_auth)])
+async def upload_video_source_image(
+    file: UploadFile | None = File(default=None),
+    upload: UploadFile | None = File(default=None),
+) -> dict[str, Any]:
+    """Hold the exact scene image an image-to-video generation will animate.
+
+    Story Studio's video flow uploads here first and then submits with the returned id as
+    ``reference_asset_id`` — that two-step shape is Story's, and this is the one address it
+    knows, so the bytes are held between the calls (``gateway/video_assets.py``).
+
+    **The field is accepted under both names it arrives as.** Story's client sends ``upload``;
+    the transcription door next to this one takes ``file``. Accepting one name only would have
+    made the difference between a working I2V lane and a 422 that names a field nobody set.
+    """
+    from . import video_assets
+
+    chosen = upload or file
+    if chosen is None:
+        raise GatewayError(
+            422, "Upload a source image (multipart field 'upload').", "INVALID_REQUEST"
+        )
+    content = await chosen.read()
+    if not content:
+        raise GatewayError(422, "The source image is empty.", "INVALID_REQUEST")
+    if len(content) > video_assets.MAX_SOURCE_IMAGE_BYTES:
+        raise GatewayError(
+            413,
+            f"That image is {len(content) / (1024 * 1024):.1f} MB; the limit is "
+            f"{video_assets.MAX_SOURCE_IMAGE_BYTES // (1024 * 1024)} MB per request.",
+            "UPLOAD_TOO_LARGE",
+        )
+    media_type = (chosen.content_type or "").split(";")[0].strip().lower()
+    if media_type not in video_assets.ACCEPTED_MEDIA_TYPES:
+        raise GatewayError(
+            422,
+            f"Unsupported source image type {media_type or 'unknown'!r}; "
+            f"use one of {', '.join(video_assets.ACCEPTED_MEDIA_TYPES)}.",
+            "INVALID_REQUEST",
+        )
+    asset_id = video_assets.store(content, chosen.filename or "scene.png", media_type)
+    return {"id": asset_id, "bytes": len(content), "media_type": media_type,
+            "expires_in_seconds": video_assets.TTL_S}
+
+
 @app.post("/v1/videos/generations", dependencies=[Depends(require_auth)])
 def create_video(
     payload: dict[str, Any],

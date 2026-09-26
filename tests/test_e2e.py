@@ -245,8 +245,11 @@ def main() -> int:
                 "base_url": f"http://127.0.0.1:{MOCK_PORT}",
                 # `chat` is declared because Hub 0.6.63 opened its chat peer route
                 # to a Fleet credential, so this location serves the lane — which is
-                # what makes the dispatch below reachable at all.
-                "modalities": ["tts", "chat"],
+                # what makes the dispatch below reachable at all. `video` is declared
+                # because the Hub grew a real Video worker, and `withhold_reason` reads
+                # the *definition* before the kind table: a location that does not
+                # declare the lane withholds every video row it owns.
+                "modalities": ["tts", "chat", "video"],
                 "discovery": "studio_hub",
                 "description": "Test location.",
                 # Declared, and optional, exactly as the built-in local provider
@@ -3967,13 +3970,37 @@ def main() -> int:
             check("a preset-voice model is still published — not cloning is not the same as not being a model",
                   "studio-hub::mock-hub/preset-model" in published,
                   f"{[k for k in published if 'mock-hub' in k]}")
-            # A model the Hub states it serves but this adapter has no lane for is
-            # **discovered and withheld**, not dropped: the owner sees the row and
-            # the reason, and the day the adapter gains the lane the same row
-            # starts publishing with no change to the discovery table.
-            check("a lane this adapter does not serve is discovered but withheld",
+            # The lane the adapter gained. A local video model is discovered, enabled
+            # and **published on its own catalogue** — and what it publishes is the
+            # contract the worker sent: its modes, its canvases and its durations, not
+            # this gateway's flat 5s/10s@720p fallback. Video is deliberately absent
+            # from `published` above because that dict is the TTS catalogue; a video
+            # row appearing there would be the modality leak this check now pins.
+            video_published = {
+                m["id"]: m
+                for m in httpx.get(f"{BASE}/v1/videos/models", headers=AUTH).json()["models"]
+            }
+            local_video = video_published.get("studio-hub::mock-hub/video-model")
+            check("a local video lane publishes on the video catalogue",
+                  local_video is not None,
+                  f"{sorted(video_published)}")
+            check("and it is not leaked into the voice catalogue",
                   "studio-hub::mock-hub/video-model" not in published,
                   f"{[k for k in published if 'mock-hub' in k]}")
+            if local_video is not None:
+                check("its modes are the lane's own statement, not a gateway guess",
+                      local_video["modes"] == ["image-to-video", "text-to-video"]
+                      and local_video["modes_source"] == "provider",
+                      f"{local_video['modes']} {local_video['modes_source']}")
+                check("its aspect ratios and variants come from the contract, not a ladder",
+                      local_video["aspect_ratios"] == ["16:9", "9:16"]
+                      and {(v["duration_seconds"], v["resolution"])
+                           for v in local_video["variants"]}
+                      == {(2, "288p"), (4, "288p")},
+                      f"{local_video['aspect_ratios']} {local_video['variants']}")
+                check("its audio claim is the worker's own measurement",
+                      local_video["generates_audio"] is True,
+                      f"{local_video['generates_audio']}")
 
             # ── the Hub chat lane, end to end ──────────────────────────────
             #

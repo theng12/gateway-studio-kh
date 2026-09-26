@@ -27,6 +27,7 @@ from .credentials import CredentialStore
 from .definitions import (
     DISCOVERY_STATIC,
     IMAGE_REFERENCE_CAPABLE_KINDS,
+    KIND_STUDIO_HUB,
     PROVIDERS_BY_ID,
     ProviderDefinition,
     image_reference_state,
@@ -266,6 +267,15 @@ class ModelInventory:
             return "this model cannot return the SRT this gateway must ask for"
         if modality == "music" and not music_can_serve(model_id):
             return "this model has no one-shot call this gateway can make"
+        # A local video lane is only usable when the Studio publishes its own contract: the
+        # modes it accepts, the canvases and durations, and the artifact it returns. The
+        # gateway does not invent those from a model name — it publishes what the worker said,
+        # and with nothing said there is no honest row to offer.
+        if modality == "video" and definition.kind == KIND_STUDIO_HUB:
+            contract = (model.get("raw") or {}).get("lane_contract")
+            if not isinstance(contract, dict) or not contract.get("modes"):
+                return ("this location's video model publishes no usable lane contract, so the "
+                        "gateway cannot describe what it accepts")
         # A chat catalogue is not a list of chat models. NVIDIA NIM answers every
         # one of its 82 rows with only `{id, owned_by}`, so its embeddings, its
         # safety classifiers, its reward model, its OCR parsers and its translators

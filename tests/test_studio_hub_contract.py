@@ -12,6 +12,8 @@ Hub, no real generation, no credential, no installed app.
 
 from __future__ import annotations
 
+import base64
+
 import atexit
 import hashlib
 import json
@@ -82,6 +84,7 @@ class _Hub:
         connect_error: bool = False,
         read_timeout: bool = False,
         server_error: bool = False,
+        artifact_media_type: str = "audio/wav",
     ) -> None:
         self.calls: list[tuple[str, str]] = []
         self.acks: list[str] = []
@@ -100,6 +103,10 @@ class _Hub:
         self.connect_error = connect_error
         self.read_timeout = read_timeout
         self.server_error = server_error
+        # The artifact route states its media type, and a video lane's is not WAV. A fixture that
+        # always answered `audio/wav` could not tell "the adapter read the type" from "the adapter
+        # fell back to the audio default".
+        self.artifact_media_type = artifact_media_type
 
     # ── the transport ────────────────────────────────────────────────────
     def handler(self, request: httpx.Request) -> httpx.Response:
@@ -162,7 +169,7 @@ class _Hub:
                 200,
                 content=self.artifact,
                 headers={
-                    "content-type": "audio/wav",
+                    "content-type": self.artifact_media_type,
                     "X-Content-SHA256": "deadbeef",
                 },
             )
@@ -1410,6 +1417,71 @@ class LocationRefusalTests(_HubCase):
         self.assertEqual(caught.exception.status, 500)
         self.assertIsNone(caught.exception.upstream_accepted)
         self.assertTrue(caught.exception.retryable)
+
+
+class VideoLaneTests(_HubCase):
+    """The local video lane's two doors, through the adapter that opens them.
+
+    Text-to-video is the broker's JSON door (`/api/hub/jobs` → `/api/generate/txt2video`) and
+    image-to-video is its multipart door (`reference_images` → `/api/generate/video2video`). What
+    is asserted here is what the gateway *sends*: the Hub's own vocabulary (`duration`, not the
+    lane's `duration_seconds`), the reference as inline base64 — the only one of the Hub's three
+    reference forms that works across two systems — and the video media type on the way back.
+    """
+
+    def test_a_text_to_video_request_carries_the_lane_s_parameters(self) -> None:
+        hub = _Hub(artifact=b"\x00\x00\x00\x18ftypmp42", artifact_media_type="video/mp4")
+        request = self.request(modality="video", model_id="baa-ai/LTX-2.3-22B-RAM-12GB-MLX",
+                               params={"prompt": "a harbour at dawn",
+                                       "aspect_ratio": "11:7", "resolution": "448p",
+                                       "duration_seconds": 4})
+        result = self.generate(hub, request)
+        payload = hub.payloads[-1]
+        self.assertEqual(payload["modality"], "video")
+        self.assertEqual(payload["model"], "baa-ai/LTX-2.3-22B-RAM-12GB-MLX")
+        item = payload["items"][0]
+        self.assertEqual(item["prompt"], "a harbour at dawn")
+        self.assertNotIn("reference_images", item,
+                         "a prompt-only job must not claim a source image")
+        # The broker flattens form fields and carries `duration`; the lane's published name is
+        # `duration_seconds`. Both travel, and the worker's validator refuses them if they ever
+        # disagree rather than picking one.
+        self.assertEqual(item["params"]["duration"], 4)
+        self.assertEqual(item["params"]["aspect_ratio"], "11:7")
+        self.assertEqual(item["params"]["resolution"], "448p")
+        self.assertEqual(result.media_type, "video/mp4")
+
+    def test_an_image_to_video_request_sends_the_reference_inline(self) -> None:
+        from gateway import video_assets
+
+        scene = b"\x89PNG\r\n\x1a\n" + b"scene-bytes" * 8
+        asset_id = video_assets.store(scene, "scene.png", "image/png")
+        hub = _Hub(artifact=b"\x00\x00\x00\x18ftypmp42", artifact_media_type="video/mp4")
+        request = self.request(modality="video", model_id="baa-ai/LTX-2.3-22B-RAM-12GB-MLX",
+                               params={"prompt": "push in", "mode": "image-to-video",
+                                       "reference_asset_id": asset_id})
+        self.generate(hub, request)
+        item = hub.payloads[-1]["items"][0]
+        self.assertEqual(len(item["reference_images"]), 1)
+        reference = item["reference_images"][0]
+        self.assertEqual(reference["mime"], "image/png")
+        self.assertEqual(base64.b64decode(reference["b64"]), scene)
+
+    def test_a_reference_that_aged_out_is_a_caller_error(self) -> None:
+        hub = _Hub()
+        request = self.request(modality="video", params={
+            "prompt": "push in", "reference_asset_id": "00000000-0000-0000-0000-000000000000"})
+        with self.assertRaises(BackendError) as raised:
+            self.generate(hub, request)
+        self.assertEqual(raised.exception.code, "INVALID_PARAMS")
+        self.assertIn("no longer held", str(raised.exception))
+        self.assertEqual(hub.payloads, [], "nothing may be submitted without its source image")
+
+    def test_the_artifact_type_is_read_not_assumed(self) -> None:
+        hub = _Hub(artifact=b"\x00\x00\x00\x18ftypmp42", artifact_media_type="video/mp4")
+        result = self.generate(hub, self.request(modality="video", params={"prompt": "x"}))
+        self.assertEqual(result.media_type, "video/mp4",
+                         "a video artifact must not be relabelled as audio")
 
 
 if __name__ == "__main__":

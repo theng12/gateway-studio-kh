@@ -177,9 +177,10 @@ _MODALITIES_BY_KIND: dict[str, frozenset[str]] = {
     KIND_BFL: frozenset({"image"}),
     KIND_MINIMAX: frozenset({"image", "video", "music", "tts"}),
     KIND_ELEVENLABS: frozenset({"tts"}),
-    # Music is a real Hub lane (engine `music-mlx`, two engines, WAV artifacts),
-    # so a location's music rows are offerable rather than published and refused.
-    KIND_STUDIO_HUB: frozenset({"chat", "image", "tts", "music", "transcription"}),
+    # Music is a real Hub lane (engine `music-mlx`, two engines, WAV artifacts) and
+    # Video joined it on 2026-09-26 (engines `video-ltx` and `video-lance`), so both a
+    # location's music and its video rows are offerable rather than published and refused.
+    KIND_STUDIO_HUB: frozenset({"chat", "image", "tts", "music", "transcription", "video"}),
     # Chat is delegated to the OpenAI shim; image and video are native.
     KIND_XAI: frozenset({"chat", "image", "video"}),
 }

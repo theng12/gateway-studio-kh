@@ -55,6 +55,7 @@ from mock_upstream import (  # noqa: E402
     HUB_CHAT_DEADLINE_S,
     HUB_CHAT_CONTEXT_TOKENS,
     HUB_CHAT_MAX_OUTPUT_TOKENS,
+    HUB_VIDEO_DEADLINE_S,
     HUB_VOICE_DEADLINE_S,
     Handler,
     Server,
@@ -88,7 +89,7 @@ class _MockHub(unittest.TestCase):
         definition = ProviderDefinition(
             id="studio-hub-mock", display_name="Mock Hub", category="multi",
             kind=KIND_STUDIO_HUB, base_url=self.base,
-            modalities=("image", "tts", "music", "transcription"),
+            modalities=("image", "tts", "music", "transcription", "video"),
             discovery=DISCOVERY_STUDIO_HUB,
         )
         return definition, discovery.discover(definition, {"base_url": self.base})
@@ -116,16 +117,22 @@ class PackageRowTests(_MockHub):
         self.assertEqual(chat.modality, "chat")
         self.assertTrue(serves(definition, "chat"))
 
-    def test_a_lane_the_gateway_cannot_serve_is_discovered_and_withheld(self) -> None:
-        # Video is shelved by the owner on the Hub side and this adapter has no
-        # lane for it, so it arrives as a row — and `serves` is what withholds it,
-        # not a silent drop in discovery.
+    def test_a_lane_the_gateway_now_serves_is_discovered_and_publishable(self) -> None:
+        """Video is a served lane since 2026-09-26: the row that used to be withheld
+        (discovered, then refused by `serves`) is now the row that runs.
+
+        The negative half of this shape is pinned by
+        `UnplaceablePackageTests.test_an_engine_nothing_places_is_never_published` and by
+        `VideoPublicationTests.test_a_video_model_the_hub_says_does_not_fit_is_withheld`,
+        so "discovered but withheld" still has a live example — it is just no longer the
+        video lane.
+        """
         definition, result = self._discover()
         by_id = {m.model_id: m for m in result.models}
         video = by_id.get("mock-hub/video-model")
         self.assertIsNotNone(video, sorted(by_id))
         self.assertEqual(video.modality, "video")
-        self.assertFalse(serves(definition, "video"))
+        self.assertTrue(serves(definition, "video"))
 
     def test_the_lane_contract_is_carried_verbatim(self) -> None:
         _definition, result = self._discover()
@@ -268,9 +275,10 @@ class ChatLimitTests(_MockHub):
         self.assertIsNone(row.get("structured_output_mode"))
 
     def test_a_lane_with_no_contract_publishes_no_structured_output(self) -> None:
-        # `mock-hub/video-model` carries no lane contract at all, so the field is
-        # null — "unstated" — rather than an invented capability.
-        row = self._chat_row("mock-hub/video-model")
+        # `mock-hub/preset-model` carries no lane contract at all, so the field is
+        # null — "unstated" — rather than an invented capability. (`video-model` was
+        # this fixture's example until the video lane gained a real contract.)
+        row = self._chat_row("mock-hub/preset-model")
         self.assertIsNone(row.get("lane_contract"))
         self.assertIsNone(row.get("supports_structured_output"))
 
@@ -371,6 +379,69 @@ class LaneDeadlineTests(unittest.TestCase):
         self.assertNotEqual(chat, voice,
                             "one number for every lane is the defect this guards")
         self.assertEqual(chat_again, chat, "the first answer must not be cached")
+
+
+class VideoPublicationTests(_MockHub):
+    """A local video lane publishes what its contract states — and only then.
+
+    The plan's tier requirement lives here: a video model whose Hub verdict is
+    `memory_eligible: false` must not be offered, because the alternative is a node-side
+    load failure on a machine that cannot hold the weights. The gate is the Hub's own
+    per-machine verdict, relayed — the gateway does not compute a tier from a model name.
+    """
+
+    def _definition(self) -> ProviderDefinition:
+        return ProviderDefinition(
+            id="studio-hub-mock", display_name="Mock Hub", category="multi",
+            kind=KIND_STUDIO_HUB, base_url="http://127.0.0.1:1",
+            modalities=("image", "tts", "music", "transcription", "video"),
+            discovery=DISCOVERY_STUDIO_HUB,
+        )
+
+    def _row(self) -> dict:
+        from gateway.catalog import _video_row
+
+        _definition, result = self._discover()
+        video = next(m for m in result.models if m.model_id == "mock-hub/video-model")
+        return _video_row("mock-hub/video-model", self._definition(), {"raw": video.raw})
+
+    def test_the_local_row_publishes_the_lane_s_own_modes_and_variants(self) -> None:
+        row = self._row()
+        self.assertEqual(row["modes"], ["image-to-video", "text-to-video"])
+        self.assertEqual(row["modes_source"], "provider")
+        self.assertEqual(row["aspect_ratios"], ["16:9", "9:16"])
+        self.assertEqual({(v["duration_seconds"], v["resolution"]) for v in row["variants"]},
+                         {(2, "288p"), (4, "288p")})
+        self.assertIs(row["generates_audio"], True)
+        # The Hub's own deadline travels on the contract, and a video lane's is not 900.
+        _definition, result = self._discover()
+        video = next(m for m in result.models if m.model_id == "mock-hub/video-model")
+        self.assertEqual(video.raw["lane_contract"]["deadline_seconds"], HUB_VIDEO_DEADLINE_S)
+
+    def test_a_video_model_the_hub_says_does_not_fit_is_withheld(self) -> None:
+        from gateway.providers.models import ModelInventory
+
+        definition = self._definition()
+        inventory = ModelInventory.__new__(ModelInventory)
+        inventory.credentials = None  # not reached before the memory gate
+        model = {"model_id": "mock-hub/video-model", "modality": "video",
+                 "raw": {"memory_eligible": False,
+                         "lane_contract": {"modes": ["image-to-video"]}}}
+        reason = ModelInventory.withhold_reason(inventory, definition, model)
+        self.assertIn("memory", reason or "", reason)
+        self.assertFalse(ModelInventory.can_publish(inventory, definition, model))
+
+    def test_a_video_model_with_no_contract_is_withheld(self) -> None:
+        from gateway.providers.models import ModelInventory
+
+        definition = self._definition()
+        inventory = ModelInventory.__new__(ModelInventory)
+        inventory.credentials = None
+        model = {"model_id": "mock-hub/video-model", "modality": "video",
+                 "raw": {"memory_eligible": True, "lane_contract": None}}
+        reason = ModelInventory.withhold_reason(inventory, definition, model)
+        self.assertIn("lane contract", reason or "", reason)
+        self.assertFalse(ModelInventory.can_publish(inventory, definition, model))
 
 
 if __name__ == "__main__":

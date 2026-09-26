@@ -1110,6 +1110,8 @@ _STUDIO_MODALITY = {
     # spellings are mapped so neither roster loses its modality.
     "transcription": "transcription",
     "music": "music",
+    # The Video worker registers its studio as `video`, the same word its modality uses.
+    "video": "video",
 }
 
 
