@@ -409,9 +409,18 @@ class VideoPublicationTests(_MockHub):
         row = self._row()
         self.assertEqual(row["modes"], ["image-to-video", "text-to-video"])
         self.assertEqual(row["modes_source"], "provider")
-        self.assertEqual(row["aspect_ratios"], ["16:9", "9:16"])
-        self.assertEqual({(v["duration_seconds"], v["resolution"]) for v in row["variants"]},
-                         {(2, "288p"), (4, "288p")})
+        self.assertEqual(row["aspect_ratios"], ["7:4", "4:7", "1:1", "11:7"])
+        # **The variants are the lane's published CANVASES, not the cross product of its two
+        # parameter enums.** The enums above two ratios with two classes, and only four of those
+        # eight pairs exist — `7:4` at `448p` is not a canvas — so a row built from the enums
+        # offered Story Studio work the lane refuses. Each variant carries the ratio of its own
+        # pair, and a canvas that accepts only one of the two durations publishes only that one.
+        self.assertEqual({(v["duration_seconds"], v["resolution"], v.get("aspect_ratio"))
+                          for v in row["variants"]},
+                         {(2, "256p", "7:4"), (4, "256p", "7:4"),
+                          (2, "256p", "4:7"), (4, "256p", "4:7"),
+                          (2, "448p", "1:1"), (4, "448p", "1:1"),
+                          (2, "448p", "11:7")})
         self.assertIs(row["generates_audio"], True)
         # The Hub's own deadline travels on the contract, and a video lane's is not 900.
         _definition, result = self._discover()

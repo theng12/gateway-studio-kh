@@ -1,6 +1,6 @@
 # HANDOFF — gateway-kh
 
-**Read this first.** Written 2026-09-26 against **VERSION `0.2.44`**. The running build
+**Read this first.** Written 2026-09-27 against **VERSION `0.2.57`**. The running build
 stamp is on `/health` and in `/Applications/gateway-kh.app/Contents/Resources/gateway/BUILD`.
 If this file disagrees with the code, **the code wins — fix this file in the same change**.
 Every path below is inside the Git checkout `repository/` unless it says otherwise.
@@ -11,12 +11,41 @@ project does not say why, and nobody should guess.
 
 | Thing | Value |
 |---|---|
-| Current release | **0.2.55** — `repository/VERSION`, one line, the only place to bump. **The local video lane is published** — `/v1/videos/models` carries Studio Hub rows built from the lane's own contract, the `video` modality routes to the Hub's Video worker, and the image-to-video reference now travels where the Hub actually reads it (see *What 0.2.54/0.2.55 change* below) |
-| Declared Studio Hub | **0.6.77** — `adapters.studio_hub.SUPPORTED_STUDIO_HUB_VERSION`, published on `/health`; a controller on another version is reported, never refused. Set on 2026-09-26 from a **running** Hub (`/api/version` → `0.6.77` build `ebbc757`), not a changelog. 0.6.76 declared the same day from `0.6.76` build `1c0297b`; the video lane is why a controller older than 0.6.76 serves no `video` worker `[MEASURED]` |
+| Current release | **0.2.57** — `repository/VERSION`, one line, the only place to bump. **A local video lane's variants are its published CANVASES** — each variant carries its own `aspect_ratio`, built from the lane's `canvases` list rather than the cross product of its two parameter enums (see *What 0.2.57 changes* below) |
+| Declared Studio Hub | **0.6.81** — `adapters.studio_hub.SUPPORTED_STUDIO_HUB_VERSION`, published on `/health`; a controller on another version is reported, never refused. Set on 2026-09-27 from a **running** Hub (`/api/version` → `0.6.81` build `3d8ce32`), not a changelog; 0.6.81 is the release that publishes `lane_contract.canvases`, which this gateway reads. Controllers older than that still publish — the cross-product fallback in `_video_row` covers them. 0.6.76 declared the same day from `0.6.76` build `1c0297b`; the video lane is why a controller older than 0.6.76 serves no `video` worker `[MEASURED]` |
 | Branch | `main` = `origin/main`, clean tree; remote `github.com/theng12/gateway-kh` |
 | Running build | `/Applications/gateway-kh.app`, port **8787**, stamp `29b61b2-202609261652` — measured on `/health` after quitting the app, killing the surviving gateway process by **PID** (`pgrep -f "uvicorn gateway.api:app"`) and reopening the app; the app's `Info.plist` carries the same stamp, so **Check Gateway** agrees. **The stale-gateway trap is real and was hit again:** quitting the app left the old gateway process serving 8787 (pid 12074, build `f738324-…`), and only an explicit kill by PID followed by a relaunch produced the new stamp. `pkill -f` remains forbidden `[MEASURED 2026-09-26]` |
 | Distribution | DMG in `repository/dist/` (`gateway-kh-0.2.56.dmg`), named by version alone; the previous ones moved to `_trash/dist/` |
 | SSD/setup kit | `repository/dist/setup-kit/`, **pinned to GatewayKH 0.2.44** and refreshed onto all four `KH-STUDIO-*` drives on **2026-09-26**, `shasum -a 256 -c` OK on every one. The drives also carry `Studio Hub.app` **0.6.70**. Superseded kits are in each drive's `_trash/superseded-kit-2026-09-26/` (`GatewayKH-0.2.27`, `GatewayKH-0.2.43`) |
+
+## What 0.2.57 changes — a video variant names the shape it has
+
+**The lane's two parameter enums were never a set of canvases, and this catalogue built their cross
+product.** `_local_video_shape` read `parameters.aspect_ratio.enum` and `parameters.resolution.enum`
+and `_video_row` emitted one variant per `(mode, duration, resolution)` with `aspect_ratios` taken
+from the ratio enum — so for Studio Hub 0.6.81's video lane the gateway published `12` variants
+across two classes while only `4` pairs exist, and Story Studio's picker offered `448p + 16:9`.
+
+- **Root cause, measured on the worker side:** the LTX pack's two-stage pipeline floors each output
+  dimension to a multiple of 64 (`snap_output_dimensions(..., two_stage=True)` in the pinned
+  runtime). The lane used to publish `288p 16:9 = 512x288`, which the pack returns as **512x256**
+  (2:1) while the job's acceptance still said `512x288`. Studio Hub 0.6.81 replaced that table with
+  snap-stable pairs (`256p`: `7:4`, `4:7`; `448p`: `1:1`, `11:7`) and published them as
+  `lane_contract.canvases` — every pair with its exact pixels and the durations that canvas accepts.
+- **This release reads them.** `catalog._local_video_canvases` reads `canvases` (strictly: a
+  malformed list makes the whole row undescribable, because a partially-described variant is worse
+  than none), `_video_row` builds one variant per published pair per accepted duration, each
+  carrying its own `aspect_ratio`, and `aspect_ratios` is the set the canvases actually carry rather
+  than the enum's union.
+- **A worker older than 0.6.81 still publishes.** With no `canvases` key the old cross product is
+  built exactly as before — every one of those rows was published before this release, and a caller
+  that picks a pair the lane refuses is told so by the lane. The branch is marked `ponytail:` with
+  its removal condition.
+- `tests/mock_upstream.py`'s video lane now publishes real canvases (including one that accepts only
+  the shorter duration, so a per-canvas duration list is exercised rather than assumed);
+  `tests/test_hub_lane_contract.py` and `tests/test_e2e.py` pin the published variants as a set of
+  `(duration, resolution, aspect_ratio)` triples and assert the set is a subset of the published
+  pairs. **`tests/test_e2e.py`: all 577 checks pass.**
 
 ## What 0.2.56 changes — the lane ceilings have a control
 

@@ -3995,12 +3995,22 @@ def main() -> int:
                       local_video["modes"] == ["image-to-video", "text-to-video"]
                       and local_video["modes_source"] == "provider",
                       f"{local_video['modes']} {local_video['modes_source']}")
-                check("its aspect ratios and variants come from the contract, not a ladder",
-                      local_video["aspect_ratios"] == ["16:9", "9:16"]
-                      and {(v["duration_seconds"], v["resolution"])
-                           for v in local_video["variants"]}
-                      == {(2, "288p"), (4, "288p")},
-                      f"{local_video['aspect_ratios']} {local_video['variants']}")
+                check("its aspect ratios come from the contract's canvases, not its enums",
+                      local_video["aspect_ratios"] == ["7:4", "4:7", "1:1", "11:7"],
+                      f"{local_video['aspect_ratios']}")
+                check("its variants are the published PAIRS, each carrying its own ratio",
+                      {(v["duration_seconds"], v["resolution"], v.get("aspect_ratio"))
+                       for v in local_video["variants"]}
+                      == {(2, "256p", "7:4"), (4, "256p", "7:4"),
+                          (2, "256p", "4:7"), (4, "256p", "4:7"),
+                          (2, "448p", "1:1"), (4, "448p", "1:1"),
+                          (2, "448p", "11:7")},
+                      f"{local_video['variants']}")
+                check("and no variant is offered for a pair the lane does not publish",
+                      {(v["aspect_ratio"], v["resolution"]) for v in local_video["variants"]}
+                      .issubset({("7:4", "256p"), ("4:7", "256p"), ("1:1", "448p"),
+                                 ("11:7", "448p")}),
+                      f"{[(v['aspect_ratio'], v['resolution']) for v in local_video['variants']]}")
                 check("its audio claim is the worker's own measurement",
                       local_video["generates_audio"] is True,
                       f"{local_video['generates_audio']}")

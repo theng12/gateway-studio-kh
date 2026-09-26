@@ -75,7 +75,7 @@ JOB_DEADLINE_S = 900.0
 #: 0.6.76 declared on 2026-09-26 from the running Hub (`/api/version` → `0.6.76` build `1c0297b`),
 #: and 0.6.77 the same day from `0.6.77` build `ebbc757` — both measured, not read off a changelog.
 #: The video lane is why: a controller older than 0.6.76 serves no `video` worker at all.
-SUPPORTED_STUDIO_HUB_VERSION = "0.6.77"
+SUPPORTED_STUDIO_HUB_VERSION = "0.6.81"
 
 #: The answers `hub_version_relation` can give. `match` is the tested pairing; the
 #: other two are informational — a newer Hub may serve things this gateway has no

@@ -316,7 +316,39 @@ def _local_video_shape(raw: dict[str, Any]) -> dict[str, Any] | None:
     if not modes or not resolutions or not durations:
         return None
     return {"modes": modes, "aspect_ratios": ratios, "resolutions": resolutions,
-            "durations": durations}
+            "durations": durations, "canvases": _local_video_canvases(contract)}
+
+
+def _local_video_canvases(contract: dict[str, Any]) -> list[dict[str, Any]] | None:
+    """The lane's published `(aspect_ratio, resolution)` pairs, when it publishes them.
+
+    **The two parameter enums are not a set of canvases.** A lane can offer `448p` and `1:1` and
+    `11:7` while the pair `448p + 16:9` does not exist, and the cross product offered exactly
+    that — measured on 2026-09-27 against the LTX lane, whose published 16:9 canvas is the one its
+    pack floors to 2:1. So when the lane publishes the pairs, those pairs are the variants.
+
+    `None` means the lane does not publish a canvas list at all (a worker older than 0.6.81);
+    a list means every entry in it must be well-formed, because a canvas this gateway cannot read
+    is one it would have to describe to Story Studio — and a partially-described variant is worse
+    than none.
+    """
+    entries = contract.get("canvases")
+    if not isinstance(entries, list):
+        return None
+    canvases: list[dict[str, Any]] = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            return None
+        ratio = entry.get("aspect_ratio")
+        resolution = entry.get("resolution")
+        accepted = [item for item in entry.get("durations") or []
+                    if type(item) is int and item > 0]
+        if not (isinstance(ratio, str) and ratio.strip()
+                and isinstance(resolution, str) and resolution.strip() and accepted):
+            return None
+        canvases.append({"aspect_ratio": ratio.strip(), "resolution": resolution.strip(),
+                         "durations": accepted})
+    return canvases or None
 
 
 def _video_row(model_id: str, definition: ProviderDefinition, model: dict[str, Any]) -> dict[str, Any]:
@@ -354,19 +386,47 @@ def _video_row(model_id: str, definition: ProviderDefinition, model: dict[str, A
         # gateway guess that would offer this lane work it refuses.
         modes, modes_source = local["modes"], "provider"
         aspect_ratios = local["aspect_ratios"]
-        variants = [
-            {
-                "operation": mode,
-                "duration_seconds": seconds,
-                "resolution": resolution,
-                "credits_per_video": 0,
-                "minimum_credits": 0,
-                "price_version": PRICE_VERSION,
-            }
-            for mode in modes
-            for seconds in local["durations"]
-            for resolution in local["resolutions"]
-        ]
+        # Each variant names the aspect ratio that goes with its exact size and duration. The
+        # caller has to send all three, because the lane's canvases are pairs: its 448p class
+        # carries 704x448 and 448x448, so "448p, 4s" alone names two different pictures.
+        canvases = local.get("canvases")
+        if canvases:
+            # The ratios that exist, from the canvases rather than from the parameter enum: the
+            # enum is what the lane will *parse*, the canvas list is what it will *produce*.
+            aspect_ratios = list(dict.fromkeys(canvas["aspect_ratio"] for canvas in canvases))
+            variants = [
+                {
+                    "operation": mode,
+                    "duration_seconds": seconds,
+                    "resolution": canvas["resolution"],
+                    "aspect_ratio": canvas["aspect_ratio"],
+                    "credits_per_video": 0,
+                    "minimum_credits": 0,
+                    "price_version": PRICE_VERSION,
+                }
+                for mode in modes
+                for canvas in canvases
+                for seconds in canvas["durations"]
+            ]
+        else:
+            # A lane that publishes no canvas list states its modes, ratios, classes and durations
+            # but not which of them pair, so this is the cross product it has always been. Kept for
+            # a worker older than 0.6.81 rather than withheld: every one of these rows was published
+            # before that release, and a caller that picks a pair the lane refuses is told so by the
+            # lane. `ponytail:` remove this branch when no supported worker predates the canvas list.
+            variants = [
+                {
+                    "operation": mode,
+                    "duration_seconds": seconds,
+                    "resolution": resolution,
+                    "credits_per_video": 0,
+                    "minimum_credits": 0,
+                    "price_version": PRICE_VERSION,
+                }
+                for mode in modes
+                for seconds in local["durations"]
+                for resolution in local["resolutions"]
+            ]
         stated_audio = raw.get("generates_audio") if isinstance(raw, dict) else None
         return {
             "modes": modes,
