@@ -1,6 +1,6 @@
 # HANDOFF — gateway-kh
 
-**Read this first.** Written 2026-09-27 against **VERSION `0.2.57`**. The running build
+**Read this first.** Written 2026-09-27 against **VERSION `0.2.58`**. The running build
 stamp is on `/health` and in `/Applications/gateway-kh.app/Contents/Resources/gateway/BUILD`.
 If this file disagrees with the code, **the code wins — fix this file in the same change**.
 Every path below is inside the Git checkout `repository/` unless it says otherwise.
@@ -11,12 +11,52 @@ project does not say why, and nobody should guess.
 
 | Thing | Value |
 |---|---|
-| Current release | **0.2.57** — `repository/VERSION`, one line, the only place to bump. **A local video lane's variants are its published CANVASES** — each variant carries its own `aspect_ratio`, built from the lane's `canvases` list rather than the cross product of its two parameter enums (see *What 0.2.57 changes* below) |
+| Current release | **0.2.58** — `repository/VERSION`, one line, the only place to bump. **A local video lane's variants are its published CANVASES** — each variant carries its own `aspect_ratio`, built from the lane's `canvases` list rather than the cross product of its two parameter enums (see *What 0.2.57 changes* below) |
 | Declared Studio Hub | **0.6.81** — `adapters.studio_hub.SUPPORTED_STUDIO_HUB_VERSION`, published on `/health`; a controller on another version is reported, never refused. Set on 2026-09-27 from a **running** Hub (`/api/version` → `0.6.81` build `3d8ce32`), not a changelog; 0.6.81 is the release that publishes `lane_contract.canvases`, which this gateway reads. Controllers older than that still publish — the cross-product fallback in `_video_row` covers them. 0.6.76 declared the same day from `0.6.76` build `1c0297b`; the video lane is why a controller older than 0.6.76 serves no `video` worker `[MEASURED]` |
 | Branch | `main` = `origin/main`, clean tree; remote `github.com/theng12/gateway-kh` |
 | Running build | `/Applications/gateway-kh.app`, port **8787**, stamp `29b61b2-202609261652` — measured on `/health` after quitting the app, killing the surviving gateway process by **PID** (`pgrep -f "uvicorn gateway.api:app"`) and reopening the app; the app's `Info.plist` carries the same stamp, so **Check Gateway** agrees. **The stale-gateway trap is real and was hit again:** quitting the app left the old gateway process serving 8787 (pid 12074, build `f738324-…`), and only an explicit kill by PID followed by a relaunch produced the new stamp. `pkill -f` remains forbidden `[MEASURED 2026-09-26]` |
 | Distribution | DMG in `repository/dist/` (`gateway-kh-0.2.56.dmg`), named by version alone; the previous ones moved to `_trash/dist/` |
 | SSD/setup kit | `repository/dist/setup-kit/`, **pinned to GatewayKH 0.2.44** and refreshed onto all four `KH-STUDIO-*` drives on **2026-09-26**, `shasum -a 256 -c` OK on every one. The drives also carry `Studio Hub.app` **0.6.70**. Superseded kits are in each drive's `_trash/superseded-kit-2026-09-26/` (`GatewayKH-0.2.27`, `GatewayKH-0.2.43`) |
+
+## What 0.2.58 changes — What's New is a page, and there is a way to look at it
+
+**The window dumped the notes file raw.** `WhatsNewWindow` handed `whats-new.md` to one `NSTextView`
+and set `systemFont(ofSize: 12.5)`, so the reader saw literal `##`, `**bold**` and backticks at one
+size, with `Build …` glued to the first line. The owner's complaint was exact: *"i had this ugly
+modal and bad font arrangement"*, next to Studio Hub's What's New page.
+
+- **The same page furniture as Studio Hub.** `PageKit.label` + a header row of *What's New* (26pt
+  semibold), the bundle's version in monospaced digits beside it, and this build's stamp pushed
+  right in tertiary grey; then a rule, then the notes as blocks. `NotesMarkdown` carries the same
+  block rules as Studio Hub's `MarkdownText` (headings by level, bullets with a hanging indent,
+  paragraphs joined, `---` → a real separator), so a note reads the same in both apps.
+- **The inline parser is hand-rolled, and the reason is the deployment target.** Studio Hub uses
+  Foundation's `AttributedString(markdown:)`; that needs macOS 12 and this app runs on **11.0**
+  (`MACOS_MIN`). Raising the floor for one window would trade a supported Mac for a renderer, so the
+  three span kinds the notes actually contain are parsed here — audited: no tables, block quotes,
+  numbered or nested lists, links, code fences, strikethrough or double-backtick spans. It is
+  recursive, so `**bold with `code` inside**` keeps both, and an unclosed marker is plain text.
+- **Two other defects in the same window.** macOS merged it into the Overview window as a **tab**
+  (`tabbingMode` is now `.disallowed` — that is what made it look like a modal bolted on), and a
+  programmatic `NSWindow` is released when closed while this class keeps a reference, so the second
+  open could have messaged a dead window (`isReleasedWhenClosed = false`).
+- **`menubar/tools/whats-new-preview/main.swift` — a visual change can now be looked at without
+  fronting the app.** It compiles the *real* `WhatsNewWindow` against `PageKit`, renders the page
+  offscreen at a given size and appearance, and writes a PNG; `--window` calls `show()` itself and
+  reports the window it created. Not compiled into the app (`build.sh` globs `menubar/*.swift`).
+
+  ```sh
+  swiftc -target arm64-apple-macos11.0 -o /tmp/whats-new-preview \
+      menubar/tools/whats-new-preview/main.swift menubar/WhatsNewWindow.swift menubar/PageKit.swift
+  /tmp/whats-new-preview menubar/whats-new.md /tmp/notes.png 720 640 dark 2400   # 2400 = scroll offset
+  /tmp/whats-new-preview menubar/whats-new.md /tmp/notes-narrow.png 470 640 dark
+  /tmp/whats-new-preview --window
+  ```
+
+  Verified with it: dark and light, 720pt and 470pt wide (wrapping holds, no horizontal scroller),
+  a scrolled section of bullets, and `show()` twice → **one** window, reused, `tabbing=disallowed`,
+  720x672. `menubar/whats-new.md` carries a section describing this change, so the new window's
+  first entry is the one that explains it.
 
 ## What 0.2.57 changes — a video variant names the shape it has
 

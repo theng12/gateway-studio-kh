@@ -4,6 +4,19 @@ Newest first. This is the same list the **What's New** link in the app shows.
 
 ---
 
+## What's New is a page now, not a file
+
+This window used to hand the notes file to a text view and set one font on it, so you read the
+Markdown itself — literal `##`, `**bold**`, backticks — with the build stamp glued to the top line.
+It is now the same page Studio Hub's What's New is: *What's New* with the version beside it, this
+build's stamp on the right where it annotates instead of interrupting, a rule, then the notes as
+headings, paragraphs and bullets. Bold, italics and `code spans` render as themselves.
+
+Two smaller things it was getting wrong. macOS was merging it into the Overview window as a **tab**,
+which is why it read as a modal bolted onto another window — notes are their own window now. And the
+window was released on close while this app kept a reference to it, so a second open could have
+talked to a window that no longer existed.
+
 ## The local model says how it keeps a JSON promise
 
 A chat row now carries its lane's own statement about structured output, at the path
