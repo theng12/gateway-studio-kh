@@ -637,13 +637,25 @@ carefully.
   SH (a change) · truth: your `lane_contract.structured_output`, which today carries
   `formats`, `enforcement`, `grammar_constrained`, `repair_attempts` and `note` —
   **and not this field**.
-  Story Studio already reads it and it is simply absent, so it is a field nobody
-  publishes rather than one we are dropping.
-  **The gateway needs no change at all, and that is verified rather than assumed:**
-  the whole `lane_contract` object is republished verbatim to `/v1/chat/models`
-  (checked live — every key above reaches Story Studio, `structured_output` included).
-  Put the field anywhere inside `lane_contract` and it appears on their next read with
-  no release from us.
+  **It is not in your installed bundle at all** — `grep -r` over
+  `/Applications/Studio Hub.app/Contents/Resources` returns nothing, and it is not in
+  this gateway either. So it is a field **nobody has ever published**, not one we are
+  dropping, and it is on Story Studio's side that the consequence lands: their
+  scene-plan generator **throws** when it is absent (see STORY-10, which has the code
+  path and is the half that unblocks the owner).
+  **Where it has to appear is the top level of the model row, not inside the
+  contract.** `genstudio-client.ts:4866` reads `value?.max_structured_items_per_request`
+  — a sibling of `max_output_tokens`, not a path inside `lane_contract`. A value
+  published only under `structured_output` would reach Story Studio as `null` and look
+  identical to nobody publishing at all. **Tell us where it will live and we will lift
+  it**, or publish it at the top level yourself; we are not guessing a key path for a
+  field that does not exist yet.
+  **The rest of the row stands:** the whole `lane_contract` object is republished
+  verbatim to `/v1/chat/models` (checked live), so anything you put there reaches Story
+  Studio with no release from us.
+  **Correction to an earlier version of this row**, which read *"the gateway needs no
+  change at all"*. That is true for the contract block and false for this field, because
+  Story Studio reads it from the row's top level.
 
 - [ ] **HUB-22 — state what an omitted parameter means, and on which Mac.** owes: SH
   (a statement) · truth: `main.py::_resolved_parameters`, which resolves each
@@ -774,6 +786,45 @@ stop reading its silence as an answer. That line is worth more than the four row
   it. Three machines × three models × a real run each is still the thing that would
   replace every estimate here with a measurement; the machinery for it now exists, and
   this field is where the answer will appear.
+
+- [ ] **STORY-10 — your two consumers of `max_structured_items_per_request` disagree
+  about what its absence means, and one of them throws.** found 2026-09-26 by reading
+  your source while answering the owner · owes: Story (a decision) · truth:
+  `electron/server/generators/scene-plan.ts:496-510` and
+  `electron/server/services/contextual-cues.ts:132-143`.
+  **The field is unpublished — by everybody.** It is not in Studio Hub's installed
+  bundle, not in their `lane_contract.structured_output`, and not in this gateway. Your
+  `genstudio-client.ts:4866` parses it from the model row and correctly yields `null`.
+  What happens next depends on which generator asks:
+
+  | consumer | on `null` |
+  |---|---|
+  | `contextual-cues.ts` → `resolveContextualCueBatchSize` | `return published === null ? policySize : Math.min(policySize, published)` — **proceeds with your own batch size** |
+  | `scene-plan.ts` → `assertScenePromptPackCapability` | `typeof structuredItemLimit !== 'number'` → **throws** `this JSON contract requires N structured items, above its published unpublished item limit` |
+
+  **The first is right and the second reads absence as zero.** "Nobody published a
+  limit" and "the limit is zero items" are different facts, and that is the one
+  conflation both our projects are built to refuse — here it costs a whole feature
+  rather than a wrong number.
+  **Why it matters to the owner's plan specifically:** he is about to raise the ceiling
+  to 16,384 so a **30-scene prompt pack** fits in one request. That request is made
+  through the scene-plan path, which asserts before the model is ever called — and the
+  assert is independent of pack size, so it fires for a 1-scene pack too. **The ceiling
+  raise does not unblock him if this path still throws.** We have not run his pipeline
+  and cannot run your code, so this is read from source and stated as such rather than
+  claimed as an observed failure — **please confirm, and if it does throw, that is the
+  thing to fix, before or alongside any field.**
+  **If the strictness is deliberate** — "we cannot be held to a JSON contract for N
+  items without a published guarantee" — that is a defensible position and the sibling
+  generator is then the one that should change. Either way the two should agree, and
+  the choice is yours.
+  **The gateway's half, so this is not only on you:** if Studio Hub ever states such a
+  limit we will publish it, and it must be lifted to the **top level of the model row**
+  — `genstudio-client.ts:4866` reads `value?.max_structured_items_per_request`, not a
+  path inside `lane_contract`, so a value published only in the contract block would
+  reach you as `null` and look identical to nobody publishing at all. We have not built
+  that lift because the field does not exist yet and inventing a key path for it would
+  be guessing; tell us where it will live, or have Studio Hub name it.
 
 - [ ] **STORY-8 — your tokens-per-word number is better than ours, and we retract
   ours.** owes: Story (nothing — this is a correction and one number to check) ·
