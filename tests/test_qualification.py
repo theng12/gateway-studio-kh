@@ -359,6 +359,29 @@ class ThePublishedRecordTest(unittest.TestCase):
         row = qualification.published_index(self.store)[("studio-hub", "img")]
         self.assertEqual(sorted(row["machines"]), ["mac-a", "mac-b"])
 
+    def test_the_slowest_site_is_published_beside_the_median(self) -> None:
+        # Measured on the owner's fleet: M1 12 tok/s, M2 14, M4 18. A median of 15.4
+        # describes the fleet and hides the 12 — and the caller does not choose the
+        # Mac, so anything sized against the median is sized against a machine the job
+        # may not land on. Both numbers, or the reader cannot tell there is a spread.
+        self._ran("studio-hub-aaa", "m", 1800, 100.0)   # 18 tok/s, an M4
+        self._ran("studio-hub-bbb", "m", 1400, 100.0)   # 14 tok/s, an M2
+        self._ran("studio-hub-ccc", "m", 1200, 100.0)   # 12 tok/s, an M1
+        row = qualification.published_index(self.store)[("studio-hub", "m")]
+        self.assertEqual(row["median_tokens_per_second"], 14.0)
+        self.assertEqual(row["slowest_site_tokens_per_second"], 12.0)
+
+    def test_the_slowest_site_is_absent_not_zero_when_no_rate_was_measured(self) -> None:
+        # No `generation_seconds` means no rate, and `min()` over an empty set is not
+        # zero — a lane nobody timed must not read as the slowest thing in the fleet.
+        self._ran("studio-hub-aaa", "m", 100, 10.0)
+        self._ran("studio-hub-bbb", "m", 200, 10.0)
+        self.store._conn.execute("UPDATE jobs SET result_json = json_remove(result_json, '$.payload.generation_seconds')")
+        self.store._conn.commit()
+        row = qualification.published_index(self.store)[("studio-hub", "m")]
+        self.assertIsNone(row["slowest_site_tokens_per_second"])
+        self.assertIsNone(row["median_tokens_per_second"])
+
     def test_a_model_with_no_work_is_absent_from_the_index(self) -> None:
         # Which is how the catalogue publishes `measured: null` — unknown, not zero.
         self._ran("studio-hub-aaa", "m", 100, 10.0)

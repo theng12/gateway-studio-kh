@@ -1,6 +1,6 @@
 # HANDOFF — gateway-kh
 
-**Read this first.** Written 2026-09-26 against **VERSION `0.2.40`**. The running build
+**Read this first.** Written 2026-09-26 against **VERSION `0.2.41`**. The running build
 stamp is on `/health` and in `/Applications/gateway-kh.app/Contents/Resources/gateway/BUILD`.
 If this file disagrees with the code, **the code wins — fix this file in the same change**.
 Every path below is inside the Git checkout `repository/` unless it says otherwise.
@@ -11,11 +11,11 @@ project does not say why, and nobody should guess.
 
 | Thing | Value |
 |---|---|
-| Current release | **0.2.40** — `repository/VERSION`, one line, the only place to bump |
+| Current release | **0.2.41** — `repository/VERSION`, one line, the only place to bump |
 | Declared Studio Hub | **0.6.65** — `adapters.studio_hub.SUPPORTED_STUDIO_HUB_VERSION`, published on `/health`; a controller on another version is reported, never refused. Set on 2026-09-25 from a **running** Hub (`/api/version` → `0.6.65` build `37cb07b`), not a changelog `[MEASURED]` |
 | Branch | `main` = `origin/main`, clean tree; remote `github.com/theng12/gateway-kh` |
 | Running build | `/Applications/gateway-kh.app`, port **8787**, stamp `9607395-202609260239` (`/health` and `…/Resources/gateway/BUILD`) — **this stamp is one commit behind `main` by construction**: `build.sh` stamps `git rev-parse --short HEAD`, so building before committing always leaves the tree one commit ahead of the stamp. Every release in this file has that shape; the deployed *code* is the whole change. The gateway must be **respawned**, not adopted, to carry a new stamp: with *Keep the gateway running after I quit* on, quitting the app leaves the old process holding 8787 and the new app adopts it, so `/health` keeps reporting the old build while serving new code `[MEASURED 2026-09-26]` |
-| Distribution | DMG in `repository/dist/` (`gateway-kh-0.2.40.dmg`), named by version alone |
+| Distribution | DMG in `repository/dist/` (`gateway-kh-0.2.41.dmg`), named by version alone |
 | SSD/setup kit | `repository/dist/setup-kit/`. **The four `KH-STUDIO-*` drives now carry Studio Hub 0.6.65** `[MEASURED 2026-09-25]`, refreshed 21:34–21:40; the GatewayKH side on them is older — check before a rollout |
 
 - **Versions are patch-only for now:** `0.2.1`, `0.2.2`, … up to `0.2.1000`. Increment the
@@ -45,6 +45,29 @@ project does not say why, and nobody should guess.
   "Why port 8787". It was 8000 until the owner moved it (2026-09-21, `Project
   Status.md` §10h: 8000 is the most contested dev port and Story Studio's own
   default). Every Story Studio client points at `http://<host>:8787`.
+
+## WHAT 0.2.41 CHANGED — the median was hiding the slow machine
+
+One field, and it came from the owner measuring his own fleet: **M1 12 tokens/second,
+M2 14, M4 18.** This gateway's per-location medians (16.8, 16.6, 14.2, 11.6) are an
+independent measurement of the same machines and agree with that range.
+
+- **Throughput is a property of the chip, and the fleet is mixed.** So the number a
+  ceiling must be safe against is the **slowest** machine's, not the fleet's median —
+  and `measured` published only the median, which was 15.4 and hid the 12.
+  `slowest_site_tokens_per_second` now sits beside it.
+- **It corrects a claim this file made one version earlier.** 0.2.40's notes said 8,192
+  takes 532 s with 1.6–1.7× headroom; that used the median. Sized against an M1 it is
+  **683 s, 1.32×**. The conclusion survives — 8,192 is still the ask, and 16,384 now
+  **times out on every chip in the fleet** (910 s even on an M4) — but the margin did
+  not, and a margin is the whole reason the number was quoted.
+- **Why the caller cannot do this sizing itself:** the gateway picks the location at
+  dispatch, so "which Mac will run this" is not a question a caller can answer. The
+  spread has to be published, not averaged away.
+- `null` when no rate was measured — `min()` over nothing is not zero, and a lane
+  nobody timed must not read as the slowest thing in the fleet.
+
+`tests/test_qualification.py` → **33 checks** (2 new).
 
 ## WHAT 0.2.40 CHANGED — the measurement reaches Story Studio, and it is read in SQL
 

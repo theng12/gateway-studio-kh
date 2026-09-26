@@ -366,14 +366,24 @@ carefully.
   `completion_tokens == max_output_tokens`? Either works; today neither happens, and
   nobody has decided. Recorded rather than guessed.
   **The numbers to size a decision with** (same model, same session, measured).
-  **The fleet figure is 15.4 tokens/second — 23 jobs across 4 locations.** It is a
-  median of the four locations' own medians (16.8, 16.6, 14.2, 11.6), so one Mac with
-  many jobs cannot dominate it, and it is the number this gateway publishes as
-  `measured.median_tokens_per_second`. Earlier notes here said 16.8, which was the
-  single best-sampled location; **15.4 is the better-sampled figure and the one to
-  use**. **1.22 tokens/word.** Against the chat lane's own stated 900 s
-  `deadline_seconds`: 4,096 → 266 s, **8,192 → 532 s**, 16,384 → **1,064 s and does
-  not fit**. A 1,200-word chapter is ~1,467 tokens / ~95 s.
+  **Throughput is per chip, and the fleet is mixed: M1 12 tokens/second, M2 14, M4 18**
+  — the owner's own count of his machines, which this gateway's per-location medians
+  (16.8, 16.6, 14.2, 11.6) independently corroborate. **Size a ceiling against the
+  slowest, not the median**, because the caller does not choose the Mac: 8,192 takes
+  **683 s on an M1** against the lane's stated 900 s (1.32×), and 16,384 times out on
+  every chip in the fleet. A 1,200-word chapter is ~1,740 output tokens, ~145 s on an
+  M1.
+  **RESOLVED ON THEIR SIDE, 2026-09-26.** Story Studio shipped a completeness guard:
+  *"a completion that used its entire requested ceiling is treated as incomplete,
+  whatever `finish_reason` claims."* That is the correct fix and it is better than
+  anything this gateway could have done, because the caller is the only party that
+  knows what it asked for. **This row's urgency drops to "any other caller"** — the
+  Hub still reports a ceiling-cut answer as a clean stop, so a future consumer with no
+  such guard inherits the same trap, and the *statement* is still worth having. Story
+  deliberately no longer depends on it.
+  The guard does lean on this gateway: it compares the completion against
+  `max_output_tokens`, so **we must keep publishing the number the lane actually
+  enforces.** We do — it is read live from the Hub's `model_limits`, not chosen.
 
 - [ ] **HUB-19 — raise `FALLBACK_MAX_OUTPUT_TOKENS`, and that one number is the whole
   of the round-trip problem.** owes: SH (a change) · truth: the installed Hub's own
@@ -410,19 +420,103 @@ carefully.
   from it. At 8,192 their threshold becomes `floor((8192 − 2000 − 1500) / 1.3)` =
   **3,609 words**, so a 1,200-word chapter is **one call**.
   **Why 8,192 and not 16,384** — 16,384 was this gateway's earlier suggestion and it
-  does not fit the hardware: at the measured **15.4 tokens/second across this fleet**
-  (23 jobs, 4 locations) it takes **1,064 s**, past your own stated 900 s
-  `deadline_seconds`, and the slowest well-sampled location (14.2 tokens/second) would
-  need 1,154 s. **8,192 takes 532 s** at the fleet median and 577 s on the slowest
-  location — inside the deadline with 1.6× headroom. **8,192 is the largest value that
-  is safe on the machines actually in this fleet**, and it already removes the round
-  trip entirely.
+  does not fit the hardware. **Sized against the slowest Mac, not the average one**,
+  because the caller does not choose the machine: the owner measured his own fleet on
+  2026-09-26 — **M1 12 tokens/second, M2 14, M4 18** — and this gateway's per-location
+  medians (16.8, 16.6, 14.2, 11.6) independently agree with that range.
+
+  | ceiling | M1 (12/s) | M2 (14/s) | M4 (18/s) | vs the 900 s deadline |
+  |---|---|---|---|---|
+  | 4,096 | 341 s | 293 s | 228 s | fits |
+  | **8,192** | **683 s** | 585 s | 455 s | **fits, 1.32× on the slowest** |
+  | 10,240 | 853 s | 731 s | 569 s | 1.05× — too tight to ask for |
+  | 16,384 | 1,365 s | 1,170 s | 910 s | **times out on every chip in the fleet** |
+
+  **An earlier version of this row said 1.7× headroom at 8,192.** That used the fleet
+  median of 15.4 and is corrected above to **1.32×**, measured against the M1 a job can
+  actually land on. 8,192 is still the right ask and 16,384 is still impossible — the
+  conclusion survives the correction, the margin does not.
+  **And 8,192 is a budget, not an expectation.** Three 1,200-word chapters generate
+  ~5,220 tokens, which is **435 s on an M1**; only a batch that rambles to the full
+  ceiling reaches 683 s. Both fit, which is the point.
   If a checkpoint ever *does* state its own limit, none of this is needed — the
   fallback is only consulted when the model says nothing, and a model that states less
   than 8,192 still wins (`min(FALLBACK_MAX_OUTPUT_TOKENS, output_limit)`).
   **These figures are now published, not asserted**: `GET /v1/models` carries
   `measured.median_tokens_per_second` per model, so you can check any of this against
   the running fleet rather than taking our word for it (STORY-7).
+  **One operational catch, and it is the difference between this working and not:**
+  the raise must land as a **build change**, so `FALLBACK_MAX_OUTPUT_TOKENS` moves and
+  the Hub's version moves with it. GW-5 re-discovers a location when the Hub behind it
+  changes **build**, and that is what would republish the new ceiling to us and onward
+  to Story Studio. A value made settable at runtime with no version change would leave
+  the gateway publishing 4,096 indefinitely, and nothing would look wrong. If it is
+  ever made an operator setting rather than a build constant, say so and we will add a
+  re-read; until then a build change is self-propagating and needs no action from
+  anyone.
+
+- [ ] **HUB-20 — publish the limit's *source* as a stable token, not as a sentence.**
+  owes: SH (a small change) · truth: `components/chat/app/backend/main.py`
+  (`_published_max_output_tokens` returns `entry.get("source")`) and the
+  `model_limits` block you already put on the wire, read from the installed bundle
+  running **0.6.69** build `49792c4`.
+  You already publish this, structurally, and it is exactly what Story Studio is
+  asking for:
+
+  ```json
+  "model_limits": {
+    "context_window_tokens": {"value": 262144, "source": "model/config.json text_config.max_position_embeddings"},
+    "max_output_tokens":    {"value": 4096,   "source": "worker default: the checkpoint ships no generation_config.json"}
+  }
+  ```
+
+  **The ask is that `source` become a token rather than free prose** — Story Studio
+  wants `model` / `worker_default` / `operator_default` / `curated` / `gateway` /
+  `unknown` so they can *branch* on whose number it is rather than print a sentence at
+  a customer. You compute the distinction already; only the spelling is missing.
+  **Why this gateway will not do the mapping for you, deliberately:** your two current
+  values begin `model/…` and `worker default: …`, and pattern-matching those into an
+  enum would work exactly until the first reworded string, at which point a worker's
+  fallback would be silently relabelled as the model's own limit — which is the single
+  failure both our projects are built to avoid. A guess that is right today and wrong
+  silently later is worse than an honest sentence.
+  **What Story Studio has meanwhile, so this is not blocking:** we carry your `source`
+  **verbatim** on their surface as `max_output_tokens_source_detail` and
+  `context_window_tokens_source_detail` (verified live on `/v1/chat/models`), beside
+  our own coarser `*_source` (`provider`/`curated`/`gateway`). They can read your
+  exact words today; they just cannot switch on them.
+
+- [ ] **HUB-21 — publish `max_structured_items_per_request` on the chat lane.** owes:
+  SH (a change) · truth: your `lane_contract.structured_output`, which today carries
+  `formats`, `enforcement`, `grammar_constrained`, `repair_attempts` and `note` —
+  **and not this field**.
+  Story Studio already reads it and it is simply absent, so it is a field nobody
+  publishes rather than one we are dropping.
+  **The gateway needs no change at all, and that is verified rather than assumed:**
+  the whole `lane_contract` object is republished verbatim to `/v1/chat/models`
+  (checked live — every key above reaches Story Studio, `structured_output` included).
+  Put the field anywhere inside `lane_contract` and it appears on their next read with
+  no release from us.
+
+- [ ] **HUB-22 — state what an omitted parameter means, and on which Mac.** owes: SH
+  (a statement) · truth: `main.py::_resolved_parameters`, which resolves each
+  parameter's `default` through `model_defaults.resolved(data_dir, model_id, …)` —
+  per Mac — and publishes the in-force value as `default`.
+  Story Studio's ask (our STORY-5): a `defaults_scope` saying that an omitted
+  parameter resolves to **that Mac's operator setting**, not to a model default.
+  **The gateway adds one fact to that statement, and it is the reason it matters
+  here:** a caller does not choose the Mac. Six locations serve every local model and
+  the gateway picks the site at dispatch, so *"that Mac's setting"* is not
+  determinable from the caller's side at all — the same request can omit `max_tokens`
+  and be served 4,096 at one site and a different number at another. Today all six
+  locations publish an identical surface so the answer is the same everywhere and
+  nothing is wrong; **the moment one operator changes a default, our merged catalogue
+  row would publish one site's value while routing to any**, which is the "a published
+  number that does not describe the system" defect this project keeps fixing. Recorded
+  as GW-11 rather than fixed, because it cannot fire today and guessing the right
+  published shape for a case that has never occurred is how a field nobody reads gets
+  invented. If you would rather state it Hub-side in a way that survives the merge,
+  say what shape and we will carry it.
 
 
 ### Rows you are waiting on us for
@@ -486,8 +580,7 @@ stop reading its silence as an answer. That line is worth more than the four row
 ## A. Story Studio owes / we ask
 
 - [ ] **STORY-7 — the measurement is now published to you, on the row you already
-  read. Use it to stop estimating.** owes: Story (a read, when you want it) · truth:
-  `GET /v1/models` and `GET /v1/chat/models`, the new `measured` key per row.
+  read. Use it to stop estimating.** owes: Story (a read, when you want it) · truth:  `GET /v1/models` and `GET /v1/chat/models`, the new `measured` key per row.
   Shipped 2026-09-26 in **0.2.40**. Every catalogue row now carries:
 
   ```json
@@ -497,7 +590,8 @@ stop reading its silence as an answer. That line is worth more than the four row
     "modalities": ["chat"],
     "samples": 20, "with_usage": 20,
     "max_prompt_tokens": 1827, "max_completion_tokens": 4096,
-    "median_completion_tokens": 1603, "median_tokens_per_second": 16.8,
+    "median_completion_tokens": 1603, "median_tokens_per_second": 15.4,
+    "slowest_site_tokens_per_second": 11.6,
     "machines": {}, "first_seen": 1790354352.3, "last_seen": 1790389046.5,
     "source": "gateway"
   }
@@ -513,7 +607,9 @@ stop reading its silence as an answer. That line is worth more than the four row
   `measured.max_completion_tokens == max_output_tokens` means the ceiling is real and
   **being hit**, which is exactly the local lane today (4,096 against 4,096).
   `median_tokens_per_second` is a measured rate, so a time estimate stops being a
-  guess. `sites` is how many locations contributed, and `machines` splits it per Mac
+  guess; **`slowest_site_tokens_per_second` is the one to size a ceiling against**,
+  because the gateway picks the Mac and a median hides the slow one. `sites` is how
+  many locations contributed, and `machines` splits it per Mac
   where the lane names one — **the chat lane does not**, so a chat model's envelope is
   per location until Studio Hub names a machine.
   **What it is not.** Not a ceiling, not a target, and not a licence to raise
@@ -522,13 +618,73 @@ stop reading its silence as an answer. That line is worth more than the four row
   ask".
   **A caveat we owe you, because it was in an earlier message of ours:** the 17.3
   tokens/second figure we quoted was **one 489-token sample on one Mac, plain prose, no
-  JSON**. The number to use is **15.4** — 23 real jobs across 4 locations, published as
-  `measured.median_tokens_per_second`, and a median of the per-location medians so one
-  Mac with many jobs cannot dominate it. This gateway publishes the median rather than
-  the mean for exactly that reason. Three machines × three models × a real run each is
-  still the thing that would replace every estimate here with a measurement; the
-  machinery for it now exists, and this field is where the
-  answer will appear.
+  JSON**. The fleet runs **12–18 tokens/second depending on the chip** — M1 12, M2 14,
+  M4 18, the owner's own count, corroborated by this gateway's per-location medians
+  (16.8, 16.6, 14.2, 11.6). `measured` publishes the **median**
+  (`median_tokens_per_second`, currently 15.4) **and the slowest site**
+  (`slowest_site_tokens_per_second`, currently 11.6) — the second one is the number a
+  ceiling has to be safe against, because your caller does not choose which Mac runs
+  it. Three machines × three models × a real run each is still the thing that would
+  replace every estimate here with a measurement; the machinery for it now exists, and
+  this field is where the answer will appear.
+
+- [ ] **STORY-8 — your tokens-per-word number is better than ours, and we retract
+  ours.** owes: Story (nothing — this is a correction and one number to check) ·
+  truth: recomputed from **17 real local completions** in this gateway's own job
+  store, text against `usage.completion_tokens`.
+  **We said 1.22 tokens/word. That was one sample**, which is the same error we had
+  just finished warning you about, made in the same message. Measured properly on
+  `mlx-community/Qwen3.5-9B-4bit`:
+
+  | | tokens/word |
+  |---|---|
+  | **your settled range** (1,700–3,000 per 1,200 words) | **1.42 – 2.50** |
+  | **local model, 17 samples, measured here** | **1.14 – 1.88, median 1.45** |
+  | our earlier claim | 1.22 *(one sample — retracted)* |
+  | cloud lanes, 23 samples, for contrast | 1.34 – 25.23, median 3.95 |
+
+  **Your range brackets the measurement and ours did not.** A 1,200-word chapter on
+  the local model is **~1,740 output tokens** at the measured median — at your lower
+  bound, not below it. Your `OUTPUT_TOKENS_PER_WORD = 1.3` and your 1,560 estimate are
+  both slightly optimistic against this data, which is the safe direction for a
+  chunking threshold and we are not asking you to move either. Publish 1,700–3,000
+  with confidence.
+  **And one consequence to check, because it is arithmetic you can act on:**
+  **3 chapters per call at an 8,192 ceiling only fits at the low end.** 3 × 1,700 =
+  5,100 fits; 3 × 3,000 = **9,000 does not**. Your completeness guard catches it, so
+  the failure is a retry rather than a lost chapter — but on a model whose chapters run
+  long, 3-per-call will degrade toward 2-per-call and the "10 calls instead of 30"
+  figure will drift up. Worth knowing before you size the plan on it.
+
+- [ ] **STORY-9 — the deadline you do not read is one this gateway enforces, and that
+  bounds the ceiling from above.** owes: Story (nothing — a fact to hold) · truth:
+  `gateway/adapters/studio_hub.py::lane_deadline_seconds`, `_poll_batch`,
+  `httpx.Timeout(lane_deadline_seconds(request))`.
+  You wrote that you never read `deadline_seconds`, never set it and derive no cap from
+  it, so a raise changes nothing on your side — **true for you, and not true for the
+  hop between us.** This gateway reads the Hub's stated `deadline_seconds` and uses it
+  as its own poll deadline and HTTP timeout, so a generation that outruns it is killed
+  by *us*, not by you. At the measured rates — **M1 12, M2 14, M4 18 tokens/second**,
+  the owner's own count, which this gateway's per-location medians (16.8, 16.6, 14.2,
+  11.6) independently corroborate — that puts a hard lid on the ask. Sized against the
+  **slowest** chip, because the caller does not choose the Mac:
+
+  | ceiling | M1 (12/s) | M2 (14/s) | M4 (18/s) | against the Hub's stated 900 s |
+  |---|---|---|---|---|
+  | 4,096 | 341 s | 293 s | 228 s | fits |
+  | **8,192** | **683 s** | 585 s | 455 s | **fits, 1.32× on the slowest** |
+  | 16,384 | 1,365 s | 1,170 s | 910 s | **times out on every chip** |
+
+  So 8,192 is the largest value that works today, and **if anyone ever wants more, the
+  ceiling and the deadline have to move together** — raising one alone produces jobs
+  that die at our hop for no visible reason. That is the whole reason HUB-19 asks for
+  8,192 and not 16,384. Recorded here because "nothing changes on our side" is the kind
+  of true statement that gets read as "nothing changes anywhere".
+
+  **Corollary worth keeping, and it is why publishing the median alone was not
+  enough:** the number a ceiling must be safe against is the **slowest** machine's,
+  and 15.4 — the median this gateway published first — hides the 12. `measured` now
+  carries `slowest_site_tokens_per_second` beside the median for exactly that reason.
 
 - [ ] **STORY-6 — do NOT remove the chunker. It is right, and the constant behind it
   is yours to keep.** owes: Story (nothing, if you read this) · truth:
@@ -758,7 +914,32 @@ stop reading its silence as an answer. That line is worth more than the four row
   `provider`/`curated`/`gateway` vocabulary has no word for "nobody said", and adding
   one breaks readers that know only three) and is left exactly as it is.
 
+- [ ] **GW-11 — a merged catalogue row publishes one location's `lane_contract` while
+  the gateway routes to any of six.** found 2026-09-26 while answering HUB-22 · owe:
+  whoever wants it · truth: `gateway/catalog.py::rebuild` — `merged[row["id"]] = row`
+  is **first-wins**; on a duplicate only `_publish_lock` is updated, so the surviving
+  `lane_contract`, `parameters` and their `default`s come from whichever location
+  `registry.models.enabled_models()` yielded first.
+  **Not live today**: all six locations publish an identical parameter surface, checked
+  across all 21 models that carry one — zero disagreements. So this is a latent defect
+  and that is why it is recorded rather than fixed.
+  **What makes it fire**: Studio Hub resolving a parameter through an operator setting
+  per Mac (`model_defaults.resolved`), which is exactly what HUB-22 is about. One
+  operator changing `max_tokens` on one Mac and the merged row publishes one site's
+  default while the gateway may dispatch to another — a caller omits the parameter and
+  gets a number we never published, across a row that looks authoritative. That is the
+  "a published number that does not describe the system" class this project keeps
+  fixing.
+  **Why it is not fixed now**: the honest published value for disagreeing sites is not
+  obvious — `null` would collide with "no lane states one", and any single number is a
+  lie about the others. Picking a shape for a case that has never occurred is how a
+  field nobody reads gets invented. The cheap detection is a comparison of the
+  contributing locations' `lane_contract` inside the existing merge loop; decide the
+  published shape first.
+
 - [ ] **GW-10 — nothing yet tells a caller that a completion was truncated at the
+
+
   cap.** found 2026-09-26 while building GW-9, owe: whoever wants it ·
   truth: `gateway/adapters/studio_hub.py::_generate_chat` (passes the Hub's
   `finish_reason` through) and `gateway/catalog.py` (publishes `max_output_tokens`).

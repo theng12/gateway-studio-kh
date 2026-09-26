@@ -158,6 +158,14 @@ def published_index(
             "max_completion_tokens": _max_of(rows, "max_completion_tokens"),
             "median_completion_tokens": _median_of(rows, "median_completion_tokens"),
             "median_tokens_per_second": _median_of(rows, "median_tokens_per_second"),
+            # **The slowest site, published beside the median, because the caller does
+            # not choose the Mac.** The gateway picks the location at dispatch, so a
+            # ceiling derived from the median is a ceiling that one machine in the
+            # fleet cannot meet — measured on the owner's own fleet 2026-09-26: M1
+            # 12 tok/s, M2 14, M4 18. A median of 15.4 describes the fleet and hides
+            # the 12; anything sized against the median is sized against a machine the
+            # job may not land on.
+            "slowest_site_tokens_per_second": _min_of(rows, "median_tokens_per_second"),
             "machines": {name: info for row in rows for name, info in row["machines"].items()},
             "first_seen": min(row["first_seen"] for row in rows),
             "last_seen": max(row["last_seen"] for row in rows),
@@ -169,6 +177,11 @@ def published_index(
 def _max_of(rows: list[dict[str, Any]], field: str) -> Any:
     values = [row[field] for row in rows if row.get(field) is not None]
     return max(values) if values else None
+
+
+def _min_of(rows: list[dict[str, Any]], field: str) -> Any:
+    values = [row[field] for row in rows if row.get(field) is not None]
+    return min(values) if values else None
 
 
 def _median_of(rows: list[dict[str, Any]], field: str) -> Any:
