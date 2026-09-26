@@ -31,7 +31,14 @@ thing.
    are invisible to it while long sentences are not. Absence of a short string is not
    absence of the feature; use a long-form literal, or run it.
 
-Last updated **2026-09-25** by GatewayKH. Current release **0.2.28**.
+Last updated **2026-09-26** by GatewayKH. Current release **0.2.44**.
+**Reconciled against Studio Hub's own tracker on 2026-09-26**, which found two things worth
+recording. Ten rows open here (`HUB-8, 9, 10, 13, 14, 15, 16, 20, 21, 22`) appeared in **no file
+in the Studio Hub repository at all** — the whole inbound debt list was invisible to the repo
+that owes it, and only HUB-18 was reachable. That is fixed on their side: their tracker now
+carries all of them, and the "say so in one line" this file asked for has been answered.
+And **HUB-17 was stale the other way** — Studio Hub closed it on 2026-09-26 while this row still
+read open. Both directions of drift are now cleared.
 
 ---
 
@@ -543,9 +550,20 @@ carefully.
   "Nothing is listening on that address" without ever naming the address. Fixed in
   0.2.29 (`menubar/FleetTabs.swift`): the cell now shows the address and the reason.
 
-- [ ] **HUB-17 — placement follows the *modality*, not the model's own memory
+- [x] **HUB-17 — placement follows the *modality*, not the model's own memory
   requirement, so an 8 GB voice model is sent to the biggest Mac in the group.**
-  owes: SH (a policy answer; no code until decided) ·
+  **closed 2026-09-26 by Studio Hub**, recorded here after reconciling both trackers side by
+  side — theirs carried this closed while this row still read open, which is the stale
+  direction nobody was watching for. Their fix, verbatim: *"Fixed by deleting the branch
+  rather than adding one. `_placement_key` is now a single factory for every lane: a machine
+  below **this model's** published floor sorts after every machine that can run it, and among
+  those the smallest comes first. `_audio_placement_key` and the artifact-class test are gone,
+  so there is no modality rule left to drift."* His two cases are pinned as tests now: an 8 GB-floor
+  model prefers the 8 GB Mac, and a 16 GB-floor model is **not** offered it. Two tests that
+  asserted the old policy were replaced by the invariant they should have asserted.
+  **Their record:** `docs/cross-project-open-items.md` (Closed) in the Studio Hub repo.
+  The reasoning below is kept — it is why the fix took the shape it did.
+  owes: ~~SH (a policy answer; no code until decided)~~ ·
   truth: `components/hub/backend/broker.py::_placement_key`.
   last verified: 2026-09-25, read from the source **and** from the floors the Hub
   publishes. `_placement_key` decides by artifact class: anything whose class is
