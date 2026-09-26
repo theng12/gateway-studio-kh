@@ -1013,6 +1013,13 @@ def _chat_row(model_id: str, definition: ProviderDefinition, model: dict[str, An
             return None
         return int(value)
 
+    # The withdrawal date, under every spelling a provider uses for it. A
+    # `None` here means nobody stated one — never "this model does not retire".
+    expiry = _first_stated(
+        raw, ("expiration_date", "deprecation_date", "retirement_date", "retires_at")
+    )
+    expiry = str(expiry) if isinstance(expiry, (str, int, float)) and str(expiry).strip() else None
+
     architecture = raw.get("architecture")
     inputs = architecture.get("input_modalities") if isinstance(architecture, dict) else None
     inputs = [str(x) for x in inputs] if isinstance(inputs, list) and inputs else None
@@ -1193,6 +1200,25 @@ def _chat_row(model_id: str, definition: ProviderDefinition, model: dict[str, An
         # search — so "none" and "could not work it out" shared a value, which is
         # the rule this whole section exists to enforce.
         "returns_citations": None,
+        # **The withdrawal date, which a provider does state and this catalogue
+        # was throwing away.** OpenRouter publishes `expiration_date` on a model it
+        # is retiring, and discovery's key whitelist discarded it at fetch time —
+        # so Story Studio's retirement warning (a whole surface: model selector
+        # badge, `genstudio-model-retirement.ts`) could never fire. Measured
+        # 2026-09-27: the key never reached `raw`, which is why this reads `None`
+        # for every model today.
+        #
+        # `retirement_source` names whose statement it is: `provider` when a date
+        # arrived, `None` when nobody said. Nothing is derived from the date — a
+        # model with no stated expiry is not "not retiring", it is unstated, and
+        # `replacement_model_id` is published only if a provider ever states one.
+        "retires_at": expiry,
+        "deprecation_warning": expiry is not None,
+        "deprecation_warning_at": expiry,
+        "scheduled_retirement_at": expiry,
+        "upstream_shutdown_at": None,
+        "replacement_model_id": _first_stated(raw, ("replacement_model_id",)) or None,
+        "retirement_source": "provider" if expiry is not None else None,
     }
 
 
@@ -1512,6 +1538,27 @@ class Catalog:
         builder = _ROW_BUILDERS.get(modality)
         if builder is not None:
             row.update(builder(model["model_id"], definition, model))
+
+        # **Why this row cannot be used right now, in the gateway's own words.**
+        #
+        # Story Studio reads `activation_blockers` and joins it into the sentence
+        # it shows when a model is not usable (`routes/health.ts`), falling back to
+        # "This model is not currently available in GenStudio". Nothing published
+        # the field, so that fallback is what an operator always saw — while the
+        # reason sat in this very row as `lock_reason`, unread by the only caller
+        # that wanted it.
+        #
+        # Which is *not* the same fact as "there is no reason". An empty list means
+        # this row is usable; a non-empty one names each reason, and each entry is
+        # something a producer stated — the gateway's lock, or the Hub's own reason
+        # for a package it cannot place. Nothing is inferred from a model name.
+        blockers: list[str] = []
+        if lock_reason:
+            blockers.append(str(lock_reason))
+        hub_reason = str((model.get("raw") or {}).get("reason") or "").strip()
+        if hub_reason and hub_reason not in blockers:
+            blockers.append(hub_reason)
+        row["activation_blockers"] = blockers
 
         # Price constants merged LAST so they always win and stay consistent.
         row.update(zero_pricing(modality))

@@ -1,6 +1,6 @@
 # HANDOFF — gateway-kh
 
-**Read this first.** Written 2026-09-27 against **VERSION `0.2.58`**. The running build
+**Read this first.** Written 2026-09-27 against **VERSION `0.2.59`**. The running build
 stamp is on `/health` and in `/Applications/gateway-kh.app/Contents/Resources/gateway/BUILD`.
 If this file disagrees with the code, **the code wins — fix this file in the same change**.
 Every path below is inside the Git checkout `repository/` unless it says otherwise.
@@ -11,12 +11,72 @@ project does not say why, and nobody should guess.
 
 | Thing | Value |
 |---|---|
-| Current release | **0.2.58** — `repository/VERSION`, one line, the only place to bump. **A local video lane's variants are its published CANVASES** — each variant carries its own `aspect_ratio`, built from the lane's `canvases` list rather than the cross product of its two parameter enums (see *What 0.2.57 changes* below) |
+| Current release | **0.2.59** — `repository/VERSION`, one line, the only place to bump. **A local video lane's variants are its published CANVASES** — each variant carries its own `aspect_ratio`, built from the lane's `canvases` list rather than the cross product of its two parameter enums (see *What 0.2.57 changes* below) |
 | Declared Studio Hub | **0.6.81** — `adapters.studio_hub.SUPPORTED_STUDIO_HUB_VERSION`, published on `/health`; a controller on another version is reported, never refused. Set on 2026-09-27 from a **running** Hub (`/api/version` → `0.6.81` build `3d8ce32`), not a changelog; 0.6.81 is the release that publishes `lane_contract.canvases`, which this gateway reads. Controllers older than that still publish — the cross-product fallback in `_video_row` covers them. 0.6.76 declared the same day from `0.6.76` build `1c0297b`; the video lane is why a controller older than 0.6.76 serves no `video` worker `[MEASURED]` |
 | Branch | `main` = `origin/main`, clean tree; remote `github.com/theng12/gateway-kh` |
 | Running build | `/Applications/gateway-kh.app`, port **8787**, stamp `29b61b2-202609261652` — measured on `/health` after quitting the app, killing the surviving gateway process by **PID** (`pgrep -f "uvicorn gateway.api:app"`) and reopening the app; the app's `Info.plist` carries the same stamp, so **Check Gateway** agrees. **The stale-gateway trap is real and was hit again:** quitting the app left the old gateway process serving 8787 (pid 12074, build `f738324-…`), and only an explicit kill by PID followed by a relaunch produced the new stamp. `pkill -f` remains forbidden `[MEASURED 2026-09-26]` |
 | Distribution | DMG in `repository/dist/` (`gateway-kh-0.2.56.dmg`), named by version alone; the previous ones moved to `_trash/dist/` |
 | SSD/setup kit | `repository/dist/setup-kit/`, **pinned to GatewayKH 0.2.44** and refreshed onto all four `KH-STUDIO-*` drives on **2026-09-26**, `shasum -a 256 -c` OK on every one. The drives also carry `Studio Hub.app` **0.6.70**. Superseded kits are in each drive's `_trash/superseded-kit-2026-09-26/` (`GatewayKH-0.2.27`, `GatewayKH-0.2.43`) |
+
+## What 0.2.59 changes — WIRE-3: the fields Story read that nothing published
+
+**The audit's `WIRE-3` is now closed, with a decision recorded for every one of the twenty-five
+fields.** Story Studio's `GenStudioChatModel` carried twenty-five fields this catalogue never
+published. Three of them were a *bug*, not a gap, and the other twenty-two have no source anywhere
+on this Mac — which is a fact worth writing down rather than leaving as a standing suspicion.
+
+**The bug: a feature that could not run.** `routes/vision.ts` gated the thumbnail-reference vision
+picker on `max_input_images >= 1` and a non-empty `supported_detail_levels`. **No gateway publishes
+either**, and Story's parse turns their absence into `0` and `[]` — so every model failed the gate,
+the vision model list was always empty, and the one fact that decides it (`supports_vision: true`,
+published from the provider's own `architecture.input_modalities`) sat unread beside them. Fixed on
+Story's side in **1.4.230**: eligibility rests on what is published, the per-model limits are
+enforced when stated, and the menu is told whose choice each number is
+(`detail_source` / `reference_limits_source`).
+
+**The bug this release fixes: a fact fetched and thrown away.** `_openai_models` kept a fixed
+whitelist of provider keys:
+
+```python
+raw={k: v for k, v in entry.items() if k in {"id", "name", "owned_by", "context_length", ...}}
+```
+
+It had already been patched twice by adding one more key — `top_provider` for the real output
+allowance, `maximum_text_length_per_request` for the TTS limit — and each patch left the next
+provider fact needing a discovery change before anyone could read it. OpenRouter publishes
+`expiration_date` on a model it is retiring, and the whitelist discarded it **at fetch time**, which
+is why the retirement family read `None` for every model and Story Studio's retirement surface (a
+model-selector badge and `genstudio-model-retirement.ts`) could never fire.
+
+`raw` is now `dict(entry)` — the whole entry. A `/models` response is public metadata, so nothing is
+being withheld on a model's behalf; what the catalogue *publishes* stays explicit, key by key.
+
+**Published from that:**
+- `retires_at`, `deprecation_warning`, `deprecation_warning_at`, `scheduled_retirement_at` — from
+  `expiration_date` and every spelling beside it, with **`retirement_source: "provider"`**.
+  `upstream_shutdown_at` and `replacement_model_id` stay `null`: nothing states them, and a
+  `deprecation_warning: false` on a model nobody has said anything about means "unstated", not
+  "will not retire".
+- **`activation_blockers`** on every row — the gateway's own reasons a row cannot be used: the lock
+  reason, and a location's own reason for a package it cannot place. It was already in the row as
+  `lock_reason`; nothing published it, so Story's operator-facing sentence was its generic fallback
+  while the real reason sat one field away. An empty list means usable.
+
+**The decision table for the other twenty-two** (nothing states them; nothing is invented):
+
+| Field group | Decision |
+|---|---|
+| `availability_reason`, `available_again_at` | **Deleted in Story 1.4.230.** They described a temporary absence the old GenStudio published; the fact that replaced them is a *job's* retry window (`next_action_at`, `defer_reason`), which rides on the job and is already rendered in the Jobs window. Story's cooldown still works from its own measurement (`noteLlmLineupQuotaExhaustion`). |
+| `discount`, `discount_disclaimer` | **No source.** Nothing in this gateway has promotional pricing; a `false` would imply a mechanism that does not exist. Story treats absence as "no discount", which is honest. |
+| `max_input_images`, `accepted_image_mime_types`, `max_image_bytes`, `max_image_dimension`, `supported_detail_levels` | **No source** — no provider states per-image limits. Story enforces what is published when it is, and its own limits otherwise, labelling which (`reference_limits_source`). |
+| `citation_format`, `supports_domain_filters`, `research_qualified`, `supports_claim_attribution`, `web_search_credits_per_search`, `web_research_credits_per_request`, `max_web_searches` | **No source** beyond `supports_web_search` / `returns_citations`, which are published. Research pricing would have to be curated before it could be published, and a curated number must be labelled as the owner's, not the model's. |
+| `max_structured_items_per_request` | **No source.** Story already handles its absence (STORY-10) — the reader-side fix stands. |
+| `relaxed_queue_hint` | The shelf (`queue_class`) is published; the hint is the old GenStudio's scheduling prose. No source. |
+
+**Evidence.** `tests/test_wire_fields.py` (8 tests): a stated expiry becomes the retirement family
+with its source; every spelling is read; nothing stated publishes nothing retired; the six names
+stay in Story's vocabulary; `activation_blockers` carries the lock reason; and the discovery
+whitelist cannot come back. Every focused suite green, **e2e 577/577**.
 
 ## What 0.2.58 changes — What's New is a page, and there is a way to look at it
 

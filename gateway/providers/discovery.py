@@ -250,20 +250,29 @@ def _openai_models(definition: ProviderDefinition, values: dict[str, str]) -> Di
                 # plainly was published as `null`, which reads as "it said
                 # nothing". Reading every spelling is only meaningful if the
                 # spellings reach the reader.
-                raw={
-                    k: v
-                    for k, v in entry.items()
-                    if k in {"id", "name", "owned_by", "context_length", "pricing",
-                             "top_provider", "architecture", "supported_parameters",
-                             "context_window", "input_token_limit", "inputTokenLimit",
-                             "max_completion_tokens", "output_token_limit",
-                             "outputTokenLimit",
-                             # The TTS character limit. `_tts_characters` reads
-                             # both spellings, and the catalogue check that a
-                             # provider's own limit wins could not see either.
-                             "maximum_text_length_per_request",
-                             "max_characters_request_subscribed_user"}
-                },
+                # **The whole entry, not a whitelist.**
+                #
+                # This kept a fixed set of keys and threw the rest away at fetch
+                # time, and it had already been patched twice by adding one more
+                # key — `top_provider` for the real output allowance, and
+                # `maximum_text_length_per_request` for the TTS limit. Both times
+                # the fix was another entry in this set, which means the *next*
+                # provider fact also needed a discovery change before anyone could
+                # read it. Two measured consequences of the whitelist:
+                #
+                #   * Story Studio carries twenty-five chat fields the catalogue
+                #     never publishes (`WIRE-3`), and for the retirement family the
+                #     provider's own answer — OpenRouter's `expiration_date` — was
+                #     in the response and discarded here;
+                #   * the catalogue's own fallbacks were dead code, because the
+                #     spellings they look for never reached the reader.
+                #
+                # A `/models` response is public metadata by definition, so there
+                # is nothing here to withhold on the model's behalf; what the
+                # catalogue *publishes* stays explicit (each row names the keys it
+                # reads), so keeping more raw can only turn "it said nothing" into
+                # "it said this".
+                raw=dict(entry),
             )
         )
     return DiscoveryResult(models=models)
