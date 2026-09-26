@@ -155,3 +155,40 @@ test('the tab strip is absent when there is nothing to split', () => {
   assert.doesNotMatch(dom.target.innerHTML, /Your fleet/);
   assert.match(dom.target.innerHTML, /Cloud APIs \(1\)/);
 });
+
+// -- the lane ceilings -------------------------------------------------------
+// The owner asked for a control for these: the API carried `lanes` since the pool was split, the
+// page drew the pool and the providers, and a per-lane cap could only be set by editing the
+// settings file. The rows are drawn from `data.lanes.rows`, which the route builds from the
+// catalogue's own modality tuple, so a lane the gateway serves cannot be missing from the page.
+const LANES = [
+  { lane: 'chat', limit: 12, source: 'gateway', detail: 'no lane cap set, so this lane may use the whole pool', stated: null },
+  { lane: 'image', limit: 4, source: 'curated', detail: 'caps image at 4', stated: 4 },
+  { lane: 'video', limit: 12, source: 'gateway', detail: 'no lane cap set, so this lane may use the whole pool', stated: null },
+];
+
+test('every lane is drawn with a control, and its unset state is readable', () => {
+  const { dom } = run({ global: { limit: 12, detail: '' }, providers: ROWS, lanes: { rows: LANES } });
+  for (const lane of LANES) {
+    assert.ok(dom.target.innerHTML.includes(`conc-l-${lane.lane}`),
+      `${lane.lane} has no control, which is the defect this table exists to fix`);
+  }
+  // A blank box is "not set"; the row still says what is in force and where it came from.
+  assert.match(dom.target.innerHTML, /no lane cap set, so this lane may use the whole pool/);
+  assert.match(dom.target.innerHTML, /value="4"/, 'a stated cap is shown as stated');
+});
+
+test('a lane with no rows at all still renders the table, not a missing heading', () => {
+  const { dom } = run({ global: { limit: 12, detail: '' }, providers: ROWS, lanes: { rows: [] } });
+  assert.match(dom.target.innerHTML, /Lanes/);
+  assert.match(dom.target.innerHTML, /No lanes\./);
+});
+
+test('the lane inputs are read from the document, so an unsaved lane cap survives a tab switch', () => {
+  // Same rule as the provider rows: `concurrencyPayload()` reads inputs in the document, and the
+  // tab switch only hides rows. This asserts the lane inputs are in the document even when the
+  // provider tabs move.
+  const { t, dom } = run({ global: { limit: 12, detail: '' }, providers: ROWS, lanes: { rows: LANES } });
+  t.showConcurrencyTab('local');
+  assert.ok(dom.target.innerHTML.includes('conc-l-video'));
+});

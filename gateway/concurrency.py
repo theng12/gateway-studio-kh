@@ -447,7 +447,8 @@ def _hub_provider_budget(provider_id: str) -> Budget | None:
 
 
 def settings_view(provider_ids: list[str] | None = None,
-                  provider_scopes: dict[str, str] | None = None) -> dict[str, Any]:
+                  provider_scopes: dict[str, str] | None = None,
+                  lane_names: tuple[str, ...] | list[str] = ()) -> dict[str, Any]:
     """Everything the console needs to show and edit the three ceilings.
 
     `provider_ids` is the providers the caller knows about, so the page can list a
@@ -484,11 +485,26 @@ def settings_view(provider_ids: list[str] | None = None,
             # both to show an unset row as unset rather than as "1".
             "stated": _settings_providers().get(provider_id, {}).get("limit"),
         })
+    # **A lane the gateway serves must be drawable even with nothing set on it.** The caller
+    # passes the modality vocabulary (`catalog.MODALITIES`) rather than this module keeping a
+    # second copy of it: a lane absent from the page is the one most likely to be running at the
+    # pool default, which is exactly the row the owner needs to see. Settings keys the caller did
+    # not name are still listed, so a cap set by hand survives a vocabulary change.
+    names = sorted({str(name).strip().lower() for name in lane_names if str(name).strip()}
+                   | set(_settings_lanes()))
     return {
         "path": str(SETTINGS_PATH),
         "global": {**global_budget().as_dict(),
                    "stated": _positive_int(_read_file().get("global"))},
-        "lanes": {**lane_budget("").as_dict(), "values": _settings_lanes()},
+        "lanes": {
+            **lane_budget("").as_dict(),
+            "values": _settings_lanes(),
+            "rows": [{
+                "lane": name,
+                **lane_budget(name).as_dict(),
+                "stated": _settings_lanes().get(name),
+            } for name in names],
+        },
         "providers": providers,
     }
 

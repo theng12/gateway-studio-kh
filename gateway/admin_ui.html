@@ -1241,6 +1241,22 @@ function renderConcurrency(data) {
   // **Every row is rendered; a tab only hides rows.** `concurrencyPayload()` reads the inputs that
   // are in the document, so re-rendering on a switch would drop the other tab's unsaved number —
   // type a limit, glance at the other tab, save, and it is gone.
+  // **The lane ceilings are a table of their own, above the providers.** They were editable
+  // only through the settings file: the API has carried `lanes` since the pool was split, the
+  // page drew the pool and the providers, and the owner's per-lane caps had no control at all.
+  // Each row shows the number *in force* and its source, exactly like a provider row, so "no cap
+  // set, so this lane may use the whole pool" is readable rather than inferred from a blank box.
+  const lanes = Array.isArray(data.lanes?.rows) ? data.lanes.rows : [];
+  const laneRows = lanes.map(lane => `
+      <tr>
+        <td>${esc(lane.lane)}</td>
+        <td><input type="number" min="1" step="1" style="max-width:110px"
+                   id="conc-l-${esc(lane.lane)}"
+                   value="${lane.stated == null ? '' : esc(lane.stated)}"
+                   placeholder="${esc(lane.limit)}"></td>
+        <td>${esc(lane.limit)} <span class="muted">${esc(lane.source)}</span></td>
+        <td class="muted">${esc(lane.detail || '')}</td>
+      </tr>`).join('');
   const rows = providers.map(p => {
     const scope = scopeOf(p);
     return `
@@ -1263,6 +1279,12 @@ function renderConcurrency(data) {
              placeholder="${esc(pool.limit)}">
       <div class="hint" style="margin-top:6px">${esc(pool.detail || '')}</div>
     </div>
+    <h3 style="margin:16px 0 6px">Lanes</h3>
+    <p class="hint" style="margin:0 0 10px">How much of the pool one kind of work may hold. A blank box means no cap: that lane may use the whole pool.</p>
+    <table class="grid">
+      <thead><tr><th>Lane</th><th>Limit</th><th>In force</th><th>Where it came from</th></tr></thead>
+      <tbody>${laneRows || '<tr><td colspan="4" class="muted">No lanes.</td></tr>'}</tbody>
+    </table>
     <div class="tabs" id="conc-tabs" role="group" aria-label="Provider kind">
       ${tabs.map(g => `<button data-tab="${g.key}" aria-pressed="${g.key === concurrencyTab}"
              onclick="showConcurrencyTab('${g.key}')">${esc(g.title)} (${counts[g.key]})</button>`).join('')}
@@ -1303,6 +1325,14 @@ function concurrencyPayload() {
     const value = String(pool.value == null ? '' : pool.value).trim();
     body.global = value === '' ? null : Number(value);
   }
+  const lanes = {};
+  const laneBoxes = document.querySelectorAll('[id^="conc-l-"]');
+  for (let i = 0; i < (laneBoxes ? laneBoxes.length : 0); i += 1) {
+    const box = laneBoxes[i];
+    const value = String(box.value == null ? '' : box.value).trim();
+    lanes[String(box.id).slice('conc-l-'.length)] = value === '' ? null : Number(value);
+  }
+  if (Object.keys(lanes).length) body.lanes = lanes;
   const providers = {};
   const boxes = document.querySelectorAll('[id^="conc-p-"]');
   for (let i = 0; i < (boxes ? boxes.length : 0); i += 1) {

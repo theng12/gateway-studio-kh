@@ -714,10 +714,14 @@ def get_concurrency() -> dict[str, Any]:
     """
     from . import concurrency
 
+    from . import catalog
+
     described = registry.describe_all()
     known = [row["id"] for row in described if row.get("id")]
     scopes = {str(row["id"]): row.get("scope") for row in described if row.get("id")}
-    return concurrency.settings_view(known, scopes)
+    # The lane vocabulary comes from the catalogue's own modality tuple, so a lane the gateway
+    # serves cannot be missing from the page and a lane it does not serve cannot appear on it.
+    return concurrency.settings_view(known, scopes, lane_names=catalog.MODALITIES)
 
 
 @router.put("/api/settings/concurrency", dependencies=[Depends(require_admin)])

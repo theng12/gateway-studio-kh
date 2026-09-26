@@ -18,6 +18,30 @@ project does not say why, and nobody should guess.
 | Distribution | DMG in `repository/dist/` (`gateway-kh-0.2.53.dmg`), named by version alone; the previous one moved to `_trash/dist/` |
 | SSD/setup kit | `repository/dist/setup-kit/`, **pinned to GatewayKH 0.2.44** and refreshed onto all four `KH-STUDIO-*` drives on **2026-09-26**, `shasum -a 256 -c` OK on every one. The drives also carry `Studio Hub.app` **0.6.70**. Superseded kits are in each drive's `_trash/superseded-kit-2026-09-26/` (`GatewayKH-0.2.27`, `GatewayKH-0.2.43`) |
 
+## What 0.2.56 changes — the lane ceilings have a control
+
+**The owner asked for a UI for the per-lane concurrency ceilings; the API had carried them since
+the pool was split and the page never drew one.** `concurrency.settings_view` had returned
+`lanes.values` (whatever was in the settings file) and nothing that a page could iterate, so a
+lane cap could only be set by editing `provider-concurrency.local.json` by hand.
+
+- **The route now passes the lane vocabulary in** (`admin.get_concurrency` →
+  `concurrency.settings_view(..., lane_names=catalog.MODALITIES)`). One source of truth, no second
+  list inside `concurrency.py`: a lane the gateway serves cannot be missing from the page, and a
+  lane it does not serve cannot appear on it. Settings keys the caller did not name are still
+  listed, so a cap set by hand survives a vocabulary change.
+- **`settings_view` publishes `lanes.rows`** — one row per lane with the number in force, its
+  source and the sentence explaining it, exactly like a provider row, plus the `stated` value so a
+  blank box means "not set" rather than "1".
+- **The console draws a "Lanes" table above the provider tabs**, with an input per lane. The save
+  payload carries `lanes` (already supported by `save_settings`), and the inputs are read from the
+  document like every other row, so switching provider tabs cannot drop an unsaved lane cap.
+- `tests/test_concurrency_tabs.js` gains three checks — every lane has a control and its unset
+  state is readable, an empty lane list still renders the table, and the lane inputs survive a
+  provider-tab switch. **9/9.**
+
+**Verified:** e2e **575/575**, `test_worker_concurrency.py` 45/45, console suites 9/9.
+
 ## What 0.2.55 changes — the reference travels where the Hub reads it
 
 **Found by the first real chain job, and it is the kind of defect only a live chain finds.**
