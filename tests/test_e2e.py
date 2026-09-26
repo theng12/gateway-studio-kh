@@ -3810,7 +3810,7 @@ def main() -> int:
             # check is what catches that: a location pointed at the mock must find
             # the mock's models, and this run has no local Hub at all.
             check("a location discovers its own Hub's models, not the local one",
-                  len(installed) == 7,
+                  len(installed) == 8,
                   f"{sorted(installed)} error="
                   f"{hub_payload.get('error') or hub_payload.get('discovery_error')}")
             # **A lane the Hub gained on its own.** The gateway used to map a
@@ -3987,6 +3987,9 @@ def main() -> int:
             check("and it is not leaked into the voice catalogue",
                   "studio-hub::mock-hub/video-model" not in published,
                   f"{[k for k in published if 'mock-hub' in k]}")
+            check("a video model the Hub says this machine cannot run is withheld",
+                  "studio-hub::mock-hub/video-toobig-model" not in video_published,
+                  f"{sorted(video_published)}")
             if local_video is not None:
                 check("its modes are the lane's own statement, not a gateway guess",
                       local_video["modes"] == ["image-to-video", "text-to-video"]

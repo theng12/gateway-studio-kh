@@ -957,7 +957,14 @@ def _generate_image_or_voice(request: BackendRequest) -> BackendResult:
                 item["params"]["duration"] = request.params["duration_seconds"]
             reference = _video_reference(request)
             if reference is not None:
-                item["reference_images"] = reference
+                # **Inside `params`, not beside it.** The Hub builds an item from exactly three
+                # keys — `prompt`, `seed` and `params` (`broker._submit_batch_locked`) — and then
+                # merges `shared_params` with `item["params"]` before popping `reference_images`
+                # off the *body*. An item-level `reference_images` is dropped without a word, the
+                # broker takes its JSON door instead of its multipart one, and the worker receives
+                # a prompt-only job: measured 2026-09-26, the first chain job generated
+                # text-to-video from a request that had uploaded a source image.
+                item["params"]["reference_images"] = reference
     else:
         item["text"] = str(request.params.get("text") or "")
         for key in ("speed", "voice_id", "language", "controls", "temperature", "seed"):

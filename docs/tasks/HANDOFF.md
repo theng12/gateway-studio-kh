@@ -11,12 +11,30 @@ project does not say why, and nobody should guess.
 
 | Thing | Value |
 |---|---|
-| Current release | **0.2.54** — `repository/VERSION`, one line, the only place to bump. **The local video lane is published** — `/v1/videos/models` now carries Studio Hub rows built from the lane's own contract, and the `video` modality routes to the Hub's Video worker (see *What 0.2.54 changes* below) |
+| Current release | **0.2.55** — `repository/VERSION`, one line, the only place to bump. **The local video lane is published** — `/v1/videos/models` carries Studio Hub rows built from the lane's own contract, the `video` modality routes to the Hub's Video worker, and the image-to-video reference now travels where the Hub actually reads it (see *What 0.2.54/0.2.55 change* below) |
 | Declared Studio Hub | **0.6.77** — `adapters.studio_hub.SUPPORTED_STUDIO_HUB_VERSION`, published on `/health`; a controller on another version is reported, never refused. Set on 2026-09-26 from a **running** Hub (`/api/version` → `0.6.77` build `ebbc757`), not a changelog. 0.6.76 declared the same day from `0.6.76` build `1c0297b`; the video lane is why a controller older than 0.6.76 serves no `video` worker `[MEASURED]` |
 | Branch | `main` = `origin/main`, clean tree; remote `github.com/theng12/gateway-kh` |
 | Running build | `/Applications/gateway-kh.app`, port **8787**, stamp `abe4c3f-202609261215` — measured on `/health` after respawning the process by **PID** under the newly built app; the app's `Info.plist` carries the same stamp, so **Check Gateway** agrees. The old stamp was `2da713b-202609260646`, and it survived a rebuild plus a gateway kill until the *app* was replaced too: the app passes its own `GatewayBuild` on spawn `[MEASURED 2026-09-26]` |
 | Distribution | DMG in `repository/dist/` (`gateway-kh-0.2.53.dmg`), named by version alone; the previous one moved to `_trash/dist/` |
 | SSD/setup kit | `repository/dist/setup-kit/`, **pinned to GatewayKH 0.2.44** and refreshed onto all four `KH-STUDIO-*` drives on **2026-09-26**, `shasum -a 256 -c` OK on every one. The drives also carry `Studio Hub.app` **0.6.70**. Superseded kits are in each drive's `_trash/superseded-kit-2026-09-26/` (`GatewayKH-0.2.27`, `GatewayKH-0.2.43`) |
+
+## What 0.2.55 changes — the reference travels where the Hub reads it
+
+**Found by the first real chain job, and it is the kind of defect only a live chain finds.**
+`0.2.54` sent an image-to-video request's `reference_images` at the **item's top level**. Studio
+Hub builds an item from exactly three keys — `prompt`, `seed` and `params` — and then merges
+`shared_params` with `item["params"]` before popping `reference_images` off the resulting *body*
+(`broker._submit_batch_locked`). An item-level reference is dropped without a word, the broker takes
+its JSON door instead of its multipart one, and the worker receives a prompt-only request: measured
+2026-09-26, the first chain job generated **text-to-video from a request that had uploaded a source
+image**. The reference now travels inside `item["params"]`, and
+`tests/test_studio_hub_contract.py::VideoLaneTests` pins both halves — the reference is in `params`,
+and nothing item-level claims to be one.
+
+The same release carries the **tier gate asserted at the public surface**: the e2e mock now offers a
+second local video model whose Hub verdict is `memory_eligible: false` (the same field a real 16 GB
+controller publishes for the 22B model), and the suite asserts it is **not** in
+`/v1/videos/models`. Recorded check count: **575/575**.
 
 ## What 0.2.54 changes — the local video lane is published
 

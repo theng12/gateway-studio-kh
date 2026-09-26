@@ -625,6 +625,35 @@ class Handler(BaseHTTPRequestHandler):
                                 "request": "DELETE /api/hub/jobs/{batch_id}"},
                      "deadline_seconds": HUB_VIDEO_DEADLINE_S,
                  }},
+                # **A video model this Mac cannot run.** The Hub's own verdict is
+                # `memory_eligible: false` — the same field a real 16 GB controller publishes for
+                # the 22B model — so the gateway withholds it and the picker never offers work the
+                # location would refuse. This is the tier, asserted at the public surface rather
+                # than only in a unit test.
+                {"package_id": "video-toobig-model", "model_id": "mock-hub/video-toobig-model",
+                 "engine": "video-ltx", "files_state": "files_verified",
+                 "dispatch_state": "eligible", "revision": "9" * 40,
+                 "modality": "video",
+                 "lane_contract": {
+                     "schema": "studiohub.lane-contract.v1",
+                     "modality": "video",
+                     "operation": "video.generation",
+                     "modes": ["image-to-video"],
+                     "parameters": [
+                         {"name": "prompt", "type": "string", "required": True},
+                         {"name": "resolution", "type": "string", "required": False,
+                          "enum": ["448p"], "default": "448p"},
+                         {"name": "duration_seconds", "type": "integer", "required": False,
+                          "enum": [4], "default": 4},
+                     ],
+                     "artifact": {"modality": "video", "media_type": "video/mp4",
+                                  "extension": "mp4", "per_item": 1},
+                     "states": {"accepted": ["queued"], "active": ["running"],
+                                "terminal": ["done", "error", "cancelled"],
+                                "uncertain": "uncertain", "uncertain_is_terminal": False,
+                                "discard_supported": True},
+                     "deadline_seconds": HUB_VIDEO_DEADLINE_S,
+                 }},
                 # `unplaceable-model` is the one case nothing can place: an unknown
                 # engine **and** no statement anywhere. It must be *reported*, not
                 # silently dropped — "I could not work out what this is" and "there
@@ -690,6 +719,12 @@ class Handler(BaseHTTPRequestHandler):
                  "capabilities": ["img2video", "txt2video"],
                  "generates_audio": True,
                  "min_unified_memory_gb": 24, "memory_eligible": True},
+                # The same lane on a Mac below its tier: the Hub says so, and the gateway must
+                # withhold the row rather than offering work the location would refuse.
+                {"repo": "mock-hub/video-toobig-model", "family": "mock-video",
+                 "hub_modality": "video",
+                 "capabilities": ["img2video"],
+                 "min_unified_memory_gb": 24, "memory_eligible": False},
                 # A chat model: the Hub states the lane, its own limits — with the
                 # sentence saying where each number came from — and its runtime
                 # stays unmeasured.

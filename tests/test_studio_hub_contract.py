@@ -1462,8 +1462,13 @@ class VideoLaneTests(_HubCase):
                                        "reference_asset_id": asset_id})
         self.generate(hub, request)
         item = hub.payloads[-1]["items"][0]
-        self.assertEqual(len(item["reference_images"]), 1)
-        reference = item["reference_images"][0]
+        # The Hub keeps only `prompt`, `seed` and `params` from an item, and pops
+        # `reference_images` off the merged body — so the reference must be inside `params`. At
+        # the item's top level it is dropped silently and the job becomes text-to-video.
+        self.assertNotIn("reference_images", item,
+                         "an item-level reference is dropped by the Hub, not forwarded")
+        self.assertEqual(len(item["params"]["reference_images"]), 1)
+        reference = item["params"]["reference_images"][0]
         self.assertEqual(reference["mime"], "image/png")
         self.assertEqual(base64.b64decode(reference["b64"]), scene)
 
