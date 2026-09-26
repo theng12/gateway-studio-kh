@@ -198,14 +198,22 @@ blocked on an answer any more.** Every row we owed you that 0.6.64 answers is cl
 >
 > | | |
 > |---|---|
-> | locations up | **6 / 6** |
 > | controllers | **`0.6.65` × 4**, **`0.6.64` × 1** |
-> | this Mac's Hub | **`0.6.69`** build `49792c4` |
-> | machines | **9 online, 9 offline** |
+> | this Mac's Hub | **`0.6.70`** build `30ecef1` — **HUB-19 shipped, and the chain carried it** |
+> | Story Studio reads | `max_output_tokens: 16384`, `deadline_seconds: 1800.0` |
+> | machines | 9 online / 9 offline when last read |
 >
-> So the rollout did happen and went further than the text claimed. **Two follow-ons
-> from that, both on the Owner list:** the controller still on `0.6.64` (`a311a0a9f4f7`)
-> is the one to move next, and the nine offline machines are OWNER-3 and unchanged.
+> So the rollout did happen and went further than the text claimed. **HUB-19 closed
+> 2026-09-26:** Studio Hub shipped the raised ceiling and the per-generator deadline in
+> `0.6.70`, the Hub auto-updated, GW-5 re-discovered, the catalogue republished, and
+> Story Studio is reading the new numbers — **with no release from us and none from
+> them.** The full sequence is on HUB-19.
+> **Two follow-ons, both on the Owner list:** the controller still on `0.6.64`
+> (`a311a0a9f4f7`) is the one to move next, and the offline machines are OWNER-3.
+> **The live counts are not quoted here on purpose** — this fleet moves, `locations_up`
+> went from 6/6 to 5/6 and back while this file was being written, and a pasted number
+> that disagrees with `GET /admin/api/fleet` is the stale-handoff defect this box
+> exists to correct. **Read the endpoint.**
 > **A stale handoff is worse than none because it is trusted** — if you read a version
 > number here that disagrees with the box, the box was measured and the prose was not.
 
@@ -1259,6 +1267,24 @@ stop reading its silence as an answer. That line is worth more than the four row
   `provider`/`curated`/`gateway` vocabulary has no word for "nobody said", and adding
   one breaks readers that know only three) and is left exactly as it is.
 
+  **ADDENDUM 2026-09-26 (0.2.43) — the record was blending prose with JSON, and that is
+  a correction to a number both projects were given.** `measured` published one median
+  over every job, and the jobs are not all the same kind of work. `[MEASURED]` Of 48
+  settled chat jobs here, **31 asked for `json_object`** and 17 were prose, and the two
+  do not share a ratio: prose **1.26 tokens/word** (10 samples, 1.14–1.78), structured
+  **3.15** (30 samples, 1.39–25.23). Local model alone: prose **1.21**, structured
+  **1.50**. **The 1.45 this gateway published was a blend and described neither.**
+  Every row now carries **`by_output_shape`** — `text` and `structured`, each with
+  `samples`, `max_completion_tokens` and `median_tokens_per_second`. **Both keys are
+  always present**, `samples: 0` when one has never run, because a key that appears
+  only once there is data is a key a reader has to guess at. The **headline stays
+  whole-envelope** deliberately — "can this lane carry N tokens" is answered by the
+  largest that ran, whatever it was. The shape is read in SQL from
+  `params.response_format`: `json_object`/`json_schema` are structured, anything else
+  including absent is prose. **The fleet merge carries the split**, or the fix would be
+  right per location and wrong on the one row Story Studio reads.
+  `tests/test_qualification.py` → **38 checks**; `test_e2e.py` → 570/570.
+
 - [ ] **GW-11 — a merged catalogue row publishes one location's `lane_contract` while
   the gateway routes to any of six.** found 2026-09-26 while answering HUB-22 · owe:
   whoever wants it · truth: `gateway/catalog.py::rebuild` — `merged[row["id"]] = row`
@@ -1338,8 +1364,21 @@ stop reading its silence as an answer. That line is worth more than the four row
 
 ## C. Owner
 
-- [x] **OWNER-2 — SSDs mounted and kit refreshed.** closed 2026-09-25: kit 0.2.27 on
-  all four drives, SHA256-verified.
+- [x] **OWNER-2 — SSDs mounted and kit refreshed.** closed 2026-09-25 at 0.2.27, and
+  **re-refreshed 2026-09-26 to 0.2.43** — see the kit row below. All four drives,
+  SHA256-verified both times.
+- [x] **OWNER-6 — the drives' kit indexes were lying about Studio Hub.** found and
+  closed 2026-09-26 during the 0.2.43 refresh · `[MEASURED]` every one of the four
+  drives carried `Studio Hub.app` **0.6.70**, and both indexes on every drive said
+  **0.6.63**. This is the defect `AGENTS.md` already warns about — *"Two kit indexes
+  exist on each drive and both name every app's version… Update both on every kit
+  refresh, or the drive's front page lies about one of the three apps"* — and it had
+  happened again, to the app that is not ours. Both indexes on all four drives now read
+  **GatewayKH 0.2.43 / Studio Hub 0.6.70**, each checked against the bundle that is
+  actually in the folder rather than against a release note.
+  **Worth knowing for the next refresh:** the Hub bundle on the drives was correct and
+  the index was wrong, so *only* the index needed changing. Read the bundle; do not
+  assume the index is the stale half or the fresh half.
 - [ ] **OWNER-1 — re-join `vengthengs-mac-studio-hub` with the controller's current
   Fleet token** (the fix for the 401). truth: that node's own app.
 - [ ] **OWNER-3 — 9 nodes still offline.** last verified: 2026-09-25 →
@@ -1418,7 +1457,7 @@ the error this file used to carry.
 | Holds, recovery action, chat envelope | `gateway/api.py` |
 | Chat lane tests (wire) | `tests/test_hub_chat_lane.py` |
 | Lane contract tests | `tests/test_hub_lane_contract.py` |
-| Setup kit | `dist/setup-kit/` |
+| Setup kit | `dist/setup-kit/` — **refreshed 2026-09-26 to GatewayKH 0.2.43**, on all four `KH-STUDIO-*` drives, SHA256-verified; the superseded 0.2.27 kit is in each drive's `_trash/superseded-kit-2026-09-26/`. The four drives also carry `Studio Hub.app` **0.6.70** |
 | Kit on a drive | `/Volumes/KH-STUDIO-*/Video Generation Kit/GatewayKH/` |
 | Controller install script | `/Volumes/KH-STUDIO-*/Video Generation Kit/Studio Hub KH/1 - Install the app.command` |
 | Hub settings (the listen host) | `~/Library/Application Support/StudioHub Standalone/app-preferences.json` |
