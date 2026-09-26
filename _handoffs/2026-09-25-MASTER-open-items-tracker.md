@@ -1569,7 +1569,7 @@ the error this file used to carry.
 | Holds, recovery action, chat envelope | `gateway/api.py` |
 | Chat lane tests (wire) | `tests/test_hub_chat_lane.py` |
 | Lane contract tests | `tests/test_hub_lane_contract.py` |
-| Setup kit | `dist/setup-kit/` — **refreshed 2026-09-26 to GatewayKH 0.2.43**, on all four `KH-STUDIO-*` drives, SHA256-verified; the superseded 0.2.27 kit is in each drive's `_trash/superseded-kit-2026-09-26/`. The four drives also carry `Studio Hub.app` **0.6.70** |
+| Setup kit | `dist/setup-kit/` — **refreshed 2026-09-26 to GatewayKH 0.2.44**, on all four `KH-STUDIO-*` drives, SHA256-verified; superseded 0.2.27 and 0.2.43 are in each drive's `_trash/superseded-kit-2026-09-26/`. The four drives also carry `Studio Hub.app` **0.6.70** |
 | Kit on a drive | `/Volumes/KH-STUDIO-*/Video Generation Kit/GatewayKH/` |
 | Controller install script | `/Volumes/KH-STUDIO-*/Video Generation Kit/Studio Hub KH/1 - Install the app.command` |
 | Hub settings (the listen host) | `~/Library/Application Support/StudioHub Standalone/app-preferences.json` |

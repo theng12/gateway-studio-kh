@@ -14,22 +14,23 @@ project does not say why, and nobody should guess.
 | Current release | **0.2.44** — `repository/VERSION`, one line, the only place to bump |
 | Declared Studio Hub | **0.6.65** — `adapters.studio_hub.SUPPORTED_STUDIO_HUB_VERSION`, published on `/health`; a controller on another version is reported, never refused. Set on 2026-09-25 from a **running** Hub (`/api/version` → `0.6.65` build `37cb07b`), not a changelog `[MEASURED]` |
 | Branch | `main` = `origin/main`, clean tree; remote `github.com/theng12/gateway-kh` |
-| Running build | `/Applications/gateway-kh.app`, port **8787**, stamp `9607395-202609260239` (`/health` and `…/Resources/gateway/BUILD`) — **this stamp is one commit behind `main` by construction**: `build.sh` stamps `git rev-parse --short HEAD`, so building before committing always leaves the tree one commit ahead of the stamp. Every release in this file has that shape; the deployed *code* is the whole change. The gateway must be **respawned**, not adopted, to carry a new stamp: with *Keep the gateway running after I quit* on, quitting the app leaves the old process holding 8787 and the new app adopts it, so `/health` keeps reporting the old build while serving new code `[MEASURED 2026-09-26]` |
+| Running build | `/Applications/gateway-kh.app`, port **8787**, stamp `2da713b-202609260646` (`/health` and `…/Resources/gateway/BUILD`) — **this stamp is one commit behind `main` by construction**: `build.sh` stamps `git rev-parse --short HEAD`, so building before committing always leaves the tree one commit ahead of the stamp. Every release in this file has that shape; the deployed *code* is the whole change. The gateway must be **respawned**, not adopted, to carry a new stamp: with *Keep the gateway running after I quit* on, quitting the app leaves the old process holding 8787 and the new app adopts it, so `/health` keeps reporting the old build while serving new code `[MEASURED 2026-09-26]` |
 | Distribution | DMG in `repository/dist/` (`gateway-kh-0.2.44.dmg`), named by version alone |
-| SSD/setup kit | `repository/dist/setup-kit/`. **The four `KH-STUDIO-*` drives now carry Studio Hub 0.6.65** `[MEASURED 2026-09-25]`, refreshed 21:34–21:40; the GatewayKH side on them is older — check before a rollout |
+| SSD/setup kit | `repository/dist/setup-kit/`, **pinned to GatewayKH 0.2.44** and refreshed onto all four `KH-STUDIO-*` drives on **2026-09-26**, `shasum -a 256 -c` OK on every one. The drives also carry `Studio Hub.app` **0.6.70**. Superseded kits are in each drive's `_trash/superseded-kit-2026-09-26/` (`GatewayKH-0.2.27`, `GatewayKH-0.2.43`) |
 
 - **Versions are patch-only for now:** `0.2.1`, `0.2.2`, … up to `0.2.1000`. Increment the
   third number by one per shipped change; never roll to `0.3.x`/`1.0.0` until the owner says so.
 - **Finished work is committed and pushed, and a release carries a DMG.** Do not call work
   done while uncommitted, unpushed, or without an installable artifact. `dist/` stays out of Git.
-- **The setup kit is a snapshot, not a build output — and it is current as of 0.2.22.**
-  `repository/dist/setup-kit/` pins GatewayKH **0.2.22** (`installers/gateway-kh-0.2.22.dmg`,
-  sha256 `8446db07de94b397…` in `SHA256SUMS.txt`) and its `06-troubleshooting.md` gained the
+- **The setup kit is a snapshot, not a build output — and it is current as of 0.2.44.**
+  `repository/dist/setup-kit/` pins GatewayKH **0.2.44** (`installers/gateway-kh-0.2.44.dmg`,
+  sha256 `1ea5c796fd826ecd…` in `SHA256SUMS.txt`) and its `06-troubleshooting.md` gained the
   two sections this release needs: **"A node shows offline"** (the Hub's `no_hub` /
   `unreachable` / `unauthorized`, read from the installed Hub's own `peers.py` and
   `fleet_nodes.py`) and **"A job says Manual recovery required"** (discard vs close).
   Rebuild it deliberately for a rollout; never hand-edit a copy on a drive.
-- **The four SSDs were refreshed from it on 2026-09-24** `[MEASURED]`:
+- **The four SSDs were last refreshed from it on 2026-09-26 at 0.2.44** `[MEASURED]` (and on
+  2026-09-24, 2026-09-25 and twice on 2026-09-26 before that, at 0.2.22 → 0.2.27 → 0.2.43):
   `/Volumes/KH-STUDIO-{ATLAS,NOVA,ORICO,UGREEN}/Video Generation Kit/GatewayKH/`, each
   verified with `shasum -a 256 -c SHA256SUMS.txt` and each keeping the superseded kit in
   `<drive>/_trash/superseded-kit-2026-09-24/` (the only place a superseded installer lives;
@@ -595,6 +596,23 @@ Run everything from `repository/`. Python tooling is the checkout venv `.venv/bi
 
 ## OPEN / IN FLIGHT
 
+> **Read this section as a dated log, not as current status — corrected 2026-09-26.**
+> Most of it was written across 2026-09-24/25 and several of its facts have moved since.
+> Rather than rewrite each bullet (which would destroy the record of what was true when
+> it was written), here is what changed:
+>
+> | then | now `[MEASURED 2026-09-26]` |
+> |---|---|
+> | both controllers on Studio Hub **0.6.54** | `0.6.65` × 4, `0.6.64` × 1 |
+> | this Mac's Hub **0.6.60/0.6.63** | **0.6.70** build `30ecef1` |
+> | "Studio Hub is not running on this Mac" | it is running, and all four workers report ready |
+> | the chat lane publishes `max_output_tokens: 4096` | **16384**, and `deadline_seconds` **1800** |
+> | `test_e2e.py` **546–555/555** | **570/570** |
+> | the remote chat proof "blocked on our side" | **closed** — GW-1, and the fleet gate passes 47/47 with a real remote dispatch |
+>
+> **A stale handoff is worse than none, because it is trusted.** If a number here
+> disagrees with the table at the top of this file, the top of the file was measured.
+
 - **Shipped in 0.2.25 (`0b03441`): the Hub chat lane is dispatchable, proved live on
   0.6.63.** Studio Hub 0.6.63 opened `POST /studio/chat/v1/chat/completions` to a
   **Fleet** credential, which is what made a Hub LLM possible here at all — before
@@ -632,10 +650,13 @@ Run everything from `repository/`. Python tooling is the checkout venv `.venv/bi
   ask the Story session rather than guess. It publishes as
   `studio-hub::mlx-community/Qwen3.5-9B-4bit` (the normal Hub namespace) meanwhile —
   nothing is blocked. **Open question for the Story session.**
-- **The remote chat proof (their test-plan item 4) is blocked on our side:** both
-  controllers are on **0.6.54**, which refuses the chat lane to a Fleet credential.
-  Bringing one controller to 0.6.63 proves it — and that is why the declared version
-  moved to 0.6.63: a controller reads `older` until it can serve the lane.
+- ~~**The remote chat proof (their test-plan item 4) is blocked on our side:** both
+  controllers are on **0.6.54**, which refuses the chat lane to a Fleet credential.~~
+  **CLOSED 2026-09-25 (GW-1) and re-proved 2026-09-26.** The controllers are on
+  `0.6.65`/`0.6.64` and the fleet gate runs a real remote dispatch end to end —
+  `tests/test_fleet_standalone.py` **47/47** against Hub `0.6.70`, including a
+  transcription and the artifact returning through the gateway. Struck through rather
+  than deleted because it was the reason the declared version moved at all.
 - **A stale `dispatch_state` reads as "not installed".** The first live chat attempt
   was withheld because the cached package row said `files_state: not_installed` /
   `dispatch_state: ineligible` while the Hub answered a completion perfectly; a
@@ -771,7 +792,8 @@ Run everything from `repository/`. Python tooling is the checkout venv `.venv/bi
      six now publish `close_hold` `[MEASURED]`. `tests/test_studio_hub_contract.py::DiscardActionTests`,
      `tests/test_job_recovery.py`, `tests/test_jobs_outputs.swift`.
   Verification for the release: `test_e2e.py` **546/546**, `test_ui.py` **130 passed /
-  5 skipped** (the skips are Hub-dependent and Studio Hub is not running on this Mac),
+  5 skipped** (the skips are Hub-dependent; **Studio Hub was not running when this was
+  written — it is now**, rebuilt 2026-09-26 as `0.6.70`),
   `check_native.py jobs-recovery` passes against the installed app, and `/v1/models`
   publishes **0** `locked`/`availability` disagreements `[MEASURED]`.
 - **Newly known, not ours to fix:** the node `vengthengs-mac-studio-hub` answers the
