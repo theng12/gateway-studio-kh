@@ -159,7 +159,7 @@ Read off the **running** 0.2.39 gateway, `GET /admin/api/qualification`:
 | `experiential-labs` deepseek-v4.1-flash | 1 | 8,483 | *(not catalogued)* | — | — |
 | `openai-direct` gpt-6-luna | 19 | 6,221 | null | gateway | — |
 | `tokenharbor` mimo-v2.5:free | 1 | 5,045 | 128,000 | curated | — |
-| **`studio-hub-9701220bf30f` Qwen3.5-9B-4bit** | **13** | **4,096** | **4,096** | **provider** | **16.8** |
+| **`studio-hub` Qwen3.5-9B-4bit** *(4 locations)* | **23** | **4,096** | **4,096** | **provider** | **15.4** |
 | `studio-hub-b8ccda585b97` Qwen3.5-9B-4bit | 2 | 2,350 | 4,096 | provider | 16.6 |
 | `studio-hub-de7250e146a7` Qwen3.5-9B-4bit | 5 | 841 | 4,096 | provider | 14.2 |
 | `studio-hub-local` Qwen3.5-9B-4bit | 3 | 27 | 4,096 | provider | 11.6 |
@@ -173,10 +173,14 @@ Read off the **running** 0.2.39 gateway, `GET /admin/api/qualification`:
   *"finish_reason must be a clean stop"* does not, on its own, detect truncation.
   Only the measured maximum next to the stated ceiling shows it. This is HUB-18 and
   GW-10 in the master tracker, with the arithmetic below.
-- **The same model measured 16.8 tokens/second** (median over 13 real jobs — use this
-  one; a single 489-token job measured 17.3), 1.22 tokens/word, 7.0 characters/word,
-  5.7 characters/token. Against the chat lane's own stated 900 s deadline: 4,096 →
-  244 s, 8,192 → **488 s**, 16,384 → **975 s and does not fit**.
+- **The same model measured 15.4 tokens/second across the fleet** — 23 jobs over 4
+  locations, published as `measured.median_tokens_per_second`, and a median of the
+  per-location medians (16.8, 16.6, 14.2, 11.6) so one Mac with many jobs cannot
+  dominate it. Use this one; earlier notes here said 16.8 (the best-sampled single
+  location) and an even earlier one said 17.3 (**one 489-token sample**, retracted).
+  Also measured: 1.22 tokens/word, 7.0 characters/word, 5.7 characters/token. Against
+  the chat lane's own stated 900 s deadline: 4,096 → 266 s, 8,192 → **532 s**, 16,384
+  → **1,064 s and does not fit**.
 - **The round trip is the Hub's `FALLBACK_MAX_OUTPUT_TOKENS`, and Story Studio's
   chunker is not the defect.** An earlier version of this file implied the chunker was
   over-tuned. **That was wrong and is retracted** — see HUB-19. Their

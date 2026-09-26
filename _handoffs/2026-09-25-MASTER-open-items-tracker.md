@@ -365,12 +365,15 @@ carefully.
   beside the usage — or should this gateway infer it from
   `completion_tokens == max_output_tokens`? Either works; today neither happens, and
   nobody has decided. Recorded rather than guessed.
-  **The numbers to size a decision with** (same model, same session, measured):
-  **16.8 tokens/second** — the median over 13 real jobs, which is the figure to use;
-  a single 489-token job measured 17.3 and is quoted elsewhere in this file, and the
-  median is the better-sampled number. **1.22 tokens/word.** Against the chat lane's
-  own stated 900 s `deadline_seconds`: 4,096 → 244 s, **8,192 → 488 s**, 16,384 →
-  975 s and does not fit. A 1,200-word chapter is ~1,467 tokens / ~87 s.
+  **The numbers to size a decision with** (same model, same session, measured).
+  **The fleet figure is 15.4 tokens/second — 23 jobs across 4 locations.** It is a
+  median of the four locations' own medians (16.8, 16.6, 14.2, 11.6), so one Mac with
+  many jobs cannot dominate it, and it is the number this gateway publishes as
+  `measured.median_tokens_per_second`. Earlier notes here said 16.8, which was the
+  single best-sampled location; **15.4 is the better-sampled figure and the one to
+  use**. **1.22 tokens/word.** Against the chat lane's own stated 900 s
+  `deadline_seconds`: 4,096 → 266 s, **8,192 → 532 s**, 16,384 → **1,064 s and does
+  not fit**. A 1,200-word chapter is ~1,467 tokens / ~95 s.
 
 - [ ] **HUB-19 — raise `FALLBACK_MAX_OUTPUT_TOKENS`, and that one number is the whole
   of the round-trip problem.** owes: SH (a change) · truth: the installed Hub's own
@@ -407,14 +410,19 @@ carefully.
   from it. At 8,192 their threshold becomes `floor((8192 − 2000 − 1500) / 1.3)` =
   **3,609 words**, so a 1,200-word chapter is **one call**.
   **Why 8,192 and not 16,384** — 16,384 was this gateway's earlier suggestion and it
-  does not fit the hardware: at the measured 16.8 tokens/second it takes 975 s, past
-  your own stated 900 s `deadline_seconds`, and the slowest well-sampled location
-  (14.2 tokens/second) would need 1,154 s. 8,192 takes **472–577 s**, inside the
-  deadline with 1.6× headroom. **8,192 is the largest value that is safe on the
-  machines actually in this fleet**, and it already removes the round trip entirely.
+  does not fit the hardware: at the measured **15.4 tokens/second across this fleet**
+  (23 jobs, 4 locations) it takes **1,064 s**, past your own stated 900 s
+  `deadline_seconds`, and the slowest well-sampled location (14.2 tokens/second) would
+  need 1,154 s. **8,192 takes 532 s** at the fleet median and 577 s on the slowest
+  location — inside the deadline with 1.6× headroom. **8,192 is the largest value that
+  is safe on the machines actually in this fleet**, and it already removes the round
+  trip entirely.
   If a checkpoint ever *does* state its own limit, none of this is needed — the
   fallback is only consulted when the model says nothing, and a model that states less
   than 8,192 still wins (`min(FALLBACK_MAX_OUTPUT_TOKENS, output_limit)`).
+  **These figures are now published, not asserted**: `GET /v1/models` carries
+  `measured.median_tokens_per_second` per model, so you can check any of this against
+  the running fleet rather than taking our word for it (STORY-7).
 
 
 ### Rows you are waiting on us for
@@ -514,10 +522,12 @@ stop reading its silence as an answer. That line is worth more than the four row
   ask".
   **A caveat we owe you, because it was in an earlier message of ours:** the 17.3
   tokens/second figure we quoted was **one 489-token sample on one Mac, plain prose, no
-  JSON**. The number to use is **16.8**, the median over 13 real jobs, and this gateway
-  publishes the median rather than the mean for exactly that reason. Three machines ×
-  three models × a real run each is still the thing that would replace every estimate
-  here with a measurement; the machinery for it now exists, and this field is where the
+  JSON**. The number to use is **15.4** — 23 real jobs across 4 locations, published as
+  `measured.median_tokens_per_second`, and a median of the per-location medians so one
+  Mac with many jobs cannot dominate it. This gateway publishes the median rather than
+  the mean for exactly that reason. Three machines × three models × a real run each is
+  still the thing that would replace every estimate here with a measurement; the
+  machinery for it now exists, and this field is where the
   answer will appear.
 
 - [ ] **STORY-6 — do NOT remove the chunker. It is right, and the constant behind it
