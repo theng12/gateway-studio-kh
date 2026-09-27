@@ -613,6 +613,19 @@ class Handler(BaseHTTPRequestHandler):
                           "enum": [2, 4], "default": 4},
                          {"name": "seed", "type": "integer", "required": False,
                           "minimum": -1, "maximum": 4294967295, "default": -1},
+                         # The switch Hub 0.6.83 added to this lane, verbatim — including the note,
+                         # copied from the running Hub's own `/api/hub/catalog` on 2026-09-27 rather
+                         # than paraphrased. **The note is the point of relaying it**: the lane, not
+                         # this gateway, knows that unticking it skips a decode rather than a
+                         # denoise step, and a caller that shows the switch without that sentence
+                         # implies a saving the lane does not make. `seed`/`mode` above are the
+                         # control case: neither may become a switch.
+                         {"name": "audio", "type": "boolean", "required": False, "default": True,
+                          "ignored": False,
+                          "note": ("the model generates picture and sound together, so this does "
+                                   "not change generation time; unticking it skips the audio "
+                                   "decode and writes a silent MP4. The track can be added back "
+                                   "in an editor.")},
                      ],
                      # The pairs, exactly as the real lane publishes them: two classes, one
                      # ratio each way for 256p and two for 448p. `7:4` at `448p` is NOT a canvas,

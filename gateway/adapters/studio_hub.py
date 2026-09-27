@@ -75,7 +75,13 @@ JOB_DEADLINE_S = 900.0
 #: 0.6.76 declared on 2026-09-26 from the running Hub (`/api/version` → `0.6.76` build `1c0297b`),
 #: and 0.6.77 the same day from `0.6.77` build `ebbc757` — both measured, not read off a changelog.
 #: The video lane is why: a controller older than 0.6.76 serves no `video` worker at all.
-SUPPORTED_STUDIO_HUB_VERSION = "0.6.81"
+#:
+#: **0.6.83 declared 2026-09-27, and this one is load-bearing in a way the number usually is not.**
+#: It is the release whose video lane publishes the `audio` switch this gateway now relays and
+#: forwards; against an older Hub the switch is simply absent from the contract, so nothing is
+#: offered and nothing is dropped. The declaration is read off the running Hub, and the Hub release
+#: it names is the one this build was measured against.
+SUPPORTED_STUDIO_HUB_VERSION = "0.6.83"
 
 #: The answers `hub_version_relation` can give. `match` is the tested pairing; the
 #: other two are informational — a newer Hub may serve things this gateway has no
@@ -212,6 +218,13 @@ _HUB_MODALITY = {
 #: (which goes as JSON) and an image-to-video job (multipart) resolve to the same request.
 #: `mode` is deliberately not sent: the broker sets `mode=img2video` for the reference path
 #: itself, and the worker derives text-to-video when no image is attached.
+#:
+#: `audio` was added 2026-09-27 with Hub 0.6.83, which published the switch. **Forwarding it is
+#: the whole reason it is in this tuple**: a lane parameter the caller sets and this gateway drops
+#: is a lie with a schema — Story Studio would have shown a switch that changed nothing, and the
+#: caller would have paid for a track it asked not to be written. Only what the caller set travels;
+#: the lane's own default applies where the field is absent, and inventing a value here would
+#: decide a lane's behaviour on the caller's behalf.
 _HUB_VIDEO_PARAMS = (
     "duration",
     "aspect_ratio",
@@ -221,6 +234,7 @@ _HUB_VIDEO_PARAMS = (
     "frames",
     "fps",
     "seed",
+    "audio",
 )
 
 

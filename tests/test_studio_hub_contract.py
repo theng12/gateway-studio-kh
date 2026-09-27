@@ -1472,6 +1472,34 @@ class VideoLaneTests(_HubCase):
         self.assertEqual(reference["mime"], "image/png")
         self.assertEqual(base64.b64decode(reference["b64"]), scene)
 
+    def test_a_silent_request_is_forwarded_rather_than_dropped(self) -> None:
+        """`audio: false` reaches the Hub's item body, and an unstated choice stays unstated.
+
+        Hub 0.6.83 gave its LTX lane an `audio` switch and publishes it on the lane contract, so
+        a caller may ask for a silent MP4. **A parameter this gateway publishes and then drops is
+        a lie with a schema**: Story Studio would render a switch that changed nothing while the
+        caller paid for a track it had asked not to be written. `false` is the value that must
+        survive — a truthiness test that forwarded on `if value:` would lose exactly the half of
+        the switch that a silent-video request is made of.
+        """
+        hub = _Hub(artifact=b"\x00\x00\x00\x18ftypmp42", artifact_media_type="video/mp4")
+        request = self.request(modality="video", model_id="baa-ai/LTX-2.3-22B-RAM-12GB-MLX",
+                               params={"prompt": "a harbour at dawn", "aspect_ratio": "11:7",
+                                       "resolution": "448p", "duration_seconds": 4,
+                                       "audio": False})
+        self.generate(hub, request)
+        item = hub.payloads[-1]["items"][0]
+        self.assertIn("audio", item["params"],
+                      "a dropped choice is a control that does nothing")
+        self.assertIs(item["params"]["audio"], False)
+        # And the lane's own default applies where the caller stated nothing: sending `True` on
+        # every request would override a lane whose default is the other way.
+        quiet = _Hub(artifact=b"\x00\x00\x00\x18ftypmp42", artifact_media_type="video/mp4")
+        self.generate(quiet, self.request(
+            modality="video", model_id="baa-ai/LTX-2.3-22B-RAM-12GB-MLX",
+            params={"prompt": "a harbour at dawn", "duration_seconds": 4}))
+        self.assertNotIn("audio", quiet.payloads[-1]["items"][0]["params"])
+
     def test_a_reference_that_aged_out_is_a_caller_error(self) -> None:
         hub = _Hub()
         request = self.request(modality="video", params={

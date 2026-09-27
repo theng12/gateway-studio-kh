@@ -25,6 +25,7 @@ field parses. Run with::
 from __future__ import annotations
 
 import atexit
+import copy
 import os
 import shutil
 import sys
@@ -405,6 +406,12 @@ class VideoPublicationTests(_MockHub):
         video = next(m for m in result.models if m.model_id == "mock-hub/video-model")
         return _video_row("mock-hub/video-model", self._definition(), {"raw": video.raw})
 
+    def _contract(self) -> dict:
+        """The mock Hub's own lane contract for its video model, as the Hub stated it."""
+        _definition, result = self._discover()
+        video = next(m for m in result.models if m.model_id == "mock-hub/video-model")
+        return video.raw["lane_contract"]
+
     def test_the_local_row_publishes_the_lane_s_own_modes_and_variants(self) -> None:
         row = self._row()
         self.assertEqual(row["modes"], ["image-to-video", "text-to-video"])
@@ -422,6 +429,78 @@ class VideoPublicationTests(_MockHub):
                           (2, "448p", "1:1"), (4, "448p", "1:1"),
                           (2, "448p", "11:7")})
         self.assertIs(row["generates_audio"], True)
+        # **The lane's switch is relayed, and only the lane's switches are.** `audio` is the one
+        # boolean parameter this contract publishes; `mode`, `aspect_ratio`, `resolution`,
+        # `duration_seconds` and `seed` are the same vocabulary the row already states better as
+        # `variants`, and `seed` in particular is a number a caller sets rather than a switch.
+        # The default and the note travel verbatim: this gateway does not know what a given lane's
+        # switch costs, and the sentence that says so is the lane's to write.
+        self.assertEqual(row["controls"], [{
+            "name": "audio", "type": "boolean", "default": True,
+            "note": ("the model generates picture and sound together, so this does not "
+                     "change generation time; unticking it skips the audio decode and writes a "
+                     "silent MP4. The track can be added back in an editor."),
+        }])
+        # The Hub's own deadline travels on the contract, and a video lane's is not 900.
+        _definition, result = self._discover()
+        video = next(m for m in result.models if m.model_id == "mock-hub/video-model")
+        self.assertEqual(video.raw["lane_contract"]["deadline_seconds"], HUB_VIDEO_DEADLINE_S)
+
+    def test_the_lane_s_switch_is_relayed_and_a_lane_without_one_is_not(self) -> None:
+        """`controls` carries the lane's own boolean parameters, and nothing else.
+
+        Story Studio reads a published control as permission to render one, so three statements
+        have to stay distinct: a switch (relayed here), a lane that publishes no switch (no key),
+        and a lane whose entry this gateway cannot read (dropped, not rendered). The forwarding
+        half — that a caller's choice actually reaches the Hub's item body — is asserted on the
+        wire in `test_studio_hub_contract.VideoLaneTests`, because the tuple is what changed and
+        the forwarded body is what matters.
+        """
+        from gateway.catalog import _video_row
+
+        row = self._row()
+        self.assertEqual(row["controls"], [{
+            "name": "audio", "type": "boolean", "default": True,
+            "note": ("the model generates picture and sound together, so this does not "
+                     "change generation time; unticking it skips the audio decode and writes a "
+                     "silent MP4. The track can be added back in an editor."),
+        }])
+        # A lane that publishes no switch carries no `controls` key at all — absent is not the
+        # same statement as an empty list, and a caller must be able to tell them apart. Built
+        # from the same contract the row above came from, with only the switch removed, so the
+        # comparison is about the switch rather than about a fixture that differs in ten ways.
+        without = copy.deepcopy(self._contract())
+        without["parameters"] = [entry for entry in without["parameters"]
+                                 if entry.get("name") != "audio"]
+        quiet = _video_row("mock-hub/video-model", self._definition(),
+                           {"raw": {"lane_contract": without}})
+        self.assertNotIn("controls", quiet)
+        # An entry this gateway cannot read is dropped rather than rendered: `quality` travels
+        # with a `null` default rather than the string the lane got wrong (a caller shows the
+        # lane's default or nothing, never a coerced one), and the nameless one is gone — a
+        # switch with no name is one no caller could ever send a value for.
+        malformed = copy.deepcopy(without)
+        malformed["parameters"] = [
+            *malformed["parameters"],
+            {"name": "quality", "type": "boolean", "default": "yes"},
+            {"type": "boolean", "default": True},
+        ]
+        patched = _video_row("mock-hub/video-model", self._definition(),
+                             {"raw": {"lane_contract": malformed}})
+        self.assertEqual(patched["controls"], [
+            {"name": "quality", "type": "boolean", "default": None, "note": None}])
+
+    def test_the_row_s_own_modes_and_variants_are_unchanged_by_the_switch(self) -> None:
+        """The switch must not become a variant, and a variant must not gain one.
+
+        A boolean parameter is not a priced axis: turning it off does not change the duration,
+        resolution or price a caller is quoted, and a gateway that multiplied the variants by it
+        would double every row's option list with entries that differ in nothing it prices. Two
+        modes times seven canvas/duration pairs is the whole list, before and after.
+        """
+        row = self._row()
+        self.assertEqual(len(row["variants"]), 14)
+        self.assertTrue(all("audio" not in variant for variant in row["variants"]))
         # The Hub's own deadline travels on the contract, and a video lane's is not 900.
         _definition, result = self._discover()
         video = next(m for m in result.models if m.model_id == "mock-hub/video-model")

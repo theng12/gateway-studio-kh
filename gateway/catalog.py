@@ -351,6 +351,49 @@ def _local_video_canvases(contract: dict[str, Any]) -> list[dict[str, Any]] | No
     return canvases or None
 
 
+def _local_video_controls(contract: dict[str, Any]) -> list[dict[str, Any]] | None:
+    """The lane's **switch** parameters, relayed so a caller can offer exactly those.
+
+    A boolean lane parameter is a choice the lane honours, and the caller cannot know it exists
+    without being told: measured 2026-09-27, when Studio Hub gave its LTX lane an `audio` switch
+    (0.6.83) and this gateway published no trace of it, so Story Studio had no way to offer the
+    one thing the owner asked for — a video with no sound.
+
+    **Only booleans, and only fields the lane itself stated.** The rest of a lane's parameter list
+    is the vocabulary this row already publishes in a better form (`modes`, `aspect_ratios`,
+    `variants`), and restating it here would be a second copy free to disagree with the variants a
+    caller is actually billed for. `type`/`default`/`note` are relayed verbatim: the note is the
+    lane's own sentence about what the switch does, which is the sentence a caller should show —
+    this gateway has no idea what a given lane's switch costs.
+
+    `None` means the lane publishes no boolean parameter (or a contract this gateway cannot read),
+    which is not the same statement as an empty list: one is "nothing offered", the other "nothing
+    stated". A malformed entry is dropped alone rather than failing the row, because a switch this
+    gateway cannot describe is one a caller must not render.
+    """
+    entries = contract.get("parameters")
+    if not isinstance(entries, list):
+        return None
+    controls: list[dict[str, Any]] = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        name = entry.get("name")
+        if not (isinstance(name, str) and name.strip()):
+            continue
+        if str(entry.get("type") or "").strip().lower() != "boolean":
+            continue
+        controls.append({
+            "name": name.strip(),
+            "type": "boolean",
+            # A stated default travels; an absent one stays absent, and the caller shows the
+            # switch from the lane's own `default` rather than inventing one here.
+            "default": entry.get("default") if isinstance(entry.get("default"), bool) else None,
+            "note": entry.get("note") if isinstance(entry.get("note"), str) else None,
+        })
+    return controls or None
+
+
 def _video_row(model_id: str, definition: ProviderDefinition, model: dict[str, Any]) -> dict[str, Any]:
     # Story Studio accepts a video variant ONLY when all six fields are present
     # and valid, so a partially-described variant is worse than none.
@@ -428,12 +471,17 @@ def _video_row(model_id: str, definition: ProviderDefinition, model: dict[str, A
                 for resolution in local["resolutions"]
             ]
         stated_audio = raw.get("generates_audio") if isinstance(raw, dict) else None
+        controls = _local_video_controls((raw or {}).get("lane_contract") or {})
         return {
             "modes": modes,
             "modes_source": modes_source,
             "aspect_ratios": aspect_ratios,
             "generates_audio": stated_audio if isinstance(stated_audio, bool) else None,
             "variants": variants,
+            # The lane's own switches, where it publishes any. Absent for a lane that publishes
+            # none — a cloud row below states no `controls` either, and a caller must show a
+            # control only where one is published rather than on every video model alike.
+            **({"controls": controls} if controls else {}),
         }
     # **Read what the provider states, then our own adapter's knowledge, and
     # label which it was.** The id heuristic alone was the defect: fal's

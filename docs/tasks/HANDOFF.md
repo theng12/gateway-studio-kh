@@ -1,6 +1,6 @@
 # HANDOFF — gateway-kh
 
-**Read this first.** Written 2026-09-27 against **VERSION `0.2.59`**. The running build
+**Read this first.** Written 2026-09-27 against **VERSION `0.2.60`**. The running build
 stamp is on `/health` and in `/Applications/gateway-kh.app/Contents/Resources/gateway/BUILD`.
 If this file disagrees with the code, **the code wins — fix this file in the same change**.
 Every path below is inside the Git checkout `repository/` unless it says otherwise.
@@ -11,12 +11,51 @@ project does not say why, and nobody should guess.
 
 | Thing | Value |
 |---|---|
-| Current release | **0.2.59** — `repository/VERSION`, one line, the only place to bump. **A local video lane's variants are its published CANVASES** — each variant carries its own `aspect_ratio`, built from the lane's `canvases` list rather than the cross product of its two parameter enums (see *What 0.2.57 changes* below) |
-| Declared Studio Hub | **0.6.81** — `adapters.studio_hub.SUPPORTED_STUDIO_HUB_VERSION`, published on `/health`; a controller on another version is reported, never refused. Set on 2026-09-27 from a **running** Hub (`/api/version` → `0.6.81` build `3d8ce32`), not a changelog; 0.6.81 is the release that publishes `lane_contract.canvases`, which this gateway reads. Controllers older than that still publish — the cross-product fallback in `_video_row` covers them. 0.6.76 declared the same day from `0.6.76` build `1c0297b`; the video lane is why a controller older than 0.6.76 serves no `video` worker `[MEASURED]` |
+| Current release | **0.2.60** — `repository/VERSION`, one line, the only place to bump. **A local video lane's switches are published and forwarded** — the lane's boolean parameters are relayed as `controls` on the video row, and a caller's value reaches the Hub's item body (see *What 0.2.60 changes* below) |
+| Declared Studio Hub | **0.6.83** — `adapters.studio_hub.SUPPORTED_STUDIO_HUB_VERSION`, published on `/health`; a controller on another version is reported, never refused. Set on 2026-09-27 from a **running** Hub (`/api/version` → `0.6.83` build `f072f17`), not a changelog; 0.6.83 is the release whose video lane publishes the `audio` switch this gateway relays `[MEASURED]`. 0.6.81 was declared earlier the same day from `0.6.81` build `3d8ce32` — that one publishes `lane_contract.canvases`. Controllers older than both still publish, through the cross-product fallback in `_video_row`, and a lane that publishes no switch simply carries no `controls` key |
 | Branch | `main` = `origin/main`, clean tree; remote `github.com/theng12/gateway-kh` |
 | Running build | `/Applications/gateway-kh.app`, port **8787**, stamp `29b61b2-202609261652` — measured on `/health` after quitting the app, killing the surviving gateway process by **PID** (`pgrep -f "uvicorn gateway.api:app"`) and reopening the app; the app's `Info.plist` carries the same stamp, so **Check Gateway** agrees. **The stale-gateway trap is real and was hit again:** quitting the app left the old gateway process serving 8787 (pid 12074, build `f738324-…`), and only an explicit kill by PID followed by a relaunch produced the new stamp. `pkill -f` remains forbidden `[MEASURED 2026-09-26]` |
-| Distribution | DMG in `repository/dist/` (`gateway-kh-0.2.56.dmg`), named by version alone; the previous ones moved to `_trash/dist/` |
+| Distribution | DMG in `repository/dist/`, named by version alone; the previous ones moved to `_trash/dist/` |
 | SSD/setup kit | `repository/dist/setup-kit/`, **pinned to GatewayKH 0.2.44** and refreshed onto all four `KH-STUDIO-*` drives on **2026-09-26**, `shasum -a 256 -c` OK on every one. The drives also carry `Studio Hub.app` **0.6.70**. Superseded kits are in each drive's `_trash/superseded-kit-2026-09-26/` (`GatewayKH-0.2.27`, `GatewayKH-0.2.43`) |
+
+## What 0.2.60 changes — the lane's switch reaches the caller, and the caller's choice reaches the lane
+
+**The owner asked for one thing and it needed both halves:** *"for the video generations … can that
+be a button to select/deselect? also make it available in story studio too as an option."* Studio Hub
+0.6.83 gave its LTX lane an `audio` switch and published it on `lane_contract.parameters`; Story
+Studio reads the catalogue **through this gateway**, so a switch this gateway does not publish is a
+switch Story Studio cannot offer, and a value this gateway does not forward is a switch that changes
+nothing. Both halves are here.
+
+**Published: `controls` on a local video row.** `catalog._local_video_controls` relays the lane's
+**boolean** parameters — name, type, `default`, and the lane's own `note` — and nothing else. The
+rest of a lane's parameter list is the vocabulary the row already states better (`modes`,
+`aspect_ratios`, `variants`), and restating it would be a second copy free to disagree with the
+variants a caller is billed for. Measured live against the running Hub 0.6.83 `[MEASURED]`:
+
+```json
+[{"name": "audio", "type": "boolean", "required": false, "default": true,
+  "note": "the model generates picture and sound together, so this does not change generation
+           time; unticking it skips the audio decode and writes a silent MP4. The track can be
+           added back in an editor."}]
+```
+
+**The note is why relaying matters.** The lane, not this gateway, knows that unticking `audio` skips
+a *decode* rather than a denoise step; a caller that renders the switch without that sentence implies
+a saving the lane does not make. It travels verbatim and is shown verbatim.
+
+**Forwarded: `audio` in `_HUB_VIDEO_PARAMS`.** The Hub reads `params.audio` on a video item. Only
+what the caller set travels — the loop's `is not None` test — so an unstated choice leaves the lane's
+own default in force rather than letting this gateway decide it. `false` is the value that must
+survive, which is why the wire test asserts a *silent* request specifically.
+
+**Three states kept distinct, deliberately:** a switch (relayed), a lane that publishes none (no
+`controls` key at all — not an empty list), and an entry this gateway cannot read (dropped alone,
+with a `null` default rather than a coerced one). A model withheld over an unreadable extra field
+would lose a working picker row to a decoration.
+
+**Not in this release:** Story Studio's half — the switch in Motion Review, the request field, and
+the idempotency digest that has to include it — lands in its own cycle (1.4.231).
 
 ## What 0.2.59 changes — WIRE-3: the fields Story read that nothing published
 
