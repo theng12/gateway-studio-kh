@@ -1321,6 +1321,7 @@ def locations() -> list[dict]:
 
     configured = _read()
     if not configured:
+        _attach_admission(rows)
         return rows
 
     # Controllers are probed **concurrently**. Sequentially, the owner's "at
@@ -1345,7 +1346,65 @@ def locations() -> list[dict]:
             "provider_id": provider_id_for(str(row.get("id") or "")),
         })
         rows.append(result)
+    _attach_admission(rows)
     return rows
+
+
+def _attach_admission(rows: list[dict]) -> None:
+    """Give every location the number admission will actually use, per lane.
+
+    **A1's live receipt.** The Hub's own `available_worker_slots` and the budget this
+    gateway computes from it are two different numbers — `min(free + in_flight, total)`,
+    then `min` with the operator's cap — and a reader who can only see the first cannot
+    tell a site running at half its Macs from one that is genuinely full. Publishing both,
+    side by side, is what makes the arithmetic checkable from outside the process.
+
+    The in-flight count comes from the live worker when there is one. A snapshot taken
+    with no worker (a unit test, a script) publishes the same budget with `in_flight: 0`
+    and says so, rather than implying the site is idle.
+    """
+    try:
+        from . import concurrency
+    except Exception:  # noqa: BLE001 - a budget is not worth failing a fleet read over
+        return
+    live_worker = None
+    try:
+        from .runtime import worker as live_worker  # noqa: PLC0415 - cycle, by design
+    except Exception:  # noqa: BLE001
+        live_worker = None
+    for row in rows:
+        provider_id = str(row.get("provider_id") or "")
+        reachable = row.get("reachable") is not False
+        lanes: dict[str, dict] = {}
+        for modality, operation in HUB_OPERATION_BY_MODALITY.items():
+            reading = concurrency.hub_slot_reading(row, operation)
+            free = reading.get("free")
+            if free is None and not reading.get("unstated"):
+                free = reading.get("ceiling")
+            in_flight = 0
+            if live_worker is not None:
+                try:
+                    in_flight = live_worker._site_lane_in_flight(provider_id, modality)
+                except Exception:  # noqa: BLE001
+                    in_flight = 0
+            budget = concurrency.hub_budget(
+                free,
+                operation=operation,
+                stated=concurrency.stated_provider_limit(provider_id),
+                in_flight=in_flight,
+                ceiling=reading.get("ceiling"),
+                reachable=reachable,
+            )
+            entry = budget.as_dict()
+            entry.update({
+                "operation": operation,
+                "hub_free": reading.get("free"),
+                "hub_total": reading.get("ceiling"),
+                "hub_unit": reading.get("unit"),
+                "in_flight": in_flight,
+            })
+            lanes[modality] = entry
+        row["admission"] = {"lanes": lanes}
 
 
 #: How many controllers are contacted at once. Bounded so a fleet of hundreds
@@ -2077,13 +2136,24 @@ def usable_location_ids() -> set[str]:
 #: `OPERATION_BY_MODALITY` table (`components/hub/backend/capabilities.py`). Used
 #: only as the middle fallback, when a location publishes capacity per operation but
 #: no per-model supply row.
-_HUB_OPERATION_BY_MODALITY = {
+#:
+#: **One table, and now one copy.** It existed twice — here, and in `worker.py` for
+#: admission's lookup — and the two had already drifted: this copy was missing `chat`,
+#: so routing fell through to the site-wide total for a chat job while admission read
+#: `chat.completion`. Admission and routing now compare the same field of the same
+#: operation, which is the whole point of A1, so a second copy is a defect waiting to
+#: reappear. `worker` imports this name.
+HUB_OPERATION_BY_MODALITY = {
+    "chat": "chat.completion",
     "image": "image.text_to_image",
     "music": "music.generation",
     "tts": "voice.tts",
     "transcription": "audio.transcription",
     "video": "video.generation",
 }
+
+#: The old private name, kept so a reader following a stale note still lands here.
+_HUB_OPERATION_BY_MODALITY = HUB_OPERATION_BY_MODALITY
 
 
 def _as_optional_int(value: object) -> int | None:

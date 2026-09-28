@@ -44,14 +44,10 @@ from . import fleet
 #: where the catalogue says `chat.response`), so the translation is explicit rather
 #: than assumed — a wrong key reads as "the site said nothing" and silently falls
 #: back to one at a time.
-_HUB_OPERATION_BY_MODALITY = {
-    "chat": "chat.completion",
-    "image": "image.text_to_image",
-    "music": "music.generation",
-    "tts": "voice.tts",
-    "transcription": "audio.transcription",
-    "video": "video.generation",
-}
+#: **Imported, not restated.** This table and `fleet`'s copy had drifted — the fleet one
+#: was missing `chat` — and admission compares its operation's numbers with routing's.
+#: `fleet.HUB_OPERATION_BY_MODALITY` is the single definition.
+_HUB_OPERATION_BY_MODALITY = fleet.HUB_OPERATION_BY_MODALITY
 
 #: "Not now" rather than "not ever" — the site could not take this job *this time*.
 #: **Exactly the set the worker already re-routes on**, which is the point: if a
@@ -481,6 +477,11 @@ class Worker:
         self._budget_lock = threading.Lock()
         self._in_flight: dict[str, int] = {}
         self._lane_in_flight: dict[str, int] = {}
+        #: `(provider_id, modality) -> running count`. The provider book above is per
+        #: *site*; this one is per site-and-modality, which is the shape the Hub's own
+        #: free-slot count is published in and therefore the only one that can be
+        #: compared with it.
+        self._per_lane: dict[tuple[str, str], int] = {}
         #: The last budget resolved per provider, so the console can say what is
         #: bounding a lane and where the number came from rather than leaving a
         #: reader to guess why their fleet is idle.
@@ -500,30 +501,51 @@ class Worker:
             self._thread = None
 
     # -- admission ---------------------------------------------------------
+    def _site_lane_in_flight(self, provider_id: str, modality: str) -> int:
+        """This gateway's own running jobs at **one site in one modality**.
+
+        The provider counter was the only one admission had, and it is per *site*: a site
+        running one image job refused a chat job while a second, free Mac sat there. A
+        Mac runs one job at a time and the Hub's free count is per operation, so the two
+        numbers that are compared have to be about the same thing.
+        """
+        with self._budget_lock:
+            return self._per_lane.get((provider_id, modality), 0)
+
     def _provider_budget(self, provider_id: str, modality: str) -> concurrency.Budget:
         """What bounds one provider, from the best source that has an answer.
 
-        A Studio Hub location is bounded by **both** its own published slots and the
-        operator's number for it, and `hub_budget` takes the smaller — see there for why the
-        operator's figure is a cap and never a licence to over-schedule a site. Passing it
-        here is the whole fix: this path used to ignore the settings file entirely, so a
-        number typed against a location in the console did nothing at all.
+        A Studio Hub location is bounded by **its own published capacity** — the free
+        physical machines it reports for this operation, plus this gateway's own in-flight
+        jobs at that operation, clamped to the site's eligible total — and by the
+        operator's number, which `hub_budget` takes the smaller of. See there for the
+        arithmetic and why adding the in-flight count back is the fix rather than a
+        looseness: the Hub's free count is *already* net of the Macs this gateway is using.
+
+        The reading is `hub_slot_reading`, which prefers `available_physical_machine_slots`
+        over `available_worker_slots`. Routing already ranks by the physical count; reading
+        the service count here is how a one-Mac site was told it had two transcription
+        slots and then answered `MACHINE_BUSY`.
         """
         operation = _HUB_OPERATION_BY_MODALITY.get(modality, "")
+        ours = self._site_lane_in_flight(provider_id, modality)
         try:
             from . import fleet
 
             for row in fleet.snapshot(allow_stale=True).get("locations") or []:
                 if str(row.get("provider_id") or "") != provider_id:
                     continue
-                entry = ((row.get("capacity") or {}).get("by_operation") or {}).get(
-                    operation
-                )
-                slots = entry.get("available_worker_slots") if isinstance(entry, dict) else None
+                reading = concurrency.hub_slot_reading(row, operation)
+                free = reading.get("free")
+                if free is None and not reading.get("unstated"):
+                    free = reading.get("ceiling")
                 return concurrency.hub_budget(
-                    slots,
+                    free,
                     operation=operation or modality,
                     stated=concurrency.stated_provider_limit(provider_id),
+                    in_flight=ours,
+                    ceiling=reading.get("ceiling"),
+                    reachable=row.get("reachable") is not False,
                 )
         except Exception:  # noqa: BLE001 - an unreadable fleet is not a reason to stall
             pass
@@ -574,6 +596,10 @@ class Worker:
 
         Refusing is not failing: the job stays due and the next pass tries again,
         which is what keeps a busy provider from turning into a crash.
+
+        The provider check reads `self._per_lane` — this site's jobs **in this
+        modality** — because that is what the Hub's free-slot count describes. The
+        site-wide book is still kept, and still bounds the pool as a whole.
         """
         provider_id = str(job.get("provider_id") or "")
         modality = str(job.get("modality") or "")
@@ -584,10 +610,12 @@ class Worker:
                 return False
             if self._lane_in_flight.get(modality, 0) >= lane_budget.limit:
                 return False
-            if self._in_flight.get(provider_id, 0) >= provider_budget.limit:
+            if self._per_lane.get((provider_id, modality), 0) >= provider_budget.limit:
                 return False
             self._in_flight[provider_id] = self._in_flight.get(provider_id, 0) + 1
             self._lane_in_flight[modality] = self._lane_in_flight.get(modality, 0) + 1
+            key = (provider_id, modality)
+            self._per_lane[key] = self._per_lane.get(key, 0) + 1
             self.budgets[provider_id] = provider_budget.as_dict()
         return True
 
@@ -596,7 +624,8 @@ class Worker:
         modality = str(job.get("modality") or "")
         with self._budget_lock:
             for book, key in ((self._in_flight, provider_id),
-                              (self._lane_in_flight, modality)):
+                              (self._lane_in_flight, modality),
+                              (self._per_lane, (provider_id, modality))):
                 if book.get(key):
                     book[key] -= 1
                 if book.get(key, 0) <= 0:

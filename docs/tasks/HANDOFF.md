@@ -1,22 +1,98 @@
 # HANDOFF — gateway-kh
 
-**Read this first.** Written 2026-09-27 against **VERSION `0.2.60`**. The running build
+**Read this first.** Written 2026-09-28 against **VERSION `0.2.61`**. The running build
 stamp is on `/health` and in `/Applications/gateway-kh.app/Contents/Resources/gateway/BUILD`.
 If this file disagrees with the code, **the code wins — fix this file in the same change**.
 Every path below is inside the Git checkout `repository/` unless it says otherwise.
 `[MEASURED]` = observed in the session that wrote this; `[reason not recorded]` = the
 project does not say why, and nobody should guess.
 
+> **The fleet-hardening batch is in progress.** The work order is
+> `_orchestra/JOB-gateway-studiohub-fleet-hardening-20260928.md` (Batch A → B → C) and the
+> evidence is `_orchestra/AUDIT-gateway-studiohub-20260928.md`. **A1 has shipped** (0.2.61).
+> **A2–A8, B1–B4 and C1–C7 are still open**, and the twelve-check rehearsal in the job's §9 has
+> not been run. Do not read this file as "the fleet work is done".
+
 ## WHERE THINGS STAND
 
 | Thing | Value |
 |---|---|
-| Current release | **0.2.60** — `repository/VERSION`, one line, the only place to bump. **A local video lane's switches are published and forwarded** — the lane's boolean parameters are relayed as `controls` on the video row, and a caller's value reaches the Hub's item body (see *What 0.2.60 changes* below) |
+| Current release | **0.2.61** — `repository/VERSION`, one line, the only place to bump. **Admission is a capacity, not a second subtraction** (A1; closes audit B1, M1, M2) — a site with M Macs can run M concurrent jobs, admission reads the *physical machine* slots routing already uses, and a location that is not reachable is given no budget at all. See *What 0.2.61 changes* below |
 | Declared Studio Hub | **0.6.83** — `adapters.studio_hub.SUPPORTED_STUDIO_HUB_VERSION`, published on `/health`; a controller on another version is reported, never refused. Set on 2026-09-27 from a **running** Hub (`/api/version` → `0.6.83` build `f072f17`), not a changelog; 0.6.83 is the release whose video lane publishes the `audio` switch this gateway relays `[MEASURED]`. 0.6.81 was declared earlier the same day from `0.6.81` build `3d8ce32` — that one publishes `lane_contract.canvases`. Controllers older than both still publish, through the cross-product fallback in `_video_row`, and a lane that publishes no switch simply carries no `controls` key |
 | Branch | `main` = `origin/main`, clean tree; remote `github.com/theng12/gateway-kh` |
 | Running build | `/Applications/gateway-kh.app`, port **8787**, stamp **`7d87724-202609270548`** — the 0.2.60 commit, measured on `/health` after the rollout `[MEASURED 2026-09-27]`. **The stale-stamp trap fired again, in a new shape:** killing the gateway by PID made the app respawn it with the *new code* (it published `studio_hub.supported_version: 0.6.83`, which only 0.2.60 states) but the *old* `GATEWAY_BUILD` stamp `05c0fc5-202609261948`, because the stamp is passed by the **menubar app process** from its own `Info.plist` — and that process was still the pre-rebuild one. Only quitting the app (`osascript -e 'quit app "gateway-kh"'`), killing the last gateway by PID (`pgrep -f "uvicorn gateway.api:app"`) and reopening produced a stamp that matches the code. So: **a stamp that disagrees with the code is not proof of old code, and a respawn is not a restart** — check `studio_hub.supported_version` too. `pkill -f` remains forbidden `[MEASURED 2026-09-26]` |
 | Distribution | DMG in `repository/dist/`, named by version alone; the previous ones moved to `_trash/dist/` |
 | SSD/setup kit | `repository/dist/setup-kit/`, **pinned to GatewayKH 0.2.44** and refreshed onto all four `KH-STUDIO-*` drives on **2026-09-26**, `shasum -a 256 -c` OK on every one. The drives also carry `Studio Hub.app` **0.6.70**. Superseded kits are in each drive's `_trash/superseded-kit-2026-09-26/` (`GatewayKH-0.2.27`, `GatewayKH-0.2.43`) |
+
+## What 0.2.61 changes — admission is a capacity, not a remainder
+
+**A1 of the fleet batch, and it is the one that decides whether a 53-Mac rollout can use its
+Macs at all.** The Hub publishes, per operation, how many of its Macs are *free*
+(`available_physical_machine_slots`). Admission used that free count as its ceiling and then
+refused when this gateway's own in-flight jobs reached it — so with **M** Macs and **T** jobs
+already dispatched, admission needed `T < M − T`. **At most half of every site could ever be
+busy**, and the arithmetic got worse the busier the fleet got. It was invisible only because
+the live fleet has one reachable Mac per site.
+
+**The fix is one sum, bounded by the Hub's own total:**
+
+```python
+budget = min(free + in_flight, eligible_physical_machine_slots_total)
+budget = min(budget, stated_provider_limit)      # the operator's cap still throttles
+budget = 0                                        # when the location is not reachable
+```
+
+The Hub's free count is *already* net of the Macs this gateway is using, so adding its own
+in-flight count back puts those Macs back in the number instead of charging the site twice.
+With M=6 and four running: free=2, in_flight=4, budget=6 — the site takes two more.
+
+**The sum is only taken when the Hub states its total.** A Hub that publishes free slots and no
+eligible total cannot tell "three free of three" from "three free of thirty", so its free count
+stands as-is. That is the conservative branch, not the fix.
+
+**Two more defects in the same subtraction**, both closed here:
+
+- **M1 — worker services versus physical machines.** One Mac publishes `available_worker_slots: 2`
+  for `audio.transcription` while routing ranks it by `available_physical_machine_slots: 1`
+  `[MEASURED on this Mac, live]`. Admission believed the service count, so it scheduled two jobs
+  onto one Mac and the second came back `MACHINE_BUSY` — a live failure with 39 occurrences.
+  `concurrency.hub_slot_reading` is now the **single reader** for both admission and the console,
+  and it prefers the physical count.
+- **M2 — an offline location still got a budget of 1.** Two unreachable rows each computed 1, so
+  every pass spent a global slot and a connection timeout before failing. A location with
+  `reachable: false` now gets **0**, which is what routing already assumed.
+
+**The provider counter is now per site-and-modality.** It was per site, so a site running one
+image job refused a chat job while a second, free Mac sat there — the owner's *"distribute them
+properly"* complaint reproduced inside the fix. `Worker._per_lane` holds `(provider, modality)`
+counts; a missing reading is never read as an offline location (`reachable is not False`), because
+"no answer" is not "no work".
+
+**One table, one copy.** `HUB_OPERATION_BY_MODALITY` lived in both `fleet.py` and `worker.py`, and
+the two had drifted — the fleet copy was **missing `chat`**, so routing fell through to the
+site-wide total for a chat job while admission read `chat.completion`. Since the two numbers are
+now compared with each other, `fleet.HUB_OPERATION_BY_MODALITY` is the single definition and
+`worker` imports it.
+
+**Published, so the arithmetic is checkable from outside.** Every location row on
+`GET /admin/api/fleet` now carries:
+
+```json
+"admission": {"lanes": {"image": {"limit": 6, "source": "hub",
+  "operation": "image.text_to_image", "hub_free": 2, "hub_total": 6,
+  "hub_unit": "physical_machine", "in_flight": 4, "detail": "…"}}}
+```
+
+The Hub's own reading sits beside the number admission computed from it. A reader who can only
+see `available_worker_slots` cannot tell a site at half capacity from one that is genuinely full,
+which is exactly how this survived four audits.
+
+**Verified by:** `tests/test_worker_concurrency.py::AdmissionIsACapacityNotASecondSubtractionTest`
+— a live fake site whose free count falls as jobs start and rises as they finish, held at M=1, 3
+and 6; the M1 reading; the unreachable case; the operator's cap still binding; and the module's
+standing *"a limit of zero never stalls the queue"* property. Plus
+`tests/test_fleet_routing.py::TheFleetReadPublishesTheAdmissionBudgetTest` for the published
+receipt.
 
 ## What 0.2.60 changes — the lane's switch reaches the caller, and the caller's choice reaches the lane
 

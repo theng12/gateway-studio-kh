@@ -9,12 +9,20 @@ Three ceilings, and these tests hold each of them to a number a reader could che
   * **global** — the pool size, and the `paid_concurrency_limit` Story Studio reads;
   * **lane** — a modality cap, off by default;
   * **provider** — a cloud lane's curated limit, or a Studio Hub site's own
-    `available_worker_slots`.
+    **capacity**: its free physical machines for that operation plus this gateway's own
+    in-flight jobs there, clamped to the site's eligible total, and then `min`'d with the
+    operator's number for that location.
 
 Two properties matter more than the numbers and are tested the same way each time:
 **a limit is never exceeded**, and **a limit of zero never stalls the queue** — a
 site reporting no free slots must still get work, or a busy fleet would wedge
 behind a number that only meant "busy right now".
+
+A third arrived with the fleet work: **M Macs must accept M concurrent jobs**. The
+measured defect was the opposite — a site's free count was used as a ceiling and this
+gateway's own in-flight jobs were subtracted from it a second time, so a site could only
+ever run half its Macs. `AdmissionIsACapacityNotASecondSubtractionTest` holds M = 1, 3 and
+6 against a live fake site.
 """
 from __future__ import annotations
 
@@ -135,11 +143,16 @@ class _Harness:
         store.finish(job["id"])
 
     def __enter__(self):
+        # `locations` may be a **callable**, which is how a test models a site whose own
+        # free count moves as jobs start and finish. A static list says the same thing on
+        # every pass, which cannot distinguish a capacity from a remainder.
+        snapshot = (self.locations if callable(self.locations)
+                    else (lambda **_: {"locations": self.locations}))
         self._patches = [
             patch.object(worker_module, "execute_job", self._execute),
             # No live fleet: an empty location list makes every provider fall through
             # to its cloud budget, which is what these tests are about.
-            patch("gateway.fleet.snapshot", lambda **_: {"locations": self.locations}),
+            patch("gateway.fleet.snapshot", snapshot),
         ]
         for item in self._patches:
             item.start()
@@ -238,6 +251,131 @@ class ProviderBudgetsTest(unittest.TestCase):
         with _Harness(jobs, pool_size=2, hold=0.1, locations=locations) as h:
             self.assertTrue(h.wait_for(2), "a site with no free slots stalled the queue")
             self.assertEqual(h.tracker.provider("studio-hub-abc"), 1)
+
+
+class AdmissionIsACapacityNotASecondSubtractionTest(unittest.TestCase):
+    """**M Macs accept M concurrent jobs** — admission must not halve a site.
+
+    The Hub's `available_worker_slots` is already net of the Macs that are busy, and this
+    gateway's own dispatched jobs are exactly what makes them busy. Reading that free count
+    as the ceiling and then refusing at `in_flight >= free` needed `T < M − T`: at most
+    **half** of every site could ever run, and the arithmetic got worse the busier the fleet
+    got. The fix is to add this gateway's own in-flight count back before comparing:
+
+        budget = min(free + in_flight, eligible_total)
+
+    These run against a **live** fake site — its free count falls as jobs start and rises as
+    they finish, exactly as the Hub's does — so the numbers are the ones a real rollout
+    would produce, at M = 1, 3 and 6.
+    """
+
+    def setUp(self) -> None:
+        concurrency.reset_for_tests()
+        self.addCleanup(concurrency.reset_for_tests)
+
+    class _LiveSite:
+        """A fake controller whose free count follows the jobs actually running."""
+
+        def __init__(self, total: int, *, modality: str = "image") -> None:
+            self.total = total
+            self.modality = modality
+            self.busy = 0
+            self.operation = "image.text_to_image" if modality == "image" else "chat.completion"
+
+        def snapshot(self, **_) -> dict:
+            free = max(0, self.total - self.busy)
+            return {"locations": [{
+                "provider_id": "studio-hub-live",
+                "reachable": True,
+                "capacity": {
+                    "eligible_physical_machine_slots_total": self.total,
+                    "available_physical_machine_slots": free,
+                    "by_operation": {self.operation: {
+                        "eligible_physical_machine_slots_total": self.total,
+                        "available_physical_machine_slots": free,
+                    }},
+                },
+            }]}
+
+    def _run(self, total: int, jobs: int):
+        site = self._LiveSite(total)
+        peak = {"value": 0}
+        lock = threading.Lock()
+
+        def execute(job, store):
+            with lock:
+                site.busy += 1
+                peak["value"] = max(peak["value"], site.busy)
+            try:
+                time.sleep(0.25)
+            finally:
+                with lock:
+                    site.busy -= 1
+            store.finish(job["id"])
+
+        rows = [_job(f"job-{n}", provider="studio-hub-live") for n in range(jobs)]
+        with _Harness(rows, pool_size=jobs, hold=0.25, execute=execute,
+                      locations=site.snapshot) as h:
+            self.assertTrue(h.wait_for(jobs, timeout=20.0),
+                            f"a site of {total} Macs did not finish {jobs} jobs")
+        return peak["value"]
+
+    def test_one_mac_runs_one_job(self) -> None:
+        self.assertEqual(self._run(total=1, jobs=1), 1)
+
+    def test_three_macs_run_three_at_once(self) -> None:
+        # The old arithmetic allowed floor(3/2) = 1 here.
+        self.assertEqual(self._run(total=3, jobs=3), 3)
+
+    def test_six_macs_run_six_at_once(self) -> None:
+        self.assertEqual(self._run(total=6, jobs=6), 6)
+
+    def test_an_unreachable_location_is_given_no_budget(self) -> None:
+        # M2: an offline controller used to compute 1, so it burned a global slot and a
+        # timeout on every pass. Routing already skips it; admission now agrees.
+        budget = concurrency.hub_budget(4, operation="image.text_to_image", ceiling=4,
+                                        reachable=False)
+        self.assertEqual(budget.limit, 0)
+        self.assertIn("not reachable", budget.detail)
+
+    def test_a_free_count_with_no_total_is_left_alone(self) -> None:
+        # A Hub that publishes free slots and no eligible total cannot tell "3 of 3" from
+        # "3 of 30", so the free count stands and nothing is invented.
+        budget = concurrency.hub_budget(3, operation="image.text_to_image", in_flight=5)
+        self.assertEqual(budget.limit, 3)
+
+    def test_the_in_flight_count_is_added_back_and_clamped(self) -> None:
+        budget = concurrency.hub_budget(2, operation="image.text_to_image",
+                                        in_flight=4, ceiling=6)
+        self.assertEqual(budget.limit, 6, "2 free + 4 of ours = all 6 Macs")
+        self.assertIn("not charged twice", budget.detail)
+        over = concurrency.hub_budget(2, operation="image.text_to_image",
+                                      in_flight=9, ceiling=6)
+        self.assertEqual(over.limit, 6, "a stale reading is clamped to the site's total")
+
+    def test_busy_right_now_is_not_closed_for_ever(self) -> None:
+        # The property the module docstring demands: a zero reading must not wedge a queue.
+        budget = concurrency.hub_budget(0, operation="image.text_to_image", in_flight=0,
+                                        ceiling=4)
+        self.assertEqual(budget.limit, concurrency.DEFAULT_PROVIDER)
+
+    def test_the_physical_count_wins_over_the_worker_service_count(self) -> None:
+        # M1, measured live: one Mac published `available_worker_slots: 2` for
+        # audio.transcription, so admission scheduled two jobs onto one Mac and the second
+        # came back MACHINE_BUSY. Routing already used the physical count; now so does this.
+        row = {
+            "reachable": True,
+            "capacity": {"by_operation": {"audio.transcription": {
+                "available_worker_slots": 2,
+                "eligible_worker_service_slots_total": 2,
+                "available_physical_machine_slots": 1,
+                "eligible_physical_machine_slots_total": 1,
+            }}},
+        }
+        reading = concurrency.hub_slot_reading(row, "audio.transcription")
+        self.assertEqual(reading["unit"], "physical_machine")
+        self.assertEqual(reading["free"], 1)
+        self.assertEqual(reading["ceiling"], 1)
 
 
 class LaneBudgetsTest(unittest.TestCase):

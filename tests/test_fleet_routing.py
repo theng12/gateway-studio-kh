@@ -1027,3 +1027,58 @@ class VoicePinTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TheFleetReadPublishesTheAdmissionBudgetTest(unittest.TestCase):
+    """A1's receipt: the Hub's free count and the budget computed from it, side by side.
+
+    `available_worker_slots` alone cannot tell a site running at half its Macs from one
+    that is genuinely full — that ambiguity *was* the defect. `/admin/api/fleet` now
+    carries `admission.lanes.<modality>` with `hub_free`, `hub_total`, `in_flight` and the
+    `limit` admission will enforce, so the arithmetic is checkable from the read.
+    """
+
+    def _row(self, **overrides) -> dict:
+        row = {
+            "provider_id": "studio-hub-six",
+            "reachable": True,
+            "capacity": {"by_operation": {"image.text_to_image": {
+                "available_physical_machine_slots": 2,
+                "eligible_physical_machine_slots_total": 6,
+            }}},
+        }
+        row.update(overrides)
+        return row
+
+    def _attach(self, rows):
+        from gateway import fleet
+        fleet._attach_admission(rows)
+        return rows[0]["admission"]["lanes"]["image"]
+
+    def test_the_hub_reading_and_the_budget_are_both_published(self) -> None:
+        lane = self._attach([self._row()])
+        self.assertEqual(lane["hub_free"], 2)
+        self.assertEqual(lane["hub_total"], 6)
+        self.assertEqual(lane["hub_unit"], "physical_machine")
+        self.assertEqual(lane["operation"], "image.text_to_image")
+
+    def test_four_of_six_macs_busy_still_yields_a_budget_of_six(self) -> None:
+        # The B1 arithmetic, seen from the read: 2 free + 4 of ours = 6 Macs.
+        from gateway import fleet
+        with patch.object(fleet, "_attach_admission", fleet._attach_admission):
+            rows = [self._row()]
+            from gateway import concurrency
+            budget = concurrency.hub_budget(2, operation="image.text_to_image",
+                                            in_flight=4, ceiling=6)
+        self.assertEqual(budget.limit, 6)
+
+    def test_an_unreachable_location_publishes_a_budget_of_zero(self) -> None:
+        lane = self._attach([self._row(reachable=False)])
+        self.assertEqual(lane["limit"], 0)
+        self.assertIn("not reachable", lane["detail"])
+
+    def test_a_location_with_no_hub_reading_falls_back_and_says_so(self) -> None:
+        lane = self._attach([{"provider_id": "studio-hub-none", "reachable": True,
+                              "capacity": {}}])
+        self.assertEqual(lane["limit"], 1, "nothing stated is not zero capacity")
+        self.assertIn("did not state free slots", lane["detail"])

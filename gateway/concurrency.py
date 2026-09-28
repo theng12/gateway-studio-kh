@@ -135,6 +135,72 @@ def _positive_int(value: Any) -> int | None:
     return int(value)
 
 
+def _optional_int(value: Any) -> int | None:
+    """A stated count, **preserving a stated zero**, or `None` when nothing was said.
+
+    `_positive_int` collapses `0` into "nobody said", which is right for a *limit*
+    and wrong for a *measurement*: a site reporting `available_physical_machine_slots: 0`
+    has answered the question — every Mac it has is busy — and a reader that turns
+    that into `None` is guessing. This is the reader for the Hub's own numbers.
+    """
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, str):
+        try:
+            value = int(value.strip())
+        except ValueError:
+            return None
+    if not isinstance(value, (int, float)):
+        return None
+    if float(value) != int(value):
+        return None
+    return int(value)
+
+
+# -- the Hub's own reading --------------------------------------------------
+#: Free/ceiling field pairs on a Studio Hub's `capacity`, **physical machines first**.
+#:
+#: The Hub publishes both a *worker service* count and a *physical machine* count, and
+#: they disagree wherever one Mac runs more than one worker: live on this Mac,
+#: `audio.transcription` read `available_worker_slots: 2` on **one** Mac. Routing already
+#: ranks sites by the physical count (`fleet.routing_candidates`), so admission reading
+#: the service count instead let a site be told it had two slots and then answer
+#: `MACHINE_BUSY` for the second job. One Mac runs one job at a time; that is the number.
+_SLOT_FIELDS: tuple[tuple[str, str, str], ...] = (
+    ("physical_machine", "available_physical_machine_slots",
+     "eligible_physical_machine_slots_total"),
+    ("worker_service", "available_worker_slots", "eligible_worker_service_slots_total"),
+)
+
+
+def hub_slot_reading(row: dict, operation: str) -> dict[str, Any]:
+    """What one Studio Hub location says about one operation, in one shape.
+
+    Returns `{"unit", "scope", "free", "ceiling"}` — `free`/`ceiling` are `None` when the
+    Hub states nothing, and a stated `0` stays `0`. Physical machines win over worker
+    services; the operation's own row wins over the site-wide one; a Hub that publishes
+    neither falls back to its reachable machine count so an older build is not read as
+    "no capacity". `unstated` is true only when the Hub said nothing at all.
+    """
+    capacity = row.get("capacity") if isinstance(row.get("capacity"), dict) else {}
+    raw = (capacity.get("by_operation") or {}).get(operation) if operation else None
+    entry = raw if isinstance(raw, dict) else {}
+    for unit, free_key, total_key in _SLOT_FIELDS:
+        for scope, book in (("operation", entry), ("site", capacity)):
+            free = _optional_int(book.get(free_key))
+            ceiling = _optional_int(book.get(total_key))
+            if free is not None or ceiling is not None:
+                return {"unit": unit, "scope": scope, "free": free, "ceiling": ceiling,
+                        "unstated": False}
+    machines = row.get("machine_summary") if isinstance(row.get("machine_summary"), dict) else {}
+    reachable = _optional_int(machines.get("reachable"))
+    if reachable is not None:
+        return {"unit": "physical_machine", "scope": "machines", "free": None,
+                "ceiling": reachable, "unstated": True}
+    return {"unit": "physical_machine", "scope": "none", "free": None, "ceiling": None,
+            "unstated": True}
+
+
 # -- the settings file ------------------------------------------------------
 _settings_cache: dict[str, Any] = {"stamp": None, "value": {}}
 
@@ -298,27 +364,90 @@ def cloud_budget(provider_id: str) -> Budget:
     )
 
 
-def hub_budget(slots: Any, *, operation: str = "", stated: Any = None) -> Budget:
+def hub_budget(slots: Any, *, operation: str = "", stated: Any = None,
+               in_flight: int = 0, ceiling: Any = None,
+               reachable: bool = True) -> Budget:
     """A Studio Hub location's concurrency, from the site's own slots and your cap.
 
-    `slots` is `available_worker_slots` from that site's `capacity.by_operation` — the
-    site's own count of free workers for this operation, and the only live measurement in
-    this module. `stated` is the operator's number for this location, when they set one.
+    `slots` is the site's **free** count for this operation — `available_worker_slots` or,
+    where the Hub publishes it, `available_physical_machine_slots` (see
+    `hub_slot_reading`: the physical count is the one routing already uses). `in_flight`
+    is how many jobs this gateway currently has running at that site **for that
+    operation**. `ceiling` is the site's own eligible total for the same operation.
+    `reachable` is the site's reachability from the last fleet read.
 
-    **The smaller of the two wins, and they stay distinguishable.** The site's count is what
-    it can physically take; the operator's number is policy, and an operator must be able to
-    throttle a busy site below what it offers. The converse must not hold: a number typed
-    into a form is not licence to send a site more concurrent work than it says it has free
-    workers — that is how a queue becomes a crash, and it is why this is a `min` rather than
-    a substitution.
+    **The number this returns is a capacity, not a remainder.** It used to return the
+    site's *free* count and then refuse when this gateway's own in-flight count reached
+    it, so with **M** Macs and **T** jobs already dispatched admission needed `T < M − T`
+    — at most **half** every site could ever run, and the busier the fleet the worse it
+    got. The Hub's free count is already net of the Macs this gateway is using, so adding
+    the in-flight count back puts those Macs back in the number:
 
-    **Before this, the operator's number was not read at all on this path.** A Studio Hub row
-    in the console was editable and ignored, so a number typed for a location described
-    nothing; the page only ever showed the site's own count. Reading it as a cap is what makes
-    that control mean what it looks like it means.
+        budget = min(free + in_flight, ceiling)
+
+    With M=6, four running: free=2, in_flight=4, budget=6 — the site takes two more, which
+    is the truth, and the same arithmetic holds at M=1 and M=3.
+
+    **Why `ceiling` at all.** `free + in_flight` can only exceed the site's real total
+    when the two readings disagree — a job the Hub finished but this gateway has not
+    released yet, or a stale cached snapshot. Clamping to the Hub's own eligible total
+    keeps a stale reading from becoming a licence to over-schedule, **and the sum is only
+    taken at all when that total is stated**: a Hub that publishes free slots and no
+    eligible total cannot distinguish "three free of three" from "three free of thirty",
+    so its free count is used as-is.
+
+    **A site that is not reachable has no budget**, and returns `0`: admission then agrees
+    with routing, which already skips it. Before this it computed `1` from an offline row,
+    so an unreachable controller burned a global slot and a timeout on every pass.
+
+    **A stated zero never becomes a permanent wall.** `free == 0` with `in_flight == 0`
+    means the site is busy *right now*, and `_positive_int` reads it as "no usable
+    reading" — the site falls through to the operator's cap or the default of one. A busy
+    fleet must not wedge behind a number that only meant "busy".
+
+    **The smaller of the site and the operator wins, and they stay distinguishable.** The
+    site's count is what it can physically take; the operator's number is policy, and an
+    operator must be able to throttle a busy site below what it offers. The converse must
+    not hold: a number typed into a form is not licence to send a site more concurrent
+    work than it says it has free workers — that is how a queue becomes a crash, and it is
+    why this is a `min` rather than a substitution.
     """
-    site = _positive_int(slots)
+    if not reachable:
+        return Budget(
+            limit=0,
+            source=SOURCE_HUB,
+            detail=("the site is not reachable, so this gateway claims no admission "
+                    "budget for it; routing skips it for the same reason"),
+        )
+    free = _optional_int(slots)
+    free = max(0, free) if free is not None else None
+    ours = max(0, _optional_int(in_flight) or 0)
+    total = _positive_int(ceiling)
+    # **The in-flight count is only added back when the site states its own total.** That
+    # total is what makes the sum safe: `free + ours` can only be trusted while it is
+    # bounded by something the site itself published. A Hub that states free slots and no
+    # eligible total cannot distinguish "three free of three" from "three free of thirty",
+    # so its free count is used as-is — the old behaviour, which is conservative rather
+    # than wrong.
+    live = None if free is None else (free + ours if total is not None else free)
+    clamped = ""
+    if live is not None and total is not None and live > total:
+        # Unreachable while `ours <= busy`, and reachable exactly when the two readings
+        # disagree — a job the Hub finished but this gateway has not released, or a stale
+        # snapshot. Clamped rather than trusted.
+        clamped = (f" The site's own total is {total}, so that is the ceiling: a stale "
+                   f"reading is not licence to over-schedule it.")
+        live = min(live, total)
+    if live is not None and live <= 0:
+        # "Every Mac is busy right now" is not "this site is closed for ever".
+        live = None
+    site = live
     cap = _positive_int(stated)
+    how = ""
+    if ours and total is not None:
+        how = (f" {ours} of those are already this gateway's own jobs, added back because "
+               f"the site's free count is net of them — a site is not charged twice for "
+               f"the Macs it is already running work on.")
     if site is None and cap is None:
         return Budget(
             limit=DEFAULT_PROVIDER,
@@ -347,6 +476,7 @@ def hub_budget(slots: Any, *, operation: str = "", stated: Any = None) -> Budget
             detail=(
                 f"the site reports {site} available worker slot"
                 f"{'' if site == 1 else 's'}" + (f" for {operation}" if operation else "")
+                + "." + how + clamped
             ),
         )
     limit = min(site, cap)
@@ -354,7 +484,8 @@ def hub_budget(slots: Any, *, operation: str = "", stated: Any = None) -> Budget
     return Budget(
         limit=limit,
         source=SOURCE_CURATED if cap <= site else SOURCE_HUB,
-        detail=f"the site reports {site} free and you set {cap}, so {limit} runs — {tighter}",
+        detail=(f"the site reports {site} free and you set {cap}, so {limit} runs — "
+                f"{tighter}." + how + clamped),
     )
 
 
@@ -389,10 +520,16 @@ def _hub_operation_slots(provider_id: str) -> dict[str, int] | None:
                 continue
             by_operation = (row.get("capacity") or {}).get("by_operation") or {}
             slots: dict[str, int] = {}
-            for operation, entry in by_operation.items():
-                if not isinstance(entry, dict):
-                    continue
-                stated = _positive_int(entry.get("available_worker_slots"))
+            for operation in by_operation:
+                # **The same reader admission uses**, so the console cannot describe a
+                # different number from the one that bounds dispatch: physical machines
+                # before worker services (M1 — they disagreed 2:1 for transcription on
+                # one Mac, and the service count won one job too many).
+                reading = hub_slot_reading(row, str(operation))
+                stated = reading.get("free")
+                if stated is None:
+                    stated = reading.get("ceiling")
+                stated = _positive_int(stated)
                 if stated is not None:
                     slots[str(operation)] = stated
             return slots or None
