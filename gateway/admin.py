@@ -2167,6 +2167,45 @@ def fleet_add_controller(payload: dict[str, Any]) -> Any:
     }
 
 
+@router.put("/api/fleet/controllers/{controller_id}/address", dependencies=[Depends(require_admin)])
+def fleet_replace_address(controller_id: str, payload: dict[str, Any]) -> Any:
+    """**Re-point a location at a new address, keeping its identity and its decisions.**
+
+    A3 step 4, and the difference from remove-then-add is the whole reason it exists: when a
+    controller is replaced by promoting one of its nodes, the new head has a different address and
+    a different controller id, so adding it makes a *second* location and orphans the first one's
+    credential and every per-model enable decision. A rehearsal measured it — after a handover the
+    replacement row published `model_id: null` and `locations_enabled: null`, because it had
+    inherited nothing.
+
+    The row id, and therefore the provider id Story's presets and the operator's ticks are keyed on,
+    is preserved. The **site id is cleared**: it named the identity of the Mac that used to answer
+    here, and carrying it to a different Mac is the shared-identity defect `_stable_identity`
+    exists to prevent. The next probe fills in the new one.
+    """
+    try:
+        row = fleet.replace_address(controller_id, str(payload.get("url") or ""),
+                                    str(payload.get("token") or ""))
+    except ValueError as exc:
+        return _error(400, str(exc))
+    if row is None:
+        return _error(404, "No such controller.")
+    # The models must be re-read: a different Mac may offer a different set, and the per-model
+    # enable decisions this action exists to preserve only mean something against what it offers.
+    discovered: int | None = None
+    discovery_error: str | None = None
+    try:
+        discovered = len(registry.refresh(fleet.provider_id_for(controller_id)).models)
+    except Exception as exc:  # noqa: BLE001 - re-pointing is the job here
+        discovery_error = str(exc)[:300]
+    return {
+        "controller": row,
+        "discovered": discovered,
+        "discovery_error": discovery_error,
+        "controllers": fleet.controllers(),
+    }
+
+
 @router.put("/api/fleet/controllers/{controller_id}/credential", dependencies=[Depends(require_admin)])
 def fleet_set_credential(controller_id: str, payload: dict[str, Any]) -> Any:
     """Replace a location's credential without touching anything else."""

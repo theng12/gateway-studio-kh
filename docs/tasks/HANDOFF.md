@@ -1,6 +1,6 @@
 # HANDOFF — gateway-kh
 
-**Read this first.** Written 2026-09-28 against **VERSION `0.2.63`**. The running build
+**Read this first.** Written 2026-09-28 against **VERSION `0.2.64`**. The running build
 stamp is on `/health` and in `/Applications/gateway-kh.app/Contents/Resources/gateway/BUILD`.
 If this file disagrees with the code, **the code wins — fix this file in the same change**.
 Every path below is inside the Git checkout `repository/` unless it says otherwise.
@@ -24,6 +24,44 @@ project does not say why, and nobody should guess.
 | Running build | `/Applications/gateway-kh.app`, port **8787**, stamp **`7d87724-202609270548`** — the 0.2.60 commit, measured on `/health` after the rollout `[MEASURED 2026-09-27]`. **The stale-stamp trap fired again, in a new shape:** killing the gateway by PID made the app respawn it with the *new code* (it published `studio_hub.supported_version: 0.6.83`, which only 0.2.60 states) but the *old* `GATEWAY_BUILD` stamp `05c0fc5-202609261948`, because the stamp is passed by the **menubar app process** from its own `Info.plist` — and that process was still the pre-rebuild one. Only quitting the app (`osascript -e 'quit app "gateway-kh"'`), killing the last gateway by PID (`pgrep -f "uvicorn gateway.api:app"`) and reopening produced a stamp that matches the code. So: **a stamp that disagrees with the code is not proof of old code, and a respawn is not a restart** — check `studio_hub.supported_version` too. `pkill -f` remains forbidden `[MEASURED 2026-09-26]` |
 | Distribution | DMG in `repository/dist/`, named by version alone; the previous ones moved to `_trash/dist/` |
 | SSD/setup kit | `repository/dist/setup-kit/`, **pinned to GatewayKH 0.2.44** and refreshed onto all four `KH-STUDIO-*` drives on **2026-09-26**, `shasum -a 256 -c` OK on every one. The drives also carry `Studio Hub.app` **0.6.70**. Superseded kits are in each drive's `_trash/superseded-kit-2026-09-26/` (`GatewayKH-0.2.27`, `GatewayKH-0.2.43`) |
+
+## What 0.2.64 changes — what the rehearsal found
+
+The §9 rehearsal ran the whole fleet end to end (two and three real Hubs and an isolated Gateway)
+and four checks failed. Three were product defects; this release is their fix, plus the last audit
+item that had been left open.
+
+**A down cluster now still names its members.** The roster only ever came from the live probe, so a
+controller that was switched off published `nodes: []` and `node_summary: null` — "this house is
+offline with five Macs" and "this house has no Macs" read the same, which is exactly the
+distinction the owner needs when a site loses power. The Gateway now remembers the last roster a
+controller published (in-process; a display of what we last knew, not a second source of truth) and
+publishes it **only** while that location is not answering, with `members_from` and
+`members_stale_seconds` so a stale count is never mistaken for a live one. Nothing is invented for
+a site never seen up, and an empty roster never overwrites a real one.
+
+**A location can be re-pointed at a promoted controller, keeping its identity and its decisions.**
+`PUT /admin/api/fleet/controllers/{id}/address` (audit A3 step 4). Adding the new head created a
+**second** location — a promoted Mac has a different address *and* a different controller id — so
+the first one's credential and every per-model enable decision were orphaned; the rehearsal measured
+the replacement row publishing `model_id: null`, `locations_enabled: null`. The row id, and
+therefore the provider id Story's presets and the operator's ticks are keyed on, is preserved. The
+**site id is cleared rather than carried**, because it named the identity of the Mac that used to
+answer there and reusing it for a different Mac is the shared-identity defect `_stable_identity`
+exists to prevent.
+
+**`H13` — the Gateway no longer sends a Fleet token to a public address.** `_validate_address`
+accepted any `http(s)` host, so a mistyped or pasted public hostname received a location's Fleet
+token in `X-Hub-Token` on the very next probe. A controller answers on the owner's own network —
+loopback, LAN, link-local, or CGNAT (which is Tailscale) — and a **hostname** is accepted only if
+every address it resolves to is private, so MagicDNS names keep working while a name that resolves
+publicly is refused by name. Resolution happens once, at add or re-point time, never on the probe
+path. The owner's live roster is Tailscale literals, so nothing of his changes.
+
+**`/health` publishes the capacity Story is offered.** `paid_concurrency_limit` and
+`concurrency_by_modality` live on `/v1/account/overview`, which is Story's surface; the same numbers
+are now on the health read beside `concurrency_pool`, so "the fleet can do 24 while the pool says
+60" is visible without knowing which endpoint to ask.
 
 ## What 0.2.63 changes — seeing the fleet, and the correctness underneath it
 

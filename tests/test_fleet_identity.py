@@ -41,10 +41,10 @@ class AddControllerTests(unittest.TestCase):
         self.rows: list[dict] = []
         self.tokens: dict[str, str] = {}
         self.responses = {
-            "http://a:47873": {
+            "http://10.0.0.1:47873": {
                 "reachable": True, "site_id": "local-site", "controller_id": "alpha-hub",
             },
-            "http://b:47873": {
+            "http://10.0.0.2:47873": {
                 "reachable": True, "site_id": "local-site", "controller_id": "beta-hub",
             },
         }
@@ -65,14 +65,14 @@ class AddControllerTests(unittest.TestCase):
     def test_two_hubs_with_the_default_site_id_stay_two_locations(self) -> None:
         # Before the fix the second add matched the first row's `local-site` and
         # replaced it, so the roster never grew past one.
-        fleet.add_controller("A", "http://a:47873", "tok")
-        fleet.add_controller("B", "http://b:47873", "tok")
+        fleet.add_controller("A", "http://10.0.0.1:47873", "tok")
+        fleet.add_controller("B", "http://10.0.0.2:47873", "tok")
         self.assertEqual(len(self.rows), 2, self.rows)
         self.assertEqual({row["site_id"] for row in self.rows}, {"alpha-hub", "beta-hub"})
 
     def test_re_adding_the_same_controller_updates_it(self) -> None:
-        fleet.add_controller("A", "http://a:47873", "tok")
-        fleet.add_controller("A renamed", "http://a:47873", "tok2")
+        fleet.add_controller("A", "http://10.0.0.1:47873", "tok")
+        fleet.add_controller("A renamed", "http://10.0.0.1:47873", "tok2")
         self.assertEqual(len(self.rows), 1)
         self.assertEqual(self.rows[0]["label"], "A renamed")
 

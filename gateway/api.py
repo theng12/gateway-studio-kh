@@ -932,6 +932,14 @@ def health() -> dict[str, Any]:
         # after that raise sat in `accepted` for ever and the only signal was an absence. A stale
         # `last_pass_at` is the number that says so.
         "worker": worker.liveness(),
+        # **The capacity Story is offered, on the endpoint an operator checks first.**
+        # `paid_concurrency_limit` lives on `/v1/account/overview`, which is Story's surface; this
+        # is the same number on the health read, beside the pool it is *not*, so "the fleet can do
+        # 24 while the pool says 60" is visible without knowing which endpoint to ask (D, H7).
+        "concurrency": {
+            **admission(),
+            "in_flight": worker.active(),
+        },
         # **The Studio Hub release this build targets.** Studio Hub moves on its
         # own schedule and auto-updates itself, so the pairing is declared rather
         # than assumed; the number is here so a rollout can assert it and the kit

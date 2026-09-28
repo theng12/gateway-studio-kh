@@ -463,7 +463,66 @@ def _validate_address(url: str) -> str:
             raise ValueError(f"'{port}' is not a valid port.")
     if not parsed.hostname:
         raise ValueError("That address has no host in it.")
+    _require_private_host(parsed.hostname, parsed.port)
     return candidate.rstrip("/")
+
+
+#: Address ranges a controller may answer on. **A Fleet token goes to whatever is typed here**,
+#: and the token is a real allowlist — it can submit work to a controller and read its results.
+def _is_private_address(address: Any) -> bool:
+    import ipaddress
+
+    return bool(
+        address.is_loopback or address.is_private or address.is_link_local
+        or address in ipaddress.ip_network("100.64.0.0/10")  # CGNAT, which is Tailscale
+    )
+
+
+def _require_private_host(host: str, port: int | None) -> None:
+    """Refuse to send a credential to a public host (audit H13).
+
+    The Hub has refused a non-private *node* address for exactly this reason since it gained a
+    fleet (`fleet_nodes.validate_address`); the Gateway did not, so a mistyped or pasted public
+    hostname received a location's Fleet token in `X-Hub-Token` on the very next probe. A
+    controller is on the owner's own network — a Tailscale address, a LAN address, or this Mac —
+    and nothing else is a location.
+
+    **A hostname is allowed if, and only if, every address it resolves to is private.** Tailscale's
+    MagicDNS names (`mac.tailnet.ts.net`) are the reason: the owner's live roster uses Tailscale
+    *literals* (`100.76.125.18`), but a name is a reasonable thing to type and refusing all names
+    would break a working setup. Resolution happens once, at add/re-point time — never on the probe
+    path — and a name that resolves to nothing is refused rather than accepted on faith.
+    """
+    import ipaddress
+    import socket
+
+    text = str(host or "").strip().strip("[]")
+    try:
+        literal = ipaddress.ip_address(text)
+    except ValueError:
+        literal = None
+    if literal is not None:
+        if not _is_private_address(literal):
+            raise ValueError(
+                f"{text} is a public address. A controller answers on your own network — a "
+                f"Tailscale address, a LAN address, or this Mac — because a Fleet token is sent "
+                f"to it.")
+        return
+    try:
+        resolved = socket.getaddrinfo(text, port or 0, proto=socket.IPPROTO_TCP)
+    except OSError as exc:
+        raise ValueError(
+            f"'{text}' could not be resolved ({type(exc).__name__}), so it is not a controller "
+            f"this gateway can reach.") from exc
+    addresses = {info[4][0] for info in resolved}
+    if not addresses:
+        raise ValueError(f"'{text}' resolved to no addresses.")
+    public = sorted(a for a in addresses if not _is_private_address(ipaddress.ip_address(a)))
+    if public:
+        raise ValueError(
+            f"'{text}' resolves to {', '.join(public)}, which is public. A controller answers on "
+            f"your own network — a Tailscale address, a LAN address, or this Mac — because a "
+            f"Fleet token is sent to it.")
 
 
 #: Studio Hub's default `site_id` for a Hub that was never assigned one
@@ -700,6 +759,41 @@ def remove_controller(controller_id: str) -> bool:
     return True
 
 
+def replace_address(controller_id: str, url: str, token: str) -> dict | None:
+    """Point an existing location at a new address, **keeping its identity and its decisions**.
+
+    A3 step 4. When a controller is replaced by promoting one of its own nodes, the new head has a
+    different address *and* a different controller id — so adding it creates a **second** location
+    and orphans the first one's credential and every per-model enable decision with it. A
+    rehearsal measured exactly that: after the handover the replacement row's `model_id` was null
+    and `locations_enabled` was null, because it was a new row that had inherited nothing.
+
+    This is deliberately not `add_controller` with a hint. Adding and re-pointing answer different
+    questions, and the difference is the whole point: **adding** discovers what a controller offers,
+    **re-pointing** says "the Mac that was here is now there". The row id is kept on purpose — it
+    is the provider id Story's saved presets and the operator's enable decisions are keyed on.
+    """
+    url = _validate_address(url)
+    clean_token = (token or "").strip()
+    rows = _read()
+    row = next((r for r in rows if str(r.get("id")) == str(controller_id)), None)
+    if row is None:
+        return None
+    previous_url = str(row.get("url") or "")
+    row["url"] = url
+    # **The site id is cleared, not guessed.** It named the *old* controller's identity, and the
+    # Mac now answering is a different one; keeping it would make two Macs share an identity —
+    # the defect `_stable_identity` exists to prevent. The next probe fills in the new one.
+    row.pop("site_id", None)
+    row["repointed_at"] = time.time()
+    row["repointed_from"] = previous_url or None
+    _write(rows)
+    if clean_token:
+        _set_token(str(controller_id), clean_token)
+    invalidate()
+    return _masked(row)
+
+
 def rename_controller(controller_id: str, label: str) -> dict | None:
     """Give a location a new name; `None` when there is no such location.
 
@@ -831,6 +925,48 @@ def _hub_version_relation(version: object) -> str | None:
     from .adapters.studio_hub import hub_version_relation
 
     return hub_version_relation(version)
+
+
+#: The last roster a controller published, per location: `(at, nodes, node_summary)`.
+#:
+#: **A cluster that is down still has members.** Check 10 of the fleet rehearsal: take one
+#: controller's Hub down and the Gateway correctly routes elsewhere and keeps the model — but its
+#: Fleet page showed *nothing* about that site's Macs, because the roster only ever came from the
+#: live probe. "This house is offline" and "this house has no Macs" then read the same, which is
+#: exactly the distinction the owner needs when a site loses power. In-process on purpose: it is a
+#: display of what we last knew, not a durable record, and it disappears with the process rather
+#: than becoming a second source of truth about a machine.
+_last_members: dict[str, tuple[float, list[dict], dict]] = {}
+_MEMBERS_STALE_AFTER_S = 120.0
+
+
+def _remember_members(controller_id: str, nodes: Any, summary: Any) -> None:
+    """Keep the last non-empty roster a controller published."""
+    if not isinstance(nodes, list) or not nodes:
+        return
+    _last_members[str(controller_id)] = (
+        time.time(), [dict(row) for row in nodes if isinstance(row, dict)],
+        dict(summary) if isinstance(summary, dict) else {},
+    )
+
+
+def _last_known_members(controller_id: str) -> dict:
+    """What this Gateway last knew about a location's members, and when.
+
+    Published **only** when the location is not answering, and clearly labelled: `members_from` is
+    the timestamp of the last successful read and `members_stale_seconds` its age, so a stale count
+    is never mistaken for a live one. A live read replaces it and the keys disappear.
+    """
+    remembered = _last_members.get(str(controller_id))
+    if not remembered:
+        return {}
+    at, nodes, summary = remembered
+    return {
+        "nodes": nodes,
+        "node_summary": summary,
+        "members_from": at,
+        "members_stale_seconds": max(0.0, time.time() - at),
+    }
 
 
 def _probe(base: str, token: str, *, timeout: float = _TIMEOUT) -> dict:
@@ -1037,6 +1173,13 @@ def _probe(base: str, token: str, *, timeout: float = _TIMEOUT) -> dict:
         "probe_machines_hidden": hidden,
         "nodes": node_rows,
         "node_summary": nodes.get("summary") or {},
+        # **A live roster is remembered, so a later outage can still say who is there.**
+        # Check 10: a cluster that loses power must read as *down with N members*, not as empty.
+        # The keys published beside a live read (`members_from`, `members_stale_seconds`) appear
+        # only when the location is not answering, so a stale count is never mistaken for a live
+        # one and a live read carries no staleness at all.
+        "members_from": None,
+        "members_stale_seconds": None,
         "running_jobs": _running_jobs(jobs.get("batches") or []),
         "activity": {
             "pulse": activity.get("pulse") or {},
@@ -1426,6 +1569,15 @@ def locations() -> list[dict]:
         ))
 
     for row, result in zip(configured, probed):
+        controller_id = str(row.get("id") or "")
+        if result.get("reachable"):
+            # Remember what a live controller said about its members, so a later outage can still
+            # name them (check 10 — a powered-down house must not look like an empty one).
+            _remember_members(controller_id, result.get("nodes"), result.get("node_summary"))
+        else:
+            last_known = _last_known_members(controller_id)
+            if last_known:
+                result.update(last_known)
         result.update({
             "id": row.get("id"),
             "label": row.get("label") or row["url"],
