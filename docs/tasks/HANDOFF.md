@@ -18,10 +18,10 @@ project does not say why, and nobody should guess.
 
 | Thing | Value |
 |---|---|
-| Current release | **0.2.63** — `repository/VERSION`, one line, the only place to bump. **Fleet visibility and correctness:** the Fleet page shows **members** and a node marker (B1), the console has a **Queue** view with a real position for every waiting job (B3), capacity is **derived live** from the fleet and published to Story (C3/D), a job that provably never left this process is re-queued after a restart instead of becoming a hold (C2/M5), the queue is **bounded and enforced**, `due()` is ordered by arrival (C1/M3), merged rows take the **smallest** published ceiling (C4/M10), and the Hub's own `dependency` verdict withholds a tokenizer without a second HTTP call (C5/M13). See *What 0.2.63 changes* below |
-| Declared Studio Hub | **0.6.83** — `adapters.studio_hub.SUPPORTED_STUDIO_HUB_VERSION`, published on `/health`; a controller on another version is reported, never refused. Set on 2026-09-27 from a **running** Hub (`/api/version` → `0.6.83` build `f072f17`), not a changelog; 0.6.83 is the release whose video lane publishes the `audio` switch this gateway relays `[MEASURED]`. 0.6.81 was declared earlier the same day from `0.6.81` build `3d8ce32` — that one publishes `lane_contract.canvases`. Controllers older than both still publish, through the cross-product fallback in `_video_row`, and a lane that publishes no switch simply carries no `controls` key |
+| Current release | **0.2.67** — `repository/VERSION`, one line, the only place to bump. **This row read `0.2.63` for four releases while the header three lines above said the file was written against `0.2.67`** — a handoff contradicting itself in its own table. What 0.2.64–0.2.67 add: the rehearsal's four findings (id spelling, handover, re-point), the What's New **page above Settings**, and the four owner answers that had not been built — Q7 a controller unreachable for 7 days is **paused, never removed**; Q8 an unknown-outcome hold **auto-closes when the Hub's record settles** (404 → the work never existed → **requeue**); Q6 the video lane's deadline on the queue view; C3 `provider_submit_concurrency` **deleted** because nothing read it. See the dated sections below |
+| Declared Studio Hub | **0.6.83** — `adapters.studio_hub.SUPPORTED_STUDIO_HUB_VERSION`, published on `/health`; a controller on another version is reported, never refused. Set on 2026-09-27 from a **running** Hub (`/api/version` → `0.6.83` build `f072f17`), not a changelog; 0.6.83 is the release whose video lane publishes the `audio` switch this gateway relays `[MEASURED]`. 0.6.81 was declared earlier the same day from `0.6.81` build `3d8ce32` — that one publishes `lane_contract.canvases`. Controllers older than both still publish, through the cross-product fallback in `_video_row`, and a lane that publishes no switch simply carries no `controls` key. **Note for the 0.6.97 Hub: this declaration is a floor, not a match.** The Hub has moved 0.6.83 → **0.6.97** and every route the gateway reads is still answered; a mismatch here is reported, not refused, which is the design |
 | Branch | `main` = `origin/main`, clean tree; remote `github.com/theng12/gateway-kh` |
-| Running build | `/Applications/gateway-kh.app`, port **8787**, stamp **`7d87724-202609270548`** — the 0.2.60 commit, measured on `/health` after the rollout `[MEASURED 2026-09-27]`. **The stale-stamp trap fired again, in a new shape:** killing the gateway by PID made the app respawn it with the *new code* (it published `studio_hub.supported_version: 0.6.83`, which only 0.2.60 states) but the *old* `GATEWAY_BUILD` stamp `05c0fc5-202609261948`, because the stamp is passed by the **menubar app process** from its own `Info.plist` — and that process was still the pre-rebuild one. Only quitting the app (`osascript -e 'quit app "gateway-kh"'`), killing the last gateway by PID (`pgrep -f "uvicorn gateway.api:app"`) and reopening produced a stamp that matches the code. So: **a stamp that disagrees with the code is not proof of old code, and a respawn is not a restart** — check `studio_hub.supported_version` too. `pkill -f` remains forbidden `[MEASURED 2026-09-26]` |
+| Running build | `/Applications/gateway-kh.app`, port **8787**, pid **90800**, stamp **`01c5992-202609280823`** — the 0.2.67 commit, measured on `/health` `[MEASURED 2026-09-28]`. Publishing **23 providers / 22 enabled**, 1824 models of which **91 publishable and 19 withheld**, and **10 video rows** — including `studio-hub::baa-ai/LTX-2.3-22B-RAM-12GB-MLX`, the owner's own local video lane, `available: true` with no activation blockers. (`jobs_processed: 0` — a restarted process, not a broken worker: `worker_alive: true`, `consecutive_failures: 0`.) **The stale-stamp trap, recorded so it is not rediscovered:** killing the gateway by PID made the app respawn it with the *new code* but the *old* `GATEWAY_BUILD` stamp, because the stamp is passed by the **menubar app process** from its own `Info.plist` and that process was still the pre-rebuild one. Only quitting the app (`osascript -e 'quit app "gateway-kh"'`), killing the last gateway by PID (`pgrep -f "uvicorn gateway.api:app"`) and reopening produced a stamp that matches the code. So: **a stamp that disagrees with the code is not proof of old code, and a respawn is not a restart.** `pkill -f` remains forbidden `[MEASURED 2026-09-26]` |
 | Distribution | DMG in `repository/dist/`, named by version alone; the previous ones moved to `_trash/dist/` |
 | SSD/setup kit | `repository/dist/setup-kit/`, **pinned to GatewayKH 0.2.44** and refreshed onto all four `KH-STUDIO-*` drives on **2026-09-26**, `shasum -a 256 -c` OK on every one. The drives also carry `Studio Hub.app` **0.6.70**. Superseded kits are in each drive's `_trash/superseded-kit-2026-09-26/` (`GatewayKH-0.2.27`, `GatewayKH-0.2.43`) |
 
@@ -59,6 +59,35 @@ ids (`studio-hub-<controller>`) while `fleet.route` compares bare controller ids
 pinned by three tests, and re-measured on the live code path (the addendum at the end of the
 receipt). The receipt is left as measured rather than rewritten: the run that failed is the evidence
 that the step earns its place.
+
+## What 0.2.68 changes — this file was contradicting itself, and two rows were four releases stale
+
+**No code change. This is the handoff corrected, and the corrections are the record.**
+
+The header, three lines above the table, said *"Written 2026-09-28 against **VERSION `0.2.67`**"* —
+while the table's own **Current release** row said **0.2.63**, and the **Running build** row
+described the **0.2.60** commit at stamp `7d87724-202609270548`. A reader who trusted the table
+would have measured this Mac against four releases ago and concluded the fleet work was unshipped.
+
+Both rows are now measured rather than remembered `[MEASURED 2026-09-28]`:
+
+- **Current release `0.2.67`**, with what 0.2.64–0.2.67 actually added, so the row stops describing
+  0.2.63 as current while the version file says otherwise.
+- **Running build `/Applications/gateway-kh.app`, port 8787, pid 90800, stamp
+  `01c5992-202609280823`** — read off `/health`, not carried forward. It publishes 23 providers (22
+  enabled), 1824 models of which **91 publishable and 19 withheld**, and **10 video rows**.
+
+**And the reason this matters beyond bookkeeping.** The same sweep checked what this gateway offers
+in the video lane, because the Studio Hub's own handoff claimed its video lane was entirely unbuilt.
+This gateway publishes **`studio-hub::baa-ai/LTX-2.3-22B-RAM-12GB-MLX`** — `modality: video`,
+`operation: video.generation`, `available: true`, `activation_blockers: []`, modes
+`image-to-video` and `text-to-video`, priced at zero — beside nine cloud video lanes. So the local
+video lane reaches Story Studio today, and **two handoffs were each describing it as missing.** The
+Hub's side is corrected there; the row here now records what this side publishes.
+
+**`jobs_processed: 0` on `/health` is a restarted process, not a stalled worker.** `worker_alive:
+true` and `consecutive_failures: 0` beside it say so. Worth stating because a reader scanning for a
+fault finds that zero first.
 
 ## What 0.2.67 changes — the four answers that had not been built
 
