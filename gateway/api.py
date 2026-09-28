@@ -1008,7 +1008,14 @@ def credit_activity(
 # ---------------------------------------------------------------------------
 @app.get("/v1/models", dependencies=[Depends(require_auth)])
 def models_registry() -> dict[str, Any]:
-    # Consumed by nothing in Story Studio's frontend; served for completeness.
+    """Every model row, across every modality, in one answer.
+
+    **This said "consumed by nothing in Story Studio's frontend; served for completeness", and
+    that was wrong** (C7, the audit's LOW list): Story does consume it, and the sentence was the
+    kind of note that stops the next reader from checking whether a change here reaches the app.
+    `freshness` beside it is the other half — `stale: true` disables every model on Story's side,
+    so the two fields travel together and neither is decorative.
+    """
     return {"models": catalog.all_rows(), "freshness": catalog.freshness()}
 
 

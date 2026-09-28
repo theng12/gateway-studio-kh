@@ -1829,12 +1829,18 @@ final class FleetModelsTab: FleetTabView {
 /// Running batches, the per-machine work history, and the batches that are
 /// stalled or failed with the Hub's exact words.
 ///
-/// **No cancel button, deliberately.** The gateway's per-job cancel is
-/// `POST /admin/api/create/status/{id}/cancel`, and a Hub *batch* id is not a
-/// gateway job id, so that call would 404. The Hub owns its own queue and exposes
-/// no cancel route the gateway calls, so a button here would be a dead control —
-/// which is the defect `tests/test_ui.py` was written about. The page offers
-/// Refresh and says who owns the fix instead.
+/// **This comment said there was no cancel button, and the button and its route
+/// both exist below** (C7, the audit's LOW list): `onCancel` is wired, the Cancel
+/// column is built, and the shell sends the request. A docstring that contradicts
+/// the control beside it is worse than none, because the next reader believes it
+/// and removes the button as dead code.
+///
+/// The distinction it was reaching for is real and is kept here: the *gateway's*
+/// per-job cancel is `POST /admin/api/create/status/{id}/cancel`, and a Hub **batch**
+/// id is not a gateway job id, so that call would 404. What this page cancels is
+/// the Hub's own batch, through the Hub's own route — the Hub owns its queue. What
+/// must never happen is a button wired to the wrong one of those, which is the
+/// defect `tests/test_ui.py` was written about.
 final class FleetJobsTab: FleetTabView {
     var onRefresh: (() -> Void)?
     /// Ask the Hub to stop this batch. The shell owns the request, so the tab
