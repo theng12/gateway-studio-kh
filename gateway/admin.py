@@ -1893,10 +1893,40 @@ def queue_view(limit: int = Query(200, ge=1, le=1000)) -> dict[str, Any]:
         for provider_id in sorted(set(in_flight) | set(budgets))
     ]
 
+    # **How long a model in this lane may hold a machine** (Q6, the owner's answer). He asked
+    # that the video lane's deadline be visible in the queue view, and the reason is the one a
+    # waiting operator actually has: *why is my chat job behind that?* A two-hour video lane is
+    # the answer, and until now the page could not say it. Read from each model's own
+    # `lane_contract.deadline_seconds` — the lane that enforces the number states it — and `null`
+    # where a lane states none, because a guess here would be quoted as the lane's own ceiling.
+    deadlines: dict[str, float] = {}
+    for row in catalog.all_rows():
+        contract = row.get("lane_contract") or {}
+        value = contract.get("deadline_seconds")
+        model_id = str(row.get("id") or "")
+        if isinstance(value, (int, float)) and value > 0 and model_id:
+            deadlines[model_id] = float(value)
+
+    def _deadline_for(job: dict) -> float | None:
+        for key in ("model_id", "requested_model_id"):
+            value = deadlines.get(str(job.get(key) or ""))
+            if value is not None:
+                return value
+        return None
+
+    for job in jobs:
+        value = _deadline_for(job)
+        if value is not None:
+            job["lane_deadline_seconds"] = value
+
     waiting_by_lane: dict[str, int] = {}
+    lane_deadlines: dict[str, float] = {}
     for job in jobs:
         lane = str(job.get("modality") or "")
         waiting_by_lane[lane] = waiting_by_lane.get(lane, 0) + 1
+        value = _deadline_for(job)
+        if value is not None:
+            lane_deadlines[lane] = max(lane_deadlines.get(lane, 0.0), value)
     lanes = []
     for lane in _QUEUE_LANES:
         budget = concurrency.lane_budget(lane)
@@ -1909,6 +1939,9 @@ def queue_view(limit: int = Query(200, ge=1, le=1000)) -> dict[str, Any]:
             "modality": lane,
             "waiting": waiting_by_lane.get(lane, 0),
             "in_flight": running,
+            # The **longest** deadline among this lane's jobs, because that is what a wait can
+            # cost: a lane holding one two-hour video can hold it for two hours.
+            "deadline_seconds": lane_deadlines.get(lane),
             **budget.as_dict(),
         })
 
@@ -2165,6 +2198,21 @@ def fleet_add_controller(payload: dict[str, Any]) -> Any:
         "enable_seed": enable_seed,
         "controllers": fleet.controllers(),
     }
+
+
+@router.post("/api/fleet/controllers/{controller_id}/resume", dependencies=[Depends(require_admin)])
+def fleet_resume(controller_id: str) -> Any:
+    """Un-pause a location, deliberately, without touching its identity or its decisions.
+
+    Q7's other half: the owner chose *"pause after 7 days, never auto-remove"*, and a pause with
+    no resume is a removal with extra steps. This clears the clock and the pause — the row, its
+    credential and every per-model enable decision were never touched, so the site comes back
+    exactly as it was.
+    """
+    row = fleet.resume_location(controller_id)
+    if row is None:
+        return _error(404, "No such controller.")
+    return {"controller": row, "controllers": fleet.controllers()}
 
 
 @router.put("/api/fleet/controllers/{controller_id}/address", dependencies=[Depends(require_admin)])

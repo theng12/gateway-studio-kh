@@ -1570,7 +1570,8 @@ def locations() -> list[dict]:
 
     for row, result in zip(configured, probed):
         controller_id = str(row.get("id") or "")
-        if result.get("reachable"):
+        reachable_now = bool(result.get("reachable"))
+        if reachable_now:
             # Remember what a live controller said about its members, so a later outage can still
             # name them (check 10 — a powered-down house must not look like an empty one).
             _remember_members(controller_id, result.get("nodes"), result.get("node_summary"))
@@ -1578,6 +1579,19 @@ def locations() -> list[dict]:
             last_known = _last_known_members(controller_id)
             if last_known:
                 result.update(last_known)
+        # **The pause clock** (Q7): stamped on a change of reachability, so a probe loop does not
+        # rewrite the roster every few seconds, and persisted so a gateway restart does not reset
+        # a week-long outage to zero.
+        before = (bool(row.get("paused_at")), bool(row.get("unreachable_since")),
+                  row.get("last_reachable_at"))
+        note_reachability(row, reachable_now)
+        after = (bool(row.get("paused_at")), bool(row.get("unreachable_since")),
+                 row.get("last_reachable_at"))
+        if before != after:
+            _write(configured)
+        result["unreachable_since"] = row.get("unreachable_since")
+        result["paused_at"] = row.get("paused_at")
+        result["pause_reason"] = row.get("pause_reason")
         result.update({
             "id": row.get("id"),
             "label": row.get("label") or row["url"],
@@ -2366,6 +2380,77 @@ def _as_int(value: object) -> int:
         return 0
 
 
+#: How long a controller may be unreachable before routing pauses it (Q7, the owner's answer:
+#: *"Pause after 7 days, never auto-remove; visible per cluster"*).
+#:
+#: **Paused is not removed.** The row, its credential and every per-model enable decision stay
+#: exactly as they are; routing simply stops offering it, and the Fleet page says why. A house
+#: whose power is out for a week is a house you will switch back on, and re-adding a controller
+#: costs a token paste and loses nothing else — which is precisely why an automatic *removal*
+#: would be the wrong answer. Editable in the same owner file as the pool size:
+#:
+#:     {"locations": {"pause_unreachable_after_days": 7}}
+PAUSE_AFTER_DAYS_DEFAULT = 7
+
+
+def pause_after_days() -> int:
+    """The owner's threshold, from the settings file, or the seven days he chose."""
+    try:
+        from . import concurrency
+
+        entry = concurrency._read_file().get("locations")
+        stated = concurrency._positive_int(
+            (entry or {}).get("pause_unreachable_after_days") if isinstance(entry, dict) else None
+        )
+    except Exception:  # noqa: BLE001 - an unreadable setting is the default, not an outage
+        stated = None
+    return stated if stated is not None else PAUSE_AFTER_DAYS_DEFAULT
+
+
+def note_reachability(row: dict, reachable: bool) -> None:
+    """Remember when a location was last seen up, and pause it past the threshold.
+
+    **This is the one thing about a location that must survive a restart**, because "unreachable
+    for seven days" is a question about the calendar, not about this process: a gateway that
+    restarted yesterday would otherwise reset every controller's clock and never pause anything.
+    Written to `fleet.json` on a *change* of reachability only, so a probe loop does not rewrite
+    the roster every few seconds.
+    """
+    now = time.time()
+    if reachable:
+        row["last_reachable_at"] = now
+        row.pop("unreachable_since", None)
+        row.pop("paused_at", None)
+        return
+    if not row.get("last_reachable_at"):
+        # Never seen up: the clock starts at the first failed probe rather than being absent, or
+        # a location added while its Mac is off could never pause.
+        row["last_reachable_at"] = None
+    row.setdefault("unreachable_since", now)
+    limit = pause_after_days() * 86400
+    if now - float(row.get("unreachable_since") or now) >= limit and not row.get("paused_at"):
+        row["paused_at"] = now
+        row["pause_reason"] = (
+            f"unreachable since {time.strftime('%Y-%m-%d', time.localtime(row['unreachable_since']))}"
+            f" — paused after {pause_after_days()} days. Routing skips it; nothing was removed. "
+            f"Bring the Mac back, or resume it from the Fleet page."
+        )
+
+
+def resume_location(controller_id: str) -> dict | None:
+    """Clear a pause and restart the clock, deliberately, without touching anything else."""
+    rows = _read()
+    row = next((r for r in rows if str(r.get("id")) == str(controller_id)), None)
+    if row is None:
+        return None
+    row.pop("paused_at", None)
+    row.pop("pause_reason", None)
+    row.pop("unreachable_since", None)
+    _write(rows)
+    invalidate()
+    return _masked(row)
+
+
 def _takes_customer_jobs(row: dict) -> bool:
     """Whether a location may be sent customer work at all.
 
@@ -2394,6 +2479,10 @@ def _takes_customer_jobs(row: dict) -> bool:
         return False
     capacity = row.get("capacity") if isinstance(row.get("capacity"), dict) else {}
     if capacity.get("accepting_customer_jobs") is False:
+        return False
+    # **A paused location is skipped by routing** (Q7). The row is still there, its models are
+    # still published, and every per-model decision survives — it simply stops being offered.
+    if row.get("paused_at"):
         return False
     return row.get("drained") is not True
 

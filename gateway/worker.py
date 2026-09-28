@@ -34,6 +34,7 @@ from typing import Any
 
 from . import concurrency
 from .adapters import BackendError, BackendRequest, adapter_for
+from .adapters import studio_hub
 from .config import ARTIFACT_DIR
 from .providers import registry
 from .store import RECOVERY_UNKNOWN, JobStore
@@ -74,6 +75,97 @@ def _defer_delay(attempts: int, cap_s: float | None = None) -> float:
     """2s, 4s, 8s … capped. Long enough not to hammer a busy machine."""
     return min(2.0 ** max(int(attempts), 0), _DEFER_CAP_S if cap_s is None else float(cap_s))
 
+
+#: How often the hold reconciliation asks the Hub about its outstanding holds.
+_HOLD_SWEEP_S = 60.0
+
+
+def reconcile_holds(store: JobStore, *, now: float | None = None) -> dict[str, int]:
+    """Close the holds the **Hub's own record** has already settled (Q8).
+
+    The owner's answer: *"Yes — auto-close when the Hub's own batch record says finished or never
+    started."* Both are one request away, and neither is a guess:
+
+      * **finished** — the Hub reports the batch terminal, so nothing is running and the hold has
+        nothing left to protect. The job is closed as failed with the Hub's own state recorded.
+      * **never started** — the Hub has never heard of the batch id (`404`). The work it was
+        supposed to be doing does not exist, which is the same fact the restart sweep acts on when
+        `dispatch_started_at` is null: provably nothing to duplicate, so the job goes back in the
+        queue if it still has attempts left, and is failed cleanly if it does not.
+      * **still running, or the Hub did not answer** — left exactly where it is. "I could not ask"
+        is not "it is finished", and this function never treats the two the same.
+
+    Runs on the dispatch loop's own thread, on a timer, and never raises: a hold that cannot be
+    reconciled this minute is reconciled the next.
+    """
+    out = {"checked": 0, "closed_finished": 0, "requeued": 0, "still_open": 0}
+    holds_of = getattr(store, "holds", None)
+    close = getattr(store, "close_hold", None)
+    if holds_of is None or close is None:
+        return out
+    try:
+        rows = holds_of(limit=50)
+    except Exception:  # noqa: BLE001 - an unreadable table is not a reason to stop dispatching
+        log.exception("could not read recovery holds")
+        return out
+    for job in rows:
+        provider_id = str(job.get("provider_id") or "")
+        definition = registry.definition(provider_id)
+        context = job.get("recovery_context")
+        context = context if isinstance(context, dict) else {}
+        batch_id = str(context.get("batch_id") or job.get("upstream_job_id") or "")
+        if definition is None or not batch_id:
+            out["still_open"] += 1
+            continue
+        # Only Studio Hub can be asked: it is the lane that keeps a batch record and publishes a
+        # route for it. Every other lane stays on the operator's discard action.
+        if str(getattr(definition, "kind", "")) != "studio_hub":
+            out["still_open"] += 1
+            continue
+        out["checked"] += 1
+        values = registry.credentials.resolved(provider_id)
+        snapshot = studio_hub.batch_snapshot(
+            values, definition.base_url or "", batch_id,
+            kind=str(job.get("modality") or "image"),
+        )
+        if snapshot is None:
+            out["still_open"] += 1
+            continue
+        if not snapshot.get("known"):
+            limit = int(concurrency.retry_policy()["max_attempts"])
+            attempted = len(store.attempts_of(job["id"])) if hasattr(store, "attempts_of") else 0
+            if attempted < limit:
+                close(job["id"], resolution="requeued",
+                      detail=(f"the Hub has never heard of batch {batch_id} ({provider_id}), so "
+                              f"nothing was ever run for it. Returned to the queue — this is "
+                              f"proof of no work, not a guess."))
+                out["requeued"] += 1
+            else:
+                close(job["id"], resolution="failed",
+                      detail=(f"the Hub has never heard of batch {batch_id} ({provider_id}) and "
+                              f"the job has used all {limit} attempts, so it is failed rather "
+                              f"than queued again."))
+                out["closed_finished"] += 1
+            continue
+        state = str(snapshot.get("state") or "")
+        if state in _TERMINAL_UPSTREAM_STATES:
+            item = snapshot.get("item") or {}
+            detail = (f"the Hub reports batch {batch_id} ({provider_id}) finished with state "
+                      f"'{state}'"
+                      + (f": {item.get('error')}" if item.get("error") else "")
+                      + ". Closed automatically (Q8): the upstream's own record settled it.")
+            close(job["id"], resolution="failed", detail=detail)
+            out["closed_finished"] += 1
+            continue
+        out["still_open"] += 1
+    return out
+
+
+#: The Hub's terminal words, as `studio_hub` already names them.
+_TERMINAL_UPSTREAM_STATES = frozenset(
+    {"succeeded", "success", "done", "complete", "completed", "failed", "error", "cancelled",
+     "canceled", "refused", "expired"}
+)
 
 def _next_machine(store: JobStore, job_id: str, model_id: str, modality: str,
                   provider_id: str, *, code: str, detail: str) -> str | None:
@@ -589,6 +681,9 @@ class Worker:
         #: and every later job simply sat in `accepted`.
         self.last_pass_at: float | None = None
         self.pass_failures = 0
+        #: When the hold reconciliation last ran, and what it found (Q8).
+        self._last_hold_sweep = 0.0
+        self.hold_sweep: dict[str, int] = {}
 
     def start(self) -> None:
         if self._thread is not None:
@@ -798,12 +893,21 @@ class Worker:
                 self.pass_failures += 1
                 log.exception("worker dispatch pass failed (consecutive: %s)",
                               self.pass_failures)
-            finally:
-                # **When the last pass finished, successful or not.** `worker_alive` alone is a
-                # boolean an operator cannot date; this is the number that says whether dispatch
-                # is moving. Written every pass, so a stalled loop shows a stale timestamp rather
-                # than a green light.
-                self.last_pass_at = time.time()
+            # **The hold reconciliation rides the dispatch loop** (Q8). It is a network call per
+            # hold, so it runs on its own timer rather than every 0.4 s pass — and it is wrapped
+            # separately, because a hold that cannot be reconciled must not stop dispatch.
+            if time.time() - self._last_hold_sweep >= _HOLD_SWEEP_S:
+                self._last_hold_sweep = time.time()
+                try:
+                    self.hold_sweep = reconcile_holds(self.store)
+                except Exception:  # noqa: BLE001 - reconciliation is never allowed to stop work
+                    log.exception("recovery-hold reconciliation failed")
+
+            # **When the last pass finished, successful or not.** `worker_alive` alone is a
+            # boolean an operator cannot date; this is the number that says whether dispatch is
+            # moving. Written every pass, so a stalled loop shows a stale timestamp rather than a
+            # green light.
+            self.last_pass_at = time.time()
 
             self._stop.wait(self.interval_s)
 
@@ -820,4 +924,5 @@ class Worker:
             "last_pass_at": self.last_pass_at,
             "consecutive_failures": self.pass_failures,
             "in_flight": self.active(),
+            "hold_sweep": dict(self.hold_sweep),
         }

@@ -1012,12 +1012,13 @@ def _tts_row(model_id: str, definition: ProviderDefinition, model: dict[str, Any
         # languages; a cap here would make the catalogue quietly wrong about the
         # rest, which is the "our number in their field" shape with no label.
         "supported_languages": languages,
-        # ponytail: a conservative concurrency of 1 for every TTS lane. Ceiling —
-        # a provider that accepts several submissions at once is under-used.
-        # Deliberately the safe direction: over-scheduling is what makes a provider
-        # reject work, and nothing here publishes its real limit. Upgrade path —
-        # per-provider values once stated.
-        "provider_submit_concurrency": 1,
+        # **`provider_submit_concurrency` is deleted, not enforced** (C3, audit H7).
+        # It was the literal `1` on every TTS lane, described by its own `ponytail:` note as
+        # invented, and read by **nothing** anywhere in either repo. C3 said "enforced or
+        # deleted", and of the two honest answers this is the one that does not require making a
+        # number up: the real concurrency for a lane comes from the location's own published
+        # capacity and the operator's cap, both of which are already published and enforced. A
+        # field whose only reader was itself is the same defect as `available_workers` (M11).
         # ponytail: one invented temperature range for every TTS model that takes
         # one. Ceiling — a model with a narrower or wider range is described
         # wrongly, and the control fails at the provider outside its real bounds.

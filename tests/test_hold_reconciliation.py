@@ -1,0 +1,128 @@
+#!/usr/bin/env python3
+"""Q8 — a hold is closed when the **Hub's own record** settles it, and never on a guess.
+
+The owner's answer: *"Yes — auto-close when the Hub's own batch record says finished or never
+started."* Both answers are one request away, and the safety of the whole thing is the difference
+between them and a third case:
+
+  * **finished** — the batch is terminal, so nothing is running and the hold protects nothing.
+  * **never started** — the Hub has never heard of the batch id. The work does not exist, so the
+    job goes back in the queue: this is the *same proof* the restart sweep acts on, not an
+    inference from silence.
+  * **the Hub did not answer** — *left alone*. "I could not ask" is not "it is finished", and a
+    hold closed on that would be a re-run of work that may still be rendering.
+"""
+from __future__ import annotations
+
+import sys
+import unittest
+from pathlib import Path
+from typing import Any
+from unittest.mock import patch
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+
+from gateway import worker as worker_module  # noqa: E402
+
+
+class _Store:
+    def __init__(self, holds: list[dict[str, Any]], *, attempts: int = 0) -> None:
+        self._holds = holds
+        self._attempts = attempts
+        self.closed: list[dict[str, Any]] = []
+
+    def holds(self, *, limit: int = 200):
+        return list(self._holds)[:limit]
+
+    def attempts_of(self, job_id: str):
+        return [{"location": f"studio-hub-{n}"} for n in range(self._attempts)]
+
+    def close_hold(self, job_id: str, *, resolution: str, detail: str) -> bool:
+        self.closed.append({"id": job_id, "resolution": resolution, "detail": detail})
+        return True
+
+
+class _Definition:
+    def __init__(self, kind: str = "studio_hub") -> None:
+        self.kind = kind
+        self.base_url = "http://127.0.0.1:47873"
+
+
+def _hold(job_id: str = "job-1", **over: Any) -> dict[str, Any]:
+    row = {"id": job_id, "provider_id": "studio-hub-abc", "modality": "image",
+           "recovery_state": "unknown_outcome",
+           "recovery_context": {"batch_id": "batch-1", "item_index": 0}}
+    row.update(over)
+    return row
+
+
+class TheHubSettlesTheHoldTest(unittest.TestCase):
+    def _run(self, snapshot: Any, *, holds=None, attempts: int = 0, kind: str = "studio_hub"):
+        store = _Store(holds if holds is not None else [_hold()], attempts=attempts)
+        with patch.object(worker_module.registry, "definition", lambda pid: _Definition(kind)), \
+                patch.object(worker_module.registry.credentials, "resolved", lambda pid: {}), \
+                patch.object(worker_module.studio_hub, "batch_snapshot",
+                             lambda *a, **k: snapshot):
+            return store, worker_module.reconcile_holds(store)
+
+    def test_a_finished_batch_closes_the_hold_as_failed(self) -> None:
+        store, out = self._run({"known": True, "state": "failed",
+                                "item": {"error": "the worker ran out of memory"}})
+        self.assertEqual(out["closed_finished"], 1)
+        self.assertEqual(store.closed[0]["resolution"], "failed")
+        self.assertIn("finished with state 'failed'", store.closed[0]["detail"])
+        self.assertIn("the worker ran out of memory", store.closed[0]["detail"])
+
+    def test_a_batch_the_hub_never_heard_of_returns_the_job_to_the_queue(self) -> None:
+        store, out = self._run({"known": False}, attempts=0)
+        self.assertEqual(out["requeued"], 1)
+        self.assertEqual(store.closed[0]["resolution"], "requeued")
+        self.assertIn("never heard of batch", store.closed[0]["detail"])
+        self.assertIn("proof of no work", store.closed[0]["detail"])
+
+    def test_a_batch_the_hub_never_heard_of_is_failed_once_the_attempts_are_used(self) -> None:
+        # The same proof, but there is nothing left to try it on: closed as failed rather than
+        # queued again, so it cannot loop.
+        store, out = self._run({"known": False}, attempts=3)
+        self.assertEqual(out["closed_finished"], 1)
+        self.assertEqual(store.closed[0]["resolution"], "failed")
+        self.assertIn("used all 3 attempts", store.closed[0]["detail"])
+
+    def test_a_running_batch_is_left_alone(self) -> None:
+        store, out = self._run({"known": True, "state": "running", "item": None})
+        self.assertEqual(store.closed, [])
+        self.assertEqual(out["still_open"], 1)
+
+    def test_a_hub_that_did_not_answer_leaves_the_hold_open(self) -> None:
+        # **The line that must never move.** Silence is not absolution: a hold closed here could
+        # re-run work that is still rendering, and the owner's rule is no duplicates ever.
+        store, out = self._run(None)
+        self.assertEqual(store.closed, [], "an unanswered question must not close a hold")
+        self.assertEqual(out["still_open"], 1)
+
+    def test_a_cloud_lane_is_not_asked(self) -> None:
+        # Only Studio Hub keeps a batch record and publishes a route for it. A cloud hold stays on
+        # the operator's discard action, which is the only thing that can settle it.
+        store, out = self._run({"known": False}, kind="openai_compat")
+        self.assertEqual(store.closed, [])
+        self.assertEqual(out["still_open"], 1)
+
+    def test_a_hold_with_no_batch_id_is_left_alone(self) -> None:
+        store, out = self._run({"known": False}, holds=[_hold(recovery_context=None)])
+        self.assertEqual(store.closed, [])
+        self.assertEqual(out["still_open"], 1)
+
+    def test_an_unreadable_table_does_not_raise(self) -> None:
+        class Broken:
+            def holds(self, **_):
+                raise RuntimeError("database is locked")
+
+            def close_hold(self, *a, **k):  # pragma: no cover - never reached
+                return True
+
+        self.assertEqual(worker_module.reconcile_holds(Broken())["checked"], 0)
+
+
+if __name__ == "__main__":
+    unittest.main()

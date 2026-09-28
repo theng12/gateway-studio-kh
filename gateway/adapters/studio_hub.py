@@ -551,6 +551,52 @@ def _poll_batch(
     )
 
 
+def batch_snapshot(values: dict[str, Any], base_url: str, batch_id: str,
+                   *, kind: str = "image") -> dict[str, Any] | None:
+    """Ask a Hub about one batch **once**, and say honestly which of three answers it gave.
+
+    Returns:
+      * `{"known": True, "state": ..., "item": ...}` — the Hub answered.
+      * `{"known": False}` — the Hub answered `404`: it has never heard of this batch, so the work
+        it was supposed to be running **never started**.
+      * `None` — the Hub could not be reached or refused, so the question is still open.
+
+    **Why this exists at all.** A hold is a job whose upstream outcome is unknown, and the gateway
+    treated it as permanently unknown: it waited for a person, even when the Hub could simply be
+    asked. The owner's answer (Q8) was *"close when the Hub's batch record says finished or never
+    started"* — and both of those are answers the Hub gives in one request. The distinction
+    between `known: False` and `None` is the whole safety of it: "the Hub says there is no such
+    batch" is proof the work never ran, while "the Hub did not answer" is not, and only the first
+    of those may ever lead to a re-run.
+    """
+    kind = str(kind or "image")
+    jobs_path = _jobs_path(kind)
+    headers = {}
+    from ..hub import hub_headers
+
+    headers = hub_headers(str((values or {}).get("hub_token") or ""))
+    url = f"{str(base_url or '').rstrip('/')}{jobs_path}/{batch_id}"
+    try:
+        with httpx.Client(timeout=httpx.Timeout(15.0, connect=6.0)) as client:
+            response = client.get(url, headers=headers)
+    except httpx.HTTPError:
+        return None
+    if response.status_code == 404:
+        return {"known": False}
+    if response.status_code >= 400:
+        return None
+    try:
+        body = response.json()
+    except ValueError:
+        return None
+    if not isinstance(body, dict):
+        return None
+    items = body.get("items") or []
+    return {"known": True, "state": str(body.get("state") or "").lower(),
+            "item": items[0] if items and isinstance(items[0], dict) else None,
+            "summary": body}
+
+
 def _jobs_path(kind: str) -> str:
     """Where a modality's batches live.
 

@@ -121,5 +121,57 @@ class RepointingKeepsTheRowTest(unittest.TestCase):
         self.assertIn("could not be resolved", str(caught.exception))
 
 
+
+
+class AStaleControllerIsPausedNotRemovedTest(unittest.TestCase):
+    """Q7 — *"Pause after 7 days, never auto-remove; visible per cluster."*
+
+    A house whose power is out for a week is a house you switch back on. Removing its row would
+    cost a token paste and every per-model enable decision; leaving it live costs a six-second
+    probe on every fleet read (measured, M26) and offers work to a Mac that is not there. Pausing
+    is the middle: routing skips it, nothing is deleted, and the Fleet page says why.
+    """
+
+    def setUp(self) -> None:
+        self.row: dict = {"id": "abc123", "label": "Site A", "url": "http://100.64.0.1:47873"}
+
+    def test_a_location_seen_up_has_no_pause_clock(self) -> None:
+        fleet.note_reachability(self.row, True)
+        self.assertNotIn("unreachable_since", self.row)
+        self.assertNotIn("paused_at", self.row)
+
+    def test_an_outage_inside_the_window_does_not_pause(self) -> None:
+        fleet.note_reachability(self.row, False)
+        self.assertIn("unreachable_since", self.row)
+        self.assertNotIn("paused_at", self.row, "a fresh outage must not pause anything")
+
+    def test_seven_days_unreachable_pauses_it_with_a_reason(self) -> None:
+        self.row["unreachable_since"] = time.time() - (8 * 86400)
+        fleet.note_reachability(self.row, False)
+        self.assertIn("paused_at", self.row)
+        self.assertIn("paused after 7 days", self.row["pause_reason"])
+        self.assertIn("nothing was removed", self.row["pause_reason"])
+
+    def test_a_paused_location_is_skipped_by_routing_and_nothing_is_deleted(self) -> None:
+        paused = {"reachable": True, "paused_at": time.time()}
+        self.assertFalse(fleet._takes_customer_jobs(paused))
+        # The row keeps everything that makes it a location: only the offering stops.
+        self.assertEqual(paused.get("role"), None)
+        self.assertNotIn("removed", paused)
+
+    def test_coming_back_clears_the_pause_and_the_clock(self) -> None:
+        self.row["unreachable_since"] = time.time() - (8 * 86400)
+        fleet.note_reachability(self.row, False)
+        self.assertIn("paused_at", self.row)
+        fleet.note_reachability(self.row, True)
+        self.assertNotIn("paused_at", self.row)
+        self.assertNotIn("unreachable_since", self.row)
+        self.assertTrue(self.row.get("last_reachable_at"))
+
+    def test_the_threshold_is_the_owners_number(self) -> None:
+        self.assertEqual(fleet.pause_after_days(), fleet.PAUSE_AFTER_DAYS_DEFAULT)
+        self.assertEqual(fleet.PAUSE_AFTER_DAYS_DEFAULT, 7)
+
+
 if __name__ == "__main__":
     unittest.main()

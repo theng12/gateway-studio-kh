@@ -1,6 +1,6 @@
 # HANDOFF — gateway-kh
 
-**Read this first.** Written 2026-09-28 against **VERSION `0.2.66`**. The running build
+**Read this first.** Written 2026-09-28 against **VERSION `0.2.67`**. The running build
 stamp is on `/health` and in `/Applications/gateway-kh.app/Contents/Resources/gateway/BUILD`.
 If this file disagrees with the code, **the code wins — fix this file in the same change**.
 Every path below is inside the Git checkout `repository/` unless it says otherwise.
@@ -59,6 +59,49 @@ ids (`studio-hub-<controller>`) while `fleet.route` compares bare controller ids
 pinned by three tests, and re-measured on the live code path (the addendum at the end of the
 receipt). The receipt is left as measured rather than rewritten: the run that failed is the evidence
 that the step earns its place.
+
+## What 0.2.67 changes — the four answers that had not been built
+
+Before the fleet rollout, the job's own list was re-read against the code and **four items the owner
+had answered were still open**. They are closed here, and the lesson is worth keeping: three of them
+were *answers*, not findings, and an answer nobody implements looks exactly like a finished item.
+
+**Q7 · A controller unreachable for 7 days is paused, never removed.** `fleet.note_reachability`
+stamps `unreachable_since` on a change of reachability — persisted in `fleet.json`, because "a week
+down" is a question about the calendar and a gateway restarted yesterday would otherwise reset every
+controller's clock. Past the threshold the row gains `paused_at` and `pause_reason`; routing skips it
+(`_takes_customer_jobs`) and **nothing is deleted**: the credential and every per-model enable
+decision stay exactly as they are, so switching a house back on costs one resume.
+`POST /api/fleet/controllers/{id}/resume` is that action, and the threshold is
+`locations.pause_unreachable_after_days` in the owner's own settings file.
+
+**Q8 · A hold is closed when the Hub's own record settles it.** `worker.reconcile_holds` asks the
+Hub about each hold's batch, on a 60-second timer riding the dispatch loop, and the three answers are
+kept strictly apart:
+
+| The Hub's answer | What happens | Why it is safe |
+|---|---|---|
+| the batch is **terminal** | the hold is closed as failed, recording the Hub's state and its error | nothing is running, so the hold protects nothing |
+| **404 — never heard of it** | the job goes back in the queue if it has attempts left, else fails cleanly | the work does not exist; this is the *same proof* the restart sweep acts on |
+| **no answer, or still running** | **left exactly where it is** | "I could not ask" is not "it is finished", and a re-run could duplicate a render |
+
+New `adapters.studio_hub.batch_snapshot` is the one-shot read (the poll loop walks to a terminal
+state; this asks once), and it distinguishes `known: False` from `None` for exactly the reason in
+that third row. `store.holds()` and `store.close_hold()` are new; the sweep's own counts are on
+`/health` under `worker.hold_sweep`. Only Studio Hub is asked — it is the lane with a batch record —
+and every other lane keeps the operator's discard action.
+
+**C3 · `provider_submit_concurrency` is deleted, not enforced.** The literal `1` on every TTS lane,
+described by its own `ponytail:` note as invented, and read by **nothing** in either repo. C3 said
+"enforced or deleted", and deleting is the answer that does not require making a number up: a lane's
+real concurrency comes from the location's published capacity and the operator's cap, both already
+enforced. Same defect as `available_workers` (M11), same fix.
+
+**Q6 · The lane deadline is on the queue view.** He asked for the video lane's deadline to be
+visible, and the reason is the one a waiting operator actually has — *why is my chat job behind
+that?* Each waiting job now carries `lane_deadline_seconds` from its model's own
+`lane_contract.deadline_seconds`, each lane row carries the **longest** among its jobs, and a lane
+that states none publishes `null` rather than a guess.
 
 ## What 0.2.66 changes — What's New is a page, above Settings
 

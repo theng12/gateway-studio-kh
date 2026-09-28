@@ -559,6 +559,58 @@ class JobStore:
             self._conn.commit()
             return log
 
+    def holds(self, *, limit: int = 200) -> list[dict[str, Any]]:
+        """Every job waiting on a reconciliation hold, newest first.
+
+        A hold is a job whose upstream outcome is unknown. They were only ever visible one at a
+        time, inside its own job response, so nobody could see how many were accumulating — and
+        with a fleet whose houses lose power, they accumulate.
+        """
+        rows = self._conn.execute(
+            "SELECT * FROM jobs WHERE recovery_state IS NOT NULL "
+            "ORDER BY updated_at DESC LIMIT ?",
+            (max(1, int(limit)),),
+        ).fetchall()
+        return [self._row_dict(row) for row in rows]
+
+    def close_hold(self, job_id: str, *, resolution: str, detail: str) -> bool:
+        """Close a hold because the **upstream's own record** settled it.
+
+        `resolution` is the word that goes in the record — `failed` for a batch the Hub reports
+        terminal, `requeued` for one the Hub has never heard of — and `detail` is the sentence a
+        reader gets. The job keeps its upstream ids: closing a hold is a statement about what is
+        known, never permission to forget what was sent.
+
+        Only a caller that has *proved* the answer may call this. A hold closed on a guess is
+        worse than a hold left open, because a hold is at least honest.
+        """
+        now = time.time()
+        with self._lock:
+            if resolution == "requeued":
+                result = self._conn.execute(
+                    """
+                    UPDATE jobs
+                       SET state = 'accepted', recovery_state = NULL, recovery_detail = NULL,
+                           recovery_context = NULL, error_code = NULL, error_detail = ?,
+                           retryable = 0, next_action_at = ?, updated_at = ?
+                     WHERE id = ? AND recovery_state IS NOT NULL
+                    """,
+                    (detail[:500], now, now, job_id),
+                )
+            else:
+                result = self._conn.execute(
+                    """
+                    UPDATE jobs
+                       SET state = 'failed', recovery_state = NULL, recovery_detail = NULL,
+                           error_code = COALESCE(error_code, 'PROVIDER_FAILED'),
+                           error_detail = ?, retryable = 0, next_action_at = NULL, updated_at = ?
+                     WHERE id = ? AND recovery_state IS NOT NULL
+                    """,
+                    (detail[:500], now, job_id),
+                )
+            self._conn.commit()
+            return result.rowcount == 1
+
     def attempts_of(self, job_id: str) -> list[dict[str, Any]]:
         """Every settled attempt on this job, oldest first."""
         with self._lock:
