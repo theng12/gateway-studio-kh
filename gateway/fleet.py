@@ -1906,6 +1906,20 @@ def _issues_for(row: dict) -> list[dict]:
     # needed someone. The health word and the node's own sentence now ride on the
     # offline row (they are *why* it is offline, not further faults), and workers
     # on an already-offline machine are counted once instead of four times.
+    #
+    # **A node that answered and refused this controller is not an offline
+    # machine.** The Hub gives it its own state — `unauthorized` — precisely so a
+    # credential problem is not read as a network one, and it writes a sentence
+    # naming the fix. Its machine still reads `offline` in the activity report,
+    # because no work can be dispatched; reporting both would be the same fault
+    # twice, with the actionable half second. So the unauthorized node keeps its
+    # own row and the offline row for that machine is not also emitted.
+    rejected_nodes = {
+        str(node.get("id") or node.get("name") or ""): node
+        for node in (row.get("nodes") or [])
+        if isinstance(node, dict)
+        and str(node.get("state") or "").strip().lower() == "unauthorized"
+    }
     limitations: dict[tuple[str, str, str], dict] = {}
     unknown_state = 0
     offline_machines: set[str] = set()
@@ -1914,7 +1928,7 @@ def _issues_for(row: dict) -> list[dict]:
         state = str(machine.get("state") or "").strip().lower()
         health = str(machine.get("health") or "").strip()
         unhealthy = bool(health) and health.lower() != "up"
-        if state == "offline":
+        if state == "offline" and machine_id not in rejected_nodes:
             offline_machines.add(machine_id)
             detail = f"Machine {machine_id} is offline."
             if unhealthy:
@@ -1934,7 +1948,8 @@ def _issues_for(row: dict) -> list[dict]:
         # A health word on a machine that is *up* is its own fault and keeps its
         # own row; on an offline machine it is the same fault in a second
         # vocabulary, already carried above.
-        if unhealthy and machine_id not in offline_machines:
+        if unhealthy and machine_id not in offline_machines \
+                and machine_id not in rejected_nodes:
             out.append(_issue(
                 "warning", "machine_not_healthy", machine.get("location_id"),
                 machine.get("location"), machine_id,
@@ -1953,6 +1968,21 @@ def _issues_for(row: dict) -> list[dict]:
             affects = machine.get("limitation_affects")
             if isinstance(affects, list):
                 bucket["affects"].update(str(field) for field in affects)
+
+    if rejected_nodes:
+        for node_id, node in sorted(rejected_nodes.items()):
+            name = str(node.get("name") or node_id)
+            # **The Hub's own sentence, quoted.** It names the fix — re-join the
+            # Mac with the current Fleet Token — and paraphrasing it would drop the
+            # one actionable fact. A Hub that states no detail gets a sentence that
+            # says only that, rather than invented advice.
+            detail = str(node.get("detail") or "").strip() or (
+                f"The controller marks node {name} unauthorized and stated no detail."
+            )
+            out.append(_issue(
+                "error", "node_credential_rejected", location_id, location,
+                node_id or name, detail, "Studio Hub on that Mac",
+            ))
 
     if limitations:
         for (text, code, reason), bucket in sorted(limitations.items()):

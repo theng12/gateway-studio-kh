@@ -89,6 +89,12 @@ class RetentionInputTests(unittest.TestCase):
             provider_id="mock-provider",
         )
         self.assertTrue(self.store.mark_running(row["id"]))
+        # **`begin_dispatch` is now what makes this a hold.** A job claimed but never dispatched
+        # goes back to `accepted` on reopen (C2/M5) — it provably never left this process — so the
+        # unknown-outcome case this test is about needs the dispatch marker. Without it the test
+        # would still pass on the input assertion while no longer exercising a recovery hold at
+        # all, which is the kind of green that hides a regression.
+        self.assertTrue(self.store.begin_dispatch(row["id"]))
         path = self.store.path
         self.store.close()
         self.store = JobStore(path)

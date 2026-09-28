@@ -567,6 +567,12 @@ class Worker:
         #: reader to guess why their fleet is idle.
         self.budgets: dict[str, dict[str, Any]] = {}
         self.processed = 0
+        #: Liveness of the dispatch loop itself (M6). `last_pass_at` is stamped at the end of
+        #: every pass, clean or not, and `pass_failures` counts consecutive passes that raised.
+        #: A dead dispatcher used to be indistinguishable from an idle one: `/health` said ok
+        #: and every later job simply sat in `accepted`.
+        self.last_pass_at: float | None = None
+        self.pass_failures = 0
 
     def start(self) -> None:
         if self._thread is not None:
@@ -743,26 +749,59 @@ class Worker:
 
     def _loop(self) -> None:
         while not self._stop.is_set():
+            # **One pass, and one raise is not allowed to end dispatch for ever.** The loop
+            # guarded `due()` and nothing else: a raise from `_admit`, `mark_running` or the
+            # thread spawn escaped the `while`, the thread died, and every later job sat in
+            # `accepted` for ever while `/health` still said ok — there was no liveness field to
+            # say otherwise (audit M6). The pass is wrapped whole and the count of consecutive
+            # failures is published, so an operator can tell "idle" from "wedged".
             try:
                 due = self.store.due()
             except Exception:  # noqa: BLE001
                 log.exception("worker could not read due jobs")
                 due = []
 
-            for job in due:
-                if self._stop.is_set():
-                    return
-                # Reserve first, then claim: a claim that fails must not leave the
-                # budget holding a slot nobody will ever release.
-                if not self._admit(job):
-                    continue
-                if not self.store.mark_running(job["id"]):
-                    self._release(job)
-                    continue
-                job["state"] = "running"
-                threading.Thread(
-                    target=self._run, args=(job,),
-                    name=f"gateway-job-{job['id'][:8]}", daemon=True,
-                ).start()
+            try:
+                for job in due:
+                    if self._stop.is_set():
+                        return
+                    # Reserve first, then claim: a claim that fails must not leave the
+                    # budget holding a slot nobody will ever release.
+                    if not self._admit(job):
+                        continue
+                    if not self.store.mark_running(job["id"]):
+                        self._release(job)
+                        continue
+                    job["state"] = "running"
+                    threading.Thread(
+                        target=self._run, args=(job,),
+                        name=f"gateway-job-{job['id'][:8]}", daemon=True,
+                    ).start()
+                self.pass_failures = 0
+            except Exception:  # noqa: BLE001 - the next pass must still happen
+                self.pass_failures += 1
+                log.exception("worker dispatch pass failed (consecutive: %s)",
+                              self.pass_failures)
+            finally:
+                # **When the last pass finished, successful or not.** `worker_alive` alone is a
+                # boolean an operator cannot date; this is the number that says whether dispatch
+                # is moving. Written every pass, so a stalled loop shows a stale timestamp rather
+                # than a green light.
+                self.last_pass_at = time.time()
 
             self._stop.wait(self.interval_s)
+
+    def liveness(self) -> dict[str, Any]:
+        """Whether dispatch is actually moving, in the three fields `/health` publishes.
+
+        `alive` is the thread's own state, `last_pass_at` dates the last attempt, and
+        `consecutive_failures` counts passes that raised since the last clean one. A boolean
+        alone is what let a dead dispatcher read as healthy.
+        """
+        thread = self._thread
+        return {
+            "worker_alive": bool(thread is not None and thread.is_alive()),
+            "last_pass_at": self.last_pass_at,
+            "consecutive_failures": self.pass_failures,
+            "in_flight": self.active(),
+        }

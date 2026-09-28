@@ -1,29 +1,147 @@
 # HANDOFF — gateway-kh
 
-**Read this first.** Written 2026-09-28 against **VERSION `0.2.62`**. The running build
+**Read this first.** Written 2026-09-28 against **VERSION `0.2.63`**. The running build
 stamp is on `/health` and in `/Applications/gateway-kh.app/Contents/Resources/gateway/BUILD`.
 If this file disagrees with the code, **the code wins — fix this file in the same change**.
 Every path below is inside the Git checkout `repository/` unless it says otherwise.
 `[MEASURED]` = observed in the session that wrote this; `[reason not recorded]` = the
 project does not say why, and nobody should guess.
 
-> **The fleet-hardening batch is in progress.** The work order is
+> **The fleet-hardening batch.** The work order is
 > `_orchestra/JOB-gateway-studiohub-fleet-hardening-20260928.md` (Batch A → B → C) and the
-> evidence is `_orchestra/AUDIT-gateway-studiohub-20260928.md`. **Shipped: A1 (0.2.61), and
-> A5 + A6 + A7 (0.2.62).** A2, A3, A4 and A8 are Hub-side and ship from `studio-hub-kh`.
-> **B1–B4 and C1–C7 are still open**, and the twelve-check rehearsal in the job's §9 has not
-> been run. Do not read this file as "the fleet work is done".
+> evidence is `_orchestra/AUDIT-gateway-studiohub-20260928.md`. **From this repo: A1 (0.2.61),
+> A5 + A6 + A7 (0.2.62), and B1 + B3 + C1–C5 + C7 (0.2.63).** A2, A3, A4 and A8 are Hub-side and
+> ship from `studio-hub-kh`; the Hub's own half of B1/B4/C6 is there too. **What is still open is
+> named at the end of this file** — read that section before assuming anything is finished.
 
 ## WHERE THINGS STAND
 
 | Thing | Value |
 |---|---|
-| Current release | **0.2.62** — `repository/VERSION`, one line, the only place to bump. **Three fleet items in one release:** A5 (a new location inherits this Hub's own model decisions; the console groups models by model with an "N of M machines" cell), A6 (image geometry comes from the Hub's own lane contract and preset table — 16:9 is **1280×720**, not 1536×1024 — and `available` is `not locked`, so a fleet outage stops reading as a billing problem), A7 (a failed job retries on a different machine, three attempts, never a duplicate, then fails properly to Story). See *What 0.2.62 changes* below |
+| Current release | **0.2.63** — `repository/VERSION`, one line, the only place to bump. **Fleet visibility and correctness:** the Fleet page shows **members** and a node marker (B1), the console has a **Queue** view with a real position for every waiting job (B3), capacity is **derived live** from the fleet and published to Story (C3/D), a job that provably never left this process is re-queued after a restart instead of becoming a hold (C2/M5), the queue is **bounded and enforced**, `due()` is ordered by arrival (C1/M3), merged rows take the **smallest** published ceiling (C4/M10), and the Hub's own `dependency` verdict withholds a tokenizer without a second HTTP call (C5/M13). See *What 0.2.63 changes* below |
 | Declared Studio Hub | **0.6.83** — `adapters.studio_hub.SUPPORTED_STUDIO_HUB_VERSION`, published on `/health`; a controller on another version is reported, never refused. Set on 2026-09-27 from a **running** Hub (`/api/version` → `0.6.83` build `f072f17`), not a changelog; 0.6.83 is the release whose video lane publishes the `audio` switch this gateway relays `[MEASURED]`. 0.6.81 was declared earlier the same day from `0.6.81` build `3d8ce32` — that one publishes `lane_contract.canvases`. Controllers older than both still publish, through the cross-product fallback in `_video_row`, and a lane that publishes no switch simply carries no `controls` key |
 | Branch | `main` = `origin/main`, clean tree; remote `github.com/theng12/gateway-kh` |
 | Running build | `/Applications/gateway-kh.app`, port **8787**, stamp **`7d87724-202609270548`** — the 0.2.60 commit, measured on `/health` after the rollout `[MEASURED 2026-09-27]`. **The stale-stamp trap fired again, in a new shape:** killing the gateway by PID made the app respawn it with the *new code* (it published `studio_hub.supported_version: 0.6.83`, which only 0.2.60 states) but the *old* `GATEWAY_BUILD` stamp `05c0fc5-202609261948`, because the stamp is passed by the **menubar app process** from its own `Info.plist` — and that process was still the pre-rebuild one. Only quitting the app (`osascript -e 'quit app "gateway-kh"'`), killing the last gateway by PID (`pgrep -f "uvicorn gateway.api:app"`) and reopening produced a stamp that matches the code. So: **a stamp that disagrees with the code is not proof of old code, and a respawn is not a restart** — check `studio_hub.supported_version` too. `pkill -f` remains forbidden `[MEASURED 2026-09-26]` |
 | Distribution | DMG in `repository/dist/`, named by version alone; the previous ones moved to `_trash/dist/` |
 | SSD/setup kit | `repository/dist/setup-kit/`, **pinned to GatewayKH 0.2.44** and refreshed onto all four `KH-STUDIO-*` drives on **2026-09-26**, `shasum -a 256 -c` OK on every one. The drives also carry `Studio Hub.app` **0.6.70**. Superseded kits are in each drive's `_trash/superseded-kit-2026-09-26/` (`GatewayKH-0.2.27`, `GatewayKH-0.2.43`) |
+
+## What 0.2.63 changes — seeing the fleet, and the correctness underneath it
+
+### B1 · Members on the Fleet page (audit H10, M20, M21)
+
+The gateway **fetched** each controller's `nodes` and `node_summary` and never decoded them, so the
+owner could not see who had joined a controller without opening Studio Hub on it. The menubar app
+now decodes both: a **Members** column on Locations (`reachable / total`, plus `· N refused`), a
+**Node** column and a **Node last seen** column on Machines, and a State cell that draws
+**`credential refused`** for an `unauthorized` node instead of the machine's activity word
+`offline`. That state also raises a **`node_credential_rejected`** issue carrying the Hub's own
+sentence, and suppresses the `machine_offline` row for the same Mac — one fault, one row.
+
+Every decoded field is optional on purpose. Measured live: a controller on Hub 0.6.65 publishes
+node rows with `id`/`name`/`state`/`role`/`address` and **no** `last_seen_at`, so the column draws
+`—` rather than a zero, and a controller that states no summary draws `—` rather than `0 / 0`.
+
+### B3 · Queue visibility (audit H8, H9)
+
+`api.py` published `queue_position`/`queue_eta_seconds`/`queue_reason` **only when `defer_reason`
+was set**, so a waiting job looked identical to a running one; and when it was set, the position
+counted only *deferred* jobs and ignored the fresh ones dispatched ahead of it. Now **every**
+`accepted` job publishes its position and a new `queue_size`, where "ahead" means another job in
+state `accepted`, in the same modality, created earlier (ties by id) — deferred or not.
+
+New **`GET /admin/api/queue`**: waiting jobs with provider, model, modality, age, position, why it
+is waiting, and *attempt n of 3* with the last failure; plus the live `worker._in_flight`,
+`worker.budgets` — **written "so the console can say what is bounding a lane" and read by nothing
+until now** — the per-site admission budgets, the pool, and the queue wait settings. One console
+view over it, under Concurrency on the Providers page (`#queue` lands there).
+
+### C1 · Fairness and survival (audit M3, M4, M6)
+
+- **`due()` is ordered by `created_at`, not `next_action_at`.** Deferral pushes the readiness clock
+  forward, so a job that had waited kept losing its place to work that arrived later. A queue where
+  waiting costs you your position is not a queue. `next_action_at` still decides *whether* a job is
+  ready; `created_at` (ties by id, so the order is total) decides who goes first.
+- **The deferral budget survives a long render.** Eight deferrals capped at a minute is about four
+  minutes, and the live settings file did not override it, so the shipped default was the ceiling in
+  practice: a job waiting on a busy site was **failed after ~4 minutes**. It is now 240 deferrals
+  capped at five minutes — about twenty hours — which is the owner's decision C verbatim (*"hold,
+  don't fail, for a temporarily absent cluster … this replaces the audit's four-minute deferral
+  budget"*). The **retry policy is what keeps this honest**: A7 declares a job failed after three
+  real machines have tried it, so this bounds "nothing can take it yet" and A7 bounds "everything
+  tried it and failed".
+- **The dispatcher cannot die silently.** The loop guarded `due()` and nothing else, so one raise
+  from `_admit`/`mark_running`/the thread spawn ended dispatch for ever while `/health` still said
+  ok. The whole pass is wrapped, and `worker.liveness()` publishes `worker_alive`, `last_pass_at`
+  and `consecutive_failures`.
+
+### C2 · Restart recovery (audit M5, M7)
+
+- **A job that never left this process goes back in the queue.** The startup sweep failed
+  *everything* `running` as an unknown-outcome hold; six of the live holds were work that had never
+  been dispatched (`upstream_job_id: NULL`). The line is drawn at `dispatch_started_at`: before the
+  adapter was called there is no window in which a request could have reached a worker, so
+  re-queueing is provably safe. **A dispatched job is still a hold and is never replayed** — an
+  upstream id proves a container was created, and *no* id is not proof that none was.
+- **A Mac that dies mid-poll is a named hold.** `_poll_batch` had no `try/except`, so an
+  `httpx.HTTPError` became a durable hold whose detail was the exception's repr — no batch, item or
+  location. It now raises a settled-coded hold naming all three, with the recovery context the
+  discard action needs.
+
+### C3 · Capacity is derived, never configured (the owner's decision D)
+
+`paid_concurrency_limit` was the **settings pool** — live `60` while the fleet could do about `4`.
+It is now `concurrency.live_capacity()`: the sum, over **reachable** locations, of the very budget
+admission enforces (`hub_slot_reading` + `hub_budget`, the same two functions `Worker._provider_budget`
+calls), per modality and in total. `Live on this Mac: 24` — four reachable locations × six
+modalities × one Mac. A Mac that is sold leaves the number the next time Story asks; nothing is
+cached beyond the fleet's own five-second snapshot.
+
+The **pool is still published beside it** as `concurrency_pool`, and the per-modality breakdown as
+`concurrency_by_modality`, so a reader who sees the two disagree can tell which is which rather
+than discovering it by counting.
+
+**`acquire_permit` now reserves against that number** instead of returning an id and
+`expires_at: null` for ever: it answers `429` + `Retry-After` ("never 402" — a 402 locks the
+caller's key permanently) when the fleet has no headroom, and otherwise issues a permit that
+**expires**. **`max_queued_jobs` is enforced** at the one path every generation route funnels
+through, with the same `429` + `Retry-After`, and its shipped default is raised from 32 to 256 —
+53 Macs running multi-hour video jobs make 32 a busy afternoon.
+
+### C4 · Merged ceilings and one invented number (audit M10, M11)
+
+`_merge_capabilities` returned immediately for anything that was not TTS, so a merged row kept the
+**first location's** token window, output ceiling, prompt ceiling and upload cap: a Hub-side limit
+change on the second site never reached Story, and the row could advertise a window one of the
+machines would refuse. Every published ceiling now takes the **smallest** value, with its
+`*_source` and `*_source_detail` travelling beside it, for every modality. `available_workers: 1` —
+the literal, invented, published on every transcription lane for a model the fleet reported on
+sixteen machines — is **deleted**; the real concurrency comes from the location's own capacity.
+
+### C5 · The Hub's own verdict, and quantisation (audit M13, M14)
+
+The Hub states `type: "dependency"` for a package that exists only to serve another model, and the
+gateway read it and dropped it — so the guard that keeps tokenizers and codecs out of the picker
+rested entirely on a *second* HTTP call succeeding, which is the failure `models.py` records as
+having happened once already. The withhold rule now consults **either** source (the package list's
+own row or the catalogue's fact).
+
+**Every one of the 30 manifests now states its quantisation**, with the sentence saying where it
+came from — `"MLX 4-bit"` from *"the publisher's model id states it: mlx-community/chatterbox-4bit"*,
+or `null` plus the reason when the publisher names no precision. It is carried through discovery and
+published on the row as `quantization` + `quantization_source`, against the owner's standing rule
+that a model named without its quantisation cannot be checked against what he has actually run.
+`packaging/capture_model_manifests.py` preserves both keys across a re-capture, and the frozen
+digests in `tests/test_model_manifest_catalog.py` were refreshed in the same change (the manifest
+content genuinely changed).
+
+### C7 · Documentation truths (audit M17, M22)
+
+The Hub's `docs/gatewaykh-handoff-0.6.63.md` documented a **two-step** join and omitted
+`POST /api/hub/fleet/adopt`, so a scripted enrolment produced Macs the controller calls
+`unauthorized`. It now states all three steps, what the join returns, and what the node must keep.
+The Hub README's "rotate independently" claim now names the route that does it. And
+`fleet-deployment-notes.md` gained the removal caveat: **a removal is an eviction, and it makes that
+Mac's finished jobs unretrievable through the controller (503)** — fetch anything you need first.
 
 ## What 0.2.62 changes — three fleet items: what the fleet offers, what it renders, and what happens when a machine fails
 

@@ -13,8 +13,12 @@ provider queue position 2… Estimated provider wait about 2 minutes… GenStudi
 requests."* So these tests hold the vocabulary to Story's, and hold the numbers to something the
 gateway can actually know:
 
-  * `queue_position` counts **waiting** jobs of the same modality — 1 is next, and a dispatched job
-    is not in this queue at all;
+  * `queue_position` counts **waiting** jobs of the same modality — 1 is next, a dispatched job is
+    not in this queue at all, and **a fresh `accepted` job is waiting too**: publishing only for a
+    job that had already been deferred made a queued job look exactly like a running one, and made
+    the position count only the deferred jobs while the fresh submissions the dispatcher takes
+    first stood in front of it;
+  * `queue_size` is the number bounding that position, so "3" can be read as "3 of 7";
   * `queue_eta_seconds` is **when this gateway will try again**, never a claim about when the
     provider will finish;
   * a job that is not waiting publishes nothing, rather than a zero that reads like a fact.
@@ -58,55 +62,125 @@ class TheQueueHasAPositionTest(unittest.TestCase):
         )
 
     def test_a_dispatched_job_is_not_in_the_queue(self) -> None:
+        # A job nobody is waiting on must not be given a queue position. It has to
+        # be *dispatched* to prove that: every accepted job is waiting, whether or
+        # not it has been deferred yet, so merely submitting one is not the case
+        # this guards.
+        self.assertTrue(self.store.mark_running(self.first["id"]))
         self.assertIsNone(
             self.store.queue_position(self.first["id"]),
-            "a job nobody is waiting on must not be given a queue position",
+            "a job that is running must not be told it is next in a queue",
         )
+        self.assertIsNone(self.store.queue_rank(self.first["id"]))
 
-    def test_waiting_jobs_are_ranked_first_come_first_served(self) -> None:
-        for row in (self.first, self.second, self.other_lane):
-            self.store.defer(row["id"], delay_s=30, reason="LOCATION_NOT_READY: MACHINE_BUSY")
+    def test_a_fresh_submission_is_waiting_and_knows_its_place(self) -> None:
+        """The H8 defect: a newly queued job published nothing and read as running."""
         self.assertEqual(self.store.queue_position(self.first["id"]), 1)
         self.assertEqual(
             self.store.queue_position(self.second["id"]), 2,
-            "the second image job is behind the first",
+            "a fresh job stands behind the fresh job created before it",
         )
         self.assertEqual(
             self.store.queue_position(self.other_lane["id"]), 1,
             "a chat job is not behind image work: the queue is per modality",
+        )
+        rank = self.store.queue_rank(self.second["id"])
+        self.assertEqual(rank, {"position": 2, "size": 2})
+
+    def test_an_earlier_fresh_job_is_counted_ahead_of_a_deferred_one(self) -> None:
+        """What `store.queue_position` got wrong: it counted only deferred jobs.
+
+        The fresh job was created first and the dispatcher takes it first, so the
+        deferred job is second — not "next" because it is the only one carrying a
+        `defer_reason`.
+        """
+        self.store.defer(self.first["id"], delay_s=30, reason="LOCATION_NOT_READY: MACHINE_BUSY")
+        self.assertEqual(self.store.queue_position(self.first["id"]), 1)
+        self.assertEqual(
+            self.store.queue_position(self.second["id"]), 2,
+            "the fresh job created before it is ahead of it, not invisible",
+        )
+        rank = self.store.queue_rank(self.first["id"])
+        self.assertEqual(rank, {"position": 1, "size": 2})
+
+    def test_waiting_jobs_are_listed_in_the_order_they_will_be_dispatched(self) -> None:
+        self.store.defer(self.first["id"], delay_s=30, reason="LOCATION_NOT_READY: MACHINE_BUSY")
+        rows = self.store.waiting_jobs()
+        self.assertEqual(
+            [row["id"] for row in rows], [self.first["id"], self.second["id"], self.other_lane["id"]],
+            "oldest first, and only the jobs that are still waiting",
         )
 
 
 class TheEnvelopeSaysSoTest(unittest.TestCase):
     def _body(self, job: dict) -> dict:
         body: dict = {}
-        with patch.object(api, "store", _Queue(3)):
+        with patch.object(api, "store", _Queue(3, 7)):
             api._publish_queue_evidence(body, job)
         return body
 
     def test_a_waiting_job_publishes_the_vocabulary_story_reads(self) -> None:
         job = {
             "id": "job-1",
+            "state": "accepted",
             "defer_reason": "LOCATION_NOT_READY: MACHINE_BUSY",
             "next_action_at": time.time() + 42,
         }
         body = self._body(job)
         self.assertEqual(body["queue_reason"], "provider_pace")
         self.assertEqual(body["queue_position"], 3)
+        self.assertEqual(body["queue_size"], 7)
         self.assertTrue(0 <= body["queue_eta_seconds"] <= 42)
 
+    def test_a_fresh_waiting_job_publishes_its_place_without_claiming_pacing(self) -> None:
+        """The position is published for every `accepted` job; pacing is not claimed.
+
+        A job that has never been refused is queued, not paced by a provider, and
+        `queue_reason` is Story's one word for pacing — so it stays absent while the
+        two numbers that are true are published.
+        """
+        body = self._body({
+            "id": "job-fresh", "state": "accepted", "defer_reason": None,
+            "next_action_at": time.time() + 0.8,
+        })
+        self.assertEqual(body["queue_position"], 3)
+        self.assertEqual(body["queue_size"], 7)
+        self.assertNotIn("queue_reason", body)
+
     def test_a_job_that_is_not_waiting_publishes_nothing(self) -> None:
-        body = self._body({"id": "job-2", "next_action_at": None})
-        self.assertEqual(body, {}, "an absent queue is not a queue at position zero")
+        for state in ("running", "succeeded", "failed", "cancelled", None):
+            body = self._body({"id": "job-2", "state": state, "next_action_at": None})
+            self.assertEqual(body, {}, f"{state!r} is not a queue at position zero")
 
     def test_a_passed_retry_time_does_not_publish_a_negative_wait(self) -> None:
-        job = {"id": "job-3", "defer_reason": "x", "next_action_at": time.time() - 5}
+        job = {"id": "job-3", "state": "accepted", "defer_reason": "x",
+               "next_action_at": time.time() - 5}
         body = self._body(job)
         self.assertEqual(body["queue_eta_seconds"], 0)
+
+    def test_a_store_with_only_the_old_reader_still_answers(self) -> None:
+        """A store without `queue_rank` must not leave a waiting job unpublished."""
+        job = {"id": "job-4", "state": "accepted", "defer_reason": "x", "next_action_at": None}
+        body: dict = {}
+        with patch.object(api, "store", _OldQueue(4)):
+            api._publish_queue_evidence(body, job)
+        self.assertEqual(body["queue_position"], 4)
+        self.assertNotIn("queue_size", body)
 
 
 class _Queue:
     """Stands in for the store's queue reader."""
+
+    def __init__(self, position: int, size: int = 1) -> None:
+        self.position = position
+        self.size = size
+
+    def queue_rank(self, job_id: str) -> dict:
+        return {"position": self.position, "size": self.size}
+
+
+class _OldQueue:
+    """A store from before `queue_rank`: one number and no bounding count."""
 
     def __init__(self, position: int) -> None:
         self.position = position
@@ -125,13 +199,17 @@ class TheWaitIsSettingsTest(unittest.TestCase):
         self.addCleanup(patcher.stop)
 
     def test_the_documented_defaults_stand_when_nothing_is_set(self) -> None:
+        # Read from the constants, never restated: the shipped wait was 8 deferrals at a
+        # minute, and the owner's decision C moved it (a fleet running two-hour video jobs
+        # needs a longer hold). A literal here would turn that decision into a red test —
+        # the trap `tests/mock_upstream.py` names for the Hub's own numbers.
         budget = concurrency.queue_wait_budget()
-        self.assertEqual(budget["max_deferrals"], 8)
-        self.assertEqual(budget["defer_cap_seconds"], 60.0)
+        self.assertEqual(budget["max_deferrals"], concurrency.DEFAULT_MAX_DEFERRALS)
+        self.assertEqual(budget["defer_cap_seconds"], concurrency.DEFAULT_DEFER_CAP_S)
         self.assertEqual(budget["source"], concurrency.SOURCE_GATEWAY)
 
-    def test_an_operator_can_wait_longer_than_four_minutes(self) -> None:
-        """The point of the change: ~4 minutes was failing work a busy fleet would have run."""
+    def test_an_operator_can_wait_longer_than_the_shipped_default(self) -> None:
+        """The point of the settings: a busy fleet must be waited out, not failed."""
         self.path.write_text(
             json.dumps({"global": 60, "queue": {"max_deferrals": 24, "defer_cap_seconds": 300}}),
             encoding="utf-8",
@@ -147,8 +225,8 @@ class TheWaitIsSettingsTest(unittest.TestCase):
         self.path.write_text(json.dumps({"queue": {"max_deferrals": 0, "defer_cap_seconds": -1}}),
                              encoding="utf-8")
         budget = concurrency.queue_wait_budget()
-        self.assertEqual(budget["max_deferrals"], 8)
-        self.assertEqual(budget["defer_cap_seconds"], 60.0)
+        self.assertEqual(budget["max_deferrals"], concurrency.DEFAULT_MAX_DEFERRALS)
+        self.assertEqual(budget["defer_cap_seconds"], concurrency.DEFAULT_DEFER_CAP_S)
 
 
 if __name__ == "__main__":

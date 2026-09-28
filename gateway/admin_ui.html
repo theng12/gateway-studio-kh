@@ -424,6 +424,28 @@
     <div id="concurrency-msg" class="msg" role="alert" aria-live="polite"></div>
     <div id="concurrency"></div>
 
+    <!-- QUEUE
+         The live half of the numbers above. The settings say what *may* run; this
+         says what is waiting, in the order it will be dispatched, and which ceiling
+         is actually holding each lane right now — the pool, the lane cap and each
+         site's own budget, read from the running worker rather than re-derived. A
+         position with no ceiling beside it is a number without a reason. -->
+    <h2 style="margin:26px 0 4px">Queue</h2>
+    <p class="hint" style="margin:0 0 12px">
+      Every job <b>waiting</b> right now — accepted but not yet dispatched, deferred or not —
+      in the order the gateway will take them, with each one's position and the size of the
+      queue it sits in. Below that, <b>what is bounding each lane</b>: the pool, each operation's
+      cap, and each site's own budget as the worker last resolved it. A running job is not in
+      this queue at all, so <b>position 3 of 7</b> counts only work still waiting.
+    </p>
+    <div class="row" style="margin:0 0 10px">
+      <div class="stat" id="queue-summary">loading…</div>
+      <div class="spacer"></div>
+      <button class="sm" type="button" onclick="loadQueue()">Refresh queue</button>
+    </div>
+    <div id="queue-msg" class="msg" role="alert" aria-live="polite"></div>
+    <div id="queue"></div>
+
     <h2 style="margin:26px 0 4px">Measured</h2>
     <p class="hint" style="margin:0 0 12px">
       What each model has <b>actually carried</b>, from real jobs this gateway has run —
@@ -650,9 +672,15 @@ function setView(view) {
   document.getElementById('view-create').style.display = view === 'create' ? '' : 'none';
   document.getElementById('view-packs').style.display = view === 'packs' ? '' : 'none';
   if (view === 'models') loadModels();
-  else if (view === 'providers') { loadProviders(); loadConcurrency(); loadMeasured(); }
+  else if (view === 'providers') { loadProviders(); loadConcurrency(); loadMeasured(); loadQueue(); }
   else if (view === 'packs') loadContentShelf();
   else loadCreate();
+  // A `#queue` link opens the Providers page **at the queue**: the section only
+  // exists on that page, so the scroll happens here, once the section is visible,
+  // rather than in `viewFromHash` where it would scroll a hidden element.
+  if ((location.hash || '').startsWith('#queue')) {
+    document.getElementById('queue')?.scrollIntoView({ block: 'start' });
+  }
 }
 
 const SHELF_KIND_LABELS = {
@@ -1455,6 +1483,151 @@ async function saveConcurrency() {
   }
 }
 
+// -- queue -----------------------------------------------------------------
+// The live half of the ceilings above. Audit H9: four views existed and none of
+// them was the queue; `worker.budgets` was written "so the console can say what is
+// bounding a lane" and read by nothing outside tests.
+//
+// **Two tables, because there are two ceilings and they are not the same one.** A
+// lane row says how much of the pool one operation may hold; a site row says what
+// one provider will accept, which for a Studio Hub location is the free machines it
+// reports for itself. "Why is nothing running?" is answered by the second, and
+// "why is this lane only running one?" by the first.
+function queueMessage(text, failed=false) {
+  const node = document.getElementById('queue-msg');
+  if (!node) return;
+  node.textContent = text || '';
+  node.className = failed ? 'msg bad' : 'msg';
+}
+
+function queueBudget(budget) {
+  if (!budget) return '<span class="muted">not resolved yet</span>';
+  const limit = budget.limit == null ? '<span class="muted">—</span>' : esc(budget.limit);
+  return `${limit} <span class="muted">${esc(budget.source || '')}</span>`
+    + (budget.detail ? `<div class="hint" style="margin:2px 0 0">${esc(budget.detail)}</div>` : '');
+}
+
+// *attempt n of 3*, and the last machine's reason — the owner's decision E, stated
+// where the work waits rather than only after it has failed. `attempts_used` counts
+// settled machine attempts, so the attempt *in progress* is the next number; the
+// ceiling is the retry policy the gateway will hold this job to.
+function queueAttemptText(job) {
+  const used = Number(job.attempts_used || 0);
+  const allowed = job.attempts_allowed == null ? null : Number(job.attempts_allowed);
+  const n = allowed ? Math.min(used + 1, allowed) : used + 1;
+  const of = allowed == null ? 'attempt ' + n : `attempt ${n} of ${allowed}`;
+  const attempts = Array.isArray(job.attempts) ? job.attempts : [];
+  const last = attempts[attempts.length - 1];
+  const parts = [`<b>${esc(of)}</b>`];
+  if (used > 0) parts.push(`${esc(used)} tried`);
+  if (last) {
+    const why = [last.failure_code, last.failure_reason].filter(Boolean).join(': ');
+    parts.push(esc(why ? `${last.machine || 'a machine'} — ${why}` : (last.machine || 'a machine')));
+  } else {
+    parts.push('<span class="muted">not tried yet</span>');
+  }
+  return parts.join(' · ');
+}
+
+function renderQueue(data) {
+  const target = document.getElementById('queue');
+  const summary = document.getElementById('queue-summary');
+  if (!target) return;
+  const jobs = Array.isArray(data.jobs) ? data.jobs : [];
+  const lanes = Array.isArray(data.lanes) ? data.lanes : [];
+  const sites = Array.isArray(data.sites) ? data.sites : [];
+  const pool = data.pool || {};
+  const wait = data.queue_wait || {};
+  if (summary) {
+    summary.textContent = `${jobs.length} waiting · ${pool.in_flight ?? 0} running · `
+      + `pool ${pool.limit ?? '—'} (${pool.source || 'unknown'})`
+      + (data.truncated ? ' · listing truncated' : '');
+  }
+  const jobRows = jobs.map(job => {
+    const position = job.queue_position == null
+      ? '<span class="muted">—</span>'
+      : `${esc(job.queue_position)} <span class="muted">of ${esc(job.queue_size ?? '—')}</span>`;
+    // Why it is waiting, when it will be tried again, and how many times it has already
+    // been put back — the count the deferral ceiling in the summary is measured against.
+    // A job that has never been through this says nothing rather than "put back 0 times".
+    const putBack = Number(job.deferrals || 0);
+    const why = (job.defer_reason
+      ? esc(job.defer_reason)
+      : '<span class="muted">queued for the next free slot</span>')
+      + (putBack
+        ? `<div class="hint" style="margin:2px 0 0">put back ${esc(putBack)} time${putBack === 1 ? '' : 's'}</div>`
+        : '')
+      + (job.retry_in_s == null
+        ? ''
+        : `<div class="hint" style="margin:2px 0 0">retry in ${esc(job.retry_in_s)}s</div>`);
+    return `
+      <tr>
+        <td>${position}</td>
+        <td>${esc(job.modality || '—')}</td>
+        <td>${esc(job.model_name || job.model_id || '—')}<div class="hint" style="margin:2px 0 0">${esc(job.provider_name || job.provider_id || '')}</div></td>
+        <td>${esc(ago(job.created_at))}<div class="hint" style="margin:2px 0 0">${esc(job.short_id || '')}</div></td>
+        <td>${why}</td>
+        <td title="${esc(job.attempt_policy || '')}">${queueAttemptText(job)}</td>
+      </tr>`;
+  }).join('');
+  const laneRows = lanes.map(lane => `
+      <tr>
+        <td>${esc(lane.modality || '—')}</td>
+        <td>${esc(lane.waiting ?? 0)}</td>
+        <td>${esc(lane.in_flight ?? 0)}</td>
+        <td>${esc(lane.limit ?? '—')} <span class="muted">${esc(lane.source || '')}</span></td>
+        <td class="muted">${esc(lane.detail || '')}</td>
+      </tr>`).join('');
+  const siteRows = sites.map(site => `
+      <tr>
+        <td>${esc(site.provider_name || site.provider_id || '—')}</td>
+        <td>${esc(site.in_flight ?? 0)}</td>
+        <td>${queueBudget(site.budget)}</td>
+      </tr>`).join('');
+  target.innerHTML = `
+    <h3 style="margin:16px 0 6px">Waiting jobs</h3>
+    <div class="tablewrap"><div class="scroll">
+      <table class="grid">
+        <thead><tr><th style="width:90px">Position</th><th style="width:90px">Operation</th>
+          <th>Model</th><th style="width:120px">Waiting</th>
+          <th style="width:300px">Why it is waiting</th><th style="width:280px">Tries</th></tr></thead>
+        <tbody>${jobRows || '<tr><td colspan="6" class="muted">Nothing is waiting. Every accepted job has been dispatched.</td></tr>'}</tbody>
+      </table>
+    </div></div>
+    <div class="hint" style="margin-top:6px">
+      A job that cannot be put back in the queue is failed after
+      ${esc(wait.max_deferrals ?? '—')} attempts, waiting up to
+      ${esc(wait.defer_cap_seconds ?? '—')}s between them (${esc(wait.source || 'unknown')}).
+      A position counts only jobs still waiting, in the order the gateway will take them.
+    </div>
+    <h3 style="margin:18px 0 6px">What is bounding each lane</h3>
+    <table class="grid">
+      <thead><tr><th>Operation</th><th>Waiting</th><th>Running</th><th>Cap in force</th>
+        <th>Where it came from</th></tr></thead>
+      <tbody>${laneRows || '<tr><td colspan="5" class="muted">No lane is capped and nothing is waiting or running.</td></tr>'}</tbody>
+    </table>
+    <h3 style="margin:18px 0 6px">Sites</h3>
+    <p class="hint" style="margin:0 0 8px">What each location running work right now will accept,
+      as the worker last resolved it. A Studio Hub location sizes itself from the free machines it
+      reports; “not resolved yet” means no job has been admitted to it since the gateway started.</p>
+    <table class="grid">
+      <thead><tr><th>Site</th><th>Running now</th><th>Budget</th></tr></thead>
+      <tbody>${siteRows || '<tr><td colspan="3" class="muted">No job has been admitted since the gateway started.</td></tr>'}</tbody>
+    </table>`;
+}
+
+async function loadQueue() {
+  const target = document.getElementById('queue');
+  if (!target) return;
+  try {
+    renderQueue(await api('/queue'));
+    queueMessage('');
+  } catch (e) {
+    target.innerHTML = '';
+    queueMessage(e.message || 'could not read the queue', true);
+  }
+}
+
 // -- measured --------------------------------------------------------------
 // Real work only. Every number in this table is this gateway's own measurement and
 // the panel says so, because the one thing both projects refuse is a number of ours
@@ -1821,6 +1994,11 @@ document.getElementById('key-filter').addEventListener('change', renderProviders
 function viewFromHash() {
   const hash = (location.hash || '').replace(/^#/, '');
   if (hash.startsWith('providers')) return 'providers';
+  // The Queue is a section of the Providers page — the live half of the same
+  // ceilings — so its own hash lands there and `setView` scrolls to it once the
+  // section is actually visible, rather than being a second page with its own copy
+  // of the concurrency numbers.
+  if (hash.startsWith('queue')) return 'providers';
   if (hash.startsWith('create')) return 'create';
   if (hash.startsWith('packs')) return 'packs';
   return 'models';
@@ -2240,7 +2418,13 @@ async function openCreateJob(id) {
 (async function init() {
   await loadStatus();
   await setView(viewFromHash());
-  setInterval(loadStatus, 15000);
+  // The queue is live state, so it refreshes with the status line while it is the
+  // page in front of the operator — and never while another view is open, where it
+  // would re-render a section nobody is reading.
+  setInterval(() => {
+    loadStatus();
+    if (state.view === 'providers') loadQueue();
+  }, 15000);
 })();
 </script>
 </body>

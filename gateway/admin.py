@@ -1686,10 +1686,7 @@ def list_jobs(
     from .api import _lifecycle_fields, recovery_action
 
     pinned = {str(row["path"]) for row in retention.kept()}
-    labels: dict[tuple[str, str], str] = {}
-    for definition in registry.definitions():
-        for model in registry.models.models_for(definition.id, include_disabled=True):
-            labels[(definition.id, model["model_id"])] = model["display_name"]
+    labels = _model_labels()
 
     TERMINAL = {"succeeded", "failed", "cancelled"}
     rows: list[dict[str, Any]] = []
@@ -1732,8 +1729,14 @@ def list_jobs(
                 # owner actually has — "am I next?" and "when?" — to be guessed at. The position is
                 # a real rank among the waiting jobs of the same modality, and `retry_in_s` is when
                 # this gateway will make its next attempt, not a prediction about the provider.
+                # **Every `accepted` job is waiting**, not only a deferred one: gating this on
+                # `defer_reason` left a freshly queued job looking exactly like a running one.
                 "queue_position": (
-                    store.queue_position(job["id"]) if job.get("defer_reason") else None
+                    store.queue_position(job["id"]) if job["state"] == "accepted" else None
+                ),
+                "queue_size": (
+                    (store.queue_rank(job["id"]) or {}).get("size")
+                    if job["state"] == "accepted" else None
                 ),
                 "retry_in_s": (
                     max(0, int(round(float(job["next_action_at"]) - time.time())))
@@ -1760,6 +1763,174 @@ def list_jobs(
         )
 
     return {"jobs": rows, "stats": store.stats()}
+
+
+def _model_labels() -> dict[tuple[str, str], str]:
+    """`(provider_id, model_id) -> display_name`, for every model on every provider.
+
+    One reader for the jobs list and the queue view, so a model named on one surface
+    cannot be named differently on the other.
+    """
+    labels: dict[tuple[str, str], str] = {}
+    for definition in registry.definitions():
+        for model in registry.models.models_for(definition.id, include_disabled=True):
+            labels[(definition.id, model["model_id"])] = model["display_name"]
+    return labels
+
+
+#: The lane caps a queue view explains, in the catalogue's own order. `lane_budget`
+#: answers for every one of them, so a lane with no cap says "the whole pool" rather
+#: than being omitted and leaving the reader to wonder.
+_QUEUE_LANES = MODALITIES
+
+
+@router.get("/api/queue", dependencies=[Depends(require_admin)])
+def queue_view(limit: int = Query(200, ge=1, le=1000)) -> dict[str, Any]:
+    """What is waiting, where it stands, and **what is bounding each lane**.
+
+    The owner asked for this in as many words — *"when the machines get busy, i want
+    it queue… i need the UI for that"* — and the queue had no surface at all: the
+    console's four views are models, providers, create and packs, and `worker.budgets`
+    was written *"so the console can say what is bounding a lane"* and read by
+    nothing outside tests. The two halves belong together, because a position with no
+    ceiling beside it is a number without a reason: "position 3" cannot be told from
+    "position 3 and this lane may run one at a time".
+
+    Every job here is in state `accepted` — waiting, deferred or not — in the order
+    the queue will dispatch them (`store.waiting_jobs`). Each carries its own
+    `queue_position`/`queue_size` from the store's single rule, its `defer_reason`,
+    its age, and its **retry policy evidence** (`attempts_used`/`attempts_allowed`/
+    `attempts[]`, the same fields the job envelope publishes) so the owner's decision
+    E — *"the same policy stated on the Gateway's Jobs view so an operator can see
+    attempt n of 3"* — is readable where the work is waiting rather than only after
+    it has failed.
+
+    `in_flight` and `budgets` are the live worker's own books, read from the
+    singleton in `runtime` and never reconstructed: `budgets` holds the last budget
+    resolved per provider, with the source and the sentence explaining it, and
+    `in_flight` is how many jobs that provider is running right now. `lanes` states
+    each modality's cap, so the two halves meet: a provider row bounded at 1 and a
+    lane row bounded at the pool describe different ceilings and both are shown.
+    """
+    from . import concurrency
+    from .api import _publish_attempt_evidence
+
+    now = time.time()
+    labels = _model_labels()
+    waiting = store.waiting_jobs(limit=limit)
+
+    jobs: list[dict[str, Any]] = []
+    for job in waiting:
+        provider_id = str(job.get("provider_id") or "")
+        model_id = str(job.get("model_id") or "")
+        definition = registry.definition(provider_id)
+        rank = store.queue_rank(job["id"]) or {}
+        created = job.get("created_at")
+        row: dict[str, Any] = {
+            "id": job["id"],
+            "short_id": job["id"][:8],
+            "state": job["state"],
+            "modality": job["modality"],
+            "provider_id": provider_id,
+            "provider_name": definition.display_name if definition else provider_id,
+            "model_id": model_id,
+            "model_name": labels.get((provider_id, model_id), model_id),
+            "caller": job.get("caller"),
+            "created_at": created,
+            "age_seconds": round(now - created, 1) if isinstance(created, (int, float)) else None,
+            "queue_position": rank.get("position"),
+            "queue_size": rank.get("size"),
+            "defer_reason": job.get("defer_reason"),
+            "next_action_at": job.get("next_action_at"),
+            # When a *deferred* job will be tried again. A fresh job also carries a
+            # `next_action_at` (the 0.8 s dispatch delay), and rendering that as
+            # "retry in 1s" would describe a first attempt as a retry.
+            "retry_in_s": (
+                max(0, int(round(float(job["next_action_at"]) - now)))
+                if job.get("defer_reason") and isinstance(job.get("next_action_at"), (int, float))
+                else None
+            ),
+            # How many times this job has been dispatched and put back, against the
+            # ceiling that eventually stops waiting on a busy fleet. Distinct from
+            # `attempts_*`, which count *machines*: a deferral never reached one, so
+            # the retry policy does not count it.
+            "deferrals": int(job.get("attempt_count") or 0),
+        }
+        # The same evidence the job envelope publishes, from the same function, so
+        # the console and Story read one policy rather than two spellings of it.
+        _publish_attempt_evidence(row, job)
+        # **The policy is stated for every waiting job, not only one that has already
+        # failed.** `_publish_attempt_evidence` is deliberately additive — a job on
+        # its first machine carries no `attempts` key, so "never retried" stays
+        # distinguishable from "we did not look" — but the operator's question here,
+        # in the owner's own words, is *"attempt n of 3"* asked **while the job
+        # waits**. So the two counts and the wording are filled from the same policy
+        # reader when the evidence had nothing to add.
+        row.setdefault("attempts", [])
+        row.setdefault("attempts_used", 0)
+        row.setdefault("attempts_allowed", int(concurrency.retry_policy()["max_attempts"]))
+        row.setdefault("attempt_policy", concurrency.retry_policy_wording())
+        jobs.append(row)
+
+    # The live books. Copied under no lock: each is replaced key by key on the
+    # worker's own thread, and a reader that sees a count move between two keys is
+    # reading two instants, not a corrupted book.
+    in_flight = dict(getattr(worker, "_in_flight", {}) or {})
+    lane_in_flight = dict(getattr(worker, "_lane_in_flight", {}) or {})
+    budgets = dict(getattr(worker, "budgets", {}) or {})
+
+    def provider_name(provider_id: str) -> str:
+        definition = registry.definition(provider_id)
+        return definition.display_name if definition else provider_id
+
+    sites = [
+        {
+            "provider_id": provider_id,
+            "provider_name": provider_name(provider_id),
+            "in_flight": int(in_flight.get(provider_id) or 0),
+            "budget": budgets.get(provider_id),
+        }
+        for provider_id in sorted(set(in_flight) | set(budgets))
+    ]
+
+    waiting_by_lane: dict[str, int] = {}
+    for job in jobs:
+        lane = str(job.get("modality") or "")
+        waiting_by_lane[lane] = waiting_by_lane.get(lane, 0) + 1
+    lanes = []
+    for lane in _QUEUE_LANES:
+        budget = concurrency.lane_budget(lane)
+        running = int(lane_in_flight.get(lane) or 0)
+        # A lane is shown when something is happening in it or when somebody capped
+        # it; an uncapped, empty lane would be six rows of "the whole pool".
+        if not waiting_by_lane.get(lane) and not running and budget.source != concurrency.SOURCE_CURATED:
+            continue
+        lanes.append({
+            "modality": lane,
+            "waiting": waiting_by_lane.get(lane, 0),
+            "in_flight": running,
+            **budget.as_dict(),
+        })
+
+    return {
+        "generated_at": now,
+        "waiting": len(jobs),
+        "truncated": len(jobs) >= limit,
+        "jobs": jobs,
+        "lanes": lanes,
+        "sites": sites,
+        "pool": {
+            **concurrency.global_budget().as_dict(),
+            "in_flight": int(worker.active()),
+        },
+        # The raw books the worker keeps, published so the view can say what is
+        # bounding a lane without re-deriving it — and so a reader comparing the
+        # console with a test is looking at the same numbers.
+        "in_flight": in_flight,
+        "budgets": budgets,
+        "queue_wait": concurrency.queue_wait_budget(),
+        "attempt_policy": concurrency.retry_policy_wording(),
+    }
 
 
 @router.get("/api/content-library", dependencies=[Depends(require_admin)])

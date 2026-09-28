@@ -469,7 +469,31 @@ def _poll_batch(
     deadline = time.monotonic() + limit
     last: dict[str, Any] = {}
     while time.monotonic() < deadline:
-        response = client.get(f"{base}{jobs_path}/{batch_id}", headers=headers)
+        # **A Mac that dies mid-poll is a named hold, not a raw `ConnectError`.** This call had no
+        # guard at all (audit M7): an `httpx.HTTPError` escaped to the worker's generic handler,
+        # which recorded a durable `unknown_outcome` hold whose detail was the exception's own
+        # repr — no batch, no item, no location — leaving the operator nothing to reconcile
+        # against. The outcome is still **unknown**, and deliberately so: the Hub accepted the
+        # batch, and a lost connection is not evidence that the worker stopped. What changes is
+        # that the hold names the batch, the item and the machine, so it can be settled when that
+        # machine answers again.
+        try:
+            response = client.get(f"{base}{jobs_path}/{batch_id}", headers=headers)
+        except httpx.HTTPError as exc:
+            reason = str(exc).strip() or type(exc).__name__
+            raise BackendError(
+                f"lost contact with {base} while polling batch {batch_id} "
+                f"(item {item_index}): {reason}",
+                code="PROVIDER_SUBMISSION_UNCERTAIN",
+                upstream_accepted=True,
+                recovery={
+                    "location": base,
+                    "batch_id": batch_id,
+                    "item_index": item_index,
+                    "jobs_path": jobs_path,
+                    "reason": reason,
+                },
+            ) from exc
         if response.status_code >= 400:
             raise BackendError(
                 f"hub status HTTP {response.status_code}: {response.text[:200]}",

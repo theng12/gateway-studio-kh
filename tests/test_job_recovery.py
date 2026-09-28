@@ -108,10 +108,44 @@ class JobRecoveryTests(unittest.TestCase):
         assert created
         return row
 
-    def test_reopen_fails_claimed_work_as_unknown_without_dispatching_again(self) -> None:
+    def test_reopen_requeues_work_that_never_left_this_process(self) -> None:
+        """**This test used to assert the opposite, and the change is deliberate** (C2/M5).
+
+        A restart failed *everything* `running` as an unknown-outcome hold, including work the
+        adapter had never been called for — `dispatch_started_at IS NULL`. Six of the live holds
+        were exactly that: `upstream_job_id: NULL`, nothing running anywhere, and an operator
+        asked to reconcile work that had never been sent. A job that provably never left this
+        process goes back in the queue.
+
+        The next test is the other half, and it is the one that must never change: a job that
+        *had* been dispatched is a hold, because re-running it could render and bill twice.
+        """
         store = self.make_store("reopen")
         row = self.submit(store, "reopen-unknown")
         self.assertTrue(store.mark_running(row["id"]))
+        store.close()
+
+        reopened = JobStore(store.path)
+        try:
+            recovered = reopened.get(row["id"])
+            self.assertEqual(recovered["state"], "accepted",
+                             "a job that was never dispatched is not a recovery hold")
+            self.assertIsNone(recovered["recovery_state"])
+            self.assertIsNone(recovered["error_code"])
+            self.assertEqual([job["id"] for job in reopened.due(time.time() + 60)], [row["id"]],
+                             "and it is due again, so the queue picks it up")
+        finally:
+            reopened.close()
+
+    def test_reopen_still_holds_work_that_may_have_reached_a_worker(self) -> None:
+        # **The line, and why it is drawn at `dispatch_started_at`.** An upstream id proves a
+        # container was created; no id is *not* proof that none was, because the one window with
+        # no id and real work in it is a POST that succeeded whose answer was lost. Before
+        # dispatch began there is no such window. Never replay what might be running.
+        store = self.make_store("reopen-dispatched")
+        row = self.submit(store, "reopen-dispatched")
+        self.assertTrue(store.mark_running(row["id"]))
+        self.assertTrue(store.begin_dispatch(row["id"]))
         store.close()
 
         reopened = JobStore(store.path)
@@ -121,7 +155,8 @@ class JobRecoveryTests(unittest.TestCase):
             self.assertEqual(recovered["error_code"], "UNKNOWN_OUTCOME")
             self.assertEqual(recovered["recovery_state"], "unknown_outcome")
             self.assertIn("will not dispatch", recovered["error_detail"].lower())
-            self.assertEqual(reopened.due(time.time() + 60), [])
+            self.assertEqual(reopened.due(time.time() + 60), [],
+                             "a dispatched job is never re-queued automatically")
         finally:
             reopened.close()
 
@@ -157,8 +192,10 @@ class JobRecoveryTests(unittest.TestCase):
             reopened.close()
 
     def test_a_restart_before_dispatch_records_no_attempt(self) -> None:
-        # Nothing was accepted upstream, so there is nothing to name — and nothing
-        # to reconcile either. Absence stays absent rather than becoming a batch.
+        # Nothing was accepted upstream, so there is nothing to name — and nothing to reconcile
+        # either. **Absence stays absent rather than becoming a batch**: the job is not a hold at
+        # all, so it has no context to resolve and must not be given an empty one that reads as
+        # "a batch we could not name".
         store = self.make_store("restart-no-upstream")
         row = self.submit(store, "restart-no-upstream")
         self.assertTrue(store.mark_running(row["id"]))
@@ -166,7 +203,9 @@ class JobRecoveryTests(unittest.TestCase):
 
         reopened = JobStore(store.path)
         try:
-            self.assertIsNone(reopened.get(row["id"])["recovery_context"])
+            recovered = reopened.get(row["id"])
+            self.assertIsNone(recovered["recovery_context"])
+            self.assertEqual(recovered["state"], "accepted")
         finally:
             reopened.close()
 

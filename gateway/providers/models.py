@@ -316,6 +316,16 @@ class ModelInventory:
         #    Absence stays unverified — a Hub that does not publish it withholds
         #    nothing.
         raw = model.get("raw") or {}
+        # **The Hub's own `type`, from whichever read answered** (C5/M13). The catalogue says
+        # `dependency` for a package that exists only to serve another — a tokenizer, a codec,
+        # an encoder — and the package list says the same thing on its own rows. The rule used
+        # to rest entirely on the *catalogue* read, so a catalogue that timed out (it has
+        # happened; `models.py` records the incident) left a tokenizer publishable while the
+        # package list had already answered `dependency` in the first request.
+        if str(raw.get("catalogue_type") or "").strip().lower() == "dependency" \
+                or str(raw.get("package_type") or "").strip().lower() == "dependency":
+            return ("the Hub describes this as a dependency of another model, not a model "
+                    "to run")
         if raw.get("catalogued") is False:
             return (
                 "the Hub does not catalogue this as a model — it is a companion its "

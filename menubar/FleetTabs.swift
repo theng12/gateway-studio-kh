@@ -917,6 +917,33 @@ final class FleetLocationsTab: FleetTabView {
                 }
             ),
             FleetColumn(
+                id: "lmembers", title: "Members", width: 130,
+                // **Who has joined this controller** (audit H10). The Hub publishes
+                // `node_summary` per location and this page never decoded it, so
+                // "able to see each member connected" meant opening Studio Hub on the
+                // controller. The fraction is the controller's own count of nodes that
+                // answered out of the roster it holds; a refused credential is spelled
+                // out rather than folded into "offline", because it is the one state
+                // with a fix a person has to perform.
+                text: { row in
+                    guard let row = location(row) else { return "—" }
+                    return row.membersText
+                },
+                sortValue: { row in
+                    guard let count = location(row)?.memberCount else { return .none }
+                    return .number(Double(count.reachable))
+                },
+                colour: { row in
+                    guard let row = location(row) else { return .labelColor }
+                    if (row.nodeSummary?.unauthorized ?? 0) > 0 { return .systemRed }
+                    if let count = row.memberCount, count.total > 0, count.reachable == 0 {
+                        return .systemOrange
+                    }
+                    return .labelColor
+                },
+                tooltip: { row in location(row)?.membersTooltip }
+            ),
+            FleetColumn(
                 id: "lmodels", title: "Models (offered/discovered)", width: 170,
                 text: { row in
                     guard let row = location(row) else { return "—" }
@@ -1272,11 +1299,21 @@ final class FleetMachinesTab: NSView {
                 id: "state", title: "State", width: 110,
                 text: { row in
                     guard let row = machine(row) else { return "—" }
+                    // **A refused credential is not an offline machine.** The Hub puts
+                    // the node in its own `unauthorized` state precisely so a token
+                    // problem does not read as a network one; its activity word is
+                    // `offline` because nothing can be dispatched, and drawing that
+                    // sent the owner to the network for a credential.
+                    if row.nodeStateIsUnauthorized { return "credential refused" }
                     return row.state.map { FleetFormat.words($0) }
                         ?? (row.reachable == true ? "up" : "offline")
                 },
                 sortValue: { .text(machine($0)?.state ?? "") },
-                colour: { machine($0)?.reachable == false ? .systemOrange : .labelColor },
+                colour: { row in
+                    guard let row = machine(row) else { return .labelColor }
+                    if row.nodeStateIsUnauthorized { return .systemRed }
+                    return row.reachable == false ? .systemOrange : .labelColor
+                },
                 // **The reason, not just the verdict.** The Hub distinguishes a
                 // node it cannot reach from one whose Hub is not running, and the
                 // controller writes its own sentence about it; both sit here so
@@ -1302,6 +1339,54 @@ final class FleetMachinesTab: NSView {
                 id: "location", title: "Location", width: 150,
                 text: { FleetFormat.text(machine($0)?.location) },
                 sortValue: { .text(machine($0)?.location ?? "") }
+            ),
+            FleetColumn(
+                id: "node", title: "Node", width: 110,
+                // **Which Macs are members, and which one this is.** The node roster
+                // was fetched per location and never joined onto its machine (H10/M21);
+                // `node_role` is the role the controller recorded when the Mac joined
+                // (`agent` today), and `member` marks a Mac whose controller stated no
+                // role rather than claiming it is not one. The controller's own Mac has
+                // no roster row and reads `—`.
+                text: { machine($0)?.nodeRoleText ?? "—" },
+                sortValue: { .text(machine($0)?.nodeRole ?? "") },
+                colour: { row in
+                    guard let row = machine(row) else { return .labelColor }
+                    if row.nodeStateIsUnauthorized { return .systemRed }
+                    if row.nodeState?.lowercased() == "unreachable" { return .systemOrange }
+                    return .labelColor
+                },
+                tooltip: { row in
+                    guard let row = machine(row) else { return nil }
+                    guard row.isNode else {
+                        return "This is the controller's own Mac: it is not a node of "
+                            + "another controller, so it has no roster row."
+                    }
+                    guard let role = row.nodeRole, !role.isEmpty else {
+                        return "Joined this controller; the controller stated no role for it."
+                    }
+                    return "Joined this controller as ‘\(role)’."
+                }
+            ),
+            FleetColumn(
+                id: "nodeSeen", title: "Node last seen", width: 130,
+                // **"Is that Mac switched off, or gone?"** (M20.) The Hub stamps
+                // `last_seen_at` on every probe that answers; nothing drew it, so a Mac
+                // that was off and one that was scrapped looked the same. `—` means the
+                // controller has never heard from it, which is not "a long time ago".
+                text: { row in
+                    guard let row = machine(row), row.isNode else { return "—" }
+                    return row.nodeLastSeenText
+                },
+                sortValue: { .number(machine($0)?.nodeLastSeenAt?.doubleValue ?? 0) },
+                tooltip: { row in
+                    guard let row = machine(row), row.isNode else { return nil }
+                    let when = row.nodeLastSeenText
+                    if row.nodeLastSeenAt?.doubleValue == nil {
+                        return "The controller has not recorded a probe from this Mac."
+                    }
+                    return "The controller last heard from this Mac \(when)."
+                }
             ),
             FleetColumn(
                 id: "jobs", title: "Jobs (done/failed)", width: 140,

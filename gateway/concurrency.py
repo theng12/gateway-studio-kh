@@ -82,12 +82,26 @@ SOURCE_GATEWAY = "gateway"
 #: rather than a new figure to justify.
 DEFAULT_GLOBAL = 4
 
-#: `ponytail:` a flat eight deferrals with a backoff capped at a minute - about four minutes in
-#: total, and nine dispatch attempts. **Now editable** (`queue_wait_budget`); these are only the
-#: defaults a fresh profile starts from. The ceiling they encode is unchanged: a fleet busy for
-#: longer than the configured window still fails work it would eventually have run.
-DEFAULT_MAX_DEFERRALS = 8
-DEFAULT_DEFER_CAP_S = 60.0
+#: **How long a job waits for a busy fleet, and the default that had to change.**
+#:
+#: Eight deferrals with a backoff capped at a minute is about **four minutes** — fine for one Mac
+#: and one owner, and wrong for a fleet running two-hour video jobs. The owner's decision C says
+#: it in as many words: *"hold, don't fail, for a temporarily absent cluster: work aimed at a
+#: cluster that is down waits rather than failing immediately (this replaces the audit's
+#: four-minute deferral budget)"*. Measured live before this: a job waiting on a busy site was
+#: **failed** after ~4 minutes, and the settings file did not override it, so the shipped default
+#: was the ceiling in practice (audit M4).
+#:
+#: 240 deferrals with a five-minute cap is about **twenty hours** in the worst case — longer than
+#: any render this fleet runs, and still bounded, because a queue that can wait for ever is a
+#: queue nobody can reason about. The **retry policy is what makes this safe**: a job that keeps
+#: failing on real machines is declared failed after three attempts (A7) rather than waiting here.
+#: So this bounds "nothing can take it yet", and A7 bounds "everything tried it and failed".
+#:
+#: Editable without a restart (`queue_wait_budget`); these are the defaults a fresh profile and
+#: the live file both start from.
+DEFAULT_MAX_DEFERRALS = 240
+DEFAULT_DEFER_CAP_S = 300.0
 
 #: What a cloud provider gets when neither its own answer nor the owner's file says
 #: anything. One, because over-scheduling is what produces 429s, and a 429 on a
@@ -382,6 +396,104 @@ def retry_policy_wording() -> str:
         "one failed. A clone pinned to the Hub holding its reference clip keeps its location, so "
         "a voice failure is terminal after its own attempts."
     ).format(n=retry_policy()["max_attempts"])
+
+
+def live_capacity(*, worker: Any = None) -> dict[str, Any]:
+    """**What the fleet can actually do right now**, per modality and in total.
+
+    The owner's decision D, in his words: *"i want story to be able to run what the fleet can
+    actually do. setting a number isn't correct. because i may have 50 machines now, but i'll
+    have 30 if i sell 20 of them … so it must be a number that gateway has and offer to story
+    directly. and it must by dynamic of reality."*
+
+    Published was the *settings* pool: live **60**, while the fleet could do about **4**. Two
+    numbers, and the one Story acted on was the one nobody measured (H7).
+
+    **One source, and it is the number admission itself uses.** For every reachable location and
+    every modality, this is `hub_slot_reading` + `hub_budget` — the same two functions
+    `Worker._provider_budget` calls — summed. A second derivation would be free to disagree with
+    the ceiling that actually bounds dispatch, which is the defect this replaces, one layer along.
+
+    Recomputed on every call, and the callers are the fleet refresh and every membership change,
+    so a Mac that is sold leaves the number the next time Story asks. Nothing here is cached
+    beyond the fleet's own 5-second snapshot.
+
+    `worker` is the live `Worker` when there is one, so the in-flight count added back by
+    `hub_budget` is the real one. Without it the figure is the same arithmetic with
+    `in_flight: 0`, which understates a busy fleet rather than overstating it.
+    """
+    per_modality: dict[str, int] = {}
+    locations: list[dict[str, Any]] = []
+    try:
+        from . import fleet as fleet_module
+
+        rows = fleet_module.snapshot(allow_stale=True).get("locations") or []
+    except Exception:  # noqa: BLE001 - an unreadable fleet is zero capacity, not a crash
+        rows = []
+    for row in rows:
+        provider_id = str(row.get("provider_id") or "")
+        reachable = row.get("reachable") is not False
+        entry: dict[str, Any] = {"provider_id": provider_id, "reachable": reachable,
+                                 "by_modality": {}}
+        for modality, operation in _LIVE_CAPACITY_MODALITIES:
+            reading = hub_slot_reading(row, operation)
+            free = reading.get("free")
+            if free is None and not reading.get("unstated"):
+                free = reading.get("ceiling")
+            in_flight = 0
+            if worker is not None:
+                try:
+                    in_flight = worker._site_lane_in_flight(provider_id, modality)
+                except Exception:  # noqa: BLE001
+                    in_flight = 0
+            budget = hub_budget(
+                free, operation=operation,
+                stated=stated_provider_limit(provider_id),
+                in_flight=in_flight, ceiling=reading.get("ceiling"),
+                reachable=reachable,
+            )
+            # A **cloud** provider is not part of this: D is about the Macs, and a vendor lane's
+            # limit is a contract with the vendor rather than a machine you can sell. The
+            # settings file still governs those, exactly as before.
+            if _is_hub_provider(provider_id):
+                per_modality[modality] = per_modality.get(modality, 0) + budget.limit
+                entry["by_modality"][modality] = budget.limit
+            else:
+                entry["by_modality"][modality] = None
+        locations.append(entry)
+    total = sum(per_modality.values())
+    pool = global_budget()
+    return {
+        "total": total,
+        "by_modality": per_modality,
+        "locations": locations,
+        # **The pool is a local pool, not the published answer.** It bounds how many jobs *this*
+        # gateway runs at once; the fleet figure is what the fleet can do. `global` is reported
+        # beside it so a reader can see the two disagree rather than discovering it by counting.
+        "pool": {"limit": pool.limit, "source": pool.source, "detail": pool.detail},
+        "source": "the live fleet, summed over reachable locations",
+    }
+
+
+#: Which modalities `live_capacity` sums, and the Hub operation each is served by.
+_LIVE_CAPACITY_MODALITIES: tuple[tuple[str, str], ...] = (
+    ("chat", "chat.completion"),
+    ("image", "image.text_to_image"),
+    ("video", "video.generation"),
+    ("tts", "voice.tts"),
+    ("transcription", "audio.transcription"),
+    ("music", "music.generation"),
+)
+
+
+def _is_hub_provider(provider_id: str) -> bool:
+    """Whether this provider id is a Studio Hub location rather than a cloud lane."""
+    try:
+        from .fleet import PROVIDER_PREFIX
+
+        return str(provider_id or "").startswith(PROVIDER_PREFIX)
+    except Exception:  # noqa: BLE001 - unknown means "not a location"
+        return False
 
 
 def lane_budget(modality: str) -> Budget:
@@ -695,6 +807,12 @@ def settings_view(provider_ids: list[str] | None = None,
             } for name in names],
         },
         "providers": providers,
+        # **The retry policy, on the page an operator already opens.** The owner asked for it in
+        # two places by name — a document and the UI — and a number that governs how many
+        # machines a job is tried on belongs beside the pool size it competes with. `wording` is
+        # the same string the job envelope publishes, so the page and the API cannot disagree.
+        "retry": {**retry_policy(), "wording": retry_policy_wording()},
+        "queue": queue_wait_budget(),
     }
 
 
@@ -721,6 +839,20 @@ def save_settings(payload: dict[str, Any]) -> dict[str, Any]:
         raise SettingsRefused("expected a settings object")
 
     current = dict(_read_file())
+
+    if "retry" in payload:
+        stated = payload["retry"]
+        if stated in (None, "", 0):
+            current.pop("retry", None)
+        else:
+            entry = stated if isinstance(stated, dict) else {"max_attempts": stated}
+            attempts = _positive_int(entry.get("max_attempts") if isinstance(entry, dict) else None)
+            if attempts is None:
+                raise SettingsRefused(
+                    f"retry.max_attempts must be a whole number of machines, not "
+                    f"{entry.get('max_attempts') if isinstance(entry, dict) else stated!r}"
+                )
+            current["retry"] = {"max_attempts": attempts}
 
     if "global" in payload:
         value = payload["global"]

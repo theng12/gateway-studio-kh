@@ -1063,12 +1063,14 @@ def _transcription_row(model_id: str, definition: ProviderDefinition, model: dic
         "language": "multilingual",
         "supported_languages": [],
         "supports_language_auto_detect": True,
-        # ponytail: a conservative worker count of 1 for every transcription lane.
-        # Ceiling — a provider that accepts several uploads at once is under-used,
-        # and nothing here publishes its real limit. Deliberately the safe
-        # direction, because over-scheduling is what makes a provider reject work.
-        # Upgrade path — per-provider values once stated.
-        "available_workers": 1,
+        # **`available_workers` is deliberately absent (C4/M11).** It was the literal `1` on
+        # every transcription lane with a `ponytail:` note admitting it was invented — while the
+        # fleet reported the same model on sixteen machines. A number nobody measured, published
+        # as though the lane had stated it, is the exact defect this project has a standing rule
+        # against: *value + source, or `null` + why*. Nothing reads it; the real concurrency for
+        # a location comes from that location's own published capacity
+        # (`concurrency.hub_slot_reading`), and a cloud lane's from the settings file.
+        # Removing the key is the fix; inventing a better number would not be.
     }
 
 
@@ -1380,6 +1382,13 @@ def _chat_row(model_id: str, definition: ProviderDefinition, model: dict[str, An
         "controls": controls,
         "input_modalities": inputs,
         "supports_vision": ("image" in inputs) if inputs else None,
+        # **The precision this model is published at, where its own maker states one**
+        # (C5/M14). Carried from the manifest the Hub read, with the sentence that says where the
+        # value came from — a bare "4-bit" a reader cannot check is the same defect as a token
+        # window with no source. `null` is a real answer here and travels with its reason: a
+        # publisher that names no precision gets `null`, never a plausible default.
+        "quantization": raw.get("quantization"),
+        "quantization_source": raw.get("quantization_source"),
         "supports_structured_output": structured,
         "structured_output_mode": structured_mode,
         "supports_web_search": _supports("web_search", "web_search_options"),
@@ -1525,21 +1534,34 @@ def _merge_capabilities(existing: dict[str, Any], row: dict[str, Any], modality:
         maximums, and `supports_speed` only if every site has it), for the same
         reason: a caller picks one speed and may land anywhere.
 
-    Only TTS rows carry these. Everything else about a merged row is already a
-    fact about the model, not about a site.
+    **And every other published ceiling takes the minimum, for every modality.** This
+    function used to `return` immediately for anything that was not TTS, so a merged row kept
+    **the first location's** token limits, prompt ceiling and file-size cap (C4/M10). A
+    Hub-side limit change on the second site then never reached Story Studio, and — worse —
+    the row could advertise a context window that one of the machines offering it would
+    refuse. The rule is the same one the TTS numbers already followed: the caller does not
+    choose the site, so the number that is safe everywhere is the only honest one. Each
+    value's `*_source` and `*_source_detail` travel with the number they describe, because a
+    value and its provenance must come from one place or they disagree.
     """
+    # **Ceilings: the smallest wins, whatever the modality.** `(value, source, detail)` — the
+    # three keys that describe one stated limit, kept together so a merge can never publish a
+    # number beside another site's explanation of it.
+    for value_key, source_key, detail_key in _MERGED_CEILINGS:
+        current = existing.get(value_key)
+        incoming = row.get(value_key)
+        if isinstance(incoming, (int, float)) and not isinstance(incoming, bool):
+            if not isinstance(current, (int, float)) or isinstance(current, bool) \
+                    or incoming < current:
+                existing[value_key] = incoming
+                if source_key in row:
+                    existing[source_key] = row.get(source_key)
+                if detail_key in row:
+                    existing[detail_key] = row.get(detail_key)
     if modality != "tts":
         return
     if row.get("supports_voice_cloning"):
         existing["supports_voice_cloning"] = True
-    for value_key, source_key in (
-        ("maximum_input_characters", "maximum_input_characters_source"),
-    ):
-        current = existing.get(value_key)
-        incoming = row.get(value_key)
-        if isinstance(incoming, int) and (not isinstance(current, int) or incoming < current):
-            existing[value_key] = incoming
-            existing[source_key] = row.get(source_key)
     if not row.get("supports_speed"):
         existing["supports_speed"] = False
     for key, pick in (("minimum_speed", max), ("maximum_speed", min)):
@@ -1547,6 +1569,22 @@ def _merge_capabilities(existing: dict[str, Any], row: dict[str, Any], modality:
         incoming = row.get(key)
         if isinstance(current, (int, float)) and isinstance(incoming, (int, float)):
             existing[key] = pick(current, incoming)
+
+
+#: One stated upper bound, and the two keys that say where it came from.
+#:
+#: `maximum_input_characters` was the only entry before C4 and only for TTS; the token windows,
+#: the prompt ceiling and the upload cap were left at the first location's value on every other
+#: modality. Listed as data rather than repeated in the loop so the next ceiling added to a row
+#: has one obvious place to be registered — and so a reader can see the whole set at once.
+_MERGED_CEILINGS: tuple[tuple[str, str, str], ...] = (
+    ("context_window_tokens", "context_window_tokens_source",
+     "context_window_tokens_source_detail"),
+    ("max_output_tokens", "max_output_tokens_source", "max_output_tokens_source_detail"),
+    ("max_prompt_characters", "max_prompt_characters_source",
+     "max_prompt_characters_source_detail"),
+    ("maximum_input_characters", "maximum_input_characters_source", ""),
+)
 
 
 class Catalog:

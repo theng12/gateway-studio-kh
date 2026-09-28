@@ -127,12 +127,23 @@ struct FleetLocation: Decodable {
     /// The release publisher this controller has installed (Hub 0.6.51+), read
     /// from the same answer. `nil` means the gateway sent no such field.
     var trustedPublisher: FleetTrustedPublisher?
+    /// **Who has joined this controller** — the Hub's `fleet/nodes` roster, one row
+    /// per Mac, passed through by the gateway unchanged.
+    ///
+    /// Both this and `nodeSummary` were fetched per location since the node join
+    /// landed and **never decoded here** (audit H10), so "able to see each member
+    /// connected" meant opening Studio Hub on the controller itself. `nodes` is
+    /// `[]` on a location whose roster could not be read; `nodeSummary` is `nil`
+    /// there, which is the difference the Members column draws as an em dash.
+    var nodes: [FleetNode] = []
+    var nodeSummary: FleetNodeSummary?
 
     private enum CodingKeys: String, CodingKey {
         case id, label, url, local, reachable, error, role, version, hubVersionRelation
         case providerId, latencyMs
         case machines, workers, localModels, modelHealth, machineSummary, runningJobs
         case modelsDiscovered, modelsEnabled, modelsPublishable, release, trustedPublisher
+        case nodes, nodeSummary
     }
 
     init(from decoder: Decoder) throws {
@@ -153,6 +164,8 @@ struct FleetLocation: Decodable {
         localModels = lenientArray(c, forKey: .localModels)
         modelHealth = lenientArray(c, forKey: .modelHealth)
         machineSummary = try? c.decode(FleetMachineSummary.self, forKey: .machineSummary)
+        nodes = lenientArray(c, forKey: .nodes)
+        nodeSummary = try? c.decode(FleetNodeSummary.self, forKey: .nodeSummary)
         if let count = try? c.decode(Int.self, forKey: .runningJobs) {
             runningJobs = count
         } else if let rows = try? c.decode([Lenient<FleetJob>].self, forKey: .runningJobs) {
@@ -172,6 +185,134 @@ struct FleetMachineSummary: Decodable {
     var total: Int?
     var reachable: Int?
     var unreachable: Int?
+}
+
+// MARK: - Node (a Mac joined to a controller)
+
+/// One Mac in a controller's roster, exactly as the controller states it.
+///
+/// This is the Hub's `fleet/nodes` row, which the gateway has carried per location
+/// since the node join and nothing decoded (audit H10/M21). Every field is optional
+/// for the reason the rest of this file gives: an older Hub carries fewer of them
+/// (`last_seen_at`, `credential_issued_at` and `has_credential` are new in 0.6.91),
+/// and a field the Hub did not state must leave the page able to say so rather than
+/// blanking the roster.
+///
+/// **`state` is read verbatim and never collapsed.** `unreachable` is a Mac that did
+/// not answer; `unauthorized` is a Mac that answered and refused *this controller* —
+/// a different fault with a different fix, and the one the page used to render as
+/// plain "offline".
+struct FleetNode: Decodable {
+    var id: String?
+    var name: String?
+    var address: String?
+    /// The role the Mac joined with — `agent` on today's Hub. `nil` means the
+    /// controller stated none, which is not the same as "not a member".
+    var role: String?
+    var studios: [FleetNodeStudio] = []
+    var joinedAt: FleetScalar?
+    /// **The answer to "is this Mac switched off, or gone?"** (audit M20.) The Hub
+    /// stamps it on every probe that answers, so a Mac that is off keeps the last
+    /// moment it was heard from rather than looking like one that was scrapped.
+    var lastSeenAt: FleetScalar?
+    /// When the controller issued this node its credential.
+    var credentialIssuedAt: FleetScalar?
+    /// Whether the controller still holds a credential for this Mac. `nil` on a Hub
+    /// that does not state it — never read as `false`.
+    var hasCredential: Bool?
+    /// `reachable`, `unreachable`, `unauthorized` or `error`.
+    var state: String?
+    /// The controller's own sentence about reaching this node — quoted, because it
+    /// names the fix ("re-join it with the current Fleet Token").
+    var detail: String?
+    var version: String?
+
+    private enum CodingKeys: String, CodingKey {
+        case id, name, address, role, studios, joinedAt, lastSeenAt, credentialIssuedAt
+        case hasCredential, state, detail, version
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try? c.decode(String.self, forKey: .id)
+        name = try? c.decode(String.self, forKey: .name)
+        address = try? c.decode(String.self, forKey: .address)
+        role = try? c.decode(String.self, forKey: .role)
+        studios = lenientArray(c, forKey: .studios)
+        joinedAt = try? c.decode(FleetScalar.self, forKey: .joinedAt)
+        lastSeenAt = try? c.decode(FleetScalar.self, forKey: .lastSeenAt)
+        credentialIssuedAt = try? c.decode(FleetScalar.self, forKey: .credentialIssuedAt)
+        hasCredential = try? c.decode(Bool.self, forKey: .hasCredential)
+        state = try? c.decode(String.self, forKey: .state)
+        detail = try? c.decode(String.self, forKey: .detail)
+        version = try? c.decode(String.self, forKey: .version)
+    }
+
+    private var word: String { (state ?? "").lowercased() }
+
+    var isReachable: Bool { word == "reachable" }
+    var isUnreachable: Bool { word == "unreachable" }
+    /// **A refused credential, not a network fault.** The Mac answered and said no.
+    var isUnauthorized: Bool { word == "unauthorized" }
+    var isError: Bool { word == "error" }
+
+    /// What the roster says about this Mac, in the page's own words.
+    ///
+    /// `unauthorized` deliberately does not read as "offline": the two have different
+    /// causes and different fixes, and the whole point of the Hub's own state is that
+    /// a token problem stops looking like a dead Mac.
+    var stateText: String {
+        switch word {
+        case "reachable": return "reachable"
+        case "unreachable": return "offline"
+        case "unauthorized": return "credential refused"
+        case "error": return "error"
+        case "": return "—"
+        default: return FleetFormat.words(state)
+        }
+    }
+
+    /// `last_seen_at`, relative — the columns' own formatting of it. `—` when the
+    /// Hub never stamped one, which for a node that has never answered is the truth.
+    var lastSeenText: String { FleetFormat.relative(lastSeenAt?.doubleValue) }
+
+    /// What this Mac runs, from the studios it declared when it joined.
+    var studioText: String {
+        let names = studios.compactMap { $0.modality ?? $0.id }.filter { !$0.isEmpty }
+        return names.isEmpty ? "—" : names.joined(separator: ", ")
+    }
+
+    /// The Macs needing attention first, then the ones that are fine — the order a
+    /// person reads a list in when they are looking for what to act on.
+    var attentionRank: Int {
+        if isUnauthorized { return 0 }
+        if isError { return 1 }
+        if isUnreachable { return 2 }
+        if isReachable { return 3 }
+        return 4
+    }
+}
+
+/// One studio a node declared when it joined, e.g. `voice` / `transcription`.
+struct FleetNodeStudio: Decodable {
+    var id: String?
+    var modality: String?
+}
+
+/// The controller's own count of its roster, per state.
+///
+/// The numbers are the Hub's (`fleet_nodes.probe`), never re-derived here: a node row
+/// can be dropped as malformed without the count changing, and a re-derived total
+/// would then disagree with the number the controller itself published.
+struct FleetNodeSummary: Decodable {
+    var total: Int?
+    var reachable: Int?
+    var unreachable: Int?
+    var unauthorized: Int?
+    var error: Int?
+    /// Macs evicted from the group. They cannot re-join by themselves — a person has
+    /// to re-admit one — so the count is worth showing beside the roster.
+    var removed: Int?
 }
 
 // MARK: - App release
@@ -406,9 +547,17 @@ struct FleetMachine: Decodable {
     /// identical "offline" rows: the owner could see *that* they were down and
     /// never *why*. `nil` when the Hub stated neither, so an unknown never renders
     /// as a claim.
+    ///
+    /// **A refused credential is not a health problem, and the health word is not
+    /// repeated beside it.** A node the controller marked `unauthorized` often also
+    /// reads `unreachable` to the Hub's activity poll — that is the consequence, and
+    /// printing both vocabularies for one fault is how the credential sentence ends
+    /// up second.
     var stateReason: String? {
         var parts: [String] = []
-        if let health, !health.isEmpty, health.lowercased() != "up" {
+        if nodeStateIsUnauthorized {
+            parts.append("This Mac answered but refused this controller's credential.")
+        } else if let health, !health.isEmpty, health.lowercased() != "up" {
             parts.append("The Hub reports its health as ‘\(health)’.")
         }
         if let nodeDetail, !nodeDetail.isEmpty {
@@ -416,6 +565,38 @@ struct FleetMachine: Decodable {
         }
         return parts.isEmpty ? nil : parts.joined(separator: " ")
     }
+
+    /// **Whether this machine is a node of the controller at all.**
+    ///
+    /// `machines_flat` joins the roster onto the machine by id and leaves every
+    /// node field `nil` for a machine with no roster row — the controller's own Mac.
+    /// Any one of them being present means there is a node row, so a Hub too old to
+    /// state a `role` still marks its members rather than calling them the controller.
+    var isNode: Bool {
+        nodeState != nil || nodeRole != nil || nodeAddress != nil
+            || nodeDetail != nil || nodeLastSeenAt != nil
+    }
+
+    /// The Hub's node state, verbatim and lowercased for comparison.
+    private var nodeWord: String { (nodeState ?? "").lowercased() }
+
+    /// The Mac answered and refused *this controller's* credential — a token fault,
+    /// not a network one, and its own state so the two are never drawn alike.
+    var nodeStateIsUnauthorized: Bool { nodeWord == "unauthorized" }
+
+    /// What the Machines tab's Node column draws: the role the controller recorded,
+    /// `member` when it recorded none, and `—` for the controller's own Mac.
+    var nodeRoleText: String {
+        guard isNode else { return "—" }
+        guard let role = nodeRole, !role.trimmingCharacters(in: .whitespaces).isEmpty else {
+            return "member"
+        }
+        return FleetFormat.words(role)
+    }
+
+    /// When the controller last heard from this Mac. `—` when it never has, which is
+    /// a different fact from "a long time ago" and is what `last_seen_at` is for.
+    var nodeLastSeenText: String { FleetFormat.relative(nodeLastSeenAt?.doubleValue) }
 }
 
 // MARK: - Worker
@@ -776,6 +957,81 @@ extension FleetLocation {
         }
         return offered.count
     }
+
+    // MARK: Members
+
+    /// **How many of this controller's joined Macs are answering, out of how many.**
+    ///
+    /// `nil` — drawn as an em dash — when the controller stated no roster summary at
+    /// all: a location that could not be read, or a Hub older than the route. That is
+    /// deliberately *not* `0 / 0`, which is a claim about a fleet nobody counted.
+    var memberCount: (reachable: Int, total: Int)? {
+        guard let summary = nodeSummary, let total = summary.total,
+              let reachable = summary.reachable else { return nil }
+        return (reachable, total)
+    }
+
+    /// What the Members column draws: `reachable / total`, and the refused count
+    /// spelled out when there is one, because "4 / 5" does not say which Mac needs a
+    /// token re-entered and "1 refused" does.
+    var membersText: String {
+        guard let count = memberCount else { return "—" }
+        let refused = nodeSummary?.unauthorized ?? 0
+        return refused > 0 ? "\(count.reachable) / \(count.total) · \(refused) refused"
+                           : "\(count.reachable) / \(count.total)"
+    }
+
+    /// The roster itself, ordered so the Macs that need someone come first: a refused
+    /// credential, then an error, then a Mac that is off, then the ones that are fine.
+    var nodesByAttention: [FleetNode] {
+        nodes.sorted {
+            if $0.attentionRank != $1.attentionRank { return $0.attentionRank < $1.attentionRank }
+            return ($0.name ?? $0.id ?? "") < ($1.name ?? $1.id ?? "")
+        }
+    }
+
+    /// The Members cell's tooltip: the controller's own counts, then one line per
+    /// joined Mac with its state, when it was last seen and the controller's sentence.
+    ///
+    /// A controller with fifty-three nodes would otherwise fill the screen, so the
+    /// list is capped — `ponytail:` a fixed cap is enough for a tooltip; the day this
+    /// needs to be read in full it wants a Members window, not a longer tooltip.
+    var membersTooltip: String? {
+        guard nodeSummary != nil || !nodes.isEmpty else { return nil }
+        var lines: [String] = []
+        if let summary = nodeSummary, let total = summary.total {
+            var head = "\(summary.reachable ?? 0) of \(total) joined "
+                + (total == 1 ? "Mac is" : "Macs are") + " reachable now."
+            if let refused = summary.unauthorized, refused > 0 {
+                head += " \(refused) answered and refused this controller's credential."
+            }
+            if let removed = summary.removed, removed > 0 {
+                head += " \(removed) removed from the group."
+            }
+            lines.append(head)
+        } else {
+            lines.append("The controller did not state how many Macs have joined it.")
+        }
+        let ordered = nodesByAttention
+        let shown = ordered.prefix(FleetLocation.membersTooltipLimit)
+        for node in shown {
+            var line = "\(node.name ?? node.id ?? "a Mac") — \(node.stateText)"
+            if node.lastSeenAt?.doubleValue != nil {
+                line += " · last seen \(node.lastSeenText)"
+            }
+            if let detail = node.detail, !detail.isEmpty {
+                line += "\n    \(detail)"
+            }
+            lines.append(line)
+        }
+        if ordered.count > shown.count {
+            lines.append("… and \(ordered.count - shown.count) more.")
+        }
+        return lines.joined(separator: "\n")
+    }
+
+    /// How many roster rows a tooltip lists before it summarises the rest.
+    static let membersTooltipLimit = 12
 }
 
 // MARK: - Formatting and ranking

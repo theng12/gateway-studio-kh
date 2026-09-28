@@ -111,11 +111,30 @@ class TheQueueHoldsItTest(unittest.TestCase):
         ), "the last permitted wait must still happen")
 
     def test_the_wait_grows_and_then_stops_growing(self) -> None:
+        """The cap is now a setting, and it is **five minutes, not one**.
+
+        The literal `60.0` here was the shipped `DEFAULT_DEFER_CAP_S`, and the shipped defaults
+        were also the effective ceiling — the live settings file did not override them — so a job
+        waiting on a busy site was **failed after about four minutes** (audit M4). The owner's
+        decision C replaces that with *"hold, don't fail, for a temporarily absent cluster"*, and
+        two-hour video jobs are the reason: 240 deferrals capped at five minutes is about twenty
+        hours, while the retry policy (A7) is what declares a job failed when real machines have
+        tried it. The assertion is therefore read from the setting rather than restated, because a
+        second copy of this number is exactly what went stale.
+        """
+        from gateway import concurrency
+
+        cap = float(concurrency.queue_wait_budget()["defer_cap_seconds"])
+        self.assertGreaterEqual(cap, 300.0, "a long render must survive its own queue")
         delays = [_defer_delay(n) for n in range(1, _MAX_DEFERRALS + 3)]
         self.assertEqual(delays, sorted(delays), "the backoff must not go backwards")
         self.assertEqual(delays[0], 2.0)
-        self.assertLessEqual(max(delays), 60.0, "a busy fleet must not be hammered")
+        self.assertLessEqual(max(delays), cap, "a busy fleet must not be hammered")
         self.assertEqual(delays[-1], delays[-2], "and it must flatten, not explode")
+        # An explicit, long render: the cap must still hold it.
+        self.assertLessEqual(
+            max(_defer_delay(n) for n in range(1, 40)), cap,
+            "a two-hour job waits, and does not spin")
 
 
 class TheDeferredJobComesBackTest(unittest.TestCase):

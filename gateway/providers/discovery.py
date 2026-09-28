@@ -765,6 +765,23 @@ def _studio_hub(definition: ProviderDefinition, values: dict[str, str]) -> Disco
             # only when the catalogue actually answered: a read that failed must
             # not come out as "no models here".
             raw["catalogued"] = bool(facts)
+            # **The Hub's own verdict on what kind of thing this is** (C5/M13). The catalogue
+            # states `type: "model"` or `type: "dependency"`, and the *package list* states the
+            # same fact on its own rows. It used to be read and dropped — no reader anywhere —
+            # so the guard that keeps tokenizers and codecs out of the picker rested entirely on
+            # this second HTTP call succeeding, which is exactly the failure `models.py` records
+            # as having happened once already. Carried under its own name so the withhold rule
+            # can consult either source.
+            raw["catalogue_type"] = facts.get("type")
+            # **The quantisation, and the sentence saying where it came from** (C5/M14). The
+            # owner's standing rule is that a model named without its quantisation cannot be
+            # checked against what he has actually run — "not 'Z-Image-Turbo' but
+            # 'Z-Image-Turbo 6B MLX 4-bit'". Every shipped manifest now states one, and states
+            # `null` with a reason when the publisher names no precision, so this carries both
+            # halves rather than a bare label.
+            if "quantization" in facts:
+                raw["quantization"] = facts.get("quantization")
+                raw["quantization_source"] = facts.get("quantization_source")
         if facts:
             raw["capabilities"] = facts.get("capabilities") or []
             raw["reference_audio"] = facts.get("reference_audio") or {}

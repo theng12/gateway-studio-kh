@@ -450,13 +450,26 @@ class ThePublishedLimitIsTheRealOneTest(unittest.TestCase):
         patcher.start()
         self.addCleanup(patcher.stop)
 
-    def test_paid_concurrency_limit_is_the_pool_size(self) -> None:
-        # It was the literal 4 while the worker ran one job at a time — a published
-        # number that did not describe the system, in a field Story Studio reads.
+    def test_the_pool_bounds_admission_and_is_published_beside_the_fleet(self) -> None:
+        """**This test used to assert that the pool was what Story was told. It is not any more.**
+
+        It was the literal 4 while the worker ran one job at a time — a published number that did
+        not describe the system, in a field Story Studio reads — so it was moved onto the pool.
+        That was right as far as it went and wrong about *which* number belongs in that field: the
+        pool is this gateway's own concurrency, while `paid_concurrency_limit` is what Story may
+        run, and the owner's decision D is that the second is the fleet's live capacity
+        (*"setting a number isn't correct … it must be dynamic of reality"*). Measured live before
+        the change: Story was told **60** while the fleet could do about **4** (audit H7).
+
+        So the assertion is split, deliberately. The pool still bounds dispatch — that is what
+        `global_limit()` is for and the line below still holds it. The published capacity is the
+        fleet's, derived in `tests/test_live_capacity.py`, and the pool is published **beside** it
+        under its own name so the two cannot be confused.
+        """
         with patch.dict(os.environ, {"GATEWAY_JOB_CONCURRENCY": "7"}):
             concurrency.reset_for_tests()
-            self.assertEqual(constants.admission()["paid_concurrency_limit"], 7)
             self.assertEqual(concurrency.global_limit(), 7)
+            self.assertEqual(constants.admission()["concurrency_pool"], 7)
 
     def test_a_bad_value_falls_back_rather_than_stopping_the_gateway(self) -> None:
         # "0" or "many" must not mean "take no work at all".

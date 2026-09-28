@@ -336,14 +336,34 @@ class FleetTabTests(unittest.TestCase):
         workers = location["workers"]
         self.assertEqual(
             [worker["id"] for worker in workers],
-            ["mac-a:image", "mac-a:voice", "mac-b:image"],
+            ["mac-a:image", "mac-a:voice", "mac-b:image", "mac-c:image"],
         )
         self.assertEqual([worker["machine"] for worker in workers],
-                         ["mac-a", "mac-a", "mac-b"])
+                         ["mac-a", "mac-a", "mac-b", "mac-c"])
         self.assertTrue(workers[0]["online"] and workers[1]["online"])
-        self.assertFalse(workers[2]["online"])
+        self.assertFalse(workers[2]["online"],
+                         "a node the controller cannot reach is not online")
+        # **An unauthorized node is not offline either.** It answered and refused this
+        # controller's credential, which no worker row may render as `online`.
+        self.assertFalse(workers[3]["online"])
         # A node states nothing about readiness, so the page must say `None`.
         self.assertIsNone(workers[0]["ready"])
+
+    def test_the_node_roster_and_its_summary_reach_the_location_row(self) -> None:
+        """The Members data the app draws: `nodes` and `node_summary`, per state."""
+        location = self._probe()
+        self.assertEqual(location["node_summary"], {
+            "total": 3, "reachable": 1, "unreachable": 1, "unauthorized": 1,
+            "error": 0, "removed": 0,
+        })
+        nodes = {node["id"]: node for node in location["nodes"]}
+        self.assertEqual(set(nodes), {"mac-a", "mac-b", "mac-c"})
+        self.assertEqual(nodes["mac-a"]["role"], "agent")
+        self.assertEqual(nodes["mac-a"]["last_seen_at"], 2.0)
+        self.assertTrue(nodes["mac-a"]["has_credential"])
+        self.assertEqual(nodes["mac-a"]["address"], "http://10.0.0.11:47873")
+        self.assertEqual(nodes["mac-c"]["state"], "unauthorized")
+        self.assertIn("re-join it with the current Fleet Token", nodes["mac-c"]["detail"])
 
     def test_snapshot_aggregates_issues_and_counts_the_summary(self) -> None:
         location = self._probe()
@@ -673,6 +693,79 @@ class OneFaultOneRowTests(unittest.TestCase):
         self.assertEqual(node["node_role"], "agent")
         self.assertEqual(node["node_address"], "http://100.0.0.9:47873")
         self.assertIn("All connection attempts failed", node["node_detail"])
+
+
+def _refused_node_site() -> dict:
+    """One controller whose node answered and refused its credential.
+
+    The Hub's own `unauthorized` state, with the sentence `fleet_nodes.probe` writes
+    for it (`_CREDENTIAL_DETAIL` in Studio Hub 0.6.91). Modelled live: the machine
+    still reads `offline` in the activity report, because nothing can be dispatched
+    to it — which is exactly the pair the page could not tell apart.
+    """
+    row = _node_site()
+    row["nodes"] = [{
+        "id": "node-a", "name": "Node A", "state": "unauthorized", "role": "agent",
+        "address": "http://100.0.0.9:47873", "joined_at": 1.0, "last_seen_at": 0.75,
+        "credential_issued_at": 1.0, "has_credential": True,
+        "detail": "the node answered but rejected this controller's credential "
+                  "(HTTP 401) - re-join it with the current Fleet Token",
+    }]
+    row["machines"][1]["health"] = "unreachable"
+    row["node_summary"] = {"total": 1, "reachable": 0, "unreachable": 0,
+                           "unauthorized": 1, "error": 0, "removed": 0}
+    return row
+
+
+class NodeCredentialRejectedTests(unittest.TestCase):
+    """A refused credential is its own state, its own row, and the Hub's own words.
+
+    Audit H10/M20/M21: the gateway fetched `nodes` and `node_summary` and dropped
+    them, so a node the controller had marked `unauthorized` was indistinguishable
+    from one that was merely switched off — and the fix (re-join it with the current
+    Fleet Token) was in a sentence nobody rendered.
+    """
+
+    def _issues(self, row: dict | None = None) -> list[dict]:
+        return fleet._issues([row or _refused_node_site()])
+
+    def test_the_refusal_is_an_error_quoting_the_hubs_own_sentence(self) -> None:
+        issues = [i for i in self._issues() if i["code"] == "node_credential_rejected"]
+        self.assertEqual(len(issues), 1, issues)
+        self.assertEqual(issues[0]["severity"], "error")
+        self.assertEqual(issues[0]["subject"], "node-a")
+        self.assertIn("rejected this controller's credential", issues[0]["message"])
+        self.assertIn("re-join it with the current Fleet Token", issues[0]["message"])
+        self.assertEqual(issues[0]["action"], "Studio Hub on that Mac")
+
+    def test_a_refused_node_is_not_reported_as_an_offline_machine(self) -> None:
+        """One fault, one row — and it is the actionable one.
+
+        The machine reads `offline` in the activity report because no work can reach
+        it. Reporting that as well as the refusal is the same fault twice, with the
+        sentence that names the fix pushed second.
+        """
+        codes = [i["code"] for i in self._issues()]
+        self.assertIn("node_credential_rejected", codes)
+        self.assertNotIn("machine_offline", codes, codes)
+        self.assertNotIn("machine_not_healthy", codes, codes)
+
+    def test_an_unreachable_node_still_reads_as_an_offline_machine(self) -> None:
+        # The suppression is only for the credential state: a node that did not
+        # answer is a network fact and keeps the row that says so.
+        row = _node_site()
+        codes = [i["code"] for i in self._issues(row)]
+        self.assertIn("machine_offline", codes)
+        self.assertNotIn("node_credential_rejected", codes)
+
+    def test_the_machine_row_carries_the_refused_state_and_when_it_was_last_seen(self) -> None:
+        row = _refused_node_site()
+        flat = {m["machine"]: m for m in fleet.machines_flat([row])}
+        self.assertEqual(flat["node-a"]["node_state"], "unauthorized")
+        self.assertEqual(flat["node-a"]["node_last_seen_at"], 0.75)
+        self.assertEqual(flat["node-a"]["node_role"], "agent")
+        self.assertIsNone(flat["local"]["node_state"],
+                          "the controller's own Mac is not a node and borrows none of its facts")
 
 
 class HubVersionReportTests(unittest.TestCase):

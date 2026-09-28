@@ -285,5 +285,25 @@ class TheRuleItself(unittest.TestCase):
             self.assertEqual(inventory.models_for(LOCAL, include_disabled=True), before)
 
 
+class TheSentenceReachesThePageThatAddsALocation(unittest.TestCase):
+    """The add result's sentence is drawn, not only computed.
+
+    `fleet.seed_enabled_from_local` returns the counts *and* the sentence built from
+    them, `/admin/api/fleet/controllers` carries it as `enable_seed`, and the menubar
+    app drew only `discovered`/`discovery_error` — so the one moment the owner is told
+    what a new Mac inherited passed without saying it. `enable_seed` is `null` for a
+    re-add (whose own decisions are deliberately kept), which is why the app has to
+    guard it rather than assume it is there.
+    """
+
+    def test_the_app_reads_enable_seed_and_draws_its_sentence(self) -> None:
+        source = (_ROOT / "menubar" / "FleetSection.swift").read_text(encoding="utf-8")
+        self.assertIn('payload["enable_seed"] as? [String: Any]', source)
+        self.assertIn('enableSeed["sentence"] as? String', source)
+        # A failed seeding has no sentence: it must say so rather than reading as
+        # "nothing to inherit".
+        self.assertIn('enableSeed["error"] as? String', source)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

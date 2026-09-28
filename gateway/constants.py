@@ -160,15 +160,46 @@ ZERO_PURCHASE: dict[str, Any] = {
 #: not describe the system, in a field Story Studio reads and acts on. It now comes
 #: from `concurrency.global_limit()`, so the figure the caller is given is the figure
 #: the gateway enforces. Leaving it here would drift the moment the pool is resized.
-ADMISSION: dict[str, int] = {
-    "max_queued_jobs": 32,
+ADMISSION: dict[str, Any] = {
+    # **256, and now enforced.** It was 32 and read by nothing on this side (audit H7/M8), while
+    # Story Studio *does* read it and holds itself to it. With 53 Macs and multi-hour video jobs
+    # a 32-deep queue is one busy afternoon, so the shipped default is raised and the gateway
+    # refuses past it with a clean `429` + `Retry-After` rather than growing an unbounded
+    # backlog.
+    "max_queued_jobs": 256,
     "generation_submissions_per_minute": 60,
 }
 CREDIT_BALANCE = 0
 
 
-def admission() -> dict[str, int]:
-    """The admission record as published, with the concurrency actually in force."""
+def admission() -> dict[str, Any]:
+    """The admission record as published, with the concurrency the fleet actually has.
+
+    **`paid_concurrency_limit` is the fleet's own live capacity** (the owner's decision D:
+    *"setting a number isn't correct … it must be dynamic of reality"*). It used to be the
+    settings pool — live **60** while the fleet could do about **4** — so Story Studio acted on a
+    configured number that described nothing (H7). It is now the total from
+    `concurrency.live_capacity()`, which sums the very budget admission enforces over every
+    reachable location.
+
+    **The pool is still published, beside it, under its own name.** It bounds how many jobs
+    *this* gateway runs at once; it is not the fleet's capacity, and a reader who sees the two
+    disagree should be able to tell which is which rather than discovering it by counting. The
+    extra fields are additive — Story Studio ignores what it does not know.
+    """
     from . import concurrency
 
-    return {**ADMISSION, "paid_concurrency_limit": concurrency.global_limit()}
+    worker = None
+    try:
+        from .runtime import worker as live_worker  # noqa: PLC0415 - cycle, by design
+        worker = live_worker
+    except Exception:  # noqa: BLE001 - a figure is not worth failing a response over
+        worker = None
+    capacity = concurrency.live_capacity(worker=worker)
+    return {
+        **ADMISSION,
+        "paid_concurrency_limit": capacity["total"],
+        "concurrency_source": capacity["source"],
+        "concurrency_by_modality": dict(capacity["by_modality"]),
+        "concurrency_pool": capacity["pool"]["limit"],
+    }

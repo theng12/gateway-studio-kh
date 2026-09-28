@@ -264,13 +264,53 @@ FLEET_WORKERS = [
 
 #: The fallback roster: a node names its studios, and `state` is the only
 #: reachability statement a node makes.
+#:
+#: **And the shape the real Hub publishes**, which is the part that matters for the
+#: Fleet page: `fleet_nodes.probe` (0.6.91) gives every row its join `role`, its
+#: `address`, `joined_at`, `last_seen_at`, `credential_issued_at` and
+#: `has_credential`, plus its own `detail` sentence when it cannot be reached and
+#: the `host` facts it answered with. Three states are deliberately present, because
+#: two of them are the ones the page had no way to tell apart: a Mac that is off
+#: (`unreachable`) and a Mac that **answered and refused this controller**
+#: (`unauthorized`, with the Hub's own sentence naming the fix). `mac-c` is the
+#: credential case.
 FLEET_NODES = [
-    {"id": "mac-a", "name": "Mac A", "state": "reachable",
+    {"id": "mac-a", "name": "Mac A", "state": "reachable", "role": "agent",
+     "address": "http://10.0.0.11:47873", "joined_at": 1.0, "last_seen_at": 2.0,
+     "credential_issued_at": 1.0, "has_credential": True, "detail": None,
+     "version": "0.6.91", "host": {"chip": "Apple M4", "memory_gb": 16.0},
      "studios": [{"id": "image", "modality": "image"},
                   {"id": "voice", "modality": "voice"}]},
-    {"id": "mac-b", "name": "Mac B", "state": "offline",
+    {"id": "mac-b", "name": "Mac B", "state": "unreachable", "role": "agent",
+     "address": "http://10.0.0.12:47873", "joined_at": 1.0, "last_seen_at": 0.5,
+     "credential_issued_at": 1.0, "has_credential": True,
+     "detail": "could not reach the node (unreachable)", "version": None, "host": {},
+     "studios": [{"id": "image", "modality": "image"}]},
+    {"id": "mac-c", "name": "Mac C", "state": "unauthorized", "role": "agent",
+     "address": "http://10.0.0.13:47873", "joined_at": 1.0, "last_seen_at": 0.75,
+     "credential_issued_at": 1.0, "has_credential": True,
+     "detail": "the node answered but rejected this controller's credential (HTTP 401)"
+               " - re-join it with the current Fleet Token",
+     "version": None, "host": {},
      "studios": [{"id": "image", "modality": "image"}]},
 ]
+
+
+def fleet_node_summary(nodes: list[dict]) -> dict[str, int]:
+    """The Hub's own summary arithmetic, computed rather than written down.
+
+    `fleet_nodes.probe` counts each state, and `removed` from its eviction record; a
+    literal here would agree with `FLEET_NODES` only until the next node is added,
+    which is how a mock starts asserting last week's shape.
+    """
+    return {
+        "total": len(nodes),
+        "reachable": sum(node.get("state") == "reachable" for node in nodes),
+        "unreachable": sum(node.get("state") == "unreachable" for node in nodes),
+        "unauthorized": sum(node.get("state") == "unauthorized" for node in nodes),
+        "error": sum(node.get("state") == "error" for node in nodes),
+        "removed": 0,
+    }
 
 #: **The real Hub's numbers, named, because the real Hub moves them.**
 #:
@@ -445,7 +485,8 @@ class Handler(BaseHTTPRequestHandler):
             self._json(200, {"machines": [], "summary": {"machines": 0}})
             return
         if path == "/api/hub/fleet/nodes":
-            self._json(200, {"nodes": FLEET_NODES, "summary": {"nodes": len(FLEET_NODES)}})
+            self._json(200, {"nodes": FLEET_NODES,
+                             "summary": fleet_node_summary(FLEET_NODES)})
             return
         if path == "/api/hub/capabilities":
             # The rich roster `fleet._worker_roster` prefers. `/api/hub/workers`

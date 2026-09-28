@@ -96,6 +96,26 @@ FIXTURE = {
             },
             # Hub 0.6.51 says it trusts nobody — the 409 state, not an unknown.
             "trusted_publisher": {"reported": True, "publisher_id": None, "fingerprint": None},
+            # **The joined roster, and the controller's own count of it.** This is the
+            # data the page never decoded (audit H10/M20/M21): a Mac that is reachable
+            # with a last-seen stamp, and one that answered and refused this
+            # controller's credential — which must not draw as "offline".
+            "nodes": [
+                {"id": "mac-a", "name": "mac-a", "state": "reachable", "role": "agent",
+                 "address": "http://10.0.0.11:47873", "joined_at": 1790000000,
+                 "last_seen_at": 1790000000, "credential_issued_at": 1790000000,
+                 "has_credential": True, "version": "0.6.91",
+                 "studios": [{"id": "voice", "modality": "voice"}]},
+                {"id": "mac-b", "name": "mac-b", "state": "unauthorized", "role": "agent",
+                 "address": "http://10.0.0.12:47873", "joined_at": 1790000000,
+                 "last_seen_at": 1789999000, "credential_issued_at": 1790000000,
+                 "has_credential": True,
+                 "detail": "the node answered but rejected this controller's credential "
+                           "(HTTP 401) - re-join it with the current Fleet Token",
+                 "studios": [{"id": "image", "modality": "image"}]},
+            ],
+            "node_summary": {"total": 2, "reachable": 1, "unreachable": 0,
+                             "unauthorized": 1, "error": 0, "removed": 0},
             "machines": [
                 {"machine": "mac-a", "label": "mac-a", "state": "long_idle"},
                 {"machine": "mac-b", "label": "mac-b", "state": "offline"},
@@ -128,10 +148,21 @@ FIXTURE = {
         {"location_id": "ctrl-1", "location": "Blue Room", "machine": "mac-a", "label": "mac-a",
          "state": "ready", "completed": 4, "failed": 0, "median_runtime_s": 41.0,
          "chip": "Apple M4", "memory_gb": 16.0, "disk_free_gb": 120.0,
-         "modalities": {"voice": 4}, "limitation": "Direct activity partially unavailable"},
+         "modalities": {"voice": 4}, "limitation": "Direct activity partially unavailable",
+         # What `machines_flat` joins from the roster: the role it joined with, its own
+         # state, and when the controller last heard from it.
+         "node_state": "reachable", "node_role": "agent",
+         "node_address": "http://10.0.0.11:47873", "node_last_seen_at": 1790000000},
         {"location_id": "ctrl-1", "location": "Blue Room", "machine": "mac-b", "label": "mac-b",
          "state": "offline", "completed": 0, "failed": 0, "chip": "Apple M4",
-         "memory_gb": 16.0, "disk_free_gb": 380.0, "modalities": {}},
+         "memory_gb": 16.0, "disk_free_gb": 380.0, "modalities": {},
+         # The refused credential: the activity word is still `offline` (nothing can be
+         # dispatched to it), and the node's own state and sentence are what make the
+         # difference readable.
+         "node_state": "unauthorized", "node_role": "agent",
+         "node_last_seen_at": 1789999000,
+         "node_detail": "the node answered but rejected this controller's credential "
+                        "(HTTP 401) - re-join it with the current Fleet Token"},
     ],
     "running": [
         {"location_id": "ctrl-1", "provider_id": "studio-hub-ctrl-1",
@@ -228,6 +259,36 @@ enum GatewayAPI {
         locations.updateRelease(locations: snapshot.locations, state: snapshot.release)
         _ = layout("Locations", locations, rows: 2)
 
+        // **The members of a controller, decoded and drawn** (audit H10/M20/M21). The
+        // Hub publishes `nodes` and `node_summary` per location, the gateway has always
+        // forwarded both, and nothing here read them — so "see each member connected"
+        // meant opening Studio Hub on the controller.
+        let controller = snapshot.locations.first(where: { $0.id == "ctrl-1" })
+        assert(controller?.nodes.count == 2, "the node roster did not decode")
+        assert(controller?.nodeSummary?.total == 2 && controller?.nodeSummary?.unauthorized == 1,
+               "the controller's own node summary did not decode")
+        assert(controller?.memberCount?.reachable == 1 && controller?.memberCount?.total == 2,
+               "the Members fraction did not decode")
+        guard let refused = controller?.nodes.first(where: { $0.id == "mac-b" }) else {
+            print("FAIL: the roster row for mac-b did not decode"); exit(1)
+        }
+        assert(refused.isUnauthorized, "the unauthorized node state did not decode")
+        assert(!refused.isUnreachable, "unauthorized must not be read as unreachable")
+        assert(refused.stateText == "credential refused", "the state word was collapsed: \(refused.stateText)")
+        assert(refused.lastSeenAt?.doubleValue == 1789999000, "the node's last_seen_at did not decode")
+        assert((refused.detail ?? "").contains("re-join it with the current Fleet Token"),
+               "the controller's own sentence did not decode verbatim")
+        assert(controller?.nodes.first(where: { $0.id == "mac-a" })?.role == "agent",
+               "the node's join role did not decode")
+        // A location with no roster summary is unknown, never `0 / 0`.
+        assert(snapshot.locations.first(where: { $0.id == "local" })?.memberCount == nil,
+               "a location that stated no roster must not read as an empty one")
+        let locationTexts = descendants(locations).compactMap { ($0 as? NSTextField)?.stringValue }
+        assert(locationTexts.contains(where: { $0.contains("1 / 2") && $0.contains("1 refused") }),
+               "the Members column did not draw the reachable count and the refusal")
+        assert((controller?.membersTooltip ?? "").contains("re-join it with the current Fleet Token"),
+               "the Members tooltip did not quote the controller's sentence")
+
         // The publisher identity and the controller-held descriptor decode, and
         // the refusal is quoted verbatim — fingerprint and all. A page that
         // paraphrased a 409 would hide the one string the owner has to install.
@@ -264,6 +325,26 @@ enum GatewayAPI {
         machines.update(machines: snapshot.machines, studios: snapshot.studiosByMachine,
                         filter: FleetFilter())
         _ = layout("Machines", machines, rows: 3)
+
+        // **The Node marker and last-seen, on the machine itself.** `node_role` is what
+        // says which Macs are members (never the label, which the owner can change),
+        // `last_seen_at` is what separates "switched off" from "gone", and a refused
+        // credential has to be readable as that rather than as one more offline Mac.
+        let machineTexts = descendants(machines).compactMap { ($0 as? NSTextField)?.stringValue }
+        assert(machineTexts.contains("agent"), "the Node column did not mark a joined Mac")
+        assert(machineTexts.contains("credential refused"),
+               "the Machines tab drew a refused credential as a plain state: \(machineTexts)")
+        assert(!machineTexts.contains(where: { $0 == "offline" }),
+               "the refused node was also drawn as an offline machine")
+        guard let joined = snapshot.machines.first(where: { $0.machine == "mac-a" }) else {
+            print("FAIL: the machine rows did not decode"); exit(1)
+        }
+        assert(joined.isNode && joined.nodeRoleText == "agent",
+               "the node join did not reach the machine row")
+        assert(joined.nodeLastSeenText == "just now",
+               "the machine's node last-seen did not render: \(joined.nodeLastSeenText)")
+        assert(!(snapshot.machines.first(where: { $0.machine == "local" })?.isNode ?? true),
+               "the controller's own Mac must not be marked as a node")
 
         let models = FleetModelsTab(frame: .zero)
         models.update(models: snapshot.allLocalModels, workers: snapshot.locations.flatMap { $0.workers }, filter: FleetFilter())

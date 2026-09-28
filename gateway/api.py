@@ -137,10 +137,15 @@ async def _record_story_requests(request: Request, call_next):  # type: ignore[n
 # Errors — Story Studio reads exactly two fields: `detail` and optional `code`.
 # ---------------------------------------------------------------------------
 class GatewayError(Exception):
-    def __init__(self, status: int, detail: str, code: str | None = None) -> None:
+    def __init__(self, status: int, detail: str, code: str | None = None,
+                 headers: dict[str, str] | None = None) -> None:
         self.status = status
         self.detail = detail
         self.code = code
+        # **`Retry-After` is part of an honest refusal.** A `429` that does not say when to come
+        # back is a wall; the fleet's own deferral cap is the number this gateway would use, so it
+        # is the number the caller is given.
+        self.headers = headers or {}
 
 
 @app.exception_handler(GatewayError)
@@ -148,7 +153,7 @@ async def _gateway_error_handler(_: Request, exc: GatewayError) -> JSONResponse:
     body: dict[str, Any] = {"detail": exc.detail}
     if exc.code:
         body["code"] = exc.code
-    return JSONResponse(status_code=exc.status, content=body)
+    return JSONResponse(status_code=exc.status, content=body, headers=exc.headers or None)
 
 
 # ---------------------------------------------------------------------------
@@ -712,27 +717,59 @@ def _publish_queue_evidence(body: dict[str, Any], job: dict[str, Any]) -> None:
     read these fields all along, and renders *"Waiting in the GenStudio provider queue… position N…
     about 2 minutes… pacing new requests"*) could never show the queue the owner asked for.
 
+    **Waiting is `accepted`, with or without a deferral.** `store.submit` opens every job at
+    `next_action_at = now + 0.8`, so a job that has never been refused is still queued behind
+    everything in front of it; publishing only when a `defer_reason` was set made "waiting for a
+    slot" and "already running" the same payload. A job that is *running* publishes nothing here,
+    so absent still means "not in this queue" rather than position zero.
+
     The vocabulary is Story's own: `queue_reason` is exactly `provider_pace | null` in its contract,
-    so this fills that field rather than inventing a second one.
+    so this fills that field rather than inventing a second one — and only when the gateway really
+    did put the job back because a lane refused it. A fresh submission is queued, not paced, and
+    saying otherwise would be a claim about the provider nobody measured.
 
     `queue_eta_seconds` is **when this gateway will try again**, which is the only figure it can
     honestly give: it is not a prediction of when the provider will finish, and it is not published
     as one.
+
+    `queue_size` is the number bounding the position — the whole waiting set of that modality — so
+    "position 3" can be read as "3 of 7" rather than as "third of an unknown many". It is additive:
+    Story reads `queue_position`, `queue_eta_seconds` and `queue_reason` and ignores the rest.
     """
-    if not job.get("defer_reason"):
+    if str(job.get("state") or "") != "accepted":
         return
-    body["queue_reason"] = "provider_pace"
+    position: int | None = None
+    size: int | None = None
+    # `queue_rank` is the reader of the queue rule; a store that predates it still
+    # answers the single number, so a waiting job is never published without one.
+    rank_of = getattr(store, "queue_rank", None)
+    if rank_of is not None:
+        try:
+            rank = rank_of(job["id"])
+        except Exception:  # noqa: BLE001 - a queue figure must never fail a job response
+            rank = None
+        if isinstance(rank, dict):
+            state_position = rank.get("position")
+            state_size = rank.get("size")
+            position = state_position if isinstance(state_position, int) else None
+            size = state_size if isinstance(state_size, int) else None
+    if position is None:
+        position_of = getattr(store, "queue_position", None)
+        if position_of is not None:
+            try:
+                fallback = position_of(job["id"])
+            except Exception:  # noqa: BLE001 - a queue figure must never fail a job response
+                fallback = None
+            position = fallback if isinstance(fallback, int) else None
+    if position is not None and position >= 1:
+        body["queue_position"] = position
+        if size is not None and size >= position:
+            body["queue_size"] = size
+    if job.get("defer_reason"):
+        body["queue_reason"] = "provider_pace"
     next_action = job.get("next_action_at")
     if isinstance(next_action, (int, float)):
         body["queue_eta_seconds"] = max(0, int(round(next_action - time.time())))
-    position_of = getattr(store, "queue_position", None)
-    if position_of is not None:
-        try:
-            position = position_of(job["id"])
-        except Exception:  # noqa: BLE001 - a queue figure must never fail a job response
-            position = None
-        if isinstance(position, int) and position >= 1:
-            body["queue_position"] = position
 
 
 def catalog_encode(job: dict[str, Any]) -> str:
@@ -767,6 +804,41 @@ def _pinned_location(params: dict[str, Any]) -> str | None:
     return fleet.pinned_location(params)
 
 
+def _refuse_when_the_queue_is_full() -> None:
+    """Refuse a new job when the gateway's own queue is at its published ceiling.
+
+    `max_queued_jobs` is published in the admission record Story Studio reads, and Story holds
+    itself to it — but nothing here did, so the queue this process owns was unbounded while the
+    caller believed it was bounded (audit M8, and H7's family of published-but-unread numbers).
+
+    **`429` with `Retry-After`, never a silent accept and never `402`.** A refusal the caller can
+    act on is better than a job that sits in a queue nobody promised to drain; the alternative
+    considered and rejected was deleting the field and leaving the queue unbounded, which would
+    have made the published number a lie in the other direction.
+    """
+    limit = int(admission()["max_queued_jobs"])
+    waiting_of = getattr(store, "waiting_jobs", None)
+    if waiting_of is None:
+        return
+    try:
+        waiting = len(waiting_of(limit=limit + 1))
+    except Exception:  # noqa: BLE001 - a queue figure must never fail a submission
+        return
+    if waiting <= limit:
+        return
+    from . import concurrency
+
+    retry_after = int(concurrency.queue_wait_budget()["defer_cap_seconds"])
+    raise GatewayError(
+        429,
+        (f"this gateway is already holding {waiting} waiting jobs, its published ceiling "
+         f"(max_queued_jobs) is {limit}, and it will not accept more work than it can honestly "
+         f"queue. Retry after {retry_after} seconds."),
+        "QUEUE_FULL",
+        headers={"Retry-After": str(retry_after)},
+    )
+
+
 def _submit(
     modality: str,
     compound_id: str,
@@ -778,7 +850,15 @@ def _submit(
 
     Resolution is against *enabled* models, so a disabled toggle is honoured on
     the generation path and the catalogue and dispatch can never disagree.
+
+    **The queue has a ceiling, and it is enforced here** (the owner's decision on
+    `max_queued_jobs`: *"enforce it with a clean 429 + Retry-After, and raise the default to 256"*).
+    The number was published to Story Studio, which holds itself to it, and read by nothing on this
+    side — so the queue was unbounded in the one process that owns it (audit M8). One guard here,
+    on the single path every generation route funnels through, rather than a check per route that
+    the next route would forget.
     """
+    _refuse_when_the_queue_is_full()
     definition, model = catalog.resolve(
         modality, compound_id, only_location=_pinned_location(params)
     )
@@ -1100,14 +1180,95 @@ def chat_completions(payload: dict[str, Any]) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 @app.post("/v1/images/admission/permits", dependencies=[Depends(require_auth)])
 def acquire_permit(payload: dict[str, Any]) -> dict[str, Any]:
+    """Reserve a slot against the fleet's **live** capacity, or say there is none.
+
+    It used to hand back an id and `expires_at: None` — a permit that reserved nothing, for ever,
+    against a number that was a setting rather than a measurement (audit H7 and the LOW finding
+    *"the permit route always grants"*). A caller that asks whether it may start work deserves the
+    same answer the dispatcher will give it: the capacity the fleet has right now, and a refusal
+    when there is none left.
+
+    **Refused with 429, never 402** — the contract trap this repo has paid for: a 402 permanently
+    locks the caller's API key. `Retry-After` is the honest hint, and it is the deferral the queue
+    would apply anyway.
+    """
     import uuid
 
+    from . import concurrency
+
+    capacity = concurrency.live_capacity(worker=worker)
+    in_flight = worker.active()
+    # **Which number bounds this request.** The fleet's live capacity for the modality asked
+    # about, when the fleet has any — and the **pool** otherwise. That fallback is load-bearing
+    # and was found by this repo's own e2e suite: a gateway with no Studio Hub location at all
+    # (a cloud-only setup, or every Mac switched off) reports a fleet total of `0`, and refusing
+    # every permit on that figure would have made the guard itself an outage. `0` from the fleet
+    # means "no Mac is reachable", not "no capacity exists" — a cloud lane is still there, and a
+    # request for a Hub model is refused properly at submit with `SITE_CAPACITY_UNAVAILABLE`.
+    modality = _permit_modality(payload)
+    fleet_limit = capacity["by_modality"].get(modality) if modality else None
+    if fleet_limit:
+        limit, source = int(fleet_limit), capacity["source"]
+    else:
+        limit = int(concurrency.global_limit())
+        source = concurrency.global_budget().detail
+    if limit > 0 and in_flight >= limit:
+        retry_after = int(concurrency.queue_wait_budget()["defer_cap_seconds"])
+        raise GatewayError(
+            429,
+            (f"no free capacity right now: {in_flight} of {limit} slots are in use "
+             f"({source}). Retry after {retry_after} seconds."),
+            "FLEET_AT_CAPACITY",
+            headers={"Retry-After": str(retry_after)},
+        )
+    # **A permit that expires**, because a reservation nobody releases is the defect this route
+    # already had. The TTL is the queue's own cap: long enough to submit, short enough that a
+    # caller who walks away does not hold a slot for ever.
+    ttl = int(concurrency.queue_wait_budget()["defer_cap_seconds"])
     return {
         "id": str(uuid.uuid4()),
         "model_id": payload.get("model_id"),
         "operation": payload.get("operation"),
-        "expires_at": None,
+        "expires_at": time.time() + ttl,
+        "expires_in_seconds": ttl,
+        "capacity": {
+            "total": limit,
+            "in_flight": in_flight,
+            "available": max(0, limit - in_flight),
+            "by_modality": capacity["by_modality"],
+            "source": source,
+            "fleet_total": capacity["total"],
+        },
     }
+
+
+#: Which modality an admission permit is about, when the caller names one.
+#:
+#: `operation` is Story Studio's own vocabulary (`text-to-image`), and `modality` is this
+#: gateway's; both spellings are accepted because both are on the wire. An operation this gateway
+#: does not recognise answers `None`, which the guard reads as "ask the pool" rather than guessing
+#: a lane.
+_PERMIT_OPERATIONS = {
+    "text-to-image": "image",
+    "image": "image",
+    "image-to-image": "image",
+    "text-to-video": "video",
+    "image-to-video": "video",
+    "video": "video",
+    "text-to-speech": "tts",
+    "tts": "tts",
+    "transcription": "transcription",
+    "music": "music",
+    "chat": "chat",
+}
+
+
+def _permit_modality(payload: dict[str, Any]) -> str | None:
+    for key in ("modality", "operation"):
+        value = str(payload.get(key) or "").strip().lower()
+        if value in _PERMIT_OPERATIONS:
+            return _PERMIT_OPERATIONS[value]
+    return None
 
 
 @app.post("/v1/images/generations", dependencies=[Depends(require_auth)])

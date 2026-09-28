@@ -873,7 +873,8 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
                     payload["credential"] as? [String: Any],
                     verb: "Added \(name)",
                     discovered: payload["discovered"] as? Int,
-                    discoveryError: payload["discovery_error"] as? String
+                    discoveryError: payload["discovery_error"] as? String,
+                    enableSeed: payload["enable_seed"] as? [String: Any]
                 )
                 self.reload()
             }
@@ -890,7 +891,8 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
         _ credential: [String: Any]?,
         verb: String,
         discovered: Int? = nil,
-        discoveryError: String? = nil
+        discoveryError: String? = nil,
+        enableSeed: [String: Any]? = nil
     ) {
         // Discovered models arrive DISABLED. Saying it here is the difference
         // between "the location has no models" and "you have not enabled any yet".
@@ -902,6 +904,20 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
                   + "you want on the Models page; nothing is available until you do."
         } else if let discoveryError {
             tail = " Its models could not be read yet — \(discoveryError)"
+        }
+        // **What a newly added location inherited, in the gateway's own sentence.**
+        // A new controller's models are seeded from this Mac's own Hub decisions, and
+        // the gateway computes the counts that sentence is built from; this page drew
+        // only the discovered count, so "enabled here was inherited there" — the whole
+        // point of the seeding — was invisible at the moment it happened. `nil` for a
+        // re-add (its own decisions are deliberately kept), so it is guarded, and a
+        // failed seed says so rather than reading as "nothing to inherit".
+        if let enableSeed {
+            if let sentence = enableSeed["sentence"] as? String, !sentence.isEmpty {
+                tail += " " + sentence
+            } else if let error = enableSeed["error"] as? String, !error.isEmpty {
+                tail += " Its models could not inherit this Mac's decisions — \(error)"
+            }
         }
 
         guard let credential else {

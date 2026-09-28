@@ -160,3 +160,22 @@ failed to Story Studio with a reason naming every machine it was tried on. A ret
 when the previous attempt is **known** to have failed — an upstream that accepted the work and
 went silent is never re-run automatically. The full policy, including what an operator sees on the
 job envelope, is [job-retry-policy.md](job-retry-policy.md).
+
+## 10. Removing a node is permanent — and it makes that node's finished jobs unretrievable
+
+Two things an operator must know before pressing **Remove**, both recorded here because neither is
+visible in the UI (M17, and the owner's decision B):
+
+- **A removal is an eviction, not a bookmark.** The controller drops the machine's roster row *and*
+  revokes the credential it issued that machine, and it records the removal by name and date. The
+  removed Mac is refused on every later join attempt with *"this controller removed this Mac on
+  <date>; re-admit it from Connections to join again"* — it cannot re-add itself, which is the point:
+  the owner removes Macs to **sell** them. Re-admitting is a deliberate action on the controller, and
+  only then may that id join again (it is issued a fresh credential).
+- **Its finished jobs stop being fetchable through the controller.** Jobs a removed node ran are still
+  listed as done, but the controller can no longer reach that machine to fetch the artifact, so a
+  request for one answers **503**. If an artifact on a Mac you are about to remove matters, fetch it
+  before the removal — this is the caveat the remove confirmation does not yet spell out.
+
+The `_orchestra` audit that produced this section is
+`_orchestra/AUDIT-gateway-studiohub-20260928.md`, finding M17.

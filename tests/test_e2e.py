@@ -1613,8 +1613,18 @@ def main() -> int:
                   and permit.get("operation") == "text-to-image"
                   and len(str(permit.get("id") or "")) >= 8,
                   f"{permit}")
-            check("and it is unlimited rather than pretending to expire",
-                  permit.get("expires_at") is None, f"{permit.get('expires_at')}")
+            # **This check used to assert `expires_at is None` — "unlimited rather than
+            # pretending to expire". C3 changed the opposite way, deliberately:** a permit that
+            # never expires reserves nothing, and `live_capacity` is now the number it reserves
+            # against (the owner's decision D). The permit names its capacity and its source so a
+            # caller can see which ceiling it was granted under.
+            check("and it reserves against a named capacity rather than reserving nothing",
+                  isinstance(permit.get("expires_at"), (int, float))
+                  and permit["expires_at"] > 0
+                  and isinstance(permit.get("capacity"), dict)
+                  and isinstance(permit["capacity"].get("total"), int)
+                  and permit["capacity"].get("source"),
+                  f"{permit}")
             check("a permit for a malformed body is a 4xx, not a 500",
                   400 <= req(client, "POST", "/v1/images/admission/permits",
                              content=b"not json",

@@ -248,12 +248,38 @@ class JobStore:
         the Hub itself stated.
         """
         rows = self._conn.execute(
-            "SELECT id, upstream_job_id FROM jobs WHERE state = 'running'"
+            "SELECT id, upstream_job_id, dispatch_started_at FROM jobs WHERE state = 'running'"
         ).fetchall()
         if not rows:
             return 0
         now = time.time()
+        # **A job that never left this process goes back in the queue** (audit M5). The sweep
+        # failed *everything* `running`, so a restart turned work that had not been dispatched —
+        # `dispatch_started_at IS NULL` means the adapter was never called — into a durable
+        # recovery hold the operator had to reconcile by hand. Six of the live holds were exactly
+        # that, `upstream_job_id: NULL` and nothing running anywhere.
+        #
+        # The line is drawn at `dispatch_started_at` rather than at the upstream id on purpose.
+        # An id is proof that a container was created; **no** id is not proof that none was, for
+        # the one window where the POST succeeded and the answer was lost. Before dispatch began
+        # there is no such window, so that case is provably safe to re-queue and the ambiguous
+        # one still holds. Never replay what might be running; always resume what provably is not.
+        requeued = 0
         for row in rows:
+            if row["dispatch_started_at"] is None and not row["upstream_job_id"]:
+                self._conn.execute(
+                    """
+                    UPDATE jobs
+                       SET state = 'accepted', error_code = NULL, error_detail = NULL,
+                           retryable = 0, recovery_state = NULL, recovery_detail = NULL,
+                           recovery_context = NULL,
+                           next_action_at = ?, updated_at = ?
+                     WHERE id = ? AND state = 'running'
+                    """,
+                    (now, now, row["id"]),
+                )
+                requeued += 1
+                continue
             upstream = str(row["upstream_job_id"] or "")
             suffix = f" Upstream job id: {upstream}." if upstream else ""
             detail = (
@@ -290,7 +316,7 @@ class JobStore:
                     row["id"],
                 ),
             )
-        return len(rows)
+        return len(rows) - requeued
 
     def close(self) -> None:
         self._conn.close()
@@ -586,37 +612,77 @@ class JobStore:
             self._conn.commit()
             return True
 
-    def queue_position(self, job_id: str) -> int | None:
-        """Where this job sits in the gateway's own queue, 1-based, or `None`.
+    #: **The one statement of what "ahead in the queue" means**, used by both the
+    #: single-job reader and the listing, so the number a caller is told and the
+    #: order the console draws cannot disagree. `ahead_count` counts the jobs that
+    #: come first: waiting in the same lane and created earlier; ties break on id,
+    #: so two jobs created in the same microsecond still have an order rather than
+    #: both being told they are next. `queue_size` is the lane's whole waiting set,
+    #: which is the number bounding the position (`ahead_count + 1`).
+    _QUEUE_RANK_SQL = """
+        (SELECT COUNT(*) FROM jobs AS ahead
+          WHERE ahead.state = 'accepted' AND ahead.modality = j.modality
+            AND (ahead.created_at < j.created_at
+                 OR (ahead.created_at = j.created_at AND ahead.id < j.id))) AS ahead_count,
+        (SELECT COUNT(*) FROM jobs AS lane
+          WHERE lane.state = 'accepted' AND lane.modality = j.modality) AS queue_size
+    """
 
-        **The gateway has had a queue since 2026-09-25 and published nothing about it.** `defer()`
-        puts a job back with a `next_action_at` and a reason, and the caller could not tell a queued
-        job from a slow one: Story's Jobs page reads `queue_position`, `queue_eta_seconds` and
-        `queue_reason` — it renders *"Waiting in the GenStudio provider queue… position N… about 2
-        minutes… pacing new requests"* — and the job envelope hardcoded all three to `null`, so none
-        of that could ever appear.
+    def queue_rank(self, job_id: str) -> dict[str, int] | None:
+        """This job's place among the jobs waiting in its lane, or `None`.
 
-        Position counts the **deferred** jobs of the same modality created before this one, so 1 is
-        next. It is a position among waiting jobs, not a promise about machines: a job that has been
-        dispatched is not in this queue at all.
+        **Every `accepted` job is waiting, deferred or not.** `defer()` puts a job
+        back with `next_action_at` and a reason, and the caller could not tell a
+        queued job from a slow one: Story's Jobs page reads `queue_position`,
+        `queue_eta_seconds` and `queue_reason` — it renders *"Waiting in the
+        GenStudio provider queue… position N… about 2 minutes… pacing new
+        requests"* — and the envelope published none of it. Worse, when it did
+        publish a position it counted only the **deferred** jobs, so a job that had
+        just been put back read "1" while the fresh submissions the dispatcher
+        takes first stood in front of it.
+
+        So the population is every `accepted` job of the same modality, and the
+        order is first-come-first-served — the order `due()` is being moved to.
+        `{"position": n, "size": m}` with `1 <= n <= m`, or `None` for a job that is
+        not waiting: a dispatched job is not in this queue at all, and returning 1
+        for a running job would read as "you are next" to a caller that is simply
+        running.
         """
         with self._lock:
             row = self._conn.execute(
-                "SELECT modality, created_at, defer_reason FROM jobs WHERE id = ?", (job_id,)
+                f"SELECT j.id, {self._QUEUE_RANK_SQL} FROM jobs AS j "  # noqa: S608 - a constant
+                " WHERE j.id = ? AND j.state = 'accepted'",
+                (job_id,),
             ).fetchone()
-            # A job that is not waiting has no position. Returning 1 for a freshly submitted job
-            # would read as "you are next" to a caller that is simply running.
-            if row is None or not row["defer_reason"]:
-                return None
-            # Ties are broken by id, so two jobs created in the same microsecond still have an
-            # order rather than both being told they are next.
-            ahead = self._conn.execute(
-                "SELECT COUNT(*) FROM jobs "
-                " WHERE state = 'accepted' AND defer_reason IS NOT NULL AND modality = ? "
-                "   AND (created_at < ? OR (created_at = ? AND id < ?))",
-                (row["modality"], row["created_at"], row["created_at"], job_id),
-            ).fetchone()[0]
-        return int(ahead) + 1
+        if row is None:
+            return None
+        return {"position": int(row["ahead_count"]) + 1, "size": int(row["queue_size"])}
+
+    def queue_position(self, job_id: str) -> int | None:
+        """Where this job sits in the gateway's own queue, 1-based, or `None`.
+
+        The single number `queue_rank` states, kept as its own name because it is
+        what the job envelope has always published and what a caller reads. See
+        `queue_rank` for the rule; this is a reader of it, never a second rule.
+        """
+        rank = self.queue_rank(job_id)
+        return rank["position"] if rank is not None else None
+
+    def waiting_jobs(self, *, limit: int = 200) -> list[dict[str, Any]]:
+        """The queue itself: every job waiting to be dispatched, oldest first.
+
+        The console's queue view reads this rather than `list_jobs(state="accepted")`
+        because the **order is the queue** — `created_at`, ties by id, the order
+        `queue_rank` ranks in — and a listing sorted newest-first would draw the
+        job that is next as the last row. `limit` is bounded by the route.
+        """
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT * FROM jobs WHERE state = 'accepted' "
+                " ORDER BY created_at, id LIMIT ?",
+                (max(int(limit), 1),),
+            ).fetchall()
+        return [self._row_dict(row) for row in rows]
 
     def begin_dispatch(self, job_id: str) -> bool:
         """Open the dispatch window only while a running job has no cancel request."""
@@ -801,6 +867,19 @@ class JobStore:
         return self._row_dict(row)
 
     def due(self, now: float | None = None) -> list[dict[str, Any]]:
+        """Everything ready to run, **oldest first** — the queue's own order.
+
+        This ordered by `next_action_at`, which is the *readiness* clock rather than the arrival
+        order, and `defer()` pushes that clock forward on every retry — so a job that had waited
+        kept losing its place to work that arrived later (audit M3). A queue where waiting costs
+        you your position is not a queue, and on a fleet of fifty Macs the jobs that wait most are
+        exactly the ones being retried for a machine.
+
+        `created_at` is the arrival order, ties broken by id so the order is total and stable —
+        two jobs created in the same millisecond must not swap places between passes, or a
+        deferred job could be starved by a coin toss. `next_action_at` still decides *whether* a
+        job is ready; it no longer decides who goes first.
+        """
         now = time.time() if now is None else now
         rows = self._conn.execute(
             """
@@ -808,7 +887,7 @@ class JobStore:
             WHERE state NOT IN ('succeeded', 'failed', 'cancelled')
               AND next_action_at IS NOT NULL
               AND next_action_at <= ?
-            ORDER BY next_action_at
+            ORDER BY created_at, id
             """,
             (now,),
         ).fetchall()
