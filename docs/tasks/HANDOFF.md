@@ -50,12 +50,15 @@ were found by it rather than by reading the code:
 | 9 | eviction is permanent, the neighbour still works | PASS | own credential 401; Fleet-token join 403 by name; neighbour ran the work; readmit re-joined |
 | 10 | one cluster down does not hurt the others | PASS | down row still shows `node_summary {total: 1}` with `members_from` and `stale 41.6 s` |
 | 11 | published capacity is the fleet's, live | PASS | **36 → 18 → 36** with no settings edited |
-| 12 | three attempts on three machines, no duplicates | see the receipt | the unknown-outcome half passes: a Mac killed mid-poll is a hold with `retryable: false` and is **never** re-run |
+| 12 | three attempts on three machines, no duplicates | **fixed in 0.2.65** | the unknown-outcome half passes over HTTP (a Mac killed mid-poll is a hold with `retryable: false`, never re-run). The three-attempt half exposed the id-spelling defect this release corrects — see the receipt's addendum |
 
-**Check 12's three-attempt half is bounded by how many machines actually offer the model.** The
-first run recorded **two** attempts on two different machines, each with its own reason, with
-`attempts_allowed: 3` published — correct behaviour for a model only two locations offered, and the
-receipt says so rather than calling it a pass.
+**Check 12 failed, and it was right to.** The three-attempt half stopped at `attempts_used: 2`
+with `attempts_allowed: 3` even with three locations enabled, and chasing it found **the same
+id-namespace defect A7 exists to close, inside A7's own new code** — the attempt log stores provider
+ids (`studio-hub-<controller>`) while `fleet.route` compares bare controller ids. Fixed in **0.2.65**,
+pinned by three tests, and re-measured on the live code path (the addendum at the end of the
+receipt). The receipt is left as measured rather than rewritten: the run that failed is the evidence
+that the step earns its place.
 
 ## What 0.2.65 changes — the id spelling A7 was written to fix, in A7's own code
 
