@@ -927,6 +927,11 @@ def health() -> dict[str, Any]:
         },
         "models": registry.models.summary(),
         "jobs_processed": worker.processed,
+        # **Whether dispatch is actually moving** (C1/M6). `/health` said `ok` while the
+        # dispatcher thread was dead, because nothing published the loop's own state: every job
+        # after that raise sat in `accepted` for ever and the only signal was an absence. A stale
+        # `last_pass_at` is the number that says so.
+        "worker": worker.liveness(),
         # **The Studio Hub release this build targets.** Studio Hub moves on its
         # own schedule and auto-updates itself, so the pairing is declared rather
         # than assumed; the number is here so a rollout can assert it and the kit
