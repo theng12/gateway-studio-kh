@@ -2,9 +2,54 @@
 
 Newest first. This is the same list the **What's New** page in the app shows.
 
+Each release carries its version and date, the way Studio Hub's notes do, so an entry says *when* it
+arrived instead of only what it does. `tests/test_whats_new_page.py` fails if the newest section is
+not a `## <version> — <date>` heading matching `VERSION`, so the next release cannot forget. The rows
+below the newest group are the history from before this shape existed: their titles are `###` like
+every feature title, and they are left as they were written.
+
 ---
 
-## What's New is a page now, in the sidebar above Settings
+## 0.2.69 — 2026-09-28
+
+### The notes say which release each change arrived in
+
+This page listed every change as a heading of the same size, with **no version and no date** — so you
+could read what the gateway does now but not when any of it appeared, and a fix you had been waiting
+for looked exactly like one that had always been there. Studio Hub's notes have grouped by release
+for a while; these do too now.
+
+The first thing the new grouping exposed: **`0.2.67`'s changes were never written up here at all.**
+Four things shipped that day and this page said nothing about any of them. They are written below.
+
+### A controller that stays away is paused, not thrown out
+
+A Studio Hub location that cannot be reached for a week used to keep taking its share of customer
+work, so jobs waited on a machine that was never coming back. After **seven days** it is **paused**:
+routing skips it and the Fleet page says why. **Nothing is removed** — its credential and every
+per-model switch stay exactly as they were — so switching a house back on is one **Resume**, not a
+re-enrolment. The seven days is a setting, and a gateway restarted yesterday does not reset the clock.
+
+### A job whose outcome nobody could confirm now closes itself
+
+When a Mac dies mid-job the gateway could not tell *"it never started"* from *"it finished and I never
+heard"*, so the job sat held until someone cleared it by hand. It now asks the Hub about each held job
+every minute, and the three answers are kept apart: the Hub says it finished → the job is closed; the
+Hub has never heard of it → **nothing was done, so the job goes back in the queue**; the Hub cannot
+answer → the hold stays, and stays visible. A hold that still needs you means the answer was genuinely
+unknown, not merely slow.
+
+### The queue says how long a video may take
+
+A waiting video job now publishes the lane's own **deadline**, so a two-hour wait reads as normal
+rather than stuck. The number comes from the model's published contract — the local video lane states
+7,200 seconds — and not from a constant in this app.
+
+---
+
+## 0.2.66 — 2026-09-28
+
+### What's New is a page now, in the sidebar above Settings
 
 The notes used to be a window of their own, opened from a small link at the bottom of the sidebar.
 They are a **page** now — a row in the sidebar directly **above Settings**, under the *App* heading,
@@ -16,7 +61,9 @@ build's stamp on the right where it annotates instead of interrupting, a rule, t
 headings, paragraphs and bullets. Bold, italics and `code spans` render as themselves rather than
 being shown to you as characters.
 
-## The fleet page shows who has joined each controller
+---
+
+### The fleet page shows who has joined each controller
 
 Every controller's roster was fetched and thrown away, so the only way to see which Macs had joined
 one was to open Studio Hub on it. The **Locations** tab now has a **Members** column
@@ -24,7 +71,7 @@ one was to open Studio Hub on it. The **Locations** tab now has a **Members** co
 **last seen** column, and a Mac whose credential the controller refuses says **credential refused**
 instead of sharing a word with "switched off".
 
-## There is a queue you can look at
+### There is a queue you can look at
 
 Every waiting job now publishes its **position** and how many are waiting with it — before this, a
 job sitting in the queue looked exactly like one that was running. The console's Providers page has
@@ -32,7 +79,7 @@ a **Queue** section: the waiting jobs with their age, why each one is waiting, a
 with the last reason. It also shows what is bounding each lane and each site, which is the number
 that answers "why is nothing running?".
 
-## The number Story is told is what the fleet can actually do
+### The number Story is told is what the fleet can actually do
 
 The gateway used to tell Story Studio it could run **60** jobs at once because that is what a
 setting said, while the machines could do about **4**. That number is now measured: the sum, over
@@ -40,7 +87,7 @@ every reachable controller, of what admission itself will allow — per lane and
 Macs and it falls; buy three and it rises, with nothing to edit. The old pool is still shown beside
 it, named as the pool, so the two cannot be confused.
 
-## One model, ticked once, for the whole fleet
+### One model, ticked once, for the whole fleet
 
 Adding a controller used to arrive with everything switched off, so the same model had to be ticked
 on every Mac — and the console drew one row per Mac, so "Z-Image-Turbo 6B MLX 4-bit" appeared six
@@ -48,14 +95,14 @@ times with nothing to say it was the same model. A new location now **inherits t
 choices** for the same models, and the Models page draws each model **once** with a **Machines**
 column reading *"N of M machines"*. One tick switches a model on for every Mac that has it.
 
-## Images are published at the size the Macs really render
+### Images are published at the size the Macs really render
 
 Story Studio was told 16:9 was 1536×1024 and 4:3 the same, while the Macs render **1280×720** and
 **1152×864** — and the video-valid **1024×576** frame was hidden entirely. The geometry now comes
 from each model's own lane contract and the Hub's own preset table, so what you pick is what you
 get. Cloud providers are untouched.
 
-## A failed job is retried on a different machine, and never twice
+### A failed job is retried on a different machine, and never twice
 
 A job that fails for a reason the gateway can *prove* — a busy Mac, an engine out of memory, a Mac
 that is off — is tried on a **different machine**, up to three attempts, and then fails properly
@@ -63,7 +110,7 @@ with a reason naming every machine it was tried on and why each one failed. A Ma
 work and then went quiet is **never** re-run automatically: it might be rendering right now, so it
 waits for you to reconcile it. The whole policy is in `docs/job-retry-policy.md`.
 
-## The local model says how it keeps a JSON promise
+### The local model says how it keeps a JSON promise
 
 A chat row now carries its lane's own statement about structured output, at the path
 Studio Hub named — `lane_contract.structured_output`: which formats it takes, how
@@ -84,7 +131,7 @@ Note Studio Hub's own caveat, kept rather than smoothed over: **no
 grammar-constrained decoding**, so a strict-JSON call site relies on prompting plus
 validation.
 
-## The Fleet page updates when you come back to it
+### The Fleet page updates when you come back to it
 
 It read the fleet when you opened the page and then never again on its own, so the
 loop this fleet is actually built around — walk to a Mac, fix it, come back to the
@@ -95,7 +142,7 @@ Now the page re-reads when you return to the app (or switch back from another of
 its windows). It is one read, the same one the **Refresh** button makes, and only
 for pages that are read-only — a page with a form open is never re-read behind you.
 
-## Local LLMs now run through the gateway
+### Local LLMs now run through the gateway
 
 Studio Hub 0.6.63 opened its chat lane to a Fleet credential, so a Hub LLM is now
 a real lane here: enable it on **Models** and Story Studio can use it like any
@@ -118,7 +165,7 @@ grammar-constrained decoding**, so a strict-JSON call site depends on prompting
 plus validation; and a prompt past the model's stated context is refused by name
 rather than silently truncated.
 
-## Studio Hub now tells the gateway how to run each model — and the gateway reads it
+### Studio Hub now tells the gateway how to run each model — and the gateway reads it
 
 Studio Hub 0.6.61 answers the lane-contract request this gateway sent. Three of
 those answers are now in use:
@@ -151,7 +198,7 @@ and nothing creates a schedulable chat batch. So there is no fleet route for the
 gateway to submit to yet: chat models are discovered, listed, and withheld with
 the reason. That question is with the Hub session.
 
-## The gateway says which Studio Hub it is built for — and keeps working
+### The gateway says which Studio Hub it is built for — and keeps working
 
 Studio Hub moves on its own schedule. It updates itself, and this fleet has run
 `0.6.18`, `0.6.23`, `0.6.29`, `0.6.31`, `0.6.54` and `0.6.60` in a week. So the
@@ -163,7 +210,7 @@ Fleet → Locations — `0.6.60`, `0.6.54 · older`, `0.6.72 · newer`.
 your fleet down while nobody touched it. A drift is one line in the Fleet issues
 under "informational — nothing to fix", naming both versions.
 
-## A model you add on the Hub arrives here — even on an engine this build has never seen
+### A model you add on the Hub arrives here — even on an engine this build has never seen
 
 The gateway used to work out what a model *was* from its **engine name**, through
 a short list in its own code — `image-mflux`, `voice-mlx`, `music-mlx`,
@@ -184,7 +231,7 @@ not appeared, and an LLM or video lane would have been invisible by construction
   engine `fleet-mock`"), so "no models" can never be the answer while the Hub is
   listing models.
 
-## A dead node now says why, once
+### A dead node now says why, once
 
 The Fleet page could see *that* machines were down and never *why*, and it said the
 same thing many times over. Both are fixed.
@@ -205,7 +252,7 @@ same thing many times over. Both are fixed.
   `17.18 GB (7.14 GB free)`, which is the number the Hub itself uses to decide
   whether a Mac can take the work.
 
-## A stuck job can be cleared again
+### A stuck job can be cleared again
 
 A job that was in flight when the gateway restarted was left on "manual recovery
 required" with **no action anywhere in the app**: the discard needed identifiers the
@@ -220,7 +267,7 @@ all. Those jobs were stuck until someone edited the database.
 - **The gateway publishes which action applies**, instead of the app guessing from
   the job's context, so a button is only ever offered when pressing it works.
 
-## One model, one answer about whether it can run
+### One model, one answer about whether it can run
 
 A model offered by several locations is published as **one** row — and that row was
 mixing two locations' answers. With this Mac's Studio Hub down and both controllers
@@ -228,13 +275,13 @@ up, a model read `locked: false` beside `availability: "unavailable"`: the gatew
 answer and the catalogue's, disagreeing in the same payload. Both spellings of that
 one fact are now written together.
 
-## The Models tile is a real fraction
+### The Models tile is a real fraction
 
 Fleet → Overview showed **"175/102 local models available"** — more models available
 than models. The numerator counted one entry per machine and the denominator one per
 model. Both halves now count models, so the tile reads `N of M` and means it.
 
-## Adding a location no longer replaces one
+### Adding a location no longer replaces one
 
 Every Studio Hub that has never been given a site id answers the **same** one —
 `local-site`. The gateway had started identifying a controller by that value, so
@@ -244,7 +291,7 @@ looked like it could only hold so many locations.
 Add as many controllers as you like now. A Hub with its own site id keeps it, and a
 Hub still answering the default is told apart by its per-machine id instead.
 
-## The gateway stops offering a knob the model won't take
+### The gateway stops offering a knob the model won't take
 
 The last release made a refused temperature survive; this one stops asking for it.
 
@@ -257,7 +304,7 @@ The last release made a refused temperature survive; this one stops asking for i
   own parameter list is always believed. The one-retry-without-temperature from
   0.2.19 stays as the safety net for a family this table has not learned yet.
 
-## A provider's “no” is a failure, not a mystery
+### A provider's “no” is a failure, not a mystery
 
 Two things made a refused chat call look like a lost one.
 
@@ -272,7 +319,7 @@ Two things made a refused chat call look like a lost one.
   (`params_dropped`) — so the call works, and you can see the knob was dropped rather
   than believe `0.7` was used.
 
-## A release is never pushed backwards
+### A release is never pushed backwards
 
 A controller that already holds a **newer** build than the one being published is
 now refused before anything is sent.
@@ -289,7 +336,7 @@ now refused before anything is sent.
   when it matches, and says plainly when none is installed yet — the state that makes a
   push answer 409. “It trusts nobody” and “this Hub did not say” stay separate sentences.
 
-## The default port is now 8787
+### The default port is now 8787
 
 A fresh install listens on **8787** — the port this Mac's working instance already
 uses. It was 8000, which is Story Studio's *own* default and the most contested dev
@@ -301,7 +348,7 @@ alone.
 - The port stays editable in Settings, and `README.md`'s port section now says 8787.
 - Point Story Studio's Base URL at `http://<host>:8787` (Settings → Copy).
 
-## Publish Studio Hub app releases from the gateway
+### Publish Studio Hub app releases from the gateway
 
 GatewayKH signs a Studio Hub app release with its own Ed25519 **publisher** key and
 offers it to every configured controller, which verifies the signature against the
@@ -325,7 +372,7 @@ countersignature, so trust chains from this gateway to the controller to the nod
 - Nothing is re-signed or rewritten after signing, and the artifact is never
   repackaged.
 
-## Fleet: "the site is down" no longer reads as "no such model"
+### Fleet: "the site is down" no longer reads as "no such model"
 
 With every controller switched off, submitting a fleet model answered
 `404 Model "…" is not available on this gateway` — while the model sat in the
@@ -345,7 +392,7 @@ for a catalogue problem instead of a network one.
   used to become a durable unknown-outcome hold. Only a 5xx — which may have been
   accepted before it failed — keeps that careful path.
 
-## Fleet: the Hub explains its own activity gaps
+### Fleet: the Hub explains its own activity gaps
 
 Hub 0.6.49 adds a machine-readable reason beside the fleet-activity limitation it
 already published — and fixes the gap underneath it: only the Voice worker answered
@@ -363,7 +410,7 @@ its state unknown.
   measured". The activity warnings on this Mac's own machine are gone as a result:
   it now reads `ready`, 15 completed jobs, no limitation.
 
-## Fleet: an agent-mode Hub is never sent customer work
+### Fleet: an agent-mode Hub is never sent customer work
 
 A live probe caught it: one image job and one TTS job both failed with
 `409 "This Hub is in agent mode; submit customer jobs to a controller."` The
@@ -389,7 +436,7 @@ just excluded. The pin now holds only while the owner accepts customer work;
 otherwise the job routes to a controller and the reference clip is staged there,
 the same path a voice owned anywhere else already uses.
 
-## Fleet: the Hub's own answers, and Retry
+### Fleet: the Hub's own answers, and Retry
 
 Studio Hub 0.6.48 publishes what the gateway had been approximating. Where a
 location is on 0.6.48, the Fleet page now uses it:
@@ -417,7 +464,7 @@ Also fixed: the Cancel confirmation reported "0 queued cancelled, 0 signalled, 0
 pending" on a real cancellation — the adapter nests the Hub's answer one level
 down and the counts were read from the wrong level.
 
-## Fleet: only what is actionable, and one line per condition
+### Fleet: only what is actionable, and one line per condition
 
 The Overview's issue list repeated the same Hub condition once per machine —
 "Direct activity partially unavailable" appeared four times for one controller —
@@ -431,7 +478,7 @@ rather than one row per machine, and the note that some machines "report no stat
 says plainly that the Hub counts them as neither online nor offline. A fault that
 names one machine (offline, unhealthy) still gets its own row.
 
-## Fleet: placement weights the Macs that can run the model
+### Fleet: placement weights the Macs that can run the model
 
 Studio Hub 0.6.47 publishes no per-model capacity — `capabilities.model_supply`
 comes back empty on every location — so placement had fallen back to counting
@@ -447,7 +494,7 @@ available* for a model one of its Macs cannot hold, and the placement weight
 follows. A Hub that does publish `model_supply` is still believed over the
 reduction, and a machine that states neither boolean is never counted as "cannot".
 
-## Fleet: stop a running batch
+### Fleet: stop a running batch
 
 The **Jobs** tab can ask a location's Hub to stop a batch it is running.
 
@@ -467,7 +514,7 @@ The **Jobs** tab can ask a location's Hub to stop a batch it is running.
   a different path from every other modality; the modality travels with the row so
   the cancel cannot land on the wrong one.
 
-## Fleet: one page per question
+### Fleet: one page per question
 
 The **Fleet** page is now five tabs instead of one long scroll, and every table
 in it sorts by clicking a column header.
@@ -493,7 +540,7 @@ in it sorts by clicking a column header.
 The location filter and the search box above the tabs apply to Machines, Models
 and Jobs.
 
-## Models: browse the catalogue by operation
+### Models: browse the catalogue by operation
 
 The **Models** page is a browser over the whole catalogue now, not one flat list.
 
@@ -512,14 +559,14 @@ The **Models** page is a browser over the whole catalogue now, not one flat list
   the group, never a page.
 - **Roomier type.** Model names lead, ids sit beneath them in a quieter monospace.
 
-## Runs on older macOS
+### Runs on older macOS
 
 GatewayKH now states its own **macOS 11** minimum instead of inheriting whatever
 macOS the build toolchain shipped. A build made before this change stamped a
 macOS 27 minimum and would not open on macOS 14, reporting "requires macOS 27".
 The same code was always fine on macOS 11; the build just never said so.
 
-## Smarter fleet generation
+### Smarter fleet generation
 
 Generation now goes to the machines that can actually run **that model**, and a
 controller that cannot serve one is stepped over instead of failing the job.
@@ -540,7 +587,7 @@ controller that cannot serve one is stepped over instead of failing the job.
   work. Joining a controller stays that Mac's own decision, made on that Mac with
   the controller's **Fleet token** — not a Hub token.
 
-## Content Packs: install a pack someone sent you
+### Content Packs: install a pack someone sent you
 
 The **Content Packs** page sets up a private shelf once — your own signing
 identity, separate from the old Store — then you add a `.sspack` someone sent
@@ -553,7 +600,7 @@ with its normal Download/Install. The shelf publishes; it does not author.
   `scripts/backup_content_authority.py`; the shelf cannot serve a release whose
   archive is missing.
 
-## Run Story Studio from another Mac
+### Run Story Studio from another Mac
 
 The Gateway can serve your whole Tailscale network now, so Story Studio on
 another Mac connects by pointing its **Base URL** at this Mac's Tailscale
@@ -561,7 +608,7 @@ address. **Settings** shows that address with a **Copy** button. The gateway als
 moved off port 8000 (a very common port, and Story's own default) to its own
 port, so there is never a question of which service answered.
 
-## Smaller things
+### Smaller things
 
 - **Content Packs** is split into **Shelved · Preserved · Drafts · Setup** tabs
   instead of one long scroll, and every pack carries a small **type pill** with the
@@ -590,7 +637,7 @@ port, so there is never a question of which service answered.
 
 ---
 
-## More predictable Create and queued jobs
+### More predictable Create and queued jobs
 
 Refreshing models keeps your selection. If that model disappears, Create asks
 you to choose again. Generate stays disabled while the current request is pending;
@@ -604,7 +651,7 @@ access requires a configured gateway key.
 
 ---
 
-## Your voices now work on every model that can clone
+### Your voices now work on every model that can clone
 
 Only **one** of your eight local voice models offered any voices. Every voice you
 imported was stamped with the model it happened to be tuned against, and a voice
@@ -613,7 +660,7 @@ quality gave you an empty voice list, which reads as "you have no voices" rather
 than "those clips belong to another build". **All eight now offer all ten**, and a
 model that says it does not clone still gets none.
 
-## Your recordings are never shortened
+### Your recordings are never shortened
 
 Every model states its own reference window and the gateway now **reads** it
 instead of guessing at it. Nothing here crops your clips: the recording stays
@@ -627,7 +674,7 @@ each local model will do with it — used whole, shortened to a shorter aligned
 window, refused, or limits unverified — and warns when a clip is under a model's
 floor or missing the transcript a model needs.
 
-## Fixed: a location showed this Mac's models
+### Fixed: a location showed this Mac's models
 
 A Studio Hub location added on the Fleet page discovered **this Mac's** model list
 instead of its own, because one discovery path skipped the location's address and
@@ -637,7 +684,7 @@ now tested.
 
 ---
 
-## The app now stops the gateway when you quit
+### The app now stops the gateway when you quit
 
 **This is the one to know about.** Quitting used to leave the gateway running, and
 the next launch would *adopt* that old process — so "quit and reopen" quietly kept
@@ -651,7 +698,7 @@ because of it, and the only symptom was a feature that silently did not work.
 - **Check Gateway** on the Overview page tells you whether the running gateway is
   the build this app installed, and **Restart Gateway** fixes it.
 
-## Every build identifies itself
+### Every build identifies itself
 
 The app and the gateway now both carry a build stamp (commit + build time).
 `/health` reports it, and the app compares it, so "am I running the latest?" has an
@@ -659,7 +706,7 @@ answer instead of a guess.
 
 ---
 
-## New providers and lanes
+### New providers and lanes
 
 - **xAI is connected properly.** Grok chat and all three Grok image models, plus
   **Grok video** — which needed its own adapter, because xAI's video API is
@@ -674,14 +721,14 @@ answer instead of a guess.
 - Your fal picks: Nano Banana 2 Lite, GPT Image 2.5 (Sunburst and Flare), Seedance
   2.5, H3 Max, Gemini Omni Flash 1.1 — text and image versions of each.
 
-## Voices
+### Voices
 
 - **Add by ID.** Paste a voice id from a share link and save it. ElevenLabs also
   needs the owner id, which the window asks for.
 - **Search the provider's public library** still works, and now a voice you added
   by id is offered wherever it belongs.
 
-## Nothing broken is offered any more
+### Nothing broken is offered any more
 
 The Models page no longer lists a model that cannot run. That removed:
 
@@ -692,7 +739,7 @@ The Models page no longer lists a model that cannot run. That removed:
 
 If a row is there, it runs.
 
-## Things that were wrong and are fixed
+### Things that were wrong and are fixed
 
 A full audit found roughly fifty defects. The ones you would have hit:
 
@@ -714,7 +761,7 @@ A full audit found roughly fifty defects. The ones you would have hit:
   read "3 machines, 2 offline" for one Mac. Now it reads one, and says how many
   probe entries it hid.
 
-## Artifacts
+### Artifacts
 
 Received artifacts are temporary: kept **7 days or 10 GB, whichever comes first**,
 editable in Settings. Nothing under an hour old is ever removed, because a

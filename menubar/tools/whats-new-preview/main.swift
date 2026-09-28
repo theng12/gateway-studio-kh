@@ -13,7 +13,8 @@ import AppKit
 ///
 /// ```sh
 /// swiftc -target arm64-apple-macos11.0 -o /tmp/whats-new-preview \
-///     menubar/tools/whats-new-preview/main.swift menubar/WhatsNewWindow.swift menubar/PageKit.swift
+///     menubar/tools/whats-new-preview/main.swift menubar/WhatsNewWindow.swift \
+///     menubar/WhatsNewPage.swift menubar/PageKit.swift
 ///
 /// (The file is named `main.swift` because a multi-file `swiftc` build allows top-level code only
 /// in the file with that name.)
@@ -43,6 +44,19 @@ NSApp.setActivationPolicy(.prohibited)
 /// `--window` exercises the shipping path instead of the page builder: `WhatsNewWindow.shared.show()`
 /// creates the real window, and calling it twice proves the second open reuses it rather than
 /// messaging a window that AppKit has already released. Nothing is ordered front (the app is `.prohibited`).
+///
+/// **Behind a flag, because it needs the whole app.** `WhatsNewWindow.shared` reaches `MainWindow`,
+/// which reaches every section — so a build of this file plus the renderer alone cannot compile it,
+/// and that is exactly the build the offscreen half needs. Leaving it unconditional meant the
+/// documented command did not compile at all, so the one harness for *looking* at a visual change
+/// was unusable. Add `-D PREVIEW_WINDOW` and the app's own sources for this half:
+///
+/// ```sh
+/// swiftc -target arm64-apple-macos11.0 -D PREVIEW_WINDOW -o /tmp/whats-new-preview-window \
+///     menubar/tools/whats-new-preview/main.swift menubar/*.swift
+/// /tmp/whats-new-preview-window --window
+/// ```
+#if PREVIEW_WINDOW
 if arguments.contains("--window") {
     let first = WhatsNewWindow.shared
     first.show()
@@ -57,6 +71,7 @@ if arguments.contains("--window") {
           + " frame=\(Int(window.frame.width))x\(Int(window.frame.height))")
     exit(0)
 }
+#endif
 
 guard let notes = try? String(contentsOfFile: notesPath, encoding: .utf8) else {
     FileHandle.standardError.write("cannot read \(notesPath)\n".data(using: .utf8)!)
@@ -71,7 +86,11 @@ let offset = arguments.count > 6 ? CGFloat(Double(arguments[6]) ?? 0) : 0
 let appearance = NSAppearance(named: appearanceName == "light" ? .aqua : .darkAqua)
 NSApp.appearance = appearance
 
-let page = WhatsNewWindow.makePage(notes: notes, version: WhatsNewWindow.appVersion, build: "preview-000000000000")
+// `appVersion` and `makePage` moved to `WhatsNewPage` when the renderer was split out of the
+// window in 0.2.66, and this tool was left naming the old home — so the one harness for LOOKING
+// at a visual change stopped compiling, and the documented command below stopped working with
+// it. The tool has to name what the app names.
+let page = WhatsNewPage.makePage(notes: notes, version: WhatsNewPage.appVersion, build: "preview-000000000000")
 let frame = NSRect(x: 0, y: 0, width: width, height: height)
 page.frame = frame
 

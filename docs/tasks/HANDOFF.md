@@ -1,6 +1,6 @@
 # HANDOFF — gateway-kh
 
-**Read this first.** Written 2026-09-28 against **VERSION `0.2.67`**. The running build
+**Read this first.** Written 2026-09-28 against **VERSION `0.2.69`**. The running build
 stamp is on `/health` and in `/Applications/gateway-kh.app/Contents/Resources/gateway/BUILD`.
 If this file disagrees with the code, **the code wins — fix this file in the same change**.
 Every path below is inside the Git checkout `repository/` unless it says otherwise.
@@ -18,7 +18,7 @@ project does not say why, and nobody should guess.
 
 | Thing | Value |
 |---|---|
-| Current release | **0.2.67** — `repository/VERSION`, one line, the only place to bump. **This row read `0.2.63` for four releases while the header three lines above said the file was written against `0.2.67`** — a handoff contradicting itself in its own table. What 0.2.64–0.2.67 add: the rehearsal's four findings (id spelling, handover, re-point), the What's New **page above Settings**, and the four owner answers that had not been built — Q7 a controller unreachable for 7 days is **paused, never removed**; Q8 an unknown-outcome hold **auto-closes when the Hub's record settles** (404 → the work never existed → **requeue**); Q6 the video lane's deadline on the queue view; C3 `provider_submit_concurrency` **deleted** because nothing read it. See the dated sections below |
+| Current release | **0.2.69** — `repository/VERSION`, one line, the only place to bump. **This row read `0.2.63` for four releases while the header three lines above said the file was written against `0.2.67`** — a handoff contradicting itself in its own table. What 0.2.64–0.2.67 add: the rehearsal's four findings (id spelling, handover, re-point), the What's New **page above Settings**, and the four owner answers that had not been built — Q7 a controller unreachable for 7 days is **paused, never removed**; Q8 an unknown-outcome hold **auto-closes when the Hub's record settles** (404 → the work never existed → **requeue**); Q6 the video lane's deadline on the queue view; C3 `provider_submit_concurrency` **deleted** because nothing read it. See the dated sections below |
 | Declared Studio Hub | **0.6.83** — `adapters.studio_hub.SUPPORTED_STUDIO_HUB_VERSION`, published on `/health`; a controller on another version is reported, never refused. Set on 2026-09-27 from a **running** Hub (`/api/version` → `0.6.83` build `f072f17`), not a changelog; 0.6.83 is the release whose video lane publishes the `audio` switch this gateway relays `[MEASURED]`. 0.6.81 was declared earlier the same day from `0.6.81` build `3d8ce32` — that one publishes `lane_contract.canvases`. Controllers older than both still publish, through the cross-product fallback in `_video_row`, and a lane that publishes no switch simply carries no `controls` key. **Note for the 0.6.97 Hub: this declaration is a floor, not a match.** The Hub has moved 0.6.83 → **0.6.97** and every route the gateway reads is still answered; a mismatch here is reported, not refused, which is the design |
 | Branch | `main` = `origin/main`, clean tree; remote `github.com/theng12/gateway-kh` |
 | Running build | `/Applications/gateway-kh.app`, port **8787**, pid **28544**, stamp **`01f1eac-202609281329`** — the 0.2.68 commit, read off `/health` `[MEASURED 2026-09-28]`. Publishing **23 providers / 22 enabled**, 1824 models of which **91 publishable and 19 withheld**, and **10 video rows** — including `studio-hub::baa-ai/LTX-2.3-22B-RAM-12GB-MLX`, the owner's own local video lane, `available: true` with no activation blockers. (`jobs_processed: 0` — a restarted process, not a broken worker: `worker_alive: true`, `consecutive_failures: 0`.) **Rebuild ordering, worth knowing before you measure:** the first build of this release stamped **`01c5992`** — the *parent* commit — because `menubar/build.sh` writes `<short-sha>-<UTC>` from `git HEAD` at build time and the build ran before the commit existed. Rebuilding after the push gave `01f1eac`. So **build after you commit, or expect a stamp one commit behind**, and a stamp that disagrees with the code is still not proof of old code. **The stale-stamp trap, recorded so it is not rediscovered:** killing the gateway by PID made the app respawn it with the *new code* but the *old* `GATEWAY_BUILD` stamp, because the stamp is passed by the **menubar app process** from its own `Info.plist` and that process was still the pre-rebuild one. Only quitting the app (`osascript -e 'quit app "gateway-kh"'`), killing the last gateway by PID (`pgrep -f "uvicorn gateway.api:app"`) and reopening produced a stamp that matches the code. So: **a respawn is not a restart.** `pkill -f` remains forbidden `[MEASURED 2026-09-26]` |
@@ -628,12 +628,25 @@ modal and bad font arrangement"*, next to Studio Hub's What's New page.
   reports the window it created. Not compiled into the app (`build.sh` globs `menubar/*.swift`).
 
   ```sh
+  # Offscreen render — only the renderer and PageKit, no window, nothing on screen.
   swiftc -target arm64-apple-macos11.0 -o /tmp/whats-new-preview \
-      menubar/tools/whats-new-preview/main.swift menubar/WhatsNewWindow.swift menubar/PageKit.swift
+      menubar/tools/whats-new-preview/main.swift menubar/WhatsNewPage.swift menubar/PageKit.swift
   /tmp/whats-new-preview menubar/whats-new.md /tmp/notes.png 720 640 dark 2400   # 2400 = scroll offset
   /tmp/whats-new-preview menubar/whats-new.md /tmp/notes-narrow.png 470 640 dark
-  /tmp/whats-new-preview --window
+
+  # The window half needs the whole app (it reaches MainWindow), so it is behind a flag.
+  swiftc -target arm64-apple-macos11.0 -D PREVIEW_WINDOW -o /tmp/whats-new-preview-window \
+      menubar/tools/whats-new-preview/main.swift menubar/*.swift
+  /tmp/whats-new-preview-window --window
   ```
+
+  **Corrected 2026-09-28 — the command above did not compile.** It named `WhatsNewWindow.swift` in
+  the offscreen build and no `WhatsNewPage.swift`, so `WhatsNewWindow.appVersion` and
+  `.makePage` no longer existed (both moved to `WhatsNewPage` when the renderer was split out in
+  0.2.66), and `WhatsNewWindow.swift` itself reaches `MainWindow`, which the offscreen build does not
+  have. **The one harness for *looking* at a visual change had been unusable since that split**, which
+  is why the notes' own rendering was not checked when the version headings were added — see below.
+  `--window` is now behind `-D PREVIEW_WINDOW` and needs `menubar/*.swift`.
 
   Verified with it: dark and light, 720pt and 470pt wide (wrapping holds, no horizontal scroller),
   a scrolled section of bullets, and `show()` twice → **one** window, reused, `tabbing=disallowed`,
@@ -804,6 +817,18 @@ stand in for it until then.
 
 - **Versions are patch-only for now:** `0.2.1`, `0.2.2`, … up to `0.2.1000`. Increment the
   third number by one per shipped change; never roll to `0.3.x`/`1.0.0` until the owner says so.
+- **Every release's notes carry its version and date, and the gate enforces it.** Add a
+  `## <VERSION> — <YYYY-MM-DD>` heading at the **top** of `menubar/whats-new.md` with the release's
+  entries under it as `###`. `tests/test_whats_new_page.py` fails if the newest section is not the
+  current `VERSION`, so bumping without writing notes is caught rather than shipped. Two things this
+  prevents, both measured on 2026-09-28: a page where a fix you had been waiting for looks exactly
+  like one that was always there, and **a release whose notes were never written at all** —
+  `0.2.67`'s four user-facing changes had no entry anywhere, and a flat list has no place where a
+  missing release is absent from. Also: **the notes are prose for a renderer.** `#`, `- `, `---` and
+  paragraphs are implemented, with bold, italic and code **inline**; `>` blockquotes, `*`/`+`
+  bullets, ordered lists, tables and fences are **not**, and are printed at the reader as their own
+  marker. The same test rejects them. Look at the rendered page — `/tmp/whats-new-preview` below —
+  before believing a note reads well.
 - **Finished work is committed and pushed, and a release carries a DMG.** Do not call work
   done while uncommitted, unpushed, or without an installable artifact. `dist/` stays out of Git.
 - **The setup kit is a snapshot, not a build output — and it is current as of 0.2.44.**

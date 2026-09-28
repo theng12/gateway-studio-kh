@@ -20,6 +20,7 @@ Two checks, and they are deliberately different in kind:
 """
 from __future__ import annotations
 
+import datetime
 import os
 import re
 import subprocess
@@ -158,6 +159,102 @@ class TheSidebarPutsItAboveSettingsTest(unittest.TestCase):
         window = (ROOT / "menubar" / "WhatsNewWindow.swift").read_text(encoding="utf-8")
         self.assertIn('MainWindow.shared.show(section: "what\'s new")', window,
                       "the app menu and Overview still open a window of their own")
+
+
+class TheNotesSayWhichReleaseTheyCameFromTest(unittest.TestCase):
+    """Every release's notes carry its version and date, and the next one cannot forget.
+
+    The owner read the two What's New pages side by side: *"one has versions and dates. the other
+    doesn't. the gateway doesn't."* Studio Hub's `release-notes.md` groups each entry under
+    `## <version> — <date>`; this file listed 46 features as `##` headings of one size with no
+    version and no date anywhere, so a reader could see what the gateway does but not when any of it
+    arrived — and a fix he had been waiting for looked exactly like one that had always been there.
+
+    **The first thing the regrouping exposed was a gap, not a formatting problem: `0.2.67`'s four
+    user-facing changes had never been written up here at all.** Nothing could notice, because a flat
+    list has no place where a missing release is absent from.
+
+    The check is on the **newest** section, deliberately. The rows below it are history written
+    before this shape existed and are left alone; what has to hold is the shape from here on, which
+    is what he asked for — *"make sure in the future. it's also added."*
+    """
+
+    NOTES = ROOT / "menubar" / "whats-new.md"
+    VERSION_FILE = ROOT / "VERSION"
+    RELEASE = re.compile(r"^## (\d+\.\d+\.\d+) — (\d{4}-\d{2}-\d{2})$")
+
+    def _sections(self) -> list[tuple[str, str]]:
+        text = self.NOTES.read_text(encoding="utf-8")
+        return [m.groups() for m in
+                (self.RELEASE.match(line) for line in text.splitlines()) if m]
+
+    def test_the_newest_section_is_the_release_you_are_building(self) -> None:
+        sections = self._sections()
+        self.assertTrue(sections, "whats-new.md has no `<version> — <date>` release heading at all")
+        newest, _ = sections[0]
+        self.assertEqual(
+            newest, self.VERSION_FILE.read_text(encoding="utf-8").strip(),
+            "the top of whats-new.md is not this release: add a `## <VERSION> — <date>` heading for "
+            "the notes you are shipping, so the page says when the change arrived",
+        )
+
+    def test_that_section_is_the_first_heading_on_the_page(self) -> None:
+        # A release heading that is not first would sit under a feature title, and the newest release
+        # would read as part of whatever came before it.
+        body = self.NOTES.read_text(encoding="utf-8").splitlines()
+        first = next(line for line in body if line.startswith("## "))
+        self.assertTrue(self.RELEASE.match(first),
+                        f"the first `##` heading is a feature title, not a release: {first!r}")
+
+    def test_no_feature_title_is_a_release_heading(self) -> None:
+        # A feature title at `##` renders at a release heading's weight (19 pt against 15 pt for
+        # `###`), so a stray one reads as a release that never happened.
+        for line in self.NOTES.read_text(encoding="utf-8").splitlines():
+            if line.startswith("## ") and not self.RELEASE.match(line):
+                self.fail(f"feature title at `##` will render as a release heading: {line!r}")
+
+    def test_the_date_is_a_real_iso_date(self) -> None:
+        for version, date in self._sections():
+            try:
+                datetime.date.fromisoformat(date)
+            except ValueError:
+                self.fail(f"release {version} carries {date!r}, which is not a YYYY-MM-DD date")
+
+    def test_the_notes_use_only_the_block_syntax_the_renderer_implements(self) -> None:
+        """`> ` is not a blockquote here — it is a literal `>` printed at the reader.
+
+        The renderer understands exactly four block forms: `#` headings, `- ` bullets, `---` rules,
+        and paragraphs. **Bold, italic and `code` work inline; blockquotes do not.** Measured by
+        rendering, not by reading: a leading `> ` keeps its character and bold inside it is
+        swallowed, so such a note reaches the page as `> **Each release now carries…` — which is
+        what the first draft of the newest entry did here, and what looking at the page caught.
+
+        The lesson is one this repo keeps relearning in another form: **this file is prose for a
+        renderer, so prose that has not been rendered is not known to work.** The markers are cheap
+        to assert, and an unsupported one is invisible until somebody looks.
+        """
+        # Markdown block constructs the renderer does NOT implement. Each would be printed at the
+        # reader as its own marker rather than as the thing it looks like in a text editor.
+        unsupported = (
+            (">", "blockquote"),
+            ("* ", "bullet written with `*` (the renderer wants `- `)"),
+            ("+ ", "bullet written with `+` (the renderer wants `- `)"),
+            ("```", "fenced code block"),
+            ("|", "table row"),
+        )
+        text = self.NOTES.read_text(encoding="utf-8")
+        for number, line in enumerate(text.splitlines(), start=1):
+            stripped = line.strip()
+            if not stripped:
+                continue
+            for marker, name in unsupported:
+                if stripped.startswith(marker):
+                    self.fail(f"whats-new.md:{number} is a {name} (`{marker}`), which the renderer "
+                              f"does not implement: {stripped[:60]!r}")
+            # An ordered list: `1. `, `2. ` — only bullets are implemented.
+            if re.match(r"^\d+\.\s", stripped):
+                self.fail(f"whats-new.md:{number} is an ordered list, which the renderer does not "
+                          f"implement: {stripped[:60]!r}")
 
 
 if __name__ == "__main__":
