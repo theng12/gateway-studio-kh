@@ -782,6 +782,17 @@ def _studio_hub(definition: ProviderDefinition, values: dict[str, str]) -> Disco
                 facts.get("lane_contract"), dict
             ):
                 raw["lane_contract"] = facts["lane_contract"]
+            # **The preset table the Hub renders with** (A6/H3). The Hub publishes its own
+            # `image_sizes` — the pixel dimensions behind each aspect-ratio name — and this
+            # gateway is the side that tells Story Studio *the geometry the Macs actually
+            # render*. Without this carry, `catalog._hub_image_sizes` had to fall back on a copy
+            # of the table taken from the Hub's installed bundle, so a Hub that re-sized a
+            # preset would be described by the old number. Carried unread, like every other Hub
+            # fact here; the catalogue decides what it means.
+            if not isinstance(raw.get("image_sizes"), dict) and isinstance(
+                facts.get("image_sizes"), dict
+            ):
+                raw["image_sizes"] = facts["image_sizes"]
             # Whether the Hub takes a **complete script** for this model and
             # sections it itself, and how. Read, never derived: `null` means it
             # does not long-form split this model at all, which is exactly the set

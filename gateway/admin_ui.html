@@ -161,6 +161,14 @@
     text-transform: uppercase; letter-spacing: .4px; padding: 7px 10px;
   }
   #m-rows tr.m-group .n { font-weight: 500; color: var(--tertiary); text-transform: none; letter-spacing: 0; }
+  /* The per-Mac sub-row under a location's model. It is indented and quieter than
+     the model row it belongs to, because it answers "which Mac?" only after the
+     model row has answered "which model?" — and it carries the one checkbox that
+     belongs to a single machine. */
+  #m-rows tr.m-machine td { padding-top: 3px; padding-bottom: 3px; border: 0; }
+  #m-rows tr.m-machine .m-machine-name { font-size: 12.5px; color: var(--dim); padding-left: 22px; }
+  #m-rows .m-machines { font-size: 12.5px; white-space: nowrap; }
+  #m-rows .m-machines .badge { margin-left: 4px; }
 
   .card { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); margin-bottom: 12px; overflow: hidden; }
   .card.off { opacity: .62; }
@@ -294,7 +302,9 @@
     <div class="heading">
       <h1>Models</h1>
       <p>Every model this gateway has discovered. Only ticked models are offered to Story Studio —
-         everything else stays discovered but hidden.</p>
+         everything else stays discovered but hidden. A model your Hub locations run is listed
+         <b>once</b>, with how many of those machines offer it; the Macs themselves are the rows
+         beneath it.</p>
       <div class="stat" id="stats" style="margin-top:8px">loading…</div>
     </div>
 
@@ -373,7 +383,8 @@
       <div class="scroll">
         <table>
           <thead><tr>
-            <th style="width:44px"></th><th>Model</th><th>Provider</th><th style="width:150px">Operation</th>
+            <th style="width:44px"></th><th>Model</th><th>Provider</th>
+            <th style="width:150px">Operation</th><th style="width:170px">Machines</th>
           </tr></thead>
           <tbody id="m-rows"></tbody>
         </table>
@@ -382,6 +393,8 @@
     </div>
     <div class="hint" style="margin-top:10px">
       Only ticked models are offered to Story Studio. Everything else is discovered but hidden.
+      Ticking a model switches it on for every machine that has it; each machine can still be
+      switched off on its own row.
     </div>
   </section>
 
@@ -935,6 +948,19 @@ async function loadModels() {
   catch (e) { document.getElementById('m-count').textContent = 'error: ' + e.message; return; }
 
   state.modelRows = data.models;
+  // Which Macs each merged row stands for. The group tick addresses them by
+  // provider id, and the ids are not derivable from the model id, so they are
+  // read off the row the server sent rather than re-derived here. Keyed the way
+  // the server keys its groups — model **and** operation — so one model id that
+  // two locations classify differently cannot have one row's tick reach the
+  // other's machines.
+  state.modelLocations = {};
+  (data.models || []).forEach(r => {
+    if (Array.isArray(r.locations) && r.locations.length) {
+      state.modelLocations[modelLocationKey(r.model_id, r.modality)] =
+        r.locations.map(m => m.provider_id);
+    }
+  });
   state.meta = data;
   populateFilters(data);
   renderModelChips(data);
@@ -1006,7 +1032,57 @@ function modelGroupKey(by) {
   return null;
 }
 
+// A merged row is keyed by model **and operation**, exactly as the server grouped
+// it: one model id whose locations disagree about the operation is two rows, and
+// one row's tick must never reach the other's machines.
+function modelLocationKey(modelId, modality) {
+  return `${modelId}\u0000${modality}`;
+}
+
+// **One model, one row, however many Macs run it.** A location's model used to be
+// a row per Mac, so a model on six machines was six identical rows differing only
+// by a provider name, with nothing saying it was already running elsewhere. The
+// server now merges every location into one row carrying `locations` (one entry
+// per Mac) and `locations_enabled` / `locations_total`. The sub-rows are not
+// decoration: they are the only place a single Mac's toggle is addressable.
+function machineRow(model, machine) {
+  return `
+    <tr class="m-machine${machine.enabled ? ' on' : ''}">
+      <td><input type="checkbox" ${machine.enabled ? 'checked' : ''}
+                 aria-label="${esc(machine.provider_name)}"
+                 onchange="toggleModel('${esc(machine.provider_id)}','${esc(model.model_id)}', this.checked)"></td>
+      <td class="m-machine-name" title="${esc(machine.provider_id)}">↳ ${esc(machine.provider_name)}
+        ${machine.provider_enabled ? '' : '<span class="badge warn">off</span>'}</td>
+      <td class="muted">${machine.enabled ? 'enabled here' : 'not enabled'}</td>
+      <td><span class="badge">${esc(modalityLabel(machine.modality))}</span></td>
+      <td class="muted">${esc(machine.provider_id)}</td>
+    </tr>`;
+}
+
 function modelRow(r) {
+  // A merged row: the tick is "on every machine", which is the one click the
+  // owner wanted and could not have. A partially enabled model shows unchecked
+  // and says so in the Machines cell; the sub-rows are how one Mac is changed.
+  if (Array.isArray(r.locations) && r.locations.length) {
+    const every = r.locations_enabled === r.locations_total;
+    return `
+    <tr class="${r.enabled ? 'on' : ''}">
+      <td><input type="checkbox" ${every ? 'checked' : ''}
+                 title="${esc(`tick to enable on all ${r.locations_total} machines that have this model`)}"
+                 onchange="toggleModelEverywhere('${esc(r.model_id)}','${esc(r.modality)}', this.checked)"></td>
+      <td>
+        <div class="m-name">${esc(r.display_name)}</div>
+        <div class="m-id">${esc(r.model_id)}</div>
+      </td>
+      <td class="m-provider">${esc(r.provider_name)}
+        ${r.provider_enabled ? '' : '<span class="badge warn">provider off</span>'}
+        ${privacyBadge(r.data_use, r.free_lane)}</td>
+      <td><span class="badge">${esc(modalityLabel(r.modality))}</span></td>
+      <td class="m-machines">${r.locations_enabled} of ${r.locations_total} machines
+        ${every ? '<span class="badge ok">everywhere</span>'
+                : '<span class="badge warn">partial</span>'}</td>
+    </tr>` + r.locations.map(machine => machineRow(r, machine)).join('');
+  }
   return `
     <tr class="${r.enabled ? 'on' : ''}">
       <td><input type="checkbox" ${r.enabled ? 'checked' : ''}
@@ -1019,6 +1095,7 @@ function modelRow(r) {
         ${r.provider_enabled ? '' : '<span class="badge warn">provider off</span>'}
         ${privacyBadge(r.data_use, r.free_lane)}</td>
       <td><span class="badge">${esc(modalityLabel(r.modality))}</span></td>
+      <td class="muted">—</td>
     </tr>`;
 }
 
@@ -1043,7 +1120,7 @@ function renderModels() {
     });
     let html = '';
     groups.forEach((groupRows, label) => {
-      html += `<tr class="m-group"><td colspan="4">${esc(label)} <span class="n">${groupRows.length}</span></td></tr>`;
+      html += `<tr class="m-group"><td colspan="5">${esc(label)} <span class="n">${groupRows.length}</span></td></tr>`;
       html += groupRows.map(modelRow).join('');
     });
     document.getElementById('m-rows').innerHTML = html;
@@ -1079,6 +1156,26 @@ async function toggleModel(providerId, modelId, enabled) {
   // *click*, not the server's state, so a rejected change left the checkbox
   // displaying something that was never applied — and an accepted one could
   // still differ once the catalogue's gates had their say.
+  await loadModels();
+  loadStatus();
+}
+
+// The merged row's tick: the same model on **every** machine that reported it.
+// One request, because the endpoint takes a list, and the machines come from the
+// row the server sent — never from a prefix guessed here. The per-Mac sub-rows
+// keep their own controls, so this is a shortcut, not the only way in.
+async function toggleModelEverywhere(modelId, modality, enabled) {
+  const items = (state.modelLocations[modelLocationKey(modelId, modality)] || [])
+    .map(providerId => ({ provider_id: providerId, model_id: modelId }));
+  if (!items.length) return;
+  try {
+    await api('/models/enabled', {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ items, enabled })
+    });
+  } catch (e) {
+    alert(e.message);
+  }
   await loadModels();
   loadStatus();
 }

@@ -35,6 +35,7 @@ from . import voices
 from .constants import PRICE_VERSION, zero_pricing
 from .providers import registry
 from .providers.definitions import (
+    HUB_IMAGE_SIZE_BY_RATIO,
     IMAGE_SIZE_BY_RATIO,
     KIND_ANTHROPIC,
     KIND_KIE,
@@ -102,6 +103,9 @@ _CAPABILITY_OPERATION = {
     "music": "music.generate",
 }
 
+#: The cloud fallback ratio list, and **only** that: a `studio_hub` row builds its own
+#: from the lane contract (see `_local_image_shape`) because the lane that renders owns the
+#: numbers. Kept exactly as it was for every other kind — see `IMAGE_SIZE_BY_RATIO`.
 _IMAGE_RATIOS = ["16:9", "9:16", "1:1", "4:3", "3:4"]
 
 
@@ -196,28 +200,164 @@ _VIDEO_MODES_BY_KIND: dict[str, tuple[str, ...]] = {
 }
 
 
+def _hub_image_sizes(raw: dict[str, Any]) -> dict[str, tuple[int, int]]:
+    """The pixel preset behind each ratio, from the Hub's own statement where it makes one.
+
+    The Hub's catalogue row carries `image_sizes` — one entry per preset, `{"id": "16:9",
+    "label": "16:9", "width": 1280, "height": 720}`, thirteen of them on 0.6.91 including
+    the video-valid `16:9 small` = 1024x576. That list is the sizes its worker renders, so
+    when it is present **it is the whole answer**: it is read entry by entry and nothing is
+    added to it, which is what makes a ratio the Hub states without a usable width/height
+    publish with no geometry at all rather than with a plausible one.
+
+    Discovery does not carry `image_sizes` into `raw` yet, so `HUB_IMAGE_SIZE_BY_RATIO` —
+    the same table, read from the installed Hub 0.6.91 bundle and checked against this
+    Hub's `/api/hub/catalog` on 2026-09-28 — is the source in force today. It is consulted
+    **only while the Hub states no list**, the same direction every other provider fact
+    travels: the producer's own answer wins, our copy fills a silence.
+    """
+    entries = raw.get("image_sizes")
+    if not isinstance(entries, list) or not entries:
+        return dict(HUB_IMAGE_SIZE_BY_RATIO)
+    sizes: dict[str, tuple[int, int]] = {}
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        ratio = entry.get("id")
+        width, height = entry.get("width"), entry.get("height")
+        if not (isinstance(ratio, str) and ratio.strip()):
+            continue
+        # A stated size is a positive integer; anything else is the Hub saying it has no
+        # geometry for that ratio, and it stays out rather than falling back to our table.
+        if type(width) is int and type(height) is int and width > 0 and height > 0:
+            sizes[ratio.strip()] = (width, height)
+    return sizes
+
+
+def _local_image_shape(raw: dict[str, Any]) -> dict[str, Any] | None:
+    """The ratios, sizes and defaults a Studio Hub location's Image lane states.
+
+    **The lane that renders is the authority on the geometry.** Every image model used to be
+    described by the *cloud* table (`IMAGE_SIZE_BY_RATIO`), so a location's 16:9 published
+    1536x1024 while the Hub renders 1280x720 and its 4:3 published 1536x1024 against
+    1152x864 — four of the five published sizes wrong by 23–33% linearly, Story composing at
+    one geometry and receiving a file of another — and eight of the thirteen ratios the lane
+    accepts were hidden, including the video-valid `16:9 small` = 1024x576 the Image studio
+    added so a still destined for the video lane needs no crop.
+
+    Read from the contract the Hub publishes, with the reader this file already has for it
+    (`_hub_declared_parameter`) rather than a second parser:
+
+      * `parameters[aspect_ratio].enum` — every ratio the lane will parse, in the lane's own
+        order, published verbatim as `aspect_ratios`;
+      * `parameters[aspect_ratio].default` — the lane's own default, published as
+        `default_aspect_ratio` (and the `is_default` option) when it names one of those
+        ratios;
+      * `parameters[resolution].default`/`.enum` — the resolution class the lane states;
+      * each ratio's pixels, from `_hub_image_sizes`.
+
+    `None` means this is not a Hub image lane: no `lane_contract`, or one that declares no
+    `aspect_ratio` parameter at all. That is a lane which stated nothing, and the caller
+    keeps the table it has always used — absence must not read as "no ratios".
+    """
+    contract = (raw or {}).get("lane_contract")
+    if not isinstance(contract, dict):
+        return None
+    declared = _hub_declared_parameter(contract, "aspect_ratio")
+    if not isinstance(declared, dict):
+        return None
+    ratios = list(
+        dict.fromkeys(
+            str(entry).strip()
+            for entry in declared.get("enum") or []
+            if isinstance(entry, str) and str(entry).strip()
+        )
+    )
+    if not ratios:
+        return None
+    stated_default = declared.get("default")
+    default_ratio = (
+        stated_default.strip()
+        if isinstance(stated_default, str) and stated_default.strip() in ratios
+        else ratios[0]
+    )
+    resolution_param = _hub_declared_parameter(contract, "resolution")
+    resolution = None
+    if isinstance(resolution_param, dict):
+        stated_resolution = resolution_param.get("default")
+        if isinstance(stated_resolution, str) and stated_resolution.strip():
+            resolution = stated_resolution.strip()
+        else:
+            allowed = [
+                str(value).strip()
+                for value in resolution_param.get("enum") or []
+                if isinstance(value, str) and str(value).strip()
+            ]
+            resolution = allowed[0] if allowed else None
+    return {
+        "aspect_ratios": ratios,
+        "sizes": _hub_image_sizes(raw),
+        "default_aspect_ratio": default_ratio,
+        "resolution": resolution,
+    }
+
+
 def _image_row(model_id: str, definition: ProviderDefinition, model: dict[str, Any]) -> dict[str, Any]:
-    options = []
-    for index, ratio in enumerate(_IMAGE_RATIOS):
-        geometry = _geometry(ratio)
-        options.append(
+    raw = model.get("raw") or {}
+    local = _local_image_shape(raw) if definition.kind == KIND_STUDIO_HUB else None
+    if local is not None:
+        # **One option per ratio the lane stated a size for.** A ratio it accepts but gives
+        # no pixels for still publishes in `aspect_ratios` — the caller is told the lane
+        # takes it — and gets no `output_options` row, because there is no size to publish
+        # and none may be invented. A row is deliberately not emitted with a null width:
+        # Story Studio filters on `resolution` and `aspect_ratio` alone and then renders
+        # `width.toLocaleString()`, so a sizeless row is a crash, not an admission of
+        # ignorance (the same shape as the TTS character cap).
+        aspect_ratios = local["aspect_ratios"]
+        default_aspect_ratio = local["default_aspect_ratio"]
+        default_resolution = local["resolution"]
+        options = [
             {
-                "resolution": "1K",
+                "resolution": default_resolution,
                 "aspect_ratio": ratio,
-                "width": geometry["width"],
-                "height": geometry["height"],
-                "is_default": index == 0,
+                "width": local["sizes"][ratio][0],
+                "height": local["sizes"][ratio][1],
+                "is_default": ratio == default_aspect_ratio,
                 "credits_per_image": 0,
                 "base_credits_per_image": 0,
                 "price_version": PRICE_VERSION,
                 "reference_generation_credits": 0,
                 "reference_generation_price_version": PRICE_VERSION,
             }
-        )
+            for ratio in aspect_ratios
+            if ratio in local["sizes"]
+        ]
+    else:
+        # The cloud lane: unchanged, and deliberately so — what is offered here is what
+        # `image_size_for` sends, which is why the two share `IMAGE_SIZE_BY_RATIO`.
+        aspect_ratios = _IMAGE_RATIOS
+        default_aspect_ratio = "16:9"
+        default_resolution = "1K"
+        options = []
+        for index, ratio in enumerate(_IMAGE_RATIOS):
+            geometry = _geometry(ratio)
+            options.append(
+                {
+                    "resolution": "1K",
+                    "aspect_ratio": ratio,
+                    "width": geometry["width"],
+                    "height": geometry["height"],
+                    "is_default": index == 0,
+                    "credits_per_image": 0,
+                    "base_credits_per_image": 0,
+                    "price_version": PRICE_VERSION,
+                    "reference_generation_credits": 0,
+                    "reference_generation_price_version": PRICE_VERSION,
+                }
+            )
     max_prompt_characters, max_prompt_source = _limit_with_source(
         "max_prompt_characters", None, 4000, definition.id, model_id
     )
-    raw = model.get("raw") or {}
     # **Three answers, read from the model's own statement.** This used to be a
     # definite `True` for `studio_hub` and a definite `False` for everything
     # else, while `operations` claimed `image-to-image` on every row — so a
@@ -238,9 +378,11 @@ def _image_row(model_id: str, definition: ProviderDefinition, model: dict[str, A
         )
     return {
         "execution_label": "Local" if definition.kind == "studio_hub" else "Remote",
-        "aspect_ratios": _IMAGE_RATIOS,
-        "default_aspect_ratio": "16:9",
-        "default_resolution": "1K",
+        # The lane's own ratios and presets for a Studio Hub location (`local` above), the
+        # untouched cloud table for everything else.
+        "aspect_ratios": aspect_ratios,
+        "default_aspect_ratio": default_aspect_ratio,
+        "default_resolution": default_resolution,
         "output_options": options,
         "supports_reference_images": reference_state,
         "supports_image_to_image": reference_state,
@@ -258,12 +400,13 @@ def _image_row(model_id: str, definition: ProviderDefinition, model: dict[str, A
         # — no provider here publishes one, and a model with a tighter bound is
         # over-described. Upgrade path — read it from the model's own schema.
         "reference_image_max_dimension": 2048 if reference_state is True else None,
-        # ponytail: flat prompt cap and ratio list for every image model. Ceiling
-        # — the previous GenStudio published 4,000 on some models and 4,800 on
-        # others, and its ratio lists varied; a flat 4,000 is deliberately the
+        # ponytail: flat prompt cap and cloud ratio list for every image model that states
+        # neither. Ceiling — the previous GenStudio published 4,000 on some models and
+        # 4,800 on others, and its ratio lists varied; a flat 4,000 is deliberately the
         # *conservative* end (it warns early rather than letting a request fail
         # at the provider, which is the violation Story Studio's own notes record
-        # as "a 4,000-character cap overruling a published 4,800"). Upgrade path
+        # as "a 4,000-character cap overruling a published 4,800"). The ratios are the
+        # cloud table; a Studio Hub row reads its lane's own list above. Upgrade path
         # — per-model values once a provider publishes them.
         #
         # Reference *strength* is a claim only a model that takes references can
@@ -1329,10 +1472,38 @@ def _publish_lock(row: dict[str, Any], locked: bool, reason: str | None) -> None
     `studio-hub` TTS rows while this Mac's Hub was down and both controllers
     were up). A reader that branches on one and prints the other gets whichever
     location happened to be iterated first. One writer, so they cannot disagree.
+
+    **`available` is the same fact a third time**, and it is the one Story Studio's
+    transcription parser gates on (`available === true`; absent means unavailable).
+    It was a hardcoded `True` on every row, so a model whose every Mac was down —
+    or whose only Hub was an agent, drained or unreachable — published
+    `locked: true` beside `available: true`, and Story's picker offered it. Written
+    here rather than in the row literal for the same reason as the other two: the
+    merge loop calls this to unlock a row a later location can serve, and a field
+    written anywhere else keeps the first site's answer.
+
+    `lock_reason` is the **fleet's own** sentence about the outage. It is never a
+    billing or account code: Story Studio reads this field to explain a locked row,
+    and "every Mac offering this model is unreachable" and "requires a paid
+    account" send the owner to two different remedies.
+
+    **And the same sentence is the first entry of `activation_blockers`**, the list
+    Story Studio's health route joins into the sentence it shows. So it is replaced
+    here rather than left behind: `rebuild` unlocks a row the moment *any* location
+    offering it answers (`_publish_lock(existing, False, None)`), and the first site's
+    outage sentence must not survive that — the merged row published `locked: false`
+    beside "No Mac offering this model is reachable", the same disagreement in a
+    fourth spelling.
     """
+    previous = row.get("lock_reason")
     row["locked"] = locked
     row["lock_reason"] = reason
     row["availability"] = "unavailable" if locked else "available"
+    row["available"] = not locked
+    blockers = [entry for entry in row.get("activation_blockers") or [] if entry != previous]
+    if reason and str(reason) not in blockers:
+        blockers.insert(0, str(reason))
+    row["activation_blockers"] = blockers
 
 
 def _merge_capabilities(existing: dict[str, Any], row: dict[str, Any], modality: str) -> None:
@@ -1533,7 +1704,15 @@ class Catalog:
             answering = usable if usable is not None else fleet.usable_location_ids()
             if location_id not in answering:
                 locked = True
-                lock_reason = "No Studio Hub location offering this model is answering."
+                # The outage in the fleet's own words, naming what the caller can act on
+                # (a Mac to check) rather than a vague "unavailable" — and never an
+                # account or billing code, which is what Story Studio's locked-row
+                # sentence is built from: `requires_paid_account` is the only reason it
+                # renders as an account restriction, and a dead fleet is not one.
+                lock_reason = (
+                    "No Mac offering this model is reachable — every Studio Hub location "
+                    "that offers it is offline or not taking customer work."
+                )
         description = definition.description
         if is_location and definition.id != fleet.provider_id_for(fleet.LOCAL_ID):
             # A controller's description names its address, which is precisely the
@@ -1556,11 +1735,12 @@ class Catalog:
             "legacy_ids": (
                 [encode_model_id(definition.id, model["model_id"])] if is_location else []
             ),
-            # Publish availability EXPLICITLY. The transcription parser reads
-            # `available === true` (absent means unavailable) while reading
-            # `qualification_only !== false` (absent means hidden). Both
-            # defaults are unsafe to rely on.
-            "available": True,
+            # Publish `qualification_only` EXPLICITLY: the parser reads
+            # `qualification_only !== false` (absent means hidden). Availability is
+            # **not** written here — `available`, `locked`, `lock_reason` and
+            # `availability` are one fact in three vocabularies, and `_publish_lock`
+            # below writes all of them. This literal used to carry a hardcoded
+            # `"available": True` beside a `locked: true` from that same call.
             "qualification_only": False,
             # The capability catalogue's own vocabulary; see _CAPABILITY_* above.
             "modality": _CAPABILITY_MODALITY.get(modality, "text"),

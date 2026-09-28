@@ -185,6 +185,46 @@ IMAGE_SIZE_BY_RATIO: dict[str, tuple[int, int]] = {
     "9:16": (1024, 1536),
 }
 
+#: The pixel geometry a **Studio Hub location's** Image lane actually renders, keyed by
+#: the ratio ids its `lane_contract.parameters[aspect_ratio].enum` publishes.
+#:
+#: **This is the Hub's own preset table, not this gateway's**, and it is a separate table
+#: because the two lanes are two different products: the cloud table above is what an
+#: OpenAI-compatible endpoint is *sent*, while a Hub model was being described by that same
+#: table and rendered by this one — 16:9 published 1536x1024 against a rendered 1280x720,
+#: 4:3 published 1536x1024 against 1152x864, four of five sizes wrong by 23–33% linearly,
+#: so Story composed at one geometry and received a file of another.
+#:
+#: Read from the installed Hub bundle, **not** a checkout, on 2026-09-28:
+#: `/Applications/Studio Hub.app/Contents/Resources/components/image/app/backend/generation.py`
+#: `SIZE_PRESETS` (Studio Hub **0.6.91**, the version the running Hub reported on
+#: `/api/version` — build `92d7642`), and cross-checked against that Hub's own
+#: `/api/hub/catalog` `image_sizes` for both image models, which listed these thirteen
+#: presets and no others. Thirteen keys, twelve of them ratios: `16:9 small` is the same
+#: 16:9 frame at 1024x576, the video-valid canvas (720 is not a multiple of 32) the Image
+#: studio added on purpose, so it cannot share the `16:9` key.
+#:
+#: ponytail: a copy of the Hub's table, so a Hub that re-sizes a preset is described by the
+#: old number until this is edited — the honest read is the Hub's `image_sizes` on its own
+#: catalogue row, which `catalog._hub_image_sizes` already prefers the day discovery
+#: carries it. Ceiling — a ratio the Hub adds publishes with no geometry rather than with a
+#: guessed one; the ratio still reaches Story Studio, its size does not.
+HUB_IMAGE_SIZE_BY_RATIO: dict[str, tuple[int, int]] = {
+    "16:9": (1280, 720),
+    "9:16": (720, 1280),
+    "1:1": (1024, 1024),
+    "16:9 small": (1024, 576),
+    "4:3": (1152, 864),
+    "3:4": (864, 1152),
+    "3:2": (1200, 800),
+    "2:3": (800, 1200),
+    "5:4": (1120, 896),
+    "4:5": (896, 1120),
+    "21:9": (1680, 720),
+    "2:1": (1408, 704),
+    "1:2": (704, 1408),
+}
+
 
 def image_size_for(aspect_ratio: str, width: object = None, height: object = None) -> str:
     """The `size` string to send, given a ratio and optional explicit geometry.

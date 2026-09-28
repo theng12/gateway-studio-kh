@@ -657,9 +657,50 @@ def _job_envelope(job: dict[str, Any]) -> dict[str, Any]:
         body["failure_class"] = "provider_error"
         body["failure_reason"] = job.get("error_detail") or "generation failed"
 
+    _publish_attempt_evidence(body, job)
     _publish_queue_evidence(body, job)
 
     return body
+
+
+def _publish_attempt_evidence(body: dict[str, Any], job: dict[str, Any]) -> None:
+    """Say which machines this job has been tried on, and what the policy allows (A7).
+
+    The owner's decision E put the policy in two places by name: **the document, and "the same
+    policy stated on the Gateway's Jobs view so an operator can see attempt *n* of 3"**. An
+    operator watching a job move between machines had nothing to read: `attempt_count` counts
+    every dispatch including pure queue deferrals, so it is not the number the ceiling is
+    measured against, and the machines were not published at all.
+
+    Additive, and only published when there is something to say — a job still on its first
+    machine carries no `attempts` key rather than an empty list, so "never retried" and "we did
+    not look" stay distinguishable.
+    """
+    attempts_of = getattr(store, "attempts_of", None)
+    attempts: list[dict[str, Any]] = []
+    if attempts_of is not None:
+        try:
+            attempts = attempts_of(job["id"])
+        except Exception:  # noqa: BLE001 - an attempt figure must never fail a job response
+            attempts = []
+    if not attempts:
+        return
+    from . import concurrency
+
+    limit = int(concurrency.retry_policy()["max_attempts"])
+    body["attempts"] = [
+        {
+            "number": index + 1,
+            "machine": entry.get("location"),
+            "failure_code": entry.get("code"),
+            "failure_reason": entry.get("detail"),
+            "at": entry.get("at"),
+        }
+        for index, entry in enumerate(attempts)
+    ]
+    body["attempts_used"] = len(attempts)
+    body["attempts_allowed"] = limit
+    body["attempt_policy"] = concurrency.retry_policy_wording()
 
 
 def _publish_queue_evidence(body: dict[str, Any], job: dict[str, Any]) -> None:

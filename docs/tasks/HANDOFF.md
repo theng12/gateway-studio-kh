@@ -1,6 +1,6 @@
 # HANDOFF — gateway-kh
 
-**Read this first.** Written 2026-09-28 against **VERSION `0.2.61`**. The running build
+**Read this first.** Written 2026-09-28 against **VERSION `0.2.62`**. The running build
 stamp is on `/health` and in `/Applications/gateway-kh.app/Contents/Resources/gateway/BUILD`.
 If this file disagrees with the code, **the code wins — fix this file in the same change**.
 Every path below is inside the Git checkout `repository/` unless it says otherwise.
@@ -9,20 +9,98 @@ project does not say why, and nobody should guess.
 
 > **The fleet-hardening batch is in progress.** The work order is
 > `_orchestra/JOB-gateway-studiohub-fleet-hardening-20260928.md` (Batch A → B → C) and the
-> evidence is `_orchestra/AUDIT-gateway-studiohub-20260928.md`. **A1 has shipped** (0.2.61).
-> **A2–A8, B1–B4 and C1–C7 are still open**, and the twelve-check rehearsal in the job's §9 has
-> not been run. Do not read this file as "the fleet work is done".
+> evidence is `_orchestra/AUDIT-gateway-studiohub-20260928.md`. **Shipped: A1 (0.2.61), and
+> A5 + A6 + A7 (0.2.62).** A2, A3, A4 and A8 are Hub-side and ship from `studio-hub-kh`.
+> **B1–B4 and C1–C7 are still open**, and the twelve-check rehearsal in the job's §9 has not
+> been run. Do not read this file as "the fleet work is done".
 
 ## WHERE THINGS STAND
 
 | Thing | Value |
 |---|---|
-| Current release | **0.2.61** — `repository/VERSION`, one line, the only place to bump. **Admission is a capacity, not a second subtraction** (A1; closes audit B1, M1, M2) — a site with M Macs can run M concurrent jobs, admission reads the *physical machine* slots routing already uses, and a location that is not reachable is given no budget at all. See *What 0.2.61 changes* below |
+| Current release | **0.2.62** — `repository/VERSION`, one line, the only place to bump. **Three fleet items in one release:** A5 (a new location inherits this Hub's own model decisions; the console groups models by model with an "N of M machines" cell), A6 (image geometry comes from the Hub's own lane contract and preset table — 16:9 is **1280×720**, not 1536×1024 — and `available` is `not locked`, so a fleet outage stops reading as a billing problem), A7 (a failed job retries on a different machine, three attempts, never a duplicate, then fails properly to Story). See *What 0.2.62 changes* below |
 | Declared Studio Hub | **0.6.83** — `adapters.studio_hub.SUPPORTED_STUDIO_HUB_VERSION`, published on `/health`; a controller on another version is reported, never refused. Set on 2026-09-27 from a **running** Hub (`/api/version` → `0.6.83` build `f072f17`), not a changelog; 0.6.83 is the release whose video lane publishes the `audio` switch this gateway relays `[MEASURED]`. 0.6.81 was declared earlier the same day from `0.6.81` build `3d8ce32` — that one publishes `lane_contract.canvases`. Controllers older than both still publish, through the cross-product fallback in `_video_row`, and a lane that publishes no switch simply carries no `controls` key |
 | Branch | `main` = `origin/main`, clean tree; remote `github.com/theng12/gateway-kh` |
 | Running build | `/Applications/gateway-kh.app`, port **8787**, stamp **`7d87724-202609270548`** — the 0.2.60 commit, measured on `/health` after the rollout `[MEASURED 2026-09-27]`. **The stale-stamp trap fired again, in a new shape:** killing the gateway by PID made the app respawn it with the *new code* (it published `studio_hub.supported_version: 0.6.83`, which only 0.2.60 states) but the *old* `GATEWAY_BUILD` stamp `05c0fc5-202609261948`, because the stamp is passed by the **menubar app process** from its own `Info.plist` — and that process was still the pre-rebuild one. Only quitting the app (`osascript -e 'quit app "gateway-kh"'`), killing the last gateway by PID (`pgrep -f "uvicorn gateway.api:app"`) and reopening produced a stamp that matches the code. So: **a stamp that disagrees with the code is not proof of old code, and a respawn is not a restart** — check `studio_hub.supported_version` too. `pkill -f` remains forbidden `[MEASURED 2026-09-26]` |
 | Distribution | DMG in `repository/dist/`, named by version alone; the previous ones moved to `_trash/dist/` |
 | SSD/setup kit | `repository/dist/setup-kit/`, **pinned to GatewayKH 0.2.44** and refreshed onto all four `KH-STUDIO-*` drives on **2026-09-26**, `shasum -a 256 -c` OK on every one. The drives also carry `Studio Hub.app` **0.6.70**. Superseded kits are in each drive's `_trash/superseded-kit-2026-09-26/` (`GatewayKH-0.2.27`, `GatewayKH-0.2.43`) |
+
+## What 0.2.62 changes — three fleet items: what the fleet offers, what it renders, and what happens when a machine fails
+
+### A5 · Models enabled once, for the fleet (audit H1, H2)
+
+Controllers added on the Fleet page arrived with `auto_enable_discovered=False`, so each remote Mac
+contributed **5, 5, 2, 2, 2** of its 19 publishable models and only 5 of the 13 Hub rows had more
+than one location: the operator ticked a model once and believed the fleet offered it. A newly
+added location now **inherits this gateway's own decisions for the same model ids** — enabled
+there ⇒ enabled here, disabled there ⇒ recorded disabled, a model the local Hub has never seen
+gets no entry and stays off — and the add result says so in real counts. A re-add of an existing
+location is never seeded, so per-Mac choices survive a token or address change.
+
+The console's Models page no longer draws one row per Mac (108 rows for 21 models). Each model is
+drawn **once**, with a **Machines** column reading *"N of M machines"* and a per-Mac sub-row; the
+row's own tick enables or disables that model on every machine that has it. New additive fields on
+`/admin/api/models`: `is_location`, `locations[]`, `locations_enabled`, `locations_total`,
+`provider_ids`; on the add result: `controller.created` and `enable_seed{sentence}`. Nothing was
+renamed or removed — Story Studio and the SwiftUI app read this API.
+
+### A6 · The geometry the Macs actually render (audit H3, H4)
+
+Story Studio was published the **cloud** table: 16:9 → 1536×1024, 4:3 → 1536×1024. The Macs render
+16:9 → **1280×720** and 4:3 → **1152×864**, and the Hub's own lane contract accepts **13** ratios
+including `16:9 small` = **1024×576**, the video-valid frame the Image studio added on purpose.
+Four of five published sizes were wrong by 23–33% linearly and 8 of 13 accepted ratios were hidden
+— Story composed at 1536×1024 and received a 1280×720 file.
+
+For a `studio-hub` model that carries a `lane_contract`, `aspect_ratios` and `output_options` are
+now built from **the Hub's own contract and preset table** (`HUB_IMAGE_SIZE_BY_RATIO`), read
+through the existing lane-contract reader. `16:9 → 1280×720`, `16:9 small → 1024×576`,
+`4:3 → 1152×864`, `1:1 → 1024×1024`, and so on. A ratio the Hub states with no size publishes in
+`aspect_ratios` and gets **no** option row (Story renders `width.toLocaleString()`, so a sizeless
+option is a crash, not a gap). The old table is the fallback only when the Hub states nothing, and
+**non-`studio-hub` providers are byte-identical**.
+
+`available` was a hardcoded `true`, so a model whose every Mac was down still published as
+available and Story rendered the outage as *"Locked for this GenStudio account."* `available` is
+now `not locked`, and the outage publishes its own sentence:
+*"No Mac offering this model is reachable — every Studio Hub location that offers it is offline or
+not taking customer work."* Fixing this exposed a fourth inconsistency: unlocking a merged row left
+the outage sentence in `activation_blockers`, so a row could read `locked: false` beside an outage
+blocker. `_publish_lock` now reconciles it.
+
+`gateway/providers/discovery.py` also carries the Hub's `image_sizes` into the model row, so the
+catalogue prefers the Hub's live table over the copy taken from the 0.6.91 bundle the moment a
+preset changes.
+
+### A7 · Three attempts, different machines, never a duplicate (audit H5, H6; owner's decision E)
+
+The re-route was a no-op: the exclusion set was built from `provider_id`
+(`studio-hub-9701220bf30f`) and compared against `location_id` (`9701220bf30f`), so a busy Mac
+deferred the job **at the same Mac** while an idle one offered the model — 39 live `MACHINE_BUSY`
+failures — and a Mac that failed *after* the batch started was never re-routed at all
+(`ffmpeg not found on PATH`, `[METAL] Command buffer execution failed`).
+
+The policy, in full, is **[docs/job-retry-policy.md](../job-retry-policy.md)**, referenced from
+`fleet-deployment-notes.md`. In short: attempt 1 on the routed machine; on any **known** failure,
+attempt 2 on a different machine; attempt 3 on another never tried; after the third, the job is
+declared failed to Story Studio with a terminal reason naming every machine and why each failed.
+`retry.max_attempts` (default **3**) is live-editable beside the pool size.
+
+**No duplicates, absolutely.** The re-route is guarded by `if not unknown and pinned is None:` —
+an upstream that accepted the work and went silent is an unknown outcome, becomes a reconciliation
+hold, and is never re-run automatically. A pinned voice is excluded (its reference clip lives on
+one controller). A job with nowhere else to go **waits** rather than spending an attempt on a
+machine that was never going to run it.
+
+The exclusion is now a **column** (`attempted_locations`, `attempt_log`), not a local set: the old
+`tried` set lived inside one dispatch call, so a job that deferred and came back — or was
+redelivered after a restart — could be sent to the machine that had just failed it. Every retried
+job publishes `attempts[]`, `attempts_used`, `attempts_allowed` and `attempt_policy` on its
+envelope; a job on its first machine carries no `attempts` key rather than an empty list.
+
+Also in this release: routing skips a controller that has **handed its group over** — the Hub
+publishes `capacity.accepting_customer_jobs: false` and `fleet._takes_customer_jobs` now reads it,
+so a retired Mac stops receiving work in the window before the operator removes it (A3 step 4).
 
 ## What 0.2.61 changes — admission is a capacity, not a remainder
 

@@ -141,3 +141,22 @@ capability, a node can be promoted — but that re-points the gateway, so keep a
 intended controller. Prefer the most reliable, always-on, least-loaded machine; and **[confirm]**
 whether a controller that is also a busy worker loses API responsiveness, because the gateway's
 discovery would then time out on a site that is merely busy rather than broken.
+
+**Superseded in 0.2.62 / Hub 0.6.92: promotion is now a first-class action, not a re-point by
+hand.** *Promote to controller* on the node mints that Mac's own group credential, and *Hand over
+to…* on the old controller pushes the new address and token to every node in its roster over the
+channel it already has — so the cluster follows a promotion with **nobody touching a node**. The
+old controller retires itself (it keeps its history and stops accepting dispatch); the operator
+then uses a *replace address* action so routing follows without losing per-model enablement. **If
+the old controller is already dead there is no channel to the nodes**, and that case is the
+runbook plus SSH over Tailscale — see
+[credential-rotation-decision.md](credential-rotation-decision.md). The Hub's own UI says which
+case applies.
+
+## 9. What happens when a job fails
+
+A failed job is retried on a **different machine**, up to three attempts, and is then declared
+failed to Story Studio with a reason naming every machine it was tried on. A retry happens only
+when the previous attempt is **known** to have failed — an upstream that accepted the work and
+went silent is never re-run automatically. The full policy, including what an operator sees on the
+job envelope, is [job-retry-policy.md](job-retry-policy.md).

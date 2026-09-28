@@ -94,6 +94,13 @@ DEFAULT_DEFER_CAP_S = 60.0
 #: submitted job is a durable unknown-outcome hold rather than a clean retry.
 DEFAULT_PROVIDER = 1
 
+#: How many **machines** one job may be tried on before it is declared failed (A7, the owner's
+#: decision E: *"make sure the job is retried 3 times. if all 3 fails. that it's declared failed
+#: properly to story studio."*). Three is the shipped default he named, not a ceiling anyone
+#: derived — and it is editable beside the pool size, because a fleet of one Mac and a fleet of
+#: fifty want different answers and neither wants a release.
+DEFAULT_MAX_ATTEMPTS = 3
+
 
 @dataclass(frozen=True)
 class Budget:
@@ -330,6 +337,51 @@ def queue_wait_budget() -> dict[str, Any]:
         "source": SOURCE_CURATED if (attempts is not None or cap_seconds is not None) else SOURCE_GATEWAY,
         "path": str(SETTINGS_PATH),
     }
+
+
+def retry_policy() -> dict[str, Any]:
+    """How many machines one job may be tried on, and where that number came from.
+
+    The owner's decision E, and he asked for it to be **written down as well as enforced**:
+    *"i want a 'job' that's failed to retry on a different machine … just make sure no duplicates
+    but also make sure the job is retried 3 times. if all 3 fails. that it's declared failed
+    properly to story studio."*
+
+    Live from the same file as the pool size, so a change lands without a restart:
+
+        {"global": 60, "retry": {"max_attempts": 3}}
+
+    **`max_attempts` counts machines, not dispatches.** A deferral — a site that is busy and has
+    nothing else to offer — is not an attempt: it never reached a machine that could have run the
+    work. `attempt_count` on the job row counts every dispatch including those; the attempt *log*
+    (see `store.record_attempt`) is what this ceiling is measured against.
+    """
+    wording = _read_file().get("retry")
+    entry = wording if isinstance(wording, dict) else {}
+    stated = _positive_int(entry.get("max_attempts"))
+    return {
+        "max_attempts": stated if stated is not None else DEFAULT_MAX_ATTEMPTS,
+        "source": SOURCE_CURATED if stated is not None else SOURCE_GATEWAY,
+        "path": str(SETTINGS_PATH),
+    }
+
+
+def retry_policy_wording() -> str:
+    """The policy in the owner's own terms, for the console and the docs to quote.
+
+    One string, so the page an operator reads and the document he asked for cannot drift: the
+    policy is enforced in `worker._next_machine` and stated here.
+    """
+    return (
+        "A failed job is retried on a **different machine** — another Mac in the same cluster "
+        "first, then any other site offering the same model — up to {n} attempts in total. A "
+        "retry happens only when the previous attempt is *known* to have failed; a machine that "
+        "accepted the work and then went silent is an unknown outcome, is never re-run "
+        "automatically, and waits for reconciliation. After the last attempt the job is declared "
+        "failed to Story Studio with a reason naming every machine that was tried and why each "
+        "one failed. A clone pinned to the Hub holding its reference clip keeps its location, so "
+        "a voice failure is terminal after its own attempts."
+    ).format(n=retry_policy()["max_attempts"])
 
 
 def lane_budget(modality: str) -> Budget:

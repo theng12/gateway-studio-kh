@@ -520,6 +520,7 @@ def add_controller(label: str, url: str, token: str) -> dict:
         )
     if existing is None:
         existing = next((row for row in rows if row.get("url") == url), None)
+    created = existing is None
     if existing:
         existing["label"] = (label or existing.get("label") or url).strip()
         existing["url"] = url
@@ -550,7 +551,96 @@ def add_controller(label: str, url: str, token: str) -> dict:
     if secret:
         _set_token(controller_id, secret)
     invalidate()
-    return _masked(existing)
+    row = _masked(existing)
+    # **Whether this location is new**, published on the add result only (the
+    # roster list stays shaped as it was). The enable seeding reads it: a fresh
+    # location inherits this gateway's own decisions, but re-adding a location
+    # that already carries the owner's choices — a new address, a re-pasted
+    # token — must never overwrite them.
+    row["created"] = created
+    return row
+
+
+def seed_enabled_from_local(provider_id: str) -> dict:
+    """Seed a new location's enable map from this gateway's own Hub decisions.
+
+    Adding a location left every model it discovered switched off
+    (`auto_enable_discovered=False` in `providers/registry.py`, which is right
+    for a cloud vendor's 300-row catalogue). A **location** is not that: its
+    models are the same packages this Mac's own Hub already runs, so the owner
+    ticked a model once, believed the fleet offered it, and every other Mac went
+    on not serving it — the audit's "each remote controller has 5 of 19
+    enabled".
+
+    So the decision already recorded for a model here is the decision a newly
+    added location inherits, **in both directions**:
+
+      * the local Hub has the model **enabled** — enable it for the new one;
+      * the local Hub has it **disabled** — record that decision too, so the two
+        agree rather than one of them silently defaulting;
+      * the local Hub has **never seen it** — nothing is written. An absent
+        decision is not a decision, and the new location keeps its own default,
+        which for every remote provider is off.
+
+    The counts returned are the decisions actually applied, because the add
+    result's sentence is built from them and a sentence that is not computed
+    from what was written is a claim about the fleet nobody measured.
+    """
+    from .providers import registry
+
+    source_provider_id = provider_id_for(LOCAL_ID)
+    incoming = {
+        str(model.get("model_id") or ""): bool(model.get("enabled"))
+        for model in registry.models.models_for(source_provider_id, include_disabled=True)
+    }
+    inherited_on: list[str] = []
+    inherited_off: list[str] = []
+    unknown: list[str] = []
+    for model in registry.models.models_for(provider_id, include_disabled=True):
+        model_id = str(model.get("model_id") or "")
+        if not model_id:
+            continue
+        if model_id not in incoming:
+            unknown.append(model_id)
+        elif incoming[model_id]:
+            inherited_on.append(model_id)
+        else:
+            inherited_off.append(model_id)
+
+    # One write per direction, so "enabled" and "disabled" are told apart in the
+    # store exactly as they were decided here — not all written as one value and
+    # re-derived later.
+    if inherited_on:
+        registry.models.set_many(provider_id, inherited_on, True)
+    if inherited_off:
+        registry.models.set_many(provider_id, inherited_off, False)
+
+    discovered = len(inherited_on) + len(inherited_off) + len(unknown)
+    if not discovered:
+        # Discovery succeeded and found nothing. "0 of 0 models enabled" is a
+        # fraction nobody can act on, and it reads as a decision when there was
+        # nothing to decide.
+        sentence = "No models were discovered here, so there was nothing to inherit."
+    else:
+        sentence = (
+            f"{len(inherited_on)} of {discovered} models enabled here, from this Mac's Hub's "
+            f"own decisions; {len(inherited_off)} are off there too"
+        )
+        if unknown:
+            sentence += (
+                f", and {len(unknown)} the local Hub has never seen "
+                f"{'stays' if len(unknown) == 1 else 'stay'} off"
+            )
+        sentence += "."
+    return {
+        "provider_id": provider_id,
+        "source_provider_id": source_provider_id,
+        "models_discovered": discovered,
+        "enabled": len(inherited_on),
+        "disabled": len(inherited_off),
+        "no_decision": len(unknown),
+        "sentence": sentence,
+    }
 
 
 def reconcile_cached_locations() -> list[str]:
@@ -2108,8 +2198,20 @@ def _takes_customer_jobs(row: dict) -> bool:
     `ready: false` is deliberately **not** a disqualifier — it is a controller
     starting up, and treating a transient as "cannot take work" would lock the
     catalogue during every restart.
+
+    **A controller that has handed its group over is retired** (A3 step 4). It keeps its
+    history, stops accepting dispatch, and the operator then removes it from the Gateway and
+    wipes or sells it. The Hub publishes that decision itself as
+    `capacity.accepting_customer_jobs: false`, so routing skips it in the window between the
+    handover and the operator's cleanup — otherwise a retired Mac would keep receiving work that
+    the new controller's cluster is meant to run.
     """
     if str(row.get("role") or "").strip().lower() == "agent":
+        return False
+    if str(row.get("handed_over_to") or "").strip():
+        return False
+    capacity = row.get("capacity") if isinstance(row.get("capacity"), dict) else {}
+    if capacity.get("accepting_customer_jobs") is False:
         return False
     return row.get("drained") is not True
 

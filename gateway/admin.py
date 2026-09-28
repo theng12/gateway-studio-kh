@@ -358,6 +358,101 @@ def _is_free_lane(definition: Any, model_id: str) -> bool:
     return lowered.endswith(":free") or lowered.endswith("-free")
 
 
+def _model_row(
+    definition: Any, model: dict[str, Any], provider_enabled: bool, *, location: bool
+) -> dict[str, Any]:
+    """One row of the model browser, before location merging.
+
+    Every field the page and the API already publish stays exactly as it was —
+    this is a presentation change, so nothing is renamed, removed or re-typed.
+    The fields a location row adds are additive:
+
+      * `is_location` — whether this row stands for machines rather than a vendor;
+      * `locations` — one sub-row per machine, each carrying the `provider_id`
+        that addresses **that** Mac's toggle, its own name, enabled state and
+        modality (a cloud row publishes `null`, never an invented one-entry list);
+      * `locations_enabled` / `locations_total` — the "N of M machines" cell;
+      * `provider_ids` — every provider id in the row, which is what the provider
+        filter matches and what a bulk action must act on. Without it a merged
+        row's bulk action would change one Mac and call the model done.
+    """
+    model_id = str(model["model_id"])
+    return {
+        "provider_id": definition.id,
+        "provider_name": definition.display_name,
+        "provider_enabled": provider_enabled,
+        "provider_ids": [definition.id],
+        "model_id": model["model_id"],
+        "display_name": model["display_name"],
+        "modality": model["modality"],
+        "source": model["source"],
+        "enabled": model["enabled"],
+        # **The trade travels with the row.** A free model's privacy
+        # stance is its provider's, so the picker shows it without a
+        # second lookup, and both facts come from one place so they
+        # cannot disagree.
+        "free_lane": _is_free_lane(definition, model_id),
+        "data_use": definition.data_use,
+        "is_location": location,
+        "locations": [] if location else None,
+        "locations_enabled": (1 if model["enabled"] else 0) if location else None,
+        "locations_total": 1 if location else None,
+    }
+
+
+def _merge_location_row(
+    merged: dict[str, Any], definition: Any, model: dict[str, Any], provider_enabled: bool
+) -> None:
+    """Fold one machine's copy of a model into the row it shares with the others."""
+    merged["provider_ids"].append(definition.id)
+    merged["locations"].append(
+        {
+            "provider_id": definition.id,
+            "provider_name": definition.display_name,
+            "provider_enabled": provider_enabled,
+            "display_name": model["display_name"],
+            "modality": model["modality"],
+            "source": model["source"],
+            "enabled": model["enabled"],
+            "free_lane": _is_free_lane(definition, str(model["model_id"])),
+            "data_use": definition.data_use,
+        }
+    )
+
+
+def _finish_location_row(merged: dict[str, Any]) -> None:
+    """Set the row's own state from its machines, once every machine is in it."""
+    machines = merged["locations"]
+    merged["locations_total"] = len(machines)
+    merged["locations_enabled"] = sum(1 for machine in machines if machine["enabled"])
+    # **"Enabled" on a merged row means "offered to Story Studio"**, which is the
+    # question the catalogue asks: one machine serving it is enough. The N-of-M
+    # cell beside it is where a partially-rolled-out model is visible, and the
+    # sub-rows are where it is fixed.
+    merged["enabled"] = merged["locations_enabled"] > 0
+    merged["provider_enabled"] = any(machine["provider_enabled"] for machine in machines)
+    # This Mac first: it is the source of the inherited decisions, so a row whose
+    # display name, modality or privacy stance differ between machines reads from
+    # the Hub the owner is looking at. Otherwise the first location that reported it.
+    primary = next(
+        (
+            machine
+            for machine in machines
+            if machine["provider_id"] == fleet.provider_id_for(fleet.LOCAL_ID)
+        ),
+        machines[0],
+    )
+    merged["provider_id"] = primary["provider_id"]
+    # `Studio Hub`, exactly as Story Studio is told: a location is not a product,
+    # and the machines are named in the sub-rows.
+    merged["provider_name"] = fleet.FLEET_DISPLAY_NAME
+    merged["display_name"] = primary["display_name"]
+    merged["modality"] = primary["modality"]
+    merged["source"] = primary["source"]
+    merged["free_lane"] = any(machine["free_lane"] for machine in machines)
+    merged["data_use"] = primary["data_use"]
+
+
 def _flat_models() -> list[dict[str, Any]]:
     """Every model the console can show, minus the ones that could never run.
 
@@ -367,31 +462,46 @@ def _flat_models() -> list[dict[str, Any]]:
     happening with OpenRouter's two Lyria rows, which its catalogue lists while
     publishing no music request path for them. The cache still holds them, so
     nothing discovered is lost; the console just stops advertising the impossible.
+
+    **A location's models are published once, not once per Mac.** This used to be
+    one row per (model, provider), so a model every location ran appeared six
+    times with the same name, differing only by a provider name, and nothing said
+    it was already running elsewhere — the owner ticked the same model on every
+    Mac, one at a time. Every location provider now contributes to **one** merged
+    row per (model_id, modality), which names the model once, counts the machines
+    that offer it (`locations_enabled` of `locations_total`) and lists each Mac's
+    own state beneath it. The namespace is keyed by model **and modality**: a
+    group whose rows disagreed about the operation could not be filtered or
+    faceted honestly, and the modality is what the operator shops by.
+
+    A cloud provider keeps one row per model. Two vendors offering the same model
+    *are* different products, and there is no machine in the question — its
+    `locations` is `null`, never a fabricated single-entry list. The two shapes
+    share every field the page already read, so filters, facets, sorting and the
+    bulk route see one row list either way.
     """
     rows: list[dict[str, Any]] = []
+    merged_rows: dict[tuple[str, str], dict[str, Any]] = {}
     for definition in registry.definitions():
-        enabled_provider = registry.credentials.is_enabled(definition.id)
+        provider_enabled = registry.credentials.is_enabled(definition.id)
+        by_location = fleet.is_location_provider(definition.id)
         for model in registry.models.models_for(definition.id, include_disabled=True):
             if not registry.models.can_publish(definition, model):
                 continue
-            rows.append(
-                {
-                    "provider_id": definition.id,
-                    "provider_name": definition.display_name,
-                    "provider_enabled": enabled_provider,
-                    "model_id": model["model_id"],
-                    "display_name": model["display_name"],
-                    "modality": model["modality"],
-                    "source": model["source"],
-                    "enabled": model["enabled"],
-                    # **The trade travels with the row.** A free model's privacy
-                    # stance is its provider's, so the picker shows it without a
-                    # second lookup, and both facts come from one place so they
-                    # cannot disagree.
-                    "free_lane": _is_free_lane(definition, model["model_id"]),
-                    "data_use": definition.data_use,
-                }
-            )
+            if not by_location:
+                rows.append(_model_row(definition, model, provider_enabled, location=False))
+                continue
+            key = (str(model["model_id"]), str(model["modality"]))
+            merged = merged_rows.get(key)
+            if merged is None:
+                merged = _model_row(definition, model, provider_enabled, location=True)
+                merged["locations"] = []
+                merged["provider_ids"] = []
+                merged_rows[key] = merged
+                rows.append(merged)
+            _merge_location_row(merged, definition, model, provider_enabled)
+    for merged in merged_rows.values():
+        _finish_location_row(merged)
     return rows
 
 
@@ -431,7 +541,14 @@ def _filter_models(
     if status is None and only_enabled:
         status = "enabled"
     if provider_id:
-        rows = [r for r in rows if r["provider_id"] == provider_id]
+        # A merged location row belongs to **every** machine in it, so selecting
+        # one Mac has to find the model it shares rather than only the rows whose
+        # primary provider happens to be that Mac. Cloud rows carry the single id.
+        rows = [
+            r
+            for r in rows
+            if provider_id in (r.get("provider_ids") or [r["provider_id"]])
+        ]
     if modality:
         rows = [r for r in rows if r["modality"] == modality]
     if source:
@@ -571,9 +688,7 @@ def search_models(
         "modalities": sorted({r["modality"] for r in everything}),
         "sources": sorted({r["source"] for r in everything}),
         "privacy_values": sorted({r["data_use"] for r in everything}),
-        "providers": sorted(
-            {(r["provider_id"], r["provider_name"]) for r in everything}  # type: ignore[arg-type]
-        ),
+        "providers": _provider_options(everything),
         # Echoed so the page can show what it actually asked for rather than what it
         # meant to ask for — an ignored sort would otherwise look applied.
         "sort": sort if sort in _MODEL_SORTS else None,
@@ -582,12 +697,40 @@ def search_models(
     }
 
 
+def _provider_options(rows: list[dict[str, Any]]) -> list[tuple[str, str]]:
+    """The (id, name) pairs the provider filter can select.
+
+    A merged location row offers each **machine**, never the `studio-hub`
+    namespace: the namespace is what Story Studio reads, it is not a provider,
+    and enablement written under it goes nowhere (see `_apply`).
+    """
+    options: set[tuple[str, str]] = set()
+    for row in rows:
+        machines = row.get("locations")
+        if machines:
+            options.update(
+                (str(machine["provider_id"]), str(machine["provider_name"]))
+                for machine in machines
+            )
+        else:
+            options.add((str(row["provider_id"]), str(row["provider_name"])))
+    return sorted(options)
+
+
 def _apply(
     rows: list[dict[str, Any]], enabled: bool
 ) -> int:
     by_provider: dict[str, list[str]] = {}
     for row in rows:
-        by_provider.setdefault(row["provider_id"], []).append(row["model_id"])
+        # **Every machine in a merged row.** This read `row["provider_id"]`
+        # alone, which for a merged location row is one Mac: a bulk "disable all
+        # matching" would have switched the model off on the local Hub, left the
+        # other five serving it, and reported the row done — the same "the number
+        # in the sentence is not the set acted on" defect the bulk route already
+        # paid for once with `only_enabled`.
+        members = row.get("provider_ids") or [row["provider_id"]]
+        for provider_id in dict.fromkeys(members):
+            by_provider.setdefault(provider_id, []).append(row["model_id"])
     changed = 0
     for provider_id, model_ids in by_provider.items():
         # A row can only reach here from `_flat_models`, whose ids are concrete.
@@ -1820,6 +1963,25 @@ def fleet_add_controller(payload: dict[str, Any]) -> Any:
         discovered, discovery_error = len(result.models), result.error
     except Exception as exc:  # noqa: BLE001 - the location is added either way
         discovery_error = f"{type(exc).__name__}: {exc}"
+    # **A newly added location inherits this Mac's own decisions.** Its models
+    # arrive disabled, as every remote provider's must — but a location is not a
+    # cloud catalogue, it is the same packages this Hub already runs, so the
+    # owner ticked a model here and the other Macs went on not serving it. A
+    # location that is *new* is seeded from the local Hub's decisions for the
+    # same model ids (`fleet.seed_enabled_from_local`); one that was already on
+    # the roster keeps whatever the owner decided about it, because re-adding a
+    # moved controller or re-pasting its token must not rewrite those choices.
+    # The sentence that travels back is built from the decisions actually
+    # written — see `seed_enabled_from_local`.
+    enable_seed: dict[str, Any] | None = None
+    if row.get("created") and discovery_error is None:
+        try:
+            enable_seed = fleet.seed_enabled_from_local(provider_id)
+        except Exception as exc:  # noqa: BLE001 - and never silence about it
+            enable_seed = {
+                "provider_id": provider_id,
+                "error": f"{type(exc).__name__}: {exc}",
+            }
     # Check the credential as part of adding, not later: both of a controller's
     # credentials reach every route this gateway calls, so an over-privileged one
     # behaves perfectly and is never noticed. Reported now, while the token is
@@ -1829,6 +1991,7 @@ def fleet_add_controller(payload: dict[str, Any]) -> Any:
         "credential": fleet.credential_scope_for(str(row.get("id") or "")),
         "discovered": discovered,
         "discovery_error": discovery_error,
+        "enable_seed": enable_seed,
         "controllers": fleet.controllers(),
     }
 

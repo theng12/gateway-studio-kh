@@ -362,6 +362,11 @@ class CatalogueMergeTests(unittest.TestCase):
         self.assertFalse(row["locked"], row)
         self.assertIsNone(row["lock_reason"])
         self.assertEqual(row["availability"], "available")
+        # `available` is the same fact in the vocabulary Story Studio's parsers gate on
+        # (`available === true`), so the merge carries it too — and the first site's
+        # outage sentence must not survive in the blocker list either (A6/H4).
+        self.assertIs(row["available"], True, row)
+        self.assertEqual(row["activation_blockers"], [])
 
     def test_no_answering_location_locks_it_in_both_vocabularies(self) -> None:
         proposals = [
@@ -374,6 +379,14 @@ class CatalogueMergeTests(unittest.TestCase):
         self.assertTrue(row["locked"], row)
         self.assertTrue(row["lock_reason"])
         self.assertEqual(row["availability"], "unavailable")
+        # A dead fleet published `available: true` — the one field Story Studio's model
+        # picker actually gates on — so the outage rendered as an offerable model.
+        self.assertIs(row["available"], False, row)
+        # And the reason is the fleet's own sentence about the outage, never the
+        # account/billing code Story Studio renders as a paid-account restriction.
+        self.assertIn("No Mac offering this model is reachable", row["lock_reason"])
+        self.assertNotIn("account", row["lock_reason"].lower())
+        self.assertIn(row["lock_reason"], row["activation_blockers"])
 
 
 if __name__ == "__main__":

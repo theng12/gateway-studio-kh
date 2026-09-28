@@ -75,6 +75,64 @@ def _defer_delay(attempts: int, cap_s: float | None = None) -> float:
     return min(2.0 ** max(int(attempts), 0), _DEFER_CAP_S if cap_s is None else float(cap_s))
 
 
+def _next_machine(store: JobStore, job_id: str, model_id: str, modality: str,
+                  provider_id: str, *, code: str, detail: str) -> str | None:
+    """Record this attempt and name the next machine to try, or `None`.
+
+    A7's whole decision, in one place. Returns the provider id of a machine that has **not**
+    been tried, or `None` when there is nothing left to try — either because the attempts are
+    used up (so the caller must fail the job properly) or because no other machine offers the
+    model (so the caller must wait rather than burn an attempt).
+
+    **The attempt is recorded before the choice, not after.** The log is what the ceiling is
+    measured against and what the terminal failure is built from, and a crash between "we tried
+    it" and "we remembered" would make the same machine eligible again.
+
+    **The exclusion is the job's own record, not a local set.** The old `tried` set lived inside
+    one dispatch call: a job that deferred and came back — or that was redelivered after a
+    restart — began with an empty exclusion and could be sent to the machine that had just
+    failed it. That is the difference this fixes, and it is why the list is a column.
+    """
+    policy = concurrency.retry_policy()
+    record = getattr(store, "record_attempt", None)
+    if record is None:
+        # A store without the record still gets the old one-step behaviour rather than none.
+        tried = {provider_id}
+        chosen, _ = fleet.route(model_id, modality, exclude_locations=tried)
+        return chosen.id if chosen is not None and chosen.id not in tried else None
+    attempts = record(job_id, location_id=provider_id, code=code, detail=detail) or []
+    tried = {str(entry.get("location") or "") for entry in attempts}
+    tried.add(provider_id)
+    if len(attempts) >= int(policy["max_attempts"]):
+        # The ceiling the owner named. The failure path builds the sentence from this log.
+        return None
+    chosen, _note = fleet.route(model_id, modality, exclude_locations=tried)
+    if chosen is None or chosen.id in tried:
+        return None
+    record_route = getattr(store, "record_route", None)
+    if record_route is not None:
+        record_route(job_id, chosen.id)
+    return chosen.id
+
+
+def _tried_everything_detail(attempts: list[dict[str, Any]], *, limit: int) -> str:
+    """The terminal reason: every machine that was tried, and why each one failed.
+
+    The owner asked for a *proper* failure rather than an endless defer, and a proper failure
+    names what happened. "All machines failed" is not actionable; naming the site, its code and
+    its own sentence is.
+    """
+    parts = []
+    for entry in attempts[:limit]:
+        where = str(entry.get("location") or "an unnamed machine")
+        why = str(entry.get("code") or "failed")
+        said = str(entry.get("detail") or "").strip()
+        parts.append(f"{where} ({why}{': ' + said if said else ''})")
+    joined = "; ".join(parts) if parts else "no attempt was recorded"
+    return (f"tried {len(parts) or limit} machines and every one failed - "
+            f"{joined}. This is the end of the retry policy, not a queue wait.")
+
+
 def _defer_if_transient(
     store: JobStore, job_id: str, exc: BackendError, current: dict[str, Any], *,
     unknown: bool,
@@ -290,24 +348,6 @@ def execute_job(job: dict[str, Any], store: JobStore) -> None:
             result = adapter.generate(request)
             break
         except BackendError as exc:
-            # A site that could not be reached is the same kind of fact as one that
-            # refused the model: it is a property of the location, not of the job, so
-            # the next location offering the same model is tried. `LOCATION_NOT_READY`
-            # is the Hub's own refusal; `LOCATION_UNREACHABLE` is a connection that
-            # was never established, which delivered nothing.
-            if exc.code in ("LOCATION_NOT_READY", "LOCATION_UNREACHABLE") and pinned is None:
-                tried.add(provider_id)
-                chosen, note = fleet.route(model_id, modality, exclude_locations=tried)
-                if chosen is not None and chosen.id not in tried:
-                    log.warning(
-                        "job %s: %s cannot serve '%s' (%s); rerouting to %s",
-                        job_id, provider_id, model_id, exc, chosen.id,
-                    )
-                    provider_id = chosen.id
-                    record_route = getattr(store, "record_route", None)
-                    if record_route is not None:
-                        record_route(job_id, provider_id)
-                    continue
             log.warning("job %s failed via %s: %s", job_id, provider_id, exc)
             current = store.get(job_id) if hasattr(store, "get") else job
             current = current or {}
@@ -347,8 +387,37 @@ def execute_job(job: dict[str, Any], store: JobStore) -> None:
             if exc.code == "PROVIDER_SUBMISSION_UNCERTAIN":
                 unknown = True
             detail = _unknown_detail(str(exc)) if unknown else str(exc)[:500]
+            # ── A7: a **known** failure is retried on a different machine ──────────
+            #
+            # The owner's decision E, and the whole point of it: *"i want a 'job' that's failed
+            # to retry on a different machine, be it in the same cluster or a different site.
+            # just make sure no duplicates but also make sure the job is retried 3 times."*
+            #
+            # **Only a known failure**, and that is the load-bearing condition. An upstream that
+            # accepted the work and then went silent is an unknown outcome: re-running it might
+            # render and bill twice, so it becomes a reconciliation hold and is **never** retried
+            # automatically. `unknown` above is exactly that question, already answered by the
+            # adapter's own evidence.
+            #
+            # A pinned voice is excluded: its reference clip lives on one controller, so there is
+            # no other machine that could serve it and a "retry" would only be a slower failure.
+            if not unknown and pinned is None:
+                moved = _next_machine(
+                    store, job_id, model_id, modality, provider_id,
+                    code=exc.code, detail=detail,
+                )
+                if moved is not None:
+                    log.warning(
+                        "job %s: %s could not run it (%s); trying %s next",
+                        job_id, provider_id, exc.code, moved,
+                    )
+                    provider_id = moved
+                    continue
             # **A busy fleet is not a broken job** — see `_defer_if_transient` for
-            # the whole rule and why each of its conditions is load-bearing.
+            # the whole rule and why each of its conditions is load-bearing. With the re-route
+            # above in front of it, this is now the case where there is **nowhere else to go**:
+            # a site busy with its own work waits for its own machine rather than failing, which
+            # is the owner's "hold, don't fail, for a temporarily absent cluster".
             if _defer_if_transient(store, job_id, exc, current, unknown=unknown):
                 log.warning(
                     "job %s: %s cannot take it yet (%s); waiting, attempt %s of %s",
@@ -362,11 +431,22 @@ def execute_job(job: dict[str, Any], store: JobStore) -> None:
             recovery_detail = detail
             if unknown and exc.recovery:
                 recovery_detail = f"{detail} {json.dumps(exc.recovery, sort_keys=True)}"
+            # **A known failure that ran out of machines is declared properly.** The owner's
+            # words: *"if all 3 fails. that it's declared failed properly to story studio."*
+            # The last error alone knows only about itself, so the sentence is built from the
+            # attempt log — every machine that was tried, and why each one failed.
+            terminal_detail = detail
+            if not unknown:
+                attempts_of = getattr(store, "attempts_of", None)
+                logged = attempts_of(job_id) if attempts_of is not None else []
+                limit = int(concurrency.retry_policy()["max_attempts"])
+                if logged and len(logged) >= limit:
+                    terminal_detail = _tried_everything_detail(logged, limit=limit)
             _fail(
                 store,
                 job_id,
                 code=exc.code,
-                detail=detail,
+                detail=terminal_detail,
                 retryable=exc.retryable,
                 recovery_state=RECOVERY_UNKNOWN if unknown else None,
                 recovery_detail=recovery_detail if unknown else None,

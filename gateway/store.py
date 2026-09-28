@@ -109,7 +109,35 @@ _ADDED_COLUMNS: tuple[tuple[str, str], ...] = (
     # and the caller asked for work rather than for a verdict on the fleet's
     # occupancy. Cleared on dispatch, because a running job is not waiting.
     ("defer_reason", "TEXT"),
+    # **Where this job has already been tried and failed** (A7). A JSON list of location
+    # ids, so a re-route cannot revisit one — and, more importantly, so the exclusion
+    # survives a restart, a deferral and a redelivery. The dispatch loop's own `tried` set
+    # was local to one call, which is why a job that deferred and came back could be sent
+    # to the same machine twice.
+    ("attempted_locations", "TEXT"),
+    # Every settled attempt, in order: `[{"location", "code", "detail", "at"}]`. The
+    # terminal failure after the last attempt **names the machines and why each failed**,
+    # and that sentence has to be built from a record rather than reconstructed from the
+    # last error, which knows only about itself.
+    ("attempt_log", "TEXT"),
 )
+
+
+def _loads_list(value: Any) -> list[Any]:
+    """A JSON list column, or `[]`.
+
+    Every reader of `attempted_locations`/`attempt_log` goes through here, so a row written
+    by an older build (the column added to an existing database is `NULL`) and a row whose
+    JSON was truncated by a crash read the same way: no attempts recorded. That is the
+    conservative reading — it can cost one extra attempt, never a duplicate.
+    """
+    if not value:
+        return []
+    try:
+        loaded = json.loads(value)
+    except (TypeError, ValueError):
+        return []
+    return loaded if isinstance(loaded, list) else []
 
 
 def artifacts_of(job: dict[str, Any]) -> list[dict[str, Any]]:
@@ -472,6 +500,55 @@ class JobStore:
             )
             self._conn.commit()
             return result.rowcount == 1
+
+    # -- the attempt record (A7) -------------------------------------------
+    def record_attempt(self, job_id: str, *, location_id: str, code: str,
+                       detail: str) -> dict[str, Any] | None:
+        """Note that this job was tried at `location_id` and came back a **known** failure.
+
+        Called only where the outcome is settled — the caller has already proved the upstream
+        accepted nothing that could still be running. An unknown outcome never reaches here,
+        which is what keeps "retry on a different machine" from duplicating work.
+
+        Returns the new attempt log, or `None` when the row is gone.
+        """
+        entry = {"location": str(location_id or ""), "code": str(code or "")[:120],
+                 "detail": str(detail or "")[:500], "at": time.time()}
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT attempted_locations, attempt_log FROM jobs WHERE id = ?", (job_id,)
+            ).fetchone()
+            if row is None:
+                return None
+            tried = _loads_list(row["attempted_locations"])
+            if entry["location"] and entry["location"] not in tried:
+                tried.append(entry["location"])
+            log = _loads_list(row["attempt_log"])
+            log.append(entry)
+            self._conn.execute(
+                "UPDATE jobs SET attempted_locations = ?, attempt_log = ?, updated_at = ? "
+                "WHERE id = ?",
+                (json.dumps(tried), json.dumps(log), time.time(), job_id),
+            )
+            self._conn.commit()
+            return log
+
+    def attempts_of(self, job_id: str) -> list[dict[str, Any]]:
+        """Every settled attempt on this job, oldest first."""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT attempt_log FROM jobs WHERE id = ?", (job_id,)
+            ).fetchone()
+        return _loads_list(row["attempt_log"]) if row is not None else []
+
+    def attempted_locations(self, job_id: str) -> list[str]:
+        """The locations this job has already failed at, so a re-route cannot revisit one."""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT attempted_locations FROM jobs WHERE id = ?", (job_id,)
+            ).fetchone()
+        return [str(value) for value in _loads_list(row["attempted_locations"])] \
+            if row is not None else []
 
     def defer(self, job_id: str, *, delay_s: float, reason: str) -> bool:
         """Put an accepted-nothing job back in the queue instead of failing it.
