@@ -389,9 +389,6 @@ final class MainWindow: NSObject, NSTableViewDataSource, NSTableViewDelegate {
     private var statusDot = NSView()
     private let sidebarStatus = NSTextField(labelWithString: "…")
     private let sidebarVersion = NSTextField(wrappingLabelWithString: "")
-    /// A small link under the version, so the notes are one click from every page
-    /// instead of only on Overview or in the status menu.
-    private let whatsNewButton = NSButton(title: "What’s New?", target: nil, action: nil)
     private var statusTimer: Timer?
 
     /// Section names accepted by `--open` and the menu.
@@ -399,6 +396,10 @@ final class MainWindow: NSObject, NSTableViewDataSource, NSTableViewDelegate {
         "overview",
         "audio", "subtitle", "image", "music", "video", "chat",
         "jobs", "voices", "models", "providers", "fleet", "settings", "content packs",
+        // **What's New is a page now, not a modal.** It sits directly above Settings under the
+        // *App* heading, which is where Studio Hub keeps it — the two apps are read side by side,
+        // so the same thing should be in the same place in both.
+        "what's new",
     ]
 
     /// The View menu, in sidebar order: (title, key equivalent).
@@ -414,6 +415,10 @@ final class MainWindow: NSObject, NSTableViewDataSource, NSTableViewDelegate {
         ("Music", ""), ("Video", ""), ("Chat", ""),
         ("Jobs", "2"), ("Voices", "3"), ("Models", "4"), ("Content Packs", ""),
         ("Providers", "5"), ("Fleet", "6"),
+        // Kept in step with the sidebar for the same reason every other row is: this list is
+        // derived from the sidebar's order on purpose, and a section that exists in one and not
+        // the other is a destination with no door.
+        ("What's New", ""),
     ]
 
     /// A sidebar row is either a group header or a section.
@@ -446,6 +451,8 @@ final class MainWindow: NSObject, NSTableViewDataSource, NSTableViewDelegate {
         .header("Connection"),
         .section(10), .section(11),                     // Providers, Fleet
         .header("App"),
+        // Studio Hub's order inside its own `app` group: What's New, then Settings.
+        .section(14),                                   // What's New
         .section(12),                                   // Settings
     ]
 
@@ -487,8 +494,11 @@ final class MainWindow: NSObject, NSTableViewDataSource, NSTableViewDelegate {
         sections[currentIndex].activated()
     }
 
+    /// Show the What's New **page**. Every door to the notes — the Overview button, the app menu,
+    /// this one — lands on the sidebar row rather than on a separate window, so there is one place
+    /// the notes live and no second surface to keep in step.
     @objc private func openWhatsNew() {
-        WhatsNewWindow.shared.show()
+        show(section: "what's new")
     }
 
     // MARK: Construction
@@ -507,6 +517,9 @@ final class MainWindow: NSObject, NSTableViewDataSource, NSTableViewDelegate {
             FleetSection.shared,
             SettingsSection.shared,
             ConsoleSection.packs,
+            // Index 14, and the last entry: the sidebar order is the `order` list, and this has to
+            // line up with it entry for entry.
+            WhatsNewSection.shared,
         ]
 
         let window = NSWindow(
@@ -566,19 +579,11 @@ final class MainWindow: NSObject, NSTableViewDataSource, NSTableViewDelegate {
         sidebarVersion.isSelectable = true
         sidebarVersion.stringValue = "App version \(GatewayController.shared.appVersion)\nBuild \(GatewayController.shared.appBuild)"
 
-        // A link, not a button: it sits under the build stamp, where the owner
-        // looks to answer "what am I running?", so it must not read as a primary
-        // control and must not widen the 200pt sidebar.
-        whatsNewButton.target = self
-        whatsNewButton.action = #selector(openWhatsNew)
-        whatsNewButton.isBordered = false
-        whatsNewButton.font = .systemFont(ofSize: 10.5, weight: .medium)
-        whatsNewButton.contentTintColor = .controlAccentColor
-        whatsNewButton.setButtonType(.momentaryChange)
-        whatsNewButton.alignment = .left
-        whatsNewButton.toolTip = "See what changed in this build"
-
-        let statusText = NSStackView(views: [sidebarStatus, sidebarVersion, whatsNewButton])
+        // **The "What's New?" link is gone from the status block.** It existed because the notes
+        // were a modal with one door; the row is now in the sidebar directly above Settings, so the
+        // link was the same destination twice in the same column. The View menu and the Overview
+        // button still reach it.
+        let statusText = NSStackView(views: [sidebarStatus, sidebarVersion])
         statusText.orientation = .vertical
         statusText.alignment = .leading
         statusText.spacing = 2

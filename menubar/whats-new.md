@@ -1,21 +1,67 @@
 # What's new in gateway-kh
 
-Newest first. This is the same list the **What's New** link in the app shows.
+Newest first. This is the same list the **What's New** page in the app shows.
 
 ---
 
-## What's New is a page now, not a file
+## What's New is a page now, in the sidebar above Settings
 
-This window used to hand the notes file to a text view and set one font on it, so you read the
-Markdown itself — literal `##`, `**bold**`, backticks — with the build stamp glued to the top line.
-It is now the same page Studio Hub's What's New is: *What's New* with the version beside it, this
+The notes used to be a window of their own, opened from a small link at the bottom of the sidebar.
+They are a **page** now — a row in the sidebar directly **above Settings**, under the *App* heading,
+which is exactly where Studio Hub keeps them. The View menu and the Overview button still reach it;
+they select the page rather than opening a modal.
+
+The page itself is unchanged, and it is Studio Hub's: *What's New* with the version beside it, this
 build's stamp on the right where it annotates instead of interrupting, a rule, then the notes as
-headings, paragraphs and bullets. Bold, italics and `code spans` render as themselves.
+headings, paragraphs and bullets. Bold, italics and `code spans` render as themselves rather than
+being shown to you as characters.
 
-Two smaller things it was getting wrong. macOS was merging it into the Overview window as a **tab**,
-which is why it read as a modal bolted onto another window — notes are their own window now. And the
-window was released on close while this app kept a reference to it, so a second open could have
-talked to a window that no longer existed.
+## The fleet page shows who has joined each controller
+
+Every controller's roster was fetched and thrown away, so the only way to see which Macs had joined
+one was to open Studio Hub on it. The **Locations** tab now has a **Members** column
+(`reachable / total`, plus how many were refused), the **Machines** tab has a **Node** marker and a
+**last seen** column, and a Mac whose credential the controller refuses says **credential refused**
+instead of sharing a word with "switched off".
+
+## There is a queue you can look at
+
+Every waiting job now publishes its **position** and how many are waiting with it — before this, a
+job sitting in the queue looked exactly like one that was running. The console's Providers page has
+a **Queue** section: the waiting jobs with their age, why each one is waiting, and **attempt n of 3**
+with the last reason. It also shows what is bounding each lane and each site, which is the number
+that answers "why is nothing running?".
+
+## The number Story is told is what the fleet can actually do
+
+The gateway used to tell Story Studio it could run **60** jobs at once because that is what a
+setting said, while the machines could do about **4**. That number is now measured: the sum, over
+every reachable controller, of what admission itself will allow — per lane and in total. Sell two
+Macs and it falls; buy three and it rises, with nothing to edit. The old pool is still shown beside
+it, named as the pool, so the two cannot be confused.
+
+## One model, ticked once, for the whole fleet
+
+Adding a controller used to arrive with everything switched off, so the same model had to be ticked
+on every Mac — and the console drew one row per Mac, so "Z-Image-Turbo 6B MLX 4-bit" appeared six
+times with nothing to say it was the same model. A new location now **inherits this Mac's own
+choices** for the same models, and the Models page draws each model **once** with a **Machines**
+column reading *"N of M machines"*. One tick switches a model on for every Mac that has it.
+
+## Images are published at the size the Macs really render
+
+Story Studio was told 16:9 was 1536×1024 and 4:3 the same, while the Macs render **1280×720** and
+**1152×864** — and the video-valid **1024×576** frame was hidden entirely. The geometry now comes
+from each model's own lane contract and the Hub's own preset table, so what you pick is what you
+get. Cloud providers are untouched.
+
+## A failed job is retried on a different machine, and never twice
+
+A job that fails for a reason the gateway can *prove* — a busy Mac, an engine out of memory, a Mac
+that is off — is tried on a **different machine**, up to three attempts, and then fails properly
+with a reason naming every machine it was tried on and why each one failed. A Mac that accepted the
+work and then went quiet is **never** re-run automatically: it might be rendering right now, so it
+waits for you to reconcile it. The whole policy is in `docs/job-retry-policy.md`.
 
 ## The local model says how it keeps a JSON promise
 

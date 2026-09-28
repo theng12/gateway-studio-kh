@@ -1,6 +1,6 @@
 # HANDOFF — gateway-kh
 
-**Read this first.** Written 2026-09-28 against **VERSION `0.2.65`**. The running build
+**Read this first.** Written 2026-09-28 against **VERSION `0.2.66`**. The running build
 stamp is on `/health` and in `/Applications/gateway-kh.app/Contents/Resources/gateway/BUILD`.
 If this file disagrees with the code, **the code wins — fix this file in the same change**.
 Every path below is inside the Git checkout `repository/` unless it says otherwise.
@@ -59,6 +59,35 @@ ids (`studio-hub-<controller>`) while `fleet.route` compares bare controller ids
 pinned by three tests, and re-measured on the live code path (the addendum at the end of the
 receipt). The receipt is left as measured rather than rewritten: the run that failed is the evidence
 that the step earns its place.
+
+## What 0.2.66 changes — What's New is a page, above Settings
+
+The owner asked for Studio Hub's shape: *"i want the what's new just like in the studio hub for the
+gateway because right now it's still a modal and i want it moved up just above the setting tab just
+like in studio hub too."*
+
+**What's New is a sidebar row now**, under the *App* heading and directly **above Settings** — the
+same place Studio Hub keeps it, because the two apps are read side by side. It was an `NSWindow`
+opened from a small link at the bottom of the sidebar and from the Overview button; every door
+(the row, the View menu, the Overview button, the app menu) now lands on the same page, so there is
+one place the notes live and no second surface to keep in step. The bottom-of-sidebar link is gone:
+with the row visible it was the same destination twice in one column.
+
+**The renderer moved out of the window it used to live in.** `menubar/WhatsNewPage.swift` now owns
+`makePage`, `notes()`, `appVersion`, `NotesDocumentView` and `NotesMarkdown`; `WhatsNewWindow.swift`
+keeps the panel for a headless launch and routes `show()` to the page. That split is not
+housekeeping: a renderer inside a window cannot be compiled or measured without the window, and the
+one thing worth proving about this page is that the markdown becomes **type** — headings, bullets,
+bold leads — rather than literal `##` and `**` in the reader's face, which is the defect the page was
+first rebuilt for. `tests/test_whats_new_page.py` compiles the renderer on its own and walks the
+resulting view for exactly that.
+
+**The notes themselves say what changed for the person using the app.** The first entry still
+described the old window, so it was rewritten, and the fleet work shipped today now has entries a
+reader can use: members on the Fleet page, a queue you can look at, the number Story is told being
+the fleet's own, one tick enabling a model for every Mac, image geometry at the size the Macs really
+render, and the retry policy in plain words. `qualification/whats-new-page-0.2.66.png` is the page
+rendered offscreen and looked at, which is how a UI change is verified here.
 
 ## What 0.2.65 changes — the id spelling A7 was written to fix, in A7's own code
 
