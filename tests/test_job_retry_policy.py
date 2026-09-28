@@ -120,8 +120,9 @@ class ThreeMachinesTest(unittest.TestCase):
         with patch.object(worker_module.fleet, "route", route):
             worker_module._next_machine(store, "job-2", "m", "image", "studio-hub-b",
                                         code="MACHINE_BUSY", detail="busy")
-        self.assertEqual(offered, [{"studio-hub-a", "studio-hub-b"}],
-                         "both the current machine and every earlier one must be excluded")
+        self.assertEqual(offered, [{"a", "b"}],
+                         "both the current machine and every earlier one must be excluded — in "
+                         "the bare controller-id spelling the router actually compares")
 
     def test_no_other_machine_means_wait_rather_than_a_wasted_attempt(self) -> None:
         # Every site offering the model is busy with its own work. The job defers at the machine
@@ -146,6 +147,50 @@ class ThreeMachinesTest(unittest.TestCase):
                                   "two attempts means the second failure is terminal")
         self.assertEqual(concurrency.retry_policy()["max_attempts"], 3,
                          "the shipped default is the three the owner named")
+
+    def test_the_exclusion_is_in_the_spelling_the_router_compares(self) -> None:
+        """**The regression the §9 rehearsal caught, pinned here so it cannot come back.**
+
+        The attempt log stores the *provider* id (`studio-hub-<controller>`) because that names a
+        machine to an operator. `fleet.route` compares `exclude_locations` against the bare
+        `<controller>` id. Passing one where the other is expected makes the exclusion **inert** —
+        which is the exact mismatch A7 exists to close (audit H5), and it came back in this code:
+        with three locations enabled, every job stopped at `attempts_used: 2` while publishing
+        `attempts_allowed: 3`, because the lottery re-picked a tried site, the `chosen.id in tried`
+        guard rejected it, and the worker read that as "nothing left to try".
+
+        A fake route that records what it was asked to exclude is the only way to see this: the
+        numbers look right from outside until you check the spelling.
+        """
+        store = _Store({"id": "job-spelling"})
+        asked: list[set[str]] = []
+
+        def route(model_id, modality, *, exclude_locations=None, **kwargs):
+            asked.append(set(exclude_locations or ()))
+            return None, ""
+
+        with patch.object(worker_module.fleet, "route", route):
+            worker_module._next_machine(store, "job-spelling", "m", "image",
+                                        "studio-hub-abc", code="MACHINE_BUSY", detail="busy")
+            worker_module._next_machine(store, "job-spelling", "m", "image",
+                                        "studio-hub-def", code="MACHINE_BUSY", detail="busy")
+        self.assertEqual(asked[0], {"abc"},
+                         "the router compares bare controller ids, not provider ids")
+        self.assertEqual(asked[1], {"abc", "def"})
+        self.assertEqual([entry["location"] for entry in store.log],
+                         ["studio-hub-abc", "studio-hub-def"],
+                         "while the log keeps the readable provider id an operator sees")
+
+    def test_an_already_tried_site_is_never_returned_by_the_router(self) -> None:
+        # The other half: if the router hands back a site that is excluded, that is a router bug
+        # rather than a reason to declare the job finished — but the worker must not *re-try* it.
+        store = _Store({"id": "job-repeat"})
+        with patch.object(worker_module.fleet, "route",
+                          lambda *a, **k: (_Site("a"), "note")):
+            self.assertIsNone(
+                worker_module._next_machine(store, "job-repeat", "m", "image", "studio-hub-a",
+                                            code="MACHINE_BUSY", detail="busy"),
+                "a router that ignores the exclusion must not produce a repeat attempt")
 
     def test_the_terminal_reason_names_every_machine_and_why_it_failed(self) -> None:
         store = _Store({"id": "job-5"})
@@ -245,8 +290,14 @@ class EndToEndThroughThreeSitesTest(unittest.TestCase):
             return self._Outcome(order.pop(0))
 
         def route(model_id, modality, *, exclude_locations=None, **kwargs):
+            # **The fake router honours the exclusion, in the spelling the real one compares.**
+            # This is the part of the harness that hid the id-spelling regression: a fake that
+            # ignored `exclude_locations` (or compared the wrong spelling) would hand back the
+            # site that just failed while the real router would have moved on, so the test would
+            # pass against code whose exclusion was inert.
+            excluded = set(exclude_locations or ())
             for site in sites:
-                if site.id not in (exclude_locations or ()):
+                if (worker_module.fleet.controller_id_from(site.id) or site.id) not in excluded:
                     return site, "note"
             return None, ""
 

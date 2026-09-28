@@ -1,6 +1,6 @@
 # HANDOFF — gateway-kh
 
-**Read this first.** Written 2026-09-28 against **VERSION `0.2.64`**. The running build
+**Read this first.** Written 2026-09-28 against **VERSION `0.2.65`**. The running build
 stamp is on `/health` and in `/Applications/gateway-kh.app/Contents/Resources/gateway/BUILD`.
 If this file disagrees with the code, **the code wins — fix this file in the same change**.
 Every path below is inside the Git checkout `repository/` unless it says otherwise.
@@ -56,6 +56,43 @@ were found by it rather than by reading the code:
 first run recorded **two** attempts on two different machines, each with its own reason, with
 `attempts_allowed: 3` published — correct behaviour for a model only two locations offered, and the
 receipt says so rather than calling it a pass.
+
+## What 0.2.65 changes — the id spelling A7 was written to fix, in A7's own code
+
+**The §9 rehearsal caught the original defect inside its own fix, and this is that correction.**
+
+A7 exists because the re-route compared a *provider* id (`studio-hub-9701220bf30f`) against a
+*controller* id (`9701220bf30f`), so the exclusion set never matched and a busy Mac deferred work at
+the same Mac (audit H5). The new attempt log stores the provider id — deliberately, because that is
+what names a machine to an operator — and `fleet.route` compares `exclude_locations` against the bare
+controller id. **The same mismatch, one layer along.**
+
+Measured in the rehearsal with three locations verified enabled (`locations_total: 3`,
+`locations_enabled: 3`, every location `enabled: true`, all reachable with `supply
+{eligible: 1, available: 1}`): every job stopped at **`attempts_used: 2`** while publishing
+**`attempts_allowed: 3`**, on two different machines. Driving the product's own
+`fleet.routing_candidates`, the difference is visible directly:
+
+```
+excluded_by_provider_id  : ["02da…","6f14…","f64c…"]   <- asked to exclude f64c…, still returned
+excluded_by_controller_id: ["02da…","6f14…"]            <- the same exclusion, correctly dropped
+```
+
+The lottery could therefore re-pick a site that had already failed; `_next_machine`'s
+`chosen.id in tried` guard then rejected it and returned `None`, and the worker read that as
+"nothing left to try" — failing a job at two attempts with no reason on the job and nothing in the
+log to say why.
+
+`worker._next_machine` now normalises **both sides** through `fleet.controller_id_from(provider_id)
+or provider_id`, in one place, and applies the same function to the route's answer so the two cannot
+drift. The attempt log still stores the readable provider id.
+
+**Why the suite missed it and what now pins it.** The end-to-end test's fake router returned its
+sites in order and ignored `exclude_locations` — so it never exercised the exclusion at all, and a
+fake that ignores the thing under test cannot fail. `tests/test_job_retry_policy.py` now has three
+tests for it: the exclusion set is asserted to be in the **bare controller-id spelling**, the fake
+router **honours the exclusion the way the real one does**, and a router that hands back an
+already-tried site is asserted to produce no repeat attempt.
 
 ## What 0.2.64 changes — what the rehearsal found
 

@@ -94,20 +94,36 @@ def _next_machine(store: JobStore, job_id: str, model_id: str, modality: str,
     failed it. That is the difference this fixes, and it is why the list is a column.
     """
     policy = concurrency.retry_policy()
+    # **The two id spellings, normalised in one place.** An attempt log stores the *provider* id
+    # that routed the work (`studio-hub-9701220bf30f`) because that is what names a machine to an
+    # operator; `fleet.route` compares `exclude_locations` against the bare **controller** id
+    # (`9701220bf30f`). Passing one where the other is expected makes the exclusion **inert**, and
+    # the defect this whole item exists to close is exactly that mismatch (audit H5) — so it is
+    # normalised here rather than at either end, and the same function is applied to the route's
+    # answer so the two can never drift.
+    #
+    # It came back the first time in this shape and the §9 rehearsal caught it: with three
+    # locations enabled every job still stopped at `attempts_used: 2` while publishing
+    # `attempts_allowed: 3`, because the lottery could re-pick a site that was already tried,
+    # `chosen.id in tried` then rejected it, and the worker read that as "nothing left to try".
+    def _location(value: Any) -> str:
+        return str(fleet.controller_id_from(str(value or "")) or value or "")
+
     record = getattr(store, "record_attempt", None)
     if record is None:
         # A store without the record still gets the old one-step behaviour rather than none.
-        tried = {provider_id}
+        tried = {_location(provider_id)}
         chosen, _ = fleet.route(model_id, modality, exclude_locations=tried)
-        return chosen.id if chosen is not None and chosen.id not in tried else None
+        return chosen.id if chosen is not None and _location(chosen.id) not in tried else None
     attempts = record(job_id, location_id=provider_id, code=code, detail=detail) or []
-    tried = {str(entry.get("location") or "") for entry in attempts}
-    tried.add(provider_id)
+    tried = {_location(entry.get("location")) for entry in attempts}
+    tried.add(_location(provider_id))
+    tried.discard("")
     if len(attempts) >= int(policy["max_attempts"]):
         # The ceiling the owner named. The failure path builds the sentence from this log.
         return None
     chosen, _note = fleet.route(model_id, modality, exclude_locations=tried)
-    if chosen is None or chosen.id in tried:
+    if chosen is None or _location(chosen.id) in tried:
         return None
     record_route = getattr(store, "record_route", None)
     if record_route is not None:
