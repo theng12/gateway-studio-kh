@@ -25,6 +25,38 @@ project does not say why, and nobody should guess.
 | Distribution | DMG in `repository/dist/`, named by version alone; the previous ones moved to `_trash/dist/` |
 | SSD/setup kit | `repository/dist/setup-kit/`, **pinned to GatewayKH 0.2.44** and refreshed onto all four `KH-STUDIO-*` drives on **2026-09-26**, `shasum -a 256 -c` OK on every one. The drives also carry `Studio Hub.app` **0.6.70**. Superseded kits are in each drive's `_trash/superseded-kit-2026-09-26/` (`GatewayKH-0.2.27`, `GatewayKH-0.2.43`) |
 
+## The §9 fleet rehearsal — where the receipts are, and what it found
+
+`qualification/S9-fleet-rehearsal.md` is the acceptance record: **five real Hub processes** (the
+real `components.hub.standalone.app`, each with its own data dir, token and loopback port, auth
+enforced) plus one isolated Gateway, driven over HTTP by
+`_orchestra/rehearsal/run_rehearsal.py`. Each Mac runs a stub that answers the Hub's real worker
+contract, so the Hub, the catalogue, routing, admission, the queue, the retry policy and the
+membership routes are all the real thing.
+
+**Eleven of the twelve checks pass with measured readings**, and the three that this release fixes
+were found by it rather than by reading the code:
+
+| # | check | result | the reading that matters |
+|---|---|---|---|
+| 1 | a node joins and both UIs show it | PASS | controller roster 3/3; gateway `node_summary {total: 3, reachable: 3}` |
+| 2 | one model row, "N of M machines", one `/v1/models` row | PASS | 2 locations, **one** row; one enable action → 2 of 2 enabled |
+| 3 | a site of M Macs accepts M concurrent jobs | PASS | M=4: admission limit 4, peak concurrent 4 |
+| 4 | a node leaves and a removed node stays removed | PASS | leave 200 → `removed: 1`; re-join **403** with the date sentence |
+| 5 | the location is re-pointed and keeps routing + enablement | PASS | same row id, model still 2 of 2, job routed there succeeded |
+| 6 | a failed Mac is re-run on another Mac | PASS | succeeded on a different machine after the hand-off |
+| 7 | queue position, its bound, and `/health` concurrency | PASS | positions [1,2,3] of [3,3,3]; published **30 == live fleet 30** |
+| 8 | promotion + handover with **zero touches per node** | PASS | `verified 1/1`, followers with **0 touches**, enablement survived the re-point |
+| 9 | eviction is permanent, the neighbour still works | PASS | own credential 401; Fleet-token join 403 by name; neighbour ran the work; readmit re-joined |
+| 10 | one cluster down does not hurt the others | PASS | down row still shows `node_summary {total: 1}` with `members_from` and `stale 41.6 s` |
+| 11 | published capacity is the fleet's, live | PASS | **36 → 18 → 36** with no settings edited |
+| 12 | three attempts on three machines, no duplicates | see the receipt | the unknown-outcome half passes: a Mac killed mid-poll is a hold with `retryable: false` and is **never** re-run |
+
+**Check 12's three-attempt half is bounded by how many machines actually offer the model.** The
+first run recorded **two** attempts on two different machines, each with its own reason, with
+`attempts_allowed: 3` published — correct behaviour for a model only two locations offered, and the
+receipt says so rather than calling it a pass.
+
 ## What 0.2.64 changes — what the rehearsal found
 
 The §9 rehearsal ran the whole fleet end to end (two and three real Hubs and an isolated Gateway)
