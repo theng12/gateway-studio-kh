@@ -14,6 +14,26 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.76 — 2026-09-29
+
+### A dropped poll no longer throws away a finished render
+
+The Hub adapter polled a batch once a second against a 15-minute deadline, and treated the **first**
+dropped connection as an unknown outcome. One blip out of as many as 900 polls discarded the job.
+
+Measured on a real one: batch `0dcdc6331e` was reported failed at 23:10, and the Hub's own record
+shows that same item finished **`done`, with an artifact**, four minutes and forty-five seconds
+later. The image had been rendered and was thrown away.
+
+Two things make this safe to fix. The batch was already accepted and the Hub **keeps** it, so asking
+again is a GET on something that exists — idempotent, and no duplicate work can result. And the
+question it answers is the only one that settles the outcome: *is this batch finished?*
+
+A poll may now fail for up to **60 seconds** before the hold is raised, and any successful poll
+clears the run — so a Hub that drops one request an hour is never mistaken for one that has gone
+away. A Mac that really is gone still produces its named hold, and the sentence now says how long it
+waited, so "gave up immediately" is distinguishable from "stopped answering".
+
 ## 0.2.75 — 2026-09-29
 
 ### The Fleet page stops timing out when the fleet is busy

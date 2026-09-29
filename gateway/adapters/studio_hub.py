@@ -29,6 +29,23 @@ import httpx
 from .base import BackendError, BackendRequest, BackendResult
 
 POLL_INTERVAL_S = 1.0
+
+#: How long a poll may keep failing before a batch becomes an unknown-outcome hold.
+#:
+#: **A dropped socket is not an unknown outcome; it is a dropped socket.** This ran
+#: at one poll per second against a 900 s deadline and raised the hold on the very
+#: *first* `httpx.HTTPError` -- so one blip out of as many as 900 polls discarded a
+#: job that was still running. Measured on the owner's fleet 2026-09-29: batch
+#: `0dcdc6331e` was reported failed at 23:10, and the Hub's own record shows that
+#: same item finished `done` **with an artifact** 4m45s later. The image was
+#: rendered and thrown away.
+#:
+#: The outcome is only genuinely unknown once the Hub has been unreachable for long
+#: enough that we cannot say whether it is working. Sixty seconds of consecutive
+#: failures is well past a blip and still far short of the lane's own ceiling, and
+#: the deadline below bounds it either way -- so a Mac that really is gone still
+#: produces its named hold, just not on the first refused connection.
+POLL_DROP_GRACE_S = 60.0
 # Aligned with the Hub's own claim TTL floor (request timeout 300s + margin).
 JOB_DEADLINE_S = 900.0
 
@@ -468,6 +485,10 @@ def _poll_batch(
     limit = float(deadline_seconds) if deadline_seconds else JOB_DEADLINE_S
     deadline = time.monotonic() + limit
     last: dict[str, Any] = {}
+    #: When the current run of consecutive poll failures began, or `None` while the
+    #: Hub is answering. Reset by any successful poll, so a Hub that drops one
+    #: request an hour is never mistaken for one that has gone away.
+    dropped_since: float | None = None
     while time.monotonic() < deadline:
         # **A Mac that dies mid-poll is a named hold, not a raw `ConnectError`.** This call had no
         # guard at all (audit M7): an `httpx.HTTPError` escaped to the worker's generic handler,
@@ -480,10 +501,20 @@ def _poll_batch(
         try:
             response = client.get(f"{base}{jobs_path}/{batch_id}", headers=headers)
         except httpx.HTTPError as exc:
+            now = time.monotonic()
+            if dropped_since is None:
+                dropped_since = now
             reason = str(exc).strip() or type(exc).__name__
+            # **Keep asking.** The batch is already accepted and the Hub keeps it,
+            # so re-reading it is a GET on something that exists -- idempotent, and
+            # the only question that settles the outcome. Giving up here is what
+            # turned a finished render into a failure (see `POLL_DROP_GRACE_S`).
+            if now - dropped_since < POLL_DROP_GRACE_S and now < deadline:
+                time.sleep(POLL_INTERVAL_S)
+                continue
             raise BackendError(
                 f"lost contact with {base} while polling batch {batch_id} "
-                f"(item {item_index}): {reason}",
+                f"(item {item_index}) for {int(now - dropped_since)}s: {reason}",
                 code="PROVIDER_SUBMISSION_UNCERTAIN",
                 upstream_accepted=True,
                 recovery={
@@ -494,6 +525,8 @@ def _poll_batch(
                     "reason": reason,
                 },
             ) from exc
+        # The Hub answered, so whatever happened before is over.
+        dropped_since = None
         if response.status_code >= 400:
             raise BackendError(
                 f"hub status HTTP {response.status_code}: {response.text[:200]}",

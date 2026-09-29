@@ -116,5 +116,87 @@ class TheItemIsSettledTest(unittest.TestCase):
         self.assertEqual(failure.code, "PROVIDER_SUBMISSION_UNCERTAIN")
 
 
+class TheDroppedPollIsNotAnUnknownOutcomeTest(unittest.TestCase):
+    """A blip on one poll must not discard a job the Hub is still running.
+
+    Measured on the owner's fleet 2026-09-29: batch `0dcdc6331e` was reported
+    failed at 23:10, and the Hub's own record shows that item finished `done`
+    **with an artifact** 4m45s later. One `httpx.HTTPError` out of as many as 900
+    polls (1 s apart against a 900 s deadline) was enough to throw the render away.
+    """
+
+    def _flaky(self, failures: int, payload: dict):
+        import httpx
+
+        class _Flaky:
+            def __init__(self) -> None:
+                self.left = failures
+                self.calls = 0
+
+            def get(self, url: str, headers: dict | None = None):
+                self.calls += 1
+                if self.left > 0:
+                    self.left -= 1
+                    raise httpx.ConnectError("Server disconnected without sending a response")
+                return _Response(payload)
+
+        return _Flaky()
+
+    def test_a_few_dropped_polls_still_return_the_finished_item(self) -> None:
+        from unittest.mock import patch
+
+        from gateway.adapters import studio_hub
+
+        client = self._flaky(3, _batch({"state": "done", "artifact_path": "/tmp/a.png"}))
+        with patch.object(studio_hub, "POLL_INTERVAL_S", 0.01):
+            result = _poll_batch(client, "http://hub", {}, "batch-ok", 0, deadline_seconds=30)
+        self.assertEqual("done", result["item"]["state"])
+        self.assertEqual(4, client.calls, "it must keep asking after the drops, not give up")
+
+    def test_a_hub_that_stays_gone_still_becomes_a_named_hold(self) -> None:
+        from unittest.mock import patch
+
+        from gateway.adapters import studio_hub
+
+        client = self._flaky(10_000, _batch({"state": "done"}))
+        with patch.object(studio_hub, "POLL_INTERVAL_S", 0.01), \
+                patch.object(studio_hub, "POLL_DROP_GRACE_S", 0.05):
+            with self.assertRaises(BackendError) as caught:
+                _poll_batch(client, "http://hub", {}, "batch-gone", 0, deadline_seconds=30)
+        failure = caught.exception
+        self.assertEqual("PROVIDER_SUBMISSION_UNCERTAIN", failure.code)
+        self.assertTrue(failure.upstream_accepted)
+        # The hold still names the batch, so it can be settled when the Mac answers.
+        self.assertEqual("batch-gone", failure.recovery["batch_id"])
+        # And it says how long it waited, so "gave up immediately" is distinguishable.
+        self.assertIn("for ", str(failure))
+
+    def test_a_successful_poll_clears_the_drop_run(self) -> None:
+        # A Hub that drops one request now and another an hour later is not a Hub
+        # that has gone away. The run has to reset on every answer.
+        from unittest.mock import patch
+
+        from gateway.adapters import studio_hub
+
+        class _Alternating:
+            def __init__(self) -> None:
+                self.n = 0
+
+            def get(self, url: str, headers: dict | None = None):
+                import httpx
+
+                self.n += 1
+                if self.n == 1 or self.n == 3:
+                    raise httpx.ConnectError("blip")
+                if self.n >= 5:
+                    return _Response(_batch({"state": "done"}))
+                return _Response(_batch({"state": "running"}))
+
+        with patch.object(studio_hub, "POLL_INTERVAL_S", 0.01):
+            result = _poll_batch(_Alternating(), "http://hub", {}, "batch-blips", 0,
+                                 deadline_seconds=30)
+        self.assertEqual("done", result["item"]["state"])
+
+
 if __name__ == "__main__":
     unittest.main()
