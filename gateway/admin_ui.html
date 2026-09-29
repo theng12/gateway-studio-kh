@@ -499,7 +499,17 @@
       <span class="stat" id="keyless-count"></span>
       <input type="text" id="filter" placeholder="Filter providers…" style="max-width:260px">
       <button class="sm" onclick="refreshAll(this)">Refresh all models</button>
+      <!-- **Add a provider, which until now meant editing a file by hand.**
+           `providers.local.json` has been read at import since custom providers were supported, and
+           this page already reports an entry it could not load — but nothing could *write* one, so
+           adding a provider meant finding a file in Application Support and getting its schema right
+           by hand. The owner asked for the other half: *"i think we can allow an add custom option.
+           that would make future providers really easy until we can update native support."*
+           Behind a button so the page stays short, and it says plainly that a restart is needed —
+           providers are read when the gateway starts. -->
+      <button class="sm" id="custom-provider-toggle" onclick="toggleCustomProviderForm()">+ Add a provider</button>
     </div>
+    <div id="custom-provider-panel" style="display:none; margin:0 0 14px"></div>
     <div id="providers-msg" class="msg" role="alert" aria-live="polite"></div>
     <div id="providers"></div>
     </div><!-- /provider-pane-list -->
@@ -2114,6 +2124,102 @@ async function refreshAll(btn) {
   try { await api('/refresh-all', { method: 'POST' }); await loadProviders(); await loadStatus(); }
   catch (e) { alert(e.message); }
   finally { btn.disabled = false; btn.textContent = 'Refresh all models'; }
+}
+
+// ---------------------------------------------------------------------------
+// Adding a provider without editing a file.
+//
+// The file `providers.local.json` and its loader are old; this is the half that was missing. Two
+// things it must do that a naive form would not:
+//
+//   1. **Say that a restart is needed.** Providers are read when the gateway starts — deliberate,
+//      so the catalogue cannot change shape underneath an in-flight job. The route answers
+//      `restart_required`, and this shows it in words. A form that looked like it had added a
+//      working provider and left it invisible until the next restart is a control that does
+//      nothing, which is the failure this project keeps having to fix.
+//   2. **Show the ones that did not load.** An entry the loader skipped is exactly what the
+//      operator needs to see, and it is the one case the provider list cannot show, because a
+//      skipped entry has no provider to list.
+let customProviderKinds = [];
+
+async function loadCustomProviders() {
+  const panel = document.getElementById('custom-provider-panel');
+  if (!panel || panel.style.display === 'none') return;
+  let data;
+  try { data = await api('/custom-providers'); }
+  catch (e) { panel.innerHTML = `<div class="msg bad">Could not read your providers: ${esc(e.message)}</div>`; return; }
+  customProviderKinds = data.kinds || [];
+  const rows = data.providers || [];
+  const list = rows.length
+    ? `<table class="models"><tbody>${rows.map(p => `
+        <tr>
+          <td><b>${esc(p.display_name)}</b><div class="hint">${esc(p.id)} · ${esc(p.kind)} · ${esc(p.base_url)}</div>
+            ${p.skipped_reason ? `<div class="hint" style="color:var(--bad,#c00)">not loaded: ${esc(p.skipped_reason)}</div>` : ''}</td>
+          <td style="text-align:right"><button class="sm" onclick="removeCustomProvider('${esc(p.id)}')">Remove</button></td>
+        </tr>`).join('')}</tbody></table>`
+    : '<div class="hint">You have not added any providers yourself yet.</div>';
+  panel.innerHTML = `
+    <div class="card" style="padding:14px">
+      <h3 style="margin:0 0 4px">Add a provider</h3>
+      <p class="hint" style="margin:0 0 10px">
+        For anything OpenAI-compatible the gateway does not know yet. Saved to
+        <code>${esc(data.path)}</code>, and <b>the gateway must be restarted</b> before it appears —
+        providers are read when it starts.
+      </p>
+      <div class="row" style="gap:8px; flex-wrap:wrap">
+        <input id="cp-name" placeholder="Name (e.g. My Router)" style="max-width:210px">
+        <input id="cp-id" placeholder="id (e.g. my-router)" style="max-width:170px">
+        <input id="cp-url" placeholder="Base URL (https://…/v1)" style="max-width:250px">
+        <select id="cp-kind" aria-label="Kind">${customProviderKinds.map(k => `<option value="${esc(k)}">${esc(k)}</option>`).join('')}</select>
+        <input id="cp-key-env" placeholder="Key env var (optional)" style="max-width:190px">
+        <button class="sm" onclick="addCustomProvider(this)">Add</button>
+      </div>
+      <div id="cp-msg" class="msg" role="alert" aria-live="polite"></div>
+      <h3 style="margin:14px 0 4px">Providers you added</h3>
+      ${list}
+    </div>`;
+}
+
+function toggleCustomProviderForm() {
+  const panel = document.getElementById('custom-provider-panel');
+  const button = document.getElementById('custom-provider-toggle');
+  if (!panel) return;
+  const opening = panel.style.display === 'none';
+  panel.style.display = opening ? '' : 'none';
+  if (button) button.textContent = opening ? '− Hide' : '+ Add a provider';
+  if (opening) loadCustomProviders();
+}
+
+async function addCustomProvider(btn) {
+  const value = id => (document.getElementById(id)?.value || '').trim();
+  const message = document.getElementById('cp-msg');
+  btn.disabled = true;
+  try {
+    const answer = await api('/custom-providers', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        display_name: value('cp-name'), id: value('cp-id'), base_url: value('cp-url'),
+        kind: value('cp-kind'), key_env_var: value('cp-key-env'),
+      }),
+    });
+    // The restart is the point, so it is said here rather than left to the note in the route.
+    if (message) {
+      message.className = 'msg ok';
+      message.textContent = `${answer.added} was saved. Restart the gateway to use it — `
+        + 'providers are read when it starts.';
+    }
+    loadCustomProviders();
+  } catch (e) {
+    if (message) { message.className = 'msg bad'; message.textContent = e.message; }
+  } finally { btn.disabled = false; }
+}
+
+async function removeCustomProvider(id) {
+  if (!confirm(`Remove '${id}'? Nothing else is affected.`)) return;
+  try {
+    await api(`/custom-providers/${encodeURIComponent(id)}`, { method: 'DELETE' });
+    loadCustomProviders();
+  } catch (e) { alert(e.message); }
 }
 
 document.getElementById('filter').addEventListener('input', renderProviders);

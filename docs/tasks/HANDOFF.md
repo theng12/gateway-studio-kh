@@ -1,12 +1,47 @@
 # HANDOFF — gateway-kh
 
-**Read this first.** Written 2026-09-28 against **VERSION `0.2.72`**. The running build
+**Read this first.** Written 2026-09-28 against **VERSION `0.2.73`**. The running build
 stamp is on `/health` and in `/Applications/gateway-kh.app/Contents/Resources/gateway/BUILD`.
 If this file disagrees with the code, **the code wins — fix this file in the same change**.
 Every path below is inside the Git checkout `repository/` unless it says otherwise.
 `[MEASURED]` = observed in the session that wrote this; `[reason not recorded]` = the
 project does not say why, and nobody should guess.
 
+> **0.2.73 — providers the owner adds himself, and OmniRoute.**
+>
+> **The file was never the missing part.** `providers.local.json` has been read at import since
+> custom providers were supported, and `/admin/api/providers` already publishes
+> `skipped_custom_providers`. Nothing could **write** it — so adding a provider meant finding a file
+> in Application Support and getting the schema right by hand. The owner: *"i think we can allow an
+> add custom option. that would make future providers really easy until we can update native
+> support."*
+>
+> `GET/POST/DELETE /admin/api/custom-providers` plus a **+ Add a provider** form on the Providers
+> page. Every refusal the *loader* would apply silently is applied up front with the reason, because
+> a skipped entry simply never appears and reads as "my file did not load" rather than "nothing can
+> run that kind": unknown kind (naming the kinds that work), a built-in id, the reserved
+> `studio-hub` namespace, the location prefix with a non-`studio_hub` kind, a non-URL base, a bad id,
+> and a duplicate.
+>
+> ⚠ **A new provider needs a restart, and both the route and the page say so.** Definitions are
+> loaded at import — deliberate, so the catalogue cannot change shape under an in-flight job. The
+> route answers `restart_required: true` and the form prints it; a form that looked like it had
+> added a working provider and left it invisible would be a control that does nothing.
+>
+> **Two bugs in my own first cut, both caught by the suite:** `admin.py` signals refusals with its
+> own `AdminError`, not FastAPI's `HTTPException` (which is not imported there), and `fleet` is one
+> package up (`.fleet`), not two.
+>
+> **OmniRoute** is a provider: `http://127.0.0.1:20128/v1`, `openai_compatible`,
+> `DISCOVERY_OPENAI_MODELS`. `[MEASURED]` against his running instance: `POST /v1/chat/completions`
+> with `model: "auto"` and **no key** answers **200** with a real completion, while
+> `GET /v1/models` answers **401 `invalid_api_key`** — so the key is required by *listing*, which is
+> what discovery does. Keys come from `http://127.0.0.1:20128/dashboard/api-keys`. `127.0.0.1`, not
+> `localhost`: a name that resolves to `::1` first would miss an IPv4-only bind.
+>
+> 20 new tests in `tests/test_custom_providers.py`. Every `tests/test_*.js` suite and the focused
+> Python pass green.
+>
 > **0.2.72 — the Providers page is four tabs.** The owner: *"inside the gateway kh's providers,
 > there's so many stuff that i have to scroll. can you make it like fleet which it is split and have
 > separate tabs for different stuff?"* Twenty-three provider cards, the concurrency settings, the

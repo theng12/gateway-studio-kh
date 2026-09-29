@@ -523,6 +523,36 @@ PROVIDER_DEFINITIONS: tuple[ProviderDefinition, ...] = (
         docs_url="https://docs.ollama.com/api/openai-compatibility",
         credential_fields=(_api_key("OLLAMA_API_KEY"),),
     ),
+    # **OmniRoute, which runs on this Mac.** The owner: *"it's a local hosted on this computer but i
+    # add apis or sth into so it's good for me as it allows me to use the opencode that i can't
+    # personally use directly. i've paid it's subscription. it can run through omniroute."*
+    #
+    # It is an OpenAI-compatible gateway on `127.0.0.1:20128` that fans out across subscription,
+    # API-key, cheap and free tiers — so one entry here reaches everything he has wired into it,
+    # including the coding plans he cannot call directly.
+    #
+    # `127.0.0.1` and not `localhost`: the Gateway resolves this itself, and a name that can
+    # resolve to `::1` first would fail against a server bound to IPv4 only.
+    #
+    # **The key is required by *listing*, not by use — and that is why it is a credential here.**
+    # Measured 2026-09-29 against his running instance: `POST /v1/chat/completions` with
+    # `model: "auto"` and **no** key answers **200** with a real completion, while
+    # `GET /v1/models` answers **401 `invalid_api_key`**. Every other OpenAI-compatible lane needs
+    # its key for both, so this asymmetry is worth stating: the Gateway discovers models by listing
+    # them, so without a key this provider would be configured-and-empty. Make one at
+    # `http://127.0.0.1:20128/dashboard/api-keys` and paste it in.
+    ProviderDefinition(
+        id="omniroute",
+        display_name="OmniRoute (this Mac)",
+        category="language",
+        kind=KIND_OPENAI_COMPATIBLE,
+        base_url="http://127.0.0.1:20128/v1",
+        modalities=("chat",),
+        discovery=DISCOVERY_OPENAI_MODELS,
+        description="A local gateway that fans out across your subscription, API and free tiers behind one OpenAI-compatible endpoint.",
+        docs_url="https://github.com/diegosouzapw/OmniRoute",
+        credential_fields=(_api_key("OMNIROUTE_API_KEY"),),
+    ),
     ProviderDefinition(
         id="anthropic-direct",
         display_name="Anthropic",

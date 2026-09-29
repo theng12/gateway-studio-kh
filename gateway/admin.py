@@ -12,6 +12,8 @@ on the LAN. Both the configured bind and actual request peer are checked.
 
 from __future__ import annotations
 
+import json
+import re
 import time
 from pathlib import Path
 from typing import Annotated, Any
@@ -132,6 +134,145 @@ def status() -> dict[str, Any]:
             for modality in ("chat", "image", "video", "tts", "transcription", "music")
         },
     }
+
+
+# ---------------------------------------------------------------------------
+# Providers that the owner adds himself
+#
+# **The file already existed; this is the half that was missing.** `providers.local.json` has been
+# read at import since the custom-provider support was written, and the console already *reports* an
+# entry it could not load. What it never had was a way to write one — so adding a provider meant
+# finding a file in Application Support and getting its schema right by hand. The owner asked for
+# the other half: *"i think we can allow an add custom option. that would make future providers
+# really easy until we can update native support."*
+#
+# **A new provider needs a restart, and the answer says so rather than pretending otherwise.**
+# Definitions are loaded at import — a deliberate trade-off recorded in `definitions.py`, because a
+# provider definition selects an adapter and the catalogue must not change shape underneath an
+# in-flight job. A form that appeared to add a working provider and left it invisible until the next
+# restart would be a control that does nothing, which is the state this project keeps having to fix.
+# The route returns `restart_required: true` and the page says it in words.
+_CUSTOM_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._-]{1,63}$")
+
+
+def _custom_providers_file() -> Path:
+    from .config import CUSTOM_PROVIDERS_PATH
+    return CUSTOM_PROVIDERS_PATH
+
+
+def _read_custom_providers() -> list[dict[str, Any]]:
+    """The entries in the file, as written. Never the loaded definitions: an entry that was
+    *skipped* is precisely what the operator needs to see, and it has no definition."""
+    path = _custom_providers_file()
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return []
+    entries = raw.get("providers") if isinstance(raw, dict) else raw
+    return [e for e in entries if isinstance(e, dict)] if isinstance(entries, list) else []
+
+
+def _write_custom_providers(entries: list[dict[str, Any]]) -> None:
+    # Through `write_secret`: the file names which vendors are configured and, for a provider whose
+    # key is stored rather than read from the environment, can carry it. Same reasoning as
+    # `models_cache.json`, which is owner-only for the same reason.
+    from .config import write_secret
+    write_secret(_custom_providers_file(), json.dumps({"providers": entries}, indent=2) + "\n")
+
+
+@router.get("/api/custom-providers", dependencies=[Depends(require_admin)])
+def list_custom_providers() -> dict[str, Any]:
+    """Providers the owner added, and which of them could not be loaded."""
+    from .providers.definitions import IMPLEMENTED_KINDS
+
+    skipped = {row["id"]: row["reason"] for row in definitions.skipped_custom_providers()}
+    return {
+        "providers": [
+            {
+                "id": str(entry.get("id") or ""),
+                "display_name": str(entry.get("display_name") or entry.get("id") or ""),
+                "kind": str(entry.get("kind") or ""),
+                "base_url": str(entry.get("base_url") or ""),
+                "modalities": list(entry.get("modalities") or ["chat"]),
+                # An entry in the file that is not a running provider is the failure this page
+                # exists to make visible. `None` means it loaded.
+                "skipped_reason": skipped.get(str(entry.get("id") or "")),
+            }
+            for entry in _read_custom_providers()
+        ],
+        # What a new entry may declare. From `IMPLEMENTED_KINDS` itself, never a second list: a
+        # copy is how `_VALID_KINDS` fell behind and silently dropped `xai`.
+        "kinds": sorted(IMPLEMENTED_KINDS),
+        "path": str(_custom_providers_file()),
+    }
+
+
+@router.post("/api/custom-providers", dependencies=[Depends(require_admin)])
+def add_custom_provider(body: dict[str, Any]) -> dict[str, Any]:
+    """Add one provider to `providers.local.json`.
+
+    Refused, with the reason, for every way an entry can be unloadable — so the operator learns now
+    rather than after a restart that the provider they just added will not appear.
+    """
+    from .providers.definitions import IMPLEMENTED_KINDS
+    from .fleet import FLEET_PROVIDER_ID, PROVIDER_PREFIX
+
+    provider_id = str(body.get("id") or "").strip().lower()
+    if not _CUSTOM_ID_PATTERN.match(provider_id):
+        raise AdminError(400, "The id must be 2–64 characters of lower-case letters, digits, dot, dash or underscore, and start with a letter or digit.")
+    if provider_id in definitions.PROVIDERS_BY_ID:
+        raise AdminError(400, f"'{provider_id}' is already a built-in provider. Choose another id.")
+    if provider_id == FLEET_PROVIDER_ID:
+        raise AdminError(400, f"'{provider_id}' is reserved — it is the namespace every Studio Hub location's models are published under.")
+    kind = str(body.get("kind") or "").strip()
+    if kind not in IMPLEMENTED_KINDS:
+        # Named, and naming what *is* possible: the loader skips an unknown kind in silence, which
+        # reads as "my file did not load" rather than "nothing can run that kind".
+        raise AdminError(400, f"'{kind}' is not a kind this gateway can run. Choose one of: {', '.join(sorted(IMPLEMENTED_KINDS))}.")
+    if kind != "studio_hub" and provider_id.startswith(PROVIDER_PREFIX):
+        raise AdminError(400, f"An id starting with '{PROVIDER_PREFIX}' is treated as a Studio Hub location. Use another id, or the 'studio_hub' kind.")
+    base_url = str(body.get("base_url") or "").strip()
+    if not base_url.startswith(("http://", "https://")):
+        raise AdminError(400, "The base URL must start with http:// or https://")
+    modalities = [str(m).strip() for m in (body.get("modalities") or ["chat"]) if str(m).strip()]
+    if not modalities:
+        raise AdminError(400, "Choose at least one operation this provider serves.")
+    key_env = str(body.get("key_env_var") or "").strip() or f"CUSTOM_{provider_id.upper().replace('-', '_')}_KEY"
+
+    entries = _read_custom_providers()
+    if any(str(e.get("id") or "").strip().lower() == provider_id for e in entries):
+        raise AdminError(400, f"'{provider_id}' is already in {_custom_providers_file().name}.")
+    entries.append({
+        "id": provider_id,
+        "display_name": str(body.get("display_name") or provider_id).strip(),
+        "category": "custom",
+        "kind": kind,
+        "base_url": base_url,
+        "modalities": modalities,
+        "discovery": str(body.get("discovery") or "openai_models"),
+        "description": str(body.get("description") or "Added by the operator.").strip(),
+        "credential_fields": ([{"key": "api_key", "label": "API key", "env_var": key_env}]
+                              if body.get("needs_key", True) else []),
+    })
+    _write_custom_providers(entries)
+    return {
+        "added": provider_id,
+        # Stated, not implied. See the note above this route.
+        "restart_required": True,
+        "note": f"Added to {_custom_providers_file().name}. Restart the gateway to use it — providers are read when it starts.",
+    }
+
+
+@router.delete("/api/custom-providers/{provider_id}", dependencies=[Depends(require_admin)])
+def remove_custom_provider(provider_id: str) -> dict[str, Any]:
+    """Remove one, and say if it was not there — the file is the authority, not this process."""
+    entries = _read_custom_providers()
+    kept = [e for e in entries if str(e.get("id") or "").strip().lower() != provider_id.strip().lower()]
+    if len(kept) == len(entries):
+        raise AdminError(404, f"'{provider_id}' is not in {_custom_providers_file().name}.")
+    _write_custom_providers(kept)
+    return {"removed": provider_id, "restart_required": True,
+            "note": "Removed. Restart the gateway for it to stop being offered."}
 
 
 # ---------------------------------------------------------------------------

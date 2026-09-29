@@ -12,6 +12,43 @@ every feature title, and they are left as they were written.
 
 ---
 
+---
+
+## 0.2.73 — 2026-09-29
+
+### Add a provider yourself, from the Providers page
+
+You asked for this: a provider you add yourself, without waiting for the app to learn it. There is
+now a **+ Add a provider** button on the Providers page. Give it a name, an id, a base URL and the
+kind of API it speaks, and it is saved and offered like any other provider.
+
+**The reason this was not already possible is dull but worth one line:** the file behind it,
+`providers.local.json`, has been read by the gateway for a long time — but nothing could *write* it,
+so adding a provider meant finding a file in Application Support and getting its format exactly
+right by hand. That is now a form.
+
+**Two things it tells you rather than leaving you to find out:**
+
+- **Restart the gateway after adding one.** Providers are read when the gateway starts, so a new one
+  does not appear until then. The page says so in the message, not in a footnote.
+- **If something you added is not loading, the page says why.** An entry with a kind the gateway
+  cannot run is skipped — and until now it was skipped *silently*, which reads as "my file didn't
+  load" rather than "nothing can run that kind". The form refuses it up front, naming the kinds that
+  do work, and anything already in the file that will not load is listed with its reason.
+
+Existing providers are untouched, and one you added can be removed again.
+
+### OmniRoute is a provider now
+
+Your local OmniRoute, on this Mac. It fans out across your subscription, API and free tiers behind
+one endpoint, so everything you have wired into it — including the coding plans you cannot call
+directly — is reachable from Story Studio through the gateway.
+
+One thing to know: **OmniRoute lets you chat without a key, but listing models needs one.** The
+gateway discovers models by listing them, so make a key at
+`http://127.0.0.1:20128/dashboard/api-keys` and paste it in the Providers tab. Then restart the
+gateway.
+
 ## 0.2.72 — 2026-09-29
 
 ### The Providers page is split into tabs
