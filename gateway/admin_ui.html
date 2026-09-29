@@ -484,6 +484,37 @@
     <div id="measured"></div>
     </div><!-- /provider-pane-measured -->
 
+    <div class="pane" id="provider-pane-pools" style="display:none">
+    <h2 style="margin:18px 0 4px">Model pools</h2>
+    <p class="hint" style="margin:0 0 12px">
+      <b>One name for several models, tried in order.</b> A caller saves a single id and the
+      gateway walks the list until one answers — so a spent free lane, a retired model or a
+      provider refusing one account costs a retry instead of the job. A member is written as
+      this gateway's own id (<code>provider::model</code>), never a vendor's, so a pool cannot
+      name a model this gateway is unable to reach. Order is the policy: the first member is
+      tried first. Only a <b>400 the provider says is about the request itself</b> stops the
+      walk — every other failure moves on. Edits take effect at once; nothing here needs a
+      restart.
+    </p>
+    <div class="card">
+      <div class="row" style="gap:8px;flex-wrap:wrap;align-items:flex-end">
+        <label style="flex:0 0 190px">Name<br>
+          <input id="pool-name" placeholder="free-all" style="width:100%"></label>
+        <label style="flex:0 0 220px">Shown as<br>
+          <input id="pool-display" placeholder="Free — every lane" style="width:100%"></label>
+        <button class="primary" onclick="addPool(this)">Add pool</button>
+      </div>
+      <label style="display:block;margin-top:10px">Members, one per line, first tried first<br>
+        <textarea id="pool-members" rows="5" style="width:100%;font-family:ui-monospace,Menlo,monospace"
+          placeholder="google-ai-free::gemini-3.7-flash&#10;openrouter-main::some/model:free"></textarea></label>
+      <div class="hint" style="margin-top:6px">
+        The list is checked when you add it. A member that does not resolve is shown but marked —
+        "this names a model you have since disabled" is worth seeing before a job finds out.
+      </div>
+    </div>
+    <div id="pools"></div>
+    </div><!-- /provider-pane-pools -->
+
     <div class="pane" id="provider-pane-list" style="display:none">
     <h2 style="margin:18px 0 4px">Where work can run</h2>
     <div id="local-note" class="hint" style="margin:10px 0 0"></div>
@@ -2092,6 +2123,7 @@ const PROVIDER_TABS = [
   { key: 'capacity', title: 'Concurrency', hint: 'How much work runs at once, per lane' },
   { key: 'queue', title: 'Queue', hint: 'What is waiting, and what is holding each lane' },
   { key: 'measured', title: 'Measured', hint: 'What each model has actually carried' },
+  { key: 'pools', title: 'Pools', hint: 'One name for several models, tried in order' },
 ];
 let providerTab = 'list';
 
@@ -2117,6 +2149,76 @@ function selectProviderTab(key) {
     if (pane) pane.style.display = tab.key === key ? '' : 'none';
   }
   renderProviderTabs();
+  loadPools();
+}
+
+// ---------------------------------------------------------------------------
+// Pools -- one name for several models, tried in order.
+//
+// The pane shows each member's resolution rather than only the pool. A pool is a *list of
+// promises*, and the failure that costs an afternoon is a member that stopped resolving weeks
+// ago: the pool still works, just less often than its list suggests, and nothing said so.
+async function loadPools() {
+  const host = document.getElementById('pools');
+  if (!host) return;
+  let data;
+  try { data = await api('/pools'); }
+  catch (e) { host.innerHTML = `<div class="msg bad">${esc(e.message)}</div>`; return; }
+  const pools = data.pools || [];
+  if (!pools.length) {
+    host.innerHTML = `<p class="hint" style="margin-top:14px">No pools yet. A pool is worth
+      making when one lane can run out — free tiers especially — and the job matters more than
+      which model writes it.</p>`;
+    return;
+  }
+  host.innerHTML = pools.map(pool => `
+    <div class="card" style="margin-top:12px">
+      <div class="row" style="justify-content:space-between;align-items:baseline;gap:10px">
+        <div>
+          <b>${esc(pool.display_name)}</b>
+          <code style="margin-left:8px">pool::${esc(pool.name)}</code>
+        </div>
+        <div class="row" style="gap:6px">
+          <span class="hint">${pool.resolvable_count}/${pool.members.length} resolve</span>
+          <button onclick="removePool('${esc(pool.name)}', this)">Remove</button>
+        </div>
+      </div>
+      ${pool.description ? `<div class="hint" style="margin-top:4px">${esc(pool.description)}</div>` : ''}
+      <ol style="margin:8px 0 0 18px;padding:0">
+        ${pool.members_detail.map(m => `<li style="margin:3px 0">
+          <code>${esc(m.id)}</code>
+          ${m.resolves
+            ? `<span class="hint">— ${esc(m.provider_name)}</span>`
+            : `<span class="msg bad" style="display:inline;padding:1px 6px">does not resolve</span>`}
+        </li>`).join('')}
+      </ol>
+    </div>`).join('');
+}
+
+async function addPool(btn) {
+  const name = document.getElementById('pool-name').value.trim();
+  const members = document.getElementById('pool-members').value
+    .split('\n').map(m => m.trim()).filter(Boolean);
+  if (!name || !members.length) { alert('A pool needs a name and at least one member.'); return; }
+  btn.disabled = true; btn.textContent = 'Adding…';
+  try {
+    await api('/pools', { method: 'POST', body: {
+      name, members,
+      display_name: document.getElementById('pool-display').value.trim(),
+    }});
+    document.getElementById('pool-name').value = '';
+    document.getElementById('pool-display').value = '';
+    document.getElementById('pool-members').value = '';
+    await loadPools();
+  } catch (e) { alert(e.message); }
+  finally { btn.disabled = false; btn.textContent = 'Add pool'; }
+}
+
+async function removePool(name, btn) {
+  if (!confirm(`Remove the pool "${name}"? The models in it are untouched.`)) return;
+  btn.disabled = true;
+  try { await api(`/pools/${encodeURIComponent(name)}`, { method: 'DELETE' }); await loadPools(); }
+  catch (e) { alert(e.message); btn.disabled = false; }
 }
 
 async function refreshAll(btn) {

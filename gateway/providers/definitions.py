@@ -46,6 +46,12 @@ KIND_STUDIO_HUB = "studio_hub"
 #: xAI is OpenAI-compatible for chat, but its image and video APIs are its own
 #: shape (no `size`, and video is deferred), so it needs a dedicated adapter.
 KIND_XAI = "xai"
+#: A pool is not a vendor — it is a list of *this gateway's own* model ids, tried
+#: in order until one answers. It has its own kind because its adapter's job is
+#: dispatch rather than HTTP: it resolves each member through the catalogue and
+#: hands the request to whichever adapter that member belongs to, so a pool can
+#: mix vendors freely and no member needs to know it is in one.
+KIND_POOL = "pool"
 
 #: Kinds that actually have a generation adapter.
 #:
@@ -69,6 +75,7 @@ IMPLEMENTED_KINDS: frozenset[str] = frozenset(
         KIND_MINIMAX,
         KIND_ELEVENLABS,
         KIND_XAI,
+        KIND_POOL,
     }
 )
 

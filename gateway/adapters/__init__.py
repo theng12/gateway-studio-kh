@@ -31,12 +31,14 @@ from .fish import FishBackend
 from .kie import KieBackend
 from .minimax import MiniMaxBackend
 from .openai_compat import OpenAICompatibleBackend
+from .pool import PoolBackend
 from .studio_hub import StudioHubBackend
 from .google import generate_music
 from .xai import XaiBackend
 
 from ..providers.definitions import (
     IMPLEMENTED_KINDS,
+    KIND_POOL,
     KIND_ANTHROPIC,
     KIND_BFL,
     KIND_ELEVENLABS,
@@ -113,6 +115,7 @@ _MINIMAX = MiniMaxBackend()
 _ELEVENLABS = ElevenLabsBackend()
 _STUDIO_HUB = StudioHubBackend()
 _XAI = XaiBackend()
+_POOL = PoolBackend()
 
 _BY_KIND: dict[str, Backend] = {
     KIND_OPENAI_COMPATIBLE: _OPENAI_COMPATIBLE,
@@ -126,6 +129,7 @@ _BY_KIND: dict[str, Backend] = {
     KIND_ELEVENLABS: _ELEVENLABS,
     KIND_STUDIO_HUB: _STUDIO_HUB,
     KIND_XAI: _XAI,
+    KIND_POOL: _POOL,
 }
 
 
@@ -183,6 +187,10 @@ _MODALITIES_BY_KIND: dict[str, frozenset[str]] = {
     KIND_STUDIO_HUB: frozenset({"chat", "image", "tts", "music", "transcription", "video"}),
     # Chat is delegated to the OpenAI shim; image and video are native.
     KIND_XAI: frozenset({"chat", "image", "video"}),
+    # A pool is chat only. Its members are chat models by construction, and a
+    # pool that offered another modality would be offering a route that tries
+    # chat models for an image request.
+    KIND_POOL: frozenset({"chat"}),
 }
 
 assert set(_MODALITIES_BY_KIND) == set(_BY_KIND), (
@@ -190,6 +198,19 @@ assert set(_MODALITIES_BY_KIND) == set(_BY_KIND), (
     f"missing: {sorted(set(_BY_KIND) - set(_MODALITIES_BY_KIND))}, "
     f"stale: {sorted(set(_MODALITIES_BY_KIND) - set(_BY_KIND))}"
 )
+
+
+def _resolve_member(modality: str, compound: str):
+    """Resolve one pool member to (definition, model), or (None, None).
+
+    Lazily imported: `catalog` imports this module to decide what may be
+    published, so a module-level edge back would be a cycle. The lookup is the
+    catalogue's own, so a member the owner has since disabled resolves to nothing
+    here for exactly the reason it would be refused on its own.
+    """
+    from .. import catalog
+
+    return catalog.resolve(modality, compound)
 
 
 def serves(definition: ProviderDefinition, modality: str) -> bool:
@@ -246,3 +267,7 @@ __all__ = [
     "serves",
     "support_status",
 ]
+# The pool adapter dispatches instead of speaking HTTP, so it needs the two
+# functions this module owns -- the catalogue's resolver and this module's own
+# `adapter_for`. Attached here, once both exist.
+_POOL.attach(_resolve_member, adapter_for)

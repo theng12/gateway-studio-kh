@@ -14,6 +14,38 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.74 — 2026-09-29
+
+### Pools — one name for several models, tried in order
+
+A model pool is a **list of this gateway's own models under a single name**. Story Studio saves
+one id (`pool::free-all`) and the gateway walks the list until one answers, so a spent free lane,
+a retired model, or a provider refusing one account costs a *retry* instead of the job.
+
+The order is the policy: the first member is tried first.
+
+**Only a 400 the provider says is about the request itself stops the walk.** Every other failure
+moves on — 401, 402, 403, 404, 429, 5xx, a timeout, a connection error, or a 400 the adapter
+marked retryable. The asymmetry is deliberate: advancing when we should have stopped costs a few
+round trips and the caller still gets the same error, while stopping when we should have advanced
+costs the job. Those provider-side states are exactly what a pool exists to walk past.
+
+Three things that make it honest rather than merely convenient:
+
+- **A member is a gateway id** (`provider::model`), never a vendor's, so a pool cannot name a
+  model this gateway is unable to reach.
+- **Every member says whether it still resolves.** A pool is a list of promises, and the failure
+  that costs an afternoon is a member disabled weeks ago: the pool still works, just less often
+  than its list suggests. The Pools tab shows each member and marks the stale ones.
+- **Which member answered, and what the others said, is recorded on the result.** A pool that
+  works less often than its list suggests would otherwise be unreadable.
+
+Pools are edited live — nothing here needs a restart — and the members are resolved through the
+same catalogue everything else uses, so a member you switch off is skipped for exactly the reason
+it would be refused on its own.
+
+**Providers page → Pools** to make one, or `POST /admin/api/pools`.
+
 ## 0.2.73 — 2026-09-29
 
 ### Add a provider yourself, from the Providers page

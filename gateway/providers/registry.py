@@ -118,17 +118,43 @@ def _fleet_definitions() -> list[ProviderDefinition]:
     return list(_fleet_definitions_by_id().values())
 
 
+def _pool_definition() -> ProviderDefinition | None:
+    """The synthetic provider pools are published under, or None when there are none.
+
+    Read through `pools.definition()`, which returns None for an empty file, so a
+    gateway with no pools has no `pool` provider at all rather than an empty one
+    sitting in the console.
+    """
+    from .. import pools
+
+    return pools.definition()
+
+
+def _lookup(provider_id: str) -> ProviderDefinition | None:
+    """Resolve an id across every source of providers.
+
+    One function for all three lookups below. They were separate lambdas naming
+    only the fleet, which is exactly how the pool provider would have ended up
+    resolvable by the catalogue and invisible to the credential store.
+    """
+    found = PROVIDERS_BY_ID.get(provider_id) or _fleet_definitions_by_id().get(provider_id)
+    if found is not None:
+        return found
+    pool = _pool_definition()
+    return pool if pool is not None and pool.id == provider_id else None
+
+
 class ProviderRegistry:
     def __init__(self) -> None:
         # The store resolves ids through the registry, so a location added on
         # the Fleet page can hold a token like any other provider. The closure is
         # lazy: it runs per call, long after __init__ has finished.
         self.credentials = CredentialStore(
-            definition_lookup=lambda provider_id: _fleet_definitions_by_id().get(provider_id)
+            definition_lookup=_lookup
         )
         self.models = ModelInventory(
             self.credentials,
-            definition_lookup=lambda provider_id: _fleet_definitions_by_id().get(provider_id),
+            definition_lookup=_lookup,
             definitions_lookup=self.definitions,
         )
 
@@ -142,10 +168,11 @@ class ProviderRegistry:
         already takes a per-provider base URL and token. Without this the fleet
         page could show a site that could never actually be used.
         """
-        return list(PROVIDERS_BY_ID.values()) + _fleet_definitions()
+        pool = _pool_definition()
+        return list(PROVIDERS_BY_ID.values()) + _fleet_definitions() + ([pool] if pool else [])
 
     def definition(self, provider_id: str) -> ProviderDefinition | None:
-        return PROVIDERS_BY_ID.get(provider_id) or _fleet_definitions_by_id().get(provider_id)
+        return _lookup(provider_id)
 
     def describe_all(self) -> list[dict[str, Any]]:
         output: list[dict[str, Any]] = []

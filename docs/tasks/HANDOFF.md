@@ -1,11 +1,44 @@
 # HANDOFF — gateway-kh
 
-**Read this first.** Written 2026-09-28 against **VERSION `0.2.73`**. The running build
+**Read this first.** Written 2026-09-29 against **VERSION `0.2.74`**. The running build
 stamp is on `/health` and in `/Applications/gateway-kh.app/Contents/Resources/gateway/BUILD`.
 If this file disagrees with the code, **the code wins — fix this file in the same change**.
 Every path below is inside the Git checkout `repository/` unless it says otherwise.
 `[MEASURED]` = observed in the session that wrote this; `[reason not recorded]` = the
 project does not say why, and nobody should guess.
+
+> **0.2.74 — pools: one name for several models, tried in order.**
+>
+> The owner, on why a second router sat in front of this gateway: *"do we really need omniroute for
+> these backend model? can't we just create one ourself from our own gateway and offer it?"* The
+> answer was mostly yes, and the case for it was measured rather than argued: this gateway's
+> discovery is **live** and OmniRoute's is a **shipped snapshot dated 2026-08-18**, so OmniRoute was
+> still offering models Google had retired and refusing ones Google had shipped — while this gateway
+> had all of them (`gemini-3.5/3.6/3.7/3.8-flash` were enabled here and unknown there).
+>
+> A pool is a **provider with no credential** whose models are its pools. That is the whole trick:
+> `is_configured()` is true for a provider with no required fields and `models_for()` already reads
+> `static_models`, so pools reach the catalogue, the enable toggle and `/v1/models` through code that
+> already existed — `catalog.py` needed **no change at all**. The trying-in-order lives in
+> `adapters/pool.py`, so the chat route needed no change either.
+>
+> **The rule is asymmetric on purpose: only an un-retryable `400` stops the walk.** Every other
+> failure — 401, 402, 403, 404, 429, 5xx, timeout, connection error, retryable 400 — advances.
+> Advancing when we should have stopped costs a few round-trips and the caller still gets the same
+> error; stopping when we should have advanced costs the job. All four provider-side status families
+> are asserted in `tests/test_pools.py`, and the stop rule is proved by a mutant (remove the rule and
+> the test fails, which it did).
+>
+> Members are **gateway ids** (`provider::model`), resolved through `catalog.resolve` — so a member
+> the owner has since disabled is skipped for exactly the reason it would be refused on its own, and
+> `pool::pool-name` nesting is refused when written rather than detected per request.
+>
+> `GET/POST/PATCH/DELETE /admin/api/pools`, plus a **Pools** tab on the Providers page that lists
+> every member with whether it still resolves. **Edits are live — no restart**, and the route says
+> `restart_required: false` rather than implying one out of symmetry: a pool is read from its file on
+> every catalogue build, unlike a custom provider which is read at import.
+>
+> `tests/test_pools.py` (30) and `tests/test_pools_view.js` (8). Gate: **577 e2e checks**, all passing.
 
 > **0.2.73 — providers the owner adds himself, and OmniRoute.**
 >

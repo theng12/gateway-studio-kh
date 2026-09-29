@@ -278,6 +278,87 @@ def remove_custom_provider(provider_id: str) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 # Providers
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Model pools
+# ---------------------------------------------------------------------------
+# A pool is one name for several of this gateway's own models, tried in order.
+# It is what a caller saves when it wants "whichever free lane still works"
+# rather than one vendor.
+#
+# **Edits are live, and that is the point.** A custom provider is read when the
+# process starts, so adding one answers `restart_required: true`; a pool is read
+# from its file by `pools.definition()` on every catalogue build, so a pool the
+# owner just wrote is pickable without a restart. Answering "restart" here out of
+# symmetry would be false, and a control that appears to do nothing is the
+# failure this codebase keeps paying for.
+@router.get("/api/pools", dependencies=[Depends(require_admin)])
+def list_pools() -> dict[str, Any]:
+    """Every pool, with whether each member still resolves."""
+    from . import pools
+
+    return {
+        "pools": pools.describe_all(),
+        "provider_id": pools.POOL_PROVIDER_ID,
+        "path": str(pools.POOLS_PATH),
+        # What a caller sends back to use one.
+        "namespace": f"{pools.POOL_PROVIDER_ID}::",
+    }
+
+
+@router.post("/api/pools", dependencies=[Depends(require_admin)])
+def create_pool(body: dict[str, Any]) -> Any:
+    from . import pools
+
+    try:
+        pool = pools.create(
+            str(body.get("name") or ""),
+            [str(m) for m in (body.get("members") or [])],
+            display_name=str(body.get("display_name") or ""),
+            description=str(body.get("description") or ""),
+        )
+    except ValueError as exc:
+        raise AdminError(422, str(exc)) from exc
+    return {
+        "created": pool["name"],
+        "pool": pools.describe(pool["name"]),
+        "restart_required": False,
+    }
+
+
+@router.patch("/api/pools/{name}", dependencies=[Depends(require_admin)])
+def update_pool(name: str, body: dict[str, Any]) -> Any:
+    from . import pools
+
+    try:
+        pool = pools.update(
+            name,
+            members=[str(m) for m in body["members"]] if "members" in body else None,
+            display_name=str(body["display_name"]) if "display_name" in body else None,
+            description=str(body["description"]) if "description" in body else None,
+        )
+    except ValueError as exc:
+        raise AdminError(422, str(exc)) from exc
+    if pool is None:
+        raise AdminError(404, f"no pool named '{name}'")
+    return {
+        "updated": pool["name"],
+        "pool": pools.describe(pool["name"]),
+        "restart_required": False,
+    }
+
+
+@router.delete("/api/pools/{name}", dependencies=[Depends(require_admin)])
+def delete_pool(name: str) -> Any:
+    from . import pools
+
+    if not pools.remove(name):
+        raise AdminError(404, f"no pool named '{name}'")
+    return {"removed": name, "restart_required": False}
+
+
+# ---------------------------------------------------------------------------
+# Providers
+# ---------------------------------------------------------------------------
 @router.get("/api/providers", dependencies=[Depends(require_admin)])
 def list_providers(scope: str | None = None) -> dict[str, Any]:
     """Cloud APIs and local runners are different things and are listed separately.
