@@ -68,9 +68,15 @@ enum GatewayAPI {
 
     static func get(
         _ path: String,
+        timeout: TimeInterval = 15,
         completion: @escaping (Result<[String: Any], Error>) -> Void
     ) {
-        request("GET", path, completion: completion)
+        // `timeout` exists for the one read that is allowed to wait: the Fleet
+        // page's Refresh, which asks the gateway for a real fan-out across every
+        // location instead of the cached snapshot a plain read is served. 15 s is
+        // the right ceiling for a cache read and too short for a sweep, and the
+        // caller that forces says so.
+        request("GET", path, timeout: timeout, completion: completion)
     }
 
     static func post(
