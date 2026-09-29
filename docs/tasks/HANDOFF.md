@@ -1,12 +1,37 @@
 # HANDOFF — gateway-kh
 
-**Read this first.** Written 2026-09-28 against **VERSION `0.2.70`**. The running build
+**Read this first.** Written 2026-09-28 against **VERSION `0.2.71`**. The running build
 stamp is on `/health` and in `/Applications/gateway-kh.app/Contents/Resources/gateway/BUILD`.
 If this file disagrees with the code, **the code wins — fix this file in the same change**.
 Every path below is inside the Git checkout `repository/` unless it says otherwise.
 `[MEASURED]` = observed in the session that wrote this; `[reason not recorded]` = the
 project does not say why, and nobody should guess.
 
+> **0.2.71 — Ollama Cloud is a provider, and it needs no local install.** The owner went looking
+> for an API on ollama.com, found a download button, and asked whether running Ollama on his Mac was
+> the only way to reach the free cloud models. **It used to be; it is not any more.** Ollama's own
+> docs say it outright: *"No Ollama installation or local server is required."* `https://ollama.com/v1`
+> is an OpenAI-compatible endpoint reached with a key from `ollama.com/settings/keys`.
+>
+> `[MEASURED]` `GET https://ollama.com/v1/models` → **HTTP 200**, OpenAI-shaped, **no key needed to
+> list**, **17 models** (`glm-5.3`, `kimi-k3`, `gpt-oss:120b`, `minimax-m3`, `mistral-large-3:675b`,
+> `deepseek-v4-pro`, `nemotron-3-*`, …). With a key, `discovery.discover()` returns all 17; with none
+> it returns **0**, which is the correct gate — a provider whose models cannot run is not offered.
+>
+> **The whole change is data.** `KIND_OPENAI_COMPATIBLE` is already in `IMPLEMENTED_KINDS` and already
+> carries chat, so the entry is a `ProviderDefinition` reusing `DISCOVERY_OPENAI_MODELS` — the same
+> shape as the `openrouter-main` entry beside it. No adapter, no discovery strategy, no route.
+>
+> ⚠ **Free here is not unlimited, and the plan name should not be left to imply it.** Ollama's free
+> tier is *"starter usage credits"* over *"starter models"* with **one concurrent request**, then
+> pay-as-you-go — not a standing free allowance like the `google-ai-free` lane next door. Running
+> models on the owner's own hardware stays unlimited, which is the Studio Hub lane's job. Told to him
+> in those words rather than as "free models".
+>
+> **Not added, and deliberately:** a *local* Ollama provider (`http://localhost:11434/v1`, no key for
+> his own models). That is a second local runtime standing beside Studio Hub, which is a different
+> question from the one he asked, and it is his to decide — the cloud lane does not depend on it.
+>
 > **0.2.70 — the Models page can re-discover, and says how old its list is.** The owner, after
 > enabling an OpenRouter model that never reached the Chat picker: *"i just enabled it in model tab
 > but it's not refreshed or shown in the chat tab. do i have to click sth or restart the app? i

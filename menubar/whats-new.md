@@ -10,6 +10,46 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.71 — 2026-09-29
+
+### Ollama Cloud is a provider now
+
+**Open models served by Ollama, with no local install.** Ollama's website points you at a download,
+which makes it look like running their app on your Mac is the only way in — it is not any more.
+`ollama.com` has an ordinary API: make a key on their settings page, paste it into the Providers
+tab, and their cloud models appear in the catalogue like any other provider's.
+
+Worth knowing before you rely on it: Ollama's free tier is **starter credits** over a **starter set**
+of models with **one request at a time**, not a standing free allowance. Running models on your own
+Macs stays unlimited, which is what your Studio Hub machines are for. Treat this as one more lane to
+switch to when a free quota somewhere else runs out.
+
+## 0.2.70 — 2026-09-29
+
+### Refreshing the model list, and knowing how old it is
+
+The Models page now has a **Re-discover models** button, and it tells you **how old the list is**
+beside the model count.
+
+This came from a real puzzle: a model was switched on in the Models tab and then never appeared in
+the Chat tab. The missing piece was not the Chat tab — it was that this list is a **snapshot**, not
+a live view. A provider's catalogue is fetched once and cached until something asks for it again, and
+nothing does that on a timer or when the app starts. So a model the provider added since the last
+fetch is simply absent, and nothing on the page said its inventory could be days old. On this Mac it
+was **six days**.
+
+Two things now, both on the Models page:
+
+- **Re-discover models**, beside *Clear filters*. It does exactly what the Providers page's
+  *Refresh all models* does, because there was no reason for two meanings of "refresh".
+- **The inventory age**, beside the count. Past a day it is marked, because that is when a model can
+  be missing for a reason you cannot see. If no provider has reported a fetch time it says
+  **unknown** rather than showing nothing — unknown and current are different things.
+
+**Restarting the app was never the answer**, and it is worth saying plainly: a relaunch re-reads the
+same cached list. If a model you ticked is missing from the Chat tab and the inventory is recent,
+just click the Chat row again — that page re-reads when you open it.
+
 ## 0.2.69 — 2026-09-28
 
 ### The notes say which release each change arrived in

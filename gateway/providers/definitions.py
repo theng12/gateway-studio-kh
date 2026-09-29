@@ -489,6 +489,40 @@ PROVIDER_DEFINITIONS: tuple[ProviderDefinition, ...] = (
         docs_url="https://api-docs.deepseek.com",
         credential_fields=(_api_key("DEEPSEEK_API_KEY"),),
     ),
+    # **Ollama Cloud, and the one thing to know is that it needs no local install.**
+    #
+    # The owner went looking for an API on ollama.com, found a download button instead, and asked
+    # whether running Ollama on his Mac was the only way to reach the free cloud models. It used to
+    # be; it is not any more. `https://ollama.com/v1` is an OpenAI-compatible endpoint reached with
+    # an API key from ollama.com/settings/keys, and Ollama's own documentation says so in as many
+    # words: *"No Ollama installation or local server is required."* (The local server at
+    # `http://localhost:11434/v1` still works and still needs no key for models he runs himself —
+    # that is a different offer, and a second local runtime beside Studio Hub, so it is not this
+    # entry.)
+    #
+    # `KIND_OPENAI_COMPATIBLE` is already implemented and already carries chat, so this is **data,
+    # not code**: no adapter, no discovery strategy, no route. `GET https://ollama.com/v1/models`
+    # answers HTTP 200 with an OpenAI-shaped list and needs no key to list — measured 2026-09-29,
+    # 17 models — so `DISCOVERY_OPENAI_MODELS` reads it unchanged.
+    #
+    # **Free here does not mean unlimited, and the difference is worth stating rather than letting
+    # the plan name imply it.** Ollama's free tier is *"starter usage credits"* over *"starter
+    # models"* with **one concurrent request**, then pay-as-you-go — not a standing free quota like
+    # Google's free key next door. Running models on his own hardware stays unlimited, which is what
+    # the Studio Hub lane is for. So this is a useful third or fourth lane to swap to when a free
+    # quota elsewhere is spent, and the catalogue publishes its models only once a key is entered.
+    ProviderDefinition(
+        id="ollama-cloud",
+        display_name="Ollama Cloud",
+        category="language",
+        kind=KIND_OPENAI_COMPATIBLE,
+        base_url="https://ollama.com/v1",
+        modalities=("chat",),
+        discovery=DISCOVERY_OPENAI_MODELS,
+        description="Open models served by Ollama. No local install; free accounts get starter credits and a starter model set.",
+        docs_url="https://docs.ollama.com/api/openai-compatibility",
+        credential_fields=(_api_key("OLLAMA_API_KEY"),),
+    ),
     ProviderDefinition(
         id="anthropic-direct",
         display_name="Anthropic",
