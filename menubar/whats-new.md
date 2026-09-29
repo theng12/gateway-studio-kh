@@ -14,6 +14,38 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.75 — 2026-09-29
+
+### The Fleet page stops timing out when the fleet is busy
+
+**Measured, not guessed.** The snapshot cache lived for **5 s** while the background poller runs
+every **15 s** — so for two thirds of every cycle the cache was stale, and a read in that window did
+its own sweep of every controller. Ten Hub calls per location, one after another, each with a 6 s
+timeout: **22.7 s** for one snapshot, against the app's **15 s** request timeout.
+
+So the Fleet page appeared only when nothing was running — which is exactly when nobody is looking at
+it. *"This isn't showing. But when there's no job running, it did show."*
+
+Two changes, and the numbers now:
+
+- **The Fleet page read: 22.7 s before, 0.000 s now.** It no longer waits at all.
+- **A forced refresh: 22.7 s before, 8.3 s now.**
+
+- **A read that did not ask to be fresh never waits.** The poller owns freshness, exactly as its own
+  docstring always claimed; a stale read is served and refreshed behind it.
+- **The nine enrichment reads are fetched at once**, not in sequence. None needs another's answer, so
+  the cost is the slowest rather than the sum.
+- Concurrent readers share **one** sweep rather than starting one each, and the Refresh button is the
+  one path allowed to wait for a real fan-out.
+
+### A hold the Hub wrote can now be discarded
+
+`_named_attempt` — the reader behind **Discard** on an uncertain job — looked for
+`hub_batch_id` / `upstream_job_id`, while the Hub adapter writes `batch_id` / `item_index`. So the one
+route that clears a hold refused holds whose attempt was named perfectly well, answering
+`RECOVERY_CONTEXT_MISSING` with the batch sitting right there in the context. The reader now accepts
+every spelling its writers use.
+
 ## 0.2.74 — 2026-09-29
 
 ### Pools — one name for several models, tried in order

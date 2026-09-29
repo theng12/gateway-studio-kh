@@ -166,6 +166,46 @@ def _location_takes_customer_jobs(location_id: str) -> bool:
 #: with the timeout as its reason rather than silently omitted.
 _TIMEOUT = 6.0
 
+#: The best-effort reads, each with what an absent answer degrades to. **Fetched
+#: concurrently** -- see `_fetch_optional` for why that is not a micro-optimisation.
+_OPTIONAL_PROBES: tuple[tuple[str, object], ...] = (
+    ("/api/hub/fleet/nodes", {}),
+    ("/api/hub/jobs", {"batches": []}),
+    ("/api/hub/capabilities", {}),
+    ("/api/hub/stats", {}),
+    ("/api/hub/models", {}),
+    ("/api/hub/workers", {}),
+    ("/api/hub/model-packages", {}),
+    ("/api/hub/model-health", {}),
+    ("/api/hub/release", {}),
+)
+
+
+def _fetch_optional(client: "httpx.Client", base: str, token: str) -> dict:
+    """Every `_OPTIONAL_PROBES` path, in parallel, each defaulting on failure.
+
+    Sequentially these were the reason a busy Hub timed the page out. Every one
+    carries the full per-request timeout, and none needs another's answer, so the
+    cost should be the *slowest* rather than the sum. Measured across the owner's
+    six locations: one snapshot took 22.7 s, against the app's 15 s request
+    timeout -- so the page appeared only when the fleet was idle, which is exactly
+    when nobody is looking at it.
+    """
+    out: dict = {}
+    with ThreadPoolExecutor(max_workers=len(_OPTIONAL_PROBES)) as pool:
+        pending = {
+            pool.submit(_fetch, client, base, token, path): (path, empty)
+            for path, empty in _OPTIONAL_PROBES
+        }
+        # `.result()` in submission order collects rather than serialises: every
+        # future is already running by the time the first is awaited.
+        for future, (path, empty) in pending.items():
+            try:
+                out[path] = future.result()
+            except Exception:  # noqa: BLE001 - "best effort" is the contract
+                out[path] = empty
+    return out
+
 
 def _token_for(controller_id: str) -> str:
     """The controller's Hub service token, from the one credential store.
@@ -1011,81 +1051,52 @@ def _probe(base: str, token: str, *, timeout: float = _TIMEOUT) -> dict:
     try:
         with httpx.Client(timeout=timeout) as client:
             overview = _fetch(client, base, token, "/api/hub/fleet/overview")
-            try:
-                # The node roster is the *second* thing to go wrong on a Hub that
-                # is up: measured live, a Hub mid-rebuild answered
-                # `fleet/overview`, `capabilities`, `stats` and `settings` with 200
-                # while `fleet/nodes` alone returned 500. Requiring it made that
-                # location read as entirely offline — "HTTP 500 from the
-                # controller" — which is wrong and, worse, hides six working
-                # machines behind one broken route.
-                nodes = _fetch(client, base, token, "/api/hub/fleet/nodes")
-            except httpx.HTTPError:
-                nodes = {}
-            try:
-                jobs = _fetch(client, base, token, "/api/hub/jobs")
-            except httpx.HTTPError:
-                # Jobs are the least important part of "is this location alive";
-                # a controller that reports machines but not jobs is still up.
-                jobs = {"batches": []}
-            try:
-                # The authoritative identity: `capabilities.controller` carries
-                # role, Hub version and readiness in one object, plus the stable
-                # `site_id`.
-                #
-                # This replaced a derivation assembled from two other endpoints —
-                # `fleet/nodes.role` and a machine's `version` — and the Hub
-                # session found that `fleet/nodes.role` was returning a constant
-                # "controller" for a standalone Mac. Reading a field that was
-                # silently wrong is exactly how a Fleet page shows the wrong role.
-                capabilities = _fetch(client, base, token, "/api/hub/capabilities")
-            except httpx.HTTPError:
-                capabilities = {}
-            try:
-                # The Hub's own fleet analytics. This is where per-machine state
-                # (working / ready / idle / offline) and per-machine job counts
-                # come from; `fleet/overview` alone cannot answer "how many
-                # machines are online, and which one did the work".
-                stats = _fetch(client, base, token, "/api/hub/stats")
-            except httpx.HTTPError:
-                stats = {}
-            # The per-model/per-worker supply the Fleet page's Models tab reads.
-            # Each is best-effort for the same reason `fleet/nodes` is: a Hub
-            # mid-rebuild has answered some of these routes 500 while the rest
-            # answered 200, and one broken route must not make the whole location
-            # read as offline. A failure degrades to an empty list, never to an
-            # unreachable controller.
-            try:
-                models_payload = _fetch(client, base, token, "/api/hub/models")
-            except httpx.HTTPError:
-                models_payload = {}
-            try:
-                workers_payload = _fetch(client, base, token, "/api/hub/workers")
-            except httpx.HTTPError:
-                workers_payload = {}
-            try:
-                # `dispatch_state` is the readiness gate the gateway's model
-                # withholding reads, joined by the `package_id` a model's `cache`
-                # names.
-                packages_payload = _fetch(client, base, token, "/api/hub/model-packages")
-            except httpx.HTTPError:
-                packages_payload = {}
-            try:
-                # The Hub's own per-(machine, model) verdict and reason. New in
-                # 0.6.48 and on the Fleet allowlist from then; a 403 from an older
-                # Hub is one more empty list, not a failure.
-                health_payload = _fetch(client, base, token, "/api/hub/model-health")
-            except httpx.HTTPError:
-                health_payload = {}
-            try:
-                # **What this controller actually holds.** The Fleet page reports
-                # the release read back from the controller, never the push it was
-                # sent, so this is fetched with the rest of the row. Absence is
-                # `null`: a Hub with no release route (an agent, or an older
-                # controller) answered nothing, which is not an empty release.
-                release_payload = _fetch(client, base, token, "/api/hub/release")
-            except httpx.HTTPError:
-                release_payload = {}
+
+            # **The nine enrichment reads, all at once.** Nothing below needs
+            # anything else below, so fetching them in sequence -- which is what
+            # this did -- made each pay the full per-request timeout one after the
+            # other. On a Hub that is up but busy rendering, that is ~22 s for one
+            # snapshot against the app's 15 s timeout, so the Fleet page loaded
+            # only when the fleet was idle.
+            optional = _fetch_optional(client, base, token)
+            nodes = optional["/api/hub/fleet/nodes"]
+            jobs = optional["/api/hub/jobs"]
+            capabilities = optional["/api/hub/capabilities"]
+            stats = optional["/api/hub/stats"]
+            models_payload = optional["/api/hub/models"]
+            workers_payload = optional["/api/hub/workers"]
+            packages_payload = optional["/api/hub/model-packages"]
+            health_payload = optional["/api/hub/model-health"]
+            release_payload = optional["/api/hub/release"]
+
+            # Why each of the nine is best-effort rather than required, kept
+            # beside the read it explains:
+            #
+            # * `fleet/nodes` -- the *second* thing to go wrong on a Hub that is
+            #   up: measured live, a Hub mid-rebuild answered `fleet/overview`,
+            #   `capabilities`, `stats` and `settings` with 200 while
+            #   `fleet/nodes` alone returned 500. Requiring it made that location
+            #   read as entirely offline, hiding six working machines behind one
+            #   broken route.
+            # * `jobs` -- the least important part of "is this location alive"; a
+            #   controller that reports machines but not jobs is still up.
+            # * `capabilities` -- the authoritative identity: `controller` carries
+            #   role, Hub version and readiness, plus the stable `site_id`. This
+            #   replaced a derivation from `fleet/nodes.role`, which was returning
+            #   a constant "controller" for a standalone Mac.
+            # * `stats` -- the Hub's own fleet analytics, and the only place
+            #   per-machine state (working / ready / idle / offline) comes from.
+            # * `models`, `workers`, `model-packages` -- the per-model/per-worker
+            #   supply the Models tab reads, and the `dispatch_state` readiness
+            #   gate the gateway's model withholding reads.
+            # * `model-health` -- the Hub's per-(machine, model) verdict. New in
+            #   0.6.48; a 403 from an older Hub is one more empty list.
+            # * `release` -- **what this controller actually holds**, read back
+            #   rather than the push it was sent. Absence is `null`: a Hub with no
+            #   release route answered nothing, which is not an empty release.
+            #
+            # Each degrades to its own empty value in `_OPTIONAL_PROBES`; one
+            # broken route must never make a whole location read as offline.
     except httpx.HTTPStatusError as exc:
         location["error"] = (
             "Rejected the Hub token (HTTP %d)." % exc.response.status_code
@@ -1680,6 +1691,27 @@ _MAX_PROBES = 24
 _CACHE_TTL = 5.0
 _cache: dict = {"at": 0.0, "value": None}
 _cache_lock = threading.Lock()
+
+#: **One fan-out at a time, process-wide.** A stampede of readers arriving on a
+#: stale cache used to start a fan-out each, so N readers meant N sweeps of every
+#: controller — and the slowest site's timeout, paid N times over. The poller and
+#: any revalidation now share this lock.
+#: **Re-entrant, and that is load-bearing.** A refresh reaches
+#: `_attach_admission`, which imports `runtime` to find the live worker -- a lazy
+#: import that exists to break a cycle. That import constructs the `Catalog`,
+#: whose `rebuild()` asks `usable_location_ids()` and therefore calls back into
+#: `snapshot()`. A plain `Lock` deadlocked the entire read on the first refresh
+#: after boot: the outer call held it and the inner one waited for a lock its own
+#: thread already owned. Measured with `faulthandler`, stuck in `snapshot` ->
+#: `usable_location_ids` -> `catalog.rebuild` -> `_attach_admission` -> ... ->
+#: `snapshot`. An `RLock` lets the same thread through -- which is what happened
+#: before this lock existed -- while still serialising *other* threads, and that
+#: stampede is the thing being prevented.
+_refresh_lock = threading.RLock()
+
+#: Set while a background revalidation is in flight, so a stale read starts one
+#: rather than one per reader.
+_revalidating = threading.Event()
 
 
 def invalidate() -> None:
@@ -2335,12 +2367,49 @@ def snapshot(force: bool = False, *, allow_stale: bool = False) -> dict:
     reachability answer up to one refresher interval old is worth far more there
     than a catalogue read that stalls for seconds.
     """
+    # **Stale-while-revalidate, because the alternative is a page that times out.**
+    #
+    # The refresher already owns freshness -- that is what `start_refresher` says
+    # it is for: *"the request path only ever reads a value that is already
+    # there"*. It did not hold, and the arithmetic is why: `_CACHE_TTL` was 5 s
+    # while the poller runs every 15 s, so the cache was stale two thirds of the
+    # time and the request path did the fan-out itself. Measured on the owner's
+    # fleet: **22.7 s** cold, against the app's **15 s** timeout. The Fleet page
+    # could only load when nothing was running — which is exactly when nobody
+    # needs it (`"this isn't showing. but when there's no job running. it did
+    # show."`).
+    #
+    # A caller that did not say `force` gets the cached value and a background
+    # refresh, so the read is O(1) whatever the fleet is doing. Only a cold cache
+    # (nothing to serve at all) waits, and the refresher's first pass happens at
+    # startup rather than after one interval, so that window is the boot only.
     now = time.time()
     with _cache_lock:
         cached = _cache["value"]
-        if not force and cached and (allow_stale or (now - _cache["at"]) < _CACHE_TTL):
+        age = now - _cache["at"]
+    if not force and cached is not None:
+        if allow_stale or age < _CACHE_TTL:
             return cached
+        _revalidate_in_background()
+        return cached
 
+    # `force`, or nothing cached yet. **Serialised, and deduplicated even for
+    # `force`**: `at > now` means a refresh finished *after this caller asked*,
+    # so its answer is newer than the question and starting a second sweep would
+    # only make the fleet do the same work twice. Eight concurrent Refresh
+    # presses are one fan-out, not eight — measured at eight before this check
+    # covered the forced path.
+    with _refresh_lock:
+        with _cache_lock:
+            cached = _cache["value"]
+            at = _cache["at"]
+        if cached is not None and at > now:
+            return cached
+        return _refresh()
+
+
+def _refresh() -> dict:
+    """One fan-out over every location, cached on the way out."""
     rows = locations()
     value = {
         "locations": rows,
@@ -2354,6 +2423,29 @@ def snapshot(force: bool = False, *, allow_stale: bool = False) -> dict:
         _cache["at"] = time.time()
         _cache["value"] = value
     return value
+
+
+def _revalidate_in_background() -> None:
+    """Refresh a stale cache without making a reader wait for it.
+
+    Started by a read, not by a timer, so a fleet nobody is looking at costs
+    nothing -- and at most one runs, so attention on the page cannot turn into a
+    stampede on the controllers.
+    """
+    if _revalidating.is_set():
+        return
+    _revalidating.set()
+
+    def run() -> None:
+        try:
+            with _refresh_lock:
+                _refresh()
+        except Exception:  # noqa: BLE001 - a reader must never be failed by this
+            pass
+        finally:
+            _revalidating.clear()
+
+    threading.Thread(target=run, name="fleet-revalidate", daemon=True).start()
 
 
 # --------------------------------------------------------------------------

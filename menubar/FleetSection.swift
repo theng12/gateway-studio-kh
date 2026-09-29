@@ -250,7 +250,7 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
         guard !providerIds.isEmpty else {
             failedRefreshProviderIDs = []
             locationsTab.setRetryFailedVisible(false)
-            reload()
+            reload(force: true)
             return
         }
         refreshProviders(providerIds)
@@ -260,8 +260,13 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
         reload(completion: nil)
     }
 
-    private func reload(completion: (() -> Void)?) {
-        GatewayAPI.get("/admin/api/fleet") { [weak self] result in
+    /// `force` is the Refresh button. A plain `reload()` reads the gateway's
+    /// cached snapshot, which is what makes polling a dashboard cheap; forcing
+    /// is the one path that waits for a real fan-out, so it is given a longer
+    /// timeout than the 15 s a cached read needs.
+    private func reload(force: Bool = false, completion: (() -> Void)? = nil) {
+        let path = force ? "/admin/api/fleet?force=1" : "/admin/api/fleet"
+        GatewayAPI.get(path, timeout: force ? 45 : 15) { [weak self] result in
             guard let self else { return }
             switch result {
             case .failure(let error):
@@ -317,7 +322,10 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
                 }
                 finished += 1
                 guard finished == providerIDs.count else { return }
-                self.reload { [weak self] in
+                // Forced: the owner pressed Refresh, so the page must show what
+                // the fleet says *now*, not the cached snapshot the poller last
+                // wrote. This is the one read that waits for a fan-out.
+                self.reload(force: true) { [weak self] in
                     self?.reportRefresh(
                         total: providerIDs.count,
                         failures: failures,

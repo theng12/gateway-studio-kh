@@ -1,11 +1,38 @@
 # HANDOFF — gateway-kh
 
-**Read this first.** Written 2026-09-29 against **VERSION `0.2.74`**. The running build
+**Read this first.** Written 2026-09-29 against **VERSION `0.2.75`**. The running build
 stamp is on `/health` and in `/Applications/gateway-kh.app/Contents/Resources/gateway/BUILD`.
 If this file disagrees with the code, **the code wins — fix this file in the same change**.
 Every path below is inside the Git checkout `repository/` unless it says otherwise.
 `[MEASURED]` = observed in the session that wrote this; `[reason not recorded]` = the
 project does not say why, and nobody should guess.
+
+> **0.2.75 — the Fleet page stops timing out, and a hold becomes discardable.**
+>
+> `_CACHE_TTL` was 5 s while `start_refresher` runs every 15 s, so the cache was stale two thirds of
+> the time and the request path did the fan-out itself — the opposite of what the refresher's own
+> docstring promises (*"the request path only ever reads a value that is already there"*). With ten
+> sequential Hub calls per location at a 6 s timeout, one snapshot measured **22.7 s** against the
+> app's **15 s** timeout. The owner saw it as *"this isn't showing. but when there's no job running.
+> it did show."*
+>
+> Now: **stale-while-revalidate** on the plain read (0.000 s), the nine enrichment reads fetched
+> **concurrently** (forced refresh 22.7 s → **8.3 s**), and **one** sweep shared by concurrent
+> readers. `force=1` is the Refresh button, the only path that waits.
+>
+> **The lock is an `RLock`, and that is load-bearing.** A refresh reaches `_attach_admission`, which
+> lazily imports `runtime` to find the live worker; that import builds the `Catalog`, whose
+> `rebuild()` calls `usable_location_ids()` and therefore calls back into `snapshot()`. A plain
+> `Lock` deadlocked the whole read on the first refresh after boot — caught with `faulthandler`, stuck
+> in `snapshot` -> `usable_location_ids` -> `catalog.rebuild` -> `_attach_admission` -> `snapshot`.
+>
+> `_named_attempt` now reads `batch_id` / `item_index` as well as the restart's spelling. The Hub
+> adapter writes the former, so **Discard** on an uncertain job answered `RECOVERY_CONTEXT_MISSING`
+> for a hold that named its batch perfectly well; `worker.py` already read `batch_id`, so the gap was
+> in this reader alone.
+>
+> `tests/test_fleet_snapshot_freshness.py` (7) and a case in `tests/test_job_recovery.py`. Gate:
+> **577 e2e checks**.
 
 > **0.2.74 — pools: one name for several models, tried in order.**
 >

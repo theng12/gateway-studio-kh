@@ -271,11 +271,29 @@ def _named_attempt(job: dict[str, Any]) -> tuple[str, int] | None:
     context = job.get("recovery_context")
     if not isinstance(context, dict) or not context:
         return None
-    batch = str(context.get("hub_batch_id") or context.get("upstream_job_id") or "")
+    # **Every spelling the writers actually use.** `studio_hub.py` records
+    # `batch_id` / `item_index`; a restart reconstructs `hub_batch_id` /
+    # `hub_item_index`. Reading only the `hub_*`/`upstream_*` pair meant the one
+    # route that clears a hold refused a hold whose attempt was named perfectly
+    # well, with `RECOVERY_CONTEXT_MISSING` — measured on a real uncertain
+    # submission whose context read `{"batch_id": "9a9e74a3a5", "item_index": 0}`
+    # while this function looked for keys nothing had written. `worker.py` reads
+    # `batch_id` too, so the omission was here alone.
+    batch = str(
+        context.get("hub_batch_id")
+        or context.get("upstream_job_id")
+        or context.get("batch_id")
+        or ""
+    )
     if not batch:
         return None
     try:
-        index = int(context.get("hub_item_index") or context.get("upstream_item_index") or 0)
+        index = int(
+            context.get("hub_item_index")
+            or context.get("upstream_item_index")
+            or context.get("item_index")
+            or 0
+        )
     except (TypeError, ValueError):
         index = 0
     return batch, index

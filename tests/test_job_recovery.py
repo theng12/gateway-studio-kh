@@ -191,6 +191,38 @@ class JobRecoveryTests(unittest.TestCase):
         finally:
             reopened.close()
 
+    def test_the_hold_the_hub_adapter_writes_can_be_discarded(self) -> None:
+        """**The reader has to know every spelling the writers use.**
+
+        A restart writes `upstream_job_id` / `upstream_item_index`; the Hub
+        adapter writes `batch_id` / `item_index`. `_named_attempt` read only the
+        first pair, so the one route that clears a hold refused a hold whose
+        attempt was named perfectly well — measured on a real uncertain
+        submission whose context read
+        `{"batch_id": "9a9e74a3a5", "item_index": 0}` while the reader looked for
+        keys nothing had written, and answered `RECOVERY_CONTEXT_MISSING` with the
+        batch sitting right there. `worker.py` reads `batch_id` too, so the gap
+        was in this reader alone.
+        """
+        from gateway.api import _named_attempt
+
+        self.assertEqual(
+            ("9a9e74a3a5", 0),
+            _named_attempt({"recovery_context": {"batch_id": "9a9e74a3a5", "item_index": 0}}),
+        )
+        self.assertEqual(
+            ("9a9e74a3a5", 2),
+            _named_attempt({"recovery_context": {"batch_id": "9a9e74a3a5", "item_index": 2}}),
+        )
+        # The restart's spelling keeps working, and neither is preferred by luck.
+        self.assertEqual(
+            ("hub-batch-11", 0),
+            _named_attempt({"recovery_context": {"upstream_job_id": "hub-batch-11"}}),
+        )
+        # A hold that names nothing is still refused, rather than aimed at batch "".
+        self.assertIsNone(_named_attempt({"recovery_context": {"reason": "no batch here"}}))
+        self.assertIsNone(_named_attempt({"recovery_context": None}))
+
     def test_a_restart_before_dispatch_records_no_attempt(self) -> None:
         # Nothing was accepted upstream, so there is nothing to name — and nothing to reconcile
         # either. **Absence stays absent rather than becoming a batch**: the job is not a hold at

@@ -2326,14 +2326,21 @@ def _enrich_location(row: dict[str, Any]) -> dict[str, Any]:
 
 
 @router.get("/api/fleet", dependencies=[Depends(require_admin)])
-def fleet_snapshot() -> dict[str, Any]:
+def fleet_snapshot(force: bool = False) -> dict[str, Any]:
     """Every location, its machines and its in-flight work.
 
     Read-only and safe to poll: it fans out to each controller with a per-request
     timeout and reports an unreachable one as unreachable rather than failing the
     whole read. One dead location must not hide the others.
+
+    **`force` is what the page's Refresh button sends**, and it is the only thing
+    that waits for a fan-out. Without it this is a cache read however old the
+    cache is -- the poller owns freshness -- because a read that blocks on every
+    controller is a read that times out on a busy fleet. Measured before the
+    split: 22.7 s here against the app's 15 s timeout, so the Fleet page loaded
+    only when nothing was running.
     """
-    data = fleet.snapshot()
+    data = fleet.snapshot(force=force)
     # `fleet.snapshot()` returns the **cached** dict the catalogue and the
     # background refresher also read. Enriching it in place would persist these
     # gateway-side counts into the cache, so the top-level dict and every location
