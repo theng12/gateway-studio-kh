@@ -10,6 +10,27 @@ every feature title, and they are left as they were written.
 
 ---
 
+---
+
+## 0.2.72 — 2026-09-29
+
+### The Providers page is split into tabs
+
+You asked for this one: the Providers page had become a single very long scroll — twenty-three
+provider cards, then the concurrency settings, then the live queue, then the measured numbers — so
+reaching any one of them meant scrolling past the other three.
+
+It now has four tabs, in the same style as the Fleet page:
+
+- **Providers** — the keys, your Studio Hub locations, and the models each one offers
+- **Concurrency** — how much work runs at once, per lane
+- **Queue** — what is waiting right now, and what is holding each lane
+- **Measured** — what each model has actually carried, from real runs
+
+Nothing moved out of reach: everything that was on the page is still on it, one tab across. A
+`#queue` link still opens the queue — it selects the Queue tab now instead of scrolling to a
+section that is no longer in the same column.
+
 ## 0.2.71 — 2026-09-29
 
 ### Ollama Cloud is a provider now

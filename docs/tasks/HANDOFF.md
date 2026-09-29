@@ -1,12 +1,33 @@
 # HANDOFF — gateway-kh
 
-**Read this first.** Written 2026-09-28 against **VERSION `0.2.71`**. The running build
+**Read this first.** Written 2026-09-28 against **VERSION `0.2.72`**. The running build
 stamp is on `/health` and in `/Applications/gateway-kh.app/Contents/Resources/gateway/BUILD`.
 If this file disagrees with the code, **the code wins — fix this file in the same change**.
 Every path below is inside the Git checkout `repository/` unless it says otherwise.
 `[MEASURED]` = observed in the session that wrote this; `[reason not recorded]` = the
 project does not say why, and nobody should guess.
 
+> **0.2.72 — the Providers page is four tabs.** The owner: *"inside the gateway kh's providers,
+> there's so many stuff that i have to scroll. can you make it like fleet which it is split and have
+> separate tabs for different stuff?"* Twenty-three provider cards, the concurrency settings, the
+> live queue and the measured numbers were stacked in one column, so reaching any one meant scrolling
+> past the other three — the concurrency block had already been moved to the top once for exactly
+> that reason, which is a fix that does not scale.
+>
+> `PROVIDER_TABS` is one list: the strip is drawn from it and `selectProviderTab` shows exactly one
+> pane, so **a pane no tab names, or a tab that opens nothing, is not expressible**. Pane elements
+> are named `provider-pane-<key>` from the same keys.
+>
+> ⚠ **`#queue` changed mechanism, and the test that guarded it was updated rather than deleted.**
+> It used to `scrollIntoView` the queue section, which only worked while every section shared one
+> column; behind a tab that scrolls a hidden element. It now calls `selectProviderTab('queue')` from
+> `setView` — still **after** the view is shown, which is the guarantee the original assertion
+> existed for. `tests/test_queue_view.js` asserts the tab selection and asserts the scroll is **gone**,
+> so the old mechanism cannot creep back.
+>
+> Four assertions in `tests/test_models_browser.js`, one **proved to fail** with the "hide the
+> others" loop removed (a stale pane staying on screen).
+>
 > **0.2.71 — Ollama Cloud is a provider, and it needs no local install.** The owner went looking
 > for an API on ollama.com, found a download button, and asked whether running Ollama on his Mac was
 > the only way to reach the free cloud models. **It used to be; it is not any more.** Ollama's own

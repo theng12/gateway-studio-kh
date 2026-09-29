@@ -207,6 +207,17 @@ test('the queue is a section of the Providers page and is loaded with it', () =>
     'opening the Providers page must load the queue with the ceilings it explains');
   assert.match(source, /if \(hash\.startsWith\('queue'\)\) return 'providers';/,
     'a #queue link must land on the page that carries it');
-  assert.match(source, /document\.getElementById\('queue'\)\?\.scrollIntoView/,
-    'and the scroll happens after the section is shown, not while it is hidden');
+  // **The mechanism changed; the guarantee did not.** This asserted a `scrollIntoView`, because
+  // every section of the Providers page shared one column, so the queue was reachable by scrolling
+  // once the view was shown. The page now splits those sections into tabs — the owner asked for it,
+  // because reaching any one of them meant scrolling past the other three — so the queue is no
+  // longer in that column and the scroll would land on a hidden element. What must still hold is
+  // the reason the assertion existed: **the link moves the operator to the queue, and it does so
+  // after the view is shown**, not while it is still hidden.
+  assert.match(source, /if \(\(location\.hash \|\| ''\)\.startsWith\('#queue'\)\) selectProviderTab\('queue'\);/,
+    'a #queue link must open the queue tab, not leave the operator on whichever tab was last used');
+  const setView = source.slice(source.indexOf('function setView(view)'),
+                               source.indexOf('function renderProviders('));
+  assert.doesNotMatch(setView, /scrollIntoView/,
+    'the scroll targets an element that is now behind a tab, where it would do nothing');
 });

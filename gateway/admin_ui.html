@@ -413,6 +413,21 @@
          the models it offers.</p>
     </div>
 
+    <!-- **Split into tabs, because it was one very long scroll.**
+         The owner: *"inside the gateway kh's providers, there's so many stuff that i have to
+         scroll. can you make it like fleet which it is split and have separate tabs for
+         different stuff?"* Four unrelated subjects were stacked in one column — the provider
+         cards (twenty-three of them), the concurrency settings, the live queue and the measured
+         numbers — so finding any one of them meant scrolling past the other three, and the
+         concurrency settings had already been moved to the top once for exactly that reason.
+         Fleet answers the same problem with tabs, so this does too.
+
+         The pane ids and the tab keys are one list (`PROVIDER_TABS`), so a pane that no tab
+         names, or a tab that opens nothing, is not expressible. `#queue` still lands on the
+         queue — see `setView`. -->
+    <div class="tabs" id="provider-tabs" role="group" aria-label="Providers page section"></div>
+
+    <div class="pane" id="provider-pane-capacity">
     <!-- **First, not last.** This was below the provider list, which is twenty-three
          cards long, so the only way to find the concurrency settings was to scroll
          past all of them — and the owner went looking and could not find them. A
@@ -430,14 +445,16 @@
     </p>
     <div id="concurrency-msg" class="msg" role="alert" aria-live="polite"></div>
     <div id="concurrency"></div>
+    </div><!-- /provider-pane-capacity -->
 
+    <div class="pane" id="provider-pane-queue" style="display:none">
     <!-- QUEUE
          The live half of the numbers above. The settings say what *may* run; this
          says what is waiting, in the order it will be dispatched, and which ceiling
          is actually holding each lane right now — the pool, the lane cap and each
          site's own budget, read from the running worker rather than re-derived. A
          position with no ceiling beside it is a number without a reason. -->
-    <h2 style="margin:26px 0 4px">Queue</h2>
+    <h2 style="margin:18px 0 4px">Queue</h2>
     <p class="hint" style="margin:0 0 12px">
       Every job <b>waiting</b> right now — accepted but not yet dispatched, deferred or not —
       in the order the gateway will take them, with each one's position and the size of the
@@ -452,8 +469,10 @@
     </div>
     <div id="queue-msg" class="msg" role="alert" aria-live="polite"></div>
     <div id="queue"></div>
+    </div><!-- /provider-pane-queue -->
 
-    <h2 style="margin:26px 0 4px">Measured</h2>
+    <div class="pane" id="provider-pane-measured" style="display:none">
+    <h2 style="margin:18px 0 4px">Measured</h2>
     <p class="hint" style="margin:0 0 12px">
       What each model has <b>actually carried</b>, from real jobs this gateway has run —
       not what its maker advertises. The largest completion that really ran is the only
@@ -463,8 +482,10 @@
       not listed at all.
     </p>
     <div id="measured"></div>
+    </div><!-- /provider-pane-measured -->
 
-    <h2 style="margin:26px 0 4px">Where work can run</h2>
+    <div class="pane" id="provider-pane-list" style="display:none">
+    <h2 style="margin:18px 0 4px">Where work can run</h2>
     <div id="local-note" class="hint" style="margin:10px 0 0"></div>
     <div id="skipped-note" class="hint" style="margin:10px 0 0"></div>
     <div class="row" style="margin:14px 0">
@@ -481,6 +502,7 @@
     </div>
     <div id="providers-msg" class="msg" role="alert" aria-live="polite"></div>
     <div id="providers"></div>
+    </div><!-- /provider-pane-list -->
   </section>
   <!-- CREATE -->
   <section id="view-create" style="display:none">
@@ -670,9 +692,11 @@ function downloadBlob(url, filename) {
 }
 
 function setView(view) {
-  // No tab strip here: Models and Providers are each their own page in this
-  // window's sidebar, so a second switcher inside the page was two controls for
-  // one decision. The section decides which view loads.
+  // No view-level tab strip here: Models and Providers are each their own page in
+  // this window's sidebar, so a second switcher for *that* decision was two controls
+  // for one thing. The Providers page carries its own strip for a different reason —
+  // it stacks four unrelated subjects, and splitting them is not a decision the
+  // sidebar can express.
   state.view = view;
   document.getElementById('view-models').style.display = view === 'models' ? '' : 'none';
   document.getElementById('view-providers').style.display = view === 'providers' ? '' : 'none';
@@ -682,12 +706,12 @@ function setView(view) {
   else if (view === 'providers') { loadProviders(); loadConcurrency(); loadMeasured(); loadQueue(); }
   else if (view === 'packs') loadContentShelf();
   else loadCreate();
-  // A `#queue` link opens the Providers page **at the queue**: the section only
-  // exists on that page, so the scroll happens here, once the section is visible,
-  // rather than in `viewFromHash` where it would scroll a hidden element.
-  if ((location.hash || '').startsWith('#queue')) {
-    document.getElementById('queue')?.scrollIntoView({ block: 'start' });
-  }
+  // A `#queue` link opens the Providers page **on the queue tab**. It used to scroll the
+  // queue section into view, which only worked while every section shared one column; now
+  // the section is behind a tab, so the link selects the tab. Scrolling is not needed and
+  // would land on the wrong pane.
+  if ((location.hash || '').startsWith('#queue')) selectProviderTab('queue');
+  else if (view === 'providers') renderProviderTabs();
 }
 
 const SHELF_KIND_LABELS = {
@@ -2044,6 +2068,45 @@ async function removeModel(id, modelId) {
     state.models[id] = { ...(state.models[id] || {}), models: r.models };
     renderProviders(); await loadStatus();
   } catch (e) { alert(e.message); }
+}
+
+// ---------------------------------------------------------------------------
+// The Providers page's tab strip.
+//
+// One list, so a pane no tab names — or a tab that opens nothing — is not
+// expressible. `renderProviderTabs` draws the strip from it and `selectProviderTab`
+// shows exactly one pane; the pane element ids are derived from the keys rather than
+// written out a second time.
+const PROVIDER_TABS = [
+  { key: 'list', title: 'Providers', hint: 'Keys, locations and the models each offers' },
+  { key: 'capacity', title: 'Concurrency', hint: 'How much work runs at once, per lane' },
+  { key: 'queue', title: 'Queue', hint: 'What is waiting, and what is holding each lane' },
+  { key: 'measured', title: 'Measured', hint: 'What each model has actually carried' },
+];
+let providerTab = 'list';
+
+function providerPane(key) {
+  return document.getElementById(`provider-pane-${key}`);
+}
+
+function renderProviderTabs() {
+  const strip = document.getElementById('provider-tabs');
+  if (!strip) return;
+  strip.innerHTML = PROVIDER_TABS.map(t =>
+    `<button data-tab="${t.key}" aria-pressed="${t.key === providerTab}" title="${esc(t.hint)}"
+             onclick="selectProviderTab('${t.key}')">${esc(t.title)}</button>`).join('');
+}
+
+// Show one pane and hide the rest. Every key is visited, so a pane left visible by a
+// previous selection cannot survive — the failure mode of hiding "the others" by hand.
+function selectProviderTab(key) {
+  if (!PROVIDER_TABS.some(t => t.key === key)) key = 'list';
+  providerTab = key;
+  for (const tab of PROVIDER_TABS) {
+    const pane = providerPane(tab.key);
+    if (pane) pane.style.display = tab.key === key ? '' : 'none';
+  }
+  renderProviderTabs();
 }
 
 async function refreshAll(btn) {

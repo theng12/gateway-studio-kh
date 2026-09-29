@@ -442,3 +442,94 @@ test('the button is on the Models page itself', () => {
   assert.match(models, /refreshModels\(this\)/,
     'the Models page has no re-discover control again');
 });
+
+// ---------------------------------------------------------------------------
+// The Providers page's tab strip.
+//
+// The owner: *"inside the gateway kh's providers, there's so many stuff that i have to scroll.
+// can you make it like fleet which it is split and have separate tabs for different stuff?"*
+// Four unrelated subjects were stacked in one column — twenty-three provider cards, the
+// concurrency settings, the live queue and the measured numbers — so reaching any one meant
+// scrolling past the other three. The concurrency block had already been moved to the top once
+// for that same reason, which is a fix that does not scale.
+//
+// The assertions below are about the two ways a tab strip rots: a pane that no tab can reach,
+// and a tab that leaves the previous pane on screen.
+
+test('every provider pane is named by exactly one tab, and every tab opens a pane', () => {
+  const source = fs.readFileSync(path.join(__dirname, '../gateway/admin_ui.html'), 'utf8');
+  const block = source.slice(source.indexOf('const PROVIDER_TABS'), source.indexOf('let providerTab'));
+  const tabs = [...block.matchAll(/key: '([a-z]+)'/g)].map(m => m[1]);
+  const panes = [...source.matchAll(/id="provider-pane-([a-z]+)"/g)].map(m => m[1]);
+  assert.deepEqual(tabs.slice().sort(), panes.slice().sort(),
+    'a pane with no tab is unreachable, and a tab with no pane opens nothing');
+  assert.ok(tabs.length >= 4, `the page still stacks its subjects: ${tabs.join(', ')}`);
+});
+
+test('selecting a tab shows one pane and hides the others', () => {
+  const source = fs.readFileSync(path.join(__dirname, '../gateway/admin_ui.html'), 'utf8');
+  const shown = {};
+  const nodes = new Map();
+  const node = key => {
+    if (!nodes.has(key)) nodes.set(key, { style: {}, innerHTML: '', id: key });
+    return nodes.get(key);
+  };
+  const context = vm.createContext({
+    document: { getElementById: id => node(id) },
+    state: {},
+    esc: s => String(s ?? ''),
+    PROVIDER_TABS: [
+      { key: 'list', title: 'Providers', hint: '' },
+      { key: 'capacity', title: 'Concurrency', hint: '' },
+      { key: 'queue', title: 'Queue', hint: '' },
+      { key: 'measured', title: 'Measured', hint: '' },
+    ],
+    providerTab: 'list',
+  });
+  // Evaluate just the two functions, so this drives the real code and not a copy.
+  const start = source.indexOf('function providerPane(');
+  const end = source.indexOf('async function refreshAll(');
+  vm.runInContext(source.slice(start, end), context);
+
+  context.selectProviderTab('queue');
+  const visible = ['list', 'capacity', 'queue', 'measured']
+    .filter(key => node(`provider-pane-${key}`).style.display !== 'none');
+  assert.deepEqual(visible, ['queue'],
+    `selecting Queue left more than one pane on screen: ${visible.join(', ')}`);
+  assert.equal(context.providerTab, 'queue');
+});
+
+test('an unknown tab key falls back to the first pane rather than showing none', () => {
+  // A stale `#queue`-style link, or a key renamed without the link, must not leave the page
+  // blank — a blank page reads as a broken app, not as a bad link.
+  const source = fs.readFileSync(path.join(__dirname, '../gateway/admin_ui.html'), 'utf8');
+  const nodes = new Map();
+  const node = key => {
+    if (!nodes.has(key)) nodes.set(key, { style: {}, innerHTML: '', id: key });
+    return nodes.get(key);
+  };
+  const context = vm.createContext({
+    document: { getElementById: id => node(id) },
+    esc: s => String(s ?? ''),
+    PROVIDER_TABS: [{ key: 'list', title: 'Providers', hint: '' }],
+    providerTab: 'list',
+  });
+  const start = source.indexOf('function providerPane(');
+  vm.runInContext(source.slice(start, source.indexOf('async function refreshAll(')), context);
+  context.selectProviderTab('gone');
+  assert.equal(context.providerTab, 'list');
+  assert.notEqual(node('provider-pane-list').style.display, 'none',
+    'an unrecognised key must show the default pane, not nothing');
+});
+
+test('the queue link selects the queue tab instead of scrolling to a hidden section', () => {
+  // `#queue` used to scroll the queue section into view, which only worked while every section
+  // shared one column. Behind a tab, scrolling would land on a hidden element.
+  const source = fs.readFileSync(path.join(__dirname, '../gateway/admin_ui.html'), 'utf8');
+  const setView = source.slice(source.indexOf('function setView(view)'),
+                               source.indexOf('function renderProviders('));
+  assert.match(setView, /selectProviderTab\('queue'\)/,
+    'the #queue link no longer opens the queue');
+  assert.doesNotMatch(setView, /scrollIntoView/,
+    'the #queue link scrolls to an element that is now behind a tab');
+});
