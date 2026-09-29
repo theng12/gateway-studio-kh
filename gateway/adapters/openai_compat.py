@@ -252,6 +252,20 @@ def _image_count(params: dict[str, Any]) -> int:
     return count
 
 
+#: Image models that always answer base64 and refuse `response_format`.
+#:
+#: A prefix, because the family is what changed -- `gpt-image-1`,
+#: `gpt-image-2.5-sunburst-2026-09-08` and whatever ships next all behave the same
+#: way, and listing every dated snapshot would rot.
+IMAGE_MODELS_WITHOUT_RESPONSE_FORMAT = ("gpt-image",)
+
+
+def _takes_response_format(model_id: str) -> bool:
+    """Whether this image model accepts `response_format` at all."""
+    name = str(model_id or "").strip().lower()
+    return not any(name.startswith(prefix) for prefix in IMAGE_MODELS_WITHOUT_RESPONSE_FORMAT)
+
+
 def _image(request: BackendRequest) -> BackendResult:
     body: dict[str, Any] = {
         "model": request.model_id,
@@ -259,8 +273,23 @@ def _image(request: BackendRequest) -> BackendResult:
         "n": _image_count(request.params),
         "size": _size_for(request.params),
     }
-    # `b64_json` avoids a second fetch and sidesteps the same-origin rule.
-    body["response_format"] = "b64_json"
+    # `b64_json` avoids a second fetch and sidesteps the same-origin rule -- but
+    # only ask for it where the model takes the parameter.
+    #
+    # **The `gpt-image-*` family rejects it outright.** Measured 2026-09-30 on the
+    # owner's gateway: `gpt-image-2.5-sunburst-2026-09-08` answered
+    # `HTTP 400: Unknown parameter: 'response_format'` on every attempt, while the
+    # older `dall-e-*` models still accept it and still need it to avoid a URL. The
+    # newer models return `b64_json` unconditionally, so omitting it is not a
+    # trade -- it is the only spelling they accept, and the reader below already
+    # handles either shape.
+    #
+    # Curated rather than discovered, for the same reason
+    # `TRANSCRIPTION_SRT_UNSUPPORTED` is a list: no provider *publishes* which
+    # parameters it rejects, so the alternative is discovering it one failed
+    # generation at a time.
+    if _takes_response_format(request.model_id):
+        body["response_format"] = "b64_json"
 
     try:
         response = httpx.post(

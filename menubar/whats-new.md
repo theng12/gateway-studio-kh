@@ -14,6 +14,25 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.77 — 2026-09-30
+
+### The gpt-image family generates again
+
+`gpt-image-2.5-sunburst-2026-09-08` failed on every attempt with:
+
+```
+openai-direct: HTTP 400: Unknown parameter: 'response_format'.
+```
+
+The image adapter sent `response_format: "b64_json"` **unconditionally** — which the
+older `dall-e-*` models accept and need, to avoid a second fetch for the URL. The
+newer `gpt-image-*` family refuses the parameter outright and returns base64 anyway,
+so omitting it is not a trade: it is the only spelling they accept.
+
+Curated by model prefix rather than discovered, for the same reason
+`TRANSCRIPTION_SRT_UNSUPPORTED` is a list — no provider *publishes* which parameters
+it rejects, so the alternative is finding out one failed generation at a time.
+
 ## 0.2.76 — 2026-09-29
 
 ### A dropped poll no longer throws away a finished render
