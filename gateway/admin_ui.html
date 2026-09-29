@@ -343,6 +343,13 @@
         <option value="off">Provider switched off</option>
       </select>
       <button class="sm" onclick="clearFilters()">Clear filters</button>
+      <!-- Re-discover, on the page that shows what discovery produced.
+           The owner asked for this in as many words: "i prefer a refresh button in the model's
+           tab." He was standing on this page after enabling a model that had not reached the
+           Chat picker, and the only re-discover control in the console was on the Providers
+           tab — so the page listing models gave him no way to ask for a newer list, and no hint
+           that the list it was showing could be days old. -->
+      <button class="sm" onclick="refreshModels(this)">Re-discover models</button>
     </div>
 
     <div class="row controls" style="margin-bottom:10px">
@@ -671,7 +678,7 @@ function setView(view) {
   document.getElementById('view-providers').style.display = view === 'providers' ? '' : 'none';
   document.getElementById('view-create').style.display = view === 'create' ? '' : 'none';
   document.getElementById('view-packs').style.display = view === 'packs' ? '' : 'none';
-  if (view === 'models') loadModels();
+  if (view === 'models') { loadModels(); loadFreshness(); }
   else if (view === 'providers') { loadProviders(); loadConcurrency(); loadMeasured(); loadQueue(); }
   else if (view === 'packs') loadContentShelf();
   else loadCreate();
@@ -910,6 +917,66 @@ async function loadStatus() {
 
 /* ---------------------------------- models --------------------------------- */
 
+// **How old the model list is.** The one fact that would have answered the owner's question before
+// he asked it.
+//
+// A provider's catalogue is fetched once and cached until something re-discovers it, and nothing
+// does that on a timer or at startup — so a model the provider added since the last fetch is simply
+// absent from this page, with nothing on screen to suggest the inventory could be days old. He read
+// a stale list as a current one and went looking for a refresh button, which is exactly what a
+// reader does when a page gives them no age.
+//
+// `inventoryAgeMs` and `inventoryOldestProvider` are the honest pair, and they come from
+// `/admin/api/catalog` rather than from this page's own `/models` read. That is deliberate: the
+// models route reads only the provider registry, and answering this from there would pull a full
+// catalogue rebuild into the one request that runs on every keystroke of the filter box. The age is
+// a page-level fact that changes on discovery, not on filtering, so it is read once per page load
+// and again after a re-discover.
+//
+// **Never `stale`**: that flag is computed from the last *rebuild*, which `freshness()` performs
+// before reading it, so it is false by construction and a badge wired to it would never light.
+// A `null` age means no provider reported a fetch time: unknown, which is not the same as fresh.
+function modelInventoryAge() {
+  const f = state.freshness;
+  if (!f || f.inventoryAgeMs == null) return ' · <span class="stat">inventory age unknown</span>';
+  const ms = Number(f.inventoryAgeMs);
+  const human = ms < 3600000 ? `${Math.max(1, Math.floor(ms / 60000))}m`
+    : ms < 86400000 ? `${Math.floor(ms / 3600000)}h` : `${Math.floor(ms / 86400000)}d`;
+  const oldest = f.inventoryOldestProvider ? `, oldest ${esc(f.inventoryOldestProvider)}` : '';
+  // Past a day the list is old enough that a model can be missing from it for no reason the
+  // operator can see, so it stops being a quiet statistic and says so.
+  const late = ms >= 86400000;
+  return ` · <span class="stat"${late ? ' title="A model a provider added since this snapshot will not appear until you re-discover."' : ''}>`
+    + `inventory ${late ? '⚠ ' : ''}${human} old${oldest}</span>`;
+}
+
+// Read the age, and redraw the count line it is shown on. A failure here is silent on purpose: the
+// age annotates a list that loaded perfectly well, and an error over a working page because a
+// secondary read failed would be worse than no age — `modelInventoryAge` already says "unknown".
+async function loadFreshness() {
+  try { state.freshness = (await api('/catalog')).freshness || null; }
+  catch (e) { state.freshness = null; }
+  if (state.modelRows) renderModels();
+}
+
+// The Models page's own re-discover — the button the owner asked for on this page:
+// *"i prefer a refresh button in the model's tab."* He was standing here after enabling a model
+// that had not reached the Chat picker, and the console's only re-discover control was on the
+// Providers tab, so the page listing models offered no way to ask for a newer list.
+//
+// It calls the **same endpoint** the Providers tab's button does, so the two cannot disagree about
+// what refreshing means. It is a separate function only because this page must also redraw itself:
+// `refreshAll` reloads providers and status, which is everything the Providers page shows, and
+// doing only that here would re-fetch the catalogues and leave the model list unchanged.
+async function refreshModels(btn) {
+  btn.disabled = true; btn.textContent = 'Re-discovering…';
+  try {
+    await api('/refresh-all', { method: 'POST' });
+    await loadModels(); await loadFreshness(); await loadStatus(); await loadProviders();
+  } catch (e) { alert(e.message); }
+  finally { btn.disabled = false; btn.textContent = 'Re-discover models'; }
+}
+
 // What a model *does*, in the owner's words rather than the catalogue's. The
 // internal names are `chat` and `tts`; "LLM chat" and "Voice / TTS" are what the
 // pages beside this one call them, and this map is the one place the two meet.
@@ -1131,7 +1198,8 @@ function renderModels() {
   const rows = state.modelRows;
   const { matched, listable_total, enabled_total, returned } = state.meta;
   document.getElementById('m-count').innerHTML =
-    `showing ${returned} of ${matched} matching · <b>${enabled_total}</b> of ${listable_total} enabled overall`;
+    `showing ${returned} of ${matched} matching · <b>${enabled_total}</b> of ${listable_total} enabled overall`
+    + modelInventoryAge();
   document.getElementById('m-enable-all').textContent = `Enable all ${matched} matching`;
   document.getElementById('m-disable-all').textContent = `Disable all ${matched} matching`;
 

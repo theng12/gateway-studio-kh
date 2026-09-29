@@ -1,12 +1,54 @@
 # HANDOFF — gateway-kh
 
-**Read this first.** Written 2026-09-28 against **VERSION `0.2.69`**. The running build
+**Read this first.** Written 2026-09-28 against **VERSION `0.2.70`**. The running build
 stamp is on `/health` and in `/Applications/gateway-kh.app/Contents/Resources/gateway/BUILD`.
 If this file disagrees with the code, **the code wins — fix this file in the same change**.
 Every path below is inside the Git checkout `repository/` unless it says otherwise.
 `[MEASURED]` = observed in the session that wrote this; `[reason not recorded]` = the
 project does not say why, and nobody should guess.
 
+> **0.2.70 — the Models page can re-discover, and says how old its list is.** The owner, after
+> enabling an OpenRouter model that never reached the Chat picker: *"i just enabled it in model tab
+> but it's not refreshed or shown in the chat tab. do i have to click sth or restart the app? i
+> prefer a refresh button in the model's tab."*
+>
+> **Restarting would not have helped, and that is the part worth keeping.** Nothing re-discovers
+> cloud providers at startup or on a timer, so a relaunch re-reads the same `models_cache.json`. The
+> console's only re-discover control was on the **Providers** tab; the page that actually lists
+> models offered no way to ask for a newer list and no hint that its inventory could be old.
+> Measured on this Mac: `openai-direct` and its neighbours were last fetched **2026-09-23 09:39**
+> while `openrouter-main` was re-fetched 2026-09-29 12:47 — a **6.16-day** inventory age, and the
+> model he enabled had been released ~12 h after the previous OpenRouter snapshot.
+>
+> `[MEASURED]` The Chat tab was **not** withholding it: `GET /admin/api/create/models` returned
+> `openrouter-main::stealth/space-bunny-alpha` in `by_modality.chat` at the time of writing. So for
+> a model already in the catalogue the whole fix is a sidebar switch — `select()` calls
+> `activated()` unconditionally — or the Chat lane's existing *Refresh models* button. Nothing on
+> the Chat side changed.
+>
+> Two changes, both on the Models page:
+>
+> * **`Re-discover models`** beside *Clear filters*, calling the **same** `POST /admin/api/refresh-all`
+>   the Providers page uses, so the two cannot disagree about what refreshing means. It is a separate
+>   function only because this page must also redraw itself — `refreshAll` reloads providers and
+>   status, which is all the Providers page shows.
+> * **The inventory age**, beside the count. It reads `/admin/api/catalog`'s `freshness` rather than
+>   being added to the models route on purpose: that route runs on **every keystroke of the filter
+>   box** and reads only the provider registry, so answering the age from there would pull a full
+>   catalogue rebuild into it. The age changes on discovery, not on filtering.
+>
+> **Read `inventoryAgeMs` / `inventoryOldestProvider`; never `stale`** — that flag is false by
+> construction (see the freshness bullet in this repo's `AGENTS.md`), so a badge wired to it would
+> never light. Past a day the age is marked ⚠, because that is when a model can be missing from the
+> list for a reason the operator cannot see. A `null` age says "unknown", not "fresh" — verified by
+> test, including the case where the secondary read fails and must not take the model list down.
+>
+> `[MEASURED]` `node --test tests/test_models_browser.js` → **23 pass** (6 new, and the button test
+> was **proved to fail** with the button removed); every other `tests/test_*.js` suite green; the
+> focused `tests/test_*.py` pass green. `tests/test_models_grouping.py` needed `_Credentials.is_configured`
+> added to its stub **only while the age was briefly on the models route**; that change was reverted
+> with the design.
+>
 > **The fleet-hardening batch.** The work order is
 > `_orchestra/JOB-gateway-studiohub-fleet-hardening-20260928.md` (Batch A → B → C) and the
 > evidence is `_orchestra/AUDIT-gateway-studiohub-20260928.md`. **From this repo: A1 (0.2.61),

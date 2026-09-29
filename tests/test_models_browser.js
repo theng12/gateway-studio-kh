@@ -61,7 +61,7 @@ function harness(responses = [emptyPage()]) {
       if (options) writes.push({ page, options });
       return responses[Math.min(index++, responses.length - 1)];
     },
-    alert() {}, confirm: () => true, loadStatus() {},
+    alert() {}, confirm: () => true, loadStatus() {}, loadProviders() {},
     URLSearchParams, setTimeout, clearTimeout, console,
   });
   vm.runInContext(source.slice(START, END), context);
@@ -341,4 +341,104 @@ test('the order toggle is dead until something is sorted by', () => {
   context.toggleModelOrder();
   assert.equal(context.state.modelOrder, 'desc');
   assert.equal(get('m-order').textContent, '↓');
+});
+
+// ---------------------------------------------------------------------------
+// The inventory age, and the re-discover button the owner asked for.
+//
+// His report: *"openrouter has a new model called space bunny and i just enabled it in model tab
+// but it's not refreshed or shown in the chat tab. do i have to click sth or restart the app? i
+// prefer a refresh button in the model's tab."*
+//
+// The list on this page is a **discovery snapshot**, not a live view — a provider's catalogue is
+// fetched once and cached until something re-discovers it, and nothing does that on a timer or at
+// startup. So a model the provider added since the last fetch is simply absent, and the page said
+// nothing about how old its inventory was. A reader with no age and no refresh control reasonably
+// concludes the list is current and the fault is elsewhere.
+//
+// Two assertions matter here and they are different: the page must be able to **ask** for a newer
+// list, and it must be able to **say** how old the one it has is.
+
+test('the inventory age is rendered from the honest field', () => {
+  const { context } = harness();
+  context.state.freshness = { inventoryAgeMs: 6 * 3600000,
+    inventoryOldestProvider: 'openai-direct' };
+  const html = context.modelInventoryAge();
+  assert.match(html, /inventory 6h old/, 'the age the operator needs is not on the page');
+  assert.match(html, /oldest openai-direct/, 'the age must name what it is the age of');
+});
+
+test('a list more than a day old is marked, not just stated', () => {
+  const { context } = harness();
+  context.state.freshness = { inventoryAgeMs: 3 * 86400000 };
+  const html = context.modelInventoryAge();
+  assert.match(html, /3d old/);
+  assert.match(html, /⚠/, 'a three-day-old inventory is old enough to hide a new model silently');
+  assert.match(html, /title=/, 'the mark must say what it means');
+});
+
+test('an unknown age says unknown, and never reads as fresh', () => {
+  const { context } = harness();
+  context.state.freshness = { inventoryAgeMs: null };
+  assert.match(context.modelInventoryAge(), /unknown/,
+    'a provider that reported no fetch time is unknown, which is not the same as current');
+  context.state.freshness = null;
+  assert.match(context.modelInventoryAge(), /unknown/,
+    'a page that has not read the age yet must say unknown, not nothing');
+});
+
+test('the age is read from the catalogue route, not bolted onto the models read', async () => {
+  // The models route is the one request that runs on every keystroke of the filter box, and it
+  // reads only the provider registry. Answering the age from there would pull a full catalogue
+  // rebuild into it. The age changes on discovery, not on filtering, so it is its own read.
+  const { context, calls } = harness([{ freshness: { inventoryAgeMs: 60000 } }]);
+  await context.loadFreshness();
+  assert.deepEqual(calls, ['/catalog'], 'the age must come from the catalogue route');
+  assert.equal(context.state.freshness.inventoryAgeMs, 60000);
+});
+
+test('a failed age read leaves the page working and says unknown', async () => {
+  const { context } = harness([{ freshness: { inventoryAgeMs: 60000 } }]);
+  context.api = async () => { throw new Error('nope'); };
+  await context.loadFreshness();
+  assert.equal(context.state.freshness, null);
+  assert.match(context.modelInventoryAge(), /unknown/,
+    'a secondary read that failed must not take the model list down with it');
+});
+
+test('the age badge never reads the stale flag', () => {
+  // `stale` is false by construction — it is computed from the last catalogue *rebuild*, which
+  // `freshness()` performs before reading it — so a badge wired to it would never light. The
+  // repository's AGENTS.md says so; this is the test that keeps someone from "fixing" it back.
+  const source = fs.readFileSync(path.join(__dirname, '../gateway/admin_ui.html'), 'utf8');
+  const start = source.indexOf('function modelInventoryAge()');
+  const body = source.slice(start, source.indexOf('\n}', start));
+  assert.ok(start > 0, 'modelInventoryAge is gone');
+  assert.doesNotMatch(body, /\.stale\b/,
+    'the badge reads a flag that is false by construction, so it can never light');
+  assert.match(body, /inventoryAgeMs/, 'the badge must read the measured age');
+});
+
+test('re-discovering reloads this page, not only the providers page', async () => {
+  // The Providers page's own button reloads providers and status, which is everything that page
+  // shows. Doing only that here would re-fetch every catalogue and leave the model list unchanged —
+  // the exact "I pressed refresh and nothing moved" outcome.
+  const { context, calls } = harness([emptyPage(), emptyPage()]);
+  const button = element('btn');
+  await context.refreshModels(button);
+  assert.ok(calls.includes('/refresh-all'), 're-discover must actually re-discover');
+  assert.ok(calls.filter(c => c.startsWith('/models?')).length >= 1,
+    're-discover must redraw the model list it just refreshed');
+  assert.equal(button.disabled, false, 'the button must come back');
+  assert.equal(button.textContent, 'Re-discover models', 'the label must be restored');
+});
+
+test('the button is on the Models page itself', () => {
+  // The owner asked for it *in the model's tab*. The console's only re-discover control used to be
+  // on the Providers tab, so the page listing models gave him no way to ask for a newer list.
+  const source = fs.readFileSync(path.join(__dirname, '../gateway/admin_ui.html'), 'utf8');
+  const models = source.slice(source.indexOf('<section id="view-models"'),
+                              source.indexOf('<section id="view-providers"'));
+  assert.match(models, /refreshModels\(this\)/,
+    'the Models page has no re-discover control again');
 });
