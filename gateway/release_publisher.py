@@ -620,8 +620,9 @@ def publish(
     build: str,
     filename: str | None = None,
     allow_downgrade: bool = False,
+    controller_ids: list[str] | None = None,
 ) -> dict[str, Any]:
-    """Sign one artifact and offer it to every configured controller.
+    """Sign one artifact and offer it to every configured controller (or only `controller_ids`).
 
     Returns the descriptor, its fingerprint, and a per-controller outcome in which
     `release` is what the controller **read back** after storing it.
@@ -651,6 +652,13 @@ def publish(
         (str(row.get("id") or ""), row.get("label"), str(row.get("url") or ""))
         for row in fleet._read()  # noqa: SLF001 - the roster, and only controllers take a release
     ]
+    if controller_ids is not None:
+        # A staged rollout (a pilot controller first): only the named controllers are offered it.
+        unknown = sorted(set(controller_ids) - {cid for cid, _, _ in rows})
+        if unknown or not controller_ids:
+            raise ReleaseError(f"Unknown controller id(s): {', '.join(unknown) or '(none given)'}.",
+                               400, "RELEASE_UNKNOWN_CONTROLLER")
+        rows = [row for row in rows if row[0] in set(controller_ids)]
     tokens = {cid: fleet._token_for(cid) for cid, _, _ in rows}  # noqa: SLF001
     results: dict[str, Any] = {}
     with ExitStack() as stack:

@@ -313,6 +313,26 @@ class ReleaseDelta(unittest.TestCase):
             rp.load_manifest(self.tree)
         self.assertEqual(caught.exception.code, "RELEASE_MANIFEST_INVALID")
 
+    # -- staged rollout --------------------------------------------------------
+    def test_controller_ids_offers_the_release_to_only_the_named_controllers(self) -> None:
+        pilot, other = self.controller(), self.controller()
+        rows = [{"id": f"c{i}", "label": f"c{i}", "url": c.base} for i, c in enumerate((pilot, other))]
+        with patch.object(fleet, "_read", return_value=rows), \
+             patch.object(fleet, "_token_for", return_value="tok"):
+            state = rp.publish(artifact_path=self.dmg, version="0.6.116", build="abc", controller_ids=["c0"])
+        self.assertEqual(set(state["locations"]), {"c0"})
+        self.assertTrue(state["locations"]["c0"]["ok"])
+        self.assertEqual((other.posts, other.puts, other.held), ([], [], None), "a controller not named must not be offered it")
+
+    def test_an_unknown_controller_id_is_refused_before_anything_is_sent(self) -> None:
+        pilot = self.controller()
+        with patch.object(fleet, "_read", return_value=[{"id": "c0", "label": "c0", "url": pilot.base}]), \
+             patch.object(fleet, "_token_for", return_value="tok"):
+            with self.assertRaises(rp.ReleaseError) as caught:
+                rp.publish(artifact_path=self.dmg, version="0.6.116", build="abc", controller_ids=["nope"])
+        self.assertEqual(caught.exception.code, "RELEASE_UNKNOWN_CONTROLLER")
+        self.assertEqual((pilot.posts, pilot.puts), ([], []))
+
     # -- concurrency ---------------------------------------------------------
 
     def test_controllers_are_pushed_at_the_same_time(self) -> None:

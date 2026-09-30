@@ -2805,6 +2805,8 @@ def release_publish(payload: dict[str, Any]) -> Any:
             build=str(payload.get("build") or ""),
             filename=str(filename) if filename else None,
             allow_downgrade=bool(payload.get("allow_downgrade")),
+            controller_ids=([str(c) for c in payload["controller_ids"]]
+                            if isinstance(payload.get("controller_ids"), list) else None),
         )
     except release_publisher.ReleaseError as exc:
         return _error(exc.status, exc.message, exc.code)

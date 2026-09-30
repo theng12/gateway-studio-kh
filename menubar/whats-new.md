@@ -14,6 +14,10 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.87 — 2026-09-30
+
+- **Publish a Studio Hub release to chosen controllers only.** A release can now go to a pilot controller first (`controller_ids` on the publish call) instead of every controller at once; an unknown id is refused before anything is sent.
+
 ## 0.2.86 — 2026-09-30
 
 ### Pruned artifacts go to a Trash Folder
