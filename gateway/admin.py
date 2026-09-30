@@ -1884,6 +1884,26 @@ def _admin_outputs(job: dict[str, Any], pinned: set[str] | None = None) -> list[
     } for index, row in enumerate(artifacts_of(job))]
 
 
+@router.get("/api/analytics", dependencies=[Depends(require_admin)])
+def generation_analytics(
+    limit: int = Query(20000, ge=1, le=50000),
+) -> dict[str, Any]:
+    """What this gateway has generated, grouped by lane, model and machine.
+
+    **This is the surface that answers "where should the next job go?"** — totals by
+    generation type, mean and median time per model, and what each machine actually
+    produced. Until the adapter started carrying `runtime_s` the generation record held a
+    figure for chat and `None` for image, voice, music and video, so the lanes that do the
+    real work could not be compared at all.
+
+    `limit` is bounded for the reason `/api/jobs` documents: it is bound straight into SQL
+    as `LIMIT ?`, and an unbounded `int` here is both an `OverflowError` waiting to be a
+    500 and a way to ask for every job ever recorded. The grouping needs individual
+    durations rather than a SQL summary, so the bound is real work, not a formality.
+    """
+    return store.generation_analytics(limit=limit)
+
+
 @router.get("/api/jobs", dependencies=[Depends(require_admin)])
 def list_jobs(
     limit: int = Query(50, ge=1, le=500),

@@ -1042,6 +1042,140 @@ class JobStore:
         ).fetchall()
         return [dict(row) for row in rows]
 
+    def generation_analytics(self, *, limit: int = 20000) -> dict[str, Any]:
+        """What this gateway has generated, grouped three ways, from the job record.
+
+        **One pass over scalars, never over prose.** `result_json` carries the whole
+        generated text, so the read extracts only the five fields this needs and leaves
+        the prose in the file — the same rule `usage_samples` documents. What is
+        different here is that a median needs the individual values, not a summary, so
+        this cannot be a single `GROUP BY`: the rows are the raw material and the
+        grouping happens below. The row count is bounded for that reason.
+
+        **Median beside mean, because generation time is not symmetric.** A lane's first
+        item after a model load takes far longer than the ones behind it, so a mean over
+        a handful of image jobs describes the cold load rather than the machine's real
+        rate. The owner is reading this to decide where to send future work, and the
+        median is the number that answers that; the mean is kept beside it so the gap
+        between them is visible rather than hidden. Both are `None` — never `0` — when no
+        job in the group stated a time, because "unstated" and "instant" must not render
+        alike.
+
+        `machine` is the Hub's own answer for the item: `"local"` means the controller
+        ran it on itself, and a node id means a joined Mac did. The two are reported
+        under `machine` with the provider beside them, so a controller's own work is
+        never mistaken for a joined node's.
+
+        Settled jobs only. A queued or running job has no duration yet, and counting one
+        would drag every average toward zero.
+        """
+        rows = self._conn.execute(
+            """
+            SELECT modality,
+                   model_id,
+                   provider_id,
+                   CASE WHEN json_valid(result_json)
+                        THEN json_extract(result_json, '$.payload.hub_machine') END
+                       AS machine,
+                   state,
+                   CASE WHEN json_valid(result_json)
+                         AND json_type(result_json, '$.payload.generation_seconds')
+                             IN ('integer', 'real')
+                        THEN json_extract(result_json, '$.payload.generation_seconds') END
+                       AS seconds,
+                   CASE WHEN json_valid(result_json)
+                         AND json_type(result_json, '$.payload.bytes')
+                             IN ('integer', 'real')
+                        THEN json_extract(result_json, '$.payload.bytes') END
+                       AS bytes
+              FROM jobs
+             WHERE state IN ('succeeded', 'failed', 'cancelled')
+             ORDER BY created_at DESC
+             LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+
+        def group(key: Any) -> dict[str, Any]:
+            return {
+                "key": key,
+                "jobs": 0,
+                "succeeded": 0,
+                "failed": 0,
+                "cancelled": 0,
+                "bytes": 0,
+                "bytes_jobs": 0,
+                "_seconds": [],
+            }
+
+        buckets: dict[str, dict[str, Any]] = {}
+        dimensions = {
+            "by_modality": lambda r: r["modality"] or "unknown",
+            "by_model": lambda r: r["model_id"] or "unknown",
+            "by_machine": lambda r: (
+                f"{r['machine'] or 'unstated'} @ {r['provider_id'] or 'unknown'}"
+            ),
+        }
+        for name, keyer in dimensions.items():
+            buckets[name] = {}
+        totals = group("all")
+
+        for row in rows:
+            state = row["state"]
+            seconds = row["seconds"]
+            size = row["bytes"]
+            for name, keyer in dimensions.items():
+                bucket = buckets[name].setdefault(keyer(row), group(keyer(row)))
+                bucket["jobs"] += 1
+                bucket[state] = bucket.get(state, 0) + 1
+                if isinstance(size, (int, float)) and not isinstance(size, bool):
+                    bucket["bytes"] += int(size)
+                    bucket["bytes_jobs"] += 1
+                if isinstance(seconds, (int, float)) and not isinstance(seconds, bool):
+                    bucket["_seconds"].append(float(seconds))
+            totals["jobs"] += 1
+            totals[state] = totals.get(state, 0) + 1
+            if isinstance(size, (int, float)) and not isinstance(size, bool):
+                totals["bytes"] += int(size)
+                totals["bytes_jobs"] += 1
+            if isinstance(seconds, (int, float)) and not isinstance(seconds, bool):
+                totals["_seconds"].append(float(seconds))
+
+        def finish(bucket: dict[str, Any]) -> dict[str, Any]:
+            values = sorted(bucket.pop("_seconds"))
+            if values:
+                middle = len(values) // 2
+                median = (
+                    values[middle]
+                    if len(values) % 2
+                    else (values[middle - 1] + values[middle]) / 2
+                )
+                bucket["seconds_min"] = round(values[0], 2)
+                bucket["seconds_max"] = round(values[-1], 2)
+                bucket["seconds_mean"] = round(sum(values) / len(values), 2)
+                bucket["seconds_median"] = round(median, 2)
+            else:
+                # Stated by nobody in this group: absent, not zero.
+                bucket["seconds_min"] = None
+                bucket["seconds_max"] = None
+                bucket["seconds_mean"] = None
+                bucket["seconds_median"] = None
+            bucket["timed_jobs"] = len(values)
+            return bucket
+
+        def ranked(name: str) -> list[dict[str, Any]]:
+            finished = [finish(b) for b in buckets[name].values()]
+            finished.sort(key=lambda b: (-b["jobs"], str(b["key"])))
+            return finished
+
+        return {
+            "totals": finish(totals),
+            "by_modality": ranked("by_modality"),
+            "by_model": ranked("by_model"),
+            "by_machine": ranked("by_machine"),
+            "sampled": len(rows),
+        }
+
     def protected_input_paths(self) -> set[str]:
         """Inputs held by queued, running, or explicitly recoverable jobs."""
         rows = self._conn.execute(

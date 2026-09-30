@@ -240,6 +240,45 @@ class _HubCase(unittest.TestCase):
         return result
 
 
+class GenerationTimingTests(_HubCase):
+    """The Hub's own runtime reaches the job record — on every lane, not only chat.
+
+    Chat has always recorded `generation_seconds` (from `elapsed_seconds`). The image,
+    voice, music and video lanes did not, because this adapter read the sibling fields of
+    `terminal_result` and skipped `runtime_s` — so the generation record held a rate for
+    chat and `None` for the lanes that do the real work, and no analytics built on it
+    could answer "how long does this model take" for an image at all.
+    """
+
+    def test_an_image_job_records_the_hubs_runtime(self) -> None:
+        hub = _Hub(item={"terminal_result": {"machine_id": "node-a", "runtime_s": 64.9}})
+        result = self.generate_then_deliver(
+            hub, self.request(modality="image", params={"prompt": "a cat"})
+        )
+        self.assertEqual(result.payload["generation_seconds"], 64.9)
+        # The sibling field it travels with, so a reader can tell which Mac ran it.
+        self.assertEqual(result.payload["hub_machine"], "node-a")
+
+    def test_an_unstated_runtime_stays_absent_rather_than_zero(self) -> None:
+        # **The distinction the whole page depends on.** A Hub that states no runtime is not
+        # a Hub that reported an instant job: `0.0` would enter every average and drag the
+        # model's real rate down, and it would render as a real measurement.
+        hub = _Hub(item={"terminal_result": {"machine_id": "local"}})
+        result = self.generate_then_deliver(
+            hub, self.request(modality="image", params={"prompt": "a cat"})
+        )
+        self.assertIsNone(result.payload["generation_seconds"])
+
+    def test_a_voice_job_records_it_too(self) -> None:
+        # Voice is the lane the timing gap hid longest: it shares this code path with
+        # image, and a voice rate is what decides which Mac a clone is pushed to.
+        hub = _Hub(item={"terminal_result": {"machine_id": "node-b", "runtime_s": 12.25}})
+        result = self.generate_then_deliver(
+            hub, self.request(modality="tts", params={"text": "hello"})
+        )
+        self.assertEqual(result.payload["generation_seconds"], 12.25)
+
+
 class DeliveryReceiptTests(_HubCase):
     """Item 1 — a verified delivery is acknowledged, on the modality's own route."""
 

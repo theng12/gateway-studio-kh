@@ -1199,6 +1199,17 @@ def _generate_image_or_voice(request: BackendRequest) -> BackendResult:
         "resolved_seed": terminal.get("resolved_seed"),
         "sha256": terminal.get("sha256"),
         "bytes": terminal.get("bytes"),
+        # **The Hub's own runtime for this item, and the reason image and voice jobs had
+        # no timing at all.** `terminal_result` has carried `runtime_s` the whole time —
+        # the sibling `machine_id`, `bytes`, `sha256` and `resolved_seed` above are read
+        # from the same dict — and this gateway simply never copied it. Chat has always
+        # recorded its figure (from `elapsed_seconds`, below), so the generation record
+        # measured a rate for chat and nothing for the lanes that do the real work:
+        # image, voice, music and video. Same key and same meaning as chat's, because a
+        # reader asking "how long did this take" should not have to know which lane
+        # answered. Absent stays absent: `None` is "the Hub stated no runtime", which is
+        # a different fact from zero and must not render as one.
+        "generation_seconds": terminal.get("runtime_s"),
         # **How the job went, not just that it finished** — `None` when the Hub
         # reported no progress figure, which is a different answer from "it never
         # stalled". See `HubProgress`.

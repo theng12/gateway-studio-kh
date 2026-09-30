@@ -163,6 +163,39 @@ def check_jobs_recovery() -> tuple[bool, str]:
     return True, f"rows={rows} hold={on_hold} actions={offered}"
 
 
+def check_analytics_page() -> tuple[bool, str]:
+    """Analytics opens, and says something rather than sitting blank.
+
+    **This is the check that would catch the page being wired to nothing.** A section
+    exists in three index-aligned lists (`sections`, `order`, `layout`) plus the View
+    menu, and a row in one but not another is either a page with no door or a door onto
+    the wrong page. Opening it through the View menu — the same way a person does — is
+    what proves all four agree, because `order` is what that menu item resolves through.
+
+    The detail reports whether real numbers arrived. An empty record is a legitimate
+    state on a fresh gateway, so the check asserts the *page rendered* and reports the
+    figures separately rather than failing for having nothing to count.
+    """
+    title = open_section("Analytics")
+    if title != "gateway-kh — Analytics":
+        return False, f"Analytics did not open (window is {title!r})"
+    texts = osa(
+        f"tell {MAIN_WINDOW} to tell splitter group 1 to return (value of every static text)"
+    )
+    said = texts or ""
+    if "Analytics" not in said:
+        return False, f"the page opened but rendered no heading: {said[:120]!r}"
+    if "Could not read analytics" in said:
+        return False, f"the read failed on screen: {said[:200]!r}"
+    has_tables = "By model" in said and "By machine" in said
+    if not has_tables:
+        # Either the record is genuinely empty, or the blocks did not build.
+        return ("Nothing generated yet" in said), (
+            f"neither table rendered and no empty state either: {said[:200]!r}"
+        )
+    return True, "page rendered with the by-model and by-machine blocks"
+
+
 CHECKS = {
     "sidebar": ("sidebar footer shows the app version and the What's New link", check_sidebar),
     "jobs-provider": ("Jobs table has a Provider column and a real value", check_jobs_provider),
@@ -174,6 +207,10 @@ CHECKS = {
     "jobs-recovery": (
         "the discard action is offered only for a recovery hold",
         check_jobs_recovery,
+    ),
+    "analytics": (
+        "Analytics opens from the View menu and renders its tables",
+        check_analytics_page,
     ),
 }
 

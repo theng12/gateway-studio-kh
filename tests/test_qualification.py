@@ -450,6 +450,130 @@ class TheStoreReadsItsOwnNumbersTest(unittest.TestCase):
         self.assertEqual(sample["completion_tokens"], 7)
 
 
+class TheGenerationAnalyticsTest(unittest.TestCase):
+    """What the Analytics page counts, and the three ways it could lie.
+
+    The page exists to help decide where future work goes, so a wrong number here is worse
+    than a missing one: it would send the next batch to the wrong Mac.
+    """
+
+    def setUp(self) -> None:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.store = JobStore(Path(tmp.name) / "jobs.sqlite3")
+        self.addCleanup(self.store.close)
+        self._n = 0
+
+    def _job(self, *, modality: str = "image", model: str = "flux", state: str = "succeeded",
+             machine: str | None = "local", provider: str = "studio-hub-x",
+             seconds: Any = None, size: Any = None) -> str:
+        self._n += 1
+        row, _ = self.store.submit(
+            modality=modality, model_id=model, params={},
+            idempotency_key=f"k{self._n}", provider_id=provider,
+        )
+        payload: dict[str, Any] = {}
+        if machine is not None:
+            payload["hub_machine"] = machine
+        if seconds is not None:
+            payload["generation_seconds"] = seconds
+        if size is not None:
+            payload["bytes"] = size
+        self.store._conn.execute(
+            "UPDATE jobs SET state = ?, result_json = ? WHERE id = ?",
+            (state, json.dumps({"payload": payload}), row["id"]),
+        )
+        self.store._conn.commit()
+        return row["id"]
+
+    def test_the_median_survives_a_cold_load_the_mean_does_not(self) -> None:
+        # The reason both are published. The first render after a model load is far slower
+        # than the ones behind it, and a mean alone would describe that load rather than the
+        # machine's rate — which is the number the owner is deciding on.
+        for seconds in (300.0, 60.0, 62.0):
+            self._job(seconds=seconds)
+        model = self.store.generation_analytics()["by_model"][0]
+        self.assertEqual(model["seconds_median"], 62.0)
+        self.assertEqual(model["seconds_mean"], 140.67)
+        self.assertEqual(model["seconds_max"], 300.0)
+
+    def test_an_unstated_runtime_is_absent_not_zero(self) -> None:
+        # "Unstated" and "instant" must not render alike: a zero would enter the average
+        # and drag the model's real rate down while looking like a measurement.
+        self._job(seconds=None)
+        self._job(seconds=10.0)
+        totals = self.store.generation_analytics()["totals"]
+        self.assertEqual(totals["jobs"], 2)
+        self.assertEqual(totals["timed_jobs"], 1)
+        self.assertEqual(totals["seconds_mean"], 10.0)
+        model = self.store.generation_analytics()["by_model"][0]
+        self.assertEqual(model["timed_jobs"], 1)
+        self.assertEqual(model["seconds_median"], 10.0)
+
+    def test_a_group_with_no_timings_reports_none_not_zero(self) -> None:
+        self._job(seconds=None)
+        totals = self.store.generation_analytics()["totals"]
+        self.assertIsNone(totals["seconds_mean"])
+        self.assertIsNone(totals["seconds_median"])
+        self.assertEqual(totals["timed_jobs"], 0)
+
+    def test_a_json_boolean_is_not_a_duration(self) -> None:
+        # `json_extract` returns 1 for `true`, so the same guard `usage_samples` needs
+        # applies here: the type must be checked while it is still a JSON type.
+        self._job(seconds=True)
+        totals = self.store.generation_analytics()["totals"]
+        self.assertEqual(totals["timed_jobs"], 0)
+        self.assertIsNone(totals["seconds_mean"])
+
+    def test_a_stringified_number_is_not_a_duration(self) -> None:
+        self._job(seconds="64.9")
+        self.assertEqual(self.store.generation_analytics()["totals"]["timed_jobs"], 0)
+
+    def test_a_malformed_row_does_not_take_the_record_with_it(self) -> None:
+        self._job(seconds=10.0)
+        self._n += 1
+        row, _ = self.store.submit(modality="image", model_id="flux", params={},
+                                   idempotency_key="bad", provider_id="studio-hub-x")
+        self.store._conn.execute(
+            "UPDATE jobs SET state = 'succeeded', result_json = ? WHERE id = ?",
+            ("{not json", row["id"]),
+        )
+        self.store._conn.commit()
+        totals = self.store.generation_analytics()["totals"]
+        self.assertEqual(totals["jobs"], 2)
+        self.assertEqual(totals["timed_jobs"], 1)
+
+    def test_a_controllers_own_work_is_not_read_as_a_joined_nodes(self) -> None:
+        # `local` is the Hub's word for "this controller ran it itself", and a node id is
+        # a joined Mac. Reporting one as the other is the exact confusion this page was
+        # asked to clear up, so the provider travels with the machine.
+        self._job(machine="local", seconds=10.0)
+        self._job(machine="node-a", seconds=20.0)
+        keys = {row["key"] for row in self.store.generation_analytics()["by_machine"]}
+        self.assertEqual(keys, {"local @ studio-hub-x", "node-a @ studio-hub-x"})
+
+    def test_only_settled_jobs_are_counted(self) -> None:
+        # A queued or running job has no duration yet; counting one would drag every
+        # average toward zero.
+        self._job(state="succeeded", seconds=10.0)
+        for state in ("queued", "running"):
+            self._n += 1
+            row, _ = self.store.submit(modality="image", model_id="flux", params={},
+                                       idempotency_key=state, provider_id="studio-hub-x")
+            self.store._conn.execute(
+                "UPDATE jobs SET state = ? WHERE id = ?", (state, row["id"]))
+        self.store._conn.commit()
+        self.assertEqual(self.store.generation_analytics()["totals"]["jobs"], 1)
+
+    def test_failures_are_counted_but_do_not_claim_output(self) -> None:
+        self._job(state="succeeded", seconds=10.0, size=1000)
+        self._job(state="failed", seconds=None, size=None)
+        totals = self.store.generation_analytics()["totals"]
+        self.assertEqual((totals["succeeded"], totals["failed"]), (1, 1))
+        self.assertEqual(totals["bytes"], 1000)
+        self.assertEqual(totals["bytes_jobs"], 1)
+
+
 class TheOutputShapeTest(unittest.TestCase):
     """Prose and structured work are told apart, because they are not interchangeable.
 

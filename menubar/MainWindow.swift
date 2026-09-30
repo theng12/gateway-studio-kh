@@ -400,6 +400,8 @@ final class MainWindow: NSObject, NSTableViewDataSource, NSTableViewDelegate {
         // *App* heading, which is where Studio Hub keeps it — the two apps are read side by side,
         // so the same thing should be in the same place in both.
         "what's new",
+        // Analytics is index 15, appended with the section it names — see `build()`.
+        "analytics",
     ]
 
     /// The View menu, in sidebar order: (title, key equivalent).
@@ -413,7 +415,7 @@ final class MainWindow: NSObject, NSTableViewDataSource, NSTableViewDelegate {
         ("Overview", "1"),
         ("Audio", ""), ("Subtitle", ""), ("Image", ""),
         ("Music", ""), ("Video", ""), ("Chat", ""),
-        ("Jobs", "2"), ("Voices", "3"), ("Models", "4"), ("Content Packs", ""),
+        ("Jobs", "2"), ("Analytics", ""), ("Voices", "3"), ("Models", "4"), ("Content Packs", ""),
         ("Providers", "5"), ("Fleet", "6"),
         // Kept in step with the sidebar for the same reason every other row is: this list is
         // derived from the sidebar's order on purpose, and a section that exists in one and not
@@ -447,6 +449,10 @@ final class MainWindow: NSObject, NSTableViewDataSource, NSTableViewDelegate {
         .section(4), .section(5), .section(6),          // Music, Video, Chat
         .header("Library"),
         .section(7), .section(8), .section(9),          // Jobs, Voices, Models
+        // Analytics sits with the other "what I have kept" pages, directly after Jobs: it is the
+        // same record read the other way round — Jobs answers "what happened to that job", this
+        // answers "what has this machine been doing".
+        .section(15),                                   // Analytics
         .section(13),                                   // Content Packs
         .header("Connection"),
         .section(10), .section(11),                     // Providers, Fleet
@@ -520,6 +526,11 @@ final class MainWindow: NSObject, NSTableViewDataSource, NSTableViewDelegate {
             // Index 14, and the last entry: the sidebar order is the `order` list, and this has to
             // line up with it entry for entry.
             WhatsNewSection.shared,
+            // Appended rather than inserted, deliberately: `order` and `layout` address sections by
+            // **index**, so inserting Analytics beside Jobs would renumber every section after it
+            // and a single missed entry would silently point a sidebar row at the wrong page. A new
+            // section goes on the end and `layout` places it where it belongs on screen.
+            AnalyticsSection.shared,
         ]
 
         let window = NSWindow(

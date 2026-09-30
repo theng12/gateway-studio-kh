@@ -14,15 +14,55 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.78 — 2026-09-30
+
+### A new Analytics page: what you generated, and which Mac did it
+
+You asked two things — whether the joined Macs are really generating (they are, and this shows it),
+and whether you can see what your fleet has actually been doing. There is now an **Analytics** page
+in the sidebar, under Library, directly below Jobs.
+
+Jobs answers *"what happened to that job"*. Analytics answers *"what has this fleet been doing"* —
+grouped three ways:
+
+- **By generation type** — image, voice, video, music, chat, subtitle: how many, how many worked,
+  how long they took, how much they produced.
+- **By model** — so you can see which model is actually fast on your machines.
+- **By machine** — every Mac that ran something, with the controller it belongs to. **`local` means
+  the controller ran it on itself; a node id means a joined Mac did.** That distinction is the
+  whole answer to "are the nodes working?" — they are, they just were not visible from here before,
+  because your gateway picks the *site* and the controller picks the *machine*.
+
+**Median and average are both shown, deliberately.** The first render after a model loads is much
+slower than the ones after it, so an average over a few image jobs describes the model *loading*
+rather than the machine working. The median is what you should expect; the average sits beside it so
+you can see the difference.
+
+### The number behind it was missing, and that was a real bug
+
+This page could not have been built a day ago. Your Hub has always reported how long each item took
+— the gateway was reading several fields out of the same reply (`which Mac`, `how many bytes`, the
+checksum) and **skipping the runtime**.
+
+Chat recorded a time; image, voice, music and video recorded **nothing**. So the generation record
+held a rate for the one lane that is a cloud call and `None` for every lane that does the real work.
+
+That is fixed, and it is the reason this page exists at all. One honest limit: **times are recorded
+from now on.** Jobs that already finished ran before the fix, so they show a dash rather than a
+number — a dash means *not stated*, and it is excluded from the averages rather than counted as
+zero, because counting an unknown as zero would flatter every model. The counts, machines and output
+sizes for those older jobs are all still there.
+
+---
+
+
 ## 0.2.77 — 2026-09-30
 
 ### The gpt-image family generates again
 
 `gpt-image-2.5-sunburst-2026-09-08` failed on every attempt with:
 
-```
-openai-direct: HTTP 400: Unknown parameter: 'response_format'.
-```
+`openai-direct: HTTP 400: Unknown parameter: 'response_format'.`
 
 The image adapter sent `response_format: "b64_json"` **unconditionally** — which the
 older `dall-e-*` models accept and need, to avoid a second fetch for the URL. The
