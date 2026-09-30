@@ -1894,6 +1894,9 @@ def machines_flat(rows: list[dict]) -> list[dict]:
             return {
                 "node_state": node.get("state"),
                 "node_detail": node.get("detail"),
+                # **Why** it is unreachable, when the Hub states it as a field. See
+                # `_node_reach_reason` for the fallback that covers Hubs predating it.
+                "node_reason": node.get("reason"),
                 "node_role": node.get("role"),
                 "node_last_seen_at": node.get("last_seen_at"),
                 "node_address": node.get("address"),
@@ -2005,6 +2008,54 @@ def running_flat(rows: list[dict]) -> list[dict]:
 
 #: Errors first, then warnings, then information.
 _ISSUE_SEVERITY = {"error": 0, "warning": 1, "info": 2}
+
+
+def _node_reach_reason(machine: dict) -> str:
+    """Why a node did not answer, refusing to guess when the Hub does not say.
+
+    **The field first.** Hub 0.6.113 publishes `reason` on an unreachable node, and that is
+    the answer: `no_hub` for a refused TCP connection (the Mac is up, nothing listening on
+    :47873) and `unreachable` for dropped packets (asleep, off, or firewalled).
+
+    **Then the machine's `health`, which has carried the same two words since before the
+    field existed** — the live fleet of 2026-09-24 had one controller saying `no_hub` and
+    another `unreachable` in exactly that slot. Only those two tokens are accepted here: any
+    other health word is a different fault and must not be read as a reachability reason.
+
+    **Then the sentence, and only while older Hubs are in the fleet.** Controllers that
+    predate both state the token inside `node_detail` — `could not reach the node (no_hub)`.
+    This is a second copy of a vocabulary the Hub owns, which is exactly the kind of thing
+    that drifts; it is confined to this one function so that deleting it, once every
+    controller publishes the field, is a two-line change with no caller to update.
+
+    **Neutral when none of them says.** An empty answer is not "unreachable": it is "nobody
+    told us", and those must not render as the same advice.
+    """
+    stated = str(machine.get("node_reason") or "").strip().lower()
+    if stated:
+        return stated
+    health = str(machine.get("health") or "").strip().lower()
+    if health in {"no_hub", "unreachable"}:
+        return health
+    sentence = str(machine.get("node_detail") or "")
+    match = re.search(r"\((no_hub|unreachable)\)\s*$", sentence.strip())
+    return match.group(1) if match else ""
+
+
+def _offline_action(reason: str) -> str:
+    """What to go and check, which is the opposite question for the two reasons.
+
+    A machine whose Hub is not running needs Studio Hub started on it. A machine that never
+    answered needs its power and its network checked — and the previous advice, *"Studio Hub
+    on that Mac"*, sent the owner to the second of those looking at the first. Eight
+    powered-off Macs read as a Hub fault because of it.
+    """
+    if reason == "no_hub":
+        return "Start Studio Hub on that Mac"
+    if reason == "unreachable":
+        return "Check that Mac is switched on and awake"
+    # Nothing stated it: say only what is certainly true.
+    return "Check that Mac"
 
 
 def _issue(
@@ -2137,9 +2188,17 @@ def _issues_for(row: dict) -> list[dict]:
             node_detail = str(machine.get("node_detail") or "").strip()
             if node_detail:
                 detail += f" {node_detail}"
+            # **The action follows the reason, because the two answers are opposite.**
+            # `no_hub` is a refused TCP connection — the Mac is up and its Studio Hub is
+            # not running — so pointing at Studio Hub is right. `unreachable` is dropped
+            # packets: the Mac is asleep, off, or firewalled, and telling the owner to fix
+            # Studio Hub on a switched-off machine sends him to the wrong place. This
+            # page used to say "Studio Hub on that Mac" for both, which is what made eight
+            # powered-off Macs read as a Hub fault.
             out.append(_issue(
                 "warning", "machine_offline", machine.get("location_id"),
-                machine.get("location"), machine_id, detail, "Studio Hub on that Mac",
+                machine.get("location"), machine_id, detail,
+                _offline_action(_node_reach_reason(machine)),
             ))
         elif not state or state == "unknown":
             unknown_state += 1

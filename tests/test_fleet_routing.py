@@ -668,6 +668,103 @@ class OneFaultOneRowTests(unittest.TestCase):
         issues = [i for i in self._issues(row) if i["code"] == "worker_offline"]
         self.assertEqual([i["subject"] for i in issues], ["local:voice"], issues)
 
+    def _offline_action(self, *, machine: dict | None = None, node: dict | None = None) -> str:
+        """The action on the offline row, with the given shape of evidence.
+
+        `health` belongs to the machine; `reason` and `detail` belong to the **node**, and
+        `machines_flat` merges the node's own fields over the machine's — so a test that put
+        them on the machine would be asserting against a value the merge had already
+        replaced.
+        """
+        row = _node_site()
+        committed = dict(row["machines"][1])
+        committed.update(machine or {})
+        row["machines"] = [row["machines"][0], committed]
+        if node:
+            replaced = dict(row["nodes"][0])
+            replaced.update(node)
+            row["nodes"] = [replaced]
+        issues = [i for i in self._issues(row) if i["code"] == "machine_offline"]
+        self.assertEqual(len(issues), 1, issues)
+        return issues[0]["action"]
+
+    def test_a_switched_off_mac_does_not_get_hub_advice(self) -> None:
+        # **The defect this closes.** `unreachable` means packets were dropped — the Mac is
+        # asleep, off, or firewalled — and the page told the owner to fix Studio Hub on it.
+        # Eight powered-off Macs on one controller read as a Hub fault because of that, and
+        # the owner went looking for a fault that did not exist.
+        self.assertEqual(
+            self._offline_action(machine={"health": "unreachable"}),
+            "Check that Mac is switched on and awake",
+        )
+
+    def test_a_hub_that_is_not_running_still_gets_hub_advice(self) -> None:
+        # TCP refused: the Mac is up and nothing is listening on :47873. Here the old
+        # advice was right, and it has to survive the fix. This is the fixture's own shape.
+        self.assertEqual(
+            self._offline_action(machine={"health": "no_hub"}),
+            "Start Studio Hub on that Mac",
+        )
+
+    def test_the_hubs_new_reason_field_wins_over_the_older_sources(self) -> None:
+        # Hub 0.6.113 states the reason as a field, and `detail` is kept only for controllers
+        # that predate it. When they disagree the field is the answer, not the prose.
+        self.assertEqual(
+            self._offline_action(
+                node={"reason": "no_hub", "detail": "could not reach the node (unreachable)"},
+                machine={"health": "unreachable"},
+            ),
+            "Start Studio Hub on that Mac",
+        )
+        self.assertEqual(
+            self._offline_action(
+                node={"reason": "unreachable", "detail": "could not reach the node (no_hub)"},
+                machine={"health": "no_hub"},
+            ),
+            "Check that Mac is switched on and awake",
+        )
+
+    def test_an_older_controllers_sentence_is_still_read(self) -> None:
+        # **Every controller in the fleet today predates the field**, and states the token in
+        # the sentence instead. Reading it is what makes the fix work now rather than only
+        # after five Macs are updated.
+        self.assertEqual(
+            self._offline_action(
+                node={"detail": "could not reach the node (no_hub)"}, machine={"health": ""}),
+            "Start Studio Hub on that Mac",
+        )
+        self.assertEqual(
+            self._offline_action(
+                node={"detail": "could not reach the node (unreachable)"}, machine={"health": ""}),
+            "Check that Mac is switched on and awake",
+        )
+
+    def test_a_sentence_the_gateway_cannot_read_gets_no_invented_cause(self) -> None:
+        # "Nobody told us" and "we know it is off" must not render as the same advice. This
+        # is the live shape the direct-probe path writes, which carries no token at all.
+        self.assertEqual(
+            self._offline_action(
+                node={"detail": "could not reach http://100.0.0.9:47873 "
+                                "(/api/hub/resources): ConnectTimeout"},
+                machine={"health": ""},
+            ),
+            "Check that Mac",
+        )
+
+    def test_a_health_word_that_is_not_a_reachability_reason_is_ignored(self) -> None:
+        # `health` carries many words. Only the two that mean "did not answer" may be read as
+        # a reachability reason; anything else is a different fault.
+        self.assertEqual(
+            self._offline_action(machine={"health": "degraded"}), "Check that Mac")
+
+    def test_the_reason_vocabulary_is_what_decides(self) -> None:
+        # The two reasons and the two actions, one for one — so a third reason appearing
+        # later cannot silently inherit either answer.
+        self.assertEqual(fleet._offline_action("no_hub"), "Start Studio Hub on that Mac")
+        self.assertEqual(
+            fleet._offline_action("unreachable"), "Check that Mac is switched on and awake")
+        self.assertEqual(fleet._offline_action("something_new"), "Check that Mac")
+
     def test_a_model_that_could_not_be_checked_on_an_offline_machine_is_not_a_fault(self) -> None:
         codes = [i["code"] for i in self._issues()]
         self.assertNotIn("model_catalog_error", codes, codes)

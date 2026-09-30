@@ -14,6 +14,30 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.79 — 2026-09-30
+
+### The Fleet page stopped telling you to fix Studio Hub on Macs that are switched off
+
+You noticed that one controller showed eight of its nine Macs unreachable and asked whether that
+was a real outage or a reporting problem. **It was a real outage — those Macs are off** — but
+checking it turned up a genuine mistake in what this page was telling you to do about it.
+
+When a Mac does not answer, the Fleet page offers a next step. It said **"Studio Hub on that Mac"**
+for every one of them. That is correct for exactly one of the two reasons a Mac goes unreachable:
+
+- **The Mac answered, but Studio Hub is not running on it.** Then yes — go and start Studio Hub.
+- **The Mac never answered at all** — it is asleep, switched off, or a firewall is blocking it.
+  Telling you to look at Studio Hub there sends you to check something that is not the problem.
+
+Those eight rows were all the second kind: switched-off Macs being reported as a Hub fault.
+
+The page now says the right thing for each: **"Check that Mac is switched on and awake"** when the
+Mac never answered, and **"Start Studio Hub on that Mac"** when it did answer without its Hub.
+
+This works with the controllers you are running today. It also reads a new field from Studio Hub
+**0.6.113** onward, so once your controllers are updated the reason comes from the Hub directly
+rather than being worked out from its wording.
+
 ## 0.2.78 — 2026-09-30
 
 ### A new Analytics page: what you generated, and which Mac did it
