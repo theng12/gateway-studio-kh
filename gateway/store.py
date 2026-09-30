@@ -32,7 +32,7 @@ RECOVERY_UNKNOWN = "unknown_outcome"
 RECOVERY_RETRYABLE = "retryable"
 CANCEL_REQUESTED = "requested"
 CANCEL_CONFIRMED = "confirmed"
-_INPUT_PARAM_KEYS = ("_upload_path",)
+_INPUT_PARAM_KEYS = ("_upload_path", "_reference_path")
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS jobs (
@@ -104,6 +104,9 @@ _ADDED_COLUMNS: tuple[tuple[str, str], ...] = (
     # asks at 2am when a batch failed. Absent means the caller said nothing, and
     # that stays distinguishable from a caller that named itself.
     ("caller", "TEXT"),
+    # While a running job's Hub item is still queued: `{"reason", "next_try_at", "since"}` as JSON.
+    # Published as `waiting` on the job envelope; null as soon as a Mac starts rendering.
+    ("waiting_json", "TEXT"),
     # Why a job is back in the queue instead of running. **A busy fleet is not a
     # broken job**: a site with no free machine right now will have one shortly,
     # and the caller asked for work rather than for a verdict on the fleet's
@@ -199,6 +202,7 @@ class JobStore:
         self._conn.executescript(_SCHEMA)
         self._ensure_columns()
         self._recover_interrupted()
+        self._settle_late_successes()
         self._conn.commit()
 
     def _ensure_columns(self) -> None:
@@ -219,6 +223,10 @@ class JobStore:
             result["retryable"] = bool(result["retryable"])
         result["cancel_requested"] = result.get("cancel_requested_at") is not None
         result["recovery_required"] = bool(result.get("recovery_state"))
+        try:
+            result["waiting"] = json.loads(result["waiting_json"]) if result.get("waiting_json") else None
+        except ValueError:
+            result["waiting"] = None
         # A JSON column we cannot read is "unknown", never a confirmation: an
         # unreadable cancel must not read as a remote stop, and an unreadable
         # recovery context must not look like a resolvable hold.
@@ -232,6 +240,25 @@ class JobStore:
                 except ValueError:
                     result[column] = None
         return result
+
+    def _settle_late_successes(self) -> None:
+        """A hold whose result arrived late is a success, not a failure with a footnote.
+
+        `succeed()` now settles such a job itself; this is the same rule applied once to the rows
+        written before it did (restarts that raced a finishing job left `failed / UNKNOWN_OUTCOME`
+        beside an artifact on disk that nothing published).
+        """
+        self._conn.execute(
+            """
+            UPDATE jobs
+               SET state = 'succeeded', recovery_state = NULL, recovery_detail = NULL,
+                   recovery_context = NULL, error_code = NULL, error_detail = NULL,
+                   retryable = 0, next_action_at = NULL
+             WHERE state = 'failed' AND recovery_state = ? AND late_result_state = 'succeeded'
+               AND (asset_path IS NOT NULL OR result_json IS NOT NULL)
+            """,
+            (RECOVERY_UNKNOWN,),
+        )
 
     def _recover_interrupted(self) -> int:
         """Close the unsafe restart window without ever replaying in-flight work.
@@ -401,7 +428,12 @@ class JobStore:
             if result is not None:
                 fields["result_json"] = json.dumps(result)
 
-            if existing["state"] in TERMINAL_STATES:
+            # **A result for a job held as an unknown outcome settles the hold** (owner decision,
+            # 2026-09-30: finished work is adopted, never left `failed / UNKNOWN_OUTCOME`). Any
+            # other terminal job keeps its verdict and records the late result beside it.
+            holding = (existing["state"] == "failed"
+                       and existing.get("recovery_state") == RECOVERY_UNKNOWN)
+            if existing["state"] in TERMINAL_STATES and not holding:
                 if existing["state"] != "succeeded":
                     fields["late_result_state"] = "succeeded"
                 self._update_locked(job_id, fields)
@@ -413,6 +445,8 @@ class JobStore:
                     recovery_state=None,
                     recovery_detail=None,
                 )
+                if holding:
+                    fields.update(error_code=None, error_detail=None, recovery_context=None)
                 if existing.get("cancel_requested_at") is not None:
                     fields["cancel_state"] = "completed_after_request"
                 self._update_locked(job_id, fields)
@@ -773,6 +807,10 @@ class JobStore:
             )
             self._conn.commit()
             return result.rowcount == 1
+
+    def record_waiting(self, job_id: str, waiting: dict[str, Any] | None) -> None:
+        """Remember why a running job is waiting for the upstream to start it (or that it is not)."""
+        self._update(job_id, waiting_json=json.dumps(waiting) if waiting else None)
 
     def settle_cancelled(self, job_id: str) -> bool:
         """Settle a cancelled-while-running job whose upstream attempt has ended in failure."""

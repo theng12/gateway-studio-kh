@@ -28,12 +28,14 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+import httpx
 from fastapi import Depends, FastAPI, File, Form, Header, Query, Request, Response, UploadFile
 from fastapi.responses import JSONResponse
 
@@ -49,7 +51,7 @@ from . import fleet
 from . import retention
 from .activity import is_story_path, record
 from .runtime import store, worker
-from .store import artifacts_of
+from .store import TERMINAL_STATES, artifacts_of
 from .worker import cancel_upstream
 from .voices import story_row, tts_output_container, voice_registry, voices_for_model
 
@@ -57,7 +59,7 @@ from .voices import story_row, tts_output_container, voice_registry, voices_for_
 # Uploaded audio for transcription quotes, held between the quote and its
 # confirm. In memory on purpose: it is a single-process gateway and the payload
 # is a transient request body, not state worth persisting.
-_UPLOADS: dict[str, tuple[bytes | None, str, str, float, str]] = {}
+_UPLOADS: dict[str, tuple[Any, ...]] = {}
 #: A staged audio upload, held between the quote and the confirm.
 #:
 #: `content` is `None` for a quote that carried a model but no audio — the
@@ -432,7 +434,7 @@ def _discard_recovery_hold(job_id: str) -> dict[str, Any]:
             "ok": True,
             "closed": "local",
             "discard": None,
-            "job": _job_envelope(closed or store.get(job_id)),
+            "job": _job_envelope(closed or store.get(job_id), native=True),
         }
     batch, index = _named_attempt(job) or ("", 0)
     if not batch:
@@ -481,7 +483,7 @@ def _discard_recovery_hold(job_id: str) -> dict[str, Any]:
         "ok": True,
         "closed": "upstream",
         "discard": answer,
-        "job": _job_envelope(closed or store.get(job_id)),
+        "job": _job_envelope(closed or store.get(job_id), native=True),
     }
 
 
@@ -511,19 +513,91 @@ def _lifecycle_fields(job: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+# ---------------------------------------------------------------------------
+# The job envelope's contract additions (2026-09-30): dispatch state, cancellation, waiting.
+# ---------------------------------------------------------------------------
+_HUB_ROUTE = re.compile(r"(?:https?://[^\s/'\"]+|[\w.-]+:\d+)?/api/hub[^\s'\"),]*")
+_ADDRESS = re.compile(
+    r"https?://[^\s/'\"]+"
+    r"|\b(?:\d{1,3}(?:\.\d{1,3}){3}|localhost|[\w-]+(?:\.[\w-]+)+):\d{2,5}\b"
+)
+
+
+def scrub(value: Any) -> Any:
+    """Remove a Hub's `host:port` and `/api/hub/...` routes from anything about to be published.
+
+    Story Studio's invariant is that it never learns a second address. It never *calls* one, but
+    the address still crossed inside `failure_reason`, `recovery_detail` and the cancel record. One
+    helper, applied to every published text field, so the next field cannot forget it.
+    """
+    if isinstance(value, str):
+        return _ADDRESS.sub("the location", _HUB_ROUTE.sub("the Hub", value))
+    if isinstance(value, dict):
+        return {key: scrub(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [scrub(item) for item in value]
+    return value
+
+
+def _iso(moment: Any) -> str | None:
+    if not isinstance(moment, (int, float)):
+        return None
+    return datetime.fromtimestamp(float(moment), timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+#: How soon a caller should ask again, by lane. A 30-second video does not change once a second,
+#: and a fixed 1000 pinned Story to ~1 GET/s per job for the whole render.
+_POLL_AFTER_MS = {"chat": 1000, "tts": 1500, "image": 3000, "video": 5000, "music": 5000,
+                  "transcription": 5000}
+
+
+def _contract_fields(job: dict[str, Any]) -> dict[str, Any]:
+    """`dispatch_state`, `cancellable`, `cancellation_requested`, `cancelled`, `waiting`.
+
+    `pre_dispatch` is "nothing has been sent upstream yet", which is also exactly when a cancel is
+    honoured now (`store.cancel` settles it locally). `waiting` is only ever published while the job
+    is running here but its Hub item is still queued, and is `null` the moment a Mac starts.
+    """
+    state = job["state"]
+    pre = state == "accepted" or (
+        job.get("dispatch_started_at") is None and not job.get("upstream_job_id"))
+    waiting = job.get("waiting") if state == "running" else None
+    if isinstance(waiting, dict):
+        waiting = {"reason": scrub(str(waiting.get("reason") or "waiting for a free Mac")),
+                   "next_try_at": _iso(waiting.get("next_try_at")),
+                   "since": _iso(waiting.get("since"))}
+    else:
+        waiting = None
+    return {
+        "dispatch_state": "pre_dispatch" if pre else "dispatched",
+        "cancellable": state not in TERMINAL_STATES and pre and not job.get("cancel_requested"),
+        "cancellation_requested": bool(job.get("cancel_requested")),
+        "cancelled": state == "cancelled",
+        "waiting": waiting,
+    }
+
+
 def _cancel_upstream(job: dict[str, Any]) -> dict[str, Any] | None:
     """Ask whoever owns dispatched work to stop it (see `worker.cancel_upstream`)."""
     return cancel_upstream(job, store)
 
 
-def _job_envelope(job: dict[str, Any]) -> dict[str, Any]:
+def _job_envelope(job: dict[str, Any], *, native: bool = False) -> dict[str, Any]:
+    """The job as Story Studio reads it.
+
+    `native=True` is the menu bar app's own reading: it keeps `state: "cancelled"` and does not
+    scrub, because the owner's operator views want the address and the app knows the state.
+    """
     modality = job["modality"]
     result = _result_of(job)
     payload = result.get("payload") or {}
+    # Story Studio's `JobState` has no `cancelled`: a cancelled job is `failed` with `cancelled:
+    # true` (its own note, `genstudio-client.ts`), or it polls the job for hours.
+    cancelled_for_story = job["state"] == "cancelled" and not native
 
     body: dict[str, Any] = {
         "id": job["id"],
-        "state": job["state"],
+        "state": "failed" if cancelled_for_story else job["state"],
         "model_id": catalog_encode(job),
         "failure_code": None,
         "failure_class": None,
@@ -534,8 +608,10 @@ def _job_envelope(job: dict[str, Any]) -> dict[str, Any]:
         "queue_reason": None,
         "retry_after_seconds": None,
         "retry_at": None,
-        "poll_after_ms": 1000,
+        "poll_after_ms": _POLL_AFTER_MS.get(modality, 3000) if job["state"] not in TERMINAL_STATES
+        else 1000,
         **_lifecycle_fields(job),
+        **_contract_fields(job),
         **ZERO_SETTLEMENT,
     }
 
@@ -632,10 +708,19 @@ def _job_envelope(job: dict[str, Any]) -> dict[str, Any]:
         body["failure_code"] = job.get("error_code") or "PROVIDER_FAILED"
         body["failure_class"] = "provider_error"
         body["failure_reason"] = job.get("error_detail") or "generation failed"
+    elif cancelled_for_story:
+        body["failure_code"] = "CANCELLED"
+        body["failure_class"] = "cancelled"
+        body["failure_reason"] = "The job was cancelled."
 
     _publish_attempt_evidence(body, job)
     _publish_queue_evidence(body, job)
 
+    if not native:
+        for key in ("failure_reason", "recovery_detail", "cancel_remote", "attempts",
+                    "queue_reason"):
+            if body.get(key) is not None:
+                body[key] = scrub(body[key])
     return body
 
 
@@ -929,15 +1014,22 @@ def version() -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 @app.get("/v1/account/overview", dependencies=[Depends(require_auth)])
 def account_overview() -> dict[str, Any]:
+    # Story Studio's `hasVerifiedCapacity` needs integer `paid_active_jobs` and `paid_queued_jobs`;
+    # without them it reads this whole record as unverified and never shows or paces to the queue.
+    live = {
+        "paid_active_jobs": worker.active(),
+        "paid_queued_jobs": len(store.waiting_jobs(limit=int(admission()["max_queued_jobs"]) + 1)),
+    }
     return {
         **admission(),
+        **live,
         "credit_balance": CREDIT_BALANCE,
         "credits_used_30d": 0,
         "currency": "credits",
         "tier": "owner",
         "lifetime_paid_cents": 0,
         "service_tier": "owner",
-        "admission": admission(),
+        "admission": {**admission(), **live},
         "capacity_verified": True,
         "limit_source": "gateway",
     }
@@ -1062,6 +1154,128 @@ def save_voice(voice_id: str) -> dict[str, Any]:
 @app.delete("/v1/voices/{voice_id}/save", dependencies=[Depends(require_auth)])
 def unsave_voice(voice_id: str) -> dict[str, Any]:
     return {"id": voice_id, "is_saved": False}
+
+
+@app.get("/v1/voices/{voice_id:path}/preview", dependencies=[Depends(require_auth)])
+def voice_preview(voice_id: str) -> Response:
+    """A voice's stored sample, proxied so the caller never learns a provider URL or credential.
+
+    Published as `preview_url` on the voice row, and only for voices that have one.
+    """
+    try:
+        content, media_type = voice_registry().preview(voice_id)
+    except KeyError as exc:
+        raise GatewayError(404, f"No preview is available for this voice: {exc}", "PREVIEW_NOT_FOUND")
+    if not content:
+        raise GatewayError(404, "The provider returned no preview audio.", "PREVIEW_NOT_FOUND")
+    return Response(content=content, media_type=media_type)
+
+
+# The provider libraries Story Studio's picker can browse, under the names it hard-codes.
+_VOICE_LIBRARIES = {"elevenlabs": "elevenlabs-direct", "fish": "fish-audio"}
+#: What the last page of each library listed, by `(library, public_voice_id)`: the add and preview
+#: calls carry only the id, and ElevenLabs needs the voice's `owner_id` (and its sample URL) that
+#: only the listing knows. ponytail: process memory, so a restart between browse and add answers
+#: 409 "browse again"; persist it if that ever bites.
+_LIBRARY_SEEN: dict[tuple[str, str], Any] = {}
+
+
+def _library_provider(library: str) -> str:
+    provider_id = _VOICE_LIBRARIES.get(library)
+    if provider_id is None:
+        raise GatewayError(404, f'There is no voice library named "{library}".', "LIBRARY_NOT_FOUND")
+    return provider_id
+
+
+def _admin_result(answer: Any) -> Any:
+    """The admin voice-library code answers an error as a response object; raise it as ours."""
+    if isinstance(answer, JSONResponse):
+        try:
+            detail = json.loads(answer.body).get("detail")
+        except (ValueError, AttributeError):
+            detail = None
+        raise GatewayError(answer.status_code, str(detail or "the voice library could not answer"),
+                           "VOICE_LIBRARY_ERROR")
+    return answer
+
+
+@app.get("/v1/voice-library/{library}", dependencies=[Depends(require_auth)])
+def voice_library_page(library: str, search: str = "", page: int = Query(0, ge=0)) -> dict[str, Any]:
+    """Browse a provider's public voice library, in the shape Story Studio's picker reads.
+
+    Reads the same live search the admin library uses (`voices.search_library`).
+    """
+    from .voices import search_library
+
+    provider_id = _library_provider(library)
+    definition = registry.definition(provider_id)
+    if definition is None or not registry.credentials.is_configured(provider_id):
+        raise GatewayError(409, f"No API key is configured for {library}.", "LIBRARY_NOT_CONFIGURED")
+    found = search_library(definition, registry.credentials.resolved(provider_id), search, page)
+    if library == "fish" and search.strip():  # Fish answers its whole library; filter here
+        needle = search.strip().lower()
+        found = [v for v in found if needle in v.display_name.lower()
+                 or needle in v.description.lower()]
+    known = {v.provider_voice_id: v.id for v in voice_registry().voices(provider_id=provider_id)}
+    voices = []
+    for voice in found:
+        _LIBRARY_SEEN[(library, voice.provider_voice_id)] = voice
+        voices.append({
+            "public_voice_id": voice.provider_voice_id,
+            "name": voice.display_name,
+            "description": voice.description,
+            "language": voice.language,
+            "accent": voice.accent or None,
+            "gender": voice.gender or None,
+            "age": voice.age or None,
+            "preview_available": bool(voice.preview_url),
+            "preview_url": (f"/v1/voice-library/{library}/{voice.provider_voice_id}/preview"
+                            if voice.preview_url else None),
+            "genstudio_voice_id": known.get(voice.provider_voice_id),
+            "is_saved": voice.provider_voice_id in known,
+            "credits_per_1000_characters": 0,
+        })
+    # ElevenLabs pages are 30 voices; Fish answers its whole library at once.
+    return {"page": page, "has_more": library == "elevenlabs" and len(voices) >= 30,
+            "voices": voices}
+
+
+@app.post("/v1/voice-library/{library}/add", dependencies=[Depends(require_auth)])
+def voice_library_add(library: str, payload: dict[str, Any]) -> dict[str, Any]:
+    """Bring a browsed library voice into this gateway's voices (`admin.import_voice`)."""
+    from . import admin
+
+    provider_id = _library_provider(library)
+    voice_id = str(payload.get("public_voice_id") or "").strip()
+    if not voice_id:
+        raise GatewayError(422, "public_voice_id is required.", "INVALID_REQUEST")
+    seen = _LIBRARY_SEEN.get((library, voice_id))
+    if seen is None:
+        raise GatewayError(409, "Browse the library again, then add the voice.", "LIBRARY_STALE")
+    answer = _admin_result(admin.import_voice({
+        "provider_id": provider_id, "provider_voice_id": voice_id,
+        "display_name": seen.display_name, "owner_id": (seen.raw or {}).get("owner_id") or "",
+    }))
+    voice = answer["voice"]
+    return {"voice_id": voice["id"], "created": True, "saved": True,
+            "credits_per_1000_characters": 0}
+
+
+@app.get("/v1/voice-library/{library}/{voice_id}/preview", dependencies=[Depends(require_auth)])
+def voice_library_preview(library: str, voice_id: str) -> Response:
+    _library_provider(library)
+    seen = _LIBRARY_SEEN.get((library, voice_id))
+    url = seen.preview_url if seen is not None else ""
+    if not url:
+        raise GatewayError(404, "No preview is available for this voice.", "PREVIEW_NOT_FOUND")
+    try:
+        answer = httpx.get(url, timeout=20.0, follow_redirects=True)
+    except httpx.HTTPError as exc:
+        raise GatewayError(502, f"The provider's sample could not be fetched: {exc}", "PREVIEW_UNAVAILABLE")
+    if answer.status_code >= 400 or not answer.content:
+        raise GatewayError(502, "The provider returned no preview audio.", "PREVIEW_UNAVAILABLE")
+    return Response(content=answer.content,
+                    media_type=answer.headers.get("content-type", "audio/mpeg").split(";")[0])
 
 
 # ---------------------------------------------------------------------------
@@ -1390,6 +1604,26 @@ async def upload_video_source_image(
             "expires_in_seconds": video_assets.TTL_S}
 
 
+def _stage_video_reference(payload: dict[str, Any]) -> dict[str, Any]:
+    """Keep the source image with the job, the way a transcription's audio is staged.
+
+    The upload lives 15 minutes in process memory, but the adapter reads it at *dispatch*: a video
+    job that waited longer in the queue, or outlived a restart, failed with "upload it again".
+    Written beside the other staged inputs at submit, so the job carries its own bytes (and the
+    retention sweep knows not to delete them while it is queued or held).
+    """
+    from . import video_assets
+
+    asset = video_assets.get(str(payload.get("reference_asset_id") or "").strip())
+    if asset is None:
+        return payload  # nothing uploaded, or gone already: the worker names it, as before
+    directory = ARTIFACT_DIR / "uploads"
+    directory.mkdir(parents=True, exist_ok=True)
+    staged = directory / f"video-ref-{payload['reference_asset_id']}"
+    staged.write_bytes(asset["content"])
+    return {**payload, "_reference_path": str(staged), "_reference_type": asset["media_type"]}
+
+
 @app.post("/v1/videos/generations", dependencies=[Depends(require_auth)])
 def create_video(
     payload: dict[str, Any],
@@ -1399,7 +1633,7 @@ def create_video(
 ) -> dict[str, Any]:
     key = _require_idempotency_key(idempotency_key)
     model_id = str(payload.get("model_id") or payload.get("model") or "")
-    job, created = _submit("video", model_id, payload, key, caller=caller)
+    job, created = _submit("video", model_id, _stage_video_reference(payload), key, caller=caller)
     if created:
         response.status_code = 202
         response.headers["Location"] = f"/v1/videos/{job['id']}"
@@ -1423,6 +1657,14 @@ def get_video_job(job_id: str) -> dict[str, Any]:
 @app.get("/v1/videos/{job_id}/file", dependencies=[Depends(require_auth)])
 def get_video_file(job_id: str) -> Response:
     return _artifact_response(_load_job(job_id, "video"), "video/mp4")
+
+
+@app.post("/v1/videos/{job_id}/cancel", dependencies=[Depends(require_auth)])
+def cancel_video_job(job_id: str) -> dict[str, Any]:
+    job = _load_job(job_id, "video")
+    store.cancel(job_id)
+    _cancel_upstream(job)
+    return _job_envelope(store.get(job_id))
 
 
 # ---------------------------------------------------------------------------
@@ -1641,6 +1883,8 @@ async def transcription_quote(
     request: Request,
     file: UploadFile | None = File(default=None),
     model: str | None = Form(default=None),
+    language: str | None = Form(default=None),
+    word_timestamps: str | None = Form(default=None),
 ) -> dict[str, Any]:
     """Accept the audio upload and quote it.
 
@@ -1705,6 +1949,13 @@ async def transcription_quote(
             file.content_type or "application/octet-stream",
             now,
             str(body_model or ""),
+            # What Story validated against the model's published languages and sent with the
+            # audio: carried to the confirm, or it is told one language and runs another.
+            {key: value for key, value in (
+                ("language", (language or "").strip() or None),
+                ("word_timestamps", None if word_timestamps is None
+                 else word_timestamps.strip().lower() in {"1", "true", "yes", "on"}),
+            ) if value is not None},
         )
 
     return {
@@ -1760,7 +2011,7 @@ async def confirm_transcription(
             410, "Transcription quote expired or was lost on restart. Upload the audio again to obtain a new quote.", "TRANSCRIPTION_QUOTE_EXPIRED"
         )
 
-    content, name, content_type, _, _quoted_model = upload
+    content, name, content_type, _, _quoted_model, *rest = upload
     if content is None:
         raise GatewayError(
             400,
@@ -1795,6 +2046,7 @@ async def confirm_transcription(
         "_upload_path": str(staged),
         "_upload_name": name,
         "_upload_type": content_type,
+        **(rest[0] if rest else {}),
     }
     job, created = _submit("transcription", model_id, payload, key, caller=caller)
     if created:
@@ -1841,6 +2093,14 @@ def get_transcription_job(job_id: str) -> dict[str, Any]:
 @app.get("/v1/transcriptions/{job_id}/srt", dependencies=[Depends(require_auth)])
 def get_transcription_srt(job_id: str) -> Response:
     return _artifact_response(_load_job(job_id, "transcription"), "application/x-subrip")
+
+
+@app.post("/v1/transcriptions/{job_id}/cancel", dependencies=[Depends(require_auth)])
+def cancel_transcription_job(job_id: str) -> dict[str, Any]:
+    job = _load_job(job_id, "transcription")
+    store.cancel(job_id)
+    _cancel_upstream(job)
+    return _job_envelope(store.get(job_id))
 
 
 # ---------------------------------------------------------------------------

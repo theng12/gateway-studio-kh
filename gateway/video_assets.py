@@ -6,8 +6,9 @@ Story Studio's image-to-video flow is two calls: it uploads the exact scene imag
 held here between the two calls.
 
 **Bounded and temporary, like the transcription uploads it is modelled on.** An image is held
-for ``TTL_S`` and then dropped; the Hub-side copy is made at submit time (the adapter base64s it
-into the job body), so nothing needs to outlive the request that uses it. The cap is the same
+for ``TTL_S`` and then dropped. **The job keeps its own copy**: ``create_video`` stages the bytes
+beside the transcription uploads at submit (``_reference_path``), so a job that queues past the
+window, or outlives a restart, still has its image; the adapter base64s that copy into the job body. The cap is the same
 25 MB the transcription door enforces, and it is a refusal rather than a truncation.
 
 Held in memory on purpose: a scene PNG is a few megabytes and the window is seconds. This is

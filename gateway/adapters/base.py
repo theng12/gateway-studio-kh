@@ -148,6 +148,9 @@ class BackendRequest:
     #: (ack, artifact, discard) all name an index, and hardcoding it in each of
     #: them is how one of them ends up addressing the wrong item.
     upstream_item_index: int = 0
+    #: Told when a dispatched job is waiting for the upstream to start it (`{"reason", "next_try_at",
+    #: "since"}`) and again with `None` when it stops. Absent means nobody is listening.
+    on_wait: Callable[[dict[str, Any] | None], None] | None = None
 
 
 @runtime_checkable

@@ -207,13 +207,17 @@ class ProviderBudgetsTest(unittest.TestCase):
         concurrency.reset_for_tests()
         self.addCleanup(concurrency.reset_for_tests)
 
-    def test_a_cloud_lane_runs_one_at_a_time_by_default(self) -> None:
-        # The shipping default: over-scheduling is what produces 429s, and a 429 on
-        # a submitted job is a durable hold rather than a clean retry.
-        jobs = [_job(f"job-{n}") for n in range(4)]
+    def test_a_cloud_lane_never_runs_more_than_its_own_limit(self) -> None:
+        # A provider's limit is an "up to" ceiling that differs per provider and rises with its
+        # tier, so no number is asserted: whatever the settings say (or the default when nothing
+        # does) is what bounds the lane -- over-scheduling is what produces 429s, and a 429 on a
+        # submitted job is a durable hold rather than a clean retry.
+        limit = concurrency.cloud_budget("openai-direct").limit
+        jobs = [_job(f"job-{n}") for n in range(6)]
         with _Harness(jobs, pool_size=4, hold=0.2) as h:
-            self.assertTrue(h.wait_for(4))
-            self.assertEqual(h.tracker.provider("openai-direct"), 1)
+            self.assertTrue(h.wait_for(6))
+            self.assertEqual(h.tracker.provider("openai-direct"), min(limit, 4),
+                             "the lane ran at its configured limit -- not over it, not under it")
 
     def test_a_curated_limit_is_what_the_owner_wrote(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -270,6 +274,16 @@ class AdmissionIsACapacityNotASecondSubtractionTest(unittest.TestCase):
     """
 
     def setUp(self) -> None:
+        # These measure the arithmetic of one site, so the pool above it must not be the thing that
+        # bounds them: a lane with no cap of its own is bounded by the settings' `global`, which is
+        # 100 on the owner's machine and 4 on a clean one. The test states its own, above every M.
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        path = Path(tmp.name) / "provider-concurrency.local.json"
+        path.write_text(json.dumps({"global": 50}), encoding="utf-8")
+        patcher = patch.object(concurrency, "SETTINGS_PATH", path)
+        patcher.start()
+        self.addCleanup(patcher.stop)
         concurrency.reset_for_tests()
         self.addCleanup(concurrency.reset_for_tests)
 
@@ -383,18 +397,31 @@ class LaneBudgetsTest(unittest.TestCase):
         concurrency.reset_for_tests()
         self.addCleanup(concurrency.reset_for_tests)
 
+    def _settings(self, body: dict):
+        """Point the settings at a file this test wrote: the owner's own must not decide it."""
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        path = Path(tmp.name) / "provider-concurrency.local.json"
+        path.write_text(json.dumps(body), encoding="utf-8")
+        patcher = patch.object(concurrency, "SETTINGS_PATH", path)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        concurrency.reset_for_tests()
+
     def test_a_lane_cap_bounds_that_lane(self) -> None:
-        with patch.dict(os.environ, {"GATEWAY_LANE_CONCURRENCY": "image=1"}):
-            concurrency.reset_for_tests()
-            jobs = [_job(f"job-{n}", provider=f"provider-{n}") for n in range(3)]
-            with _Harness(jobs, pool_size=4, hold=0.25) as h:
-                self.assertTrue(h.wait_for(3))
-                self.assertEqual(h.tracker.provider("provider-0"), 1)
-                self.assertLessEqual(h.tracker.peak, 1, "the lane cap did not bound the lane")
+        self._settings({"lanes": {"image": 2}})
+        cap = concurrency.lane_budget("image").limit
+        self.assertEqual(cap, 2, "the cap that was configured is the cap in force")
+        jobs = [_job(f"job-{n}", provider=f"provider-{n}") for n in range(6)]
+        with _Harness(jobs, pool_size=4, hold=0.25) as h:
+            self.assertTrue(h.wait_for(6))
+            self.assertEqual(h.tracker.peak, cap, "the lane ran at its cap: not over it, not under")
 
     def test_a_lane_with_no_cap_may_use_the_whole_pool(self) -> None:
-        concurrency.reset_for_tests()
-        budget = concurrency.lane_budget("image")
+        self._settings({})
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("GATEWAY_LANE_CONCURRENCY", None)
+            budget = concurrency.lane_budget("image")
         self.assertEqual(budget.limit, concurrency.global_limit())
         self.assertEqual(budget.source, "gateway")
 
@@ -424,8 +451,11 @@ class SlotsAreNeverLeakedTest(unittest.TestCase):
                 patch.object(worker_module, "execute_job", lambda job, store: None):
             h = _Harness([_job("job-0", provider="openai-direct")], pool_size=1)
             h.worker._admit(_job("job-0", provider="openai-direct"))
-            self.assertEqual(h.worker.budgets["openai-direct"]["source"], "gateway")
-            self.assertEqual(h.worker.budgets["openai-direct"]["limit"], 1)
+            # Whatever the settings say -- or the default, when nothing does -- and *which* of the
+            # two it was, exactly as `cloud_budget` states it.
+            stated = concurrency.cloud_budget("openai-direct")
+            self.assertEqual(h.worker.budgets["openai-direct"]["source"], stated.source)
+            self.assertEqual(h.worker.budgets["openai-direct"]["limit"], stated.limit)
 
 
 class ThePublishedLimitIsTheRealOneTest(unittest.TestCase):
@@ -584,16 +614,23 @@ class TheConsoleReportsWhatWillActuallyRunTest(unittest.TestCase):
         with patch("gateway.fleet.snapshot", lambda **_: {"locations": []}):
             view = concurrency.settings_view(["openai-direct"])
         row = self._row(view, "openai-direct")
-        self.assertEqual(row["source"], concurrency.SOURCE_GATEWAY)
-        self.assertEqual(row["limit"], concurrency.DEFAULT_PROVIDER)
+        # The page reports the very budget admission enforces: the owner's number when he wrote
+        # one, the default when he did not.
+        stated = concurrency.cloud_budget("openai-direct")
+        self.assertEqual(row["source"], stated.source)
+        self.assertEqual(row["limit"], stated.limit)
 
     def test_an_unreadable_fleet_does_not_stop_the_page_drawing(self) -> None:
         def boom(**_):
             raise RuntimeError("no fleet")
         with patch("gateway.fleet.snapshot", boom):
             view = concurrency.settings_view(["studio-hub-test", "openai-direct"])
-        self.assertEqual(len(view["providers"]), 2)
-        self.assertEqual(self._row(view, "studio-hub-test")["limit"], concurrency.DEFAULT_PROVIDER)
+        # Both asked-for providers are drawn (the owner's file may add more rows of its own), and
+        # a location whose fleet cannot be read falls back to the ordinary budget.
+        self.assertEqual({"studio-hub-test", "openai-direct"} - {
+            row["provider_id"] for row in view["providers"]}, set())
+        self.assertEqual(self._row(view, "studio-hub-test")["limit"],
+                         concurrency.cloud_budget("studio-hub-test").limit)
 
 
 class AHubLocationsNumberIsACapNotALicenceTest(unittest.TestCase):

@@ -1103,6 +1103,12 @@ class Server(ThreadingHTTPServer):
     """
 
     daemon_threads = True
+    #: **The reason `test_fleet_routing` failed about one run in eight.** `fleet._probe` opens nine
+    #: connections at once (`_fetch_optional`), and `socketserver`'s default listen backlog is 5, so
+    #: the surplus were reset by the kernel ("Connection reset by peer" -- measured 300 probes: 8 came
+    #: back with no models). Each read is best-effort by design, so the probe quietly returned fewer
+    #: rows and the assertion, not the connection, was what failed. Nothing in the gateway is wrong.
+    request_queue_size = 128
 
     def server_bind(self) -> None:
         socketserver.TCPServer.server_bind(self)

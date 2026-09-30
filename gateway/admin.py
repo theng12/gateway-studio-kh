@@ -1268,7 +1268,7 @@ def create_submit(payload: dict[str, Any]) -> Any:
         job, created = _submit(modality, model_id, params, key)
     except GatewayError as exc:
         return _error(exc.status, exc.detail, exc.code)
-    return {"created": created, **_job_envelope(job)}
+    return {"created": created, **_job_envelope(job, native=True)}
 
 
 @router.post("/api/create/transcription", dependencies=[Depends(require_admin)])
@@ -1319,7 +1319,7 @@ async def create_transcription(
         job, created = _submit("transcription", model_id, params, key)
     except GatewayError as exc:
         return _error(exc.status, exc.detail, exc.code)
-    return {"created": created, **_job_envelope(job)}
+    return {"created": created, **_job_envelope(job, native=True)}
 
 
 @router.get("/api/create/status/{job_id}", dependencies=[Depends(require_admin)])
@@ -1330,7 +1330,7 @@ def create_status(job_id: str) -> Any:
     job = store.get(job_id)
     if job is None:
         return _error(404, f"no job '{job_id}'")
-    return {**_job_envelope(job), "outputs": _admin_outputs(job)}
+    return {**_job_envelope(job, native=True), "outputs": _admin_outputs(job)}
 
 
 @router.post("/api/create/status/{job_id}/cancel", dependencies=[Depends(require_admin)])
@@ -1340,7 +1340,7 @@ def create_cancel(job_id: str) -> Any:
     job = store.get(job_id)
     if job is None:
         return _error(404, f"no job '{job_id}'")
-    return _job_envelope(store.cancel(job_id))
+    return _job_envelope(store.cancel(job_id), native=True)
 
 
 @router.post("/api/jobs/{job_id}/discard-uncertain", dependencies=[Depends(require_admin)])

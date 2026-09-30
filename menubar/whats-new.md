@@ -14,6 +14,72 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.80 — 2026-09-30
+
+### Finished work is no longer lost when the gateway restarts, and a job waiting for a Mac says so
+
+Three decisions of yours went in together, and one bug you would not have wanted to meet.
+
+**A finished result is adopted, not left as a failure.** When the gateway restarted in the middle of
+a job, it filed the job as *"outcome unknown"* — even when the Mac finished it seconds later and the
+picture, voice or subtitle was sitting there. Now the gateway asks the Hub once a minute about every
+held job, and when the Hub says *done* it fetches the result, checks its checksum, saves it, tells
+the Hub it arrived, and settles the job as **succeeded** with a normal download link. Before this it
+could not do that at all: the check that was meant to do it never saw the Hub's real answer, never
+asked your own Mac's Hub, and only looked at the newest 50 holds — most of them not Hub work. Jobs
+that had already been left that way are settled the first time this version starts.
+
+**Waiting in the queue no longer uses up the job's time.** A job is now allowed its full render time
+*once a Mac starts it*. Time spent waiting behind a busy fleet is not counted, and the job says so:
+Story Studio now receives a `waiting` note ("waiting for a free machine", when it will try again)
+that clears the moment a Mac starts. Nothing running is ever cancelled on a guess; a job still
+queued after three hours is withdrawn from the Hub's queue, and only when the Hub confirms nothing
+ran does it move to another location.
+
+**Cancel works from Story Studio.** Every job now says whether it has been sent yet, whether cancel
+will be honoured now, and whether a cancel was asked for. A cancelled job is reported as failed with
+`cancelled: true` — Story Studio has no "cancelled" state, and it was polling such jobs for hours.
+The video and subtitle cancel routes Story Studio was calling did not exist; they do now, and a
+cancel that arrives just as the Hub accepts the batch is passed on to it.
+
+### Smaller fixes on the same seam
+
+- **Voice preview** works: a voice offers a preview only when it has one, and the button plays it.
+- **ElevenLabs and Fish voice libraries** can be browsed and added to from Story Studio.
+- Story Studio's capacity panel works: the account overview now reports how many jobs are running
+  and queued.
+- Polling is calmer: a long job is asked about every few seconds, not every second.
+- A video's source image is kept with the job, so a video that waits more than 15 minutes, or spans
+  a restart, no longer fails with "upload it again".
+- Subtitle language and word timestamps chosen in Story Studio now reach the Hub.
+- Story Studio no longer sees a Mac's address (`host:port` or `/api/hub/...`) in a failure message.
+- Reference-image generation is no longer offered: the upload it needs does not exist here yet.
+- `/api/version` reports the real version instead of `0.0.1`.
+- The Hub's hold sweep, refusal codes (`STUDIO_NOT_RUNNING`, `OUTPUT_STORAGE_BLOCKED`,
+  `MODEL_CATALOG_UNAVAILABLE` now move a job to another location), chat connect timeouts, artifact
+  download retries with a checksum check, busy-Mac items from older controllers, subtitle timing and
+  machine, and 5xx answers while polling were all corrected against the Hub's real answers.
+
+### The Fleet page could undo your edits — that is fixed
+
+Renaming a controller, changing its address, adding, removing or resuming one could be silently
+reverted a few seconds later: the page's background refresh wrote back the list it had read before
+it started probing. It also rewrote your roster file on every refresh. Every edit now takes effect and
+stays, and the file is only written when something about it actually changed.
+
+### The app
+
+Quit, Stop, Restart and Save now warn before interrupting running jobs. The Jobs window shows attempts,
+durations, absolute times and queue position, filters by state up to 500 rows, and stops rebuilding
+the open detail on every refresh. Analytics shows model names with the id on hover, the Voices popup
+refreshes properly, and a subtitle upload that is too large is refused before it is read.
+
+### For whoever runs the tests
+
+The seven tests that asserted "the pool is 60" and "two providers" now assert the rule against
+whatever your settings are, so they pass on your Mac and on a clean install. The flaky Fleet routing
+test was a listen-backlog limit in its own mock server, not the gateway.
+
 ## 0.2.79 — 2026-09-30
 
 ### The Fleet page stopped telling you to fix Studio Hub on Macs that are switched off

@@ -23,7 +23,7 @@ import json
 import logging
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import httpx
 
@@ -32,6 +32,12 @@ from .base import BackendError, BackendRequest, BackendResult
 log = logging.getLogger(__name__)
 
 POLL_INTERVAL_S = 1.0
+
+#: The longest a batch may sit `queued` on the Hub before this gateway withdraws it (and only if
+#: the Hub confirms nothing ran). The lane deadline does not count queue time, so without this a
+#: job behind a machine that never frees up would poll for ever. ponytail: one flat number
+#: (Story's own wait is four hours); a per-lane figure if some lane's queue is legitimately longer.
+QUEUE_WAIT_CEILING_S = 3 * 3600.0
 
 #: How long a poll may keep failing before a batch becomes an unknown-outcome hold.
 #:
@@ -287,6 +293,10 @@ def _video_reference(request: BackendRequest) -> list[dict[str, Any]] | None:
     """
     from .. import video_assets
 
+    staged = str(request.params.get("_reference_path") or "")
+    if staged and Path(staged).exists():
+        return [{"b64": base64.b64encode(Path(staged).read_bytes()).decode("ascii"),
+                 "mime": str(request.params.get("_reference_type") or "image/png")}]
     asset_id = str(request.params.get("reference_asset_id") or "").strip()
     if not asset_id:
         return None
@@ -483,6 +493,7 @@ def _poll_batch(
     jobs_path: str = "/api/hub/jobs",
     deadline_seconds: float | None = None,
     progress: HubProgress | None = None,
+    on_wait: Callable[[dict[str, Any] | None], None] | None = None,
 ) -> dict[str, Any]:
     """Poll a Hub batch to a terminal state.
 
@@ -492,7 +503,13 @@ def _poll_batch(
     rather than a useful error.
 
     `deadline_seconds` is the lane's own ceiling when it published one (see
-    `lane_deadline_seconds`), and this gateway's flat fallback otherwise.
+    `lane_deadline_seconds`), and this gateway's flat fallback otherwise. **It counts only the
+    time the Hub item is running** (owner decision, 2026-09-30): the lane's number is the Hub's
+    per-attempt *generation* ceiling, and spending it on time spent queued behind a busy fleet
+    turned a job that was merely waiting for a Mac into a forced unknown-outcome hold. While the
+    item is `queued` the clock is paused and `on_wait` is told why (the Hub's own note, and when
+    it will try again), so the job can say "waiting for a Mac" instead of looking merely slow.
+    `QUEUE_WAIT_CEILING_S` is the only bound on that wait, and it cancels rather than guesses.
 
     `progress` is filled in as we go and read by the caller afterwards. It is passed
     in rather than returned because the interesting case is the one that **raises**:
@@ -501,13 +518,24 @@ def _poll_batch(
     on that path.
     """
     limit = float(deadline_seconds) if deadline_seconds else JOB_DEADLINE_S
-    deadline = time.monotonic() + limit
+    started = tick = time.monotonic()
+    ran = 0.0  # seconds this item has spent running -- the only time the lane budget counts
+    running = False
+    waiting_key: tuple[Any, ...] | None = None
+    waiting_since = 0.0
     last: dict[str, Any] = {}
     #: When the current run of consecutive poll failures began, or `None` while the
     #: Hub is answering. Reset by any successful poll, so a Hub that drops one
     #: request an hour is never mistaken for one that has gone away.
     dropped_since: float | None = None
-    while time.monotonic() < deadline:
+    while True:
+        now = time.monotonic()
+        if running:
+            ran += now - tick
+        tick = now
+        out_of_time = ran >= limit or now - started >= QUEUE_WAIT_CEILING_S
+        if out_of_time:
+            break
         # **A Mac that dies mid-poll is a named hold, not a raw `ConnectError`.** This call had no
         # guard at all (audit M7): an `httpx.HTTPError` escaped to the worker's generic handler,
         # which recorded a durable `unknown_outcome` hold whose detail was the exception's own
@@ -538,7 +566,7 @@ def _poll_batch(
             # so re-reading it is a GET on something that exists -- idempotent, and
             # the only question that settles the outcome. Giving up here is what
             # turned a finished render into a failure (see `POLL_DROP_GRACE_S`).
-            if now - dropped_since < POLL_DROP_GRACE_S and now < deadline:
+            if now - dropped_since < POLL_DROP_GRACE_S:
                 time.sleep(POLL_INTERVAL_S)
                 continue
             raise BackendError(
@@ -570,6 +598,21 @@ def _poll_batch(
         items = summary.get("items") or []
         item = items[item_index] if item_index < len(items) else None
         state = str((item or {}).get("state") or summary.get("state") or "").lower()
+        running = state != "queued"
+        if on_wait is not None:
+            if state == "queued":
+                reason = str((item or {}).get("error") or summary.get("governor_note") or
+                             "waiting for a free Mac")
+                retry_at = (item or {}).get("retry_at") or summary.get("next_retry_at")
+                key = (reason, retry_at)
+                if key != waiting_key:
+                    if waiting_key is None:
+                        waiting_since = time.time()
+                    waiting_key = key
+                    on_wait({"reason": reason, "next_try_at": retry_at, "since": waiting_since})
+            elif waiting_key is not None:
+                waiting_key = None
+                on_wait(None)
 
         if state in _TERMINAL_OK:
             return {"summary": summary, "item": item or {}}
@@ -617,8 +660,25 @@ def _poll_batch(
             )
         time.sleep(POLL_INTERVAL_S)
 
+    if ran < limit:
+        # Still queued after `QUEUE_WAIT_CEILING_S`. A queued item has provably not run, so it may
+        # be cancelled -- and only if the Hub *says* it cancelled it from the queue is it safe to
+        # let the worker try another location. A running item is never cancelled on a guess.
+        kind = "transcription" if "transcription" in jobs_path else "image"
+        cancel = _cancel_batch(base, headers, batch_id, kind)
+        answer = cancel.get("answer") if isinstance(cancel.get("answer"), dict) else {}
+        if cancel.get("ok") and int(answer.get("queued_cancelled") or 0) >= 1 \
+                and not answer.get("running_signalled") and not answer.get("running_pending"):
+            raise BackendError(
+                f"the Hub kept this queued for {int(QUEUE_WAIT_CEILING_S)}s with no machine free; "
+                "it was withdrawn from the queue before anything ran",
+                code="LOCATION_NOT_READY",
+                retryable=True,
+                upstream_accepted=False,
+                upstream_settled=True,
+            )
     raise BackendError(
-        f"hub job did not finish within {int(limit)}s"
+        f"hub job did not finish within {int(limit)}s of running"
         + (progress.why() if progress is not None else ""),
         code="PROVIDER_SUBMISSION_UNCERTAIN",
         retryable=True,
@@ -663,6 +723,45 @@ def _verify_digest(artifact: httpx.Response, stated: object = None) -> None:
         )
 
 
+def _hold_base(base_url: str, local: bool) -> str:
+    """Where to ask about a held batch, or `""` when nobody can be asked.
+
+    This Mac's own Hub has no stored address ("discovered at runtime"), so it is looked up. A
+    *remote* location with no address asks nobody: falling back to this Mac's Hub would answer 404
+    for a batch it never saw, which reads as "never started" and would re-run work that may be
+    rendering elsewhere.
+    """
+    from ..hub import hub_base_url
+
+    return (str(base_url or "").strip() or (hub_base_url() if local else "")).rstrip("/")
+
+
+def adopt_batch(request: BackendRequest, batch_id: str, *, local: bool = False) -> BackendResult:
+    """Collect the result of a held batch the Hub reports **done** (owner decision, 2026-09-30).
+
+    A hold is a job whose outcome the gateway lost track of; when the Hub's own record says the
+    item finished, the rendered artifact is still there, so it is fetched, sha256-verified and
+    returned exactly as a live job's would be -- through the same `_collect_*` functions, with the
+    same delivery receipt for the worker to send after the bytes are saved. Raises `BackendError`
+    if the Hub no longer says `done` or the bytes cannot be verified; the caller leaves the hold.
+    """
+    from ..hub import hub_headers
+
+    base = _hold_base(request.base_url, local)
+    if not base:
+        raise BackendError("no address to collect the held batch from", code="PROVIDER_FAILED")
+    headers = hub_headers(str(request.values.get("hub_token") or ""), local=local)
+    transcription = request.modality == "transcription"
+    with httpx.Client(timeout=httpx.Timeout(60.0, connect=10.0)) as client:
+        progress = HubProgress()
+        outcome = _poll_batch(
+            client, base, headers, batch_id, 0,
+            jobs_path=_jobs_path(request.modality), deadline_seconds=30.0, progress=progress,
+        )
+        collect = _collect_transcription if transcription else _collect_batch
+        return collect(client, base, headers, request, batch_id, outcome, progress)
+
+
 def batch_snapshot(values: dict[str, Any], base_url: str, batch_id: str,
                    *, kind: str = "image", local: bool = False) -> dict[str, Any] | None:
     """Ask a Hub about one batch **once**, and say honestly which of three answers it gave.
@@ -683,14 +782,13 @@ def batch_snapshot(values: dict[str, Any], base_url: str, batch_id: str,
     """
     kind = str(kind or "image")
     jobs_path = _jobs_path(kind)
-    from ..hub import hub_base_url, hub_headers
+    from ..hub import hub_headers
 
     headers = hub_headers(str((values or {}).get("hub_token") or ""), local=local)
-    # This Mac's own Hub has no stored address ("discovered at runtime"), so ask where it is.
-    base = str(base_url or "").strip() or (hub_base_url() if local else "")
+    base = _hold_base(base_url, local)
     if not base:
         return None
-    url = f"{base.rstrip('/')}{jobs_path}/{batch_id}"
+    url = f"{base}{jobs_path}/{batch_id}"
     try:
         with httpx.Client(timeout=httpx.Timeout(15.0, connect=6.0)) as client:
             response = client.get(url, headers=headers)
@@ -1252,19 +1350,37 @@ def _generate_image_or_voice(request: BackendRequest) -> BackendResult:
             client, base, headers, batch_id, 0,
             deadline_seconds=lane_deadline_seconds(request),
             progress=progress,
+            on_wait=request.on_wait,
         )
+        return _collect_batch(client, base, headers, request, batch_id, outcome, progress)
 
-        artifact = _fetch_artifact(
-            client, _artifact_url(base, batch_id, 0, request.modality), headers,
-            httpx.Timeout(600.0, connect=10.0),
+
+def _collect_batch(
+    client: httpx.Client,
+    base: str,
+    headers: dict[str, str],
+    request: BackendRequest,
+    batch_id: str,
+    outcome: dict[str, Any],
+    progress: HubProgress,
+) -> BackendResult:
+    """Fetch, verify and describe the artifact of an item the Hub has finished.
+
+    The one place a finished image/voice/music/video item becomes a result -- both a job that
+    polled its batch to `done` and a hold **adopted** later (see `adopt_batch`) come through here,
+    so an adopted result is exactly a normal one and there is no second implementation to drift.
+    """
+    artifact = _fetch_artifact(
+        client, _artifact_url(base, batch_id, 0, request.modality), headers,
+        httpx.Timeout(600.0, connect=10.0),
+    )
+    if artifact.status_code >= 400:
+        raise BackendError(
+            f"hub artifact HTTP {artifact.status_code}",
+            code="PROVIDER_FAILED",
+            status=artifact.status_code,
+            retryable=artifact.status_code >= 500,
         )
-        if artifact.status_code >= 400:
-            raise BackendError(
-                f"hub artifact HTTP {artifact.status_code}",
-                code="PROVIDER_FAILED",
-                status=artifact.status_code,
-                retryable=artifact.status_code >= 500,
-            )
 
     terminal = (outcome.get("item") or {}).get("terminal_result") or {}
     _verify_digest(artifact, terminal.get("sha256"))
@@ -1344,6 +1460,8 @@ def _generate_transcription(request: BackendRequest) -> BackendResult:
     }
     if request.params.get("language"):
         data["language"] = str(request.params["language"])
+    if request.params.get("word_timestamps") is not None:
+        data["word_timestamps"] = "true" if request.params["word_timestamps"] else "false"
 
     with httpx.Client(timeout=httpx.Timeout(120.0, connect=10.0)) as client:
         try:
@@ -1403,19 +1521,33 @@ def _generate_transcription(request: BackendRequest) -> BackendResult:
             jobs_path="/api/hub/transcription/jobs",
             deadline_seconds=lane_deadline_seconds(request),
             progress=progress,
+            on_wait=request.on_wait,
         )
+        return _collect_transcription(client, base, headers, request, batch_id, outcome, progress)
 
-        artifact = _fetch_artifact(
-            client, _artifact_url(base, batch_id, 0, "transcription") + "?format=srt", headers,
-            httpx.Timeout(300.0, connect=10.0),
+
+
+def _collect_transcription(
+    client: httpx.Client,
+    base: str,
+    headers: dict[str, str],
+    request: BackendRequest,
+    batch_id: str,
+    outcome: dict[str, Any],
+    progress: HubProgress,
+) -> BackendResult:
+    """The transcription twin of `_collect_batch`: one path for a live job and an adopted hold."""
+    artifact = _fetch_artifact(
+        client, _artifact_url(base, batch_id, 0, "transcription") + "?format=srt", headers,
+        httpx.Timeout(300.0, connect=10.0),
+    )
+    if artifact.status_code >= 400:
+        raise BackendError(
+            f"hub transcript artifact HTTP {artifact.status_code}",
+            code="PROVIDER_FAILED",
+            status=artifact.status_code,
         )
-        if artifact.status_code >= 400:
-            raise BackendError(
-                f"hub transcript artifact HTTP {artifact.status_code}",
-                code="PROVIDER_FAILED",
-                status=artifact.status_code,
-            )
-        _verify_digest(artifact)
+    _verify_digest(artifact)
 
     item = outcome.get("item") or {}
     studio = str(item.get("studio") or "")

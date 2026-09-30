@@ -84,12 +84,21 @@ class ThePublishedNumberIsTheFleetsTest(unittest.TestCase):
         self.assertEqual(dark["paid_concurrency_limit"], 18)
 
     def test_the_pool_is_published_beside_it_and_is_not_the_answer(self) -> None:
-        with patch.object(concurrency, "global_limit", lambda: 60):
+        # Whatever the pool is set to -- here a value guaranteed to differ from the fleet's 6 --
+        # the fleet is what is published as the limit, and the pool is named beside it.
+        pool = concurrency.Budget(limit=6 + 7, source=concurrency.SOURCE_CURATED, detail="test")
+        with patch.object(concurrency, "global_budget", lambda: pool):
             published = self._admission([_site("a", machines=1)])
         self.assertEqual(published["paid_concurrency_limit"], 6,
                          "the fleet is the answer, not the pool")
-        self.assertEqual(published["concurrency_pool"], 60,
+        self.assertEqual(published["concurrency_pool"], pool.limit,
                          "and the pool is named, so the two cannot be confused")
+
+    def test_the_named_pool_is_the_one_dispatch_uses(self) -> None:
+        # No number: with the owner's live settings or a clean default, what is published as the
+        # pool is exactly what `global_budget()` -- the ceiling admission enforces -- says.
+        published = self._admission([_site("a", machines=1)])
+        self.assertEqual(published["concurrency_pool"], concurrency.global_budget().limit)
 
     def test_a_cloud_lane_is_not_counted_as_fleet_capacity(self) -> None:
         # D is about Macs you can sell. A vendor lane's limit is a contract, not a machine.

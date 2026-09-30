@@ -89,6 +89,7 @@ class _Hub:
         artifact_failures: int = 0,
         poll_faults: list[Any] | None = None,
         duplicate: bool = False,
+        queued_item: dict[str, Any] | None = None,
     ) -> None:
         self.calls: list[tuple[str, str]] = []
         self.acks: list[str] = []
@@ -117,6 +118,8 @@ class _Hub:
         #: Answers handed out to the first polls: an int is that status, a str a 200 non-JSON body.
         self.poll_faults = list(poll_faults or [])
         self.duplicate = duplicate
+        #: Fields the item carries while it is `queued` (a deferral's `error` and `retry_at`).
+        self.queued_item = queued_item or {}
 
     # ── the transport ────────────────────────────────────────────────────
     def handler(self, request: httpx.Request) -> httpx.Response:
@@ -200,6 +203,8 @@ class _Hub:
             state = self._states.pop(0) if len(self._states) > 1 else self._states[0]
             item = {"index": 0, "state": state, "terminal_result": {"machine_id": "local"}}
             item.update(self.item or {})
+            if state == "queued":
+                item.update(self.queued_item)
             return httpx.Response(
                 200, json={"batch_id": BATCH, "items": [item]}
             )
@@ -1717,6 +1722,117 @@ class HubContractHardeningTests(_HubCase):
         with self.assertRaises(BackendError) as caught:
             self.generate(hub, self.request(modality="image", params={"prompt": "x"}))
         self.assertEqual(caught.exception.status, 404)
+
+
+class _Clock:
+    """A fake monotonic clock: `sleep` advances it, nothing else does."""
+
+    def __init__(self) -> None:
+        self.now = 0.0
+
+    def monotonic(self) -> float:
+        return self.now
+
+    def sleep(self, seconds: float) -> None:
+        self.now += seconds
+
+    def time(self) -> float:
+        return 1_700_000_000.0 + self.now
+
+
+class QueueWaitTests(_HubCase):
+    """Queue wait does not consume the lane budget (owner decision, 2026-09-30)."""
+
+    def _poll(self, hub: _Hub, *, deadline: float, waits: list | None = None) -> dict[str, Any]:
+        clock = _Clock()
+        fake = SimpleNamespace(monotonic=clock.monotonic, sleep=clock.sleep, time=clock.time)
+        with patch.object(hub_module, "time", fake), self.hub_client(hub), \
+                httpx.Client() as client:
+            return hub_module._poll_batch(
+                client, HUB, {}, BATCH, 0, deadline_seconds=deadline,
+                on_wait=(waits.append if waits is not None else None),
+            )
+
+    def test_time_spent_queued_does_not_count_against_the_lane_deadline(self) -> None:
+        hub = _Hub(states=["queued"] * 40 + ["running"] * 3 + ["done"],
+                   queued_item={"error": "waiting for a free machine: local is reserved",
+                                "retry_at": 1_700_000_030.0})
+        waits: list = []
+        outcome = self._poll(hub, deadline=10, waits=waits)  # 40 s queued > the 10 s budget
+        self.assertEqual(outcome["item"]["state"], "done")
+        self.assertEqual(hub.deletes, [])
+        self.assertEqual(waits[0]["reason"], "waiting for a free machine: local is reserved")
+        self.assertEqual(waits[0]["next_try_at"], 1_700_000_030.0)
+        self.assertIsNone(waits[-1], "the wait ends when a Mac starts rendering")
+
+    def test_running_time_still_bounds_the_job_and_a_running_item_is_never_cancelled(self) -> None:
+        hub = _Hub(states=["queued"] * 5 + ["running"])
+        with self.assertRaises(BackendError) as caught:
+            self._poll(hub, deadline=10)
+        self.assertEqual(caught.exception.code, "PROVIDER_SUBMISSION_UNCERTAIN")
+        self.assertEqual(hub.deletes, [], "never DELETE a running item on a guess")
+
+    def test_a_batch_queued_past_the_ceiling_is_withdrawn_and_may_be_rerouted(self) -> None:
+        hub = _Hub(states=["queued"])
+        with patch.object(hub_module, "QUEUE_WAIT_CEILING_S", 20.0):
+            with self.assertRaises(BackendError) as caught:
+                self._poll(hub, deadline=10)
+        self.assertEqual(caught.exception.code, "LOCATION_NOT_READY")
+        self.assertIs(caught.exception.upstream_accepted, False)
+        self.assertEqual(hub.deletes, [f"/api/hub/jobs/{BATCH}"])
+
+
+class _HoldRegistry(_Registry):
+    @staticmethod
+    def definition(_provider_id: str) -> Any:
+        return SimpleNamespace(id="studio-hub-test", kind="studio_hub", base_url=HUB,
+                               display_name="Hub")
+
+
+class AdoptedHoldTests(_HubCase):
+    """A held job whose Hub item finished is adopted: verified, saved, acked, `succeeded`."""
+
+    def _held_job(self, store: JobStore, key: str) -> dict[str, Any]:
+        row, _ = store.submit(modality="image", model_id="model/test", params={"prompt": "x"},
+                              idempotency_key=key, provider_id="studio-hub-test")
+        self.assertTrue(store.mark_running(row["id"]))
+        self.assertTrue(store.begin_dispatch(row["id"]))
+        store.record_upstream_acceptance(row["id"], BATCH)
+        store.fail(row["id"], code="UNKNOWN_OUTCOME", detail="the gateway restarted",
+                   recovery_state="unknown_outcome", recovery_detail="restart",
+                   recovery_context={"batch_id": BATCH, "item_index": 0})
+        return store.get(row["id"])
+
+    def _sweep(self, hub: _Hub, store: JobStore) -> dict[str, int]:
+        with patch.object(worker_module, "registry", _HoldRegistry()), self.hub_client(hub):
+            return worker_module.reconcile_holds(store)
+
+    def test_a_finished_hold_is_settled_succeeded_with_its_artifact_and_acked(self) -> None:
+        store = JobStore(_TEMP_ROOT / "adopt.sqlite3")
+        self.addCleanup(store.close)
+        held = self._held_job(store, "adopt-1")
+        self.assertTrue(held["recovery_required"])
+        hub = _Hub(states=["done"])
+        out = self._sweep(hub, store)
+        job = store.get(held["id"])
+        self.assertEqual(out["adopted"], 1)
+        self.assertEqual(job["state"], "succeeded")
+        self.assertFalse(job["recovery_required"])
+        self.assertIsNone(job["error_code"])
+        self.assertEqual(Path(job["asset_path"]).read_bytes(), b"artifact-bytes")
+        self.assertEqual(hub.acks, [f"/api/hub/jobs/{BATCH}/items/0/ack"])
+
+    def test_bytes_that_do_not_verify_leave_the_hold_alone(self) -> None:
+        store = JobStore(_TEMP_ROOT / "adopt-bad.sqlite3")
+        self.addCleanup(store.close)
+        held = self._held_job(store, "adopt-2")
+        hub = _Hub(states=["done"], artifact_sha256="0" * 64)
+        out = self._sweep(hub, store)
+        job = store.get(held["id"])
+        self.assertEqual((out["adopted"], out["still_open"]), (0, 1))
+        self.assertEqual(job["state"], "failed")
+        self.assertTrue(job["recovery_required"])
+        self.assertEqual(hub.acks, [], "an artifact that failed its check is never acknowledged")
 
 
 if __name__ == "__main__":

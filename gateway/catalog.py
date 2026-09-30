@@ -365,6 +365,13 @@ def _image_row(model_id: str, definition: ProviderDefinition, model: dict[str, A
     # does not take, and a fal `text-to-image` endpoint advertised an
     # image-to-image operation it does not serve. The contradiction was the tell.
     reference_state = image_reference_state(definition.kind, model_id, raw)
+    # ponytail: a model that says it *takes* a reference is still published as not taking one,
+    # because this gateway serves neither half of the feature Story would then use: there is no
+    # `POST /v1/images/source-images` to upload to, and no image adapter reads `reference_asset_ids`.
+    # Offering it turned into a hard 404 at the upload. Upgrade path -- build both, then delete
+    # this line (`image_reference_state` already reads the model's own statement).
+    if reference_state is True:
+        reference_state = False
     if reference_state is True:
         operations = ["text-to-image", "image-to-image"]
         minimum_references, maximum_references = 1, 4

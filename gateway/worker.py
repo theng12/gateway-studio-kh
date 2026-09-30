@@ -88,8 +88,8 @@ def reconcile_holds(store: JobStore, *, now: float | None = None) -> dict[str, i
 
       * **finished** — the Hub reports the item `error`/`cancelled`, so nothing is running and the
         hold has nothing left to protect. The job is closed as failed with the Hub's own state
-        recorded. An item the Hub reports `done` is **not** closed: its artifact is still on the
-        Hub, and whether to adopt it or close is an open owner decision — the hold stays and is logged.
+        recorded. An item the Hub reports `done` is **adopted**: its artifact is fetched, verified,
+        saved and the job settled `succeeded` through the normal done path.
       * **never started** — the Hub has never heard of the batch id (`404`). The work it was
         supposed to be doing does not exist, which is the same fact the restart sweep acts on when
         `dispatch_started_at` is null: provably nothing to duplicate, so the job goes back in the
@@ -100,7 +100,7 @@ def reconcile_holds(store: JobStore, *, now: float | None = None) -> dict[str, i
     Runs on the dispatch loop's own thread, on a timer, and never raises: a hold that cannot be
     reconciled this minute is reconciled the next.
     """
-    out = {"checked": 0, "closed_finished": 0, "requeued": 0, "still_open": 0}
+    out = {"checked": 0, "closed_finished": 0, "requeued": 0, "adopted": 0, "still_open": 0}
     holds_of = getattr(store, "holds", None)
     close = getattr(store, "close_hold", None)
     if holds_of is None or close is None:
@@ -152,11 +152,26 @@ def reconcile_holds(store: JobStore, *, now: float | None = None) -> dict[str, i
             continue
         state = str(snapshot.get("state") or "")
         if state in _DONE_UPSTREAM_STATES:
-            # ponytail: the Hub finished it and holds a rendered artifact. Closing it as failed
-            # would discard that; adopting it (fetch, ack, succeed) is an owner decision that has
-            # not been made, so the hold stays open exactly as before, and the sweep says so.
-            log.info("hold %s: the Hub reports batch %s (%s) '%s'; left open pending the "
-                     "adopt-or-close decision", job["id"], batch_id, provider_id, state)
+            # **The Hub finished it and still holds the artifact: adopt it** (owner decision,
+            # 2026-09-30) -- fetch, verify the sha256, save it and settle the job `succeeded`
+            # through the normal done path. Anything that stops that (the bytes will not verify,
+            # the Hub stops answering) leaves the hold exactly as it was, to be tried next minute.
+            request = BackendRequest(
+                provider_id=provider_id, model_id=str(job.get("model_id") or ""),
+                modality=str(job.get("modality") or "image"), params={}, values=values,
+                base_url=str(values.get("base_url") or definition.base_url or ""),
+                display_name=getattr(definition, "display_name", ""),
+            )
+            try:
+                settle_result(job["id"], studio_hub.adopt_batch(
+                    request, batch_id,
+                    local=provider_id == fleet.provider_id_for(fleet.LOCAL_ID)), store)
+            except Exception as exc:  # noqa: BLE001 - a hold that cannot be adopted stays a hold
+                log.warning("hold %s: could not adopt finished batch %s (%s): %s",
+                            job["id"], batch_id, provider_id, exc)
+            else:
+                out["adopted"] += 1
+                continue
         elif state in _TERMINAL_UPSTREAM_STATES:
             item = snapshot.get("item") or {}
             detail = (f"the Hub reports batch {batch_id} ({provider_id}) finished with state "
@@ -400,6 +415,61 @@ def cancel_upstream(job: dict[str, Any], store: JobStore) -> dict[str, Any] | No
     return answer
 
 
+def settle_result(job_id: str, result: Any, store: JobStore) -> None:
+    """Save what an adapter returned, send the delivery receipt, and settle the job `succeeded`.
+
+    The one done path: a job that ran to the end and a **held job the Hub has since finished**
+    (`adopt_hold`) both come through here, so an adopted result is a normal one -- same artifact
+    names, same receipt-after-save ordering, same published URLs.
+    """
+    # **Every artifact the provider returned is written.** A job holds a list now,
+    # because a provider can answer several variations for one request (Suno sends
+    # one entry per track, an image call with `n` sends one per image) and keeping
+    # only the first made the rest unreachable. Artifact 0 keeps the original
+    # `{job_id}.{ext}` name, so every single-artifact route and every file already
+    # on disk is unchanged; the rest add an index.
+    stored: list[dict[str, Any]] = []
+    for index, artifact in enumerate(result.artifacts):
+        stem = job_id if index == 0 else f"{job_id}-{index}"
+        path = Path(ARTIFACT_DIR) / f"{stem}.{_ext_for(artifact.media_type)}"
+        path.write_bytes(artifact.content)
+        stored.append(
+            {
+                "asset_id": str(index),
+                "path": str(path),
+                "media_type": artifact.media_type,
+                "bytes": len(artifact.content),
+            }
+        )
+        record_artifacts = getattr(store, "record_artifacts", None)
+        if record_artifacts is not None:
+            record_artifacts(job_id, [stored[-1]])
+
+    # **The delivery receipt goes out only now.** The Hub protects its output
+    # receipt and index on a 2xx from its ack route, and that route is the caller
+    # asserting it has verified delivery — downloading an artifact never reaches
+    # it. So it is sent once every artifact is on disk, never from inside the
+    # download. A refusal is recorded, not raised: the artifact is saved and
+    # serveable, and discarding real work over a bookkeeping step would be worse.
+    if result.deliver is not None:
+        receipt = result.deliver()
+        if not receipt.get("ok"):
+            log.warning(
+                "job %s: upstream did not acknowledge delivery: %s", job_id, receipt
+            )
+
+    store.succeed(
+        job_id,
+        asset_path=stored[0]["path"] if stored else None,
+        media_type=stored[0]["media_type"] if stored else None,
+        artifacts=stored,
+        result={
+            "text": result.text,
+            "payload": result.payload,
+        },
+    )
+
+
 def execute_job(job: dict[str, Any], store: JobStore) -> None:
     """Run one job to a terminal state. Never raises."""
     job_id = job["id"]
@@ -484,6 +554,12 @@ def execute_job(job: dict[str, Any], store: JobStore) -> None:
     params["_job_id"] = job_id
     record_acceptance = getattr(store, "record_upstream_acceptance", None)
 
+    record_waiting = getattr(store, "record_waiting", None)
+
+    def on_wait(waiting: dict[str, Any] | None) -> None:
+        if record_waiting is not None:
+            record_waiting(job_id, waiting)
+
     def on_accepted(upstream_job_id: str) -> None:
         record_acceptance(job_id, upstream_job_id)
         # A cancel that arrived before the Hub's batch id existed had nothing to ask (the API read
@@ -517,8 +593,11 @@ def execute_job(job: dict[str, Any], store: JobStore) -> None:
             base_url=definition.base_url,
             display_name=definition.display_name,
             checkpoint=on_accepted if record_acceptance is not None else None,
+            on_wait=on_wait,
         )
         adapter = adapter_for(definition)
+        if job.get("waiting_json") or current.get("waiting_json"):
+            on_wait(None)  # a fresh attempt is not waiting for anything yet
         try:
             result = adapter.generate(request)
             break
@@ -652,52 +731,7 @@ def execute_job(job: dict[str, Any], store: JobStore) -> None:
             )
             return
 
-    # **Every artifact the provider returned is written.** A job holds a list now,
-    # because a provider can answer several variations for one request (Suno sends
-    # one entry per track, an image call with `n` sends one per image) and keeping
-    # only the first made the rest unreachable. Artifact 0 keeps the original
-    # `{job_id}.{ext}` name, so every single-artifact route and every file already
-    # on disk is unchanged; the rest add an index.
-    stored: list[dict[str, Any]] = []
-    for index, artifact in enumerate(result.artifacts):
-        stem = job_id if index == 0 else f"{job_id}-{index}"
-        path = Path(ARTIFACT_DIR) / f"{stem}.{_ext_for(artifact.media_type)}"
-        path.write_bytes(artifact.content)
-        stored.append(
-            {
-                "asset_id": str(index),
-                "path": str(path),
-                "media_type": artifact.media_type,
-                "bytes": len(artifact.content),
-            }
-        )
-        record_artifacts = getattr(store, "record_artifacts", None)
-        if record_artifacts is not None:
-            record_artifacts(job_id, [stored[-1]])
-
-    # **The delivery receipt goes out only now.** The Hub protects its output
-    # receipt and index on a 2xx from its ack route, and that route is the caller
-    # asserting it has verified delivery — downloading an artifact never reaches
-    # it. So it is sent once every artifact is on disk, never from inside the
-    # download. A refusal is recorded, not raised: the artifact is saved and
-    # serveable, and discarding real work over a bookkeeping step would be worse.
-    if result.deliver is not None:
-        receipt = result.deliver()
-        if not receipt.get("ok"):
-            log.warning(
-                "job %s: upstream did not acknowledge delivery: %s", job_id, receipt
-            )
-
-    store.succeed(
-        job_id,
-        asset_path=stored[0]["path"] if stored else None,
-        media_type=stored[0]["media_type"] if stored else None,
-        artifacts=stored,
-        result={
-            "text": result.text,
-            "payload": result.payload,
-        },
-    )
+    settle_result(job_id, result, store)
 
 
 class Worker:

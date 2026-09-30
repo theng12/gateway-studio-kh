@@ -1,11 +1,64 @@
 # HANDOFF — gateway-kh
 
-**Read this first.** Written 2026-09-29 against **VERSION `0.2.75`**. The running build
+**Read this first.** Updated 2026-09-30 for **VERSION `0.2.80`** (the release blocks below are
+newest first; 0.2.76-0.2.79 are recorded in `menubar/whats-new.md` and their commits). The running build
 stamp is on `/health` and in `/Applications/gateway-kh.app/Contents/Resources/gateway/BUILD`.
 If this file disagrees with the code, **the code wins — fix this file in the same change**.
 Every path below is inside the Git checkout `repository/` unless it says otherwise.
 `[MEASURED]` = observed in the session that wrote this; `[reason not recorded]` = the
 project does not say why, and nobody should guess.
+
+> **0.2.80 — Story<->gateway<->Hub seam: adopt finished work, queue wait is not lane budget, a real waiting state.**
+>
+> Owner decisions of 2026-09-30, from the two seam audits (`_orchestra/audit-20260930/seam-*.md`):
+>
+> 1. **Adopt.** A hold whose Hub item is `done` is collected by `worker.reconcile_holds` through
+>    `studio_hub.adopt_batch` -> the same `_collect_batch`/`_collect_transcription` a live job uses ->
+>    `worker.settle_result` (extracted from `execute_job`: one done path) -> `store.succeed`, which now
+>    settles a `failed / unknown_outcome` job as `succeeded` (any other terminal job keeps its verdict and
+>    only records `late_result_state`). The sweep asks `holds(sweepable=True)` (unknown_outcome with an
+>    upstream id), resolves the local Hub's address at runtime and never falls back to *this* Mac's Hub for
+>    a remote hold (a 404 there reads as "never started" and would re-run work). `JobStore.__init__` settles
+>    rows stranded before the rule (`_settle_late_successes`).
+> 2. **Queue wait is not lane budget.** `_poll_batch` counts only time the item is `running` against
+>    `lane_deadline_seconds`; `queued` pauses the clock and reports `on_wait` -> `store.record_waiting` ->
+>    `waiting_json`. `QUEUE_WAIT_CEILING_S` (3 h, ponytail: one flat number) withdraws a batch still queued and
+>    only re-routes if the Hub confirms `queued_cancelled >= 1`. A running item is never DELETEd on a guess.
+> 3. **Envelope contract** (`CONTRACT-job-envelope.md`): every `_job_envelope` carries `dispatch_state`,
+>    `cancellable`, `cancellation_requested`, `cancelled`, `waiting`. A cancelled job is published
+>    `state: "failed"`, `cancelled: true`, `failure_code: "CANCELLED"`. **`_job_envelope(job, native=True)` is the
+>    menu bar app's reading** (keeps `state: "cancelled"`, does not scrub) - the admin routes use it. All published
+>    text goes through `api.scrub` (no `host:port`, no `/api/hub`).
+>
+> Also: `POST /v1/videos/{id}/cancel`, `/v1/transcriptions/{id}/cancel`; a cancel set before the batch id exists
+> is sent at `record_upstream_acceptance` (`worker.cancel_upstream`, moved out of `api.py`); `GET
+> /v1/voices/{id:path}/preview` and `preview_url`/`preview_available` only when a preview exists;
+> `/v1/voice-library/{elevenlabs|fish}` (browse, `/add`, `/{id}/preview`) over `search_library` and the admin
+> `import_voice`; `paid_active_jobs`/`paid_queued_jobs` on `/v1/account/overview`; `poll_after_ms` per lane;
+> the video source image staged with the job (`_reference_path`, protected from pruning); transcription
+> `language`/`word_timestamps` carried quote -> confirm -> Hub form; `supports_reference_images` never `true`
+> (no upload route and no adapter mapping; delete the override in `catalog._image_row` when both exist);
+> `gateway.__version__` reads `VERSION` (build.sh copies it beside the package); Hub-seam fixes F1-F10 of
+> `seam-gateway-hub.md` (refusal code in `detail.code`, item `error_code`, artifact retry + sha256, poll grace for
+> 5xx, chat ConnectTimeout, transcription job id as `item_ids`).
+>
+> **P0 found live: `fleet.json` lost updates.** `fleet.locations()` wrote back the roster it read *before* a
+> multi-second probe, and `last_reachable_at` made that every probe (~10-30 s): a rename answered 200 and was
+> reverted 3 s later. Now `_ROSTER_LOCK` (RLock) guards every read-modify-write, the write is atomic (temp +
+> `os.replace`), the snapshot persists only the reachability keys merged into a **fresh** read
+> (`_persist_reachability`), `add_controller` reads after its probe, and `last_reachable_at` moves the write
+> trigger only in 5-minute steps (it is read only as "ever seen up"). `tests/test_fleet_roster_writes.py`.
+>
+> **Tests:** the 7 red ones (`test_worker_concurrency`, `test_live_capacity`) assert invariants against the
+> effective settings (`cloud_budget`, `lane_budget`, `global_budget`), not fixed numbers, and pass with the
+> owner's settings and a clean default (`GATEWAY_PROVIDER_CONCURRENCY=<none>`). `test_fleet_routing`'s ~1-in-8
+> flake was `mock_upstream.Server`'s listen backlog of 5 against the probe's 9 simultaneous connections
+> (`request_queue_size = 128`). New: `test_story_envelope_contract.py`, `test_fleet_roster_writes.py`, and
+> additions to `test_studio_hub_contract.py`, `test_hold_reconciliation.py`, `test_hub_chat_lane.py`.
+>
+> **Open, not done:** Story-side vocabulary (seam-story-gateway F8), Story must treat `recovery_required` as
+> non-final for ~5 minutes, PNG-only image check (F12), transcription `total_pages` etc. F4's owner decision is
+> the queue-wait bound above. The 09-26 `MACHINE_BUSY` rows were **chat** jobs (peer route, no batch).
 
 > **0.2.75 — the Fleet page stops timing out, and a hold becomes discardable.**
 >

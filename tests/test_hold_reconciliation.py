@@ -80,12 +80,26 @@ class TheHubSettlesTheHoldTest(unittest.TestCase):
         self.assertIn("finished with state 'error'", store.closed[0]["detail"])
         self.assertIn("the worker ran out of memory", store.closed[0]["detail"])
 
-    def test_a_done_item_is_not_closed_as_failed(self) -> None:
-        # The Hub rendered it and still holds the artifact. Closing it as failed would discard
-        # that; adopt-or-close is an owner decision, so the hold stays exactly as it is.
-        store, out = self._run({"known": True, "state": "done", "item": {"state": "done"}})
+    def test_a_done_item_is_adopted_not_closed_as_failed(self) -> None:
+        # The Hub rendered it and still holds the artifact (owner decision, 2026-09-30): fetch,
+        # verify, save and settle it through the normal done path -- never close it as failed.
+        settled: list[str] = []
+        with patch.object(worker_module.studio_hub, "adopt_batch", lambda *a, **k: "result"), \
+                patch.object(worker_module, "settle_result",
+                             lambda job_id, result, store: settled.append((job_id, result))):
+            store, out = self._run({"known": True, "state": "done", "item": {"state": "done"}})
+        self.assertEqual(settled, [("job-1", "result")])
         self.assertEqual(store.closed, [], "a done item must not be closed as failed")
-        self.assertEqual(out["still_open"], 1)
+        self.assertEqual(out["adopted"], 1)
+
+    def test_a_done_item_that_cannot_be_adopted_stays_a_hold(self) -> None:
+        def refuse(*a, **k):
+            raise RuntimeError("the sha256 did not match")
+
+        with patch.object(worker_module.studio_hub, "adopt_batch", refuse):
+            store, out = self._run({"known": True, "state": "done", "item": {"state": "done"}})
+        self.assertEqual(store.closed, [])
+        self.assertEqual((out["adopted"], out["still_open"]), (0, 1))
 
     def test_the_sweep_asks_only_for_sweepable_holds(self) -> None:
         store, _ = self._run(None)

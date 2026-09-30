@@ -25,6 +25,7 @@ from __future__ import annotations
 import json
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -463,6 +464,14 @@ def discover(definition: ProviderDefinition, values: dict[str, str]) -> list[Voi
         return handler(definition, values)
     except Exception:  # noqa: BLE001 - a provider must never break the registry
         return []
+
+
+def has_preview(voice: Voice) -> bool:
+    """A stored preview: the provider's own sample, or a local voice's reference clip on disk."""
+    if voice.preview_url:
+        return True
+    path = (voice.raw or {}).get("reference_path") if voice.source == SOURCE_LOCAL else None
+    return bool(path) and Path(str(path)).exists()
 
 
 def search_library(
@@ -938,8 +947,11 @@ def story_row(voice: Voice) -> dict[str, Any]:
         "catalog_status": "published",
         "quote_enabled": True,
         "generation_enabled": True,
-        "preview_available": bool(voice.preview_url) or voice.source == SOURCE_LOCAL,
-        "preview_url": None,
+        # **Only when a stored preview exists**: Story enables its preview button from this flag
+        # and downloads `preview_url`, so a flag that was true for every local voice and a URL that
+        # was never published made the button always fail. Nothing here synthesises on demand.
+        "preview_available": has_preview(voice),
+        "preview_url": f"/v1/voices/{voice.id}/preview" if has_preview(voice) else None,
         "preview_text": None,
         "preview_notice": None,
         "is_saved": False,

@@ -167,6 +167,8 @@ echo "==> stamping the build"
 # was built, because two builds of the same commit are still two builds.
 BUILD_ID="$(git -C "$ROOT" rev-parse --short HEAD 2>/dev/null || echo nogit)-$(date -u +%Y%m%d%H%M)"
 echo "$BUILD_ID" > "$APP/Contents/Resources/gateway/BUILD"
+# `gateway.__version__` (and so `/api/version`) reads `VERSION` from beside the package.
+[ -f "$ROOT/VERSION" ] && cp "$ROOT/VERSION" "$APP/Contents/Resources/gateway/VERSION"
 echo "    build $BUILD_ID"
 
 # The version a person names ("which one is installed?"), separate from the exact

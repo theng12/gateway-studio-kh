@@ -425,7 +425,21 @@ def _read() -> list[dict]:
     return [row for row in (rows or []) if isinstance(row, dict) and row.get("url")]
 
 
+#: **Every read-modify-write of `fleet.json` holds this.** The roster is edited by the owner (rename,
+#: address, add, remove, resume) and by the snapshot loop (reachability), on different threads, and
+#: the snapshot used to write back the list it had read *before* a multi-second probe -- so an edit
+#: that landed during the probe was reverted a few seconds later. Measured live 2026-09-30: a rename
+#: answered 200, showed in the file, and was gone 3 s later. Re-entrant, because a caller that holds
+#: it calls `_write`, which takes it again.
+_ROSTER_LOCK = threading.RLock()
+
+
 def _write(rows: list[dict], *, local_name: str | None = None) -> None:
+    with _ROSTER_LOCK:
+        _write_locked(rows, local_name=local_name)
+
+
+def _write_locked(rows: list[dict], *, local_name: str | None = None) -> None:
     global _revision
     _revision += 1
     FLEET_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -442,9 +456,13 @@ def _write(rows: list[dict], *, local_name: str | None = None) -> None:
         payload["local_label"] = name
     # The roster carries no secrets, but it is written 0600 anyway: which sites
     # this gateway talks to is nobody else's business on a shared Mac.
-    fd = os.open(str(FLEET_PATH), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    # Written beside the roster and renamed over it, so a reader on another thread sees the old file
+    # or the new one and never a half-written one (which reads as an empty roster).
+    scratch = FLEET_PATH.with_name(FLEET_PATH.name + ".tmp")
+    fd = os.open(str(scratch), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "w", encoding="utf-8") as handle:
         json.dump(payload, handle, indent=2)
+    os.replace(scratch, FLEET_PATH)
     try:
         FLEET_PATH.chmod(stat.S_IRUSR | stat.S_IWUSR)
     except OSError:
@@ -602,8 +620,6 @@ def add_controller(label: str, url: str, token: str) -> dict:
     """
     url = _validate_address(url)
     clean_token = (token or "").strip()
-    rows = _read()
-    existing = None
     # Best-effort: a probe failure is a normal state (the controller is switched
     # off, or the token was not pasted), never an error for the add itself.
     stable_id = ""
@@ -613,6 +629,14 @@ def add_controller(label: str, url: str, token: str) -> dict:
         except Exception:  # noqa: BLE001 - the address is still a usable answer
             probed = {}
         stable_id = _stable_identity(probed)
+    with _ROSTER_LOCK:
+        return _add_controller_locked(url, label, clean_token, stable_id)
+
+
+def _add_controller_locked(url: str, label: str, clean_token: str, stable_id: str) -> dict:
+    # Read **after** the probe above: the roster this edits must be the one on disk now.
+    rows = _read()
+    existing = None
     if stable_id:
         existing = next(
             (row for row in rows if str(row.get("site_id") or "") == stable_id), None
@@ -786,11 +810,12 @@ def reconcile_cached_locations() -> list[str]:
 
 
 def remove_controller(controller_id: str) -> bool:
-    rows = _read()
-    keep = [row for row in rows if row.get("id") != controller_id]
-    if len(keep) == len(rows):
-        return False
-    _write(keep)
+    with _ROSTER_LOCK:
+        rows = _read()
+        keep = [row for row in rows if row.get("id") != controller_id]
+        if len(keep) == len(rows):
+            return False
+        _write(keep)
     # The location is gone, so its token must not linger in the store.
     _clear_token(controller_id)
     # Nor its models, nor which of them the owner had switched on.
@@ -815,19 +840,21 @@ def replace_address(controller_id: str, url: str, token: str) -> dict | None:
     """
     url = _validate_address(url)
     clean_token = (token or "").strip()
-    rows = _read()
-    row = next((r for r in rows if str(r.get("id")) == str(controller_id)), None)
-    if row is None:
-        return None
-    previous_url = str(row.get("url") or "")
-    row["url"] = url
-    # **The site id is cleared, not guessed.** It named the *old* controller's identity, and the
-    # Mac now answering is a different one; keeping it would make two Macs share an identity —
-    # the defect `_stable_identity` exists to prevent. The next probe fills in the new one.
-    row.pop("site_id", None)
-    row["repointed_at"] = time.time()
-    row["repointed_from"] = previous_url or None
-    _write(rows)
+    with _ROSTER_LOCK:
+        rows = _read()
+        row = next((r for r in rows if str(r.get("id")) == str(controller_id)), None)
+        if row is None:
+            return None
+        previous_url = str(row.get("url") or "")
+        row["url"] = url
+        # **The site id is cleared, not guessed.** It named the *old* controller's identity, and
+        # the Mac now answering is a different one; keeping it would make two Macs share an
+        # identity — the defect `_stable_identity` exists to prevent. The next probe fills in the
+        # new one.
+        row.pop("site_id", None)
+        row["repointed_at"] = time.time()
+        row["repointed_from"] = previous_url or None
+        _write(rows)
     if clean_token:
         _set_token(str(controller_id), clean_token)
     invalidate()
@@ -846,16 +873,17 @@ def rename_controller(controller_id: str, label: str) -> dict | None:
     clean = (label or "").strip()
     if not clean:
         raise ValueError("A name is required.")
-    if controller_id == LOCAL_ID:
-        _write(_read(), local_name=clean)
-        invalidate()
-        return {"id": LOCAL_ID, "label": clean, "url": "", "local": True}
-    rows = _read()
-    row = next((r for r in rows if r.get("id") == controller_id), None)
-    if row is None:
-        return None
-    row["label"] = clean
-    _write(rows)
+    with _ROSTER_LOCK:
+        if controller_id == LOCAL_ID:
+            _write(_read(), local_name=clean)
+            invalidate()
+            return {"id": LOCAL_ID, "label": clean, "url": "", "local": True}
+        rows = _read()
+        row = next((r for r in rows if r.get("id") == controller_id), None)
+        if row is None:
+            return None
+        row["label"] = clean
+        _write(rows)
     invalidate()
     return _masked(row)
 
@@ -1593,13 +1621,17 @@ def locations() -> list[dict]:
         # **The pause clock** (Q7): stamped on a change of reachability, so a probe loop does not
         # rewrite the roster every few seconds, and persisted so a gateway restart does not reset
         # a week-long outage to zero.
-        before = (bool(row.get("paused_at")), bool(row.get("unreachable_since")),
-                  row.get("last_reachable_at"))
+        # `last_reachable_at` is stamped on every reachable probe, so it goes in the comparison in
+        # five-minute steps (it is only ever read as "has this been seen up at all"): otherwise
+        # the roster was rewritten every probe, ~every 10-30 s, for a timestamp nobody reads.
+        def marks(item: dict) -> tuple:
+            return (bool(item.get("paused_at")), bool(item.get("unreachable_since")),
+                    int((item.get("last_reachable_at") or 0) // 300))
+
+        before = marks(row)
         note_reachability(row, reachable_now)
-        after = (bool(row.get("paused_at")), bool(row.get("unreachable_since")),
-                 row.get("last_reachable_at"))
-        if before != after:
-            _write(configured)
+        if before != marks(row):
+            _persist_reachability(row)
         result["unreachable_since"] = row.get("unreachable_since")
         result["paused_at"] = row.get("paused_at")
         result["pause_reason"] = row.get("pause_reason")
@@ -1615,6 +1647,31 @@ def locations() -> list[dict]:
         rows.append(result)
     _attach_admission(rows)
     return rows
+
+
+#: What the snapshot may write back to a roster row: its reachability, and nothing else.
+_REACHABILITY_KEYS = ("paused_at", "pause_reason", "unreachable_since", "last_reachable_at")
+
+
+def _persist_reachability(row: dict) -> None:
+    """Merge one probed row's reachability into the roster **as it is on disk now**.
+
+    The snapshot holds a list it read before probing, and probing takes seconds; writing that list
+    back reverted any rename, address change or removal made in the meantime. So it re-reads under
+    the lock and copies over only the reachability fields of the row it probed. A row that was
+    removed while the probe ran stays removed.
+    """
+    with _ROSTER_LOCK:
+        fresh = _read()
+        target = next((r for r in fresh if str(r.get("id")) == str(row.get("id"))), None)
+        if target is None:
+            return
+        for key in _REACHABILITY_KEYS:
+            if key in row:
+                target[key] = row[key]
+            else:
+                target.pop(key, None)
+        _write(fresh)
 
 
 def _attach_admission(rows: list[dict]) -> None:
@@ -2599,14 +2656,15 @@ def note_reachability(row: dict, reachable: bool) -> None:
 
 def resume_location(controller_id: str) -> dict | None:
     """Clear a pause and restart the clock, deliberately, without touching anything else."""
-    rows = _read()
-    row = next((r for r in rows if str(r.get("id")) == str(controller_id)), None)
-    if row is None:
-        return None
-    row.pop("paused_at", None)
-    row.pop("pause_reason", None)
-    row.pop("unreachable_since", None)
-    _write(rows)
+    with _ROSTER_LOCK:
+        rows = _read()
+        row = next((r for r in rows if str(r.get("id")) == str(controller_id)), None)
+        if row is None:
+            return None
+        row.pop("paused_at", None)
+        row.pop("pause_reason", None)
+        row.pop("unreachable_since", None)
+        _write(rows)
     invalidate()
     return _masked(row)
 
