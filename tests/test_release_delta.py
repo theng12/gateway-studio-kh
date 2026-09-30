@@ -65,8 +65,11 @@ class Controller:
     """One controller stand-in. `held` mirrors what `GET /api/hub/release` returns."""
 
     def __init__(self, mode: str = "delta", preheld: set[str] | None = None,
-                 barrier: threading.Barrier | None = None, break_post: bool = False) -> None:
+                 barrier: threading.Barrier | None = None, break_post: bool = False,
+                 drop: str | None = None, drop_first_puts: int = 0) -> None:
         self.mode, self.preheld, self.barrier, self.break_post = mode, set(preheld or ()), barrier, break_post
+        # `drop`: hang up on the POST without answering, "before_store" or "after_store".
+        self.drop, self.drop_puts = drop, drop_first_puts
         self.held: dict | None = None
         self.posts: list[dict] = []
         self.puts: list[str] = []
@@ -107,21 +110,30 @@ class Controller:
                     me.barrier.wait(timeout=8)  # only passes if every controller is in flight at once
                 if me.break_post:
                     return self._send(500, {"detail": "boom"})
+                if me.drop == "before_store":
+                    return  # closes the connection with no response, nothing stored
                 if "file_manifest" in body:
                     if me.mode == "noroutes":
                         return self._send(404, {"detail": "no such route"})
                     me.manifest = body["file_manifest"]
                     me.held = {**body["descriptor"], "controller_key_id": "c" * 64}
+                    if me.drop == "after_store":
+                        return
                     return self._send(200, {"descriptor": me.held, "need": self._need()})
                 if "artifact_base64" not in body:
                     return self._send(400, {"detail": "artifact_base64 is required"})
                 me.held = dict(body["descriptor"])
+                if me.drop == "after_store":
+                    return
                 self._send(200, me.held)
 
             def do_PUT(self):
                 digest = self.path.rsplit("/", 1)[1]
                 assert "chunked" not in self.headers.get("Transfer-Encoding", "")
                 data = self.rfile.read(int(self.headers["Content-Length"]))
+                if me.drop_puts > 0:
+                    me.drop_puts -= 1
+                    return  # a lost reply on an idempotent request
                 if hashlib.sha256(data).hexdigest() != digest:
                     return self._send(400, {"detail": "sha256 mismatch"})
                 me.puts.append(digest)
@@ -272,6 +284,62 @@ class ReleaseDelta(unittest.TestCase):
             outcome = self.publish(c)["locations"]["c0"]
         self.assertFalse(outcome["ok"])
         self.assertEqual(outcome["code"], "RELEASE_INCOMPLETE")
+
+    # -- a transport error is not a verdict ----------------------------------------
+
+    def test_a_dropped_reply_after_the_release_was_stored_is_reported_ok(self) -> None:
+        # The live pilot: the release was stored, the reply never arrived.
+        everything = {sha(data) for data in FILES.values()}
+        c = self.controller(preheld=everything, drop="after_store")
+        with patch.object(rp, "_RECOVER_SECONDS", 3.0), patch.object(rp, "_RECOVER_INTERVAL", 0.1):
+            outcome = self.publish(c)["locations"]["c0"]
+        self.assertTrue(outcome["ok"], outcome)
+        self.assertEqual(outcome["release"]["version"], "0.6.116")
+        self.assertIn("reply was lost", outcome["note"])
+        self.assertEqual((outcome["mode"], outcome["blobs_sent"], outcome["bytes_sent"]), ("delta", 0, 0))
+        self.assertIn("recover", outcome["timings"])
+
+    def test_a_dropped_reply_before_anything_was_stored_is_the_real_failure(self) -> None:
+        c = self.controller(drop="before_store")
+        c.held = {"version": "0.6.115", "signature": "the-older-release"}  # holds something, not this
+        with patch.object(rp, "_RECOVER_SECONDS", 0.5), patch.object(rp, "_RECOVER_INTERVAL", 0.1):
+            outcome = self.publish(c)["locations"]["c0"]
+        self.assertFalse(outcome["ok"])
+        self.assertEqual(outcome["code"], "RELEASE_PUSH_FAILED")
+        self.assertIn("holds 0.6.115, not this release", outcome["detail"])
+        self.assertEqual((outcome["mode"], outcome["blobs_sent"], outcome["bytes_sent"]), ("delta", 0, 0))
+        self.assertEqual(c.held["version"], "0.6.115")
+
+    def test_a_stored_release_that_still_lacks_blobs_is_not_reported_ok(self) -> None:
+        c = self.controller(drop="after_store")  # holds the descriptor, none of the bytes
+        with patch.object(rp, "_RECOVER_SECONDS", 3.0), patch.object(rp, "_RECOVER_INTERVAL", 0.1):
+            outcome = self.publish(c)["locations"]["c0"]
+        self.assertFalse(outcome["ok"])
+        self.assertEqual(outcome["code"], "RELEASE_INCOMPLETE")
+
+    def test_a_lost_reply_on_a_blob_put_is_repeated(self) -> None:
+        c = self.controller(drop_first_puts=2)
+        with patch.object(rp.time, "sleep", lambda _s: None):
+            outcome = self.publish(c)["locations"]["c0"]
+        self.assertTrue(outcome["ok"], outcome)
+        self.assertEqual(outcome["blobs_sent"], 4)
+
+    def test_a_full_push_whose_reply_was_lost_is_reported_ok(self) -> None:
+        c = self.controller(mode="legacy", drop="after_store")
+        with patch.object(rp, "_RECOVER_SECONDS", 3.0), patch.object(rp, "_RECOVER_INTERVAL", 0.1):
+            outcome = self.publish(c)["locations"]["c0"]
+        self.assertTrue(outcome["ok"], outcome)
+        self.assertEqual(outcome["mode"], "full")
+
+    def test_every_outcome_says_mode_and_what_was_sent_and_delta_says_how_long(self) -> None:
+        state = self.publish(self.controller(), self.controller(break_post=True), self.controller(mode="legacy"))
+        for cid, outcome in state["locations"].items():
+            self.assertTrue({"mode", "blobs_sent", "bytes_sent"} <= set(outcome), (cid, outcome))
+        good, refused = state["locations"]["c0"], state["locations"]["c1"]
+        self.assertEqual((refused["mode"], refused["blobs_sent"], refused["bytes_sent"]), ("delta", 0, 0))
+        self.assertEqual(good["bytes_sent"], sum(len(d) for d in set(FILES.values())))
+        self.assertTrue({"manifest_post", "blob_puts", "need_check", "readback"} <= set(good["timings"]))
+        self.assertTrue({"hash_image", "probe", "push"} <= set(state["timings"]))
 
     # -- fallback ------------------------------------------------------------
 

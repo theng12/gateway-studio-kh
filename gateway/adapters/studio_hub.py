@@ -107,7 +107,10 @@ JOB_DEADLINE_S = 900.0
 #: forwards; against an older Hub the switch is simply absent from the contract, so nothing is
 #: offered and nothing is dropped. The declaration is read off the running Hub, and the Hub release
 #: it names is the one this build was measured against.
-SUPPORTED_STUDIO_HUB_VERSION = "0.6.83"
+#:
+#: **0.6.117 declared 2026-09-30** (owner/coordinator; the Hub release this gateway now publishes and
+#: pilots). It is a label, never a gate: 0.6.83 was stale by 34 releases and the Fleet page said so.
+SUPPORTED_STUDIO_HUB_VERSION = "0.6.117"
 
 #: The answers `hub_version_relation` can give. `match` is the tested pairing; the
 #: other two are informational — a newer Hub may serve things this gateway has no

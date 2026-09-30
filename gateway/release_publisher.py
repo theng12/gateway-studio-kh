@@ -61,6 +61,18 @@ _SIGN_TIMEOUT = 30.0
 #: (the controller still buffers it); a delta push's POST can take ~20 s of hashing on
 #: the controller's side, so the read timeout is generous.
 _PUSH_TIMEOUT = httpx.Timeout(600.0, connect=15.0)
+#: Everything after the manifest POST answers from memory or a small write; a step that
+#: hangs is a dead controller, and 600 s of waiting on it is what a 550 s failed pilot
+#: looked like. The idempotent steps get a short read timeout plus `_retry`.
+_STEP_TIMEOUT = httpx.Timeout(120.0, connect=15.0)
+#: A transport error mid-push does not say whether the controller stored the release
+#: (the reply can be lost after the store, or the Hub can restart to install it). Poll its
+#: own record this long before calling the push failed.
+_RECOVER_SECONDS = 60.0
+_RECOVER_INTERVAL = 5.0
+#: Transport errors worth repeating on an idempotent request (a stale keep-alive
+#: connection is "Server disconnected without sending a response"). Not read timeouts.
+_TRANSIENT = (httpx.RemoteProtocolError, httpx.ReadError, httpx.WriteError, httpx.ConnectError)
 MANIFEST_SCHEMA = "studiohub.file-manifest.v1"
 #: Parallel blob PUTs to ONE controller (the contract says "a handful" is fine).
 _BLOB_WORKERS = 4
@@ -393,6 +405,54 @@ def _failed(exc: httpx.HTTPError, base: str) -> dict[str, Any]:
     }
 
 
+def _retry(call: Any, attempts: int = 3) -> Any:
+    """Repeat an idempotent request on a transient transport error."""
+    for n in range(attempts):
+        try:
+            return call()
+        except _TRANSIENT:
+            if n == attempts - 1:
+                raise
+            time.sleep(0.5 * (n + 1))
+
+
+def _recover(
+    base: str, token: str, descriptor: dict[str, Any], failed: dict[str, Any], *, delta: bool
+) -> dict[str, Any]:
+    """A transport error is not a verdict: ask the controller what it holds.
+
+    Polls its own record for `_RECOVER_SECONDS`. If it carries this descriptor's
+    signature (so version and build too) the push succeeded and only the reply was lost;
+    for a delta, `GET /need` must then also be empty. Otherwise the original failure is
+    reported, with what the controller actually holds.
+    """
+    deadline = time.monotonic() + _RECOVER_SECONDS
+    while True:
+        release, _ = _probe(base, token)
+        if release is not None and release.get("signature") == descriptor["signature"]:
+            outcome = {**failed, "ok": True, "code": None, "detail": None, "release": release,
+                       "note": f"the reply was lost ({failed['detail']}), but the controller's own record shows this release"}
+            if delta:
+                try:
+                    with httpx.Client(timeout=_STEP_TIMEOUT) as client:
+                        answer = _retry(lambda: client.get(f"{base.rstrip('/')}/api/hub/release/need", headers=_headers(token)))
+                    need = answer.json().get("need") if answer.status_code == 200 else None
+                except (httpx.HTTPError, ValueError, AttributeError):
+                    need = None
+                if isinstance(need, list) and need:
+                    outcome.update(ok=False, code="RELEASE_INCOMPLETE", release=None, detail=(
+                        f"the controller stored the release but still lacks {len(need)} blob(s); publish again to send them"))
+                elif not isinstance(need, list):
+                    outcome["note"] += "; completeness (GET /need) could not be read"
+            return outcome
+        if time.monotonic() >= deadline:
+            held = str((release or {}).get("version") or "").strip()
+            failed = {**failed, "detail": f"{failed['detail']} (the controller was re-checked for {int(_RECOVER_SECONDS)} s and "
+                      + (f"holds {held}, not this release)" if held else "does not hold this release)")}
+            return failed
+        time.sleep(_RECOVER_INTERVAL)
+
+
 def _refusal(response: httpx.Response) -> dict[str, Any]:
     """The controller's own refusal sentence, verbatim.
 
@@ -464,7 +524,10 @@ def push(
         with httpx.Client(timeout=_PUSH_TIMEOUT) as client:
             response = client.post(f"{base.rstrip('/')}/api/hub/release", headers=headers, content=body)
     except httpx.HTTPError as exc:
-        return _failed(exc, base)
+        failed = _failed(exc, base)
+        if isinstance(exc, (httpx.ConnectError, httpx.ConnectTimeout)):
+            return failed  # nothing was delivered
+        return _recover(base, token, descriptor, failed, delta=False)
     if response.status_code != 200:
         return _refusal(response)
     try:
@@ -511,6 +574,14 @@ def push_delta(
     root = f"{base.rstrip('/')}/api/hub/release"
     headers = _headers(token)
     stop = threading.Event()
+    lock = threading.Lock()
+    stats: dict[str, Any] = {"mode": "delta", "blobs_sent": 0, "bytes_sent": 0}
+    timings: dict[str, float] = {}
+    step = "manifest"
+
+    def finish(outcome: dict[str, Any]) -> dict[str, Any]:
+        """Every path out reports how much was sent, and how long each step took."""
+        return {**outcome, **stats, "timings": dict(timings)}
 
     def put(client: httpx.Client, digest: str) -> int:
         path = manifest.blobs.get(digest)
@@ -523,55 +594,74 @@ def push_delta(
         if stop.is_set():
             return 0
         size = path.stat().st_size
-        with open(path, "rb") as handle:
-            response = client.put(
-                f"{root}/blob/{digest}", headers={**headers, "Content-Length": str(size)},
-                content=iter(lambda: handle.read(1 << 20), b""),
-            )
+
+        def send() -> httpx.Response:
+            with open(path, "rb") as handle:  # a retry re-reads from the start
+                return client.put(
+                    f"{root}/blob/{digest}", headers={**headers, "Content-Length": str(size)},
+                    content=iter(lambda: handle.read(1 << 20), b""),
+                )
+
+        response = _retry(send)
         if response.status_code != 200:
             stop.set()
             raise _Refused(_refusal(response))
+        with lock:
+            stats["blobs_sent"] += 1
+            stats["bytes_sent"] += size
         return size
 
+    started = time.monotonic()
     try:
         with httpx.Client(timeout=_PUSH_TIMEOUT) as client:
             posted = client.post(root, headers=headers, json={
                 "descriptor": descriptor,
                 "file_manifest": {"index": manifest.index, "groups": manifest.groups},
             })
+            timings["manifest_post"] = round(time.monotonic() - started, 2)
             if posted.status_code in (404, 405):
                 return None
             if posted.status_code != 200:
-                return _refusal(posted)
+                return finish(_refusal(posted))
             try:
                 need = posted.json().get("need")
             except (ValueError, AttributeError):
                 need = None
             if not isinstance(need, list):
-                return {
+                return finish({
                     "ok": False, "status": 200, "code": "RELEASE_NOT_STORED",
                     "detail": "the controller answered 200 but did not say which blobs it needs",
                     "release": None,
-                }
+                })
+            step, mark = "blobs", time.monotonic()
             wanted = list(dict.fromkeys(str(digest) for digest in need))
-            with ThreadPoolExecutor(max_workers=_BLOB_WORKERS) as pool:
-                sent = list(pool.map(lambda digest: put(client, digest), wanted))
-            remaining = client.get(f"{root}/need", headers=headers)
-            held = client.get(root, headers=headers)
+            stats["blobs_needed"] = len(wanted)
+            with httpx.Client(timeout=_STEP_TIMEOUT) as steps, ThreadPoolExecutor(max_workers=_BLOB_WORKERS) as pool:
+                list(pool.map(lambda digest: put(steps, digest), wanted))
+                timings["blob_puts"] = round(time.monotonic() - mark, 2)
+                step, mark = "need", time.monotonic()
+                remaining = _retry(lambda: steps.get(f"{root}/need", headers=headers))
+                timings["need_check"] = round(time.monotonic() - mark, 2)
+                step, mark = "readback", time.monotonic()
+                held = _retry(lambda: steps.get(root, headers=headers))
+                timings["readback"] = round(time.monotonic() - mark, 2)
     except _Refused as refused:
-        return refused.outcome
+        return finish(refused.outcome)
     except httpx.HTTPError as exc:
-        return _failed(exc, base)
+        failed = _failed(exc, base)
+        timings[f"{step}_failed_after"] = round(time.monotonic() - started, 2)
+        if step == "manifest" and isinstance(exc, (httpx.ConnectError, httpx.ConnectTimeout)):
+            return finish(failed)  # nothing was delivered: unreachable, not an unknown push
+        mark = time.monotonic()
+        recovered = _recover(base, token, descriptor, failed, delta=True)
+        timings["recover"] = round(time.monotonic() - mark, 2)
+        return finish(recovered)
     try:
         still = remaining.json().get("need") if remaining.status_code == 200 else None
         release = held.json().get("release") if held.status_code == 200 else None
     except (ValueError, AttributeError):
         still, release = None, None
-    outcome: dict[str, Any] = {
-        "ok": False, "status": 200, "code": None, "detail": None, "release": None,
-        "mode": "delta", "blobs_sent": sum(1 for size in sent if size),
-        "bytes_sent": sum(sent),
-    }
+    outcome: dict[str, Any] = {"ok": False, "status": 200, "code": None, "detail": None, "release": None}
     if still != []:
         outcome.update(
             code="RELEASE_INCOMPLETE",
@@ -584,7 +674,7 @@ def push_delta(
         )
     else:
         outcome.update(ok=True, release=release)
-    return outcome
+    return finish(outcome)
 
 
 # ---------------------------------------------------------------------------
@@ -641,11 +731,21 @@ def publish(
     path = Path(artifact_path).expanduser()
     if not path.is_file():
         raise ReleaseError(f"No artifact at {path}.", 400, "RELEASE_ARTIFACT_MISSING")
+    clock = time.monotonic()
+    timings: dict[str, float] = {}
+
+    def lap(name: str) -> None:
+        nonlocal clock
+        timings[name] = round(time.monotonic() - clock, 2)
+        clock = time.monotonic()
+
     sha256, size = _hash_file(path)
+    lap("hash_image")
     fields = {"sha256": sha256, "size": size, "version": version, "build": build,
               "filename": filename or path.name, "published_at": int(time.time())}
     descriptor = descriptor_for(**fields)
     fingerprint = identity()["fingerprint"]
+    lap("sign")
     target = descriptor["version"]
 
     rows = [
@@ -664,6 +764,7 @@ def publish(
     with ExitStack() as stack:
         pool = stack.enter_context(ThreadPoolExecutor(max_workers=max(1, len(rows))))
         probes = list(pool.map(lambda row: _probe(row[2], tokens[row[0]]), rows))
+        lap("probe")
 
         manifest: Manifest | None = None
         skipped: str | None = None
@@ -673,10 +774,12 @@ def publish(
             except ReleaseError as exc:
                 skipped = f"delta push skipped ({exc.message}); the whole image was sent"
         delta_descriptor = descriptor_for(**fields, files=manifest.files) if manifest else None
+        lap("mount_manifest_sign")
 
         def one(row: tuple[str, Any, str], probe: tuple[dict[str, Any] | None, bool]) -> dict[str, Any]:
             cid, label, url = row
             held, capable = probe
+            planned = "delta" if capable and manifest and delta_descriptor else "full"
             held_version = str((held or {}).get("version") or "").strip()
             try:
                 if held is not None and not allow_downgrade and is_downgrade(target, held_version):
@@ -692,11 +795,12 @@ def publish(
                 else:
                     outcome = (
                         push_delta(url, tokens[cid], delta_descriptor, manifest)
-                        if capable and manifest and delta_descriptor else None
+                        if planned == "delta" else None
                     )
                     if outcome is None:
                         outcome = push(url, tokens[cid], descriptor, path)
                         outcome["mode"] = "full"
+                        outcome.setdefault("bytes_sent", size if outcome["ok"] else 0)
                         if capable and skipped:
                             outcome["note"] = skipped
             except Exception as exc:  # noqa: BLE001 - one controller must not stop the others
@@ -704,11 +808,19 @@ def publish(
                     "ok": False, "status": None, "code": "RELEASE_PUSH_FAILED",
                     "detail": f"the push failed: {type(exc).__name__}: {exc}", "release": None,
                 }
+            # Every path says what it tried and how much left this Mac, failures included.
+            outcome.setdefault("mode", planned)
+            outcome.setdefault("blobs_sent", 0)
+            outcome.setdefault("bytes_sent", 0)
             outcome["label"] = label or cid
+            steps = ", ".join(f"{k} {v}s" for k, v in outcome.get("timings", {}).items())
+            print(f"[release] {outcome['label']}: {outcome['mode']} {'ok' if outcome['ok'] else outcome['code']}, "
+                  f"{outcome['blobs_sent']} blob(s) {outcome['bytes_sent'] // 1024} KiB ({steps})", flush=True)
             return outcome
 
         for row, outcome in zip(rows, pool.map(one, rows, probes)):
             results[row[0]] = outcome
+        lap("push")
 
     shown = delta_descriptor or descriptor
     state = {
@@ -721,6 +833,7 @@ def publish(
             if key in shown
         },
         "locations": results,
+        "timings": timings,
     }
     _write_state(state)
     return state

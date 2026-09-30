@@ -14,6 +14,17 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.88 — 2026-09-30
+
+- **A release push that succeeded is no longer reported as failed.** When the connection to a controller broke during a push
+  (the live pilot to controller 1500: "Server disconnected without sending a response" after 550 s, although the controller
+  held the new release), the gateway now asks the controller what it holds, for up to a minute, before deciding. If the controller's
+  own record carries this release (and has every file), the push is reported as a success with a note that the reply was lost; if not,
+  the real failure is shown with what the controller does hold. Lost replies on the small per-file uploads are repeated automatically,
+  and every result now says how it was sent (`mode`), how many files and bytes went over (`blobs_sent`, `bytes_sent`) and how long each
+  step took (`timings`, also in the gateway log).
+- **Fleet page: "built against Hub" now says 0.6.117** (it said 0.6.83). It is a label, never a gate.
+
 ## 0.2.87 — 2026-09-30
 
 - **Publish a Studio Hub release to chosen controllers only.** A release can now go to a pilot controller first (`controller_ids` on the publish call) instead of every controller at once; an unknown id is refused before anything is sent.

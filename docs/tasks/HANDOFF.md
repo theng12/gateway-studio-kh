@@ -1,12 +1,40 @@
 # HANDOFF — gateway-kh
 
-**Read this first.** Updated 2026-09-30 for **VERSION `0.2.86`** (the release blocks below are
+**Read this first.** Updated 2026-09-30 for **VERSION `0.2.88`** (the release blocks below are
 newest first; 0.2.76-0.2.79 are recorded in `menubar/whats-new.md` and their commits). The running build
 stamp is on `/health` and in `/Applications/gateway-kh.app/Contents/Resources/gateway/BUILD`.
 If this file disagrees with the code, **the code wins — fix this file in the same change**.
 Every path below is inside the Git checkout `repository/` unless it says otherwise.
 `[MEASURED]` = observed in the session that wrote this; `[reason not recorded]` = the
 project does not say why, and nobody should guess.
+
+> **0.2.88 — release push: a transport error is not a verdict (`gateway/release_publisher.py`).** (0.2.87 = `controller_ids`
+> staged rollout, see `menubar/whats-new.md`.)
+>
+> * **Live pilot [MEASURED by the coordinator]:** `POST /admin/api/release/publish` with `controller_ids=["b8ccda585b97"]` (Hub 0.6.116,
+>   delta-capable) took 550 s and returned `RELEASE_PUSH_FAILED "Server disconnected without sending a response"`, yet the controller then held
+>   0.6.117 with `delta.manifest true`. So the push worked and the gateway misreported it.
+> * **Fix:** any `httpx.HTTPError` after the request left (except a connect failure on the very first POST = `LOCATION_UNREACHABLE`) goes to
+>   `_recover`: poll the controller's `GET /api/hub/release` every 5 s for 60 s (`_RECOVER_SECONDS/_RECOVER_INTERVAL`); if its record's
+>   `signature` equals the pushed descriptor's (so version+build too) the outcome is `ok` with a `note` ("the reply was lost ..."); for a
+>   delta `GET /need` must also be `[]` (non-empty -> `RELEASE_INCOMPLETE`; unreadable -> ok + note). Otherwise the original failure, with
+>   what the controller holds. Same for the full push. The idempotent steps (blob PUT, `/need`, read-back) also `_retry` 3x on
+>   `RemoteProtocolError/ReadError/WriteError/ConnectError` (a stale keep-alive), and use a 120 s read timeout (`_STEP_TIMEOUT`) instead of
+>   600 s; only the manifest POST keeps 600 s (the controller may hash its installed app first).
+> * **Every outcome** now has `mode`, `blobs_sent`, `bytes_sent` (failure paths included); a delta outcome adds `blobs_needed` and
+>   `timings` (`manifest_post`, `blob_puts`, `need_check`, `readback`, `recover`, or `<step>_failed_after`); the state file has publish-level
+>   `timings` (`hash_image`, `sign`, `probe`, `mount_manifest_sign`, `push`), and each controller logs one `[release] ...` line.
+> * **Why 550 s [MEASURED gateway side; controller side is code reading, NOT measured]:** on the real 0.6.117 DMG the gateway's own steps
+>   are ~3 s (hash 1.3 s, sign x2 0.2 s, mount 0.3 s, `load_manifest` 0.4 s; the manifest POST body is 6 MB, 47,340 unique blobs, 93,042
+>   files). So the time is in the controller/transport. Suspect (studio-hub-kh `components/hub`): `PUT /release/blob/<sha>` is `async def` and
+>   answers with `len(app_release.missing_blobs())`, which per blob lists the blob dir, rebuilds `installed_by_sha` over ~93k entries and sorts
+>   ~47k, all synchronously on the event loop; with a few thousand small blobs that is minutes. Hub fix: return the count lazily or keep
+>   an incremental set. The gateway cannot batch PUTs (contract), so 4 parallel PUTs stay. The new `timings` will show it on the next pilot.
+> * `SUPPORTED_STUDIO_HUB_VERSION` 0.6.83 -> 0.6.117 (the "built against Hub" stamp on the Fleet page; a label, never a gate).
+> * Tests: `tests/test_release_delta.py` (mock controller can hang up before/after storing, or drop the first N blob PUT replies): reply lost
+>   after store -> ok via re-probe; before store -> real failure naming what it holds; stored but lacking blobs -> `RELEASE_INCOMPLETE`;
+>   blob PUT retry; full push recovery; fields on every path. Mutation-proved (no recovery, recovery trusting any answer, need ignored, no
+>   retry, no full-push recovery, no default fields). Nothing was pushed to a real controller. Not installed.
 
 > **0.2.86 — artifact pruning goes to a self-cleaning Trash Folder (`gateway/retention.py`).**
 >
