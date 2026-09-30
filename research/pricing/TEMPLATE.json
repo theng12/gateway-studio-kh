@@ -1,0 +1,40 @@
+{
+  "schema": "gateway-kh.price-evidence.v1",
+  "researched_at": "YYYY-MM-DDTHH:MM:SSZ",
+  "providers": [
+    {
+      "provider_id": "openai-direct",
+      "official_domains_used": [],
+      "status": "not_found",
+      "notes": "",
+      "prices": [
+        {
+          "model_id": "gpt-image-2.5-flare-2026-09-08",
+          "modality": "image",
+          "unit": "per_image",
+          "unit_text": null,
+          "usd": null,
+          "variant": null,
+          "source_url": "",
+          "quote": "",
+          "page_date": null,
+          "conversion_quote": null
+        }
+      ],
+      "rate_limits": [
+        {
+          "tier": "",
+          "how_reached": null,
+          "scope": "per org",
+          "rpm": null,
+          "tpm": null,
+          "rpd": null,
+          "concurrency": null,
+          "images_per_min": null,
+          "source_url": "",
+          "quote": ""
+        }
+      ]
+    }
+  ]
+}
