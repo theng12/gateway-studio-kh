@@ -78,6 +78,11 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
 
     func activated() {
         reload()
+        // The plain read is served from the gateway's cache while it re-sweeps in the
+        // background, so coming back after fixing a Mac shows the old picture. Read
+        // once more shortly after; repeated activations collapse into one.
+        NSObject.cancelPreviousPerformRequests(withTarget: self, selector: #selector(reload), object: nil)
+        perform(#selector(reload), with: nil, afterDelay: 3)
     }
 
     // MARK: Layout
@@ -270,7 +275,7 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
             guard let self else { return }
             switch result {
             case .failure(let error):
-                self.render(error: "Could not read the fleet — \(error)")
+                self.render(error: "Could not read the fleet — \(error.localizedDescription)")
             case .success(let payload):
                 self.render(payload)
             }
@@ -385,6 +390,11 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
         }
         self.snapshot = snapshot
         self.locations = snapshot.locations
+        // A successful read replaces whatever the status line said before (an old
+        // error, "Loading…", "Refreshed N locations.") with how fresh the picture is.
+        if !adding && !publishing {
+            setStatus(snapshot.generatedAt.map { "As of \(GatewayAPI.clock($0))" } ?? "")
+        }
 
         var providerIDs: [String: String] = [:]
         for location in snapshot.locations {
@@ -482,6 +492,13 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
         let encodedBatch = batchId.addingPercentEncoding(withAllowedCharacters: .alphanumerics)
             ?? batchId
         let what = "\(FleetFormat.words(job.modality)) · \(job.model ?? job.label ?? batchId)"
+        // One click stops a whole batch and there is no resuming it, only per-item retry.
+        guard PageKit.confirm(
+            "Stop \(what)?",
+            "\(job.running ?? 0) running, \(job.queued ?? 0) queued at \(job.location ?? "this location"). "
+                + "Queued items are cancelled; a worker that already took its item cannot be promised to stop.",
+            ok: "Stop batch"
+        ) else { return }
         setStatus("Asking the Hub to stop \(what)…")
         GatewayAPI.post(
             "/admin/api/fleet/controllers/\(encodedLocation)/jobs/\(encodedBatch)/cancel",

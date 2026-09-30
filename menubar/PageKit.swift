@@ -159,6 +159,20 @@ enum PageKit {
         label(text, size: 11.5, colour: .secondaryLabelColor, wrapping: true)
     }
 
+    /// A confirmation for something that cannot be taken back. Cancel is the
+    /// default, so a stray Return does nothing.
+    static func confirm(_ message: String, _ detail: String, ok: String) -> Bool {
+        let alert = NSAlert()
+        alert.messageText = message
+        alert.informativeText = detail
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: ok)
+        alert.addButton(withTitle: "Cancel")
+        alert.buttons.first?.keyEquivalent = ""
+        alert.buttons.last?.keyEquivalent = "\r"
+        return alert.runModal() == .alertFirstButtonReturn
+    }
+
     /// A full-width row inside a `page()`.
     static func row(_ views: [NSView], spacing: CGFloat = 10) -> NSStackView {
         let row = NSStackView(views: views)

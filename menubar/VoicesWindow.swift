@@ -44,6 +44,8 @@ final class VoicesSection: NSObject, AppSection, NSTableViewDataSource, NSTableV
     private var libraryMode = false
     private var sound: NSSound?
     private var searchTimer: Timer?
+    /// A slow search must not repaint over a newer one.
+    private var reloadGeneration = 0
 
     /// The section's content, built once and hosted by the main window.
     /// Lazy so it can be built by a method on self.
@@ -303,7 +305,7 @@ final class VoicesSection: NSObject, AppSection, NSTableViewDataSource, NSTableV
             switch result {
             case .failure(let error):
                 self.summaryLabel.textColor = .systemOrange
-                self.summaryLabel.stringValue = "Could not add them — \(error)"
+                self.summaryLabel.stringValue = "Could not add them — \(error.localizedDescription)"
             case .success(let payload):
                 let imported = payload["imported"] as? [[String: Any]] ?? []
                 let skipped = payload["skipped"] as? [[String: Any]] ?? []
@@ -430,8 +432,9 @@ final class VoicesSection: NSObject, AppSection, NSTableViewDataSource, NSTableV
         let preserved = selection ?? selectedVoiceIDs()
         let providerId = selectedProviderId()
         let library = libraryCheck.state == .on && supportsLibrary(providerId)
-        libraryMode = library
         addButton?.isEnabled = library
+        reloadGeneration += 1
+        let generation = reloadGeneration
 
         let query = searchField.stringValue.trimmingCharacters(in: .whitespaces)
         var path: String
@@ -452,6 +455,8 @@ final class VoicesSection: NSObject, AppSection, NSTableViewDataSource, NSTableV
 
         GatewayAPI.get(path) { [weak self] result in
             guard let self else { return }
+            guard self.reloadGeneration == generation else { return completion?() ?? () }
+            self.libraryMode = library
             switch result {
             case .success(let payload):
                 self.rows = payload["voices"] as? [[String: Any]] ?? []
@@ -486,11 +491,20 @@ final class VoicesSection: NSObject, AppSection, NSTableViewDataSource, NSTableV
     }
 
     private func loadProviders(from payload: [String: Any]) {
-        guard providers.isEmpty,
-              let list = payload["providers"] as? [[String: Any]] else { return }
-        providers = list.compactMap {
-            guard let id = $0["id"] as? String, let name = $0["name"] as? String else { return nil }
-            return (id: id, name: name, kind: $0["kind"] as? String ?? "")
+        guard let list = payload["providers"] as? [[String: Any]] else { return }
+        let fresh = list.compactMap { row -> (id: String, name: String, kind: String)? in
+            guard let id = row["id"] as? String, let name = row["name"] as? String else { return nil }
+            return (id: id, name: name, kind: row["kind"] as? String ?? "")
+        }
+        // Rebuilt whenever the set changes, so a provider added after launch appears —
+        // keeping whichever one is selected.
+        guard fresh.map({ $0.id }) != providers.map({ $0.id }) else { return }
+        let chosen = selectedProviderId()
+        providers = fresh
+        defer {
+            if let item = providerPopup.itemArray.first(where: { $0.representedObject as? String == chosen }) {
+                providerPopup.select(item)
+            }
         }
         providerPopup.removeAllItems()
         providerPopup.addItem(withTitle: "All providers")
@@ -579,19 +593,22 @@ final class VoicesSection: NSObject, AppSection, NSTableViewDataSource, NSTableV
             switch result {
             case .failure(let error):
                 self.summaryLabel.textColor = .systemOrange
-                self.summaryLabel.stringValue = "Could not share them — \(error)"
+                self.summaryLabel.stringValue = "Could not share them — \(error.localizedDescription)"
             case .success(let payload):
                 let results = payload["results"] as? [[String: Any]] ?? []
                 let ok = results.filter { $0["ok"] as? Bool == true }
                 let bad = results.filter { $0["ok"] as? Bool == false }
                 if let first = ok.first {
                     self.summaryLabel.textColor = .secondaryLabelColor
-                    var line = "Shared \(ok.count) of \(results.count): "
+                    var line = "Shared \(ok.count) of \(results.count) transfers: "
                         + "\(first["voice"] as? String ?? "?") at \(first["location"] as? String ?? "?")"
                         + " — \(first["detail"] as? String ?? "")"
                     if let segments = first["segments"] as? Int { line += " · \(segments) timings kept" }
                     if !bad.isEmpty {
-                        line += " · \(bad.count) location\(bad.count == 1 ? "" : "s") could not take it"
+                        let named = bad.map {
+                            "\($0["location"] as? String ?? "?") (\($0["detail"] as? String ?? "no reason given"))"
+                        }.joined(separator: "; ")
+                        line += " · could not take it: \(named)"
                         self.summaryLabel.textColor = .systemOrange
                     }
                     self.summaryLabel.stringValue = line
@@ -648,7 +665,7 @@ final class VoicesSection: NSObject, AppSection, NSTableViewDataSource, NSTableV
             switch result {
             case .failure(let error):
                 self.summaryLabel.textColor = .systemOrange
-                self.summaryLabel.stringValue = "Could not record it — \(error)"
+                self.summaryLabel.stringValue = "Could not record it — \(error.localizedDescription)"
             case .success:
                 self.summaryLabel.textColor = .secondaryLabelColor
                 self.summaryLabel.stringValue =
@@ -670,7 +687,7 @@ final class VoicesSection: NSObject, AppSection, NSTableViewDataSource, NSTableV
             guard let self else { return }
             if case .failure(let error) = result {
                 self.summaryLabel.textColor = .systemOrange
-                self.summaryLabel.stringValue = "Could not change it — \(error)"
+                self.summaryLabel.stringValue = "Could not change it — \(error.localizedDescription)"
             } else {
                 self.summaryLabel.textColor = .secondaryLabelColor
                 self.summaryLabel.stringValue =
@@ -1070,7 +1087,6 @@ final class VoicesSection: NSObject, AppSection, NSTableViewDataSource, NSTableV
         guard sender.tag < rows.count, let id = rows[sender.tag]["id"] as? String else { return }
         let enabled = sender.state == .on
         rows[sender.tag]["enabled"] = enabled
-        let index = sender.tag
         // Deliberately no reload on success: a full refresh would rebuild the
         // table and fight the checkbox the user just clicked. The next reload
         // shows the corrected totals.
@@ -1082,7 +1098,10 @@ final class VoicesSection: NSObject, AppSection, NSTableViewDataSource, NSTableV
         GatewayAPI.post("/admin/api/voices/enabled", body: ["items": [id], "enabled": enabled]) {
             result in
             if case .failure(let error) = result {
-                self.rows[index]["enabled"] = !enabled
+                // By id, not by the row number the click had: a reload may have moved it.
+                if let current = self.rows.firstIndex(where: { $0["id"] as? String == id }) {
+                    self.rows[current]["enabled"] = !enabled
+                }
                 sender.state = enabled ? .off : .on
                 self.summaryLabel.stringValue = "Could not change that voice — \(error.localizedDescription)"
                 self.summaryLabel.textColor = .systemRed

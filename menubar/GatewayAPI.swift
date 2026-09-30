@@ -436,6 +436,17 @@ enum GatewayAPI {
 
     // MARK: Formatting helpers shared by the windows
 
+    private static let clockFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "HH:mm:ss"
+        return formatter
+    }()
+
+    /// The wall-clock time of an epoch, for "as of" lines and job details where "5m ago" is not enough.
+    static func clock(_ epoch: Double) -> String {
+        clockFormatter.string(from: Date(timeIntervalSince1970: epoch))
+    }
+
     static func relativeTime(_ epoch: Double?) -> String {
         guard let epoch, epoch > 0 else { return "—" }
         let seconds = Date().timeIntervalSince1970 - epoch

@@ -248,6 +248,10 @@ final class CreateWorkspace: NSView {
     private var fileButton: NSButton?
     private var fileHelp: NSTextField?
     private var fileURL: URL?
+    /// Why the chosen file cannot be sent, said before it is read rather than after the upload.
+    private var fileProblem: String?
+    /// The gateway refuses a transcription upload past this (api.py `_MAX_UPLOAD_BYTES`).
+    private static let maxUploadBytes = 25 * 1024 * 1024
     private var capabilityLabel: NSTextField?
     private var cancelButton: NSButton?
     private var retryAttemptButton: NSButton?
@@ -486,7 +490,7 @@ final class CreateWorkspace: NSView {
             if FileManager.default.fileExists(atPath: url.path) {
                 fileURL = url
                 fileButton?.title = url.lastPathComponent
-                fileHelp?.stringValue = url.path
+                showFile(url)
             }
         }
         updateCapabilities()
@@ -742,6 +746,7 @@ final class CreateWorkspace: NSView {
             && !submissionInFlight
             && pendingJobID == nil
             && ambiguousAttempt == nil
+            && fileProblem == nil
     }
 
     private func selectedModelID() -> String? {
@@ -756,8 +761,19 @@ final class CreateWorkspace: NSView {
         guard panel.runModal() == .OK, let url = panel.url else { return }
         fileURL = url
         fileButton?.title = url.lastPathComponent
-        fileHelp?.stringValue = url.path
+        showFile(url)
+        updateGenerateEnabled()
         persistState()
+    }
+
+    /// Show the path, or say the file is too big — from its size on disk, without reading it.
+    private func showFile(_ url: URL) {
+        let size = (try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0
+        fileProblem = size > Self.maxUploadBytes
+            ? "This file is \(size / (1024 * 1024)) MB; the gateway accepts at most "
+                + "\(Self.maxUploadBytes / (1024 * 1024)) MB. Choose a shorter or compressed recording."
+            : nil
+        fileHelp?.stringValue = fileProblem ?? url.path
     }
 
     private func value(of key: String) -> String {
@@ -842,22 +858,19 @@ final class CreateWorkspace: NSView {
         submit(attempt)
     }
 
+    /// Read and hash a recording off the main thread: it can be tens of megabytes.
+    /// `data` is nil when the file is unreadable, empty or past the upload limit.
+    private func readUpload(_ url: URL, then done: @escaping (Data?, String?) -> Void) {
+        DispatchQueue.global(qos: .userInitiated).async {
+            let size = (try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0
+            let data = size > Self.maxUploadBytes ? nil : try? Data(contentsOf: url)
+            let hash = data.map { self.digest($0) }
+            DispatchQueue.main.async { done(data?.isEmpty == false ? data : nil, hash) }
+        }
+    }
+
     private func makeAttempt(modelID: String) -> CreateAttempt? {
         let key = UUID().uuidString
-        if lane.isUpload {
-            guard let url = fileURL,
-                  let data = try? Data(contentsOf: url), !data.isEmpty else {
-                statusLabel.stringValue = "Choose a recording first."
-                return nil
-            }
-            return CreateAttempt(
-                key: key, modelID: modelID, modality: lane.modality, body: nil,
-                uploadPath: url.path, uploadName: url.lastPathComponent,
-                uploadType: "application/octet-stream", uploadBytes: data.count,
-                uploadDigest: digest(data)
-            )
-        }
-
         var params: [String: Any] = [:]
         for field in lane.fields {
             let raw = value(of: field.key)
@@ -898,21 +911,23 @@ final class CreateWorkspace: NSView {
 
     private func submit(_ attempt: CreateAttempt) {
         if let uploadPath = attempt.uploadPath, let name = attempt.uploadName {
-            guard let data = try? Data(contentsOf: URL(fileURLWithPath: uploadPath)) else {
-                refuseChangedUpload(attempt, reason: "The saved upload is missing.")
-                return
-            }
-            guard attempt.uploadBytes == data.count,
-                  attempt.uploadDigest == digest(data) else {
-                refuseChangedUpload(attempt, reason: "The saved upload changed since the attempt was recorded.")
-                return
-            }
-            GatewayAPI.upload(
-                "/admin/api/create/transcription",
-                fileField: "file", filename: name, data: data,
-                fields: ["model_id": attempt.modelID, "idempotency_key": attempt.key]
-            ) { [weak self] result in
-                self?.handleSubmit(result, attemptKey: attempt.key)
+            readUpload(URL(fileURLWithPath: uploadPath)) { [weak self] data, hash in
+                guard let self, self.activeAttempt?.key == attempt.key else { return }
+                guard let data else {
+                    self.refuseChangedUpload(attempt, reason: "The saved upload is missing.")
+                    return
+                }
+                guard attempt.uploadBytes == data.count, attempt.uploadDigest == hash else {
+                    self.refuseChangedUpload(attempt, reason: "The saved upload changed since the attempt was recorded.")
+                    return
+                }
+                GatewayAPI.upload(
+                    "/admin/api/create/transcription",
+                    fileField: "file", filename: name, data: data,
+                    fields: ["model_id": attempt.modelID, "idempotency_key": attempt.key]
+                ) { [weak self] result in
+                    self?.handleSubmit(result, attemptKey: attempt.key)
+                }
             }
             return
         }
@@ -948,7 +963,38 @@ final class CreateWorkspace: NSView {
                 return
             }
         }
+        if lane.isUpload {
+            guard let url = fileURL else {
+                statusLabel.stringValue = "Choose a recording first."
+                return
+            }
+            if let problem = fileProblem {
+                statusLabel.stringValue = problem
+                return
+            }
+            generateButton.isEnabled = false
+            statusLabel.stringValue = "reading the recording…"
+            readUpload(url) { [weak self] data, hash in
+                guard let self else { return }
+                guard let data, let hash else {
+                    self.statusLabel.stringValue = "Choose a recording first."
+                    self.updateGenerateEnabled()
+                    return
+                }
+                self.begin(CreateAttempt(
+                    key: UUID().uuidString, modelID: modelID, modality: self.lane.modality, body: nil,
+                    uploadPath: url.path, uploadName: url.lastPathComponent,
+                    uploadType: "application/octet-stream", uploadBytes: data.count,
+                    uploadDigest: hash
+                ))
+            }
+            return
+        }
         guard let attempt = makeAttempt(modelID: modelID) else { return }
+        begin(attempt)
+    }
+
+    private func begin(_ attempt: CreateAttempt) {
         jobRequestGeneration += 1
         activeAttempt = attempt
         submissionInFlight = true

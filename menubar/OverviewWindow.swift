@@ -365,7 +365,13 @@ final class OverviewSection: NSObject, AppSection {
         GatewayAPI.get("/admin/api/status") { [weak self] result in
             guard let self else { return }
             guard case .success(let payload) = result else {
-                self.subtitleLabel.stringValue = "Waiting for the gateway…"
+                // Say why: a 401 after a key change and a gateway that is not there are
+                // different problems. Only a gateway that is starting is "waiting".
+                if case .failure(let error) = result, GatewayController.shared.isRunning {
+                    self.subtitleLabel.stringValue = error.localizedDescription
+                } else {
+                    self.subtitleLabel.stringValue = "Waiting for the gateway…"
+                }
                 // The tiles, the modality bars and the hub lines all kept their
                 // previous values, so a failed read showed stale numbers beside a
                 // message saying the gateway was not answering. Blank them: an
@@ -590,6 +596,12 @@ final class OverviewSection: NSObject, AppSection {
     /// about, so a gateway started before this app ran survived a "restart" and was
     /// adopted again. This kills the port holder by pid and then says what happened.
     @objc private func restartGateway() {
+        GatewayController.shared.confirmIfBusy("Restart") { [weak self] ok in
+            if ok { self?.restartConfirmed() }
+        }
+    }
+
+    private func restartConfirmed() {
         buildLabel.textColor = .secondaryLabelColor
         let killed = GatewayController.shared.killPortHolders()
         buildLabel.stringValue = killed.isEmpty

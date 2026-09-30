@@ -39,6 +39,12 @@ final class SettingsSection: NSObject, AppSection {
     private var publisherIDLabel: NSTextField!
     private var releaseIdentityStatus: NSTextField!
 
+    /// What the retention fields last showed from the gateway, to tell a change from a re-read.
+    private var loadedRetention: [String: Double] = [:]
+    /// What `fill` last wrote into a field. A field that no longer says that has been typed
+    /// into, and a re-read on activation must not put the old value back over it.
+    private var written: [ObjectIdentifier: String] = [:]
+
     lazy var view: NSView = buildContent()
 
     func activated() {
@@ -297,13 +303,21 @@ final class SettingsSection: NSObject, AppSection {
         loginCheck?.state = LaunchAgent.isInstalled ? .on : .off
         autoStartCheck?.state = ConfigStore.shared.config.autoStartGateway ? .on : .off
         keepRunningCheck?.state = ConfigStore.shared.config.keepGatewayRunning == true ? .on : .off
-        keyField?.stringValue = EnvFile.apiKey()
+        fill(keyField, EnvFile.apiKey())
         storyBaseField?.stringValue = LocalAddresses.storyBaseURL(port: ConfigStore.shared.config.port)
         runtimeLabel?.stringValue = GatewayController.shared.runtimeDescription
         dataLabel?.stringValue = AppPaths.data.path
         statusLabel?.stringValue = "Config: \(ConfigStore.shared.configPath)"
         loadRetention()
         loadReleaseIdentity()
+    }
+
+    private func fill(_ field: NSTextField?, _ value: String) {
+        guard let field else { return }
+        let id = ObjectIdentifier(field)
+        if let last = written[id], field.stringValue != last { return }
+        field.stringValue = value
+        written[id] = value
     }
 
     /// Read the publisher identity from the gateway. It is public material and
@@ -360,20 +374,23 @@ final class SettingsSection: NSObject, AppSection {
                 // "Prune now" then wrote back to the gateway, so a read that
                 // failed could silently overwrite the owner's real limits with
                 // defaults. An empty field is honest; a wrong number is not.
-                self.retentionDaysField?.stringValue = ""
-                self.retentionGBField?.stringValue = ""
+                self.fill(self.retentionDaysField, "")
+                self.fill(self.retentionGBField, "")
+                self.loadedRetention = [:]
                 if case .failure(let error) = result {
                     self.retentionUsageLabel?.stringValue =
                         "Could not read the limits — \(error.localizedDescription)"
                 }
                 return
             }
+            self.loadedRetention = [:]
             if let days = payload["max_age_days"] as? Double {
-                self.retentionDaysField?.stringValue = String(format: "%g", days)
+                self.loadedRetention["max_age_days"] = days
+                self.fill(self.retentionDaysField, String(format: "%g", days))
             }
             if let bytes = payload["max_bytes"] as? Double {
-                self.retentionGBField?.stringValue =
-                    String(format: "%g", bytes / (1024 * 1024 * 1024))
+                self.loadedRetention["max_bytes"] = bytes
+                self.fill(self.retentionGBField, String(format: "%g", bytes / (1024 * 1024 * 1024)))
             }
             self.describeRetention(payload["usage"] as? [String: Any])
         }
@@ -388,26 +405,60 @@ final class SettingsSection: NSObject, AppSection {
             "\(files) file\(files == 1 ? "" : "s"), \(formatted) — Story Studio keeps its own copy"
     }
 
-    /// Save the limits and run the policy, so the effect of a change is visible now
-    /// rather than at the next hourly pass.
-    @objc private func pruneNow() {
-        let days = Double(retentionDaysField.stringValue.trimmingCharacters(in: .whitespaces))
-        let gb = Double(retentionGBField.stringValue.trimmingCharacters(in: .whitespaces))
-        var body: [String: Any] = [:]
-        if let days { body["max_age_days"] = days }
-        if let gb { body["max_bytes"] = gb * 1024 * 1024 * 1024 }
+    /// The typed limits as a request body, or nil after saying what is wrong. A blank field
+    /// (the read failed) is left alone rather than sent as a guess.
+    private func retentionBody() -> [String: Double]? {
+        var body: [String: Double] = [:]
+        let fields = [
+            (retentionDaysField!, "max_age_days", 1.0, "days"),
+            (retentionGBField!, "max_bytes", 1024.0 * 1024 * 1024, "GB"),
+        ]
+        for (field, key, scale, unit) in fields {
+            let text = field.stringValue.trimmingCharacters(in: .whitespaces)
+            if text.isEmpty { continue }
+            guard let value = Double(text), value > 0 else {
+                statusLabel.stringValue = "The \(unit) limit must be a number above zero — nothing was saved."
+                return nil
+            }
+            body[key] = value * scale
+        }
+        return body
+    }
 
-        GatewayAPI.put("/admin/api/settings/retention", body: body) { [weak self] result in
+    private func retentionChanged(_ body: [String: Double]) -> Bool {
+        body.contains { key, new in
+            guard let old = loadedRetention[key] else { return true }
+            return abs(new - old) > max(new, old) * 1e-5
+        }
+    }
+
+    /// Save the limits and run the policy, so the effect of a change is visible now
+    /// rather than at the next hourly pass. Deletes files, so it asks first.
+    @objc private func pruneNow() {
+        guard let body = retentionBody() else { return }
+        guard !body.isEmpty else {
+            statusLabel.stringValue = "The limits could not be read from the gateway — nothing was pruned."
+            return
+        }
+        guard PageKit.confirm(
+            "Delete old received artifacts now?",
+            "Files older than \(retentionDaysField.stringValue) days, or beyond \(retentionGBField.stringValue) GB "
+                + "(oldest first), are deleted from this Mac. Now: \(retentionUsageLabel.stringValue). "
+                + "Pinned files and anything newer than an hour are kept. This cannot be undone.",
+            ok: "Prune"
+        ) else { return }
+
+        GatewayAPI.put("/admin/api/settings/retention", body: body as [String: Any]) { [weak self] result in
             guard let self else { return }
             if case .failure(let error) = result {
-                self.statusLabel.stringValue = "Could not save the limits — \(error)"
+                self.statusLabel.stringValue = "Could not save the limits — \(error.localizedDescription)"
                 return
             }
             GatewayAPI.post("/admin/api/artifacts/prune", body: [:]) { [weak self] result in
                 guard let self else { return }
                 switch result {
                 case .failure(let error):
-                    self.statusLabel.stringValue = "Could not prune — \(error)"
+                    self.statusLabel.stringValue = "Could not prune — \(error.localizedDescription)"
                 case .success(let payload):
                     let deleted = payload["deleted"] as? Int ?? 0
                     let freed = (payload["freed_bytes"] as? Double) ?? 0
@@ -417,6 +468,7 @@ final class SettingsSection: NSObject, AppSection {
                           + ByteCountFormatter.string(fromByteCount: Int64(freed), countStyle: .file)
                           + " freed."
                     self.describeRetention(payload["usage"] as? [String: Any])
+                    self.loadedRetention.merge(body) { _, new in new }
                 }
             }
         }
@@ -437,10 +489,17 @@ final class SettingsSection: NSObject, AppSection {
     }
 
     @objc private func regenerateKey() {
+        guard PageKit.confirm(
+            "Generate a new API key?",
+            "Story Studio presents this key. It stops working the moment the new one is written, "
+                + "and the old key cannot be recovered. Paste the new key into Story Studio → Settings afterwards.",
+            ok: "Generate"
+        ) else { return }
         let key = EnvFile.generateKey()
         EnvFile.writeApiKey(key)
         ConsoleSection.refreshCredentials()
         keyField.stringValue = key
+        written = [:]
         statusLabel.stringValue =
             "New key written. New requests use it immediately; update Story Studio if it has the old key."
     }
@@ -476,14 +535,44 @@ final class SettingsSection: NSObject, AppSection {
             return
         }
         let key = keyField.stringValue.trimmingCharacters(in: .whitespaces)
+        guard let retention = retentionBody() else { return }
 
-        ConfigStore.shared.update { $0.port = port }
-        if !key.isEmpty {
-            EnvFile.writeApiKey(key)
-            ConsoleSection.refreshCredentials()
+        // The gateway reads its key from .env on every request, so only a new port needs a restart.
+        let portChanged = port != ConfigStore.shared.config.port
+        let keyChanged = !key.isEmpty && key != EnvFile.apiKey()
+        let limitsChanged = retentionChanged(retention)
+        guard portChanged || keyChanged || limitsChanged else {
+            statusLabel.stringValue = "Nothing to save — no setting has changed."
+            return
         }
-        statusLabel.stringValue = "Saved. Restarting the gateway…"
-        GatewayController.shared.restart()
+        let apply = { [weak self] in
+            guard let self else { return }
+            if keyChanged {
+                EnvFile.writeApiKey(key)
+                ConsoleSection.refreshCredentials()
+            }
+            if limitsChanged {
+                GatewayAPI.put("/admin/api/settings/retention", body: retention as [String: Any]) { [weak self] result in
+                    if case .failure(let error) = result {
+                        self?.statusLabel.stringValue = "Could not save the limits — \(error.localizedDescription)"
+                    } else {
+                        self?.loadedRetention.merge(retention) { _, new in new }
+                    }
+                }
+            }
+            self.written = [:]
+            guard portChanged else {
+                self.statusLabel.stringValue = "Saved."
+                return
+            }
+            ConfigStore.shared.update { $0.port = port }
+            self.statusLabel.stringValue = "Saved. Restarting the gateway…"
+            GatewayController.shared.restart()
+        }
+        guard portChanged else { return apply() }
+        GatewayController.shared.confirmIfBusy("Restart") { [weak self] ok in
+            if ok { apply() } else { self?.statusLabel.stringValue = "Not saved." }
+        }
     }
 
     @objc private func openConsole() { MainWindow.shared.show(section: "providers") }

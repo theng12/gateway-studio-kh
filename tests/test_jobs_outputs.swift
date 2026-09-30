@@ -30,6 +30,7 @@ enum GatewayAPI {
     static var postBodies: [[String: Any]] = []
     static var downloads: [(String, (Result<Data, GatewayAPIError>) -> Void)] = []
     static var deferJobs = false
+    static var failJobs = false
     static var deferredJobsCompletion: ((Result<[String: Any], Error>) -> Void)?
     static var deferCancel = false
     static var deferredCancelCompletion: ((Result<[String: Any], Error>) -> Void)?
@@ -50,6 +51,10 @@ enum GatewayAPI {
         } else {
             if deferJobs {
                 deferredJobsCompletion = completion
+                return
+            }
+            if failJobs {
+                completion(.failure(GatewayAPIError.transport("gateway down")))
                 return
             }
             completion(.success(["jobs": jobs, "stats": ["total": jobs.count]]))
@@ -448,6 +453,60 @@ struct JobsOutputsCheck {
             !labels(cancelSection.view).contains { $0.contains("Refreshing lifecycle state") },
             "late cancel response overwrote another job's status"
         )
+
+        // ── a poll must not disturb the open detail, and a failed poll keeps the table ──
+        GatewayAPI.jobs = [outputJob]
+        GatewayAPI.downloads.removeAll()
+        let pollSection = JobsSection()
+        _ = pollSection.view
+        pollSection.activated()
+        let pollTable = descendants(pollSection.view).compactMap { $0 as? NSTableView }.first!
+        pollTable.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+        buttons(pollSection.view).first { $0.title == "Preview" }?.performClick(nil)
+        assert(labels(pollSection.view).contains { $0.hasPrefix("Downloading") }, "no download status to keep")
+        pollSection.activated()
+        RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+        assert(labels(pollSection.view).contains { $0.hasPrefix("Downloading") },
+               "an unchanged poll rebuilt the detail and wiped its status: \(labels(pollSection.view))")
+        GatewayAPI.failJobs = true
+        pollSection.activated()
+        RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+        GatewayAPI.failJobs = false
+        assert(pollTable.numberOfRows == 1 && pollTable.selectedRow == 0,
+               "a failed poll dropped the table or the selection")
+        assert(labels(pollSection.view).contains { $0.contains("Job job-output") },
+               "a failed poll blanked the detail: \(labels(pollSection.view))")
+
+        // ── facts the gateway publishes: attempts, exact times, queue position ──
+        let jobRetried: [String: Any] = [
+            "id": "job-retried", "state": "accepted", "modality": "image", "model_name": "image-model",
+            "provider_name": "Mock", "created_at": 1.0, "outputs": [], "duration_s": 12.5,
+            "queue_position": 3, "queue_size": 5,
+            "attempts": [
+                ["number": 1, "machine": "terranash-1102", "failure_reason": "out of memory", "at": 2.0],
+                ["number": 2, "machine": "terranash-1200", "failure_code": "BUSY", "at": 3.0],
+            ],
+            "attempts_used": 2, "attempts_allowed": 3,
+        ]
+        GatewayAPI.jobs = [jobRetried]
+        let factsSection = JobsSection()
+        _ = factsSection.view
+        factsSection.activated()
+        let factsTable = descendants(factsSection.view).compactMap { $0 as? NSTableView }.first!
+        factsTable.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+        let facts = labels(factsSection.view).joined(separator: "\n")
+        assert(facts.contains("Attempt 2 of 3") && facts.contains("terranash-1102 — out of memory"),
+               "attempts were not drawn: \(facts)")
+        assert(facts.contains("position 3 of 5"), "queue position hidden without a defer reason: \(facts)")
+
+        // ── the state filter asks the route for what it names, at the route's ceiling ──
+        let popup = descendants(factsSection.view).compactMap { $0 as? NSPopUpButton }.first!
+        popup.selectItem(withTitle: "In progress")
+        _ = popup.target?.perform(popup.action, with: popup)
+        let asked = GatewayAPI.getPaths.last { $0.hasPrefix("/admin/api/jobs") } ?? ""
+        assert(asked.contains("state=running") && asked.contains("limit=500"), "filter did not reach the route: \(asked)")
 
         print("PASS: Jobs outputs library native fixture")
     }

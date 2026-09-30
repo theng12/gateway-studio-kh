@@ -786,6 +786,30 @@ final class GatewayController {
         }
     }
 
+    /// Warn before anything that interrupts the gateway while it has work in flight.
+    ///
+    /// Job threads die with the process, and an outcome the gateway cannot know becomes a
+    /// manual recovery hold, so a Quit or Restart mid-batch leaves the owner holds to clear.
+    /// Warn-and-confirm, not drain. Fails open: a gateway that does not answer has nothing
+    /// to lose, and the owner must always be able to stop it.
+    func confirmIfBusy(_ verb: String, then proceed: @escaping (Bool) -> Void) {
+        GatewayAPI.get("/admin/api/status", timeout: 3) { result in
+            guard case .success(let payload) = result,
+                  let byState = (payload["jobs"] as? [String: Any])?["by_state"] as? [String: Any]
+            else { return proceed(true) }
+            let running = byState["running"] as? Int ?? 0
+            let waiting = byState["accepted"] as? Int ?? 0
+            guard running + waiting > 0 else { return proceed(true) }
+            proceed(PageKit.confirm(
+                "\(verb) the gateway?",
+                "\(running) job\(running == 1 ? " is" : "s are") running and \(waiting) waiting. "
+                    + "This interrupts them; work that was already handed to a provider may need "
+                    + "manual recovery on the Jobs page.",
+                ok: verb
+            ))
+        }
+    }
+
     /// Stop whatever is running and start this build, for the menu and the button.
     func restartCleanly() {
         killPortHolders()
@@ -1110,16 +1134,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if ConfigStore.shared.config.keepGatewayRunning == true {
             return .terminateNow
         }
-        GatewayController.shared.stop()
-        // Terminating a process is asynchronous, so give the port a moment to be
-        // released — otherwise the next launch races the old listener and adopts
-        // it, which is the whole problem this is here to fix.
-        GatewayController.shared.killPortHolders()
-        let deadline = Date().addingTimeInterval(2.0)
-        while Date() < deadline, GatewayController.shared.portIsHeld() {
-            usleep(100_000)
+        GatewayController.shared.confirmIfBusy("Quit") { ok in
+            if ok {
+                GatewayController.shared.stop()
+                // Terminating a process is asynchronous, so give the port a moment to be
+                // released — otherwise the next launch races the old listener and adopts
+                // it, which is the whole problem this is here to fix.
+                GatewayController.shared.killPortHolders()
+                let deadline = Date().addingTimeInterval(2.0)
+                while Date() < deadline, GatewayController.shared.portIsHeld() {
+                    usleep(100_000)
+                }
+            }
+            NSApp.reply(toApplicationShouldTerminate: ok)
         }
-        return .terminateNow
+        return .terminateLater
     }
 
     /// Clicking the Dock icon, or activating the app when its window is closed or
@@ -1301,8 +1330,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     // MARK: Actions
 
     @objc private func startGateway() { GatewayController.shared.start() }
-    @objc private func stopGateway() { GatewayController.shared.stop() }
-    @objc private func restartGateway() { GatewayController.shared.restart() }
+    @objc private func stopGateway() {
+        GatewayController.shared.confirmIfBusy("Stop") { if $0 { GatewayController.shared.stop() } }
+    }
+    @objc private func restartGateway() {
+        GatewayController.shared.confirmIfBusy("Restart") { if $0 { GatewayController.shared.restart() } }
+    }
 
     // Not `private`: MainMenuBuilder references these by selector from another
     // type in this file.
@@ -1371,7 +1404,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             alert.addButton(withTitle: "OK")
             alert.addButton(withTitle: "Restart Gateway")
             if alert.runModal() == .alertSecondButtonReturn {
-                GatewayController.shared.restartCleanly()
+                GatewayController.shared.confirmIfBusy("Restart") { if $0 { GatewayController.shared.restartCleanly() } }
             }
         }
     }

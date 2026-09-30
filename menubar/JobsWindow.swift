@@ -72,6 +72,9 @@ final class JobsSection: NSObject, AppSection, NSTableViewDataSource, NSTableVie
     private var cancelButton: NSButton?
     private var discardButton: NSButton?
     private var rows: [[String: Any]] = []
+    /// The last list read as the gateway sent it, to tell whether a job changed.
+    private var listRows: [String: [String: Any]] = [:]
+    private var keptKeys: Set<String> = []
 
     /// Asked before anything is discarded. A property so the native test can
     /// answer without a modal alert: the confirmation is part of the behaviour
@@ -86,6 +89,18 @@ final class JobsSection: NSObject, AppSection, NSTableViewDataSource, NSTableVie
     /// The section's content, built once and hosted by the main window.
     lazy var view: NSView = buildContent()
 
+    /// The route filters on one `state`; "needs recovery" is a `failed` job the gateway
+    /// still holds for a manual decision, which only the row itself says.
+    private let filters: [(title: String, state: String?, recoveryOnly: Bool)] = [
+        ("All results", nil, false),
+        ("In progress", "running", false),
+        ("Waiting in queue", "accepted", false),
+        ("Needs recovery", "failed", true),
+        ("Succeeded", "succeeded", false),
+        ("Failed", "failed", false),
+        ("Cancelled", "cancelled", false),
+    ]
+
     private let columns: [(id: String, title: String, width: CGFloat)] = [
         ("time", "When", 70),
         ("modality", "Type", 80),
@@ -95,8 +110,9 @@ final class JobsSection: NSObject, AppSection, NSTableViewDataSource, NSTableVie
         ("outputs", "Outputs", 66),
     ]
 
+    /// Also the host's 5 s timer: a quiet read keeps what is on screen.
     func activated() {
-        reload()
+        load(quiet: true)
     }
 
     // MARK: Layout
@@ -114,7 +130,7 @@ final class JobsSection: NSObject, AppSection, NSTableViewDataSource, NSTableVie
         summaryLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
         filterPopup = NSPopUpButton()
-        filterPopup.addItems(withTitles: ["All results", "Succeeded", "Failed", "Cancelled"])
+        filterPopup.addItems(withTitles: filters.map { $0.title })
         filterPopup.target = self
         filterPopup.action = #selector(reload)
         filterPopup.controlSize = .small
@@ -205,40 +221,78 @@ final class JobsSection: NSObject, AppSection, NSTableViewDataSource, NSTableVie
     // MARK: Data
 
     @objc func reload() {
+        load(quiet: false)
+    }
+
+    private func load(quiet: Bool) {
         reloadGeneration += 1
         let requestGeneration = reloadGeneration
 
-        var path = "/admin/api/jobs?limit=200"
-        switch filterPopup?.indexOfSelectedItem ?? 0 {
-        case 1: path += "&state=succeeded"
-        case 2: path += "&state=failed"
-        case 3: path += "&state=cancelled"
-        default: break
-        }
+        let filter = filters[max(filterPopup?.indexOfSelectedItem ?? 0, 0)]
+        var path = "/admin/api/jobs?limit=500"
+        if let state = filter.state { path += "&state=\(state)" }
 
-        summaryLabel?.stringValue = "Loading…"
+        // A timer-driven read must not wipe the summary or the detail pane.
+        if !quiet || rows.isEmpty { summaryLabel?.stringValue = "Loading…" }
         GatewayAPI.get(path) { [weak self] result in
             guard let self, self.reloadGeneration == requestGeneration else { return }
 
             switch result {
             case .success(let payload):
-                let currentID = self.selectedJobID ?? self.selectedTableJobID()
-                self.rows = payload["jobs"] as? [[String: Any]] ?? []
+                var fresh = payload["jobs"] as? [[String: Any]] ?? []
+                if filter.recoveryOnly { fresh = fresh.filter { $0["recovery_required"] as? Bool == true } }
+                self.adopt(fresh)
                 self.updateSummary(payload: payload)
-                self.suppressSelectionCallback = true
-                self.table?.reloadData()
-                self.suppressSelectionCallback = false
-                self.restoreSelection(currentID)
                 self.loadKeptState(requestGeneration: requestGeneration)
             case .failure(let error):
-                self.rows = []
-                self.selectedJobID = nil
-                self.selectionGeneration += 1
-                self.table?.reloadData()
-                self.renderPlaceholder()
+                // A failed poll keeps the last table and the selection; the summary says so.
                 self.summaryLabel?.stringValue = "Could not load jobs: \(error.localizedDescription)"
+                    + (self.rows.isEmpty ? "" : " — showing the last list.")
             }
         }
+    }
+
+    /// The row as the list reported it, minus the countdown that changes on every read.
+    private func stable(_ row: [String: Any]?) -> NSDictionary? {
+        guard var row else { return nil }
+        row["retry_in_s"] = nil
+        return row as NSDictionary
+    }
+
+    /// Install a fresh list. Detail fetched separately (attempts, text output) is carried
+    /// over, and the open detail is rebuilt only if the selected job's own row changed —
+    /// otherwise a poll would scroll a long answer back to the top and wipe its status line.
+    private func adopt(_ fresh: [[String: Any]]) {
+        let currentID = selectedJobID ?? selectedTableJobID()
+        let before = Dictionary(rows.compactMap { row in string(row["id"]).map { ($0, row) } },
+                                uniquingKeysWith: { first, _ in first })
+        let listed = listRows
+        listRows = Dictionary(fresh.compactMap { row in string(row["id"]).map { ($0, row) } },
+                              uniquingKeysWith: { first, _ in first })
+        rows = fresh.map { row in
+            let id = string(row["id"]) ?? ""
+            var merged = before[id] ?? [:]
+            if stable(listed[id]) != stable(row) { merged.merge(row) { _, new in new } }
+            return withKept(merged)
+        }
+        suppressSelectionCallback = true
+        table?.reloadData()
+        suppressSelectionCallback = false
+        let unchanged = currentID != nil && currentID == selectedJobID
+            && stable(listed[currentID!]) == stable(listRows[currentID!])
+        restoreSelection(currentID, redraw: !unchanged)
+    }
+
+    private func withKept(_ job: [String: Any]) -> [String: Any] {
+        guard var outputs = job["outputs"] as? [[String: Any]] else { return job }
+        let jobID = string(job["id"]) ?? ""
+        for index in outputs.indices {
+            let assetID = string(outputs[index]["asset_id"]) ?? ""
+            outputs[index]["kept"] = keptKeys.contains(outputKey(jobID: jobID, assetID: assetID))
+        }
+        var updated = job
+        updated["outputs"] = outputs
+        return updated
     }
 
     private func updateSummary(payload: [String: Any]) {
@@ -258,29 +312,16 @@ final class JobsSection: NSObject, AppSection, NSTableViewDataSource, NSTableVie
             guard case .success(let payload) = result,
                   let artifacts = payload["artifacts"] as? [[String: Any]] else { return }
 
-            let currentID = self.selectedJobID ?? self.selectedTableJobID()
             let kept = Set(artifacts.compactMap { entry -> String? in
                 guard let jobID = self.string(entry["job_id"]),
                       let assetID = self.string(entry["asset_id"]),
                       !jobID.isEmpty, !assetID.isEmpty else { return nil }
                 return self.outputKey(jobID: jobID, assetID: assetID)
             })
-            self.rows = self.rows.map { job in
-                var updated = job
-                let jobID = self.string(job["id"]) ?? ""
-                if var outputs = job["outputs"] as? [[String: Any]] {
-                    outputs = outputs.map { output in
-                        var updatedOutput = output
-                        let assetID = self.string(output["asset_id"]) ?? ""
-                        updatedOutput["kept"] = kept.contains(
-                            self.outputKey(jobID: jobID, assetID: assetID)
-                        )
-                        return updatedOutput
-                    }
-                    updated["outputs"] = outputs
-                }
-                return updated
-            }
+            guard kept != self.keptKeys else { return }
+            let currentID = self.selectedJobID ?? self.selectedTableJobID()
+            self.keptKeys = kept
+            self.rows = self.rows.map(self.withKept)
             self.suppressSelectionCallback = true
             self.table.reloadData()
             self.suppressSelectionCallback = false
@@ -293,7 +334,7 @@ final class JobsSection: NSObject, AppSection, NSTableViewDataSource, NSTableVie
         return string(rows[table.selectedRow]["id"])
     }
 
-    private func restoreSelection(_ jobID: String?) {
+    private func restoreSelection(_ jobID: String?, redraw: Bool = true) {
         guard let jobID,
               let row = rows.firstIndex(where: { string($0["id"]) == jobID }) else {
             if selectedJobID != nil {
@@ -313,6 +354,7 @@ final class JobsSection: NSObject, AppSection, NSTableViewDataSource, NSTableVie
             selectionGeneration += 1
         }
         selectedJobID = jobID
+        guard redraw else { return }
         renderDetail(rows[row])
         loadJobStatus(jobID: jobID, generation: selectionGeneration)
     }
@@ -406,6 +448,7 @@ final class JobsSection: NSObject, AppSection, NSTableViewDataSource, NSTableVie
                     "recovery_required", "recovery_state", "recovery_detail",
                     "upstream_job_id", "late_result_state", "output_text", "outputs",
                     "error_code", "error_detail", "failure_code", "failure_reason",
+                    "attempts", "attempts_used", "attempts_allowed", "attempt_policy",
                 ]
                 for key in detailKeys where payload[key] != nil {
                     merged[key] = payload[key]
@@ -444,6 +487,14 @@ final class JobsSection: NSObject, AppSection, NSTableViewDataSource, NSTableVie
         detailStack.addArrangedSubview(PageKit.sectionTitle("\(model) · \(provider)"))
         detailStack.addArrangedSubview(PageKit.help("Job \(jobID) · \(displayState(job))"))
 
+        // Exact times and how long it took: "5m ago" cannot answer "when exactly".
+        var times: [String] = []
+        if let created = job["created_at"] as? Double { times.append("Created \(Self.stamp(created))") }
+        let terminal = ["succeeded", "failed", "cancelled"].contains(string(job["state"]) ?? "")
+        if terminal, let updated = job["updated_at"] as? Double { times.append("finished \(Self.stamp(updated))") }
+        if let took = job["duration_s"] as? Double { times.append("took \(Self.shortDuration(Int(took.rounded())))") }
+        if !times.isEmpty { detailStack.addArrangedSubview(PageKit.help(times.joined(separator: " · "))) }
+
         // **Who asked.** Not an identity — one API key, shared by every caller — but
         // the difference between Story Studio and a script, which is the question
         // actually asked when a batch fails. Omitted when the request said nothing,
@@ -463,15 +514,19 @@ final class JobsSection: NSObject, AppSection, NSTableViewDataSource, NSTableVie
         // modality, and `retry_in_s` is when this gateway makes its next attempt (not a promise about
         // the provider). Each is drawn only when present, so a queue the gateway cannot count does
         // not read as "position zero".
-        if let waiting = string(job["defer_reason"]), !waiting.isEmpty {
-            var line = "Waiting for a free machine"
-            if let position = integer(job["queue_position"]), position > 0 {
+        // The position is published for every `accepted` job, not only a deferred one.
+        let waiting = string(job["defer_reason"]) ?? ""
+        let position = integer(job["queue_position"]) ?? 0
+        if !waiting.isEmpty || position > 0 {
+            var line = waiting.isEmpty ? "Queued" : "Waiting for a free machine"
+            if position > 0 {
                 line += " — position \(position)"
+                if let size = integer(job["queue_size"]), size > 0 { line += " of \(size)" }
             }
             if let retry = integer(job["retry_in_s"]), retry > 0 {
                 line += ", trying again in \(Self.shortDuration(retry))"
             }
-            let label = PageKit.help("\(line). \(waiting)")
+            let label = PageKit.help(waiting.isEmpty ? "\(line)." : "\(line). \(waiting)")
             label.textColor = .systemOrange
             detailStack.addArrangedSubview(label)
         }
@@ -481,6 +536,18 @@ final class JobsSection: NSObject, AppSection, NSTableViewDataSource, NSTableVie
             let lifecycleLabel = PageKit.help(lifecycle)
             lifecycleLabel.textColor = lifecycleColour(job)
             detailStack.addArrangedSubview(lifecycleLabel)
+        }
+
+        // Which machines tried it, and where the retry policy stands (attempt n of N).
+        if let attempts = job["attempts"] as? [[String: Any]], !attempts.isEmpty {
+            var lines = ["Attempt \(integer(job["attempts_used"]) ?? attempts.count)"
+                + (integer(job["attempts_allowed"]).map { " of \($0)" } ?? "")]
+            for attempt in attempts {
+                let reason = string(attempt["failure_reason"]) ?? string(attempt["failure_code"]) ?? "no reason recorded"
+                let at = (attempt["at"] as? Double).map { " · \(Self.stamp($0))" } ?? ""
+                lines.append("\(integer(attempt["number"]) ?? 0). \(string(attempt["machine"]) ?? "unknown machine") — \(reason)\(at)")
+            }
+            detailStack.addArrangedSubview(PageKit.help(lines.joined(separator: "\n")))
         }
 
         if let errorCode = string(job["error_code"]), !errorCode.isEmpty {
@@ -515,7 +582,7 @@ final class JobsSection: NSObject, AppSection, NSTableViewDataSource, NSTableVie
 
         cancelButton = nil
         if canRequestCancellation(job) {
-            let cancel = NSButton(title: "Cancel queued job", target: self, action: #selector(cancelSelectedJob))
+            let cancel = NSButton(title: job["state"] as? String == "running" ? "Cancel running job" : "Cancel queued job", target: self, action: #selector(cancelSelectedJob))
             cancel.bezelStyle = .rounded
             cancel.controlSize = .small
             detailStack.addArrangedSubview(cancel)
@@ -706,6 +773,8 @@ final class JobsSection: NSObject, AppSection, NSTableViewDataSource, NSTableVie
     }
 
     private func updatePin(jobID: String, assetID: String, kept: Bool) {
+        let key = outputKey(jobID: jobID, assetID: assetID)
+        if kept { keptKeys.insert(key) } else { keptKeys.remove(key) }
         for index in rows.indices where string(rows[index]["id"]) == jobID {
             guard var outputs = rows[index]["outputs"] as? [[String: Any]] else { continue }
             for outputIndex in outputs.indices where string(outputs[outputIndex]["asset_id"]) == assetID {
@@ -804,9 +873,12 @@ final class JobsSection: NSObject, AppSection, NSTableViewDataSource, NSTableVie
     private func confirmCloseHoldWithAlert() -> Bool {
         let alert = NSAlert()
         alert.messageText = "Close this hold?"
-        alert.informativeText = """
-        No discard can be sent for this attempt: the lane that ran it has no such        route, so the provider is not contacted and nothing on its side changes.        The gateway stops asking for a manual reconciliation and will not dispatch        it again. Anything the provider still produces is not collected. This        cannot be undone.
-        """
+        alert.informativeText =
+            "No discard can be sent for this attempt: the lane that ran it has no such "
+            + "route, so the provider is not contacted and nothing on its side changes. "
+            + "The gateway stops asking for a manual reconciliation and will not dispatch "
+            + "it again. Anything the provider still produces is not collected. This "
+            + "cannot be undone."
         alert.alertStyle = .warning
         alert.addButton(withTitle: "Close the hold")
         alert.addButton(withTitle: "Keep it open")
@@ -818,9 +890,10 @@ final class JobsSection: NSObject, AppSection, NSTableViewDataSource, NSTableVie
     private func confirmDiscardWithAlert() -> Bool {
         let alert = NSAlert()
         alert.messageText = "Discard this uncertain attempt?"
-        alert.informativeText = """
-        The Studio Hub will abandon the attempt and release the machine it has been         holding. Anything the original worker still produces is ignored, and this         cannot be undone. Reconcile it instead if the result may still matter.
-        """
+        alert.informativeText =
+            "The Studio Hub will abandon the attempt and release the machine it has been "
+            + "holding. Anything the original worker still produces is ignored, and this "
+            + "cannot be undone. Reconcile it instead if the result may still matter."
         alert.alertStyle = .warning
         alert.addButton(withTitle: "Discard")
         alert.addButton(withTitle: "Keep waiting")
@@ -939,6 +1012,17 @@ final class JobsSection: NSObject, AppSection, NSTableViewDataSource, NSTableVie
 
     private func outputKey(jobID: String, assetID: String) -> String {
         "\(jobID)\u{001F}\(assetID)"
+    }
+
+    private static let stampFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "d MMM HH:mm:ss"
+        return formatter
+    }()
+
+    /// The wall-clock time of an epoch: "5m ago" cannot answer "when exactly".
+    private static func stamp(_ epoch: Double) -> String {
+        stampFormatter.string(from: Date(timeIntervalSince1970: epoch))
     }
 
     /// "45s" / "3m 20s" — for a countdown the owner reads at a glance, not a wall clock.

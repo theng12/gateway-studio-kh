@@ -40,6 +40,9 @@ final class AnalyticsSection: NSObject, AppSection {
     private let body = NSStackView()
     private let status = NSTextField(labelWithString: "Reading the job record…")
     private var loading = false
+    /// Ids the job record stores, and the names Jobs and Fleet show for them.
+    private var modelNames: [String: String] = [:]
+    private var providerNames: [String: String] = [:]
 
     lazy var view: NSView = buildPage()
 
@@ -121,13 +124,34 @@ final class AnalyticsSection: NSObject, AppSection {
             self.loading = false
             switch result {
             case .success(let payload):
-                self.render(payload)
+                self.loadNames { self.render(payload) }
             case .failure(let error):
                 // Name the failure rather than emptying the page: a blank Analytics page
                 // reads as "nothing has ever been generated", which is a different and
                 // much worse claim than "the read failed".
-                self.status.stringValue = "Could not read analytics: \(error)"
+                self.status.stringValue = "Could not read analytics: \(error.localizedDescription)"
                 self.body.setViews([], in: .top)
+            }
+        }
+    }
+
+    /// The job record keys rows by raw model and provider ids, which no other page shows.
+    /// Best effort: a failed read leaves the ids, which are still true.
+    private func loadNames(then done: @escaping () -> Void) {
+        func names(_ payload: [String: Any], _ list: String, _ id: String) -> [String: String] {
+            Dictionary(
+                (payload[list] as? [[String: Any]] ?? []).compactMap { row in
+                    guard let key = row[id] as? String, let name = row["display_name"] as? String else { return nil }
+                    return (key, name)
+                },
+                uniquingKeysWith: { first, _ in first }
+            )
+        }
+        GatewayAPI.get("/admin/api/providers") { [weak self] result in
+            if case .success(let payload) = result { self?.providerNames = names(payload, "providers", "id") }
+            GatewayAPI.get("/admin/api/models?limit=2000") { [weak self] result in
+                if case .success(let payload) = result { self?.modelNames = names(payload, "models", "model_id") }
+                done()
             }
         }
     }
@@ -161,19 +185,24 @@ final class AnalyticsSection: NSObject, AppSection {
             title: "By generation type",
             firstHeader: "Type",
             firstWidth: 150,
-            rows: rows(from: payload["by_modality"])
+            rows: rows(from: payload["by_modality"]) { $0 }
         ))
         blocks.append(contentsOf: table(
             title: "By model",
             firstHeader: "Model",
             firstWidth: 300,
-            rows: rows(from: payload["by_model"])
+            rows: rows(from: payload["by_model"]) { self.modelNames[$0] ?? $0 }
         ))
         blocks.append(contentsOf: table(
             title: "By machine",
             firstHeader: "Machine",
             firstWidth: 300,
-            rows: rows(from: payload["by_machine"])
+            rows: rows(from: payload["by_machine"]) { key in
+                // "<machine> @ <provider id>"; the machine is already a name.
+                let parts = key.components(separatedBy: " @ ")
+                guard parts.count == 2, let name = self.providerNames[parts[1]] else { return key }
+                return "\(parts[0]) @ \(name)"
+            }
         ))
 
         if timed < sampled {
@@ -224,14 +253,16 @@ final class AnalyticsSection: NSObject, AppSection {
         return stack
     }
 
-    private func rows(from any: Any?) -> [[String]] {
+    /// Each row is its cells plus the raw id, which the first cell's tooltip carries.
+    private func rows(from any: Any?, label: (String) -> String) -> [(cells: [String], id: String)] {
         (any as? [[String: Any]] ?? []).map { row in
-            let first = (row["key"] as? String) ?? "unknown"
+            let id = (row["key"] as? String) ?? "unknown"
+            let first = (row["label"] as? String) ?? label(id)
             let jobs = AnalyticsSection.count(row["jobs"])
             let ok = AnalyticsSection.count(row["succeeded"])
             let failed = AnalyticsSection.count(row["failed"])
             let timed = AnalyticsSection.count(row["timed_jobs"])
-            return [
+            return ([
                 first,
                 "\(jobs)",
                 "\(ok)",
@@ -240,12 +271,12 @@ final class AnalyticsSection: NSObject, AppSection {
                 timed == 0 ? "—" : AnalyticsSection.seconds(row["seconds_mean"]),
                 AnalyticsSection.count(row["bytes_jobs"]) == 0
                     ? "—" : AnalyticsSection.bytes(row["bytes"]),
-            ]
+            ], id)
         }
     }
 
     private func table(
-        title: String, firstHeader: String, firstWidth: CGFloat, rows: [[String]]
+        title: String, firstHeader: String, firstWidth: CGFloat, rows: [(cells: [String], id: String)]
     ) -> [NSView] {
         var views: [NSView] = [PageKit.sectionTitle(title)]
         guard !rows.isEmpty else {
@@ -257,12 +288,12 @@ final class AnalyticsSection: NSObject, AppSection {
         let headers = [firstHeader, "Jobs", "OK", "Failed", "Median", "Mean", "Output"]
         views.append(tableRow(headers, widths: widths, header: true))
         for row in rows {
-            views.append(tableRow(row, widths: widths, header: false))
+            views.append(tableRow(row.cells, widths: widths, header: false, tip: row.id))
         }
         return views
     }
 
-    private func tableRow(_ cells: [String], widths: [CGFloat], header: Bool) -> NSView {
+    private func tableRow(_ cells: [String], widths: [CGFloat], header: Bool, tip: String? = nil) -> NSView {
         let views: [NSView] = cells.enumerated().map { index, text in
             let field = PageKit.label(
                 text,
@@ -271,7 +302,9 @@ final class AnalyticsSection: NSObject, AppSection {
                 colour: header ? .secondaryLabelColor : .labelColor
             )
             field.alignment = index == 0 ? .left : .right
-            field.lineBreakMode = .byTruncatingMiddle
+            // Tail, not middle: the middle is where a long id differs.
+            field.lineBreakMode = .byTruncatingTail
+            if index == 0 { field.toolTip = tip }
             field.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
             field.widthAnchor.constraint(equalToConstant: widths[index]).isActive = true
             return field
