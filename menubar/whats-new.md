@@ -14,6 +14,24 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.83 — 2026-09-30
+
+### Import researched prices and rate limits, with the page they came from
+
+**Providers → Import price research…** takes a JSON file produced by a research session that read
+each provider's own pricing and rate-limit pages. The gateway fetches nothing and calls no model: it
+only checks the file. **A number is kept only if it has a source URL on that provider's own domain
+and a verbatim quote that contains the number** — everything else is dropped, and the page lists
+each drop with its reason.
+
+Kept prices appear on model rows as `price_source: "provider_page"` with `price_url` and the research
+date (`price_as_of`), separate from `"provider"`, where the provider's own API stated the price.
+A price the provider's API states always wins; where a page lists several sizes or qualities, none
+is picked (they are listed in `price_variants`). Rate-limit tiers are shown as information only and
+never change your concurrency settings. Importing enables nothing and routes nothing — Anthropic
+models stay off for Story. The research session can check its file first with
+`python3 -m gateway.price_evidence check <file>`.
+
 ## 0.2.82 — 2026-09-30
 
 ### A burst of jobs now reaches every Mac that can run it — including this one

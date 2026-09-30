@@ -530,6 +530,10 @@
       <span class="stat" id="keyless-count"></span>
       <input type="text" id="filter" placeholder="Filter providers…" style="max-width:260px">
       <button class="sm" onclick="refreshAll(this)">Refresh all models</button>
+      <!-- Prices researched from each provider's own pricing page (a separate research session
+           writes the JSON; the gateway only validates and stores it — nothing is fetched here). -->
+      <button class="sm" id="evidence-import" onclick="document.getElementById('evidence-file').click()">Import price research…</button>
+      <input type="file" id="evidence-file" accept=".json,application/json" style="display:none" onchange="importEvidence(this)">
       <!-- **Add a provider, which until now meant editing a file by hand.**
            `providers.local.json` has been read at import since custom providers were supported, and
            this page already reports an entry it could not load — but nothing could *write* one, so
@@ -541,6 +545,7 @@
       <button class="sm" id="custom-provider-toggle" onclick="toggleCustomProviderForm()">+ Add a provider</button>
     </div>
     <div id="custom-provider-panel" style="display:none; margin:0 0 14px"></div>
+    <div id="evidence-panel" class="hint" style="display:none; margin:0 0 14px" role="status" aria-live="polite"></div>
     <div id="providers-msg" class="msg" role="alert" aria-live="polite"></div>
     <div id="providers"></div>
     </div><!-- /provider-pane-list -->
@@ -2219,6 +2224,28 @@ async function removePool(name, btn) {
   btn.disabled = true;
   try { await api(`/pools/${encodeURIComponent(name)}`, { method: 'DELETE' }); await loadPools(); }
   catch (e) { alert(e.message); btn.disabled = false; }
+}
+
+// Import a price-research file: the gateway checks every number (source URL on the provider's own
+// domain + a verbatim quote containing it) and answers what it kept and what it dropped, and why.
+async function importEvidence(input) {
+  const panel = document.getElementById('evidence-panel');
+  const file = input.files && input.files[0];
+  input.value = '';
+  if (!file) return;
+  panel.style.display = '';
+  panel.textContent = 'Checking ' + file.name + '…';
+  try {
+    const body = JSON.parse(await file.text());
+    const r = await api('/pricing/evidence', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+                                               body: JSON.stringify(body) });
+    panel.innerHTML = `<strong>${esc(file.name)}: ${r.accepted} accepted, ${r.dropped} dropped.</strong>` +
+      r.providers.map(p => `<div style="margin-top:6px"><strong>${esc(p.provider_id)}</strong> (${esc(p.status)}): ` +
+        `${p.accepted_prices} prices, ${p.accepted_rate_limits} rate-limit tiers` +
+        (p.dropped.length ? `<ul style="margin:2px 0 0 18px">` + p.dropped.map(d =>
+          `<li>${esc(d.kind)} ${esc([d.model_id, d.unit, d.tier].filter(Boolean).join(' '))}: ${esc(d.reason)}</li>`).join('') + '</ul>' : '') +
+        '</div>').join('');
+  } catch (e) { panel.textContent = 'Import failed: ' + e.message; }
 }
 
 async function refreshAll(btn) {

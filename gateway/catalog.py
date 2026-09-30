@@ -1843,6 +1843,7 @@ class Catalog:
         row.update(row_price(
             definition.kind, modality, model.get("raw"),
             None if is_location else registry.models.cached(definition.id).get("fetched_at"),
+            definition.id, model["model_id"],
         ))
         return row
 

@@ -3,9 +3,11 @@
 Beside (never instead of) `constants.zero_pricing`, which keeps Story Studio's parser from dropping
 rows. Those credit fields are zero-valued *shapes*; this module publishes the truth next to them:
 
-    price_source  "provider" | "local" | "unpublished"
+    price_source  "provider" | "provider_page" | "local" | "unpublished"
     price_usd     {unit: number} | null      a number exists only when a source states it
-    price_as_of   ISO-8601 | null            when the provider last stated it (source == "provider")
+    price_as_of   ISO-8601 | null            when the provider last stated it (source == "provider"),
+                                             or the research date (source == "provider_page", which
+                                             also carries price_url and price_variants)
 
 **Nothing here is computed or guessed.** A number is published only when the provider's own
 response carried it (read from the discovery `raw` row, or fal's pricing endpoint stored there),
@@ -20,6 +22,7 @@ from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
+from . import price_evidence
 from .providers.definitions import KIND_STUDIO_HUB
 
 #: The owner's own Macs are free: price 0, source `local`. The unit keys per modality mirror
@@ -98,14 +101,22 @@ def _read_provider(modality: str, raw: dict[str, Any]) -> dict[str, float] | Non
 
 
 def row_price(kind: str, modality: str, raw: dict[str, Any] | None,
-              fetched_at: float | None) -> dict[str, Any]:
-    """The three price-truth fields for one catalogue row."""
+              fetched_at: float | None, provider_id: str = "", model_id: str = "") -> dict[str, Any]:
+    """The price-truth fields for one catalogue row.
+
+    Order of trust: the owner's own Macs (`local`), then the provider's own API response
+    (`provider`), then a number the owner imported from the provider's pricing page with its URL and
+    quote (`provider_page`, `price_evidence`), else `unpublished`.
+    """
     if kind == KIND_STUDIO_HUB:
         return {"price_source": "local",
                 "price_usd": {unit: 0 for unit in _LOCAL_UNITS.get(modality, ())} or None,
                 "price_as_of": None}
     stated = _read_provider(modality, raw) if isinstance(raw, dict) else None
     if stated is None:
+        page = price_evidence.page_price(provider_id, modality, model_id)
+        if page is not None:
+            return page
         return {"price_source": "unpublished", "price_usd": None, "price_as_of": None}
     as_of = (datetime.fromtimestamp(fetched_at, tz=timezone.utc).isoformat()
              if isinstance(fetched_at, (int, float)) and fetched_at > 0 else None)

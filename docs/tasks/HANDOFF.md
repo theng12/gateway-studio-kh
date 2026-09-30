@@ -1,12 +1,37 @@
 # HANDOFF — gateway-kh
 
-**Read this first.** Updated 2026-09-30 for **VERSION `0.2.82`** (the release blocks below are
+**Read this first.** Updated 2026-09-30 for **VERSION `0.2.83`** (the release blocks below are
 newest first; 0.2.76-0.2.79 are recorded in `menubar/whats-new.md` and their commits). The running build
 stamp is on `/health` and in `/Applications/gateway-kh.app/Contents/Resources/gateway/BUILD`.
 If this file disagrees with the code, **the code wins — fix this file in the same change**.
 Every path below is inside the Git checkout `repository/` unless it says otherwise.
 `[MEASURED]` = observed in the session that wrote this; `[reason not recorded]` = the
 project does not say why, and nobody should guess.
+
+> **0.2.83 — imported price research: `price_source: "provider_page"`, validated per number.**
+>
+> Owner decision: the $250 is Claude Code session credit, not API credit, so **the gateway builds no
+> Anthropic/Batch client and calls no model for research** (an earlier plan to do so was dropped before any
+> code). A research session elsewhere (`research/pricing/README.md`) writes one JSON file
+> (`_orchestra/audit-20260930/CONTRACT-price-evidence.md`); the gateway only validates and stores it.
+>
+> * `gateway/price_evidence.py` (stdlib only at import): `DOMAINS` is the one allow-list table. A price is kept
+>   only with an `https` source URL on the provider's domain (exact or subdomain) AND a quote that contains the
+>   number (commas stripped, `K`/`M` expanded; the quote must have words, not be a bare number); unit must fit the
+>   modality (`other` is stored, never published); `model_id` must be a model of that provider with the same
+>   modality (skipped only by the CLI, which has no model list). Rate-limit tiers keep only their verified
+>   numbers. Everything else is dropped with a reason.
+> * `POST/GET /admin/api/pricing/evidence` (stored in `DATA_DIR/price-evidence.json`; a provider in the file replaces
+>   its old evidence). `pricing.row_price` gained `provider_id, model_id`: order of trust is local, provider's API
+>   (`provider`), page (`provider_page` + `price_url` + `price_variants`, `price_as_of` = research date), unpublished.
+>   A unit with several different numbers (variants) is not published as one price. Rate limits are informational
+>   (admin GET only), never applied to concurrency.
+> * CLI `python3 -m gateway.price_evidence check <file>` = the same `validate()`; exit 1 on any drop / bad schema.
+> * Providers page: **Import price research…** (file picker -> accepted/dropped per provider with reasons).
+> * Tests: `tests/test_price_evidence.py` (14; validation, cap-equivalents mutation-proved: host, quote, number
+>   compare, model check, variants, scheme, rate-limit quote; template parses; import enables/routes nothing).
+> * Ceiling: "quote contains the number" is textual; the gateway cannot prove the quote is on the page. Not installed
+>   (coordinator does that). CONTRACT-pricing.md section 6 tells Story what to show.
 
 > **0.2.82 — scarcest-first scheduling at the gateway: spread, late binding, queue ahead.**
 >

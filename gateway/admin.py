@@ -38,6 +38,7 @@ from .activity import story_activity
 from .adapters import BackendError, BackendRequest, adapter_for, serves, support_status
 from .catalog import MODALITIES, catalog, decode_model_id
 from . import fleet
+from . import price_evidence
 from . import qualification
 from . import release_publisher
 from .config import is_loopback, request_is_loopback
@@ -466,6 +467,30 @@ def refresh_provider(provider_id: str) -> Any:
 @router.post("/api/refresh-all", dependencies=[Depends(require_admin)])
 def refresh_all() -> dict[str, Any]:
     return {"outcomes": registry.models.refresh_all()}
+
+
+# ---------------------------------------------------------------------------
+# Price research evidence (imported, never fetched: CONTRACT-price-evidence.md)
+# ---------------------------------------------------------------------------
+@router.get("/api/pricing/evidence", dependencies=[Depends(require_admin)])
+def pricing_evidence() -> dict[str, Any]:
+    """What is accepted and dropped, and the informational rate-limit tiers per provider."""
+    return price_evidence.current()
+
+
+@router.post("/api/pricing/evidence", dependencies=[Depends(require_admin)])
+def import_pricing_evidence(payload: dict[str, Any]) -> Any:
+    """Validate and store a research file. Enables, routes and changes nothing else: it only adds
+    `provider_page` prices to rows that the provider itself does not price."""
+    try:
+        result = price_evidence.import_evidence(
+            payload,
+            lambda pid: {m["model_id"]: m["modality"] for m in registry.models.models_for(pid)},
+        )
+    except ValueError as exc:
+        return _error(422, str(exc))
+    catalog.rebuild(force=True)
+    return result
 
 
 # ---------------------------------------------------------------------------
