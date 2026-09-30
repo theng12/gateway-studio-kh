@@ -259,7 +259,8 @@ class AdapterCheckpointTests(unittest.TestCase):
                 submits.append(request.url.path)
                 return httpx.Response(200, json={"batch_id": "hub-batch-1"})
             events.append("poll")
-            return httpx.Response(500, json={"error": "poll failed"})
+            # A 4xx is an answer (a 5xx is ridden out for a minute, see `POLL_DROP_GRACE_S`).
+            return httpx.Response(404, json={"error": "poll failed"})
 
         params = {"prompt": "test"} if modality == "image" else {"text": "test"}
         if modality == "transcription":

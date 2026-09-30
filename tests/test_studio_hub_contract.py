@@ -85,6 +85,10 @@ class _Hub:
         read_timeout: bool = False,
         server_error: bool = False,
         artifact_media_type: str = "audio/wav",
+        artifact_sha256: str = "",
+        artifact_failures: int = 0,
+        poll_faults: list[Any] | None = None,
+        duplicate: bool = False,
     ) -> None:
         self.calls: list[tuple[str, str]] = []
         self.acks: list[str] = []
@@ -107,6 +111,12 @@ class _Hub:
         # always answered `audio/wav` could not tell "the adapter read the type" from "the adapter
         # fell back to the audio default".
         self.artifact_media_type = artifact_media_type
+        self.artifact_sha256 = artifact_sha256
+        #: How many artifact GETs answer 503 before one succeeds.
+        self.artifact_failures = artifact_failures
+        #: Answers handed out to the first polls: an int is that status, a str a 200 non-JSON body.
+        self.poll_faults = list(poll_faults or [])
+        self.duplicate = duplicate
 
     # ── the transport ────────────────────────────────────────────────────
     def handler(self, request: httpx.Request) -> httpx.Response:
@@ -155,33 +165,43 @@ class _Hub:
                 return httpx.Response(409, json=self.submit_refusal)
             return httpx.Response(200, json={"batch_id": BATCH})
         if method == "POST" and path == "/api/hub/transcription/jobs":
-            self.payloads.append({"content_type": request.headers.get("content-type", "")})
+            self.payloads.append({"content_type": request.headers.get("content-type", ""),
+                                  "body": request.content})
             if self.submit_refusal is not None:
                 return httpx.Response(409, json=self.submit_refusal)
-            return httpx.Response(200, json={"batch_id": BATCH})
+            return httpx.Response(200, json={"batch_id": BATCH, "duplicate": self.duplicate})
         if method == "POST" and path == "/api/hub/voice-references":
             self.payloads.append(request.content)
             if self.voice_reference_status >= 400:
                 return httpx.Response(self.voice_reference_status, json={"detail": "refused"})
             return httpx.Response(self.voice_reference_status, json=self.reference or {})
         if method == "GET" and path.endswith("/artifact"):
+            if self.artifact_failures > 0:
+                self.artifact_failures -= 1
+                return httpx.Response(503, json={"detail": "restarting"})
             return httpx.Response(
                 200,
                 content=self.artifact,
                 headers={
                     "content-type": self.artifact_media_type,
-                    "X-Content-SHA256": "deadbeef",
+                    "X-Content-SHA256": self.artifact_sha256
+                    or hashlib.sha256(self.artifact).hexdigest(),
                 },
             )
         if method == "GET" and (
             path == f"/api/hub/jobs/{BATCH}"
             or path == f"/api/hub/transcription/jobs/{BATCH}"
         ):
+            if self.poll_faults:
+                fault = self.poll_faults.pop(0)
+                if isinstance(fault, int):
+                    return httpx.Response(fault, json={"detail": "fault"})
+                return httpx.Response(200, content=fault.encode())
             state = self._states.pop(0) if len(self._states) > 1 else self._states[0]
             item = {"index": 0, "state": state, "terminal_result": {"machine_id": "local"}}
             item.update(self.item or {})
             return httpx.Response(
-                200, json={"batch_id": BATCH, "items": [item], "state": state}
+                200, json={"batch_id": BATCH, "items": [item]}
             )
         return httpx.Response(404, json={"detail": f"no route for {method} {path}"})
 
@@ -1405,10 +1425,12 @@ class LocationRefusalTests(_HubCase):
     """
 
     def test_a_not_ready_refusal_is_a_location_refusal(self) -> None:
-        hub = _Hub(submit_refusal={
+        # The REAL batch-submit wire shape: `HTTPException(409, {dict})` is rendered by FastAPI as
+        # `{"detail": {dict}}`. (Measured: the owner's DB holds exactly this text for a 409.)
+        hub = _Hub(submit_refusal={"detail": {
             "code": "MODEL_NOT_READY",
             "detail": "model files, runtime, OS, or chip are not ready",
-        })
+        }})
         with self.assertRaises(BackendError) as caught:
             self.generate(hub, self.request(modality="image", params={"prompt": "x"}))
         self.assertEqual(caught.exception.code, "LOCATION_NOT_READY")
@@ -1416,14 +1438,25 @@ class LocationRefusalTests(_HubCase):
         self.assertTrue(caught.exception.retryable)
 
     def test_a_not_packaged_refusal_is_a_location_refusal(self) -> None:
-        hub = _Hub(submit_refusal={
+        hub = _Hub(submit_refusal={"detail": {
             "code": "MODEL_NOT_PACKAGED",
             "detail": "model is not in the packaged catalog",
-        })
+        }})
         with self.assertRaises(BackendError) as caught:
             self.generate(hub, self.request(modality="image", params={"prompt": "x"}))
         self.assertEqual(caught.exception.code, "LOCATION_NOT_READY")
         self.assertFalse(caught.exception.upstream_accepted)
+
+    def test_the_site_properties_reroute_and_the_operator_codes_stay_terminal(self) -> None:
+        for code, reroutes in (("STUDIO_NOT_RUNNING", True), ("OUTPUT_STORAGE_BLOCKED", True),
+                               ("MODEL_CATALOG_UNAVAILABLE", True), ("MODEL_PAUSED", False),
+                               ("MACHINE_DISABLED", False), ("STUDIO_DISABLED", False)):
+            hub = _Hub(submit_refusal={"detail": {"code": code, "detail": "refused"}})
+            with self.assertRaises(BackendError) as caught:
+                self.generate(hub, self.request(modality="image", params={"prompt": "x"}))
+            self.assertEqual(caught.exception.code,
+                             "LOCATION_NOT_READY" if reroutes else "PROVIDER_FAILED", code)
+            self.assertIs(caught.exception.upstream_accepted, False)
 
     def test_another_refusal_is_definite_not_unknown(self) -> None:
         # The Hub answered and refused, so it accepted nothing. `None` here meant
@@ -1554,6 +1587,136 @@ class VideoLaneTests(_HubCase):
         result = self.generate(hub, self.request(modality="video", params={"prompt": "x"}))
         self.assertEqual(result.media_type, "video/mp4",
                          "a video artifact must not be relabelled as audio")
+
+
+class CancelReachesRunningWorkTests(_HubCase):
+    """A cancel requested while the job runs must end `cancelled`, and must reach the Hub."""
+
+    def _run(self, key: str, *, cancel_on: str, states: list[str]):
+        hub = _Hub(states=states)
+        store = JobStore(_TEMP_ROOT / f"{key}.sqlite3")
+        self.addCleanup(store.close)
+        row, _ = store.submit(modality="image", model_id="model/test", params={"prompt": "x"},
+                              idempotency_key=key, provider_id="studio-hub-test")
+        self.assertTrue(store.mark_running(row["id"]))
+        real_handler, fired = hub.handler, []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            reply = real_handler(request)
+            if not fired and f"{request.method} {request.url.path}" == cancel_on:
+                fired.append(1)  # the owner presses cancel at exactly this moment
+                store.cancel(row["id"])
+            return reply
+
+        hub.handler = handler
+        with patch.object(worker_module, "registry", _Registry()), patch.object(
+            worker_module, "adapter_for", return_value=hub_module.StudioHubBackend()
+        ), patch.object(hub_module, "POLL_INTERVAL_S", 0), self.hub_client(hub):
+            worker_module.execute_job(row, store)
+        return hub, store.get(row["id"])
+
+    def test_a_hub_confirmed_cancel_settles_cancelled_not_failed(self) -> None:
+        hub, job = self._run("cancel-mid", cancel_on=f"GET /api/hub/jobs/{BATCH}",
+                             states=["running", "cancelled"])
+        self.assertEqual(job["state"], "cancelled")
+        self.assertEqual(job["cancel_state"], "confirmed")
+        self.assertEqual(hub.calls.count(("POST", "/api/hub/jobs")), 1, "never re-submitted")
+
+    def test_a_cancel_before_the_batch_id_exists_is_sent_once_it_does(self) -> None:
+        # The API read the row before there was an id, so it had nothing to DELETE.
+        hub, job = self._run("cancel-early", cancel_on="POST /api/hub/jobs",
+                             states=["running", "cancelled"])
+        self.assertEqual(hub.deletes, [f"/api/hub/jobs/{BATCH}"])
+        self.assertEqual(job["state"], "cancelled")
+
+
+class HubContractHardeningTests(_HubCase):
+    """Findings F6-F10 of the 2026-09-30 gateway<->Hub audit, one check each."""
+
+    def setUp(self) -> None:
+        for name, value in (("POLL_INTERVAL_S", 0), ("ARTIFACT_RETRY_S", 0)):
+            patcher = patch.object(hub_module, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def _transcribe(self, hub: _Hub, **params: Any) -> BackendResult:
+        upload = _TEMP_ROOT / "harden.wav"
+        upload.write_bytes(b"audio")
+        params = {"_upload_path": str(upload), "_upload_name": "same-name.wav", **params}
+        return self.generate(hub, self.request(modality="transcription", params=params))
+
+    # F6
+    def test_a_transient_artifact_error_is_retried(self) -> None:
+        hub = _Hub(artifact_failures=2)
+        result = self.generate(hub, self.request(modality="image", params={"prompt": "x"}))
+        self.assertEqual(result.content, b"artifact-bytes")
+
+    def test_an_artifact_that_never_arrives_is_a_hold_not_a_crash(self) -> None:
+        hub = _Hub(artifact_failures=99)
+        with self.assertRaises(BackendError) as caught:
+            self.generate(hub, self.request(modality="image", params={"prompt": "x"}))
+        self.assertEqual(caught.exception.status, 503)
+
+    def test_a_digest_mismatch_is_refused_and_never_acknowledged(self) -> None:
+        hub = _Hub(artifact_sha256="0" * 64)
+        with self.assertRaises(BackendError) as caught:
+            self.generate_then_deliver(hub, self.request(modality="image", params={"prompt": "x"}))
+        self.assertIn("sha256", str(caught.exception))
+        self.assertTrue(caught.exception.upstream_accepted)
+        self.assertEqual(hub.acks, [])
+
+    def test_the_terminal_result_digest_is_checked_when_no_header_is_sent(self) -> None:
+        hub = _Hub(artifact_sha256=" ", item={"terminal_result": {"sha256": "f" * 64}})
+        with self.assertRaises(BackendError):
+            self.generate(hub, self.request(modality="image", params={"prompt": "x"}))
+
+    # F7
+    def test_a_busy_machine_item_is_a_location_refusal(self) -> None:
+        hub = _Hub(states=["error"], item={"state": "error", "error_code": "MACHINE_BUSY",
+                                           "error": "local is reserved for other work"})
+        with self.assertRaises(BackendError) as caught:
+            self.generate(hub, self.request(modality="image", params={"prompt": "x"}))
+        self.assertEqual(caught.exception.code, "LOCATION_NOT_READY")
+        self.assertIs(caught.exception.upstream_accepted, False)
+        self.assertTrue(caught.exception.upstream_settled)
+
+    def test_an_operator_decision_item_stays_terminal_and_names_its_code(self) -> None:
+        hub = _Hub(states=["error"], item={"state": "error", "error_code": "MODEL_PAUSED",
+                                           "error": "paused by the owner"})
+        with self.assertRaises(BackendError) as caught:
+            self.generate(hub, self.request(modality="image", params={"prompt": "x"}))
+        self.assertEqual(caught.exception.code, "PROVIDER_FAILED")
+        self.assertIn("MODEL_PAUSED", str(caught.exception))
+
+    # F8 + F10
+    def test_transcription_records_its_time_and_machine(self) -> None:
+        hub = _Hub(item={"duration_seconds": 41.5, "studio": "Studio-3@node-b"})
+        result = self._transcribe(hub)
+        self.assertEqual(result.payload["generation_seconds"], 41.5)
+        self.assertEqual(result.payload["hub_machine"], "node-b")
+
+    def test_transcription_sends_the_job_id_so_same_named_uploads_do_not_share_a_batch(self) -> None:
+        hub = _Hub()
+        self._transcribe(hub, _job_id="job-123")
+        body = hub.payloads[0]["body"]
+        self.assertIn(b'name="item_ids"\r\n\r\njob-123', body)
+
+    def test_a_duplicate_batch_is_logged(self) -> None:
+        with self.assertLogs(hub_module.log, "WARNING") as logged:
+            self._transcribe(_Hub(duplicate=True))
+        self.assertIn("duplicate", logged.output[0])
+
+    # F9
+    def test_a_5xx_or_unreadable_poll_is_ridden_out_like_a_dropped_socket(self) -> None:
+        hub = _Hub(poll_faults=[502, "<html>proxy</html>", 503], states=["running", "done"])
+        result = self.generate(hub, self.request(modality="image", params={"prompt": "x"}))
+        self.assertEqual(result.content, b"artifact-bytes")
+
+    def test_a_4xx_poll_is_still_fatal_at_once(self) -> None:
+        hub = _Hub(poll_faults=[404])
+        with self.assertRaises(BackendError) as caught:
+            self.generate(hub, self.request(modality="image", params={"prompt": "x"}))
+        self.assertEqual(caught.exception.status, 404)
 
 
 if __name__ == "__main__":

@@ -50,6 +50,7 @@ from . import retention
 from .activity import is_story_path, record
 from .runtime import store, worker
 from .store import artifacts_of
+from .worker import cancel_upstream
 from .voices import story_row, tts_output_container, voice_registry, voices_for_model
 
 
@@ -511,56 +512,8 @@ def _lifecycle_fields(job: dict[str, Any]) -> dict[str, Any]:
 
 
 def _cancel_upstream(job: dict[str, Any]) -> dict[str, Any] | None:
-    """Ask whoever owns dispatched work to stop it, and record the answer.
-
-    A cancellation after dispatch is a *request*: a worker that has accepted the
-    job is not ours to stop. So this asks the lane that took the work — for a
-    Studio Hub location, its own DELETE route — and stores exactly what came back
-    on the job's `cancel_remote`. Nothing may report a remote stop the owner of
-    the work did not confirm, and an unconfirmed answer stays visible as
-    `ok: false` beside the reason.
-
-    A job with no upstream id never left the gateway; `store.cancel` already
-    settled that case locally, and there is nothing to ask.
-    """
-    batch_id = str(job.get("upstream_job_id") or "").strip()
-    if not batch_id:
-        return None
-    provider_id = str(job.get("provider_id") or "")
-    definition = registry.definition(provider_id)
-    if definition is None:
-        return None
-    adapter = adapter_for(definition)
-    cancel = getattr(adapter, "cancel", None)
-    if cancel is None:
-        answer: dict[str, Any] = {
-            "ok": False,
-            "status": None,
-            "reason": f"the {definition.kind} lane cannot cancel dispatched work",
-        }
-    else:
-        request = BackendRequest(
-            provider_id=provider_id,
-            model_id=str(job.get("model_id") or ""),
-            modality=str(job.get("modality") or ""),
-            params={},
-            values=registry.credentials.resolved(provider_id),
-            base_url=definition.base_url,
-            display_name=definition.display_name,
-            upstream_job_id=batch_id,
-        )
-        try:
-            answer = cancel(request)
-        except Exception as exc:  # noqa: BLE001 - a cancel must never 500 the caller
-            answer = {"ok": False, "status": None, "error": f"{type(exc).__name__}: {exc}"}
-        if not isinstance(answer, dict):
-            answer = {
-                "ok": False,
-                "status": None,
-                "error": f"unreadable cancel answer: {answer!r}",
-            }
-    store.record_cancel_remote(job["id"], answer)
-    return answer
+    """Ask whoever owns dispatched work to stop it (see `worker.cancel_upstream`)."""
+    return cancel_upstream(job, store)
 
 
 def _job_envelope(job: dict[str, Any]) -> dict[str, Any]:

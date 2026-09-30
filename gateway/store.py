@@ -559,16 +559,21 @@ class JobStore:
             self._conn.commit()
             return log
 
-    def holds(self, *, limit: int = 200) -> list[dict[str, Any]]:
+    def holds(self, *, limit: int = 200, sweepable: bool = False) -> list[dict[str, Any]]:
         """Every job waiting on a reconciliation hold, newest first.
+
+        `sweepable` narrows it to what the Hub can be asked about: unknown outcomes that carry an
+        upstream id. Without it, `retryable` rows and id-less chat holds fill the sweep's window
+        and starve the real ones.
 
         A hold is a job whose upstream outcome is unknown. They were only ever visible one at a
         time, inside its own job response, so nobody could see how many were accumulating — and
         with a fleet whose houses lose power, they accumulate.
         """
+        where = ("recovery_state = 'unknown_outcome' AND COALESCE(upstream_job_id, '') != ''"
+                 if sweepable else "recovery_state IS NOT NULL")
         rows = self._conn.execute(
-            "SELECT * FROM jobs WHERE recovery_state IS NOT NULL "
-            "ORDER BY updated_at DESC LIMIT ?",
+            f"SELECT * FROM jobs WHERE {where} ORDER BY updated_at DESC LIMIT ?",
             (max(1, int(limit)),),
         ).fetchall()
         return [self._row_dict(row) for row in rows]
@@ -763,6 +768,21 @@ class JobStore:
                  WHERE id = ? AND state = 'running'
                    AND cancel_requested_at IS NOT NULL
                    AND dispatch_started_at IS NULL
+                """,
+                (CANCEL_CONFIRMED, time.time(), job_id),
+            )
+            self._conn.commit()
+            return result.rowcount == 1
+
+    def settle_cancelled(self, job_id: str) -> bool:
+        """Settle a cancelled-while-running job whose upstream attempt has ended in failure."""
+        with self._lock:
+            result = self._conn.execute(
+                """
+                UPDATE jobs
+                   SET state = 'cancelled', cancel_state = ?, next_action_at = NULL,
+                       updated_at = ?
+                 WHERE id = ? AND state = 'running' AND cancel_requested_at IS NOT NULL
                 """,
                 (CANCEL_CONFIRMED, time.time(), job_id),
             )

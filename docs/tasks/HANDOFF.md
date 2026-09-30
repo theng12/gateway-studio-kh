@@ -589,7 +589,8 @@ preset changes.
 The re-route was a no-op: the exclusion set was built from `provider_id`
 (`studio-hub-9701220bf30f`) and compared against `location_id` (`9701220bf30f`), so a busy Mac
 deferred the job **at the same Mac** while an idle one offered the model — 39 live `MACHINE_BUSY`
-failures — and a Mac that failed *after* the batch started was never re-routed at all
+failures (all **chat** jobs, 2026-09-26, on the synchronous peer route: no Hub batch exists for them, so
+they are not batch-level rows; they are the deferral budget running out against one busy location) — and a Mac that failed *after* the batch started was never re-routed at all
 (`ffmpeg not found on PATH`, `[METAL] Command buffer execution failed`).
 
 The policy, in full, is **[docs/job-retry-policy.md](../job-retry-policy.md)**, referenced from

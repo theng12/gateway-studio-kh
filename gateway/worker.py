@@ -86,8 +86,10 @@ def reconcile_holds(store: JobStore, *, now: float | None = None) -> dict[str, i
     The owner's answer: *"Yes — auto-close when the Hub's own batch record says finished or never
     started."* Both are one request away, and neither is a guess:
 
-      * **finished** — the Hub reports the batch terminal, so nothing is running and the hold has
-        nothing left to protect. The job is closed as failed with the Hub's own state recorded.
+      * **finished** — the Hub reports the item `error`/`cancelled`, so nothing is running and the
+        hold has nothing left to protect. The job is closed as failed with the Hub's own state
+        recorded. An item the Hub reports `done` is **not** closed: its artifact is still on the
+        Hub, and whether to adopt it or close is an open owner decision — the hold stays and is logged.
       * **never started** — the Hub has never heard of the batch id (`404`). The work it was
         supposed to be doing does not exist, which is the same fact the restart sweep acts on when
         `dispatch_started_at` is null: provably nothing to duplicate, so the job goes back in the
@@ -104,7 +106,7 @@ def reconcile_holds(store: JobStore, *, now: float | None = None) -> dict[str, i
     if holds_of is None or close is None:
         return out
     try:
-        rows = holds_of(limit=50)
+        rows = holds_of(limit=50, sweepable=True)
     except Exception:  # noqa: BLE001 - an unreadable table is not a reason to stop dispatching
         log.exception("could not read recovery holds")
         return out
@@ -125,8 +127,9 @@ def reconcile_holds(store: JobStore, *, now: float | None = None) -> dict[str, i
         out["checked"] += 1
         values = registry.credentials.resolved(provider_id)
         snapshot = studio_hub.batch_snapshot(
-            values, definition.base_url or "", batch_id,
+            values, str(values.get("base_url") or definition.base_url or ""), batch_id,
             kind=str(job.get("modality") or "image"),
+            local=provider_id == fleet.provider_id_for(fleet.LOCAL_ID),
         )
         if snapshot is None:
             out["still_open"] += 1
@@ -148,7 +151,13 @@ def reconcile_holds(store: JobStore, *, now: float | None = None) -> dict[str, i
                 out["closed_finished"] += 1
             continue
         state = str(snapshot.get("state") or "")
-        if state in _TERMINAL_UPSTREAM_STATES:
+        if state in _DONE_UPSTREAM_STATES:
+            # ponytail: the Hub finished it and holds a rendered artifact. Closing it as failed
+            # would discard that; adopting it (fetch, ack, succeed) is an owner decision that has
+            # not been made, so the hold stays open exactly as before, and the sweep says so.
+            log.info("hold %s: the Hub reports batch %s (%s) '%s'; left open pending the "
+                     "adopt-or-close decision", job["id"], batch_id, provider_id, state)
+        elif state in _TERMINAL_UPSTREAM_STATES:
             item = snapshot.get("item") or {}
             detail = (f"the Hub reports batch {batch_id} ({provider_id}) finished with state "
                       f"'{state}'"
@@ -161,10 +170,11 @@ def reconcile_holds(store: JobStore, *, now: float | None = None) -> dict[str, i
     return out
 
 
+#: The Hub finished it and there is an artifact: not a failure, so not closed as one.
+_DONE_UPSTREAM_STATES = frozenset({"succeeded", "success", "done", "complete", "completed"})
 #: The Hub's terminal words, as `studio_hub` already names them.
 _TERMINAL_UPSTREAM_STATES = frozenset(
-    {"succeeded", "success", "done", "complete", "completed", "failed", "error", "cancelled",
-     "canceled", "refused", "expired"}
+    {"failed", "error", "cancelled", "canceled", "refused", "expired"}
 )
 
 def _next_machine(store: JobStore, job_id: str, model_id: str, modality: str,
@@ -337,6 +347,59 @@ def _fail(
         store.fail(job_id, code=code, detail=detail)
 
 
+def cancel_upstream(job: dict[str, Any], store: JobStore) -> dict[str, Any] | None:
+    """Ask whoever owns dispatched work to stop it, and record the answer.
+
+    A cancellation after dispatch is a *request*: a worker that has accepted the
+    job is not ours to stop. So this asks the lane that took the work — for a
+    Studio Hub location, its own DELETE route — and stores exactly what came back
+    on the job's `cancel_remote`. Nothing may report a remote stop the owner of
+    the work did not confirm, and an unconfirmed answer stays visible as
+    `ok: false` beside the reason.
+
+    A job with no upstream id never left the gateway; `store.cancel` already
+    settled that case locally, and there is nothing to ask.
+    """
+    batch_id = str(job.get("upstream_job_id") or "").strip()
+    if not batch_id:
+        return None
+    provider_id = str(job.get("provider_id") or "")
+    definition = registry.definition(provider_id)
+    if definition is None:
+        return None
+    adapter = adapter_for(definition)
+    cancel = getattr(adapter, "cancel", None)
+    if cancel is None:
+        answer: dict[str, Any] = {
+            "ok": False,
+            "status": None,
+            "reason": f"the {definition.kind} lane cannot cancel dispatched work",
+        }
+    else:
+        request = BackendRequest(
+            provider_id=provider_id,
+            model_id=str(job.get("model_id") or ""),
+            modality=str(job.get("modality") or ""),
+            params={},
+            values=registry.credentials.resolved(provider_id),
+            base_url=definition.base_url,
+            display_name=definition.display_name,
+            upstream_job_id=batch_id,
+        )
+        try:
+            answer = cancel(request)
+        except Exception as exc:  # noqa: BLE001 - a cancel must never 500 the caller
+            answer = {"ok": False, "status": None, "error": f"{type(exc).__name__}: {exc}"}
+        if not isinstance(answer, dict):
+            answer = {
+                "ok": False,
+                "status": None,
+                "error": f"unreadable cancel answer: {answer!r}",
+            }
+    store.record_cancel_remote(job["id"], answer)
+    return answer
+
+
 def execute_job(job: dict[str, Any], store: JobStore) -> None:
     """Run one job to a terminal state. Never raises."""
     job_id = job["id"]
@@ -420,6 +483,14 @@ def execute_job(job: dict[str, Any], store: JobStore) -> None:
 
     params["_job_id"] = job_id
     record_acceptance = getattr(store, "record_upstream_acceptance", None)
+
+    def on_accepted(upstream_job_id: str) -> None:
+        record_acceptance(job_id, upstream_job_id)
+        # A cancel that arrived before the Hub's batch id existed had nothing to ask (the API read
+        # the row before there was an id), so the batch would run on to `succeeded`. Ask now.
+        row = store.get(job_id) or {}
+        if row.get("cancel_requested_at") is not None:
+            cancel_upstream(row, store)
     # A voice is pinned to the controller that holds its reference clip, so a
     # refusal there is final. Any other job may be tried at the next location that
     # offers the same model: `LOCATION_NOT_READY` is a property of the site, not of
@@ -445,11 +516,7 @@ def execute_job(job: dict[str, Any], store: JobStore) -> None:
             values=registry.credentials.resolved(provider_id),
             base_url=definition.base_url,
             display_name=definition.display_name,
-            checkpoint=(
-                (lambda upstream_job_id: record_acceptance(job_id, upstream_job_id))
-                if record_acceptance is not None
-                else None
-            ),
+            checkpoint=on_accepted if record_acceptance is not None else None,
         )
         adapter = adapter_for(definition)
         try:
@@ -494,6 +561,14 @@ def execute_job(job: dict[str, Any], store: JobStore) -> None:
                     )
             if exc.code == "PROVIDER_SUBMISSION_UNCERTAIN":
                 unknown = True
+            # **The owner cancelled this job, so a failure now is the cancel arriving, not a
+            # reason to try another machine.** The Hub answers a cancelled item with an error, the
+            # loop below would treat that as a known failure and re-submit the job elsewhere, and
+            # nothing ever turned the Hub's confirmed cancel into `cancelled`. An unknown outcome
+            # keeps its hold: that is unresolved work, whatever was asked.
+            if (not unknown and current.get("cancel_requested_at") is not None
+                    and store.settle_cancelled(job_id)):
+                return
             detail = _unknown_detail(str(exc)) if unknown else str(exc)[:500]
             # ── A7: a **known** failure is retried on a different machine ──────────
             #

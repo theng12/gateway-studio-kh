@@ -15,6 +15,7 @@ between them and a third case:
 from __future__ import annotations
 
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from typing import Any
@@ -23,7 +24,11 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
+import httpx  # noqa: E402
+
 from gateway import worker as worker_module  # noqa: E402
+from gateway.adapters import studio_hub  # noqa: E402
+from gateway.store import JobStore  # noqa: E402
 
 
 class _Store:
@@ -32,7 +37,8 @@ class _Store:
         self._attempts = attempts
         self.closed: list[dict[str, Any]] = []
 
-    def holds(self, *, limit: int = 200):
+    def holds(self, *, limit: int = 200, sweepable: bool = False):
+        self.sweepable = sweepable
         return list(self._holds)[:limit]
 
     def attempts_of(self, job_id: str):
@@ -67,12 +73,23 @@ class TheHubSettlesTheHoldTest(unittest.TestCase):
             return store, worker_module.reconcile_holds(store)
 
     def test_a_finished_batch_closes_the_hold_as_failed(self) -> None:
-        store, out = self._run({"known": True, "state": "failed",
+        store, out = self._run({"known": True, "state": "error",
                                 "item": {"error": "the worker ran out of memory"}})
         self.assertEqual(out["closed_finished"], 1)
         self.assertEqual(store.closed[0]["resolution"], "failed")
-        self.assertIn("finished with state 'failed'", store.closed[0]["detail"])
+        self.assertIn("finished with state 'error'", store.closed[0]["detail"])
         self.assertIn("the worker ran out of memory", store.closed[0]["detail"])
+
+    def test_a_done_item_is_not_closed_as_failed(self) -> None:
+        # The Hub rendered it and still holds the artifact. Closing it as failed would discard
+        # that; adopt-or-close is an owner decision, so the hold stays exactly as it is.
+        store, out = self._run({"known": True, "state": "done", "item": {"state": "done"}})
+        self.assertEqual(store.closed, [], "a done item must not be closed as failed")
+        self.assertEqual(out["still_open"], 1)
+
+    def test_the_sweep_asks_only_for_sweepable_holds(self) -> None:
+        store, _ = self._run(None)
+        self.assertTrue(store.sweepable)
 
     def test_a_batch_the_hub_never_heard_of_returns_the_job_to_the_queue(self) -> None:
         store, out = self._run({"known": False}, attempts=0)
@@ -122,6 +139,68 @@ class TheHubSettlesTheHoldTest(unittest.TestCase):
                 return True
 
         self.assertEqual(worker_module.reconcile_holds(Broken())["checked"], 0)
+
+
+def _snapshot(body: dict[str, Any], *, base: str = "http://hub.test", local: bool = False,
+              kind: str = "image", ready: str = ""):
+    """`batch_snapshot` against a Hub that answers `body` — the REAL summary shape."""
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(200, json=body)
+
+    real = httpx.Client
+    with patch.object(studio_hub.httpx, "Client",
+                      side_effect=lambda *a, **k: real(transport=httpx.MockTransport(handler))), \
+            patch("gateway.hub.hub_base_url", lambda: ready), \
+            patch("gateway.hub.hub_token", lambda: "operator-token"):
+        return studio_hub.batch_snapshot({}, base, "b1", kind=kind, local=local), seen
+
+
+class TheRealHubSummaryShapeTest(unittest.TestCase):
+    # /api/hub/jobs publishes NO batch-level `state`; the item carries it. A transcription
+    # summary rolls up into `status`. (Measured from broker.batch_summary / transcription summary.)
+    def test_the_state_comes_from_the_item(self) -> None:
+        snap, _ = _snapshot({"id": "b1", "errors": [], "items": [{"index": 0, "state": "error"}]})
+        self.assertEqual(snap["state"], "error")
+
+    def test_a_transcription_summary_uses_status(self) -> None:
+        snap, _ = _snapshot({"id": "b1", "status": "cancelled", "items": []},
+                            kind="transcription")
+        self.assertEqual(snap["state"], "cancelled")
+
+    def test_this_macs_own_hub_is_found_at_runtime_and_gets_its_token(self) -> None:
+        snap, seen = _snapshot({"items": [{"state": "running"}]}, base="", local=True,
+                               ready="http://127.0.0.1:47873")
+        self.assertEqual(snap["state"], "running")
+        self.assertEqual(str(seen[0].url), "http://127.0.0.1:47873/api/hub/jobs/b1")
+        self.assertEqual(seen[0].headers["x-hub-token"], "operator-token")
+
+    def test_a_remote_hold_with_no_address_asks_nobody(self) -> None:
+        # Never fall back to *this* Mac's Hub for another location's batch: a 404 there would
+        # read as "never started" and re-run work that may be rendering.
+        snap, seen = _snapshot({}, base="", local=False, ready="http://127.0.0.1:47873")
+        self.assertIsNone(snap)
+        self.assertEqual(seen, [])
+
+
+class TheSweepWindowTest(unittest.TestCase):
+    def test_retryable_and_idless_holds_cannot_starve_the_real_ones(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = JobStore(Path(tmp) / "jobs.sqlite3")
+            self.addCleanup(store.close)
+            rows = [("real", "unknown_outcome", "batch-1", 1.0),
+                    ("chat", "unknown_outcome", "", 5.0),
+                    ("retry", "retryable", "batch-2", 6.0)]
+            for job_id, recovery, upstream, updated in rows:
+                store._conn.execute(
+                    "INSERT INTO jobs (id, modality, state, created_at, updated_at, "
+                    "recovery_state, upstream_job_id) VALUES (?, 'image', 'failed', 0, ?, ?, ?)",
+                    (job_id, updated, recovery, upstream))
+            store._conn.commit()
+            self.assertEqual([r["id"] for r in store.holds(limit=1, sweepable=True)], ["real"])
+            self.assertEqual(len(store.holds()), 3)
 
 
 if __name__ == "__main__":

@@ -20,6 +20,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import logging
 import time
 from pathlib import Path
 from typing import Any
@@ -27,6 +28,8 @@ from typing import Any
 import httpx
 
 from .base import BackendError, BackendRequest, BackendResult
+
+log = logging.getLogger(__name__)
 
 POLL_INTERVAL_S = 1.0
 
@@ -175,16 +178,31 @@ _TERMINAL_UNCERTAIN = {"uncertain"}
 #: started dispatching to a pool, because we now ask a site for more than one job at
 #: a time. Failing the caller's job for it is the same mistake the 409 in agent mode
 #: used to make, in the other direction.
-_LOCATION_REFUSAL_CODES = {"MODEL_NOT_READY", "MODEL_NOT_PACKAGED", "MACHINE_BUSY"}
+#:
+#: The pre-acceptance site properties `_submission_readiness` / `_peer_admission_refusal` also
+#: emit (`STUDIO_NOT_RUNNING`, `OUTPUT_STORAGE_BLOCKED`, `MODEL_CATALOG_UNAVAILABLE`) are the same
+#: kind of thing — true here now, maybe not on another Mac — so they re-route too. The
+#: operator-decision codes (`MODEL_PAUSED`, `MACHINE_DISABLED`, `STUDIO_DISABLED`) stay terminal.
+_LOCATION_REFUSAL_CODES = {
+    "MODEL_NOT_READY", "MODEL_NOT_PACKAGED", "MACHINE_BUSY",
+    "STUDIO_NOT_RUNNING", "OUTPUT_STORAGE_BLOCKED", "MODEL_CATALOG_UNAVAILABLE",
+}
 
 
 def _hub_refusal_code(response: httpx.Response) -> str | None:
-    """The Hub's own `code` on a refusal, when it carries one."""
+    """The Hub's own `code` on a refusal, when it carries one.
+
+    Two shapes, both real: the peer/chat route puts `code` beside `detail`, while the batch-submit
+    routes raise `HTTPException(409, {"code": ...})`, which FastAPI renders as `detail: {code}`.
+    """
     try:
         body = response.json()
     except ValueError:
         return None
-    code = body.get("code") if isinstance(body, dict) else None
+    if not isinstance(body, dict):
+        return None
+    detail = body.get("detail")
+    code = body.get("code") or (detail.get("code") if isinstance(detail, dict) else None)
     return str(code) if code else None
 
 
@@ -345,7 +363,7 @@ def lane_deadline_seconds(request: BackendRequest | None) -> float:
 
     **The fallback stays a flat 900, and it is not the number to "fix" when the Hub's
     lanes diverge.** On 2026-09-26 Studio Hub made the deadline **per lane** — chat
-    1,800 s; image, voice, transcription and music 900 s; video 7,200 s — and the
+    1,800 s and voice 1,800 s; image, transcription and music 900 s; video 7,200 s — and the
     previous single constant, `PEER_PROXY_TIMEOUT_S = 900.0`, no longer exists on their
     side. A flat number therefore matches no Hub's table any more, which is exactly why
     it must not be raised to the largest one: **900 is the correct answer for the only
@@ -498,13 +516,24 @@ def _poll_batch(
         # batch, and a lost connection is not evidence that the worker stopped. What changes is
         # that the hold names the batch, the item and the machine, so it can be settled when that
         # machine answers again.
+        # A dropped socket, a 5xx (the Hub restarting, a proxy hiccup) and a 2xx that is not JSON
+        # are one thing: the Hub did not give an answer *this time*. A 4xx is an answer.
+        fault = ""
         try:
             response = client.get(f"{base}{jobs_path}/{batch_id}", headers=headers)
+            if response.status_code >= 500:
+                fault = f"HTTP {response.status_code}"
+            elif response.status_code < 400:
+                summary = response.json() or {}
         except httpx.HTTPError as exc:
+            fault = str(exc).strip() or type(exc).__name__
+        except ValueError as exc:
+            fault = f"unreadable answer: {exc}"
+        if fault:
             now = time.monotonic()
             if dropped_since is None:
                 dropped_since = now
-            reason = str(exc).strip() or type(exc).__name__
+            reason = fault
             # **Keep asking.** The batch is already accepted and the Hub keeps it,
             # so re-reading it is a GET on something that exists -- idempotent, and
             # the only question that settles the outcome. Giving up here is what
@@ -524,7 +553,7 @@ def _poll_batch(
                     "jobs_path": jobs_path,
                     "reason": reason,
                 },
-            ) from exc
+            )
         # The Hub answered, so whatever happened before is over.
         dropped_since = None
         if response.status_code >= 400:
@@ -534,7 +563,6 @@ def _poll_batch(
                 status=response.status_code,
                 retryable=response.status_code >= 500,
             )
-        summary = response.json() or {}
         last = summary
         if progress is not None:
             progress.note(summary)
@@ -559,6 +587,19 @@ def _poll_batch(
         if state in _TERMINAL_BAD:
             error = (item or {}).get("error") or summary.get("error") or {}
             message = error.get("message") if isinstance(error, dict) else str(error)
+            hub_code = str((item or {}).get("error_code") or "")
+            if hub_code == "MACHINE_BUSY":
+                # A controller older than Hub 0.6.111 fails a busy Mac as a terminal item. Nothing
+                # ran, and busy is a moment, so it is the same site property the submit path names.
+                raise BackendError(
+                    f"the location cannot serve this model right now ({hub_code})",
+                    code="LOCATION_NOT_READY",
+                    retryable=True,
+                    upstream_accepted=False,
+                    upstream_settled=True,
+                )
+            if hub_code:  # MODEL_PAUSED, MACHINE_DISABLED, ...: terminal, but say which
+                message = f"{hub_code}: {message or 'no detail'}"
             # **The Hub has finished this item, it produced nothing, and nothing is pending.**
             # The batch id recorded at submit does not contradict that: a batch is a container the
             # Hub creates *before* it validates the item, so a refused or failed item leaves an id
@@ -584,8 +625,46 @@ def _poll_batch(
     )
 
 
+#: Fetching a finished artifact: the file is still on the worker, so a transient error is worth
+#: asking again rather than filing a hold for a job that has already succeeded.
+ARTIFACT_TRIES = 3
+ARTIFACT_RETRY_S = 2.0
+
+
+def _fetch_artifact(client: httpx.Client, url: str, headers: dict[str, str],
+                    timeout: httpx.Timeout) -> httpx.Response:
+    for attempt in range(1, ARTIFACT_TRIES + 1):
+        try:
+            response = client.get(url, headers=headers, timeout=timeout)
+            if response.status_code < 500 or attempt == ARTIFACT_TRIES:
+                return response
+        except httpx.HTTPError as exc:
+            if attempt == ARTIFACT_TRIES:
+                raise BackendError(
+                    f"hub artifact fetch failed after {attempt} tries: {exc}",
+                    code="PROVIDER_FAILED", upstream_accepted=True, retryable=True,
+                ) from exc
+        time.sleep(ARTIFACT_RETRY_S)
+    raise AssertionError("unreachable")  # pragma: no cover
+
+
+def _verify_digest(artifact: httpx.Response, stated: object = None) -> None:
+    """Refuse bytes that do not match the digest the Hub states -- before the receipt says they do.
+
+    The ack tells the Hub its copy is safe to clean up, so it must not go out for a file that
+    arrived different. Nothing stated means nothing to compare, and that is not a failure.
+    """
+    expected = (str(artifact.headers.get("x-content-sha256") or "").strip()
+                or str(stated or "").strip()).lower()
+    if expected and hashlib.sha256(artifact.content).hexdigest() != expected:
+        raise BackendError(
+            "the artifact did not match the sha256 the Hub stated for it; not acknowledged",
+            code="PROVIDER_FAILED", upstream_accepted=True,
+        )
+
+
 def batch_snapshot(values: dict[str, Any], base_url: str, batch_id: str,
-                   *, kind: str = "image") -> dict[str, Any] | None:
+                   *, kind: str = "image", local: bool = False) -> dict[str, Any] | None:
     """Ask a Hub about one batch **once**, and say honestly which of three answers it gave.
 
     Returns:
@@ -604,11 +683,14 @@ def batch_snapshot(values: dict[str, Any], base_url: str, batch_id: str,
     """
     kind = str(kind or "image")
     jobs_path = _jobs_path(kind)
-    headers = {}
-    from ..hub import hub_headers
+    from ..hub import hub_base_url, hub_headers
 
-    headers = hub_headers(str((values or {}).get("hub_token") or ""))
-    url = f"{str(base_url or '').rstrip('/')}{jobs_path}/{batch_id}"
+    headers = hub_headers(str((values or {}).get("hub_token") or ""), local=local)
+    # This Mac's own Hub has no stored address ("discovered at runtime"), so ask where it is.
+    base = str(base_url or "").strip() or (hub_base_url() if local else "")
+    if not base:
+        return None
+    url = f"{base.rstrip('/')}{jobs_path}/{batch_id}"
     try:
         with httpx.Client(timeout=httpx.Timeout(15.0, connect=6.0)) as client:
             response = client.get(url, headers=headers)
@@ -625,9 +707,11 @@ def batch_snapshot(values: dict[str, Any], base_url: str, batch_id: str,
     if not isinstance(body, dict):
         return None
     items = body.get("items") or []
-    return {"known": True, "state": str(body.get("state") or "").lower(),
-            "item": items[0] if items and isinstance(items[0], dict) else None,
-            "summary": body}
+    item = items[0] if items and isinstance(items[0], dict) else None
+    # The Hub publishes no batch-level `state` on /api/hub/jobs: the item carries it, and a
+    # transcription batch's summary calls its own rollup `status`.
+    state = (item or {}).get("state") or body.get("status") or ""
+    return {"known": True, "state": str(state).lower(), "item": item, "summary": body}
 
 
 def _jobs_path(kind: str) -> str:
@@ -1170,10 +1254,9 @@ def _generate_image_or_voice(request: BackendRequest) -> BackendResult:
             progress=progress,
         )
 
-        artifact = client.get(
-            _artifact_url(base, batch_id, 0, request.modality),
-            headers=headers,
-            timeout=httpx.Timeout(600.0, connect=10.0),
+        artifact = _fetch_artifact(
+            client, _artifact_url(base, batch_id, 0, request.modality), headers,
+            httpx.Timeout(600.0, connect=10.0),
         )
         if artifact.status_code >= 400:
             raise BackendError(
@@ -1183,6 +1266,8 @@ def _generate_image_or_voice(request: BackendRequest) -> BackendResult:
                 retryable=artifact.status_code >= 500,
             )
 
+    terminal = (outcome.get("item") or {}).get("terminal_result") or {}
+    _verify_digest(artifact, terminal.get("sha256"))
     media_type = artifact.headers.get("content-type", "").split(";")[0].strip()
     if not media_type:
         # Music comes back as WAV like voice, Image as PNG, and a local video as MP4 — the
@@ -1191,7 +1276,6 @@ def _generate_image_or_voice(request: BackendRequest) -> BackendResult:
         media_type = {"image": "image/png", "video": "video/mp4"}.get(
             request.modality, "audio/wav")
 
-    terminal = (outcome.get("item") or {}).get("terminal_result") or {}
     payload: dict[str, Any] = {
         "hub_batch_id": batch_id,
         "hub_machine": terminal.get("machine_id"),
@@ -1252,7 +1336,12 @@ def _generate_transcription(request: BackendRequest) -> BackendResult:
             request.params.get("_upload_type") or "application/octet-stream",
         )
     }
-    data: dict[str, str] = {"model": request.model_id, "item_ids": "0"}
+    # The Hub dedupes on (project, episode, model, item_id, filename) while a batch is active, so a
+    # constant id made two same-named uploads share one batch and one SRT. The job id is unique.
+    data: dict[str, str] = {
+        "model": request.model_id,
+        "item_ids": str(request.params.get("_job_id") or "0"),
+    }
     if request.params.get("language"):
         data["language"] = str(request.params["language"])
 
@@ -1302,6 +1391,9 @@ def _generate_transcription(request: BackendRequest) -> BackendResult:
         batch_id = str(submitted.get("batch_id") or "")
         if not batch_id:
             raise BackendError("hub returned no batch_id", code="PROVIDER_FAILED")
+        if submitted.get("duplicate"):
+            log.warning("hub transcription batch %s was already active for this upload "
+                        "(duplicate: true)", batch_id)
         if request.checkpoint is not None:
             request.checkpoint(batch_id)
 
@@ -1313,10 +1405,9 @@ def _generate_transcription(request: BackendRequest) -> BackendResult:
             progress=progress,
         )
 
-        artifact = client.get(
-            _artifact_url(base, batch_id, 0, "transcription") + "?format=srt",
-            headers=headers,
-            timeout=httpx.Timeout(300.0, connect=10.0),
+        artifact = _fetch_artifact(
+            client, _artifact_url(base, batch_id, 0, "transcription") + "?format=srt", headers,
+            httpx.Timeout(300.0, connect=10.0),
         )
         if artifact.status_code >= 400:
             raise BackendError(
@@ -1324,9 +1415,16 @@ def _generate_transcription(request: BackendRequest) -> BackendResult:
                 code="PROVIDER_FAILED",
                 status=artifact.status_code,
             )
+        _verify_digest(artifact)
 
+    item = outcome.get("item") or {}
+    studio = str(item.get("studio") or "")
     payload: dict[str, Any] = {
         "hub_batch_id": batch_id,
+        # Sibling of the image lanes' `runtime_s`/`machine_id`, read from the item the Hub polled:
+        # its real elapsed seconds, and the machine after the `@` in `studio` ("name@machine").
+        "generation_seconds": item.get("duration_seconds"),
+        "hub_machine": studio.split("@", 1)[1] if "@" in studio else None,
         # Same record as the image and voice lanes: `None` when the Hub reported no
         # progress figure, never a reassuring `false` we invented from silence.
         "hub_progress": progress.as_payload(),
@@ -1443,7 +1541,7 @@ def _generate_chat(request: BackendRequest) -> BackendResult:
             json=_chat_body(request),
             timeout=timeout,
         )
-    except httpx.ConnectError as exc:
+    except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
         # Nothing accepted the connection: an unreachable location, not a job
         # failure, so the worker may try the next site that offers the model.
         raise BackendError(
@@ -1477,7 +1575,9 @@ def _generate_chat(request: BackendRequest) -> BackendResult:
             code="PROVIDER_FAILED",
             status=response.status_code,
             retryable=response.status_code >= 500,
-            upstream_accepted=None if response.status_code >= 500 else False,
+            # A refusal *by name* (STUDIO_NOT_RUNNING, OUTPUT_STORAGE_BLOCKED ...) happened at
+            # the door, before any work, whatever its status; only a bare 5xx is ambiguous.
+            upstream_accepted=None if response.status_code >= 500 and not code else False,
         )
 
     payload = response.json() or {}

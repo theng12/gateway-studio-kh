@@ -34,6 +34,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+import httpx
+
 
 _TEMP_ROOT = Path(tempfile.mkdtemp(prefix="gateway-hub-chat-"))
 atexit.register(shutil.rmtree, _TEMP_ROOT, ignore_errors=True)
@@ -225,6 +227,25 @@ class ChatLaneTests(unittest.TestCase):
                 StudioHubBackend().generate(_request())
         self.assertTrue(caught.exception.retryable)
         self.assertIsNone(caught.exception.upstream_accepted)
+
+    def test_a_5xx_refusal_by_name_is_definite_not_ambiguous(self) -> None:
+        # `MODEL_PAUSED` is terminal (an operator decision), but it is a refusal at the door:
+        # the Hub named it, so nothing ran, whatever the status. Only a bare 5xx is ambiguous.
+        with patch.object(mock_upstream, "CHAT_STATUS", 503), \
+                patch.object(mock_upstream, "CHAT_REFUSAL_CODE", "MODEL_PAUSED"):
+            with self.assertRaises(BackendError) as caught:
+                StudioHubBackend().generate(_request())
+        self.assertEqual(caught.exception.code, "PROVIDER_FAILED")
+        self.assertIs(caught.exception.upstream_accepted, False)
+
+    def test_a_connect_timeout_is_an_unreachable_location_not_a_hold(self) -> None:
+        # A controller off the tailnet times out on connect rather than refusing.
+        with patch("gateway.adapters.studio_hub.httpx.post",
+                   side_effect=httpx.ConnectTimeout("timed out")):
+            with self.assertRaises(BackendError) as caught:
+                StudioHubBackend().generate(_request())
+        self.assertEqual(caught.exception.code, "LOCATION_UNREACHABLE")
+        self.assertIs(caught.exception.upstream_accepted, False)
 
     def test_an_empty_answer_is_a_failure_not_a_blank_success(self) -> None:
         with patch.object(mock_upstream, "CHAT_EMPTY", True):
