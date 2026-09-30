@@ -327,16 +327,23 @@ Nothing pruned them before `gateway/retention.py`, so `data/artifacts/` grew
 unbounded.
 
 Two limits, editable via the API (`/admin/api/settings/retention`,
-`/admin/api/artifacts/prune`) — **7 days** or **10 GB**, whichever comes
+`/admin/api/artifacts/prune`) — **3 days** or **8 GB**, whichever comes
 first. A **pin** (`/admin/api/artifacts/keep`) outranks both:
 
-- **Age** is the norm: a week unfetched by Story Studio is deleted.
+- **Age** is the norm: three days unfetched by Story Studio and it is pruned.
 - **Size** is the burst fallback: long videos can pass the cap in a day, so the
   oldest go first and the newest stay fetchable.
 
 **Nothing younger than an hour is ever removed**, whatever the limits say: a
 freshly-written artifact is about to be fetched and a staged upload is being
-read, so the newest stay safe by construction, not luck. Settings live in
+read, so the newest stay safe by construction, not luck.
+
+**Pruning moves, it does not delete.** A pruned file is renamed (same volume) into the
+Trash Folder `DATA_DIR/trash/<UTC date moved>/<path under artifacts/>`; a failed move
+is skipped, never unlinked. Dated folders older than **15 days** are purged
+automatically, the only hard delete (owner decision 2026-09-30). `max_bytes` counts
+the live store only; `usage()` (and Settings > Received artifacts) reports the Trash
+Folder size separately. Settings live in
 `DATA_DIR/retention.json`, not `.env`, which the menu bar app owns and rewrites.
 ## `.env` is read live, and the key is checked per request
 

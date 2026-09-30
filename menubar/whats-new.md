@@ -14,6 +14,17 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.86 — 2026-09-30
+
+### Pruned artifacts go to a Trash Folder
+
+Received artifacts are now kept **3 days or 8 GB** (was 7 days or 10 GB) — Story Studio already holds the originals.
+Pruning no longer deletes: expired files move into a **Trash Folder** inside the gateway's data folder, and
+anything in it is deleted for good after 15 days, automatically. The 8 GB cap counts only the live store, not the
+Trash Folder. **Settings > Received artifacts** shows the Trash Folder size ("Trash Folder: 1.2 GB, emptied
+automatically after 15 days"). Pinned files and anything newer than an hour are protected as before. Settings you
+already saved keep their values; only the defaults changed.
+
 ## 0.2.85 — 2026-09-30
 
 ### Prices are visible in the app

@@ -8,13 +8,21 @@ at all before this, so `data/artifacts/` grew without bound.
 
 Two limits, whichever is reached first, both editable:
 
-    max_age_days  (default 7)
-    max_bytes     (default 10 GB)
+    max_age_days  (default 3)
+    max_bytes     (default 8 GB)
 
-The age limit is the normal one — an artifact Story Studio has not fetched in a week
-is not going to be. The size limit is the backstop for a burst: a few long videos
-can exceed ten gigabytes inside a day, and when that happens the oldest go first so
-the newest stay fetchable.
+The age limit is the normal one — an artifact Story Studio has not fetched in three
+days is not going to be. The size limit is the backstop for a burst: a few long videos
+can exceed eight gigabytes inside a day, and when that happens the oldest go first so
+the newest stay fetchable. `max_bytes` counts the live store only, never the Trash Folder.
+
+**Pruning never hard-deletes.** The store is a cache (Story Studio holds the originals),
+but a pruned file is still moved, not unlinked: a same-volume rename into the Trash
+Folder `DATA_DIR/trash/<UTC date of the move>/<path under artifacts/>`. The dated
+folder is the move-in record (a moved file keeps its old mtime, so the file cannot
+say when it arrived). Folders whose date is more than 15 days old are then purged;
+that purge is the only hard delete in this module (owner-approved, 2026-09-30). A
+move that fails is skipped, never retried as an unlink.
 
 Settings live in their own file rather than `.env`, which the menu bar app owns
 and rewrites when saving connection settings. Retention settings are read fresh
@@ -33,8 +41,10 @@ single count would let one masquerade as the other.
 from __future__ import annotations
 
 import json
+import shutil
 import threading
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 from .config import ARTIFACT_DIR, DATA_DIR
@@ -47,9 +57,14 @@ SETTINGS_PATH = Path(str(DATA_DIR)) / "retention.json"
 #: the asset.
 KEPT_PATH = Path(str(DATA_DIR)) / "kept.json"
 
-DEFAULT_MAX_AGE_DAYS = 7.0
-DEFAULT_MAX_BYTES = 10 * 1024**3  # 10 GB
+DEFAULT_MAX_AGE_DAYS = 3.0
+DEFAULT_MAX_BYTES = 8 * 1024**3  # 8 GB
 GB = 1024**3
+
+#: The self-cleaning Trash Folder (a sibling of `artifacts/`, so `_files()` never
+#: counts it against `max_bytes`) and how long a moved-in file stays there.
+TRASH_DIR = Path(str(DATA_DIR)) / "trash"
+TRASH_DAYS = 15
 
 #: Nothing newer than this is ever removed, whatever the limits say. An artifact is
 #: written when a job finishes and Story Studio fetches it seconds later; a staged
@@ -222,14 +237,81 @@ def _protected_input_paths(store: object | None = None) -> set[Path] | None:
         return None
 
 
+def _trash_stats() -> tuple[int, int]:
+    """(files, bytes) in the Trash Folder."""
+    files = size = 0
+    for path in TRASH_DIR.rglob("*"):
+        try:
+            if path.is_file():
+                files += 1
+                size += path.stat().st_size
+        except OSError:
+            continue
+    return files, size
+
+
+def _day(moment: float) -> str:
+    return datetime.fromtimestamp(moment, timezone.utc).strftime("%Y-%m-%d")
+
+
+def _move_to_trash(path: Path, moment: float) -> bool:
+    """Same-volume rename into `trash/<UTC day>/<relative path>`. False = skipped.
+
+    Never falls back to unlink or copy: a cross-volume or otherwise failed rename
+    leaves the file where it is.
+    """
+    try:
+        target = TRASH_DIR / _day(moment) / path.relative_to(ARTIFACT_DIR)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        n = 0
+        while target.exists():  # same path pruned twice in a day: stamped suffix
+            n += 1
+            target = target.with_name(f"{path.name}.{int(moment)}-{n}")
+        path.rename(target)
+        return True
+    except (OSError, ValueError):
+        return False
+
+
+def _purge_trash(moment: float) -> tuple[int, int]:
+    """Hard-delete dated folders moved in more than TRASH_DAYS ago. (files, bytes).
+
+    The only hard delete here. Only `YYYY-MM-DD` folders are touched; anything
+    else in the Trash Folder is left alone.
+    """
+    files = size = 0
+    if not TRASH_DIR.is_dir():
+        return 0, 0
+    for folder in TRASH_DIR.iterdir():
+        try:
+            born = datetime.strptime(folder.name, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+            if not folder.is_dir() or moment - born.timestamp() <= TRASH_DAYS * 86400.0:
+                continue
+            for f in folder.rglob("*"):
+                if f.is_file():
+                    files += 1
+                    size += f.stat().st_size
+            shutil.rmtree(folder)
+        except (OSError, ValueError):
+            continue
+    return files, size
+
+
 def usage() -> dict:
     entries = _files()
     pins = kept()
+    trash_files, trash_bytes = _trash_stats()
     present = [p for p in pins if p["present"]]
     return {
         "files": len(entries),
         "bytes": sum(size for _, _, size in entries),
         "path": str(ARTIFACT_DIR),
+        # The Trash Folder is reported apart from `bytes`, which is the live store
+        # the size cap is measured against.
+        "trash_files": trash_files,
+        "trash_bytes": trash_bytes,
+        "trash_days": TRASH_DAYS,
+        "trash_path": str(TRASH_DIR),
         # **Two questions, two numbers.** `protected_files` is "too new to touch";
         # `pinned_files` is "the owner asked me to keep this". One count answering
         # both would let a pin look like the hour-long grace window, and would hide
@@ -241,7 +323,7 @@ def usage() -> dict:
 
 
 def prune(now: float | None = None, store: object | None = None) -> dict:
-    """Delete by age, then by size, oldest first. Never raises.
+    """Move to the Trash Folder by age, then by size, oldest first; purge old trash.
 
     Returns what happened, so a person can see the policy working rather than
     trusting that it does.
@@ -259,11 +341,12 @@ def prune(now: float | None = None, store: object | None = None) -> dict:
     except Exception:  # noqa: BLE001 - a sweeper must not raise
         pass
     limits = settings()
+    purged_files, purged_bytes = _purge_trash(moment)
     entries = _files()
     pinned = {p["path"] for p in kept() if p["present"]}
     protected_inputs = _protected_input_paths(store)
     if protected_inputs is None:
-        return {"deleted": 0, "freed_bytes": 0, "limits": limits,
+        return {"deleted": 0, "freed_bytes": 0, "limits": limits, "purged_files": purged_files,
                 "blocked_reason": "Cannot read job input protection; no artifacts were pruned. Retry after the job database is readable."}
     # A pinned artifact is not a candidate at all, whatever its age or the size
     # pressure. The young-file protection is counted separately from the pins so
@@ -304,11 +387,12 @@ def prune(now: float | None = None, store: object | None = None) -> dict:
     deleted = 0
     for path in doomed.values():
         try:
-            freed += path.stat().st_size
-            path.unlink()
-            deleted += 1
+            size = path.stat().st_size
         except OSError:
             continue
+        if _move_to_trash(path, moment):
+            freed += size
+            deleted += 1
 
     # A staged upload lives in a subdirectory; remove the directories it leaves
     # behind, so the tree does not fill with empty folders.
@@ -321,8 +405,10 @@ def prune(now: float | None = None, store: object | None = None) -> dict:
                 continue
 
     return {
-        "deleted": deleted,
+        "deleted": deleted,  # moved to the Trash Folder, not unlinked
         "freed_bytes": freed,
+        "purged_files": purged_files,
+        "purged_bytes": purged_bytes,
         "deleted_by_age": by_age,
         "deleted_by_size": by_size,
         "kept_files": len(entries) - deleted,
@@ -354,7 +440,7 @@ def start_pruner(interval: float = PRUNE_INTERVAL_S) -> None:
                     result = prune()
                     if result["deleted"]:
                         print(
-                            f"[retention] removed {result['deleted']} file(s), "
+                            f"[retention] moved {result['deleted']} file(s) to the Trash Folder, "
                             f"{result['freed_bytes'] // 1024} KiB "
                             f"({result['deleted_by_age']} by age, {result['deleted_by_size']} by size)",
                             flush=True,

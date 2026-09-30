@@ -173,9 +173,9 @@ final class SettingsSection: NSObject, AppSection {
         root.addArrangedSubview(PageKit.sectionTitle("Received artifacts"))
         root.addArrangedSubview(PageKit.help(
             "Images, audio and subtitles pass through this Mac on their way to Story Studio, "
-            + "which keeps its own copy. They are deleted when either limit is reached — "
-            + "whichever comes first, oldest first. A file newer than an hour is never removed, "
-            + "so work in flight is safe."
+            + "which keeps its own copy. They are moved to the Trash Folder when either limit is "
+            + "reached — whichever comes first, oldest first — and the Trash Folder empties itself "
+            + "after 15 days. A file newer than an hour is never touched, so work in flight is safe."
         ))
         retentionDaysField = NSTextField(string: "")
         retentionDaysField.widthAnchor.constraint(equalToConstant: 70).isActive = true
@@ -401,8 +401,12 @@ final class SettingsSection: NSObject, AppSection {
         let files = usage["files"] as? Int ?? 0
         let bytes = (usage["bytes"] as? Double) ?? 0
         let formatted = ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .file)
+        let trashBytes = Int64((usage["trash_bytes"] as? Double) ?? 0)
+        let trashDays = usage["trash_days"] as? Int ?? 15
+        let trash = ByteCountFormatter.string(fromByteCount: trashBytes, countStyle: .file)
         retentionUsageLabel?.stringValue =
-            "\(files) file\(files == 1 ? "" : "s"), \(formatted) — Story Studio keeps its own copy"
+            "\(files) file\(files == 1 ? "" : "s"), \(formatted) — Story Studio keeps its own copy\n"
+            + "Trash Folder: \(trash), emptied automatically after \(trashDays) days"
     }
 
     /// The typed limits as a request body, or nil after saying what is wrong. A blank field
@@ -441,10 +445,10 @@ final class SettingsSection: NSObject, AppSection {
             return
         }
         guard PageKit.confirm(
-            "Delete old received artifacts now?",
+            "Move old received artifacts to the Trash Folder now?",
             "Files older than \(retentionDaysField.stringValue) days, or beyond \(retentionGBField.stringValue) GB "
-                + "(oldest first), are deleted from this Mac. Now: \(retentionUsageLabel.stringValue). "
-                + "Pinned files and anything newer than an hour are kept. This cannot be undone.",
+                + "(oldest first), are moved to the Trash Folder and deleted for good after 15 days. Now: \(retentionUsageLabel.stringValue). "
+                + "Pinned files and anything newer than an hour are kept.",
             ok: "Prune"
         ) else { return }
 
@@ -463,10 +467,10 @@ final class SettingsSection: NSObject, AppSection {
                     let deleted = payload["deleted"] as? Int ?? 0
                     let freed = (payload["freed_bytes"] as? Double) ?? 0
                     self.statusLabel.stringValue = deleted == 0
-                        ? "Nothing to remove — everything is inside the limits."
-                        : "Removed \(deleted) file\(deleted == 1 ? "" : "s"), "
+                        ? "Nothing to move — everything is inside the limits."
+                        : "Moved \(deleted) file\(deleted == 1 ? "" : "s") to the Trash Folder, "
                           + ByteCountFormatter.string(fromByteCount: Int64(freed), countStyle: .file)
-                          + " freed."
+                          + " freed from the store."
                     self.describeRetention(payload["usage"] as? [String: Any])
                     self.loadedRetention.merge(body) { _, new in new }
                 }

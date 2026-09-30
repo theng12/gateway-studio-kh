@@ -1,12 +1,31 @@
 # HANDOFF — gateway-kh
 
-**Read this first.** Updated 2026-09-30 for **VERSION `0.2.85`** (the release blocks below are
+**Read this first.** Updated 2026-09-30 for **VERSION `0.2.86`** (the release blocks below are
 newest first; 0.2.76-0.2.79 are recorded in `menubar/whats-new.md` and their commits). The running build
 stamp is on `/health` and in `/Applications/gateway-kh.app/Contents/Resources/gateway/BUILD`.
 If this file disagrees with the code, **the code wins — fix this file in the same change**.
 Every path below is inside the Git checkout `repository/` unless it says otherwise.
 `[MEASURED]` = observed in the session that wrote this; `[reason not recorded]` = the
 project does not say why, and nobody should guess.
+
+> **0.2.86 — artifact pruning goes to a self-cleaning Trash Folder (`gateway/retention.py`).**
+>
+> Owner decision 2026-09-30: the artifact store is a cache (Story Studio has the originals), so pruning must not hard-delete.
+> * `prune()` now `rename`s each doomed file into `DATA_DIR/trash/<UTC date of the move>/<path under artifacts/>` (`_move_to_trash`;
+>   stamped suffix on a same-day collision; a failed rename — e.g. a cross-volume `ARTIFACT_DIR` — skips the file, never unlinks).
+>   The dated folder is the move-in record (a moved file keeps its old mtime). `_purge_trash` `rmtree`s folders named `YYYY-MM-DD`
+>   whose date is more than **15 days** old — the only hard delete, owner-approved; non-date entries are never touched. It runs at
+>   the top of every prune (also when input protection is unreadable and pruning is blocked).
+> * Defaults **3 days / 8 GB** (was 7 / 10). `max_bytes` measures the live store only (`trash/` is a sibling of `artifacts/`).
+>   `usage()` (so `GET/PUT /admin/api/settings/retention`, `POST /admin/api/artifacts/prune`) adds `trash_files`, `trash_bytes`,
+>   `trash_days`, `trash_path`; prune result adds `purged_files/purged_bytes` (`deleted` now means "moved"). Native Settings >
+>   Received artifacts shows "Trash Folder: X, emptied automatically after 15 days". The Create page text says 3 days.
+> * **The LIVE `retention.json` was NOT changed** — a saved file keeps its old numbers; the coordinator applies 3 / 8 GB
+>   (`PUT /admin/api/settings/retention`) after install.
+> * Tests: `tests/test_retention_inputs.py::TrashFolderTests` (moved not deleted, collision, failed move skips, purge only >15 days,
+>   max_bytes excludes trash + usage reports it) and `tests/test_e2e.py` section 19. Mutation-proved (unlink instead of move;
+>   purge window 1 day; trash counted in the cap). Existing referenced-input / young-file / pin tests unchanged and green.
+>   `test_ui.py` / `test_fleet_standalone.py` not run (owner's screen / real Hub). Not installed.
 
 > **0.2.85 — prices visible in the app; Providers opens on the list.**
 >

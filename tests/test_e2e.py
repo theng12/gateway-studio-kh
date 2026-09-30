@@ -3660,13 +3660,13 @@ def main() -> int:
                 return path
 
             ancient = stage("ancient.mp4", 30)          # over any sane age limit
-            old = stage("old.mp4", 9)                   # over 7 days
-            recent = stage("recent.mp4", 2)             # inside 7 days
+            old = stage("old.mp4", 9)                   # over 3 days
+            recent = stage("recent.mp4", 1)             # inside 3 days
             fresh = stage("fresh.mp4", 0.01)            # inside the protected hour
 
             got = req(client, "GET", "/admin/api/settings/retention").json()
-            check("the defaults are the ones asked for: 7 days or 10 GB",
-                  got["max_age_days"] == 7 and got["max_bytes"] == 10 * 1024**3,
+            check("the defaults are the ones asked for: 3 days or 8 GB",
+                  got["max_age_days"] == 3 and got["max_bytes"] == 8 * 1024**3,
                   f"{got['max_age_days']} days / {got['max_bytes']} bytes")
             check("and it reports what is actually stored",
                   got["usage"]["files"] >= 4, f"{got['usage']}")
@@ -3675,6 +3675,11 @@ def main() -> int:
             check("pruning removes what is past the age limit",
                   not ancient.exists() and not old.exists(),
                   f"ancient={ancient.exists()} old={old.exists()}")
+            trash = tmp / "trash"
+            check("pruned files go to the Trash Folder, not oblivion",
+                  sorted(p.name for p in trash.rglob("*.mp4")) == ["ancient.mp4", "old.mp4"]
+                  and req(client, "GET", "/admin/api/settings/retention").json()["usage"]["trash_files"] >= 2,
+                  f"{sorted(trash.rglob('*'))}")
             check("and keeps what is inside it", recent.exists() and fresh.exists())
             check("a file newer than the protection window is never removed",
                   fresh.exists(), "the newest artifact must survive even an aggressive cap")
@@ -3683,7 +3688,7 @@ def main() -> int:
                   f"{ {k: out[k] for k in ('deleted','deleted_by_age','deleted_by_size','freed_bytes')} }")
 
             # The size limit is the backstop, and it takes the oldest first.
-            big = [stage(f"bulk-{i}.bin", age_days=3 - i * 0.5, size=900 * 1024) for i in range(3)]
+            big = [stage(f"bulk-{i}.bin", age_days=2 - i * 0.5, size=900 * 1024) for i in range(3)]
             saved = req(client, "PUT", "/admin/api/settings/retention",
                         json={"max_bytes": 2 * 1024 * 1024}).json()
             check("the limits can be edited", saved["max_bytes"] == 2 * 1024 * 1024, f"{saved}")

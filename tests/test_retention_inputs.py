@@ -115,5 +115,75 @@ class RetentionInputTests(unittest.TestCase):
         self.assertIn("blocked_reason", result)
 
 
+class TrashFolderTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.store = JobStore(_TEMP_ROOT / f"{self._testMethodName}.sqlite3")
+        shutil.rmtree(retention.TRASH_DIR, ignore_errors=True)
+        shutil.rmtree(ARTIFACT_DIR, ignore_errors=True)
+        ARTIFACT_DIR.mkdir(parents=True)
+        for pin in retention.kept():
+            retention.unkeep(pin["path"])
+
+    def tearDown(self) -> None:
+        self.store.close()
+
+    def test_defaults_are_three_days_and_eight_gb(self) -> None:
+        self.assertEqual(retention.DEFAULT_MAX_AGE_DAYS, 3.0)
+        self.assertEqual(retention.DEFAULT_MAX_BYTES, 8 * 1024**3)
+
+    def test_prune_moves_into_dated_trash_and_never_unlinks(self) -> None:
+        now = time.time()
+        old = RetentionInputTests.write_file("sub/old.bin", age_s=5 * 86400)
+        young = RetentionInputTests.write_file("young.bin", age_s=30)
+        retention.save(max_age_days=3, max_bytes=8 * 1024**3)
+        result = retention.prune(now=now, store=self.store)
+        moved = retention.TRASH_DIR / retention._day(now) / "sub" / "old.bin"
+        self.assertFalse(old.exists(), result)
+        self.assertTrue(moved.is_file(), "pruned file must be in the Trash Folder, not gone")
+        self.assertEqual(moved.stat().st_size, 2_000_000)
+        self.assertTrue(young.exists())
+        self.assertEqual(result["deleted"], 1)
+        # a second file at the same path the same day gets a stamped name, not an overwrite
+        again = RetentionInputTests.write_file("sub/old.bin", age_s=5 * 86400)
+        retention.prune(now=now, store=self.store)
+        self.assertFalse(again.exists())
+        self.assertEqual(len(list((retention.TRASH_DIR / retention._day(now) / "sub").iterdir())), 2)
+
+    def test_failed_move_skips_and_keeps_the_file(self) -> None:
+        old = RetentionInputTests.write_file("stuck.bin", age_s=5 * 86400)
+        with patch.object(Path, "rename", side_effect=OSError("cross-device")):
+            result = retention.prune(now=time.time(), store=self.store)
+        self.assertTrue(old.exists())
+        self.assertEqual(result["deleted"], 0)
+
+    def test_purge_only_folders_older_than_fifteen_days(self) -> None:
+        now = time.time()
+        stale = retention.TRASH_DIR / retention._day(now - 16 * 86400)
+        fresh = retention.TRASH_DIR / retention._day(now - 10 * 86400)
+        stranger = retention.TRASH_DIR / "not-a-date"
+        for folder in (stale, fresh, stranger):
+            folder.mkdir(parents=True)
+            (folder / "f.bin").write_bytes(b"x" * 10)
+        result = retention.prune(now=now, store=self.store)
+        self.assertFalse(stale.exists())
+        self.assertTrue((fresh / "f.bin").exists())
+        self.assertTrue((stranger / "f.bin").exists())
+        self.assertEqual(result["purged_files"], 1)
+
+    def test_max_bytes_ignores_the_trash_folder_and_usage_reports_it(self) -> None:
+        today = retention.TRASH_DIR / retention._day(time.time())
+        today.mkdir(parents=True)
+        for name in ("a", "b"):
+            (today / name).write_bytes(b"x" * 3_000_000)
+        live = RetentionInputTests.write_file("live.bin", age_s=2 * 3600, size=2_000_000)
+        retention.save(max_age_days=3, max_bytes=2_500_000)  # live alone fits; live+trash would not
+        result = retention.prune(now=time.time(), store=self.store)
+        self.assertTrue(live.exists(), result)
+        use = retention.usage()
+        self.assertEqual(use["trash_bytes"], 6_000_000)
+        self.assertEqual(use["trash_days"], 15)
+        self.assertEqual(use["bytes"], 2_000_000)
+
+
 if __name__ == "__main__":
     unittest.main()
