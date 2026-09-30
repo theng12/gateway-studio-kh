@@ -28,9 +28,10 @@ now closed, and these are the parts that were expensive to work out.
 - **Music is a modality with two engines and no defaults.** Discovery maps the
   Hub's `music-mlx` engine to `music`; `_MODALITIES_BY_KIND[studio_hub]` and both
   provider definitions declare it. Items are `{"prompt", "params"}` on the same
-  `/api/hub/jobs` route, artifacts come back as WAV. ACE-Step/Ace-Step1.5 sings and
-  does long form (`lyrics`, `vocal_language`, `instrumental`, `shift`);
-  stabilityai/stable-audio-3-optimized is instrumental only. The adapter forwards
+  `/api/hub/jobs` route, artifacts come back as WAV. The fleet's music is YuE2 and
+  Stable Audio 3 (ACE-Step 1.5 was retired 2026-09-30, owner decision); vocal engines take
+  `lyrics`, `vocal_language`, `instrumental`, `shift`; stabilityai/stable-audio-3-optimized
+  is instrumental only. The adapter forwards
   whichever parameters the caller set and **invents none** — which engine accepts
   what is the engine's own answer, and a guessed default would be silently wrong.
 - **A staged voice reference carries its metadata, and the answer is checked.** The

@@ -14,6 +14,28 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.84 — 2026-09-30
+
+### Publishing a Studio Hub release sends only what changed, to every controller at once
+
+**Fleet → Publish release** used to read the whole ~1.9 GB disk image into memory and send it to each
+controller one after another (the last real push: 5 controllers, 43 minutes, 8 GB of memory). Now the
+gateway asks each controller what it can do. A controller running Studio Hub 0.6.115 or newer gets the
+release's file list and then only the files it does not already have; every other controller gets the
+whole image as before, but streamed instead of held in memory. Controllers are pushed together, each with
+its own result in the report (how it was sent, how many files, and what the controller itself read back),
+so one failing controller no longer stops the rest. The first release built by 0.6.115 is still a full push
+to every controller; the delta starts with the release after it.
+
+### Imported prices that vary are shown, not hidden
+
+A model whose pricing page lists several numbers (peak and off-peak, short and long context) or a price in
+another unit (per million bytes, "free of charge") used to show "price not published" even though the research
+had it. It now shows the pricing-page source with every number listed as a variant; a single price is still
+only shown where the page gave exactly one.
+
+---
+
 ## 0.2.83 — 2026-09-30
 
 ### Import researched prices and rate limits, with the page they came from

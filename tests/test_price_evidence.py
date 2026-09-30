@@ -103,11 +103,10 @@ class ValidationTest(unittest.TestCase):
         for item in cases:
             self.assertEqual(self.check(item)["prices"], [], item)
 
-    def test_other_units_are_kept_as_evidence_and_never_published(self) -> None:
+    def test_other_units_are_kept_as_evidence_and_never_a_price(self) -> None:
         got = self.check(price(unit="other", unit_text="2 credits per image", usd=None,
                                quote="Each image costs 2 credits"))
         self.assertEqual((got["prices"], len(got["other"])), ([], 1))
-        self.assertIsNone(pe.page_price("openai-direct", "image", "gpt-image-2.5"))
 
     def test_rate_limits_keep_only_verified_numbers(self) -> None:
         tier = {"tier": "Tier 1", "how_reached": "$5 paid", "scope": "per org", "rpm": 500, "tpm": 30000,
@@ -175,8 +174,37 @@ class ImportAndPublishTest(unittest.TestCase):
         hd = price(usd=0.08, variant="hd", quote="Image generation: $0.080 per image at 1024x1024 hd quality")
         self.client.post("/admin/api/pricing/evidence", json=evidence([price(variant="standard"), hd]))
         row = self.row("openai-direct", "image", "gpt-image-2.5")
-        self.assertEqual(row["price_source"], "unpublished")
-        self.assertIsNone(row["price_usd"])
+        # published as the page's variants; no unit is resolved, so price_usd is empty, never one of them
+        self.assertEqual(row["price_source"], "provider_page")
+        self.assertEqual(row["price_usd"], {})
+        self.assertEqual(sorted(v["usd"] for v in row["price_variants"]), [0.04, 0.08])
+
+    def test_other_units_publish_as_variants_with_their_text_and_no_number(self) -> None:
+        self.client.post("/admin/api/pricing/evidence", json=evidence([price(
+            unit="other", unit_text="2 credits per image", usd=None, quote="Each image costs 2 credits")]))
+        row = self.row("openai-direct", "image", "gpt-image-2.5")
+        self.assertEqual((row["price_source"], row["price_usd"]), ("provider_page", {}))
+        self.assertEqual(row["price_variants"], [{"unit": "other", "variant": None, "unit_text": "2 credits per image",
+                                                  "source_url": "https://openai.com/api/pricing/"}])
+
+    def test_the_real_imported_file_publishes_variant_only_rows(self) -> None:
+        doc = json.loads((Path(__file__).parent / "fixtures" / "price-evidence-2026-09-30.json").read_text())
+        self.assertEqual(pe.import_evidence(doc)["dropped"], 0)  # no model list: the CLI's check
+        deepseek = pe.page_price("deepseek-main", "chat", "deepseek-v4-pro")
+        self.assertEqual((deepseek["price_source"], deepseek["price_usd"]), ("provider_page", {}))
+        self.assertEqual(len(deepseek["price_variants"]), 6)
+        self.assertEqual({v["usd"] for v in deepseek["price_variants"] if v["unit"] == "output_per_1m_tokens"}, {1.98, 3.96})
+        self.assertEqual(deepseek["price_url"], "https://api-docs.deepseek.com/quick_start/pricing/")
+        luna = pe.page_price("openai-direct", "chat", "gpt-6-luna")
+        self.assertEqual(luna["price_usd"], {})
+        self.assertEqual(len(luna["price_variants"]), 6)
+        fish = pe.page_price("fish-audio", "tts", "s2.1-pro")
+        self.assertEqual(fish["price_usd"], {})
+        self.assertEqual(fish["price_variants"][0]["unit_text"], "$15.00 / M UTF-8 bytes")
+        self.assertNotIn("usd", fish["price_variants"][0])
+        # a single-number unit still resolves beside the variants
+        haiku = pe.page_price("anthropic-direct", "chat", "claude-haiku-4-5-20251001")
+        self.assertEqual(haiku["price_usd"]["input_per_1m_tokens"], 1.0)
 
     def test_a_providers_own_price_outranks_the_page(self) -> None:
         self.client.post("/admin/api/pricing/evidence", json=evidence([price()]))

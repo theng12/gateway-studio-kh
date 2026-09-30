@@ -309,11 +309,9 @@ def _video_reference(request: BackendRequest) -> list[dict[str, Any]] | None:
     return [{"b64": base64.b64encode(asset["content"]).decode("ascii"),
              "mime": asset["media_type"]}]
 
-#: What the Hub's Music item accepts, per its two engines.
-#:
-#: ACE-Step/Ace-Step1.5 sings and does long form and takes `lyrics`,
-#: `vocal_language`, `instrumental` and `shift`; stabilityai/stable-audio-3-optimized
-#: is instrumental only and takes the rest. The gateway forwards whichever of these
+#: What the Hub's Music item accepts. Which engine takes which field differs (the
+#: vocal engines take `lyrics`, `vocal_language`, `instrumental`; Stable Audio 3 is
+#: instrumental only and takes the rest). The gateway forwards whichever of these
 #: the caller set and invents none of them — which engine accepts what is the
 #: engine's own answer, and a Hub refusal names the field far better than a
 #: default guessed here.

@@ -289,7 +289,7 @@ def _index() -> tuple[dict[tuple[str, str, str], list[dict[str, Any]]], dict[str
         dates: dict[str, str] = {}
         for pid, p in _read().items():
             dates[pid] = p.get("researched_at")
-            for item in p.get("prices") or []:
+            for item in (p.get("prices") or []) + (p.get("other") or []):
                 prices.setdefault((pid, item["modality"], item["model_id"]), []).append(item)
         _CACHE = (stamp, prices, dates)
     return _CACHE[1], _CACHE[2]
@@ -298,27 +298,25 @@ def _index() -> tuple[dict[tuple[str, str, str], list[dict[str, Any]]], dict[str
 def page_price(provider_id: str, modality: str, model_id: str) -> dict[str, Any] | None:
     """The `provider_page` price fields for one row, or `None` when nothing was researched.
 
-    A unit is published only when the page gave one number for it (or every variant gave the same);
-    several different numbers (sizes, qualities, tiers) are never collapsed into one — they ride in
-    `price_variants` and the unit is left out of `price_usd`. No resolved unit -> `None`.
+    Any accepted evidence publishes the row: `price_variants` lists EVERY accepted number (and
+    `other`-unit statements as `unit_text`, no `usd`), while `price_usd` holds only the units for which
+    the page gave one number (or every variant gave the same) — several different numbers (peak/off-peak,
+    context tiers, sizes) are never collapsed into one, so `price_usd` may be `{}`.
     """
     prices, dates = _index()
     entries = prices.get((provider_id, modality, model_id))
     if not entries:
         return None
     resolved: dict[str, float] = {}
-    url = None
-    for unit in dict.fromkeys(e["unit"] for e in entries):
+    for unit in dict.fromkeys(e["unit"] for e in entries if e["unit"] != "other"):
         same = [e for e in entries if e["unit"] == unit]
         if len({e["usd"] for e in same}) == 1:
             resolved[unit] = same[0]["usd"]
-            url = url or same[0]["source_url"]
-    if not resolved:
-        return None
-    return {"price_source": "provider_page", "price_usd": resolved, "price_url": url,
-            "price_as_of": dates.get(provider_id),
-            "price_variants": [{"unit": e["unit"], "usd": e["usd"], "variant": e["variant"],
-                                "source_url": e["source_url"]} for e in entries]}
+    variants = [{"unit": e["unit"], "variant": e["variant"], "source_url": e["source_url"],
+                 **({"unit_text": e["unit_text"]} if e["unit"] == "other" else {"usd": e["usd"]})}
+                for e in entries]
+    return {"price_source": "provider_page", "price_usd": resolved, "price_url": entries[0]["source_url"],
+            "price_as_of": dates.get(provider_id), "price_variants": variants}
 
 
 def main(argv: list[str]) -> int:

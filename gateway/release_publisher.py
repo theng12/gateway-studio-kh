@@ -29,12 +29,19 @@ implementation of "canonical", not two that can drift.
 from __future__ import annotations
 
 import base64
+import gzip
 import hashlib
 import json
+import os
 import re
+import subprocess
+import tempfile
+import threading
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import ExitStack, contextmanager
 from pathlib import Path
 import time
-from typing import Any
+from typing import Any, Iterator, NamedTuple
 
 import httpx
 
@@ -50,11 +57,14 @@ _SIGNER = Path(__file__).with_name("content_signing.mjs")
 #: for the artifact — the artifact never goes anywhere near the signer.
 _OUTPUT_LIMIT = 64 * 1024
 _SIGN_TIMEOUT = 30.0
-#: A pushed artifact is base64 in one JSON body, so the upload is larger than the
-#: file. `ponytail:` this holds the artifact and its base64 in memory on both
-#: sides (~1.5x the file); the design chose "keep it simple" and this is the point
-#: where a memory-tight side would want multipart.
+#: A full push is one JSON body with the image in base64, generated in chunks here
+#: (the controller still buffers it); a delta push's POST can take ~20 s of hashing on
+#: the controller's side, so the read timeout is generous.
 _PUSH_TIMEOUT = httpx.Timeout(600.0, connect=15.0)
+MANIFEST_SCHEMA = "studiohub.file-manifest.v1"
+#: Parallel blob PUTs to ONE controller (the contract says "a handful" is fine).
+_BLOB_WORKERS = 4
+_CHUNK = 3 * 1024 * 1024  # multiple of 3, so every base64 chunk but the last has no padding
 
 
 class ReleaseError(ValueError):
@@ -207,11 +217,17 @@ def canonical_bytes(descriptor: dict[str, Any]) -> bytes:
     ).encode("utf-8")
 
 
-def descriptor_for_bytes(
-    artifact: bytes, *, version: str, build: str, filename: str
+def descriptor_for(
+    *, sha256: str, size: int, version: str, build: str, filename: str,
+    files: dict[str, Any] | None = None, published_at: int | None = None,
 ) -> dict[str, Any]:
-    """Build and sign a release descriptor for an artifact's bytes."""
-    if not artifact:
+    """Build and sign a release descriptor for a disk image known by its digest.
+
+    `files` is `{files_sha256, files_count, files_bytes}` from the DMG's own
+    `file-manifest/index.json`; the three go **inside the signed bytes** (all or
+    none), and `sha256`/`bytes` keep meaning the disk image.
+    """
+    if not size:
         raise ReleaseError("The artifact is empty.", 400, "RELEASE_ARTIFACT_EMPTY")
     if not version.strip() or not build.strip() or not filename.strip():
         raise ReleaseError(
@@ -223,14 +239,106 @@ def descriptor_for_bytes(
         "version": version.strip(),
         "build": build.strip(),
         "filename": filename.strip(),
-        "bytes": len(artifact),
-        "sha256": hashlib.sha256(artifact).hexdigest(),
-        "published_at": int(time.time()),
+        "bytes": size,
+        "sha256": sha256,
+        "published_at": published_at or int(time.time()),
         "publisher_id": PUBLISHER_ID,
         "publisher_key_id": identity()["fingerprint"],
     }
+    if files:
+        descriptor.update({key: files[key] for key in ("files_sha256", "files_count", "files_bytes")})
     descriptor["signature"] = sign_descriptor(descriptor)
     return descriptor
+
+
+def descriptor_for_bytes(
+    artifact: bytes, *, version: str, build: str, filename: str
+) -> dict[str, Any]:
+    """Build and sign a release descriptor for an artifact's bytes."""
+    return descriptor_for(
+        sha256=hashlib.sha256(artifact).hexdigest(), size=len(artifact),
+        version=version, build=build, filename=filename,
+    )
+
+
+def _hash_file(path: Path) -> tuple[str, int]:
+    """sha256 and size of a file, streamed — the disk image never sits in memory."""
+    digest, size = hashlib.sha256(), 0
+    with open(path, "rb") as handle:
+        while chunk := handle.read(1 << 20):
+            digest.update(chunk)
+            size += len(chunk)
+    return digest.hexdigest(), size
+
+
+# ---------------------------------------------------------------------------
+# The file manifest inside the disk image (delta push)
+# ---------------------------------------------------------------------------
+
+@contextmanager
+def _mounted(dmg: Path) -> Iterator[Path]:
+    """The disk image mounted read-only at a private mount point; always detached."""
+    mountpoint = tempfile.mkdtemp(prefix="gateway-dmg-")
+    try:
+        attach = subprocess.run(
+            ["hdiutil", "attach", "-readonly", "-nobrowse", "-noverify", "-noautoopen",
+             "-mountpoint", mountpoint, str(dmg)],
+            capture_output=True, text=True, timeout=300,
+        )
+        if attach.returncode != 0:
+            raise ReleaseError(
+                f"Could not mount the disk image: {(attach.stderr or '').strip()[:300]}",
+                500, "RELEASE_MOUNT_FAILED",
+            )
+        yield Path(mountpoint)
+    finally:
+        # Detach even when attach failed half way; a mount that never happened just errors.
+        subprocess.run(["hdiutil", "detach", "-force", mountpoint], capture_output=True, timeout=120)
+        try:
+            os.rmdir(mountpoint)
+        except OSError:
+            pass
+
+
+class Manifest(NamedTuple):
+    index: dict[str, Any]
+    groups: dict[str, str]  # group -> base64 of its .tsv.gz, exactly as the Hub wants it
+    blobs: dict[str, Path]  # sha256 of file bytes -> a file that has them
+    files: dict[str, Any]   # the three descriptor fields
+
+
+def load_manifest(root: Path) -> Manifest:
+    """Read and self-check `<app>/Contents/Resources/file-manifest/` under a mounted image."""
+    app = next(iter(sorted(root.glob("*.app"))), None)
+    directory = app / "Contents/Resources/file-manifest" if app else None
+    if directory is None or not (directory / "index.json").is_file():
+        raise ReleaseError("The disk image carries no file manifest.", 400, "RELEASE_NO_MANIFEST")
+    try:
+        index = json.loads((directory / "index.json").read_text(encoding="utf-8"))
+        assert index["schema"] == MANIFEST_SCHEMA
+        described = index["groups"]
+        count, total = int(index["files_count"]), int(index["files_bytes"])
+        assert count > 0 and total > 0 and described
+        groups: dict[str, str] = {}
+        blobs: dict[str, Path] = {}
+        for name, info in described.items():
+            raw = (directory / f"{name}.tsv.gz").read_bytes()
+            text = gzip.decompress(raw)
+            assert hashlib.sha256(text).hexdigest() == info["sha256"]
+            groups[name] = base64.b64encode(raw).decode("ascii")
+            for line in text.decode("utf-8").splitlines():
+                kind, _x, _size, digest, rel = line.split("\t", 4)
+                if kind == "f":
+                    blobs.setdefault(digest, app / rel)
+        committed = "".join(f"{n}\0{described[n]['sha256']}\n" for n in sorted(described))
+        assert hashlib.sha256(committed.encode()).hexdigest() == index["files_sha256"]
+    except (OSError, ValueError, KeyError, TypeError, AssertionError) as exc:
+        raise ReleaseError(
+            f"The disk image's file manifest is unusable ({type(exc).__name__}).",
+            400, "RELEASE_MANIFEST_INVALID",
+        ) from exc
+    files = {"files_sha256": index["files_sha256"], "files_count": count, "files_bytes": total}
+    return Manifest(index, groups, blobs, files)
 
 
 # ---------------------------------------------------------------------------
@@ -241,43 +349,36 @@ def _headers(token: str) -> dict[str, str]:
     return {"X-Hub-Token": token} if token else {}
 
 
-def read_release(base: str, token: str) -> dict[str, Any] | None:
-    """What a controller actually holds, from its own answer.
+def _probe(base: str, token: str) -> tuple[dict[str, Any] | None, bool]:
+    """What a controller holds, and whether it can take a delta push.
 
-    `{"release": null}` is the controller saying it holds nothing — published as
-    `None`, never as a stub that could read as a release.
+    The release is the controller's own answer: `{"release": null}` is published as
+    `None`, never as a stub that could read as a release. A `delta` key with the
+    manifest schema is the capability marker (0.6.115+); no key means the full push.
     """
     try:
         with httpx.Client(timeout=httpx.Timeout(20.0, connect=6.0)) as client:
             response = client.get(f"{base.rstrip('/')}/api/hub/release", headers=_headers(token))
-    except httpx.HTTPError:
-        return None
-    if response.status_code != 200:
-        return None
-    try:
-        body = response.json()
-    except ValueError:
-        return None
-    release = body.get("release") if isinstance(body, dict) else None
-    return release if isinstance(release, dict) else None
+        body = response.json() if response.status_code == 200 else None
+    except (httpx.HTTPError, ValueError):
+        return None, False
+    if not isinstance(body, dict):
+        return None, False
+    release = body.get("release")
+    delta = body.get("delta")
+    return (
+        release if isinstance(release, dict) else None,
+        isinstance(delta, dict) and delta.get("schema") == MANIFEST_SCHEMA,
+    )
 
 
-def push(base: str, token: str, descriptor: dict[str, Any], artifact: bytes) -> dict[str, Any]:
-    """Offer a release to one controller. Its refusal is the controller's own words.
+def read_release(base: str, token: str) -> dict[str, Any] | None:
+    """What a controller actually holds, from its own answer."""
+    return _probe(base, token)[0]
 
-    A `409` means no trusted gateway key is installed on that controller yet, which
-    is the one action the owner has to take there — so the fingerprint to install
-    is appended, and the controller's own sentence is kept verbatim in front of it.
-    """
-    body = {
-        "descriptor": descriptor,
-        "artifact_base64": base64.b64encode(artifact).decode("ascii"),
-    }
-    endpoint = f"{base.rstrip('/')}/api/hub/release"
-    try:
-        with httpx.Client(timeout=_PUSH_TIMEOUT) as client:
-            response = client.post(endpoint, headers=_headers(token), json=body)
-    except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
+
+def _failed(exc: httpx.HTTPError, base: str) -> dict[str, Any]:
+    if isinstance(exc, (httpx.ConnectError, httpx.ConnectTimeout)):
         # A connection that was never established delivered nothing, so this is a
         # site that is down rather than an unknown push. A read timeout after the
         # request left is different and keeps the generic path below.
@@ -286,39 +387,19 @@ def push(base: str, token: str, descriptor: dict[str, Any], artifact: bytes) -> 
             "detail": f"could not reach the controller at {base} ({type(exc).__name__})",
             "release": None,
         }
-    except httpx.HTTPError as exc:
-        return {
-            "ok": False, "status": None, "code": "RELEASE_PUSH_FAILED",
-            "detail": f"the push failed: {exc}", "release": None,
-        }
-    detail: str | None = None
-    release: dict[str, Any] | None = None
-    if response.status_code == 200:
-        try:
-            answered = response.json()
-        except ValueError:
-            answered = {}
-        release: dict[str, Any] | None = None
-        if isinstance(answered, dict):
-            candidate = answered.get("release")
-            if isinstance(candidate, dict):
-                release = candidate
-            elif answered.get("schema") == SCHEMA:
-                # The contract's 200 is **the stored descriptor itself**; the
-                # `{"release": …}` envelope is the shape the GET uses. Accept
-                # either, so a controller that follows the literal wording is not
-                # read as "it stored nothing".
-                release = answered
-        if release is None:
-            # A 200 without the stored descriptor is not a success we can report:
-            # the only proof is the controller's own record.
-            return {
-                "ok": False, "status": 200, "code": "RELEASE_NOT_STORED",
-                "detail": "the controller answered 200 but returned no stored release",
-                "release": None,
-            }
-        return {"ok": True, "status": 200, "code": None, "detail": None, "release": release}
+    return {
+        "ok": False, "status": None, "code": "RELEASE_PUSH_FAILED",
+        "detail": f"the push failed: {exc}", "release": None,
+    }
 
+
+def _refusal(response: httpx.Response) -> dict[str, Any]:
+    """The controller's own refusal sentence, verbatim.
+
+    A `409` means no trusted gateway key is installed on that controller yet, which
+    is the one action the owner has to take there — so the fingerprint to install
+    is appended in front of the controller's own sentence.
+    """
     try:
         payload = response.json()
     except ValueError:
@@ -328,9 +409,7 @@ def push(base: str, token: str, descriptor: dict[str, Any], artifact: bytes) -> 
     if not isinstance(reason, str) or not reason.strip():
         reason = f"the controller refused the release (HTTP {response.status_code})"
     if response.status_code == 409:
-        # No trusted key: name the fingerprint the owner must install. The
-        # controller cannot know it — it is the gateway's, and this is the side
-        # that holds it.
+        # The controller cannot know the fingerprint — it is the gateway's.
         try:
             fingerprint = identity()["fingerprint"]
             reason = f"{reason.strip()} Install this gateway's publisher fingerprint on that Mac: {fingerprint}"
@@ -343,6 +422,169 @@ def push(base: str, token: str, descriptor: dict[str, Any], artifact: bytes) -> 
         "detail": reason,
         "release": None,
     }
+
+
+def _full_body(descriptor: dict[str, Any], artifact: bytes | Path) -> tuple[Iterator[bytes], int]:
+    """The legacy JSON push body, generated in chunks instead of held in memory.
+
+    Byte for byte `{"descriptor": …, "artifact_base64": "…"}`; the length is computed up
+    front so it goes out with a Content-Length (no chunked encoding for the controller
+    to trip over). The controller still buffers it on its side.
+    """
+    head = b'{"descriptor":' + json.dumps(descriptor).encode() + b',"artifact_base64":"'
+    tail = b'"}'
+    size = len(artifact) if isinstance(artifact, bytes) else artifact.stat().st_size
+    length = len(head) + 4 * ((size + 2) // 3) + len(tail)
+
+    def chunks() -> Iterator[bytes]:
+        yield head
+        if isinstance(artifact, bytes):
+            for start in range(0, size, _CHUNK):
+                yield base64.b64encode(artifact[start:start + _CHUNK])
+        else:
+            with open(artifact, "rb") as handle:
+                while block := handle.read(_CHUNK):
+                    yield base64.b64encode(block)
+        yield tail
+
+    return chunks(), length
+
+
+def push(
+    base: str, token: str, descriptor: dict[str, Any], artifact: bytes | Path
+) -> dict[str, Any]:
+    """Offer a whole release (descriptor + disk image) to one controller.
+
+    Streams the body, so the DMG is never in memory here; used for controllers without
+    the delta capability. Its refusal is the controller's own words.
+    """
+    body, length = _full_body(descriptor, artifact)
+    headers = {**_headers(token), "Content-Type": "application/json", "Content-Length": str(length)}
+    try:
+        with httpx.Client(timeout=_PUSH_TIMEOUT) as client:
+            response = client.post(f"{base.rstrip('/')}/api/hub/release", headers=headers, content=body)
+    except httpx.HTTPError as exc:
+        return _failed(exc, base)
+    if response.status_code != 200:
+        return _refusal(response)
+    try:
+        answered = response.json()
+    except ValueError:
+        answered = {}
+    release: dict[str, Any] | None = None
+    if isinstance(answered, dict):
+        candidate = answered.get("release")
+        if isinstance(candidate, dict):
+            release = candidate
+        elif answered.get("schema") == SCHEMA:
+            # The contract's 200 is **the stored descriptor itself**; the
+            # `{"release": …}` envelope is the shape the GET uses. Accept
+            # either, so a controller that follows the literal wording is not
+            # read as "it stored nothing".
+            release = answered
+    if release is None:
+        # A 200 without the stored descriptor is not a success we can report:
+        # the only proof is the controller's own record.
+        return {
+            "ok": False, "status": 200, "code": "RELEASE_NOT_STORED",
+            "detail": "the controller answered 200 but returned no stored release",
+            "release": None,
+        }
+    return {"ok": True, "status": 200, "code": None, "detail": None, "release": release}
+
+
+class _Refused(Exception):
+    def __init__(self, outcome: dict[str, Any]) -> None:
+        self.outcome = outcome
+
+
+def push_delta(
+    base: str, token: str, descriptor: dict[str, Any], manifest: Manifest
+) -> dict[str, Any] | None:
+    """Manifest first, then only the blobs the controller says it lacks, then read back.
+
+    Returns `None` when the controller has no such routes (404/405): the caller falls
+    back to the full push. Every other answer is final. The outcome's `release` is the
+    controller's own record read back after the last blob, and `ok` needs it to carry
+    this descriptor's signature and `need` to be empty.
+    """
+    root = f"{base.rstrip('/')}/api/hub/release"
+    headers = _headers(token)
+    stop = threading.Event()
+
+    def put(client: httpx.Client, digest: str) -> int:
+        path = manifest.blobs.get(digest)
+        if path is None:
+            raise _Refused({
+                "ok": False, "status": 200, "code": "RELEASE_NEED_UNKNOWN",
+                "detail": f"the controller asked for blob {digest[:12]}, which is not in the manifest",
+                "release": None,
+            })
+        if stop.is_set():
+            return 0
+        size = path.stat().st_size
+        with open(path, "rb") as handle:
+            response = client.put(
+                f"{root}/blob/{digest}", headers={**headers, "Content-Length": str(size)},
+                content=iter(lambda: handle.read(1 << 20), b""),
+            )
+        if response.status_code != 200:
+            stop.set()
+            raise _Refused(_refusal(response))
+        return size
+
+    try:
+        with httpx.Client(timeout=_PUSH_TIMEOUT) as client:
+            posted = client.post(root, headers=headers, json={
+                "descriptor": descriptor,
+                "file_manifest": {"index": manifest.index, "groups": manifest.groups},
+            })
+            if posted.status_code in (404, 405):
+                return None
+            if posted.status_code != 200:
+                return _refusal(posted)
+            try:
+                need = posted.json().get("need")
+            except (ValueError, AttributeError):
+                need = None
+            if not isinstance(need, list):
+                return {
+                    "ok": False, "status": 200, "code": "RELEASE_NOT_STORED",
+                    "detail": "the controller answered 200 but did not say which blobs it needs",
+                    "release": None,
+                }
+            wanted = list(dict.fromkeys(str(digest) for digest in need))
+            with ThreadPoolExecutor(max_workers=_BLOB_WORKERS) as pool:
+                sent = list(pool.map(lambda digest: put(client, digest), wanted))
+            remaining = client.get(f"{root}/need", headers=headers)
+            held = client.get(root, headers=headers)
+    except _Refused as refused:
+        return refused.outcome
+    except httpx.HTTPError as exc:
+        return _failed(exc, base)
+    try:
+        still = remaining.json().get("need") if remaining.status_code == 200 else None
+        release = held.json().get("release") if held.status_code == 200 else None
+    except (ValueError, AttributeError):
+        still, release = None, None
+    outcome: dict[str, Any] = {
+        "ok": False, "status": 200, "code": None, "detail": None, "release": None,
+        "mode": "delta", "blobs_sent": sum(1 for size in sent if size),
+        "bytes_sent": sum(sent),
+    }
+    if still != []:
+        outcome.update(
+            code="RELEASE_INCOMPLETE",
+            detail=f"the controller still lacks {len(still) if isinstance(still, list) else 'an unknown number of'} blob(s) after the push",
+        )
+    elif not isinstance(release, dict) or release.get("signature") != descriptor["signature"]:
+        outcome.update(
+            code="RELEASE_NOT_STORED",
+            detail="the controller's own record does not show this release after the push",
+        )
+    else:
+        outcome.update(ok=True, release=release)
+    return outcome
 
 
 # ---------------------------------------------------------------------------
@@ -384,56 +626,91 @@ def publish(
     Returns the descriptor, its fingerprint, and a per-controller outcome in which
     `release` is what the controller **read back** after storing it.
 
-    Before each push the controller is asked what it holds. A controller holding a
-    **newer** version than this artifact is refused (`RELEASE_DOWNGRADE`) unless
-    `allow_downgrade` is set: the Hub's updater has no ordering and would take the
-    older build, so the gateway is the only place that can stop it.
+    Controllers are probed first. A controller that reports the `delta` capability gets
+    the DMG's file manifest and then only the blobs it lacks (the DMG is mounted
+    read-only once, streamed from, and always detached); any other controller — or one
+    without the routes — gets the whole image, streamed. Controllers are pushed
+    concurrently and each keeps its own outcome: one failing does not stop the rest.
+
+    A controller holding a **newer** version than this artifact is refused
+    (`RELEASE_DOWNGRADE`) unless `allow_downgrade` is set: the Hub's updater has no
+    ordering and would take the older build, so the gateway is the only place that can
+    stop it.
     """
     path = Path(artifact_path).expanduser()
     if not path.is_file():
         raise ReleaseError(f"No artifact at {path}.", 400, "RELEASE_ARTIFACT_MISSING")
-    artifact = path.read_bytes()
-    descriptor = descriptor_for_bytes(
-        artifact, version=version, build=build, filename=filename or path.name
-    )
+    sha256, size = _hash_file(path)
+    fields = {"sha256": sha256, "size": size, "version": version, "build": build,
+              "filename": filename or path.name, "published_at": int(time.time())}
+    descriptor = descriptor_for(**fields)
     fingerprint = identity()["fingerprint"]
     target = descriptor["version"]
 
-    controllers = fleet._read()  # noqa: SLF001 - the roster, and only controllers take a release
+    rows = [
+        (str(row.get("id") or ""), row.get("label"), str(row.get("url") or ""))
+        for row in fleet._read()  # noqa: SLF001 - the roster, and only controllers take a release
+    ]
+    tokens = {cid: fleet._token_for(cid) for cid, _, _ in rows}  # noqa: SLF001
     results: dict[str, Any] = {}
-    for row in controllers:
-        controller_id = str(row.get("id") or "")
-        url = str(row.get("url") or "")
-        token = fleet._token_for(controller_id)  # noqa: SLF001
-        held = read_release(url, token)
-        held_version = str((held or {}).get("version") or "").strip()
-        if held is not None and not allow_downgrade and is_downgrade(target, held_version):
-            outcome = {
-                "ok": False,
-                "status": None,
-                "code": "RELEASE_DOWNGRADE",
-                "detail": (
-                    f"this controller holds {held_version}, which is newer than {target}. "
-                    "Publishing would take it backwards; publish a newer build, or choose "
-                    "to publish anyway."
-                ),
-                "release": None,
-            }
-        else:
-            outcome = push(url, token, descriptor, artifact)
-        outcome["label"] = row.get("label") or controller_id
-        results[controller_id] = outcome
+    with ExitStack() as stack:
+        pool = stack.enter_context(ThreadPoolExecutor(max_workers=max(1, len(rows))))
+        probes = list(pool.map(lambda row: _probe(row[2], tokens[row[0]]), rows))
 
+        manifest: Manifest | None = None
+        skipped: str | None = None
+        if any(capable for _, capable in probes):
+            try:
+                manifest = load_manifest(stack.enter_context(_mounted(path)))
+            except ReleaseError as exc:
+                skipped = f"delta push skipped ({exc.message}); the whole image was sent"
+        delta_descriptor = descriptor_for(**fields, files=manifest.files) if manifest else None
+
+        def one(row: tuple[str, Any, str], probe: tuple[dict[str, Any] | None, bool]) -> dict[str, Any]:
+            cid, label, url = row
+            held, capable = probe
+            held_version = str((held or {}).get("version") or "").strip()
+            try:
+                if held is not None and not allow_downgrade and is_downgrade(target, held_version):
+                    outcome = {
+                        "ok": False, "status": None, "code": "RELEASE_DOWNGRADE",
+                        "detail": (
+                            f"this controller holds {held_version}, which is newer than {target}. "
+                            "Publishing would take it backwards; publish a newer build, or choose "
+                            "to publish anyway."
+                        ),
+                        "release": None,
+                    }
+                else:
+                    outcome = (
+                        push_delta(url, tokens[cid], delta_descriptor, manifest)
+                        if capable and manifest and delta_descriptor else None
+                    )
+                    if outcome is None:
+                        outcome = push(url, tokens[cid], descriptor, path)
+                        outcome["mode"] = "full"
+                        if capable and skipped:
+                            outcome["note"] = skipped
+            except Exception as exc:  # noqa: BLE001 - one controller must not stop the others
+                outcome = {
+                    "ok": False, "status": None, "code": "RELEASE_PUSH_FAILED",
+                    "detail": f"the push failed: {type(exc).__name__}: {exc}", "release": None,
+                }
+            outcome["label"] = label or cid
+            return outcome
+
+        for row, outcome in zip(rows, pool.map(one, rows, probes)):
+            results[row[0]] = outcome
+
+    shown = delta_descriptor or descriptor
     state = {
         "updated_at": int(time.time()),
         "fingerprint": fingerprint,
         "release": {
-            "version": descriptor["version"],
-            "build": descriptor["build"],
-            "filename": descriptor["filename"],
-            "bytes": descriptor["bytes"],
-            "sha256": descriptor["sha256"],
-            "signature": descriptor["signature"],
+            key: shown[key]
+            for key in ("version", "build", "filename", "bytes", "sha256", "signature",
+                        "files_sha256", "files_count", "files_bytes")
+            if key in shown
         },
         "locations": results,
     }

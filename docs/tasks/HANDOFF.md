@@ -1,12 +1,47 @@
 # HANDOFF — gateway-kh
 
-**Read this first.** Updated 2026-09-30 for **VERSION `0.2.83`** (the release blocks below are
+**Read this first.** Updated 2026-09-30 for **VERSION `0.2.84`** (the release blocks below are
 newest first; 0.2.76-0.2.79 are recorded in `menubar/whats-new.md` and their commits). The running build
 stamp is on `/health` and in `/Applications/gateway-kh.app/Contents/Resources/gateway/BUILD`.
 If this file disagrees with the code, **the code wins — fix this file in the same change**.
 Every path below is inside the Git checkout `repository/` unless it says otherwise.
 `[MEASURED]` = observed in the session that wrote this; `[reason not recorded]` = the
 project does not say why, and nobody should guess.
+
+> **0.2.84 — delta release push, concurrent controllers, streamed full push (`gateway/release_publisher.py`).**
+>
+> Contract: `_orchestra/audit-20260930/CONTRACT-hub-release-delta.md` (Hub 0.6.115). `publish()` now: hashes the DMG
+> streamed (no more `read_bytes`), probes every controller (`GET /api/hub/release`; a `delta` key with schema
+> `studiohub.file-manifest.v1` = capable), mounts the DMG read-only ONCE only if some controller is capable
+> (`_mounted`: `hdiutil attach -readonly -nobrowse -noverify`, `detach -force` in `finally`), reads
+> `Contents/Resources/file-manifest/` (`load_manifest` re-verifies group sha, `files_sha256`, counts), then pushes
+> all controllers concurrently (`ThreadPoolExecutor`, one worker per controller; each outcome caught, so one
+> failure never stops the rest). Delta (`push_delta`): POST descriptor + `file_manifest` (no artifact) -> `need` ->
+> parallel `PUT /blob/<sha>` (4 per controller, Content-Length, streamed from the mounted files) -> `GET /need`
+> must be `[]` and the read-back `GET /api/hub/release` must carry this descriptor's signature, else
+> `RELEASE_INCOMPLETE` / `RELEASE_NOT_STORED`. 404/405 on the manifest POST -> full push. Other refusals (400/409)
+> are final and reported verbatim (409 still appends the fingerprint to install).
+> * **Two descriptors are signed:** the delta one carries `files_sha256/files_count/files_bytes` inside the signed bytes;
+>   the legacy one (no files fields) goes to controllers without the capability, so a 0.6.114 controller sees exactly
+>   what it always saw. `state.release` reports the delta one (with the files fields) when there is one.
+> * The full push is streamed (`_full_body`: same JSON, base64 in 3 MB chunks, computed Content-Length); the controller
+>   still buffers it. If the image has no/invalid manifest the capable controllers get the full push with
+>   `note` saying why. Per-location outcomes gained `mode` (`delta`/`full`), `blobs_sent`, `bytes_sent`.
+> * Expect the 0.6.115 release to be a full push everywhere (installed apps have no manifest yet); delta from the next.
+> * **Also 0.2.84 — variant-only prices publish.** `price_evidence.page_price` publishes a row as `provider_page` for ANY accepted
+>   evidence (prices AND `other`-unit statements): `price_usd` = only units with one number (may be `{}`), `price_variants` =
+>   every accepted entry (`usd` or `unit_text`). Before, a row whose every unit had variants stayed `unpublished`. Provider-API
+>   price still wins. Fixture: `tests/fixtures/price-evidence-2026-09-30.json` (the real imported file; deepseek-v4-pro,
+>   gpt-6-luna, fish s2.1-pro must come out provider_page). Mutation-proved (return None on no resolved unit; collapse variants;
+>   `other` not indexed). CONTRACT-pricing.md updated.
+> * **Also 0.2.84 — ACE-Step 1.5 retired from the fleet (owner):** Studio Hub location description now says "YuE2 and Stable Audio 3
+>   music"; the music-params comment and `docs/studio-hub-wire-contract.md` no longer describe ACE-Step as shipped. The forwarded
+>   params (`lyrics`, `vocal_language`, `instrumental`, `shift`, ...) are model-agnostic and unchanged; tests still use the ACE-Step
+>   repo id purely as a wire fixture.
+> * Tests: `tests/test_release_delta.py` (13; Python controller mock in delta/legacy/noroutes modes, fake app tree instead of
+>   a DMG, `_mounted` injectable). Mutation-proved: need-only, 404 fallback, capability check, files fields inside the
+>   signature, concurrency (barrier), detach, per-controller exception catch. A real `hdiutil` attach/detach of a small
+>   DMG was smoke-tested by hand. NOT tested against a real controller (none pushed to). Not installed.
 
 > **0.2.83 — imported price research: `price_source: "provider_page"`, validated per number.**
 >
