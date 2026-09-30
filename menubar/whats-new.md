@@ -14,6 +14,25 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.89 — 2026-09-30
+
+- **All six Create pages are redesigned to match Studio Hub's generator pages.** Audio, Subtitle, Image, Music, Video and Chat used to be a narrow
+  column of small controls in the top-left corner with the result squeezed underneath. They now share one layout: the form on the left
+  (about 390 pt, scrolling on its own) and the result on the right, filling the rest of the window at any size. Larger text, full-width
+  controls, a prominent Generate button, and the model picker with a Refresh button and a **Manage Models** shortcut.
+- **Real previews, not a "Preview" button.** The result appears by itself: **Audio and Music** get an inline player with a waveform you can
+  click to seek (music that returns two tracks has a Result 1 / Result 2 switch); **Image** shows one large picture with thumbnails when
+  the model returned several; **Video** plays inline; **Subtitle** shows the transcript with a timestamp beside each line, plus Copy and Save (SRT);
+  **Chat** is a conversation with You and Model turns, and each message now carries the earlier ones so the model answers in context.
+  Save, Open, Show in Finder and Pin are in the result header.
+- **Fixed: a test job id showed up on the Audio page** ("Job mock-job is selected. Reload it…"). A test had once saved its stand-in job id into your real
+  saved Create state. Tests can no longer touch it at all (only the app itself reads or writes it), and a saved job the gateway does not know
+  is now dropped instead of shown. A saved job it does know comes back by itself when you open the page.
+- **Fixed: Subtitle said "Your selected model is no longer available" with an empty model list.** The Studio Hub Whisper models were switched on the whole
+  time; the page had saved one under its old id (`studio-hub-local::…`) and the catalogue has since published the same model under a new one, so the page
+  thought it had vanished. A renamed model is now recognised as the same model. If a lane really has no model switched on, the page says so
+  ("No subtitle models are switched on. Open Models…") and **Manage … Models** opens the Models page.
+
 ## 0.2.88 — 2026-09-30
 
 - **A release push that succeeded is no longer reported as failed.** When the connection to a controller broke during a push

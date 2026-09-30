@@ -14,7 +14,9 @@ apply here and to delegated workers.
 - Pruning must fail closed if referenced-input protection cannot be read.
 - Create retries retain the exact original payload/key. Native multiline draft
   observers include nested editors, and callbacks must not unlock newer jobs.
-  Native tests use unique disposable UserDefaults domains, never production.
+  Only the app bundle (`kh.gateway.menubar`) reads or writes the real Create state (`CreateStateStore`); any other
+  process (a test binary, a fixture) keeps it in memory, so a test cannot reach it even by forgetting to isolate.
+  A saved job id the gateway answers 404 for is dropped, never shown (`mock-job` once was).
 - Admin artifact URLs are extensionless: local files use stated media types,
   with authenticated same-origin downloads. Do not derive file types from URLs.
 - Preserved Content Pack archives are not ownership or installation. The private

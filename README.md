@@ -443,8 +443,14 @@ work; provider-specific reconciliation is not implemented. Queued cancellation
 is confirmed locally; already-dispatched work can only receive a cancellation
 request, and a late output remains visible in Jobs.
 
+The six Create pages (Audio, Subtitle, Image, Music, Video, Chat) share one layout,
+`CreatePageLayout` in `menubar/PageKit.swift`, after Studio Hub's generator pages: the form
+column on the left, the result on the right filling the rest of the window. The result is
+previewed in place (`menubar/CreatePreview.swift`): an audio player with waveform, a large
+image with thumbnails, an inline video player, a timestamped transcript, a conversation.
+
 Create retains drafts, selected jobs and ambiguous submission identities across
-restarts. Retrying an ambiguous submission uses its original payload and key;
+restarts (a saved job the gateway answers 404 for is dropped, not shown). Retrying an ambiguous submission uses its original payload and key;
 changed or missing upload bytes cannot silently become that original request.
 Jobs lists all output variations, with authenticated local-file downloads and
 pin/unpin controls. Retention protects inputs referenced by unfinished or

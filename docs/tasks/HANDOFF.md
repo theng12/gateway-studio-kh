@@ -1,12 +1,47 @@
 # HANDOFF — gateway-kh
 
-**Read this first.** Updated 2026-09-30 for **VERSION `0.2.88`** (the release blocks below are
+**Read this first.** Updated 2026-09-30 for **VERSION `0.2.89`** (the release blocks below are
 newest first; 0.2.76-0.2.79 are recorded in `menubar/whats-new.md` and their commits). The running build
 stamp is on `/health` and in `/Applications/gateway-kh.app/Contents/Resources/gateway/BUILD`.
 If this file disagrees with the code, **the code wins — fix this file in the same change**.
 Every path below is inside the Git checkout `repository/` unless it says otherwise.
 `[MEASURED]` = observed in the session that wrote this; `[reason not recorded]` = the
 project does not say why, and nobody should guess.
+
+> **0.2.89 — every Create page redesigned to Studio Hub's generator shape; two root-cause fixes (`menubar/PageKit.swift`, `CreatePreview.swift`, `CreateSection.swift`).**
+> Owner: *"all the generators on the gateway is small and ugly. unlike how the studio hub is ... as the preview and everything too."*
+>
+> * **One layout, six pages.** `CreatePageLayout` (PageKit) is the frame: heading, form column left (310-440 pt, ideal 390, its own scroller), result
+>   pane right taking all remaining width/height (min 260), a `CardView` result card, a header with the page's result actions, and a caption. `CreateWorkspace`
+>   only fills the form and swaps the card's content (`setPreview`); `CreateLane` gained `previewTitle/emptyTitle/emptyDetail`. The old stacked "form above
+>   result, 330 pt controls" build is gone. Form order follows Studio Hub: fields, Generate (accent, large), status line, then Model (+ Refresh, **Manage <lane>
+>   Models** -> `MainWindow.show(section: "models")`) and capabilities.
+> * **Previews (`CreatePreview.swift`), fetched automatically through the authenticated `GatewayAPI.download`:** `AudioPlayerView` + `WaveformView` (Audio, Music;
+>   peaks read in chunks off-main; click/drag seeks), `ImageGalleryView` (large image + thumbnails, all outputs fetched), `VideoPreviewView` (AVPlayerView), `TranscriptText`
+>   (SRT -> timestamp gutter + words; Copy, Save as SRT), `ConversationView` (You/Model cards). Several outputs of a non-image lane get a "Result N" switch. Header: Copy (text
+>   lanes), Save..., and a menu: Open, Show in Finder (the saved copy, else the downloaded one), Pin/Unpin, Clear Conversation (chat), Reload Result, All Jobs. The "Preview"/"Open"/"Save"/"Pin"
+>   row of buttons per asset is gone. Chat is now a real conversation: `chatHistory()` sends earlier completed turns with each message (a failed try and its message are left out); the transcript is
+>   in memory only. `build.sh` links AVFoundation + AVKit.
+> * **Root cause 1 - `mock-job` in the real app.** `CreateStateStore` fell back to the production suite `kh.gateway.create` whenever `GATEWAY_NATIVE_DEFAULTS_SUITE` was unset, so
+>   *any* process that built a `CreateWorkspace` without remembering the env var wrote the fixture's `mock-job` into the owner's Audio state. The committed tests have set a suite since `1e516e1`, so the run that leaked was an
+>   uncommitted harness variant (`gateway-task5-debug-*` and `gateway-review-*` plists in `~/Library/Preferences` are their leftovers; the exact run is not recoverable) - [MEASURED] with the guard reverted a plain test run does write the real suite. A suite per run also left ~240 `gateway-*-test-*.plist` files there; moved to `_trash/prefs-litter/`. Fix: only a process whose bundle id is `kh.gateway.menubar` reads/writes the real suite; every other process keeps state in memory
+>   (the env override still exists for the app under `serve_ui_fixture.py`). Second layer: the page no longer says "Job X is selected. Reload it"; on first open it reloads the saved job itself
+>   (`restoreSelectedJob`, once per page life), and a **404** from `/admin/api/create/status/<id>` drops the id (`forgetJob`) and shows the empty state. Non-terminal reloaded jobs now poll (they used to sit
+>   "still running" forever). **The owner's live `kh.gateway.create` audio state still holds `mock-job` until the installed app is updated and the Audio page is opened once**; nothing edits it by hand.
+> * **Root cause 2 - Subtitle "Your selected model is no longer available", empty picker, "Capabilities: unknown".** [MEASURED live] `GET /admin/api/create/models` lists **2** enabled transcription models (Studio Hub
+>   `whisper-small-mlx` / `whisper-base-mlx`; the admin models list has `studio-hub-local` and `studio-hub-de7250e146a7` enabled), so the lane was not empty and the page read the right lane/field (`by_modality["transcription"]`).
+>   What broke is identity: those rows are now published as `studio-hub::mlx-community/...` with the previous ids in `legacy_ids` (e.g. `studio-hub-local::...`); the page had saved the old id, did not find it, reported it gone and reset the selection.
+>   Fix: a saved id matching a row's `legacy_ids` is the same model (carried to its new id, no message). An empty lane now says "No subtitle models are switched on. Open Models and switch one on" (never "no longer available"); a genuinely
+>   removed model is named ("hub::x is no longer switched on ..."), and its id is now kept while the lane is empty so switching it back on reselects it. `generate()` also refuses a model id that is not in the current list.
+>   (`/v1/models/transcription` is not a route - 404; the catalogue is `/v1/transcription/models`.)
+> * **Tests.** `tests/test_create_layout.py` (rewritten): for all six lanes at 1600x1000, 1100x800 and the app's true minimum detail width 660: one `CreatePageLayout`, form and preview side by side sharing a top,
+>   form 310-440, preview reaching the right margin and taking the extra width, columns filling the height, window not forced wider, Generate/picker/script-editor minimum sizes, an empty state; then the real page restores a job and each lane
+>   must show its preview (audio player + waveform, 3-image gallery, AVPlayerView, timestamped transcript, conversation) filling the card. `tests/test_create_workspace.swift`: no suite/env at all now, plus the real suite read before/after ("a test wrote to the real Create suite"),
+>   unknown saved job dropped and not looked up again, renamed model carried over, empty Subtitle lane text + Manage Models opens Models, removed model named, chat conversation carries history, output fetched without a Preview click.
+>   Mutation-proved (each fails on its assertion when reverted): store guard removed, 404 not forgotten, `legacy_ids` ignored, old empty text, preview off the right margin, form 700 pt, image gallery not built, preview not filling the card, small Generate.
+>   **A mutation run that pointed the fallback at the real suite really did write the owner's `kh.gateway.create` audio modelID away (restored byte-for-byte; values were empty); the store-guard mutation is now proved against a throwaway suite name.**
+> * Offscreen renders (no window shown): `tests/`-independent harness in the session scratchpad, before/after PNGs for all six lanes, empty and with a result, at 1600x1000 / 1100x800 / 660x600. AVPlayerView draws black offscreen (layer-backed); the player itself is asserted in the test.
+>   Gate: `test_e2e.py` **578/578**, 59 focused Python suites, 9 Node suites, all exit 0; `test_ui.py`, `check_native.py`, `test_fleet_standalone.py` not run. Not installed.
 
 > **0.2.88 — release push: a transport error is not a verdict (`gateway/release_publisher.py`).** (0.2.87 = `controller_ids`
 > staged rollout, see `menubar/whats-new.md`.)

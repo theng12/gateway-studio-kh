@@ -73,23 +73,31 @@ private struct CreateWorkspaceState: Codable {
 
 private enum CreateStateStore {
     private static let prefix = "gateway.create.state."
+    /// The app's own bundle. Only this process may touch the owner's real saved state.
+    private static let appBundleID = "kh.gateway.menubar"
+    /// Everything else -- a test binary, a fixture, a build run from a shell -- keeps its state in
+    /// memory. A fixture id ("mock-job") once reached the owner's real Create page because the
+    /// only isolation was a test remembering to set an environment variable, and a test that forgot
+    /// wrote to the production suite. Now forgetting is harmless: there is no path to it.
+    private static var memory: [String: Data] = [:]
 
-    private static var defaults: UserDefaults {
-        let name = ProcessInfo.processInfo.environment["GATEWAY_NATIVE_DEFAULTS_SUITE"]
-            ?? "kh.gateway.create"
-        return UserDefaults(suiteName: name) ?? .standard
+    private static var defaults: UserDefaults? {
+        if let name = ProcessInfo.processInfo.environment["GATEWAY_NATIVE_DEFAULTS_SUITE"] {
+            return UserDefaults(suiteName: name)
+        }
+        return Bundle.main.bundleIdentifier == appBundleID ? UserDefaults(suiteName: "kh.gateway.create") : nil
     }
 
     static func load(lane: String) -> CreateWorkspaceState {
-        guard let data = defaults.data(forKey: prefix + lane),
-              let state = try? JSONDecoder().decode(CreateWorkspaceState.self, from: data)
+        let data = defaults != nil ? defaults?.data(forKey: prefix + lane) : memory[prefix + lane]
+        guard let data, let state = try? JSONDecoder().decode(CreateWorkspaceState.self, from: data)
         else { return .empty }
         return state
     }
 
     static func save(_ state: CreateWorkspaceState, lane: String) {
         guard let data = try? JSONEncoder().encode(state) else { return }
-        defaults.set(data, forKey: prefix + lane)
+        if let defaults { defaults.set(data, forKey: prefix + lane) } else { memory[prefix + lane] = data }
     }
 }
 
@@ -104,6 +112,10 @@ struct CreateLane {
     let fields: [CreateField]
     /// Transcription carries a file rather than a JSON body.
     var isUpload = false
+    /// What the result pane is called, and what it says before there is a result.
+    var previewTitle = "Preview"
+    var emptyTitle = "Nothing generated yet"
+    var emptyDetail = "Fill in the form and press Generate. Anything you make here is temporary until you save it or keep it."
 }
 
 enum CreateLanes {
@@ -121,13 +133,17 @@ enum CreateLanes {
                             placeholder: "Write what should be spoken…"),
                 CreateField(key: "voice_id", label: "Voice", kind: .voice,
                             hint: "Every speech lane here needs a voice — the gateway will not invent one."),
-            ]
+            ],
+            previewTitle: "Preview", emptyTitle: "Your audio will appear here",
+            emptyDetail: "Write a script, pick a voice and generate. You can play it here, then save it."
         ),
         CreateLane(
             key: "subtitle", title: "Subtitle", symbol: "text.bubble",
             modality: "transcription",
             blurb: "Import a recording and read its transcript.",
-            fields: [], isUpload: true
+            fields: [], isUpload: true,
+            previewTitle: "Transcript", emptyTitle: "Your transcript will appear here",
+            emptyDetail: "Choose a recording and generate. The words come back with their timestamps, ready to copy or save as SRT."
         ),
         CreateLane(
             key: "image", title: "Image", symbol: "photo", modality: "image",
@@ -137,7 +153,9 @@ enum CreateLanes {
                             placeholder: "Describe the image…"),
                 CreateField(key: "n", label: "How many", kind: .number, initial: "1",
                             hint: "A provider that answers several variations returns all of them."),
-            ]
+            ],
+            previewTitle: "Preview", emptyTitle: "Your image will appear here",
+            emptyDetail: "Describe an image and generate it. Several results show as thumbnails under the large preview."
         ),
         CreateLane(
             key: "music", title: "Music", symbol: "music.note", modality: "music",
@@ -147,7 +165,9 @@ enum CreateLanes {
                             placeholder: "calm piano, late night…"),
                 CreateField(key: "style", label: "Style", kind: .text, placeholder: "Classical"),
                 CreateField(key: "title", label: "Title", kind: .text, placeholder: "Peaceful"),
-            ]
+            ],
+            previewTitle: "Preview", emptyTitle: "Your music will appear here",
+            emptyDetail: "Describe the music and generate it. You can play it here, then save it."
         ),
         CreateLane(
             key: "video", title: "Video", symbol: "film", modality: "video",
@@ -155,7 +175,9 @@ enum CreateLanes {
             fields: [
                 CreateField(key: "prompt", label: "Prompt", kind: .script,
                             placeholder: "Describe the shot…"),
-            ]
+            ],
+            previewTitle: "Preview", emptyTitle: "Your video will appear here",
+            emptyDetail: "Describe the shot and generate it. Video can take a few minutes; it plays here when it is ready."
         ),
         CreateLane(
             key: "chat", title: "Chat", symbol: "bubble.left.and.bubble.right",
@@ -164,7 +186,9 @@ enum CreateLanes {
             fields: [
                 CreateField(key: "prompt", label: "Message", kind: .script,
                             placeholder: "Ask anything…"),
-            ]
+            ],
+            previewTitle: "Conversation", emptyTitle: "No messages yet",
+            emptyDetail: "The first message starts the conversation."
         ),
     ]
 }
@@ -186,42 +210,42 @@ final class CreateSection: NSObject, AppSection {
     init(lane: CreateLane) { self.lane = lane }
 
     private lazy var workspace = CreateWorkspace(lane: lane)
+    private var restoredJob = false
     var view: NSView { workspace }
 
-    func activated() { workspace.refreshModels() }
+    func activated() {
+        workspace.refreshModels()
+        // The result this page was showing when the app last closed comes back once, when the
+        // page is first opened, rather than waiting for a "Reload" click.
+        if !restoredJob {
+            restoredJob = true
+            workspace.restoreSelectedJob()
+        }
+    }
 }
 
 // MARK: - Workspace
 
-private final class CreateArtifactButton: NSButton {
+/// One output of the job on screen.
+private struct CreateOutput {
     let jobID: String
     let assetID: String
     let path: String
     let mediaType: String
+    let bytes: Int?
+    let present: Bool
     var kept: Bool
 
-    init(
-        title: String, jobID: String, assetID: String, path: String, mediaType: String,
-        kept: Bool = false, target: AnyObject?, action: Selector
-    ) {
-        self.jobID = jobID
-        self.assetID = assetID
-        self.path = path
-        self.mediaType = mediaType
-        self.kept = kept
-        super.init(frame: .zero)
-        self.title = title
-        self.target = target
-        self.action = action
-        bezelStyle = .rounded
+    var key: String { "\(jobID)/\(assetID)" }
+    var facts: String {
+        let size = bytes.map { "\($0) bytes" } ?? "size unknown"
+        return "Asset \(assetID) · \(mediaType.isEmpty ? "media type unknown" : mediaType) · \(size) · "
+            + (present ? (kept ? "Pinned" : "Available") : "Missing file")
     }
-
-    required init?(coder: NSCoder) { fatalError("not used") }
 }
 
-/// Studio Hub's Create house frame: a heading, then the form on the left and the
-/// result on the right, with the output area holding its empty state until there
-/// is something to show.
+/// Studio Hub's generator page: the form on the left, the result on the right, one shared frame
+/// (`CreatePageLayout`) for all six lanes. What differs per lane is only the fields and the preview.
 final class CreateWorkspace: NSView {
     private let lane: CreateLane
     private var state: CreateWorkspaceState
@@ -245,6 +269,7 @@ final class CreateWorkspace: NSView {
     private var jobRequestGeneration = 0
     private var draftObservers: [NSObjectProtocol] = []
     private var localArtifactURLs: [String: URL] = [:]
+    private var savedArtifactURLs: [String: URL] = [:]
     private var fileButton: NSButton?
     private var fileHelp: NSTextField?
     private var fileURL: URL?
@@ -256,14 +281,34 @@ final class CreateWorkspace: NSView {
     private var cancelButton: NSButton?
     private var retryAttemptButton: NSButton?
     private var newDraftButton: NSButton?
-    private var loadJobButton: NSButton?
 
-    private let resultBox = NSStackView()
+    private let layout: CreatePageLayout
     private let statusLabel = PageKit.label("", size: 12, colour: .secondaryLabelColor, wrapping: true)
     private let generateButton = NSButton(title: "Generate", target: nil, action: nil)
+    // The result pane's actions.
+    private let saveButton = NSButton(title: "Save…", target: nil, action: nil)
+    private let copyButton = NSButton(
+        image: NSImage(systemSymbolName: "doc.on.doc", accessibilityDescription: "Copy") ?? NSImage(),
+        target: nil, action: nil)
+    private let moreButton = NSPopUpButton(frame: .zero, pullsDown: true)
+    private var openItem: NSMenuItem!
+    private var revealItem: NSMenuItem!
+    private var pinItem: NSMenuItem!
+    private var reloadItem: NSMenuItem!
+    private var clearItem: NSMenuItem!
+
+    /// The outputs of the job on screen, and which one Save / Open / Pin act on.
+    private var outputs: [CreateOutput] = []
+    private var selectedOutput = 0
+    private var gallery: ImageGalleryView?
+    /// What Copy puts on the pasteboard: the transcript, or the model's last reply.
+    private var copyableText: String?
+    private var chatTurns: [ChatTurn] = []
+    private var chatRecordedJobs: Set<String> = []
 
     init(lane: CreateLane) {
         self.lane = lane
+        self.layout = CreatePageLayout(title: lane.title, blurb: lane.blurb, previewTitle: lane.previewTitle)
         self.state = CreateStateStore.load(lane: lane.key)
         self.selectedModelIDHint = state.draft.modelID
         self.currentJobID = state.currentJobID
@@ -275,10 +320,8 @@ final class CreateWorkspace: NSView {
         if ambiguousAttempt != nil {
             setEditingEnabled(false)
             showAttemptResolution()
-        } else if let currentJobID {
-            statusLabel.stringValue = "Job \(currentJobID.prefix(8)) is selected. Reload it to inspect the result."
-            loadJobButton?.isHidden = false
         }
+        updateActions()
     }
 
     required init?(coder: NSCoder) { fatalError("not used") }
@@ -286,106 +329,81 @@ final class CreateWorkspace: NSView {
     // MARK: layout
 
     private func build() {
-        let page = PageKit.page()
-        page.addArrangedSubview(PageKit.heading(lane.title, lane.blurb))
-        page.addArrangedSubview(headerRow())
-
-        let split = NSStackView(views: [formPane(), outputPane()])
-        // Keep the form usable at the app's minimum width. The output is a
-        // second block below it, so controls never force the window wider or
-        // push the primary action outside the viewport.
-        split.orientation = .vertical
-        split.alignment = .leading
-        split.spacing = 20
-        split.distribution = .fill
-        split.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        page.addArrangedSubview(split)
-        split.widthAnchor.constraint(equalTo: page.widthAnchor, constant: -PageKit.pagePadding * 2)
-            .isActive = true
-        formColumn.widthAnchor.constraint(lessThanOrEqualToConstant: 390).isActive = true
-        for case let label as NSTextField in formColumn.arrangedSubviews {
-            label.preferredMaxLayoutWidth = 330
-            label.widthAnchor.constraint(equalToConstant: 330).isActive = true
-        }
-        outputColumn.widthAnchor.constraint(equalTo: split.widthAnchor).isActive = true
-
-        // A form has a required height, so the page scrolls rather than growing the
-        // window — the rule this app learned the hard way.
-        let document = FlippedView()
-        document.translatesAutoresizingMaskIntoConstraints = false
-        document.addSubview(page)
-        let scroll = NSScrollView()
-        scroll.hasVerticalScroller = true
-        scroll.drawsBackground = false
-        scroll.translatesAutoresizingMaskIntoConstraints = false
-        scroll.documentView = document
-        addSubview(scroll)
+        layout.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(layout)
         NSLayoutConstraint.activate([
-            page.topAnchor.constraint(equalTo: document.topAnchor),
-            page.leadingAnchor.constraint(equalTo: document.leadingAnchor),
-            page.trailingAnchor.constraint(equalTo: document.trailingAnchor),
-            page.bottomAnchor.constraint(equalTo: document.bottomAnchor),
-            document.widthAnchor.constraint(equalTo: scroll.contentView.widthAnchor),
-            scroll.topAnchor.constraint(equalTo: topAnchor),
-            scroll.leadingAnchor.constraint(equalTo: leadingAnchor),
-            scroll.trailingAnchor.constraint(equalTo: trailingAnchor),
-            scroll.bottomAnchor.constraint(equalTo: bottomAnchor),
+            layout.topAnchor.constraint(equalTo: topAnchor),
+            layout.leadingAnchor.constraint(equalTo: leadingAnchor),
+            layout.trailingAnchor.constraint(equalTo: trailingAnchor),
+            layout.bottomAnchor.constraint(equalTo: bottomAnchor),
         ])
+        buildForm()
+        buildPreviewActions()
+        showMessage(lane.emptyTitle, lane.emptyDetail, symbol: lane.symbol)
     }
 
-    private func headerRow() -> NSView {
-        statusLabel.preferredMaxLayoutWidth = 280
-        statusLabel.widthAnchor.constraint(equalToConstant: 280).isActive = true
-        let refresh = NSButton(title: "Refresh models", target: self, action: #selector(refreshModels))
-        refresh.bezelStyle = .rounded
-        loadJobButton = NSButton(title: "Reload selected job", target: self, action: #selector(loadSelectedJob))
-        loadJobButton?.bezelStyle = .rounded
-        loadJobButton?.isHidden = true
-        return PageKit.row([statusLabel, NSView(), loadJobButton!, refresh])
+    /// A titled block of the form: the title in Studio Hub's `.headline` weight, the control at the
+    /// full width of the column, and an optional hint under it.
+    private func section(_ title: String, _ control: NSView, hint: String = "", fullWidth: Bool = true) -> NSView {
+        let head = PageKit.label(title, size: 13, weight: .semibold)
+        let stack = NSStackView(views: [head, control])
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 6
+        if fullWidth { control.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true }
+        if !hint.isEmpty {
+            let help = wrapped(PageKit.help(hint))
+            stack.addArrangedSubview(help)
+            help.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+        }
+        return stack
     }
 
-    private let formColumn = NSStackView()
-    private let outputColumn = NSStackView()
+    /// A wrapping label is as wide as its column, so it breaks where the column ends.
+    private func wrapped(_ label: NSTextField) -> NSTextField {
+        label.preferredMaxLayoutWidth = 0
+        return label
+    }
 
-    private func formPane() -> NSView {
-        formColumn.orientation = .vertical
-        formColumn.alignment = .leading
-        formColumn.spacing = 12
+    private func divider() -> NSView {
+        let line = NSBox()
+        line.boxType = .separator
+        return line
+    }
 
-        let picker = NSPopUpButton()
-        picker.target = self
-        picker.action = #selector(modelChanged)
-        picker.widthAnchor.constraint(equalToConstant: 330).isActive = true
-        modelPopup = picker
-        formColumn.addArrangedSubview(PageKit.formRow("Model", picker))
-        formColumn.addArrangedSubview(PageKit.help("Only models switched on for this lane appear here — the same set Story Studio picks from."))
-
-        capabilityLabel = PageKit.help("Capabilities: unknown")
-        formColumn.addArrangedSubview(capabilityLabel!)
-
+    private func buildForm() {
         if lane.isUpload {
             let choose = NSButton(title: "Choose File…", target: self, action: #selector(pickFile))
             choose.bezelStyle = .rounded
             fileButton = choose
             fileHelp = PageKit.help("No file chosen")
-            formColumn.addArrangedSubview(PageKit.formRow("Recording", [choose, fileHelp!]))
+            let column = NSStackView(views: [choose, fileHelp!])
+            column.orientation = .vertical
+            column.alignment = .leading
+            column.spacing = 6
+            fileHelp!.preferredMaxLayoutWidth = 0
+            fileHelp!.widthAnchor.constraint(equalTo: column.widthAnchor).isActive = true
+            layout.addForm(section("Recording", column))
         }
 
         for field in lane.fields {
             let control = makeControl(field)
             fields[field.key] = control
-            formColumn.addArrangedSubview(PageKit.formRow(field.label, control))
-            if !field.hint.isEmpty {
-                formColumn.addArrangedSubview(PageKit.help(field.hint))
-            }
+            layout.addForm(section(field.label, control, hint: field.hint, fullWidth: field.kind != .number))
         }
 
         generateButton.target = self
         generateButton.action = #selector(generate)
         generateButton.bezelStyle = .rounded
+        generateButton.controlSize = .large
         generateButton.keyEquivalent = "\r"
+        // Studio Hub's `.borderedProminent`: the one control the page is built around is the
+        // accent colour, also while the window is not key.
+        generateButton.bezelColor = .controlAccentColor
+        generateButton.widthAnchor.constraint(greaterThanOrEqualToConstant: 110).isActive = true
         cancelButton = NSButton(title: "Cancel", target: self, action: #selector(cancel))
         cancelButton?.bezelStyle = .rounded
+        cancelButton?.controlSize = .large
         cancelButton?.isHidden = true
         retryAttemptButton = NSButton(title: "Retry same attempt", target: self, action: #selector(retryAttempt))
         retryAttemptButton?.bezelStyle = .rounded
@@ -393,38 +411,93 @@ final class CreateWorkspace: NSView {
         newDraftButton = NSButton(title: "Start separate draft", target: self, action: #selector(startNewDraft))
         newDraftButton?.bezelStyle = .rounded
         newDraftButton?.isHidden = true
-        let row = PageKit.row([
-            generateButton, cancelButton!, retryAttemptButton!, newDraftButton!,
-            PageKit.label("", size: 12, colour: .secondaryLabelColor),
+        let actions = NSStackView(views: [
+            PageKit.row([generateButton, cancelButton!]), retryAttemptButton!, newDraftButton!,
         ])
-        formColumn.addArrangedSubview(row)
-        return formColumn
+        actions.orientation = .vertical
+        actions.alignment = .leading
+        actions.spacing = 8
+        layout.addForm(actions)
+        layout.addForm(wrapped(statusLabel))
+
+        layout.addForm(divider())
+        let picker = NSPopUpButton()
+        picker.target = self
+        picker.action = #selector(modelChanged)
+        modelPopup = picker
+        let refresh = NSButton(
+            image: NSImage(systemSymbolName: "arrow.clockwise", accessibilityDescription: "Refresh models") ?? NSImage(),
+            target: self, action: #selector(refreshModels))
+        refresh.bezelStyle = .rounded
+        refresh.toolTip = "Refresh models"
+        let pickerRow = PageKit.row([picker, refresh], spacing: 8)
+        picker.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
+        capabilityLabel = PageKit.help("Capabilities: unknown")
+        let manage = NSButton(title: "Manage \(lane.title) Models", target: self, action: #selector(openModels))
+        manage.bezelStyle = .rounded
+        let modelColumn = NSStackView(views: [pickerRow, manage])
+        modelColumn.orientation = .vertical
+        modelColumn.alignment = .leading
+        modelColumn.spacing = 10
+        pickerRow.widthAnchor.constraint(equalTo: modelColumn.widthAnchor).isActive = true
+        let modelBlock = section(
+            "Model", modelColumn,
+            hint: "Only models switched on for this lane appear here — the same set Story Studio picks from.")
+        layout.addForm(modelBlock)
+        layout.addForm(wrapped(capabilityLabel!))
+    }
+
+    private func buildPreviewActions() {
+        saveButton.target = self
+        saveButton.action = #selector(saveArtifact)
+        saveButton.bezelStyle = .rounded
+        copyButton.target = self
+        copyButton.action = #selector(copyText)
+        copyButton.bezelStyle = .rounded
+        copyButton.toolTip = "Copy the transcript"
+
+        moreButton.addItem(withTitle: "")
+        moreButton.item(at: 0)?.image = NSImage(systemSymbolName: "ellipsis.circle", accessibilityDescription: "More")
+        moreButton.isBordered = false
+        moreButton.autoenablesItems = false
+        func item(_ title: String, _ action: Selector) -> NSMenuItem {
+            let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
+            item.target = self
+            moreButton.menu?.addItem(item)
+            return item
+        }
+        openItem = item("Open", #selector(openArtifact))
+        revealItem = item("Show in Finder", #selector(revealArtifact))
+        pinItem = item("Pin", #selector(keepArtifact))
+        clearItem = item("Clear Conversation", #selector(clearConversation))
+        reloadItem = item("Reload Result", #selector(loadSelectedJob))
+        _ = item("All Jobs", #selector(openJobs))
+        for view in [copyButton, saveButton, moreButton] { layout.previewActions.addArrangedSubview(view) }
     }
 
     private func makeControl(_ field: CreateField) -> NSView {
         switch field.kind {
         case .script:
             let text = NSTextView()
-            text.font = .systemFont(ofSize: 13)
+            text.font = .systemFont(ofSize: 14)
             text.isRichText = false
             text.string = field.initial
             text.isVerticallyResizable = true
             text.autoresizingMask = [.width]
-            text.textContainerInset = NSSize(width: 4, height: 6)
+            text.textContainerInset = NSSize(width: 6, height: 8)
             let scroll = NSScrollView()
             scroll.documentView = text
             scroll.hasVerticalScroller = true
             scroll.borderType = .bezelBorder
             scroll.translatesAutoresizingMaskIntoConstraints = false
-            scroll.widthAnchor.constraint(equalToConstant: 330).isActive = true
-            scroll.heightAnchor.constraint(equalToConstant: 120).isActive = true
+            scroll.heightAnchor.constraint(equalToConstant: 170).isActive = true
             return scroll
         case .number, .text:
             let entry = NSTextField(string: field.initial)
             entry.placeholderString = field.placeholder
             entry.font = .systemFont(ofSize: 13)
-            entry.widthAnchor.constraint(equalToConstant: field.kind == .number ? 90 : 330).isActive = true
-            entry.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+            // A count is a short number; it should not stretch across the column.
+            if field.kind == .number { entry.widthAnchor.constraint(equalToConstant: 90).isActive = true }
             return entry
         case .voice:
             let combo = NSComboBox()
@@ -432,7 +505,6 @@ final class CreateWorkspace: NSView {
             combo.completes = true
             combo.font = .systemFont(ofSize: 13)
             combo.placeholderString = "Search compatible voices"
-            combo.widthAnchor.constraint(equalToConstant: 330).isActive = true
             combo.target = self
             combo.action = #selector(voiceChanged)
             voiceComboBox = combo
@@ -440,39 +512,20 @@ final class CreateWorkspace: NSView {
             let advanced = NSTextField()
             advanced.placeholderString = "Advanced provider voice ID (exact)"
             advanced.font = .systemFont(ofSize: 13)
-            advanced.widthAnchor.constraint(equalToConstant: 330).isActive = true
             advancedVoiceField = advanced
 
             let stack = NSStackView(views: [combo, advanced])
             stack.orientation = .vertical
             stack.alignment = .leading
             stack.spacing = 6
+            combo.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+            advanced.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
             return stack
         }
     }
 
-    private func outputPane() -> NSView {
-        outputColumn.orientation = .vertical
-        outputColumn.alignment = .leading
-        outputColumn.spacing = 12
-        resultBox.orientation = .vertical
-        resultBox.alignment = .leading
-        resultBox.spacing = 10
-        resultBox.edgeInsets = NSEdgeInsets(top: 14, left: 14, bottom: 14, right: 14)
-        resultBox.wantsLayer = true
-        resultBox.layer?.backgroundColor = NSColor.controlBackgroundColor.cgColor
-        resultBox.layer?.cornerRadius = 6
-        let preview = PageKit.sectionTitle(lane.title)
-        outputColumn.addArrangedSubview(preview)
-        outputColumn.addArrangedSubview(resultBox)
-        resultBox.widthAnchor.constraint(equalTo: outputColumn.widthAnchor).isActive = true
-        resultBox.addArrangedSubview(
-            PageKit.empty("Nothing generated yet",
-                          "Fill in the form and press Generate. Anything you make here is temporary until you save it or keep it.",
-                          symbol: lane.symbol)
-        )
-        return outputColumn
-    }
+    @objc private func openModels() { MainWindow.shared.show(section: "models") }
+    @objc private func openJobs() { MainWindow.shared.show(section: "jobs") }
 
     // MARK: data
 
@@ -567,10 +620,17 @@ final class CreateWorkspace: NSView {
         }
     }
 
+    /// Whether a message about the models may take the status line: not while a job is running or an
+    /// unresolved submission is waiting for a decision. (A *finished* job's "succeeded" does not
+    /// count: a page with no model to run must say so.)
+    private var modelStatusIsFree: Bool {
+        pendingJobID == nil && !submissionInFlight && ambiguousAttempt == nil
+    }
+
     @objc func refreshModels() {
         modelRefreshRequest += 1
         let requestID = modelRefreshRequest
-        if currentJobID == nil && !submissionInFlight {
+        if modelStatusIsFree {
             statusLabel.stringValue = "loading models…"
         }
         GatewayAPI.get("/admin/api/create/models") { [weak self] result in
@@ -578,7 +638,7 @@ final class CreateWorkspace: NSView {
             guard self.modelRefreshRequest == requestID else { return }
             switch result {
             case .failure(let error):
-                if self.currentJobID == nil && !self.submissionInFlight {
+                if self.modelStatusIsFree {
                     self.statusLabel.stringValue = error.localizedDescription
                 }
             case .success(let payload):
@@ -588,12 +648,14 @@ final class CreateWorkspace: NSView {
                 self.models = rows
                 self.modelPopup?.removeAllItems()
                 if rows.isEmpty {
-                    self.selectedModelIDHint = nil
+                    // The remembered choice is kept: switch the model back on and it is selected again.
                     self.modelPopup?.addItem(withTitle: "No model switched on")
                     self.modelPopup?.lastItem?.isEnabled = false
-                    if self.currentJobID == nil && !self.submissionInFlight {
+                    if self.modelStatusIsFree {
+                        // Say what is wrong and where to fix it -- not "no longer available", which
+                        // reads as a model that vanished rather than one that was never switched on.
                         self.statusLabel.stringValue =
-                            "No model is switched on for this lane. Enable one on the Providers page and it appears here."
+                            "No \(self.lane.title.lowercased()) models are switched on. Open Models and switch one on — it appears here."
                     }
                 } else {
                     for row in rows {
@@ -606,9 +668,16 @@ final class CreateWorkspace: NSView {
 
                     var selectionLost = false
                     var needsSelection = false
+                    // A model can be renamed without being removed: the catalogue lists the
+                    // ids it used to publish under `legacy_ids`. A saved choice that matches one
+                    // is the same model, so it is kept under its current id rather than reported
+                    // as gone (Subtitle showed "no longer available" for exactly this).
                     if let previousModelID,
-                       let index = rows.firstIndex(where: { $0["id"] as? String == previousModelID }) {
-                        self.selectedModelIDHint = previousModelID
+                       let index = rows.firstIndex(where: {
+                           $0["id"] as? String == previousModelID
+                               || ($0["legacy_ids"] as? [String])?.contains(previousModelID) == true
+                       }) {
+                        self.selectedModelIDHint = rows[index]["id"] as? String
                         self.modelPopup?.selectItem(at: index)
                     } else if !self.hasLoadedModels && previousModelID == nil {
                         self.modelPopup?.selectItem(at: 0)
@@ -621,9 +690,9 @@ final class CreateWorkspace: NSView {
                         self.modelPopup?.item(at: 0)?.isEnabled = false
                         self.modelPopup?.selectItem(at: 0)
                     }
-                    if self.currentJobID == nil && !self.submissionInFlight {
+                    if self.modelStatusIsFree {
                         self.statusLabel.stringValue = selectionLost
-                            ? "Your selected model is no longer available. Select a model to continue."
+                            ? "\(previousModelID ?? "The model you chose") is no longer switched on. Select another model to continue, or open Models to switch it back on."
                             : needsSelection
                             ? "Select a model to continue."
                             : "\(rows.count) model\(rows.count == 1 ? "" : "s") available"
@@ -730,7 +799,8 @@ final class CreateWorkspace: NSView {
             lines.append("Input characters: \(unknown(row["maximum_input_characters"])) (\(source(row, "maximum_input_characters_source")))")
             let cloning = (row["supports_voice_cloning"] as? Bool).map { $0 ? "yes" : "no" } ?? "unknown"
             lines.append("Voice cloning: \(cloning)")
-            lines.append("Speed: \(unknown(row["minimum_speed"]))–\(unknown(row["maximum_speed"]))")
+            let low = unknown(row["minimum_speed"]), high = unknown(row["maximum_speed"])
+            lines.append("Speed: " + (low == "unknown" && high == "unknown" ? "unknown" : "\(low)–\(high)"))
         } else if lane.modality == "chat" {
             lines.append("Context window: \(unknown(row["context_window_tokens"])) tokens (\(source(row, "context_window_tokens_source")))")
             lines.append("Output tokens: \(unknown(row["max_output_tokens"])) (\(source(row, "max_output_tokens_source")))")
@@ -829,7 +899,6 @@ final class CreateWorkspace: NSView {
         retryAttemptButton?.isHidden = false
         newDraftButton?.isHidden = false
         cancelButton?.isHidden = true
-        loadJobButton?.isHidden = true
         updateGenerateEnabled()
     }
 
@@ -878,7 +947,8 @@ final class CreateWorkspace: NSView {
             params[field.key] = field.kind == .number ? (Int(raw) ?? 1) : raw
         }
         if lane.modality == "chat" {
-            params["messages"] = [["role": "user", "content": params["prompt"] as? String ?? ""]]
+            // The whole conversation so far, so the model answers in context.
+            params["messages"] = chatHistory() + [["role": "user", "content": params["prompt"] as? String ?? ""]]
         }
         let body: [String: Any] = [
             "modality": lane.modality, "model_id": modelID,
@@ -944,7 +1014,7 @@ final class CreateWorkspace: NSView {
 
     @objc private func generate() {
         guard !submissionInFlight, pendingJobID == nil, ambiguousAttempt == nil else { return }
-        guard let modelID = selectedModelID() else {
+        guard let modelID = selectedModelID(), selectedModelRow() != nil else {
             statusLabel.stringValue = "Select a model before generating."
             return
         }
@@ -991,7 +1061,28 @@ final class CreateWorkspace: NSView {
             return
         }
         guard let attempt = makeAttempt(modelID: modelID) else { return }
+        if lane.modality == "chat" {
+            chatTurns.append(ChatTurn(role: "user", text: value(of: "prompt")))
+            showConversation(waiting: true)
+        }
         begin(attempt)
+    }
+
+    /// The completed turns, as chat messages. A message that got no reply is left out, with the
+    /// failure that followed it, so a failed try never becomes part of what the model is asked.
+    private func chatHistory() -> [[String: String]] {
+        var messages: [[String: String]] = []
+        for (index, turn) in chatTurns.enumerated() where !turn.failed {
+            let next = index + 1 < chatTurns.count ? chatTurns[index + 1] : nil
+            if turn.role == "user", next?.failed == true { continue }
+            messages.append(["role": turn.role == "user" ? "user" : "assistant", "content": turn.text])
+        }
+        return messages
+    }
+
+    /// The message field empties once the message is on the wire and in the transcript.
+    private func clearPrompt() {
+        setValue("", for: "prompt")
     }
 
     private func begin(_ attempt: CreateAttempt) {
@@ -1070,7 +1161,7 @@ final class CreateWorkspace: NSView {
             pendingJobID = terminal ? nil : id
             render(job)
             cancelButton?.isHidden = terminal
-            loadJobButton?.isHidden = false
+            if lane.modality == "chat" { clearPrompt() }
             persistState()
             if terminal {
                 setEditingEnabled(true)
@@ -1082,17 +1173,31 @@ final class CreateWorkspace: NSView {
         }
     }
 
-    @objc private func loadSelectedJob() {
+    /// Re-attach the job this page was showing when the app last closed.
+    func restoreSelectedJob() {
+        guard currentJobID != nil, pendingJobID == nil, !submissionInFlight, ambiguousAttempt == nil else { return }
+        loadJob(automatic: true)
+    }
+
+    @objc private func loadSelectedJob() { loadJob(automatic: false) }
+
+    private func loadJob(automatic: Bool) {
         guard let id = currentJobID else { return }
         jobRequestGeneration += 1
         let requestGeneration = jobRequestGeneration
-        statusLabel.stringValue = "loading selected job…"
+        if !automatic { statusLabel.stringValue = "loading selected job…" }
         GatewayAPI.get("/admin/api/create/status/\(id)") { [weak self] result in
             guard let self else { return }
             guard self.jobRequestGeneration == requestGeneration,
                   self.currentJobID == id else { return }
             switch result {
             case .failure(let error):
+                // A saved id the gateway has never heard of (pruned, deleted, or never real) is not
+                // a result to offer "reloading": forget it and show the empty page.
+                if let refused = error as? GatewayAPIError, case .refused(404, _) = refused {
+                    self.forgetJob()
+                    return
+                }
                 self.statusLabel.stringValue = "Cannot load this job — \(error.localizedDescription)"
             case .success(let job):
                 guard (job["id"] as? String ?? id) == id else { return }
@@ -1103,11 +1208,26 @@ final class CreateWorkspace: NSView {
                 self.cancelButton?.isHidden = terminal
                 self.setEditingEnabled(terminal && self.ambiguousAttempt == nil)
                 self.persistState()
-                self.statusLabel.stringValue = terminal
-                    ? "Job reloaded; outputs were reattached from the gateway."
-                    : "Job \(id.prefix(8)) is still \(state)."
+                if terminal {
+                    if !automatic { self.statusLabel.stringValue = "Job reloaded; outputs were reattached from the gateway." }
+                } else {
+                    self.statusLabel.stringValue = "Job \(id.prefix(8)) is still \(state)."
+                    self.startPolling(id)
+                }
             }
         }
+    }
+
+    /// Drop a selected job the gateway does not know, and go back to the empty page.
+    private func forgetJob() {
+        currentJobID = nil
+        pendingJobID = nil
+        outputs = []
+        persistState()
+        showMessage(lane.emptyTitle, lane.emptyDetail, symbol: lane.symbol)
+        updateActions()
+        setEditingEnabled(ambiguousAttempt == nil)
+        refreshModels()
     }
 
     @objc private func cancel() {
@@ -1187,126 +1307,278 @@ final class CreateWorkspace: NSView {
 
     // MARK: render
 
-    private func clearResult() {
-        for view in resultBox.arrangedSubviews { view.removeFromSuperview() }
+    /// A message centred in the result card: the empty state, a running job, a failure.
+    private func messageView(
+        _ title: String, _ detail: String, symbol: String,
+        spinning: Bool = false, colour: NSColor = .secondaryLabelColor
+    ) -> NSView {
+        let icon: NSView
+        if spinning {
+            let spin = NSProgressIndicator()
+            spin.style = .spinning
+            spin.startAnimation(nil)
+            icon = spin
+        } else {
+            let image = NSImageView()
+            image.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)
+            image.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 34, weight: .light)
+            image.contentTintColor = colour
+            icon = image
+        }
+        let heading = PageKit.label(title, size: 15, weight: .semibold, colour: colour == .secondaryLabelColor ? .labelColor : colour)
+        var views = [icon, heading]
+        if !detail.isEmpty {
+            let words = PageKit.label(detail, size: 13, colour: .secondaryLabelColor, wrapping: true)
+            words.alignment = .center
+            words.preferredMaxLayoutWidth = 0
+            words.widthAnchor.constraint(lessThanOrEqualToConstant: 440).isActive = true
+            views.append(words)
+        }
+        let stack = NSStackView(views: views)
+        stack.orientation = .vertical
+        stack.alignment = .centerX
+        stack.spacing = 10
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        let container = NSView()
+        container.addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.centerXAnchor.constraint(equalTo: container.centerXAnchor),
+            stack.centerYAnchor.constraint(equalTo: container.centerYAnchor),
+            stack.leadingAnchor.constraint(greaterThanOrEqualTo: container.leadingAnchor),
+            stack.trailingAnchor.constraint(lessThanOrEqualTo: container.trailingAnchor),
+            stack.topAnchor.constraint(greaterThanOrEqualTo: container.topAnchor),
+            stack.bottomAnchor.constraint(lessThanOrEqualTo: container.bottomAnchor),
+        ])
+        return container
+    }
+
+    private func showMessage(
+        _ title: String, _ detail: String, symbol: String,
+        spinning: Bool = false, colour: NSColor = .secondaryLabelColor
+    ) {
+        layout.setPreview(messageView(title, detail, symbol: symbol, spinning: spinning, colour: colour))
+    }
+
+    private func showConversation(waiting: Bool = false) {
+        outputs = []
+        copyableText = chatTurns.last { $0.role != "user" && !$0.failed }?.text
+        layout.setCaption("")
+        if chatTurns.isEmpty && !waiting {
+            showMessage(lane.emptyTitle, lane.emptyDetail, symbol: lane.symbol)
+        } else {
+            var footer: NSView?
+            if waiting {
+                let spin = NSProgressIndicator()
+                spin.style = .spinning
+                spin.controlSize = .small
+                spin.startAnimation(nil)
+                footer = PageKit.row([spin, PageKit.label("The model is answering…", size: 13, colour: .secondaryLabelColor)])
+            }
+            let view = ConversationView(turns: chatTurns, footer: footer)
+            layout.setPreview(view)
+            DispatchQueue.main.async { view.scrollToEnd() }
+        }
+        updateActions()
+    }
+
+    private func recordChat(_ jobID: String, _ turn: ChatTurn) {
+        guard chatRecordedJobs.insert(jobID).inserted else { return }
+        chatTurns.append(turn)
     }
 
     private func render(_ job: [String: Any]) {
         let state = job["state"] as? String ?? ""
         let jobID = job["id"] as? String ?? currentJobID ?? ""
         let cancellationRequested = job["cancel_requested"] as? Bool == true
+        let isChat = lane.modality == "chat"
         statusLabel.stringValue = cancellationRequested && state != "cancelled"
             ? "Cancellation requested — this job may still complete."
-            : state
-        clearResult()
+            : state == "succeeded" ? "Finished." : state
 
         if state == "failed" {
-            resultBox.addArrangedSubview(PageKit.label(
-                job["failure_reason"] as? String ?? job["error_detail"] as? String ?? "the generation failed",
-                size: 13, colour: .systemRed, wrapping: true))
+            let reason = job["failure_reason"] as? String ?? job["error_detail"] as? String ?? "the generation failed"
+            if isChat {
+                recordChat(jobID, ChatTurn(role: "model", text: reason, failed: true))
+                showConversation()
+            } else {
+                outputs = []
+                showMessage("The generation failed", reason, symbol: "exclamationmark.triangle", colour: .systemRed)
+                updateActions()
+            }
             return
         }
         if state == "cancelled" {
-            resultBox.addArrangedSubview(PageKit.label(
-                "The generation was cancelled. No automatic replay was made.",
-                size: 13, colour: .secondaryLabelColor, wrapping: true))
+            outputs = []
+            copyableText = nil
+            showMessage("Cancelled", "The generation was cancelled. No automatic replay was made.", symbol: "xmark.circle")
+            updateActions()
             return
         }
         if state != "succeeded" {
-            let spin = NSProgressIndicator()
-            spin.style = .spinning
-            spin.startAnimation(nil)
-            resultBox.addArrangedSubview(PageKit.row([spin,
-                PageKit.label(
+            if isChat {
+                showConversation(waiting: true)
+            } else {
+                outputs = []
+                showMessage(
+                    cancellationRequested ? "Cancellation requested" : "\(state)…",
                     cancellationRequested
-                        ? "Cancellation requested; the provider may still finish."
-                        : "\(state)…",
-                    size: 13, colour: .secondaryLabelColor, wrapping: true)]))
+                        ? "The provider may still finish; anything it makes is kept."
+                        : "This page updates by itself. You can leave and come back.",
+                    symbol: lane.symbol, spinning: true)
+                updateActions()
+            }
             return
         }
 
-        if lane.modality == "chat" {
-            let text = NSTextView()
-            text.isEditable = false
-            text.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
-            text.string = job["output_text"] as? String ?? ""
-            let scroll = NSScrollView()
-            scroll.documentView = text
-            scroll.hasVerticalScroller = true
-            scroll.borderType = .bezelBorder
-            scroll.translatesAutoresizingMaskIntoConstraints = false
-            scroll.widthAnchor.constraint(lessThanOrEqualToConstant: 520).isActive = true
-            scroll.heightAnchor.constraint(equalToConstant: 260).isActive = true
-            resultBox.addArrangedSubview(scroll)
+        if isChat {
+            recordChat(jobID, ChatTurn(role: "model", text: job["output_text"] as? String ?? ""))
+            showConversation()
             return
         }
 
-        let outputs = job["outputs"] as? [[String: Any]] ?? []
+        let raw = job["outputs"] as? [[String: Any]] ?? []
+        outputs = raw.map { output in
+            let assetID = output["asset_id"] as? String ?? "0"
+            return CreateOutput(
+                jobID: jobID, assetID: assetID,
+                path: output["url"] as? String ?? "/admin/api/artifacts/\(jobID)/outputs/\(assetID)",
+                mediaType: output["media_type"] as? String ?? "",
+                bytes: output["bytes"] as? Int,
+                present: output["present"] as? Bool ?? true,
+                kept: output["kept"] as? Bool ?? false)
+        }
+        selectedOutput = 0
+        copyableText = nil
+        gallery = nil
         if outputs.isEmpty {
-            resultBox.addArrangedSubview(PageKit.empty(
-                "No result", "The job finished but produced no artifact.", symbol: lane.symbol))
-            return
-        }
-        if outputs.count > 1 {
-            resultBox.addArrangedSubview(PageKit.label(
-                "\(outputs.count) results — every one the model returned",
-                size: 11.5, colour: .secondaryLabelColor))
-        }
-        for output in outputs {
-            resultBox.addArrangedSubview(artifactRow(jobID: jobID, output: output))
+            showMessage("No result", "The job finished but produced no artifact.", symbol: lane.symbol)
+            layout.setCaption("")
+            updateActions()
+        } else if lane.modality == "image" {
+            presentGallery()
+        } else {
+            present(0)
         }
     }
 
-    private func artifactRow(jobID: String, output: [String: Any]) -> NSView {
-        let assetID = output["asset_id"] as? String ?? "0"
-        let path = output["url"] as? String
-            ?? "/admin/api/artifacts/\(jobID)/outputs/\(assetID)"
-        let present = output["present"] as? Bool ?? true
-        let kept = output["kept"] as? Bool ?? false
-        let stack = NSStackView()
+    private func updateCaption() {
+        guard outputs.indices.contains(selectedOutput) else { return layout.setCaption("") }
+        let prefix = outputs.count > 1 ? "\(outputs.count) results — every one the model returned · " : ""
+        layout.setCaption(prefix + outputs[selectedOutput].facts)
+    }
+
+    /// Several images: one large, the rest as thumbnails. Every output is fetched, because the
+    /// thumbnails are the only way to choose between them.
+    private func presentGallery() {
+        guard outputs.contains(where: { $0.present }) else {
+            showMessage(
+                "The files are gone",
+                "The gateway no longer has these files. Reload the result after reattachment; no network request was made for the missing outputs.",
+                symbol: "exclamationmark.triangle", colour: .systemRed)
+            updateCaption()
+            updateActions()
+            return
+        }
+        let view = ImageGalleryView(count: outputs.count)
+        view.onSelect = { [weak self] index in
+            self?.selectedOutput = index
+            self?.updateCaption()
+            self?.updateActions()
+        }
+        gallery = view
+        layout.setPreview(view)
+        updateCaption()
+        updateActions()
+        let missing = NSImage(systemSymbolName: "exclamationmark.triangle", accessibilityDescription: "Missing")
+        for (index, output) in outputs.enumerated() {
+            guard output.present else { view.setImage(missing, at: index); continue }
+            fetch(output) { [weak view] data, _ in
+                view?.setImage(NSImage(data: data) ?? missing, at: index)
+            }
+        }
+    }
+
+    /// Show one output. A model that returned several (music often returns two) gets a picker.
+    private func present(_ index: Int) {
+        guard outputs.indices.contains(index) else { return }
+        selectedOutput = index
+        copyableText = nil
+        let output = outputs[index]
+        updateCaption()
+        updateActions()
+        guard output.present else {
+            layout.setPreview(picker(messageView(
+                "The file is gone",
+                "The gateway no longer has this file. Reload the result after reattachment; no network request was made for the missing output.",
+                symbol: "exclamationmark.triangle", colour: .systemRed)))
+            return
+        }
+        layout.setPreview(picker(messageView("Loading…", "", symbol: lane.symbol, spinning: true)))
+        fetch(output) { [weak self] data, url in
+            guard let self, self.selectedOutput == index, self.outputs.indices.contains(index),
+                  self.outputs[index].key == output.key else { return }
+            self.layout.setPreview(self.picker(self.mediaView(output, data, url)))
+            self.updateActions()
+        }
+    }
+
+    private func picker(_ content: NSView) -> NSView {
+        guard outputs.count > 1 else { return content }
+        let segments = NSSegmentedControl(
+            labels: (1...outputs.count).map { "Result \($0)" },
+            trackingMode: .selectOne, target: self, action: #selector(pickResult(_:)))
+        segments.selectedSegment = selectedOutput
+        let stack = NSStackView(views: [segments, content])
         stack.orientation = .vertical
         stack.alignment = .leading
-        stack.spacing = 8
-
-        let media = output["media_type"] as? String ?? "media type unknown"
-        let bytes = (output["bytes"] as? Int).map { "\($0) bytes" } ?? "size unknown"
-        let state = present ? (kept ? "Pinned" : "Available") : "Missing file"
-        stack.addArrangedSubview(PageKit.label(
-            "Asset \(assetID) · \(media) · \(bytes) · \(state)",
-            size: 13, colour: present ? .labelColor : .systemRed, wrapping: true))
-
-        if !present {
-            stack.addArrangedSubview(PageKit.help(
-                "The gateway no longer has this file. Reload the selected job after reattachment; no network request was made for the missing output."))
-            return stack
-        }
-
-        let icon = NSImageView()
-        icon.image = NSImage(systemSymbolName: lane.symbol, accessibilityDescription: nil)
-        icon.contentTintColor = .secondaryLabelColor
-        stack.addArrangedSubview(PageKit.row([icon, PageKit.label(
-            "\(lane.title) result · asset \(assetID)", size: 13, colour: .secondaryLabelColor)]))
-
-        let preview = CreateArtifactButton(
-            title: "Preview", jobID: jobID, assetID: assetID, path: path, mediaType: media,
-            kept: kept, target: self, action: #selector(previewArtifact(_:)))
-        let open = CreateArtifactButton(
-            title: "Open", jobID: jobID, assetID: assetID, path: path, mediaType: media,
-            kept: kept, target: self, action: #selector(openArtifact(_:)))
-        let save = CreateArtifactButton(
-            title: "Save…", jobID: jobID, assetID: assetID, path: path, mediaType: media,
-            kept: kept, target: self, action: #selector(saveArtifact(_:)))
-        let keep = CreateArtifactButton(
-            title: kept ? "Unpin" : "Pin", jobID: jobID, assetID: assetID, path: path, mediaType: media,
-            kept: kept, target: self, action: #selector(keepArtifact(_:)))
-        stack.addArrangedSubview(PageKit.row([preview, open, save, keep]))
+        stack.spacing = 12
+        content.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+        content.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .vertical)
         return stack
     }
 
-    // MARK: artifact actions
+    @objc private func pickResult(_ sender: NSSegmentedControl) { present(sender.selectedSegment) }
 
-    private func artifactKey(_ sender: CreateArtifactButton) -> String {
-        "\(sender.jobID)/\(sender.assetID)"
+    private func mediaView(_ output: CreateOutput, _ data: Data, _ url: URL) -> NSView {
+        switch lane.modality {
+        case "tts", "music":
+            let player = AudioPlayerView(url: url)
+            if player.canPlay { return player }
+        case "video":
+            return VideoPreviewView(url: url)
+        case "transcription":
+            let text = String(data: data, encoding: .utf8) ?? ""
+            if text.isEmpty {
+                return messageView("The transcript came back empty", "The model heard no speech in this recording.", symbol: "text.bubble")
+            }
+            copyableText = text
+            return TranscriptText.view(text)
+        default: break
+        }
+        return messageView(
+            "No preview here",
+            "This \(output.mediaType) can't be shown in the page. Use Open or Save… to see it.",
+            symbol: lane.symbol)
+    }
+
+    // MARK: actions
+
+    private var selected: CreateOutput? { outputs.indices.contains(selectedOutput) ? outputs[selectedOutput] : nil }
+
+    private func updateActions() {
+        let has = selected?.present == true
+        let isChat = lane.modality == "chat"
+        saveButton.isHidden = !has
+        copyButton.isHidden = copyableText == nil
+        for item in [openItem, revealItem, pinItem] {
+            item?.isEnabled = has
+            item?.isHidden = isChat
+        }
+        pinItem?.title = selected?.kept == true ? "Unpin" : "Pin"
+        clearItem?.isHidden = !isChat
+        clearItem?.isEnabled = !chatTurns.isEmpty && pendingJobID == nil
+        reloadItem?.isHidden = isChat
+        reloadItem?.isEnabled = currentJobID != nil
     }
 
     private func safeAdminPath(_ path: String) -> String? {
@@ -1315,33 +1587,36 @@ final class CreateWorkspace: NSView {
         return path
     }
 
-    private func downloadArtifact(
-        _ sender: CreateArtifactButton,
-        completion: @escaping (Data, URL) -> Void
-    ) {
-        let key = artifactKey(sender)
+    /// The output's bytes and a local copy of them, downloaded once through the authenticated helper.
+    private func fetch(_ output: CreateOutput, completion: @escaping (Data, URL) -> Void) {
+        let key = output.key
         if let data = localArtifactData[key], let url = localArtifactURLs[key] {
             completion(data, url)
             return
         }
-        guard let path = safeAdminPath(sender.path) else {
+        guard let path = safeAdminPath(output.path) else {
             statusLabel.stringValue = "The gateway returned an invalid artifact path."
             return
         }
-        statusLabel.stringValue = "downloading asset \(sender.assetID)…"
         let generation = jobRequestGeneration
         GatewayAPI.download(path) { [weak self] result in
-            guard let self, self.currentJobID == sender.jobID,
+            guard let self, self.currentJobID == output.jobID,
                   self.jobRequestGeneration == generation else { return }
             switch result {
             case .failure(let error):
                 self.statusLabel.stringValue = error.localizedDescription == "The requested file is no longer available."
-                    ? "Asset \(sender.assetID) is missing from the gateway."
-                    : "Could not download asset \(sender.assetID) — \(error.localizedDescription)"
+                    ? "Asset \(output.assetID) is missing from the gateway."
+                    : "Could not download asset \(output.assetID) — \(error.localizedDescription)"
+                if self.outputs.indices.contains(self.selectedOutput), self.outputs[self.selectedOutput].key == key,
+                   self.lane.modality != "image" {
+                    self.layout.setPreview(self.picker(self.messageView(
+                        "Could not load this result", error.localizedDescription,
+                        symbol: "exclamationmark.triangle", colour: .systemRed)))
+                }
             case .success(let data):
-                let ext = PageKit.artifactExtension(sender.mediaType)
+                let ext = PageKit.artifactExtension(output.mediaType)
                 let url = FileManager.default.temporaryDirectory
-                    .appendingPathComponent("gateway-kh-\(sender.jobID)-\(sender.assetID).\(ext)")
+                    .appendingPathComponent("gateway-kh-\(output.jobID)-\(output.assetID).\(ext)")
                 DispatchQueue.global(qos: .userInitiated).async {
                     guard (try? data.write(to: url, options: .atomic)) != nil else {
                         DispatchQueue.main.async {
@@ -1352,9 +1627,8 @@ final class CreateWorkspace: NSView {
                     DispatchQueue.main.async {
                         self.localArtifactData[key] = data
                         self.localArtifactURLs[key] = url
-                        guard self.currentJobID == sender.jobID,
+                        guard self.currentJobID == output.jobID,
                               self.jobRequestGeneration == generation else { return }
-                        self.statusLabel.stringValue = "Downloaded locally: \(url.path)"
                         completion(data, url)
                     }
                 }
@@ -1364,54 +1638,34 @@ final class CreateWorkspace: NSView {
 
     private var localArtifactData: [String: Data] = [:]
 
-    @objc private func previewArtifact(_ sender: CreateArtifactButton) {
-        downloadArtifact(sender) { [weak self] data, url in
-            guard let self else { return }
-            if self.lane.modality == "image", let image = NSImage(data: data) {
-                let view = NSImageView(image: image)
-                view.imageScaling = .scaleProportionallyDown
-                view.translatesAutoresizingMaskIntoConstraints = false
-                view.widthAnchor.constraint(lessThanOrEqualToConstant: 520).isActive = true
-                view.heightAnchor.constraint(lessThanOrEqualToConstant: 340).isActive = true
-                self.resultBox.addArrangedSubview(view)
-            } else if self.lane.modality == "transcription" {
-                self.showTextPreview(String(data: data, encoding: .utf8) ?? "The transcript came back empty.")
-            } else {
-                NSWorkspace.shared.open(url)
-            }
+    @objc private func openArtifact() {
+        guard let output = selected, output.present else { return }
+        fetch(output) { _, url in NSWorkspace.shared.open(url) }
+    }
+
+    /// Show the saved copy in Finder, or the downloaded one if nothing was saved yet.
+    @objc private func revealArtifact() {
+        guard let output = selected, output.present else { return }
+        if let saved = savedArtifactURLs[output.key], FileManager.default.fileExists(atPath: saved.path) {
+            NSWorkspace.shared.activateFileViewerSelecting([saved])
+        } else {
+            fetch(output) { _, url in NSWorkspace.shared.activateFileViewerSelecting([url]) }
         }
     }
 
-    private func showTextPreview(_ value: String) {
-        let text = NSTextView()
-        text.isEditable = false
-        text.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
-        text.string = value.isEmpty ? "The transcript came back empty." : value
-        let scroll = NSScrollView()
-        scroll.documentView = text
-        scroll.hasVerticalScroller = true
-        scroll.borderType = .bezelBorder
-        scroll.translatesAutoresizingMaskIntoConstraints = false
-        scroll.widthAnchor.constraint(lessThanOrEqualToConstant: 520).isActive = true
-        scroll.heightAnchor.constraint(equalToConstant: 260).isActive = true
-        resultBox.addArrangedSubview(scroll)
-    }
-
-    @objc private func openArtifact(_ sender: CreateArtifactButton) {
-        downloadArtifact(sender) { _, url in NSWorkspace.shared.open(url) }
-    }
-
-    @objc private func saveArtifact(_ sender: CreateArtifactButton) {
+    @objc private func saveArtifact() {
+        guard let output = selected, output.present else { return }
         let panel = NSSavePanel()
-        panel.nameFieldStringValue = "\(lane.key)-\(sender.jobID.prefix(8))-\(sender.assetID).\(PageKit.artifactExtension(sender.mediaType))"
+        panel.nameFieldStringValue = "\(lane.key)-\(output.jobID.prefix(8))-\(output.assetID).\(PageKit.artifactExtension(output.mediaType))"
         guard panel.runModal() == .OK, let destination = panel.url else { return }
-        downloadArtifact(sender) { [weak self] data, _ in
+        fetch(output) { [weak self] data, _ in
             guard let self else { return }
             let statusLabel = self.statusLabel
             let filename = destination.lastPathComponent
             DispatchQueue.global(qos: .userInitiated).async {
                 let success = (try? data.write(to: destination, options: .atomic)) != nil
                 DispatchQueue.main.async {
+                    if success { self.savedArtifactURLs[output.key] = destination }
                     statusLabel.stringValue = success
                         ? "Saved \(filename)."
                         : "Could not save \(filename)."
@@ -1420,22 +1674,38 @@ final class CreateWorkspace: NSView {
         }
     }
 
-    @objc private func keepArtifact(_ sender: CreateArtifactButton) {
-        let keep = !sender.kept
-        sender.isEnabled = false
+    @objc private func copyText() {
+        guard let text = copyableText else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
+        statusLabel.stringValue = "Copied."
+    }
+
+    @objc private func clearConversation() {
+        chatTurns = []
+        showConversation()
+    }
+
+    @objc private func keepArtifact() {
+        guard let output = selected, output.present else { return }
+        let keep = !output.kept
+        let index = selectedOutput
+        pinItem.isEnabled = false
         GatewayAPI.post(
             "/admin/api/artifacts/keep",
-            body: ["job_id": sender.jobID, "asset_id": sender.assetID, "keep": keep]
+            body: ["job_id": output.jobID, "asset_id": output.assetID, "keep": keep]
         ) { [weak self] result in
             guard let self else { return }
+            self.pinItem.isEnabled = true
             switch result {
             case .failure(let error):
-                sender.isEnabled = true
                 self.statusLabel.stringValue = error.localizedDescription
             case .success:
-                sender.kept = keep
-                sender.title = keep ? "Unpin" : "Pin"
-                sender.isEnabled = true
+                if self.outputs.indices.contains(index), self.outputs[index].key == output.key {
+                    self.outputs[index].kept = keep
+                    self.updateCaption()
+                    self.updateActions()
+                }
                 self.statusLabel.stringValue = keep
                     ? "Pinned — retention will protect this output."
                     : "Unpinned — retention may remove this output."

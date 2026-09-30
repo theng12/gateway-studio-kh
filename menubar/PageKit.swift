@@ -182,3 +182,157 @@ enum PageKit {
         return row
     }
 }
+
+/// A rounded panel that follows light/dark mode. A `CALayer` colour is fixed at the moment it is
+/// set, so a card that assigned `controlBackgroundColor.cgColor` once stayed light after the
+/// system went dark; `updateLayer` re-resolves it whenever the appearance changes.
+final class CardView: NSView {
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        wantsLayer = true
+    }
+    required init?(coder: NSCoder) { fatalError("not used") }
+    override var wantsUpdateLayer: Bool { true }
+    override func updateLayer() {
+        layer?.backgroundColor = NSColor.controlBackgroundColor.cgColor
+        layer?.borderColor = NSColor.separatorColor.cgColor
+        layer?.borderWidth = 1
+        layer?.cornerRadius = 8
+    }
+}
+
+/// Something in a preview that must stop when the preview is replaced (audio, video).
+protocol PreviewStoppable: AnyObject { func stop() }
+
+/// **The one frame every Create page uses**, after Studio Hub's generator pages: a large title, then
+/// the form on the left (310-440 pt, scrolling on its own) and the result on the right, taking every
+/// remaining point of width and height. Six pages, one layout, so they cannot drift apart one fix
+/// at a time. A page fills `form` (via `addForm`), puts buttons in `previewActions`, and swaps what
+/// the result card shows with `setPreview`.
+final class CreatePageLayout: NSView {
+    static let formMinWidth: CGFloat = 310
+    static let formIdealWidth: CGFloat = 390
+    static let formMaxWidth: CGFloat = 440
+    /// Below this the preview is too narrow to be a preview; the form gives way first.
+    static let previewMinWidth: CGFloat = 260
+    static let gap: CGFloat = 24
+
+    let form = NSStackView()
+    let formScroll = NSScrollView()
+    let preview = NSStackView()
+    let previewActions = NSStackView()
+    let previewCard = CardView()
+    let caption = PageKit.label("", size: 12, colour: .secondaryLabelColor, wrapping: true)
+    private(set) var content: NSView?
+
+    init(title: String, blurb: String, previewTitle: String) {
+        super.init(frame: .zero)
+        let heading = PageKit.heading(title, blurb)
+
+        form.orientation = .vertical
+        form.alignment = .leading
+        form.spacing = 18
+        form.translatesAutoresizingMaskIntoConstraints = false
+        let document = FlippedView()
+        document.translatesAutoresizingMaskIntoConstraints = false
+        document.addSubview(form)
+        formScroll.documentView = document
+        formScroll.hasVerticalScroller = true
+        formScroll.autohidesScrollers = true
+        formScroll.drawsBackground = false
+        formScroll.borderType = .noBorder
+
+        previewActions.orientation = .horizontal
+        previewActions.spacing = 8
+        let title = PageKit.sectionTitle(previewTitle)
+        // The title keeps its words; the buttons are what give way when the window is at its narrowest.
+        title.setContentCompressionResistancePriority(.required, for: .horizontal)
+        let header = PageKit.row([title, NSView(), previewActions])
+        caption.preferredMaxLayoutWidth = 0
+        caption.isHidden = true
+        preview.orientation = .vertical
+        preview.alignment = .leading
+        preview.spacing = 12
+        for view in [header, previewCard, caption] { preview.addArrangedSubview(view) }
+        header.widthAnchor.constraint(equalTo: preview.widthAnchor).isActive = true
+        previewCard.widthAnchor.constraint(equalTo: preview.widthAnchor).isActive = true
+        caption.widthAnchor.constraint(equalTo: preview.widthAnchor).isActive = true
+        previewCard.heightAnchor.constraint(greaterThanOrEqualToConstant: 220).isActive = true
+        // The card takes whatever height the header and caption leave.
+        previewCard.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .vertical)
+        previewCard.setContentCompressionResistancePriority(NSLayoutConstraint.Priority(1), for: .vertical)
+
+        for view in [heading, formScroll, preview] {
+            view.translatesAutoresizingMaskIntoConstraints = false
+            addSubview(view)
+        }
+        let pad = PageKit.pagePadding
+        let ideal = formScroll.widthAnchor.constraint(equalToConstant: Self.formIdealWidth)
+        // Below 500, or the window treats the ideal as a minimum and refuses to get narrower.
+        ideal.priority = NSLayoutConstraint.Priority(400)
+        NSLayoutConstraint.activate([
+            heading.topAnchor.constraint(equalTo: topAnchor, constant: pad),
+            heading.leadingAnchor.constraint(equalTo: leadingAnchor, constant: pad),
+            heading.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -pad),
+
+            formScroll.topAnchor.constraint(equalTo: heading.bottomAnchor, constant: PageKit.blockSpacing),
+            formScroll.leadingAnchor.constraint(equalTo: leadingAnchor, constant: pad),
+            formScroll.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -pad),
+            formScroll.widthAnchor.constraint(greaterThanOrEqualToConstant: Self.formMinWidth),
+            formScroll.widthAnchor.constraint(lessThanOrEqualToConstant: Self.formMaxWidth),
+            ideal,
+
+            preview.topAnchor.constraint(equalTo: formScroll.topAnchor),
+            preview.leadingAnchor.constraint(equalTo: formScroll.trailingAnchor, constant: Self.gap),
+            preview.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -pad),
+            preview.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -pad),
+            preview.widthAnchor.constraint(greaterThanOrEqualToConstant: Self.previewMinWidth),
+
+            form.topAnchor.constraint(equalTo: document.topAnchor),
+            form.leadingAnchor.constraint(equalTo: document.leadingAnchor),
+            // Room for the overlay scroller, so it never sits on a control.
+            form.trailingAnchor.constraint(equalTo: document.trailingAnchor, constant: -16),
+            form.bottomAnchor.constraint(equalTo: document.bottomAnchor, constant: -20),
+            document.widthAnchor.constraint(equalTo: formScroll.contentView.widthAnchor),
+        ])
+    }
+
+    required init?(coder: NSCoder) { fatalError("not used") }
+
+    /// A full-width row of the form.
+    func addForm(_ view: NSView) {
+        form.addArrangedSubview(view)
+        view.widthAnchor.constraint(equalTo: form.widthAnchor).isActive = true
+    }
+
+    /// Replace what the result card shows. The view fills the card, and must be able to shrink
+    /// below its natural size (an image, a player).
+    func setPreview(_ view: NSView) {
+        func stopAll(_ view: NSView) {
+            (view as? PreviewStoppable)?.stop()
+            view.subviews.forEach(stopAll)
+        }
+        for old in previewCard.subviews {
+            stopAll(old)
+            old.removeFromSuperview()
+        }
+        content = view
+        view.translatesAutoresizingMaskIntoConstraints = false
+        previewCard.addSubview(view)
+        let low = NSLayoutConstraint.Priority(1)
+        view.setContentCompressionResistancePriority(low, for: .horizontal)
+        view.setContentCompressionResistancePriority(low, for: .vertical)
+        let inset: CGFloat = 16
+        NSLayoutConstraint.activate([
+            view.topAnchor.constraint(equalTo: previewCard.topAnchor, constant: inset),
+            view.leadingAnchor.constraint(equalTo: previewCard.leadingAnchor, constant: inset),
+            view.trailingAnchor.constraint(equalTo: previewCard.trailingAnchor, constant: -inset),
+            view.bottomAnchor.constraint(equalTo: previewCard.bottomAnchor, constant: -inset),
+        ])
+    }
+
+    func setCaption(_ text: String) {
+        caption.stringValue = text
+        caption.isHidden = text.isEmpty
+    }
+}

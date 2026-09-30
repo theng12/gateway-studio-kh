@@ -54,6 +54,8 @@ swiftc \
   -target "${TARGET_ARCH}-apple-macos${MACOS_MIN}" \
   -framework Cocoa \
   -framework WebKit \
+  -framework AVFoundation \
+  -framework AVKit \
   -o "$APP/Contents/MacOS/$APP_NAME" \
   "$HERE"/*.swift
 
