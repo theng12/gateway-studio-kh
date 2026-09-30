@@ -46,10 +46,27 @@ def open_section(name: str) -> str:
 
 
 def check_sidebar() -> tuple[bool, str]:
-    buttons = osa(f"tell {MAIN_WINDOW} to tell splitter group 1 to return (title of every button)")
+    """The footer names the build, and What's New still has a door.
+
+    **This check used to look for a "New" button in the sidebar, and had been failing
+    ever since What's New became a page.** It was a modal opened from a small link at the
+    bottom of the sidebar; the owner asked for Studio Hub's shape instead, where What's
+    New is an ordinary row — and this assertion was left naming the control that was
+    removed. The sidebar is an `NSTableView` and holds **0 buttons**; measured, not
+    assumed, and the same on every section.
+
+    What is worth pinning is what the footer still promises: the app version is readable
+    in the sidebar, and What's New is reachable. Now that it is a page rather than a
+    button, that door is the View menu — which `order` is what resolves, so this also
+    catches those index-aligned lists drifting apart.
+    """
     version = osa(f"tell {MAIN_WINDOW} to tell splitter group 1 to return (value of every static text)")
-    ok = "New" in buttons and "App version" in version
-    return ok, f"buttons={buttons!r} version={'App version' in version}"
+    menu = osa('tell menu bar item "View" of menu bar 1 to return (name of every menu item of menu 1)')
+    has_version = "App version" in version
+    has_door = "What's New" in menu
+    return has_version and has_door, (
+        f"app_version_in_footer={has_version} whats_new_door={has_door}"
+    )
 
 
 def check_jobs_provider() -> tuple[bool, str]:
@@ -179,8 +196,13 @@ def check_analytics_page() -> tuple[bool, str]:
     title = open_section("Analytics")
     if title != "gateway-kh — Analytics":
         return False, f"Analytics did not open (window is {title!r})"
+    # **The page, not the sidebar.** `splitter group 1` reads back the sidebar's own static
+    # texts (the "Running on…" footer), which is what the first cut of this check did — it
+    # reported a page that had rendered perfectly as having no heading. The detail pane is
+    # `scroll area 2`, the same element the Jobs check reads its table from.
     texts = osa(
-        f"tell {MAIN_WINDOW} to tell splitter group 1 to return (value of every static text)"
+        f"tell {MAIN_WINDOW} to tell splitter group 1 to tell scroll area 2 "
+        f"to return (value of every static text)"
     )
     said = texts or ""
     if "Analytics" not in said:
@@ -193,6 +215,10 @@ def check_analytics_page() -> tuple[bool, str]:
         return ("Nothing generated yet" in said), (
             f"neither table rendered and no empty state either: {said[:200]!r}"
         )
+    # Report the headline, so a passing run says *what* it saw rather than only that it passed.
+    parts = [p.strip() for p in said.split(",")]
+    headline = " · ".join(parts[2:9]) if len(parts) > 8 else ""
+    return True, f"by-model and by-machine blocks rendered — {headline[:130]}"
     return True, "page rendered with the by-model and by-machine blocks"
 
 
