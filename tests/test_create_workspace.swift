@@ -303,20 +303,20 @@ struct CreateWorkspaceCheck {
         GatewayAPI.state = "succeeded"
         GatewayAPI.nextJobID = "job-a"
         GatewayAPI.statusJobID = "job-a"
-        GatewayAPI.outputs = [["asset_id": "a", "url": "/admin/api/artifacts/job-a/outputs/a", "media_type": "audio/mpeg", "bytes": 1, "present": true, "kept": false]]
+        GatewayAPI.outputs = [["asset_id": "a", "url": "/admin/api/artifacts/job-a/outputs/a", "media_type": "audio/mpeg", "bytes": 1100000, "present": true, "kept": false]]
         let raceWorkspace = CreateWorkspace(lane: CreateLanes.all[0])
         raceWorkspace.refreshModels()
         raceWorkspace.perform(NSSelectorFromString("generate"))
         GatewayAPI.deferStatus = true
         raceWorkspace.perform(NSSelectorFromString("loadSelectedJob"))
         GatewayAPI.nextJobID = "job-b"
-        GatewayAPI.outputs = [["asset_id": "b", "url": "/admin/api/artifacts/job-b/outputs/b", "media_type": "audio/mpeg", "bytes": 2, "present": true, "kept": false]]
+        GatewayAPI.outputs = [["asset_id": "b", "url": "/admin/api/artifacts/job-b/outputs/b", "media_type": "audio/mpeg", "bytes": 2200000, "present": true, "kept": false]]
         raceWorkspace.perform(NSSelectorFromString("generate"))
-        GatewayAPI.statusReply?(.success(["id": "job-a", "state": "succeeded", "outputs": [["asset_id": "a", "url": "/admin/api/artifacts/job-a/outputs/a", "media_type": "audio/mpeg", "bytes": 1, "present": true, "kept": false]]]))
+        GatewayAPI.statusReply?(.success(["id": "job-a", "state": "succeeded", "outputs": [["asset_id": "a", "url": "/admin/api/artifacts/job-a/outputs/a", "media_type": "audio/mpeg", "bytes": 1100000, "present": true, "kept": false]]]))
         GatewayAPI.statusReply = nil
         GatewayAPI.deferStatus = false
-        assert(labels(raceWorkspace).contains { $0.contains("Asset b") }, "late selected-job response replaced the newer submission")
-        assert(!labels(raceWorkspace).contains { $0.contains("Asset a") }, "stale selected-job output remained visible")
+        assert(labels(raceWorkspace).contains { $0 == "MP3 · 2.2 MB" }, "late selected-job response replaced the newer submission")
+        assert(!labels(raceWorkspace).contains { $0.contains("1.1 MB") }, "stale selected-job output remained visible")
 
         // Preview goes through the authenticated byte helper, not a raw URL or a
         // synchronous Data(contentsOf:) call.

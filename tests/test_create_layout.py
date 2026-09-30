@@ -91,6 +91,22 @@ import AVKit
                     assert(editor.frame.width >= 300 && editor.frame.height >= 150, tag + "script editor is small")
                 }
                 assert(page.form.frame.width <= page.formScroll.frame.width, tag + "the form is wider than its column")
+
+                // Order of the form: model picker, then the lane's inputs, Generate last.
+                func top(_ view: NSView) -> CGFloat { view.convert(view.bounds, to: nil).maxY }
+                func bottom(_ view: NSView) -> CGFloat { view.convert(view.bounds, to: nil).minY }
+                let formViews = descendants(page.formScroll).filter { !$0.isHiddenOrHasHiddenAncestor }
+                let firstInput: NSView = lane.isUpload
+                    ? formViews.compactMap { $0 as? NSButton }.first { $0.title == "Choose File…" }!
+                    : formViews.compactMap { $0 as? NSTextView }.first!.enclosingScrollView!
+                assert(top(popup) > top(firstInput), tag + "the model picker is not above the first input")
+                assert(bottom(popup) > top(firstInput), tag + "the model picker overlaps the first input")
+                assert(top(generate) < bottom(firstInput) + 1, tag + "Generate is above an input")
+                for view in formViews where view !== generate && (view is NSControl || view is NSTextView)
+                    && (view as? NSTextField)?.isEditable != false {  // labels (the status line) may follow Generate
+                    let extent = (view as? NSTextView)?.enclosingScrollView ?? view
+                    assert(bottom(generate) <= bottom(extent) + 1, tag + "Generate is not the last control: \(type(of: view))")
+                }
             }
         }
 

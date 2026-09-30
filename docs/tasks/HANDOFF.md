@@ -14,7 +14,7 @@ project does not say why, and nobody should guess.
 > * **One layout, six pages.** `CreatePageLayout` (PageKit) is the frame: heading, form column left (310-440 pt, ideal 390, its own scroller), result
 >   pane right taking all remaining width/height (min 260), a `CardView` result card, a header with the page's result actions, and a caption. `CreateWorkspace`
 >   only fills the form and swaps the card's content (`setPreview`); `CreateLane` gained `previewTitle/emptyTitle/emptyDetail`. The old stacked "form above
->   result, 330 pt controls" build is gone. Form order follows Studio Hub: fields, Generate (accent, large), status line, then Model (+ Refresh, **Manage <lane>
+>   result, 330 pt controls" build is gone. Form order (final): Model, then inputs, then Generate; the sentence below describes the first cut: fields, Generate (accent, large), status line, then Model (+ Refresh, **Manage <lane>
 >   Models** -> `MainWindow.show(section: "models")`) and capabilities.
 > * **Previews (`CreatePreview.swift`), fetched automatically through the authenticated `GatewayAPI.download`:** `AudioPlayerView` + `WaveformView` (Audio, Music;
 >   peaks read in chunks off-main; click/drag seeks), `ImageGalleryView` (large image + thumbnails, all outputs fetched), `VideoPreviewView` (AVPlayerView), `TranscriptText`
@@ -22,6 +22,7 @@ project does not say why, and nobody should guess.
 >   lanes), Save..., and a menu: Open, Show in Finder (the saved copy, else the downloaded one), Pin/Unpin, Clear Conversation (chat), Reload Result, All Jobs. The "Preview"/"Open"/"Save"/"Pin"
 >   row of buttons per asset is gone. Chat is now a real conversation: `chatHistory()` sends earlier completed turns with each message (a failed try and its message are left out); the transcript is
 >   in memory only. `build.sh` links AVFoundation + AVKit.
+> * **Form order (coordinator review):** Model (picker, Refresh, Manage Models, capabilities) -> divider -> the lane's inputs -> Generate + status line last. `test_create_layout.py` asserts, for all six lanes, model picker above the first input and Generate the lowest control (mutation-proved). Result caption is human ("WAV · 117 KB", "4 images · PNG · 120 KB"), not asset ids.
 > * **Root cause 1 - `mock-job` in the real app.** `CreateStateStore` fell back to the production suite `kh.gateway.create` whenever `GATEWAY_NATIVE_DEFAULTS_SUITE` was unset, so
 >   *any* process that built a `CreateWorkspace` without remembering the env var wrote the fixture's `mock-job` into the owner's Audio state. The committed tests have set a suite since `1e516e1`, so the run that leaked was an
 >   uncommitted harness variant (`gateway-task5-debug-*` and `gateway-review-*` plists in `~/Library/Preferences` are their leftovers; the exact run is not recoverable) - [MEASURED] with the guard reverted a plain test run does write the real suite. A suite per run also left ~240 `gateway-*-test-*.plist` files there; moved to `_trash/prefs-litter/`. Fix: only a process whose bundle id is `kh.gateway.menubar` reads/writes the real suite; every other process keeps state in memory

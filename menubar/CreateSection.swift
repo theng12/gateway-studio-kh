@@ -237,10 +237,18 @@ private struct CreateOutput {
     var kept: Bool
 
     var key: String { "\(jobID)/\(assetID)" }
+    /// "WAV · 117 KB", "PNG · 1.2 MB · Pinned". Nothing an owner has to decode.
     var facts: String {
-        let size = bytes.map { "\($0) bytes" } ?? "size unknown"
-        return "Asset \(assetID) · \(mediaType.isEmpty ? "media type unknown" : mediaType) · \(size) · "
-            + (present ? (kept ? "Pinned" : "Available") : "Missing file")
+        guard present else { return "The file is missing from the gateway" }
+        var parts = [Self.kind(mediaType)]
+        if let bytes { parts.append(ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .file)) }
+        if kept { parts.append("Pinned") }
+        return parts.joined(separator: " · ")
+    }
+
+    static func kind(_ mediaType: String) -> String {
+        let ext = PageKit.artifactExtension(mediaType)
+        return ext == "bin" ? "File" : ext.uppercased()
     }
 }
 
@@ -372,6 +380,35 @@ final class CreateWorkspace: NSView {
     }
 
     private func buildForm() {
+        // Model first, then the lane's inputs, then Generate as the last thing in the column: the
+        // order a person acts in (pick what runs it, say what to make, press go).
+        let picker = NSPopUpButton()
+        picker.target = self
+        picker.action = #selector(modelChanged)
+        modelPopup = picker
+        let refresh = NSButton(
+            image: NSImage(systemSymbolName: "arrow.clockwise", accessibilityDescription: "Refresh models") ?? NSImage(),
+            target: self, action: #selector(refreshModels))
+        refresh.bezelStyle = .rounded
+        refresh.toolTip = "Refresh models"
+        let pickerRow = PageKit.row([picker, refresh], spacing: 8)
+        picker.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
+        capabilityLabel = PageKit.help("Capabilities: unknown")
+        let manage = NSButton(title: "Manage \(lane.title) Models", target: self, action: #selector(openModels))
+        manage.bezelStyle = .rounded
+        let modelColumn = NSStackView(views: [pickerRow, manage])
+        modelColumn.orientation = .vertical
+        modelColumn.alignment = .leading
+        modelColumn.spacing = 10
+        pickerRow.widthAnchor.constraint(equalTo: modelColumn.widthAnchor).isActive = true
+        let modelBlock = section(
+            "Model", modelColumn,
+            hint: "Only models switched on for this lane appear here — the same set Story Studio picks from.")
+        layout.addForm(modelBlock)
+        layout.addForm(wrapped(capabilityLabel!))
+    
+        layout.addForm(divider())
+
         if lane.isUpload {
             let choose = NSButton(title: "Choose File…", target: self, action: #selector(pickFile))
             choose.bezelStyle = .rounded
@@ -419,32 +456,6 @@ final class CreateWorkspace: NSView {
         actions.spacing = 8
         layout.addForm(actions)
         layout.addForm(wrapped(statusLabel))
-
-        layout.addForm(divider())
-        let picker = NSPopUpButton()
-        picker.target = self
-        picker.action = #selector(modelChanged)
-        modelPopup = picker
-        let refresh = NSButton(
-            image: NSImage(systemSymbolName: "arrow.clockwise", accessibilityDescription: "Refresh models") ?? NSImage(),
-            target: self, action: #selector(refreshModels))
-        refresh.bezelStyle = .rounded
-        refresh.toolTip = "Refresh models"
-        let pickerRow = PageKit.row([picker, refresh], spacing: 8)
-        picker.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
-        capabilityLabel = PageKit.help("Capabilities: unknown")
-        let manage = NSButton(title: "Manage \(lane.title) Models", target: self, action: #selector(openModels))
-        manage.bezelStyle = .rounded
-        let modelColumn = NSStackView(views: [pickerRow, manage])
-        modelColumn.orientation = .vertical
-        modelColumn.alignment = .leading
-        modelColumn.spacing = 10
-        pickerRow.widthAnchor.constraint(equalTo: modelColumn.widthAnchor).isActive = true
-        let modelBlock = section(
-            "Model", modelColumn,
-            hint: "Only models switched on for this lane appear here — the same set Story Studio picks from.")
-        layout.addForm(modelBlock)
-        layout.addForm(wrapped(capabilityLabel!))
     }
 
     private func buildPreviewActions() {
@@ -1463,7 +1474,8 @@ final class CreateWorkspace: NSView {
 
     private func updateCaption() {
         guard outputs.indices.contains(selectedOutput) else { return layout.setCaption("") }
-        let prefix = outputs.count > 1 ? "\(outputs.count) results — every one the model returned · " : ""
+        let noun = lane.modality == "image" ? "images" : "results"
+        let prefix = outputs.count > 1 ? "\(outputs.count) \(noun) · " : ""
         layout.setCaption(prefix + outputs[selectedOutput].facts)
     }
 
@@ -1605,8 +1617,8 @@ final class CreateWorkspace: NSView {
             switch result {
             case .failure(let error):
                 self.statusLabel.stringValue = error.localizedDescription == "The requested file is no longer available."
-                    ? "Asset \(output.assetID) is missing from the gateway."
-                    : "Could not download asset \(output.assetID) — \(error.localizedDescription)"
+                    ? "This file is missing from the gateway."
+                    : "Could not download the file — \(error.localizedDescription)"
                 if self.outputs.indices.contains(self.selectedOutput), self.outputs[self.selectedOutput].key == key,
                    self.lane.modality != "image" {
                     self.layout.setPreview(self.picker(self.messageView(

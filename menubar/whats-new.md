@@ -19,7 +19,7 @@ every feature title, and they are left as they were written.
 - **All six Create pages are redesigned to match Studio Hub's generator pages.** Audio, Subtitle, Image, Music, Video and Chat used to be a narrow
   column of small controls in the top-left corner with the result squeezed underneath. They now share one layout: the form on the left
   (about 390 pt, scrolling on its own) and the result on the right, filling the rest of the window at any size. Larger text, full-width
-  controls, a prominent Generate button, and the model picker with a Refresh button and a **Manage Models** shortcut.
+  controls, and the form reads top to bottom: pick the model (with a Refresh button and a **Manage Models** shortcut), say what to make, then a prominent Generate button.
 - **Real previews, not a "Preview" button.** The result appears by itself: **Audio and Music** get an inline player with a waveform you can
   click to seek (music that returns two tracks has a Result 1 / Result 2 switch); **Image** shows one large picture with thumbnails when
   the model returned several; **Video** plays inline; **Subtitle** shows the transcript with a timestamp beside each line, plus Copy and Save (SRT);
