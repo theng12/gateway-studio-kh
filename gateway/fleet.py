@@ -2017,16 +2017,23 @@ def _node_reach_reason(machine: dict) -> str:
     the answer: `no_hub` for a refused TCP connection (the Mac is up, nothing listening on
     :47873) and `unreachable` for dropped packets (asleep, off, or firewalled).
 
+    **Then the sentence's token, because it is the probe's own classification.** Controllers
+    that predate the field state it in `node_detail` — `could not reach the node (no_hub)`.
+
     **Then the machine's `health`, which has carried the same two words since before the
     field existed** — the live fleet of 2026-09-24 had one controller saying `no_hub` and
-    another `unreachable` in exactly that slot. Only those two tokens are accepted here: any
-    other health word is a different fault and must not be read as a reachability reason.
+    another `unreachable` in exactly that slot. Only those two tokens are accepted: any other
+    health word is a different fault and must not be read as a reachability reason.
 
-    **Then the sentence, and only while older Hubs are in the fleet.** Controllers that
-    predate both state the token inside `node_detail` — `could not reach the node (no_hub)`.
-    This is a second copy of a vocabulary the Hub owns, which is exactly the kind of thing
-    that drifts; it is confined to this one function so that deleting it, once every
-    controller publishes the field, is a two-line change with no caller to update.
+    ⚠ **The sentence outranks `health`, and the live fleet is why.** `terranash-1209` reports
+    `health: unreachable` while its probe detail says `(no_hub)` — the host answered. Taking
+    `health` first called that Mac switched-off when something had just replied to it. A
+    `no_hub` is positive evidence the Mac is up; `unreachable` is the absence of evidence, so
+    where the two disagree the positive one is the better answer.
+
+    The sentence parse is a second copy of a vocabulary the Hub owns, which is exactly the
+    kind of thing that drifts; it is confined to this one function so that deleting it, once
+    every controller publishes the field, is a two-line change with no caller to update.
 
     **Neutral when none of them says.** An empty answer is not "unreachable": it is "nobody
     told us", and those must not render as the same advice.
@@ -2034,12 +2041,14 @@ def _node_reach_reason(machine: dict) -> str:
     stated = str(machine.get("node_reason") or "").strip().lower()
     if stated:
         return stated
+    sentence = str(machine.get("node_detail") or "")
+    match = re.search(r"\((no_hub|unreachable)\)\s*$", sentence.strip())
+    if match:
+        return match.group(1)
     health = str(machine.get("health") or "").strip().lower()
     if health in {"no_hub", "unreachable"}:
         return health
-    sentence = str(machine.get("node_detail") or "")
-    match = re.search(r"\((no_hub|unreachable)\)\s*$", sentence.strip())
-    return match.group(1) if match else ""
+    return ""
 
 
 def _offline_action(reason: str) -> str:

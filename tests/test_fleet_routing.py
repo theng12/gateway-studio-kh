@@ -751,6 +751,20 @@ class OneFaultOneRowTests(unittest.TestCase):
             "Check that Mac",
         )
 
+    def test_the_probes_sentence_outranks_a_health_word_that_disagrees(self) -> None:
+        # **Found in the live fleet, not in a fixture.** `terranash-1209` reports
+        # `health: unreachable` while its own probe detail says `(no_hub)` — something
+        # answered. Reading `health` first called that Mac switched-off when a host had just
+        # replied to it. `no_hub` is positive evidence the Mac is up; `unreachable` is the
+        # absence of evidence, so the positive one wins where they disagree.
+        self.assertEqual(
+            self._offline_action(
+                node={"detail": "could not reach the node (no_hub)"},
+                machine={"health": "unreachable"},
+            ),
+            "Start Studio Hub on that Mac",
+        )
+
     def test_a_health_word_that_is_not_a_reachability_reason_is_ignored(self) -> None:
         # `health` carries many words. Only the two that mean "did not answer" may be read as
         # a reachability reason; anything else is a different fault.
