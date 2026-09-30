@@ -1,12 +1,42 @@
 # HANDOFF — gateway-kh
 
-**Read this first.** Updated 2026-09-30 for **VERSION `0.2.80`** (the release blocks below are
+**Read this first.** Updated 2026-09-30 for **VERSION `0.2.81`** (the release blocks below are
 newest first; 0.2.76-0.2.79 are recorded in `menubar/whats-new.md` and their commits). The running build
 stamp is on `/health` and in `/Applications/gateway-kh.app/Contents/Resources/gateway/BUILD`.
 If this file disagrees with the code, **the code wins — fix this file in the same change**.
 Every path below is inside the Git checkout `repository/` unless it says otherwise.
 `[MEASURED]` = observed in the session that wrote this; `[reason not recorded]` = the
 project does not say why, and nobody should guess.
+
+> **0.2.81 — controller handover + resume in the app; price truth beside the zero shape.**
+>
+> Owner decisions of 2026-09-30 (fix agent gateway-r3). Contract for the Story side:
+> `_orchestra/audit-20260930/CONTRACT-pricing.md`.
+>
+> 1. **Fleet -> Locations: `Change address…` and `Resume`** (`menubar/FleetSection.swift`,
+>    `FleetTabs.swift`, `FleetModels.swift`). Handover is `PUT /admin/api/fleet/controllers/{id}/address`
+>    (keeps the row id, credential and per-model enable decisions; clears `site_id`); Remove+Add would make
+>    a second location and orphan both. The sheet's **Test this address** is `POST .../{id}/test` with an
+>    optional `{url, token}` body: it probes the *candidate* and stores nothing (blank token = the stored
+>    one; the address is validated exactly as a re-point is). Confirming an address that has not answered a
+>    test asks first. `FleetLocation` now decodes `paused_at`/`pause_reason`/`unreachable_since`; the Status
+>    cell shows the gateway's pause sentence and a **Resume** button (`POST .../{id}/resume`) appears only
+>    while paused. The Actions column is 420 wide (was 300) for the two extra buttons.
+>    Tests: `test_fleet_layout.py` (decode + buttons + status text, mutation-proved),
+>    `test_fleet_members_outage.py::TestingACandidateAddressStoresNothingTest`.
+> 2. **Pricing** (`gateway/pricing.py`, wired in `catalog._story_row`, after `zero_pricing`, which is
+>    untouched). Every row publishes `price_source` (`provider|local|unpublished`), `price_usd` (units per
+>    modality) and `price_as_of`. Only provider-stated numbers: OpenRouter/Groq (`pricing` per token),
+>    Token Harbor (`*_usd_per_1m`), xAI (`*_token_price`, USD cents per 100M tokens), fal (new
+>    `GET api.fal.ai/v1/models/pricing` in `discovery._fal_prices`, best effort — **not verified live**, no
+>    cloud calls; prices arrive on the next fal-ai model refresh). Studio Hub locations are `local`, price 0.
+>    Everything else `unpublished` (`price_usd: null`). The envelope adds `cost_usd` + `cost_source:
+>    "provider"` only when `usage.cost` is stated beside `usage.is_byok` (OpenRouter shape; measured on
+>    OpenRouter and Experiential Labs jobs). Test: `tests/test_pricing.py`.
+>
+> **Open, not done:** fal tts units (chars) are not mapped; OmniRoute's snapshot `pricing` table, BFL's submit
+> `cost` (credits) and ElevenLabs' credit multiplier are candidates for a later pass; xAI's `cost_in_usd_ticks`
+> on job usage was not observed on a stored job, so it is not read.
 
 > **0.2.80 — Story<->gateway<->Hub seam: adopt finished work, queue wait is not lane budget, a real waiting state.**
 >

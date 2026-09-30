@@ -2553,18 +2553,33 @@ def fleet_rename_controller(controller_id: str, payload: dict[str, Any]) -> Any:
 
 
 @router.post("/api/fleet/controllers/{controller_id}/test", dependencies=[Depends(require_admin)])
-def fleet_test_controller(controller_id: str) -> Any:
-    """Connection test: identity, role and release, straight from the controller."""
+def fleet_test_controller(controller_id: str, payload: dict[str, Any] | None = None) -> Any:
+    """Connection test: identity, role and release, straight from the controller.
+
+    **An optional `url` (and `token`) tests a *candidate* address instead, storing nothing** — the
+    "test first" step of a handover (`PUT .../address`): probe where the replacement head is going
+    to be before the roster is re-pointed at it. A blank `token` keeps the stored credential, the
+    same rule the re-point itself uses. The address is validated exactly as a re-point validates it.
+    """
     row = next((c for c in fleet._read() if c.get("id") == controller_id), None)  # noqa: SLF001
     if row is None:
         return _error(404, "No such controller.")
+    payload = payload or {}
+    url = str(row["url"])
+    token = fleet._token_for(controller_id)  # noqa: SLF001
+    if str(payload.get("url") or "").strip():
+        try:
+            url = fleet._validate_address(str(payload["url"]))  # noqa: SLF001
+        except ValueError as exc:
+            return _error(400, str(exc))
+        token = str(payload.get("token") or "").strip() or token
     # The credential comes from the store, not the roster: the roster deliberately
     # holds no secrets, so reading a token off the row probed with an empty one and
     # reported every correctly configured controller as unreachable.
-    probed = fleet._probe(str(row["url"]), fleet._token_for(controller_id))  # noqa: SLF001
+    probed = fleet._probe(url, token)  # noqa: SLF001
     return {
         "id": controller_id,
-        "url": row["url"],
+        "url": url,
         "reachable": probed["reachable"],
         "error": probed["error"],
         "role": probed["role"],
@@ -2575,7 +2590,7 @@ def fleet_test_controller(controller_id: str) -> Any:
         # Only when it answered: an unreachable controller has no scope to report,
         # and a second doomed request would just add the same timeout to the wait.
         "credential": (
-            fleet.credential_scope(str(row["url"]), fleet._token_for(controller_id))  # noqa: SLF001
+            fleet.credential_scope(url, token)
             if probed["reachable"]
             else {"scope": "unknown", "detail": "Not reachable, so the credential was not checked."}
         ),

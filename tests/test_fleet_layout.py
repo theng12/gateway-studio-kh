@@ -87,6 +87,10 @@ FIXTURE = {
             "id": "ctrl-1", "label": "Blue Room", "local": False, "reachable": True,
             "role": "controller", "version": "0.6.47", "provider_id": "studio-hub-ctrl-1",
             "models_discovered": 5, "models_enabled": 0, "models_publishable": 2,
+            # The gateway's pause clock (Q7): epoch seconds plus its own sentence.
+            "paused_at": 1790000500, "unreachable_since": 1789000000,
+            "pause_reason": "unreachable since 2026-09-01 — paused after 7 days. Routing skips "
+                            "it; nothing was removed. Bring the Mac back, or resume it from the Fleet page.",
             # What the controller holds now: older than the pushed 0.6.50.
             "release": {
                 "version": "0.6.49", "build": "deadbee",
@@ -280,6 +284,23 @@ enum GatewayAPI {
                "the controller's own sentence did not decode verbatim")
         assert(controller?.nodes.first(where: { $0.id == "mac-a" })?.role == "agent",
                "the node's join role did not decode")
+        // **A paused controller decodes, says so, and offers Resume** (owner decision: the gateway's
+        // own pause message tells the operator to resume from this page). Handover is offered for
+        // every controller, never for this Mac.
+        assert(controller?.pausedAt == 1790000500 && controller?.unreachableSince == 1789000000,
+               "the pause clock did not decode")
+        assert((controller?.pauseReason ?? "").contains("resume it from the Fleet page"),
+               "the gateway's pause sentence did not decode")
+        assert(snapshot.locations.first(where: { $0.id == "local" })?.pausedAt == nil,
+               "a location that stated no pause must not read as paused")
+        let buttonTitles = descendants(locations).compactMap { ($0 as? NSButton)?.title }
+        assert(buttonTitles.filter { $0 == "Resume" }.count == 1,
+               "Resume must appear exactly once: on the paused controller only, got \(buttonTitles)")
+        assert(buttonTitles.filter { $0 == "Change address…" }.count == 1,
+               "Change address… must be offered for the controller and not for this Mac")
+        let pausedTexts = descendants(locations).compactMap { ($0 as? NSTextField)?.stringValue }
+        assert(pausedTexts.contains(where: { $0.contains("paused after 7 days") }),
+               "the Status column did not show the pause reason")
         // A location with no roster summary is unknown, never `0 / 0`.
         assert(snapshot.locations.first(where: { $0.id == "local" })?.memberCount == nil,
                "a location that stated no roster must not read as an empty one")

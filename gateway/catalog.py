@@ -33,6 +33,7 @@ from typing import Any
 from . import limits
 from . import voices
 from .constants import PRICE_VERSION, zero_pricing
+from .pricing import row_price
 from .providers import registry
 from .providers.definitions import (
     HUB_IMAGE_SIZE_BY_RATIO,
@@ -1836,6 +1837,13 @@ class Catalog:
 
         # Price constants merged LAST so they always win and stay consistent.
         row.update(zero_pricing(modality))
+        # **The truth beside the shape.** `zero_pricing` above only keeps Story's parser from
+        # dropping the row; these say whether a price exists and who stated it. Additive, and
+        # never derived from the zeros.
+        row.update(row_price(
+            definition.kind, modality, model.get("raw"),
+            None if is_location else registry.models.cached(definition.id).get("fetched_at"),
+        ))
         return row
 
     # -- reads ------------------------------------------------------------

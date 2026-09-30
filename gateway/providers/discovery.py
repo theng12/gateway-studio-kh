@@ -426,7 +426,35 @@ def _fal_catalog(definition: ProviderDefinition, values: dict[str, str]) -> Disc
                 raw={"endpoint_id": model_id, "category": hint},
             )
         )
+    _fal_prices(base, key, models)
     return DiscoveryResult(models=models)
+
+
+def _fal_prices(base: str, key: str, models: list[DiscoveredModel]) -> None:
+    """Attach fal's own stated price to each model's `raw["pricing"]` (`catalog` reads it).
+
+    `GET {base}/models/pricing?endpoint_id=a,b,...` (1-50 ids) answers
+    `{prices: [{endpoint_id, unit_price, unit, currency}]}`. Best effort by design: the price is
+    additive, so a failure here leaves every model discovered and unpriced (`unpublished`) rather
+    than failing discovery — and stops at the first failure instead of repeating the timeout.
+    """
+    for start in range(0, len(models), 50):
+        batch = models[start:start + 50]
+        try:
+            response = httpx.get(
+                f"{base}/models/pricing",
+                headers={"Authorization": f"Key {key}"},
+                params={"endpoint_id": ",".join(m.model_id for m in batch)},
+                timeout=TIMEOUT,
+            )
+            prices = response.json().get("prices") if response.status_code < 400 else None
+        except (httpx.HTTPError, ValueError, AttributeError):
+            return
+        by_id = {p.get("endpoint_id"): p for p in prices or [] if isinstance(p, dict)}
+        for model in batch:
+            stated = by_id.get(model.model_id)
+            if stated:
+                model.raw["pricing"] = {k: stated.get(k) for k in ("unit_price", "unit", "currency")}
 
 
 def _elevenlabs_models(definition: ProviderDefinition, values: dict[str, str]) -> DiscoveryResult:

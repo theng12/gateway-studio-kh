@@ -702,6 +702,10 @@ final class FleetLocationsTab: FleetTabView {
     var onRename: ((FleetLocation) -> Void)?
     var onCredentials: ((FleetLocation) -> Void)?
     var onRemove: ((FleetLocation) -> Void)?
+    /// Handover: re-point this location at a new address, keeping its identity and decisions.
+    var onChangeAddress: ((FleetLocation) -> Void)?
+    /// Clear a pause. Only offered while the gateway reports the location paused.
+    var onResume: ((FleetLocation) -> Void)?
     var onRefresh: (() -> Void)?
     var onRetryFailed: (() -> Void)?
     var onAddLocation: ((String, String, String) -> Void)?
@@ -999,6 +1003,12 @@ final class FleetLocationsTab: FleetTabView {
                 text: { row in
                     guard let row = location(row) else { return "—" }
                     let address = FleetFormat.text(row.url)
+                    // A pause outranks the raw probe error: it says what the gateway did about
+                    // it (routing skips this location; nothing was removed) and how to undo it.
+                    if row.pausedAt != nil {
+                        let reason = row.pauseReason ?? "Paused: unreachable."
+                        return address.isEmpty ? reason : "\(address)\n\(reason)"
+                    }
                     if row.reachable == true { return address }
                     // **The address is what you need most when it is not answering.** This cell
                     // used to *replace* the address with the reason, so "Nothing is listening on
@@ -1014,7 +1024,7 @@ final class FleetLocationsTab: FleetTabView {
                 }
             ),
             FleetColumn(
-                id: "lactions", title: "Actions", width: 300, minWidth: 290, sortable: false,
+                id: "lactions", title: "Actions", width: 420, minWidth: 400, sortable: false,
                 text: { _ in "" },
                 cell: { [weak self] any in
                     guard let self, let row = location(any) else { return NSView() }
@@ -1024,7 +1034,7 @@ final class FleetLocationsTab: FleetTabView {
         ]
     }
 
-    /// Test / Rename / Credentials / Remove, per location.
+    /// Test / Rename / Credentials / Change address / Resume (paused only) / Remove, per location.
     ///
     /// This Mac gets Rename only: it has no address to test and nothing to remove.
     private func actions(for row: FleetLocation) -> NSView {
@@ -1040,6 +1050,14 @@ final class FleetLocationsTab: FleetTabView {
             buttons.append(FleetClosureButton(title: "Credentials…") { [weak self] in
                 self?.onCredentials?(row)
             })
+            // Handover, not Remove + Add: a second row orphans the first one's credential
+            // and every per-model enable decision (see the gateway's `replace_address`).
+            buttons.append(FleetClosureButton(title: "Change address…") { [weak self] in
+                self?.onChangeAddress?(row)
+            })
+            if row.pausedAt != nil {
+                buttons.append(FleetClosureButton(title: "Resume") { [weak self] in self?.onResume?(row) })
+            }
             buttons.append(FleetClosureButton(title: "Remove") { [weak self] in self?.onRemove?(row) })
         }
         return fleetButtonCell(buttons)

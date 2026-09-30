@@ -14,6 +14,31 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.81 — 2026-09-30
+
+### Hand a controller over from the app, resume a paused one, and see what a model really costs
+
+**Change address… on the Fleet page.** When a controller is replaced (say a node is promoted to
+head) you no longer have to Remove it and Add the new one — that makes a second location and orphans
+the first one's credential and every enable decision you ticked. Locations now has **Change
+address…**: type the new address (and a token if it is a different one), press **Test this address**
+to see the new Mac answer as a controller before anything changes, then confirm. The location keeps
+its identity, its credential and its enabled models; the old Mac's identity is dropped and the next
+probe reads the new one. Confirming an address that has not answered a test asks you first.
+
+**Paused controllers are visible, with a Resume button.** After a controller has been unreachable
+for the pause window, the gateway stops routing to it (nothing is removed) — and its own message says
+to resume it from the Fleet page, which had no way to. The Status column now shows the pause and its
+reason, and a **Resume** button clears it.
+
+**Prices say who stated them.** Every model row now carries `price_source`: `provider` (the provider's
+own response carried the number), `local` (your own Macs — free), or `unpublished` (nobody stated
+one), with `price_usd` and `price_as_of` beside it. Real prices today: OpenRouter, Groq, Token Harbor
+and xAI chat models (per 1M tokens) and fal.ai image/video/voice models (fal's pricing endpoint). No
+number is ever calculated or guessed; the old zero credit fields are unchanged so Story Studio keeps
+every row. A finished job also reports `cost_usd` when — and only when — the provider states what it
+charged (OpenRouter does).
+
 ## 0.2.80 — 2026-09-30
 
 ### Finished work is no longer lost when the gateway restarts, and a job waiting for a Mac says so

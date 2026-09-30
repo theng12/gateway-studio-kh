@@ -46,6 +46,7 @@ from .adapters.studio_hub import SUPPORTED_STUDIO_HUB_VERSION
 from .catalog import MODALITIES, catalog, encode_model_id
 from .config import ARTIFACT_DIR, gateway_api_key, is_loopback, request_is_loopback
 from .constants import CREDIT_BALANCE, ZERO_SETTLEMENT, admission
+from .pricing import job_cost
 from .providers import registry
 from . import fleet
 from . import retention
@@ -703,6 +704,8 @@ def _job_envelope(job: dict[str, Any], *, native: bool = False) -> dict[str, Any
             body["variations_failed"] = payload["variations_failed"]
         if payload.get("usage"):
             body["usage"] = payload["usage"]
+        # What the provider says it *charged* for this job — stated, never computed from tokens.
+        body.update(job_cost(payload))
 
     if job["state"] == "failed":
         body["failure_code"] = job.get("error_code") or "PROVIDER_FAILED"

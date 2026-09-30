@@ -213,6 +213,8 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
         locationsTab.onRename = { [weak self] location in self?.renameController(location) }
         locationsTab.onCredentials = { [weak self] location in self?.editCredentials(location) }
         locationsTab.onRemove = { [weak self] location in self?.removeController(location) }
+        locationsTab.onChangeAddress = { [weak self] location in self?.changeAddress(location) }
+        locationsTab.onResume = { [weak self] location in self?.resumeController(location) }
 
         jobsTab.onRefresh = { [weak self] in self?.refreshEverything() }
         jobsTab.onCancel = { [weak self] job in self?.cancelJob(job) }
@@ -1120,6 +1122,137 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
                     discovered: payload["discovered"] as? Int
                 )
                 finish()
+            }
+        }
+    }
+
+    /// **Handover: point this location at the Mac that replaces it.**
+    ///
+    /// Not Remove + Add — that makes a second location and orphans this one's credential and
+    /// every per-model enable decision. The row id, and so the provider id Story's presets and
+    /// your ticks hang on, is kept. The sheet tests the *new* address first (a candidate probe,
+    /// nothing stored) and only re-points once you confirm.
+    private func changeAddress(_ location: FleetLocation) {
+        guard let id = location.id else { return }
+        let label = location.label ?? id
+
+        let address = NSTextField(string: location.url ?? "")
+        address.placeholderString = "http://100.64.0.9:47873"
+        address.translatesAutoresizingMaskIntoConstraints = false
+        address.widthAnchor.constraint(equalToConstant: 320).isActive = true
+        let token = NSSecureTextField(string: "")
+        token.placeholderString = "Fleet token (optional — empty keeps the stored one)"
+        token.translatesAutoresizingMaskIntoConstraints = false
+        token.widthAnchor.constraint(equalToConstant: 320).isActive = true
+        let result = NSTextField(wrappingLabelWithString: "Not tested yet.")
+        result.font = .systemFont(ofSize: 11)
+        result.textColor = .secondaryLabelColor
+        result.maximumNumberOfLines = 4
+        result.preferredMaxLayoutWidth = 320
+        let body: () -> [String: Any] = {
+            var body: [String: Any] = ["url": address.stringValue.trimmingCharacters(in: .whitespaces)]
+            let secret = token.stringValue.trimmingCharacters(in: .whitespaces)
+            if !secret.isEmpty { body["token"] = secret }
+            return body
+        }
+        // The address the last *successful* test answered at; a confirm on anything else asks first.
+        var testedOK: String?
+        // The sheet is modal, so the test reports into the sheet itself.
+        let test = FleetClosureButton(title: "Test this address") {
+            let sent = body()
+            result.stringValue = "Testing…"
+            result.textColor = .secondaryLabelColor
+            GatewayAPI.post("/admin/api/fleet/controllers/\(id)/test", body: sent) { outcome in
+                switch outcome {
+                case .failure(let error):
+                    result.stringValue = "Test failed — \(error.localizedDescription)"
+                    result.textColor = .systemRed
+                case .success(let payload):
+                    if payload["reachable"] as? Bool == true {
+                        testedOK = sent["url"] as? String
+                        let role = payload["role"] as? String ?? "unknown role"
+                        let version = payload["version"] as? String ?? "unknown version"
+                        result.stringValue = "Answered as \(role) on Hub \(version): "
+                            + "\(payload["machines"] as? Int ?? 0) machines, "
+                            + "\(payload["nodes"] as? Int ?? 0) nodes."
+                        result.textColor = .systemGreen
+                    } else {
+                        result.stringValue = "No answer — \(payload["error"] as? String ?? "unknown reason")"
+                        result.textColor = .systemOrange
+                    }
+                }
+            }
+        }
+        let stack = NSStackView(views: [address, token, test, result])
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 6
+        stack.frame = NSRect(x: 0, y: 0, width: 320, height: 130)
+
+        let alert = NSAlert()
+        alert.messageText = "Change the address of \(label)"
+        alert.informativeText =
+            "Use this when a controller is replaced (for example a node promoted to head). Its "
+            + "credential, its models and every enable decision stay with the location; the old "
+            + "identity is dropped and the next probe reads the new one."
+        alert.accessoryView = stack
+        alert.addButton(withTitle: "Change address")
+        alert.addButton(withTitle: "Cancel")
+        alert.window.initialFirstResponder = address
+
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        let request = body()
+        guard let url = request["url"] as? String, !url.isEmpty else {
+            report(.error, title: "An address is required", detail: "The address was not changed.")
+            return
+        }
+        if testedOK != url {
+            let sure = NSAlert()
+            sure.messageText = "This address has not answered a test"
+            sure.informativeText = "Change \(label) to \(url) anyway? Routing to it will fail until that Mac answers."
+            sure.alertStyle = .warning
+            sure.addButton(withTitle: "Cancel")
+            sure.addButton(withTitle: "Change anyway")
+            guard sure.runModal() == .alertSecondButtonReturn else { return }
+        }
+        setStatus("Changing the address of \(label)…")
+        GatewayAPI.put("/admin/api/fleet/controllers/\(id)/address", body: request) { [weak self] outcome in
+            guard let self else { return }
+            switch outcome {
+            case .failure(let error):
+                self.report(.error, title: "Could not change the address", detail: error.localizedDescription)
+            case .success(let payload):
+                let discovered = payload["discovered"] as? Int
+                let tail = discovered.map { " It now offers \($0) model\($0 == 1 ? "" : "s")." }
+                    ?? (payload["discovery_error"] as? String).map { " Its models could not be read yet — \($0)" }
+                    ?? ""
+                self.report(
+                    .success,
+                    title: "\(label) now answers at \(url)",
+                    detail: "Credential and enable decisions kept." + tail
+                )
+                self.reload()
+            }
+        }
+    }
+
+    /// Un-pause a location the gateway paused after a long outage. Nothing else changes.
+    private func resumeController(_ location: FleetLocation) {
+        guard let id = location.id else { return }
+        let label = location.label ?? id
+        setStatus("Resuming \(label)…")
+        GatewayAPI.post("/admin/api/fleet/controllers/\(id)/resume", body: [:]) { [weak self] result in
+            guard let self else { return }
+            switch result {
+            case .failure(let error):
+                self.report(.error, title: "Could not resume \(label)", detail: error.localizedDescription)
+            case .success:
+                self.report(
+                    .success,
+                    title: "Resumed \(label)",
+                    detail: "Routing may use it again as soon as it answers; nothing else changed."
+                )
+                self.reload()
             }
         }
     }

@@ -137,6 +137,12 @@ struct FleetLocation: Decodable {
     /// there, which is the difference the Members column draws as an em dash.
     var nodes: [FleetNode] = []
     var nodeSummary: FleetNodeSummary?
+    /// **The pause clock** the gateway keeps per controller (Q7): unreachable for the pause
+    /// window and routing skips it — the row, credential and enable decisions stay. Epoch
+    /// seconds; `pauseReason` is the gateway's own sentence ("resume it from the Fleet page").
+    var pausedAt: Double?
+    var pauseReason: String?
+    var unreachableSince: Double?
 
     private enum CodingKeys: String, CodingKey {
         case id, label, url, local, reachable, error, role, version, hubVersionRelation
@@ -144,6 +150,7 @@ struct FleetLocation: Decodable {
         case machines, workers, localModels, modelHealth, machineSummary, runningJobs
         case modelsDiscovered, modelsEnabled, modelsPublishable, release, trustedPublisher
         case nodes, nodeSummary
+        case pausedAt, pauseReason, unreachableSince
     }
 
     init(from decoder: Decoder) throws {
@@ -166,6 +173,9 @@ struct FleetLocation: Decodable {
         machineSummary = try? c.decode(FleetMachineSummary.self, forKey: .machineSummary)
         nodes = lenientArray(c, forKey: .nodes)
         nodeSummary = try? c.decode(FleetNodeSummary.self, forKey: .nodeSummary)
+        pausedAt = try? c.decode(Double.self, forKey: .pausedAt)
+        pauseReason = try? c.decode(String.self, forKey: .pauseReason)
+        unreachableSince = try? c.decode(Double.self, forKey: .unreachableSince)
         if let count = try? c.decode(Int.self, forKey: .runningJobs) {
             runningJobs = count
         } else if let rows = try? c.decode([Lenient<FleetJob>].self, forKey: .runningJobs) {

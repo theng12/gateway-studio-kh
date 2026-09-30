@@ -66,7 +66,7 @@ class ADownClusterStillNamesItsMembersTest(unittest.TestCase):
                          "a controller mid-rebuild must not erase what it last said")
 
 
-class RepointingKeepsTheRowTest(unittest.TestCase):
+class _RosterCase(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
@@ -85,6 +85,8 @@ class RepointingKeepsTheRowTest(unittest.TestCase):
         fleet._write(rows)
         fleet.invalidate()
 
+
+class RepointingKeepsTheRowTest(_RosterCase):
     def test_repointing_keeps_the_id_and_clears_the_old_identity(self) -> None:
         self._add("abc123", "http://100.64.0.1:47873")
         with patch.object(fleet, "_set_token"):
@@ -121,6 +123,42 @@ class RepointingKeepsTheRowTest(unittest.TestCase):
         self.assertIn("could not be resolved", str(caught.exception))
 
 
+
+
+class TestingACandidateAddressStoresNothingTest(_RosterCase):
+    """The handover sheet's "Test first": probe the *new* address, keep the roster untouched."""
+
+    def test_a_candidate_url_is_probed_and_nothing_is_written(self) -> None:
+        from gateway import admin
+        self._add("abc123", "http://100.64.0.1:47873")
+        seen: list[tuple[str, str]] = []
+
+        def probe(url: str, token: str, **_: object) -> dict:
+            seen.append((url, token))
+            return {"reachable": True, "error": None, "role": "controller", "version": "0.6.9",
+                    "machines": [1], "nodes": [1, 2], "latency_ms": 3}
+
+        with patch.object(fleet, "_probe", probe), \
+                patch.object(fleet, "_token_for", return_value="stored"), \
+                patch.object(fleet, "credential_scope", return_value={"scope": "fleet"}):
+            out = admin.fleet_test_controller("abc123", {"url": "http://100.64.0.9:47873"})
+            self.assertEqual(out["url"], "http://100.64.0.9:47873")
+            self.assertEqual(seen[-1], ("http://100.64.0.9:47873", "stored"),
+                             "a blank token keeps the stored credential")
+            admin.fleet_test_controller("abc123", {"url": "100.64.0.9:47873", "token": " new "})
+            self.assertEqual(seen[-1], ("http://100.64.0.9:47873", "new"))
+            admin.fleet_test_controller("abc123")  # the old shape still tests the stored address
+            self.assertEqual(seen[-1], ("http://100.64.0.1:47873", "stored"))
+        stored = next(r for r in fleet._read() if r["id"] == "abc123")
+        self.assertEqual(stored["url"], "http://100.64.0.1:47873", "testing must not re-point")
+        self.assertNotIn("repointed_at", stored)
+
+    def test_a_public_candidate_is_refused_before_any_probe(self) -> None:
+        from gateway import admin
+        self._add("abc123", "http://100.64.0.1:47873")
+        with patch.object(fleet, "_probe", side_effect=AssertionError("probed a public address")):
+            response = admin.fleet_test_controller("abc123", {"url": "http://93.184.216.34:47873"})
+        self.assertEqual(response.status_code, 400)
 
 
 class AStaleControllerIsPausedNotRemovedTest(unittest.TestCase):
