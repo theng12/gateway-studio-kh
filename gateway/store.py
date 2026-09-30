@@ -923,6 +923,27 @@ class JobStore:
         self._update(job_id, provider_id=provider_id)
         return True
 
+    def rebind_unsent(self, job_id: str, *, from_provider: str, to_provider: str) -> bool:
+        """Move a still-`accepted` job to another location, **only if nothing was ever sent**.
+
+        The late bind: the location chosen at submit turned out to be full while another has
+        room. One conditional UPDATE, so the guard and the write cannot be separated by a
+        dispatch: a job with `dispatch_started_at` or an `upstream_job_id` (or one that has
+        left `accepted`, or already moved) matches no row and stays exactly where it is --
+        re-sending work that may already be running is duplicate paid work. `True` only when
+        the row moved.
+        """
+        with self._lock:
+            result = self._conn.execute(
+                """UPDATE jobs SET provider_id = ?, updated_at = ?
+                   WHERE id = ? AND provider_id = ? AND state = 'accepted'
+                     AND dispatch_started_at IS NULL
+                     AND COALESCE(upstream_job_id, '') = ''""",
+                (to_provider, time.time(), job_id, from_provider),
+            )
+            self._conn.commit()
+            return result.rowcount == 1
+
     def _update(self, job_id: str, **fields: Any) -> None:
         fields["updated_at"] = time.time()
         with self._lock:

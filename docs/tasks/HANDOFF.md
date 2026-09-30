@@ -1,12 +1,45 @@
 # HANDOFF — gateway-kh
 
-**Read this first.** Updated 2026-09-30 for **VERSION `0.2.81`** (the release blocks below are
+**Read this first.** Updated 2026-09-30 for **VERSION `0.2.82`** (the release blocks below are
 newest first; 0.2.76-0.2.79 are recorded in `menubar/whats-new.md` and their commits). The running build
 stamp is on `/health` and in `/Applications/gateway-kh.app/Contents/Resources/gateway/BUILD`.
 If this file disagrees with the code, **the code wins — fix this file in the same change**.
 Every path below is inside the Git checkout `repository/` unless it says otherwise.
 `[MEASURED]` = observed in the session that wrote this; `[reason not recorded]` = the
 project does not say why, and nobody should guess.
+
+> **0.2.82 — scarcest-first scheduling at the gateway: spread, late binding, queue ahead.**
+>
+> Owner policy + measured findings: `_orchestra/audit-20260930/DESIGN-scheduler.md` ("Gateway design").
+> Measured failure: 20 same-second music jobs all bound to one location, this Mac's location got 0.
+> Test: `tests/test_late_binding.py` (real `JobStore` + real `Worker` + patched fleet; it fails on 0.2.81
+> and every piece below is mutation-proved).
+>
+> 1. **Per-job routing key.** `catalog.resolve(..., job_key=)`; `api._submit` passes `uuid4().hex`, so the
+>    weighted lottery (`fleet.rank_candidate`, extracted from `route`) no longer draws the same winner for every
+>    job of a model. Note the rank is still `(queue/slots, -available, lottery, id)`: the lottery only spreads
+>    genuine ties, the next two items do the rest.
+> 2. **Late binding** (`Worker._rebind`, `JobStore.rebind_unsent`). When `_admit` refuses because the bound
+>    *site* is full (not the pool or the lane) the job is re-ranked over candidates that have room
+>    (`_room` = `hub_budget` limit - our own in-flight there) and moved. **The store's single conditional UPDATE is
+>    the authority**: it matches only `state='accepted' AND dispatch_started_at IS NULL AND upstream_job_id empty`
+>    and the expected old provider, so a dispatched/sent/held job cannot move. Voice-pinned jobs and sites the job
+>    already failed at are excluded. `record_route` (failure re-route, `_next_machine`) is unchanged.
+> 3. **Queue ahead.** `hub_budget(free, ceiling=)` is now the site's eligible TOTAL (min the operator's number),
+>    not `min(free + in_flight, ceiling)`; the `in_flight` argument is gone. No total stated -> the free count as
+>    before. The 3 h `QUEUE_WAIT_CEILING_S` is untouched. Numbers are the Hub's/settings' "up to" ceilings.
+> 4. **Scarcest first** (`worker.scarcest_first`, `fleet.pool_size`). Each pass orders `store.due()` by
+>    `(pool, created_at)` with `pool` = sum of the model's eligible slots over reachable locations from one
+>    snapshot (`routing_candidates`' `slots`: per-model supply, then the operation's
+>    `eligible_physical_machine_slots_total`, then site-wide — consumed as-is, RAM-aware when the Hub's is). Cloud
+>    jobs (no Mac) sort first; a model nothing can run right now sorts last. `store.due()` itself is unchanged
+>    (FIFO); the sort is stable.
+> 5. Local (this Mac's Hub) is an ordinary location throughout — no special case.
+>
+> Also: `tests/test_fleet_routing.py` had `unittest.main()` in the middle of the file, so its last class never
+> ran; moved to the end (all 70 pass). **Not done / for the Hub side:** the tie-break "stay on the Mac's loaded
+> model" and pinned pool=1 are Hub decisions; the gateway does not model them. Not installed or restarted
+> (coordinator does that).
 
 > **0.2.81 — controller handover + resume in the app; price truth beside the zero shape.**
 >

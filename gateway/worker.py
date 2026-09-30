@@ -192,6 +192,33 @@ _TERMINAL_UPSTREAM_STATES = frozenset(
     {"failed", "error", "cancelled", "canceled", "refused", "expired"}
 )
 
+def scarcest_first(jobs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """`store.due()` re-ordered so the model with the fewest machines goes first.
+
+    Key: the model's fleet-wide pool (`fleet.pool_size`: eligible slots summed over every
+    reachable location, from one snapshot), then arrival order. A pass hands out slots in
+    this order, so work only a few Macs can run is not queued behind work any Mac can.
+    `sorted` is stable and `due()` is already oldest-first, so ties stay FIFO. Cloud jobs
+    take no Mac and sort first; a model nothing can run right now sorts last. One
+    `pool_size` per distinct model per pass.
+    """
+    pools: dict[tuple[str, str], float] = {}
+
+    def pool(job: dict[str, Any]) -> float:
+        if not str(job.get("provider_id") or "").startswith(fleet.PROVIDER_PREFIX):
+            return 0
+        key = (str(job.get("model_id") or ""), str(job.get("modality") or ""))
+        if key not in pools:
+            pools[key] = fleet.pool_size(*key) or float("inf")
+        return pools[key]
+
+    try:
+        return sorted(jobs, key=pool)
+    except Exception:  # noqa: BLE001 - ordering is a preference; never the reason nothing runs
+        log.exception("could not order due jobs by scarcity")
+        return jobs
+
+
 def _next_machine(store: JobStore, job_id: str, model_id: str, modality: str,
                   provider_id: str, *, code: str, detail: str) -> str | None:
     """Record this attempt and name the next machine to try, or `None`.
@@ -792,6 +819,9 @@ class Worker:
         self.pass_failures = 0
         #: When the hold reconciliation last ran, and what it found (Q8).
         self._last_hold_sweep = 0.0
+        #: `(model, modality)` shapes for which a late rebind found no site with room this
+        #: pass, so the rest of the queue behind them does not repeat the search. Cleared each pass.
+        self._nowhere: set[tuple[str, str]] = set()
         self.hold_sweep: dict[str, int] = {}
 
     def start(self) -> None:
@@ -821,12 +851,9 @@ class Worker:
     def _provider_budget(self, provider_id: str, modality: str) -> concurrency.Budget:
         """What bounds one provider, from the best source that has an answer.
 
-        A Studio Hub location is bounded by **its own published capacity** — the free
-        physical machines it reports for this operation, plus this gateway's own in-flight
-        jobs at that operation, clamped to the site's eligible total — and by the
-        operator's number, which `hub_budget` takes the smaller of. See there for the
-        arithmetic and why adding the in-flight count back is the fix rather than a
-        looseness: the Hub's free count is *already* net of the Macs this gateway is using.
+        A Studio Hub location is bounded by **its own published eligible total** for this
+        operation (queue ahead: the Hub's durable queue holds what waits for a Mac) and by
+        the operator's number, which `hub_budget` takes the smaller of.
 
         The reading is `hub_slot_reading`, which prefers `available_physical_machine_slots`
         over `available_worker_slots`. Routing already ranks by the physical count; reading
@@ -834,7 +861,6 @@ class Worker:
         slots and then answered `MACHINE_BUSY`.
         """
         operation = _HUB_OPERATION_BY_MODALITY.get(modality, "")
-        ours = self._site_lane_in_flight(provider_id, modality)
         try:
             from . import fleet
 
@@ -849,7 +875,6 @@ class Worker:
                     free,
                     operation=operation or modality,
                     stated=concurrency.stated_provider_limit(provider_id),
-                    in_flight=ours,
                     ceiling=reading.get("ceiling"),
                     reachable=row.get("reachable") is not False,
                 )
@@ -925,6 +950,56 @@ class Worker:
             self.budgets[provider_id] = provider_budget.as_dict()
         return True
 
+    def _room(self, provider_id: str, modality: str) -> int:
+        """How many more jobs this site would take now: its budget less our own there."""
+        return (self._provider_budget(provider_id, modality).limit
+                - self._site_lane_in_flight(provider_id, modality))
+
+    def _rebind(self, job: dict[str, Any]) -> bool:
+        """Late bind: move a job that was never sent off a full site onto one with room.
+
+        Called when `_admit` refused. The site chosen at submit is a guess from a snapshot up
+        to 15 s old and one lottery draw, so a burst can stack on one site while another
+        (this Mac included) has room. Only when the *site* is the reason (not the pool or the
+        lane), and never a job with `dispatch_started_at` or an `upstream_job_id`: the store's
+        conditional update is the authority (the `job` here may be a pass old), so a job that
+        may be running is not re-sent.
+        A voice-pinned job and a site this job already failed at are not candidates.
+        Candidates are ranked exactly as `fleet.route` ranks them, seeded by the job id.
+        """
+        provider_id = str(job.get("provider_id") or "")
+        modality = str(job.get("modality") or "")
+        rebind = getattr(self.store, "rebind_unsent", None)
+        if rebind is None or not provider_id.startswith(fleet.PROVIDER_PREFIX):
+            return False
+        shape = (str(job.get("model_id") or ""), modality)
+        if shape in self._nowhere:
+            return False
+        try:
+            if self._room(provider_id, modality) > 0:
+                return False
+            if fleet.pinned_location(json.loads(job.get("params") or "{}")):
+                return False
+            tried = {str(fleet.controller_id_from(provider_id))}
+            for value in getattr(self.store, "attempted_locations", lambda _id: [])(job["id"]):
+                tried.add(str(fleet.controller_id_from(str(value)) or value))
+            candidates = [
+                c for c in fleet.routing_candidates(
+                    str(job.get("model_id") or ""), modality, exclude_locations=tried)
+                if self._room(c["provider_id"], modality) > 0
+            ]
+            if not candidates:
+                self._nowhere.add(shape)
+                return False
+            best = min(candidates, key=lambda c: fleet.rank_candidate(c, str(job["id"])))
+            if not rebind(job["id"], from_provider=provider_id, to_provider=best["provider_id"]):
+                return False
+            job["provider_id"] = best["provider_id"]
+            return True
+        except Exception:  # noqa: BLE001 - a failed rebind leaves the job where it is
+            log.exception("late rebind of %s failed", job.get("id"))
+            return False
+
     def _release(self, job: dict[str, Any]) -> None:
         provider_id = str(job.get("provider_id") or "")
         modality = str(job.get("modality") or "")
@@ -975,8 +1050,9 @@ class Worker:
             # `accepted` for ever while `/health` still said ok — there was no liveness field to
             # say otherwise (audit M6). The pass is wrapped whole and the count of consecutive
             # failures is published, so an operator can tell "idle" from "wedged".
+            self._nowhere.clear()
             try:
-                due = self.store.due()
+                due = scarcest_first(self.store.due())
             except Exception:  # noqa: BLE001
                 log.exception("worker could not read due jobs")
                 due = []
@@ -987,7 +1063,7 @@ class Worker:
                         return
                     # Reserve first, then claim: a claim that fails must not leave the
                     # budget holding a slot nobody will ever release.
-                    if not self._admit(job):
+                    if not self._admit(job) and not (self._rebind(job) and self._admit(job)):
                         continue
                     if not self.store.mark_running(job["id"]):
                         self._release(job)

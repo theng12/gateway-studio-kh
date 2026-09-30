@@ -1678,8 +1678,8 @@ def _attach_admission(rows: list[dict]) -> None:
     """Give every location the number admission will actually use, per lane.
 
     **A1's live receipt.** The Hub's own `available_worker_slots` and the budget this
-    gateway computes from it are two different numbers — `min(free + in_flight, total)`,
-    then `min` with the operator's cap — and a reader who can only see the first cannot
+    gateway computes from it are two different numbers — the site's eligible total (queue
+    ahead, 0.2.82), then `min` with the operator's cap — and a reader who can only see the first cannot
     tell a site running at half its Macs from one that is genuinely full. Publishing both,
     side by side, is what makes the arithmetic checkable from outside the process.
 
@@ -1715,7 +1715,6 @@ def _attach_admission(rows: list[dict]) -> None:
                 free,
                 operation=operation,
                 stated=concurrency.stated_provider_limit(provider_id),
-                in_flight=in_flight,
                 ceiling=reading.get("ceiling"),
                 reachable=reachable,
             )
@@ -2970,6 +2969,37 @@ def routing_candidates(
     return candidates
 
 
+def rank_candidate(candidate: dict, routing_key: str) -> tuple:
+    """The order `route` picks by, lowest first -- and what a late rebind re-ranks with.
+
+    Pressure first -- queue per **fitting** machine -- then free fitting capacity, then the
+    weighted lottery, then the id so the result is deterministic. `slots` is the model's
+    own eligible machine count, so a site's small Macs no longer dilute a heavy model's
+    share. Numbers decide; the controller still picks which machine runs it.
+    """
+    pressure = candidate["queue"] / candidate["slots"]
+    free = -(candidate["available"] or 0)
+    lottery = _weighted_tiebreak(routing_key, candidate["location_id"], candidate["slots"])
+    if _truthy(config.get("GATEWAY_PREFER_FASTEST_SITE")) and (candidate["available"] or 0) > 0:
+        # `GATEWAY_PREFER_FASTEST_SITE=1` is a **nudge, not a takeover**: it
+        # only breaks a tie between sites whose numbers already match and that
+        # each have a fitting Mac free. Fleet utilisation by capacity stays the
+        # rule, so work a smaller Mac can do is not pulled onto a big one -- the
+        # controller's own scheduler still reserves large Macs for heavy jobs.
+        return (pressure, free, -candidate["speed"], lottery, candidate["location_id"])
+    return (pressure, free, lottery, candidate["location_id"])
+
+
+def pool_size(model_id: str, modality: str) -> int:
+    """How many machines, fleet-wide, can run this model: the scarcity a queue is ordered by.
+
+    The sum of each reachable location's published eligible slots for the model (RAM-aware
+    as soon as the Hub's own figure is). Busy machines count -- this is capacity, not
+    availability. `0` when nothing can run it right now.
+    """
+    return sum(c["slots"] for c in routing_candidates(model_id, modality))
+
+
 def route(
     model_id: str,
     modality: str,
@@ -2994,29 +3024,7 @@ def route(
             return None, f"every location that offers {model_id} refused it"
         return None, f"no location can run {model_id} right now"
 
-    prefer_fastest = _truthy(config.get("GATEWAY_PREFER_FASTEST_SITE"))
-
-    def rank(candidate: dict) -> tuple:
-        # Pressure first -- queue per **fitting** machine -- then free fitting
-        # capacity, then the weighted lottery, then the id so the result is
-        # deterministic. `slots` is the model's own eligible machine count, so a
-        # site's small Macs no longer dilute a heavy model's share. Numbers decide;
-        # the controller still picks which machine runs it.
-        pressure = candidate["queue"] / candidate["slots"]
-        free = -(candidate["available"] or 0)
-        lottery = _weighted_tiebreak(
-            routing_key or model_id, candidate["location_id"], candidate["slots"]
-        )
-        if prefer_fastest and (candidate["available"] or 0) > 0:
-            # `GATEWAY_PREFER_FASTEST_SITE=1` is a **nudge, not a takeover**: it
-            # only breaks a tie between sites whose numbers already match and that
-            # each have a fitting Mac free. Fleet utilisation by capacity stays the
-            # rule, so work a smaller Mac can do is not pulled onto a big one — the
-            # controller's own scheduler still reserves large Macs for heavy jobs.
-            return (pressure, free, -candidate["speed"], lottery, candidate["location_id"])
-        return (pressure, free, lottery, candidate["location_id"])
-
-    chosen = min(candidates, key=rank)
+    chosen = min(candidates, key=lambda c: rank_candidate(c, routing_key or model_id))
     note = (
         f"{chosen['label']}: {chosen['queue']} queued / {chosen['slots']} eligible"
         f" of {len(candidates)} location{'s' if len(candidates) != 1 else ''}"

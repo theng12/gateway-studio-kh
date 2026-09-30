@@ -30,6 +30,7 @@ import json
 import os
 import re
 import time
+import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -919,7 +920,8 @@ def _submit(
     """
     _refuse_when_the_queue_is_full()
     definition, model = catalog.resolve(
-        modality, compound_id, only_location=_pinned_location(params)
+        modality, compound_id, only_location=_pinned_location(params),
+        job_key=uuid.uuid4().hex,
     )
     if definition is None or model is None:
         # **An offered model with no live site is not a missing model.** The fleet

@@ -418,9 +418,8 @@ def live_capacity(*, worker: Any = None) -> dict[str, Any]:
     so a Mac that is sold leaves the number the next time Story asks. Nothing here is cached
     beyond the fleet's own 5-second snapshot.
 
-    `worker` is the live `Worker` when there is one, so the in-flight count added back by
-    `hub_budget` is the real one. Without it the figure is the same arithmetic with
-    `in_flight: 0`, which understates a busy fleet rather than overstating it.
+    `worker` is accepted for its callers; since 0.2.82 the figure no longer depends on this
+    gateway's own in-flight count (`hub_budget` states the site's eligible total).
     """
     per_modality: dict[str, int] = {}
     locations: list[dict[str, Any]] = []
@@ -440,16 +439,10 @@ def live_capacity(*, worker: Any = None) -> dict[str, Any]:
             free = reading.get("free")
             if free is None and not reading.get("unstated"):
                 free = reading.get("ceiling")
-            in_flight = 0
-            if worker is not None:
-                try:
-                    in_flight = worker._site_lane_in_flight(provider_id, modality)
-                except Exception:  # noqa: BLE001
-                    in_flight = 0
             budget = hub_budget(
                 free, operation=operation,
                 stated=stated_provider_limit(provider_id),
-                in_flight=in_flight, ceiling=reading.get("ceiling"),
+                ceiling=reading.get("ceiling"),
                 reachable=reachable,
             )
             # A **cloud** provider is not part of this: D is about the Macs, and a vendor lane's
@@ -529,52 +522,41 @@ def cloud_budget(provider_id: str) -> Budget:
 
 
 def hub_budget(slots: Any, *, operation: str = "", stated: Any = None,
-               in_flight: int = 0, ceiling: Any = None,
-               reachable: bool = True) -> Budget:
-    """A Studio Hub location's concurrency, from the site's own slots and your cap.
+               ceiling: Any = None, reachable: bool = True) -> Budget:
+    """A Studio Hub location's concurrency, from the site's own total and your cap.
 
     `slots` is the site's **free** count for this operation — `available_worker_slots` or,
     where the Hub publishes it, `available_physical_machine_slots` (see
-    `hub_slot_reading`: the physical count is the one routing already uses). `in_flight`
-    is how many jobs this gateway currently has running at that site **for that
-    operation**. `ceiling` is the site's own eligible total for the same operation.
-    `reachable` is the site's reachability from the last fleet read.
+    `hub_slot_reading`: the physical count is the one routing already uses). `ceiling` is
+    the site's own eligible total for the same operation. `reachable` is the site's
+    reachability from the last fleet read.
 
-    **The number this returns is a capacity, not a remainder.** It used to return the
-    site's *free* count and then refuse when this gateway's own in-flight count reached
-    it, so with **M** Macs and **T** jobs already dispatched admission needed `T < M − T`
-    — at most **half** every site could ever run, and the busier the fleet the worse it
-    got. The Hub's free count is already net of the Macs this gateway is using, so adding
-    the in-flight count back puts those Macs back in the number:
+    **Queue ahead (0.2.82): the number is the site's eligible total, not what is free now.**
+    It was `min(free + in_flight, ceiling)` -- which is the total again whenever this
+    gateway owns the busy Macs, and *less* than it when the Hub's own queue or another
+    client held some. Either way the gateway kept the Hub's queue near-empty and held a
+    burst itself, bound to one site, while another site's Macs went idle (measured
+    2026-09-30, 20 music jobs). Now each site holds up to its eligible total (an "up to"
+    ceiling from the Hub, never a number of ours); the Hub's queue is durable and
+    cancellable, and the adapter's 3 h queue ceiling still withdraws work that waits too
+    long. The worker compares this with its own in-flight count at that site, and when the
+    site is full while another has room it re-binds a job that was never sent.
 
-        budget = min(free + in_flight, ceiling)
-
-    With M=6, four running: free=2, in_flight=4, budget=6 — the site takes two more, which
-    is the truth, and the same arithmetic holds at M=1 and M=3.
-
-    **Why `ceiling` at all.** `free + in_flight` can only exceed the site's real total
-    when the two readings disagree — a job the Hub finished but this gateway has not
-    released yet, or a stale cached snapshot. Clamping to the Hub's own eligible total
-    keeps a stale reading from becoming a licence to over-schedule, **and the sum is only
-    taken at all when that total is stated**: a Hub that publishes free slots and no
-    eligible total cannot distinguish "three free of three" from "three free of thirty",
-    so its free count is used as-is.
+    A Hub that publishes free slots and **no** total cannot distinguish "three free of
+    three" from "three free of thirty", so its free count is used as-is.
 
     **A site that is not reachable has no budget**, and returns `0`: admission then agrees
-    with routing, which already skips it. Before this it computed `1` from an offline row,
-    so an unreachable controller burned a global slot and a timeout on every pass.
+    with routing, which already skips it.
 
-    **A stated zero never becomes a permanent wall.** `free == 0` with `in_flight == 0`
-    means the site is busy *right now*, and `_positive_int` reads it as "no usable
-    reading" — the site falls through to the operator's cap or the default of one. A busy
-    fleet must not wedge behind a number that only meant "busy".
+    **A stated zero never becomes a permanent wall.** With no total, `free == 0` means the
+    site is busy *right now*, and `_positive_int` reads it as "no usable reading" — the
+    site falls through to the operator's cap or the default of one.
 
     **The smaller of the site and the operator wins, and they stay distinguishable.** The
-    site's count is what it can physically take; the operator's number is policy, and an
-    operator must be able to throttle a busy site below what it offers. The converse must
-    not hold: a number typed into a form is not licence to send a site more concurrent
-    work than it says it has free workers — that is how a queue becomes a crash, and it is
-    why this is a `min` rather than a substitution.
+    site's count is what it can take; the operator's number is policy, and an operator must
+    be able to throttle a site below what it offers. The converse must not hold: a number
+    typed into a form is not licence to send a site more concurrent work than it states —
+    which is why this is a `min` rather than a substitution.
     """
     if not reachable:
         return Budget(
@@ -585,33 +567,22 @@ def hub_budget(slots: Any, *, operation: str = "", stated: Any = None,
         )
     free = _optional_int(slots)
     free = max(0, free) if free is not None else None
-    ours = max(0, _optional_int(in_flight) or 0)
     total = _positive_int(ceiling)
-    # **The in-flight count is only added back when the site states its own total.** That
-    # total is what makes the sum safe: `free + ours` can only be trusted while it is
-    # bounded by something the site itself published. A Hub that states free slots and no
-    # eligible total cannot distinguish "three free of three" from "three free of thirty",
-    # so its free count is used as-is — the old behaviour, which is conservative rather
-    # than wrong.
-    live = None if free is None else (free + ours if total is not None else free)
-    clamped = ""
-    if live is not None and total is not None and live > total:
-        # Unreachable while `ours <= busy`, and reachable exactly when the two readings
-        # disagree — a job the Hub finished but this gateway has not released, or a stale
-        # snapshot. Clamped rather than trusted.
-        clamped = (f" The site's own total is {total}, so that is the ceiling: a stale "
-                   f"reading is not licence to over-schedule it.")
-        live = min(live, total)
+    # **Queue ahead: a site that states its own total is admitted up to that total**, whatever
+    # its free count says right now. The Hub's queue is durable and cancellable, so work handed
+    # to it waits there for whichever Mac frees first -- instead of waiting here, where a burst
+    # bound to one site sat while another site's Macs idled.
+    # A Hub that states free slots and no total cannot distinguish "three free of three" from
+    # "three free of thirty", so its free count is used as-is -- conservative, not wrong.
+    live = total if total is not None else free
     if live is not None and live <= 0:
         # "Every Mac is busy right now" is not "this site is closed for ever".
         live = None
     site = live
     cap = _positive_int(stated)
-    how = ""
-    if ours and total is not None:
-        how = (f" {ours} of those are already this gateway's own jobs, added back because "
-               f"the site's free count is net of them — a site is not charged twice for "
-               f"the Macs it is already running work on.")
+    clamped = ""
+    how = (" That is the site's eligible total, held ahead in the Hub's own queue for "
+           "whichever Mac frees first.") if total is not None and live == total else ""
     if site is None and cap is None:
         return Budget(
             limit=DEFAULT_PROVIDER,

@@ -1906,6 +1906,7 @@ class Catalog:
         compound: str,
         *,
         only_location: str | None = None,
+        job_key: str | None = None,
     ) -> tuple[ProviderDefinition | None, dict | None]:
         """Resolve a namespaced model id against currently enabled models.
 
@@ -1917,13 +1918,18 @@ class Catalog:
         where the location is chosen. `only_location` pins that choice — it is how
         a voice job is kept at the location that actually holds the voice, since a
         reference clip lives on one Hub and not on the fleet.
+
+        `job_key` is the lottery's seed. It used to be the model id, which is the same for
+        every job of a model, so a burst of equal-rank jobs all drew the same location
+        (measured: 20 same-second music jobs, all bound to one site, this Mac given none).
+        A submit passes one key per job, so equal ranks are spread rather than stacked.
         """
         from . import fleet
 
         provider_id, model_id = decode_model_id(compound)
         if provider_id == fleet.FLEET_PROVIDER_ID:
             chosen, _note = fleet.route(
-                model_id, modality, routing_key=compound, only_location=only_location
+                model_id, modality, routing_key=job_key or compound, only_location=only_location
             )
             if chosen is None:
                 return None, None

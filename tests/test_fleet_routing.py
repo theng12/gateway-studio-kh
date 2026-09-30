@@ -1229,8 +1229,6 @@ class VoicePinTests(unittest.TestCase):
             )
 
 
-if __name__ == "__main__":
-    unittest.main()
 
 
 class TheFleetReadPublishesTheAdmissionBudgetTest(unittest.TestCase):
@@ -1267,13 +1265,12 @@ class TheFleetReadPublishesTheAdmissionBudgetTest(unittest.TestCase):
         self.assertEqual(lane["operation"], "image.text_to_image")
 
     def test_four_of_six_macs_busy_still_yields_a_budget_of_six(self) -> None:
-        # The B1 arithmetic, seen from the read: 2 free + 4 of ours = 6 Macs.
+        # Queue ahead (0.2.82): a site states its total, and that is what is admitted.
         from gateway import fleet
         with patch.object(fleet, "_attach_admission", fleet._attach_admission):
             rows = [self._row()]
             from gateway import concurrency
-            budget = concurrency.hub_budget(2, operation="image.text_to_image",
-                                            in_flight=4, ceiling=6)
+            budget = concurrency.hub_budget(2, operation="image.text_to_image", ceiling=6)
         self.assertEqual(budget.limit, 6)
 
     def test_an_unreachable_location_publishes_a_budget_of_zero(self) -> None:
@@ -1286,3 +1283,7 @@ class TheFleetReadPublishesTheAdmissionBudgetTest(unittest.TestCase):
                               "capacity": {}}])
         self.assertEqual(lane["limit"], 1, "nothing stated is not zero capacity")
         self.assertIn("did not state free slots", lane["detail"])
+
+
+if __name__ == "__main__":
+    unittest.main()

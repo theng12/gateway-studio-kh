@@ -14,6 +14,33 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.82 — 2026-09-30
+
+### A burst of jobs now reaches every Mac that can run it — including this one
+
+**The failure, measured.** Twenty music jobs sent in the same second all went to one location; this
+Mac (eligible, idle) was given none, and 16 of them bounced off that busy site before being re-routed.
+Three causes, three fixes.
+
+**Equal locations are spread.** The gateway picked a location by a lottery seeded with the model
+name, so every job of a model drew the same winner. Each job now draws its own.
+
+**A job waiting for a full location moves to one with room.** If the location chosen at submit is
+full and another eligible one (this Mac included) has room, a job that was **never sent** is re-bound
+to it. A job that has been sent — or that already has a Hub id — is never moved: that would be running
+the same paid render twice.
+
+**Each location holds up to its own eligible total.** The gateway used to hand a Hub only what was
+free at that instant, keeping the Hub's own queue empty while the burst waited here. Now it admits up
+to the number of Macs the Hub says can run the model (still capped by any limit you set on the
+Providers page); the Hub queues the rest for whichever Mac frees first, and anything waiting longer
+than 3 hours is still withdrawn.
+
+**Scarcest work first.** The gateway now hands out slots to the model with the fewest eligible Macs
+fleet-wide first, then oldest first, so work only a few Macs can do is not stuck behind work any Mac
+can. It uses the Hub's published eligible-machine counts as they are (they become RAM-aware when the
+Hub says so).
+
 ## 0.2.81 — 2026-09-30
 
 ### Hand a controller over from the app, resume a paused one, and see what a model really costs

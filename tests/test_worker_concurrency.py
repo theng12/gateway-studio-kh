@@ -355,23 +355,23 @@ class AdmissionIsACapacityNotASecondSubtractionTest(unittest.TestCase):
     def test_a_free_count_with_no_total_is_left_alone(self) -> None:
         # A Hub that publishes free slots and no eligible total cannot tell "3 of 3" from
         # "3 of 30", so the free count stands and nothing is invented.
-        budget = concurrency.hub_budget(3, operation="image.text_to_image", in_flight=5)
+        budget = concurrency.hub_budget(3, operation="image.text_to_image")
         self.assertEqual(budget.limit, 3)
 
-    def test_the_in_flight_count_is_added_back_and_clamped(self) -> None:
-        budget = concurrency.hub_budget(2, operation="image.text_to_image",
-                                        in_flight=4, ceiling=6)
-        self.assertEqual(budget.limit, 6, "2 free + 4 of ours = all 6 Macs")
-        self.assertIn("not charged twice", budget.detail)
-        over = concurrency.hub_budget(2, operation="image.text_to_image",
-                                      in_flight=9, ceiling=6)
-        self.assertEqual(over.limit, 6, "a stale reading is clamped to the site's total")
+    def test_a_site_is_admitted_up_to_its_own_total_whatever_is_free(self) -> None:
+        # Queue ahead (0.2.82): the ceiling is the site's eligible total. 2 free of 6 is 6,
+        # not 2, because the Hub's durable queue holds the rest for whichever Mac frees.
+        budget = concurrency.hub_budget(2, operation="image.text_to_image", ceiling=6)
+        self.assertEqual(budget.limit, 6)
+        self.assertIn("eligible total", budget.detail)
 
     def test_busy_right_now_is_not_closed_for_ever(self) -> None:
         # The property the module docstring demands: a zero reading must not wedge a queue.
-        budget = concurrency.hub_budget(0, operation="image.text_to_image", in_flight=0,
-                                        ceiling=4)
-        self.assertEqual(budget.limit, concurrency.DEFAULT_PROVIDER)
+        # With a stated total it is the total; without one, the default.
+        budget = concurrency.hub_budget(0, operation="image.text_to_image", ceiling=4)
+        self.assertEqual(budget.limit, 4)
+        self.assertEqual(concurrency.hub_budget(0, operation="image.text_to_image").limit,
+                         concurrency.DEFAULT_PROVIDER)
 
     def test_the_physical_count_wins_over_the_worker_service_count(self) -> None:
         # M1, measured live: one Mac published `available_worker_slots: 2` for
