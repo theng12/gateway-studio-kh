@@ -1,12 +1,34 @@
 # HANDOFF — gateway-kh
 
-**Read this first.** Updated 2026-09-30 for **VERSION `0.2.84`** (the release blocks below are
+**Read this first.** Updated 2026-09-30 for **VERSION `0.2.85`** (the release blocks below are
 newest first; 0.2.76-0.2.79 are recorded in `menubar/whats-new.md` and their commits). The running build
 stamp is on `/health` and in `/Applications/gateway-kh.app/Contents/Resources/gateway/BUILD`.
 If this file disagrees with the code, **the code wins — fix this file in the same change**.
 Every path below is inside the Git checkout `repository/` unless it says otherwise.
 `[MEASURED]` = observed in the session that wrote this; `[reason not recorded]` = the
 project does not say why, and nobody should guess.
+
+> **0.2.85 — prices visible in the app; Providers opens on the list.**
+>
+> The native Models and Providers pages are the gateway console (`gateway/admin_ui.html`) in a `WKWebView`
+> (`ConsoleSection`, `menubar/MainWindow.swift`), so both fixes are in that page, not in Swift table code.
+> * **Prices:** admin model rows (`/admin/api/models`, `/admin/api/providers/{id}/models`) now carry the catalogue's
+>   own `price_source/price_usd/price_as_of[/price_url/price_variants]` (`admin._price` = the same `row_price` call as
+>   `catalog._story_row`). Console: `priceInfo/priceCell` (Models "Price" column + each provider model row): per-1M
+>   chat, per image/video/second/1k chars/request, `Free (your Macs)`, `Not published`, `Varies — N prices` (hover lists
+>   every variant), source + as-of, `price_url` as a link (https only). Provider cards list "Rate limits (from pricing
+>   research)" from `GET /admin/api/pricing/evidence` (`loadEvidence`; also re-shows accepted/dropped on load).
+> * **Import price research… was dead in the app:** WKWebView shows no `<input type=file>` picker without
+>   `runOpenPanelWith`; added it (and `createWebViewWith`, so `target=_blank` pricing links open in the browser).
+> * **Providers opened on Concurrency — root cause:** the HTML's first pane is Concurrency (list pane is
+>   `display:none`), `providerTab` starts `'list'`, and `setView` only repainted the tab buttons (`renderProviderTabs`),
+>   never applied the tab. Strip said "Providers" over the Concurrency pane until a tab was clicked. Now
+>   `setView` calls `selectProviderTab(providerTab)`: list on first and every activation; a tab the owner clicked
+>   is remembered for the session (the WebView lives until quit).
+> * Tests: `tests/test_price_ui.js` (node VM: price text per source incl. variants/unpublished, rate limits, initial
+>   pane state seeded from the real HTML, first/repeated activation, remembered tab, Swift delegate present),
+>   `tests/test_models_grouping.py` (admin rows carry price). Mutation-proved (each listed assertion fails when the
+>   code is reverted). Not installed. The native Fleet "Models" tab (Hub models, all local/free) was not changed.
 
 > **0.2.84 — delta release push, concurrent controllers, streamed full push (`gateway/release_publisher.py`).**
 >

@@ -184,9 +184,9 @@ test('grouping buckets by operation and counts each bucket', () => {
 
   context.renderModels();
   const html = get('m-rows').innerHTML;
-  assert.ok(html.includes('<tr class="m-group"><td colspan="5">LLM chat <span class="n">2</span></td></tr>'),
+  assert.ok(html.includes('<tr class="m-group"><td colspan="6">LLM chat <span class="n">2</span></td></tr>'),
     'a group header names its operation and counts its own rows');
-  assert.ok(html.includes('<tr class="m-group"><td colspan="5">Image <span class="n">1</span></td></tr>'));
+  assert.ok(html.includes('<tr class="m-group"><td colspan="6">Image <span class="n">1</span></td></tr>'));
   assert.equal((html.match(/m-group/g) || []).length, 2, 'one header per operation, not per row');
 });
 

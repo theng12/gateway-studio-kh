@@ -351,6 +351,33 @@ final class ConsoleSection: NSObject, AppSection, WKNavigationDelegate, WKUIDele
         completionHandler()
     }
 
+    /// **A file input needs this, or its button does nothing.** WKWebView shows no picker unless the
+    /// UI delegate supplies one, so the console's "Import price research…" (a hidden `<input
+    /// type=file>` the button clicks) was dead in the app while working in a browser.
+    func webView(
+        _ webView: WKWebView,
+        runOpenPanelWith parameters: WKOpenPanelParameters,
+        initiatedByFrame frame: WKFrameInfo,
+        completionHandler: @escaping ([URL]?) -> Void
+    ) {
+        let panel = NSOpenPanel()
+        panel.allowsMultipleSelection = parameters.allowsMultipleSelection
+        panel.canChooseDirectories = parameters.allowsDirectories
+        completionHandler(panel.runModal() == .OK ? panel.urls : nil)
+    }
+
+    /// A pricing-page link (`target="_blank"`) opens in the browser; the console itself never opens a
+    /// second web view.
+    func webView(
+        _ webView: WKWebView,
+        createWebViewWith configuration: WKWebViewConfiguration,
+        for navigationAction: WKNavigationAction,
+        windowFeatures: WKWindowFeatures
+    ) -> WKWebView? {
+        if let url = navigationAction.request.url, url.scheme == "https" { NSWorkspace.shared.open(url) }
+        return nil
+    }
+
     /// `Enable all …` / `Disable all …` / `Clear …` → the verb alone.
     private static func verb(in message: String) -> String {
         for word in ["Enable", "Disable", "Clear", "Remove", "Delete"] where message.hasPrefix(word) {

@@ -14,6 +14,25 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.85 — 2026-09-30
+
+### Prices are visible in the app
+
+The **Models** page has a **Price** column and every model under a provider on the **Providers** page shows
+one. It reads "$1.50 / $9.00 per 1M", "$0.02 per image", "Free (your Macs)" for your own Studio Hub Macs,
+"Not published" when nobody stated a price (never $0), or "Varies — N prices" when a pricing page gave several
+numbers (peak and off-peak, short and long context); hover for every one of them. Under each price is who
+stated it and when: the provider's own API, or "pricing page, <date>" as a link to that page. Each provider
+card also lists the rate limits found by your price research, marked as informational "up to" numbers that
+change nothing. **Import price research…** now opens its file picker inside the app (it did nothing there
+before) and the page shows what is on file, accepted and dropped, each time it opens.
+
+### Providers opens on the providers list
+
+Opening **Providers** showed the Concurrency settings first even though the tab strip said "Providers"; you
+had to click another tab and back. It now opens on the providers list every time. A tab you click stays
+selected until you quit the app.
+
 ## 0.2.84 — 2026-09-30
 
 ### Publishing a Studio Hub release sends only what changed, to every controller at once

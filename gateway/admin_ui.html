@@ -392,6 +392,7 @@
           <thead><tr>
             <th style="width:44px"></th><th>Model</th><th>Provider</th>
             <th style="width:150px">Operation</th><th style="width:170px">Machines</th>
+            <th style="width:190px">Price</th>
           </tr></thead>
           <tbody id="m-rows"></tbody>
         </table>
@@ -757,7 +758,11 @@ function setView(view) {
   // the section is behind a tab, so the link selects the tab. Scrolling is not needed and
   // would land on the wrong pane.
   if ((location.hash || '').startsWith('#queue')) selectProviderTab('queue');
-  else if (view === 'providers') renderProviderTabs();
+  // **Apply the tab, do not just draw its button.** The strip said "Providers" while the HTML's
+  // first pane (Concurrency) was the one on screen: `renderProviderTabs` only paints buttons, and
+  // nothing showed the pane `providerTab` names until a tab was clicked. A tab the owner picked in
+  // this session is kept (`providerTab`); otherwise it is the providers list, every activation.
+  else if (view === 'providers') selectProviderTab(providerTab);
 }
 
 const SHELF_KIND_LABELS = {
@@ -1210,6 +1215,64 @@ function modelLocationKey(modelId, modality) {
 // server now merges every location into one row carrying `locations` (one entry
 // per Mac) and `locations_enabled` / `locations_total`. The sub-rows are not
 // decoration: they are the only place a single Mac's toggle is addressable.
+// -- prices ------------------------------------------------------------------
+// What a row costs and WHO said so (CONTRACT-pricing.md). Nothing is computed: a unit the row does
+// not state is not shown, `unpublished` is never $0, and a page price with several numbers for a
+// unit says "Varies" and lists them rather than picking one.
+const PRICE_UNITS = {
+  input_per_1m_tokens: ['in', 'per 1M tokens'], output_per_1m_tokens: ['out', 'per 1M tokens'],
+  cached_input_per_1m_tokens: ['cached in', 'per 1M tokens'], per_image: ['', 'per image'],
+  per_video: ['', 'per video'], per_second: ['', 'per second'], per_1k_chars: ['', 'per 1k chars'],
+  per_request: ['', 'per request'],
+};
+function priceMoney(n) {
+  let t = String(Math.round(Number(n) * 1e6) / 1e6);
+  if (!t.includes('.')) t += '.00'; else if (t.split('.')[1].length < 2) t += '0';
+  return '$' + t;
+}
+// {text, title, source, url}: `text` is the cell, `title` the detail on hover, `source` the small
+// "who stated it" line, `url` the pricing page for a `provider_page` row.
+function priceInfo(m) {
+  const src = m.price_source;
+  if (src === 'local') return { text: 'Free (your Macs)', title: 'Runs on your own Studio Hub Macs', source: 'your Macs', url: '' };
+  if (src !== 'provider' && src !== 'provider_page') {
+    return { text: 'Not published', title: 'Nobody stated a price for this model. Not the same as free.', source: '', url: '' };
+  }
+  const usd = m.price_usd && typeof m.price_usd === 'object' ? m.price_usd : {};
+  const keys = Object.keys(usd).filter(k => usd[k] != null);
+  const variants = Array.isArray(m.price_variants) ? m.price_variants : [];
+  let text = '';
+  const lines = [];
+  if (keys.length && keys.every(k => Number(usd[k]) === 0)) text = 'Free (provider states $0)';
+  else if (keys.includes('input_per_1m_tokens') && keys.includes('output_per_1m_tokens')) {
+    text = `${priceMoney(usd.input_per_1m_tokens)} / ${priceMoney(usd.output_per_1m_tokens)} per 1M`;
+    if (usd.cached_input_per_1m_tokens != null) lines.push(`cached input ${priceMoney(usd.cached_input_per_1m_tokens)} per 1M`);
+  } else {
+    text = keys.filter(k => PRICE_UNITS[k]).map(k => {
+      const [label, unit] = PRICE_UNITS[k];
+      return `${label ? label + ' ' : ''}${priceMoney(usd[k])} ${unit}`;
+    }).join(' · ');
+  }
+  // A variant whose unit is not in `price_usd` (or says `other`) is a number the page gave that no
+  // single price stands for.
+  const unresolved = variants.filter(v => v.unit === 'other' || !(v.unit in usd));
+  const varies = unresolved.length ? `Varies — ${variants.length} price${variants.length === 1 ? '' : 's'}` : '';
+  text = [text, varies].filter(Boolean).join(' · ') || 'Not published';
+  for (const v of variants) {
+    const what = v.unit === 'other' ? String(v.unit_text || '') : `${priceMoney(v.usd)} ${(PRICE_UNITS[v.unit] || ['', v.unit])[1]}`;
+    lines.push(`${v.variant ? v.variant + ': ' : ''}${what}`);
+  }
+  const day = String(m.price_as_of || '').slice(0, 10);
+  const source = src === 'provider_page' ? `pricing page${day ? ', ' + day : ''}` : `provider API${day ? ', ' + day : ''}`;
+  const url = src === 'provider_page' && /^https:\/\//.test(String(m.price_url || '')) ? m.price_url : '';
+  return { text, title: lines.join('\n'), source, url };
+}
+function priceCell(m) {
+  const i = priceInfo(m);
+  return `<span title="${esc(i.title)}">${esc(i.text)}</span>`
+    + (i.source ? `<div class="mid">${i.url ? `<a href="${esc(i.url)}" target="_blank" rel="noopener">${esc(i.source)}</a>` : esc(i.source)}</div>` : '');
+}
+
 function machineRow(model, machine) {
   return `
     <tr class="m-machine${machine.enabled ? ' on' : ''}">
@@ -1221,6 +1284,7 @@ function machineRow(model, machine) {
       <td class="muted">${machine.enabled ? 'enabled here' : 'not enabled'}</td>
       <td><span class="badge">${esc(modalityLabel(machine.modality))}</span></td>
       <td class="muted">${esc(machine.provider_id)}</td>
+      <td></td>
     </tr>`;
 }
 
@@ -1246,6 +1310,7 @@ function modelRow(r) {
       <td class="m-machines">${r.locations_enabled} of ${r.locations_total} machines
         ${every ? '<span class="badge ok">everywhere</span>'
                 : '<span class="badge warn">partial</span>'}</td>
+      <td class="m-price">${priceCell(r)}</td>
     </tr>` + r.locations.map(machine => machineRow(r, machine)).join('');
   }
   return `
@@ -1261,6 +1326,7 @@ function modelRow(r) {
         ${privacyBadge(r.data_use, r.free_lane)}</td>
       <td><span class="badge">${esc(modalityLabel(r.modality))}</span></td>
       <td class="muted">—</td>
+      <td class="m-price">${priceCell(r)}</td>
     </tr>`;
 }
 
@@ -1286,7 +1352,7 @@ function renderModels() {
     });
     let html = '';
     groups.forEach((groupRows, label) => {
-      html += `<tr class="m-group"><td colspan="5">${esc(label)} <span class="n">${groupRows.length}</span></td></tr>`;
+      html += `<tr class="m-group"><td colspan="6">${esc(label)} <span class="n">${groupRows.length}</span></td></tr>`;
       html += groupRows.map(modelRow).join('');
     });
     document.getElementById('m-rows').innerHTML = html;
@@ -1854,6 +1920,7 @@ async function loadProviders() {
       skipped.style.color = rows.length ? 'var(--warn)' : '';
     }
     renderProviders(drafts);
+    loadEvidence();
     const message = document.getElementById('providers-msg');
     if (message) {
       message.textContent = '';
@@ -1894,6 +1961,23 @@ function renderProviders(drafts = captureProviderDrafts()) {
   }
   root.innerHTML = list.map(providerCard).join('');
   restoreProviderDrafts(drafts);
+}
+
+// "Rate limits (from pricing research)": the tiers an imported research file recorded for this
+// provider. Informational ceilings ("up to"): they never change concurrency and are not on /v1/models.
+function rateLimitLine(t) {
+  const nums = [['rpm', 'requests/min'], ['tpm', 'tokens/min'], ['rpd', 'requests/day'],
+                ['concurrency', 'concurrent'], ['images_per_min', 'images/min']]
+    .filter(([k]) => t[k] != null).map(([k, l]) => `${Number(t[k]).toLocaleString('en-US')} ${l}`);
+  const how = [t.how_reached, t.scope].filter(Boolean).join(' · ');
+  return `<li><b>${esc(t.tier)}</b>${how ? ' (' + esc(how) + ')' : ''}: ${nums.length ? esc(nums.join(', ')) : 'no numbers verified'}` +
+    `${/^https:\/\//.test(String(t.source_url || '')) ? ` · <a href="${esc(t.source_url)}" target="_blank" rel="noopener">source</a>` : ''}</li>`;
+}
+function rateLimitsHtml(id) {
+  const tiers = ((state.evidence || {}).rate_limits || {})[id] || [];
+  if (!tiers.length) return '';
+  return `<div class="hint" style="margin-top:12px"><b>Rate limits (from pricing research)</b> — up to; informational, ` +
+    `changes nothing here<ul style="margin:4px 0 0 18px">${tiers.map(rateLimitLine).join('')}</ul></div>`;
 }
 
 function providerCard(p) {
@@ -1972,6 +2056,7 @@ function providerCard(p) {
         <button class="sm" onclick="openInBrowserFilter('${esc(p.id)}')">Browse in Models tab</button>
       </div>
       ${modelsHtml}
+      ${rateLimitsHtml(p.id)}
       <div class="actions">
         <input type="text" id="add-${esc(p.id)}-id" placeholder="model id" style="max-width:220px">
         <select id="add-${esc(p.id)}-mod" style="max-width:130px">${p.modalities.map(m=>`<option>${esc(m)}</option>`).join('')}</select>
@@ -1995,6 +2080,7 @@ function providerModelList(p, models) {
         <div style="font-size:13px">${esc(m.display_name)}</div>
         <div class="mid">${esc(m.model_id)}</div>
       </div>
+      <div style="text-align:right;font-size:12.5px">${priceCell(m)}</div>
       <span class="badge">${esc(m.modality)}</span>
       <span class="badge">${esc(m.source)}</span>
       ${m.publishable ? '' : `<span class="badge warn" title="${esc(m.withheld_reason || '')}">withheld</span>`}
@@ -2228,6 +2314,28 @@ async function removePool(name, btn) {
 
 // Import a price-research file: the gateway checks every number (source URL on the provider's own
 // domain + a verbatim quote containing it) and answers what it kept and what it dropped, and why.
+function renderEvidence(title, r) {
+  const panel = document.getElementById('evidence-panel');
+  panel.style.display = '';
+  panel.innerHTML = `<strong>${esc(title)}: ${r.accepted} accepted, ${r.dropped} dropped.</strong>` +
+    r.providers.map(p => `<div style="margin-top:6px"><strong>${esc(p.provider_id)}</strong> (${esc(p.status)}` +
+      `${p.researched_at ? ', researched ' + esc(String(p.researched_at).slice(0, 10)) : ''}): ` +
+      `${p.accepted_prices} prices, ${p.accepted_rate_limits} rate-limit tiers` +
+      (p.dropped.length ? `<ul style="margin:2px 0 0 18px">` + p.dropped.map(d =>
+        `<li>${esc(d.kind)} ${esc([d.model_id, d.unit, d.tier].filter(Boolean).join(' '))}: ${esc(d.reason)}</li>`).join('') + '</ul>' : '') +
+      '</div>').join('');
+}
+
+// What is on file (accepted / dropped, and the rate-limit tiers each card shows). Silent on failure:
+// it annotates a list that loaded fine.
+async function loadEvidence() {
+  try {
+    state.evidence = await api('/pricing/evidence');
+    if ((state.evidence.providers || []).length) renderEvidence('Price research on file', state.evidence);
+    renderProviders();
+  } catch (e) { state.evidence = null; }
+}
+
 async function importEvidence(input) {
   const panel = document.getElementById('evidence-panel');
   const file = input.files && input.files[0];
@@ -2239,12 +2347,9 @@ async function importEvidence(input) {
     const body = JSON.parse(await file.text());
     const r = await api('/pricing/evidence', { method: 'POST', headers: { 'Content-Type': 'application/json' },
                                                body: JSON.stringify(body) });
-    panel.innerHTML = `<strong>${esc(file.name)}: ${r.accepted} accepted, ${r.dropped} dropped.</strong>` +
-      r.providers.map(p => `<div style="margin-top:6px"><strong>${esc(p.provider_id)}</strong> (${esc(p.status)}): ` +
-        `${p.accepted_prices} prices, ${p.accepted_rate_limits} rate-limit tiers` +
-        (p.dropped.length ? `<ul style="margin:2px 0 0 18px">` + p.dropped.map(d =>
-          `<li>${esc(d.kind)} ${esc([d.model_id, d.unit, d.tier].filter(Boolean).join(' '))}: ${esc(d.reason)}</li>`).join('') + '</ul>' : '') +
-        '</div>').join('');
+    renderEvidence(file.name, r);
+    loadEvidence();
+    if (state.view === 'models') loadModels();
   } catch (e) { panel.textContent = 'Import failed: ' + e.message; }
 }
 

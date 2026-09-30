@@ -39,6 +39,7 @@ from .adapters import BackendError, BackendRequest, adapter_for, serves, support
 from .catalog import MODALITIES, catalog, decode_model_id
 from . import fleet
 from . import price_evidence
+from .pricing import row_price
 from . import qualification
 from . import release_publisher
 from .config import is_loopback, request_is_loopback
@@ -496,6 +497,18 @@ def import_pricing_evidence(payload: dict[str, Any]) -> Any:
 # ---------------------------------------------------------------------------
 # Models
 # ---------------------------------------------------------------------------
+def _price(definition: Any, model: dict[str, Any]) -> dict[str, Any]:
+    """The catalogue's own price fields (`price_source`, `price_usd`, `price_as_of`, and for a
+    page price `price_url` + `price_variants`) for one admin model row, so the console shows exactly
+    what `/v1/models` publishes. Same call, same arguments as `catalog._story_row`."""
+    location = fleet.is_location_provider(definition.id)
+    return row_price(
+        definition.kind, str(model["modality"]), model.get("raw"),
+        None if location else registry.models.cached(definition.id).get("fetched_at"),
+        definition.id, str(model["model_id"]),
+    )
+
+
 @router.get("/api/providers/{provider_id}/models", dependencies=[Depends(require_admin)])
 def provider_models(provider_id: str) -> Any:
     if registry.definition(provider_id) is None:
@@ -518,6 +531,7 @@ def provider_models(provider_id: str) -> Any:
             {
                 **model,
                 "publishable": registry.models.can_publish(definition, model),
+                **_price(definition, model),
                 # **The reason, from the same function that decides.** It used to
                 # fall back to a lane-level sentence and then to a flat "this model
                 # cannot be offered", which printed eleven times on this Mac for
@@ -644,6 +658,7 @@ def _model_row(
         "locations": [] if location else None,
         "locations_enabled": (1 if model["enabled"] else 0) if location else None,
         "locations_total": 1 if location else None,
+        **_price(definition, model),
     }
 
 

@@ -81,6 +81,10 @@ class _Inventory:
     def can_publish(_definition, _model) -> bool:
         return True
 
+    @staticmethod
+    def cached(_provider_id: str) -> dict:
+        return {"fetched_at": 1_790_000_000}
+
     def set_many(self, provider_id: str, model_ids: list[str], enabled: bool) -> int:
         self.writes.append((provider_id, list(model_ids), enabled))
         return len(model_ids)
@@ -132,6 +136,23 @@ class GroupingTests(unittest.TestCase):
             row for row in rows
             if row["provider_id"] == provider_id and row["model_id"] == model_id
         )
+
+    def test_admin_rows_carry_the_catalogues_price_truth(self) -> None:
+        """The Models page shows a Price column: the rows must carry what /v1/models publishes."""
+        self.inventory.rows[CLOUD] = [
+            {**_model("priced", "chat", True),
+             "raw": {"pricing": {"prompt": "0.0000015", "completion": "0.000009"}}},
+            _model("silent", "chat", True),
+        ]
+        rows = self._rows()
+        local = self._find(rows, LOCAL, "shared")
+        self.assertEqual((local["price_source"], local["price_usd"]), ("local", {"per_1k_chars": 0}))
+        priced = self._find(rows, CLOUD, "priced")
+        self.assertEqual(priced["price_source"], "provider")
+        self.assertEqual(priced["price_usd"]["input_per_1m_tokens"], 1.5)
+        self.assertTrue(priced["price_as_of"].startswith("2026-"))
+        silent = self._find(rows, CLOUD, "silent")
+        self.assertEqual((silent["price_source"], silent["price_usd"]), ("unpublished", None))
 
     def test_a_location_model_is_one_row_naming_every_machine(self) -> None:
         rows = self._rows()
