@@ -31,6 +31,13 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
+# Without this the first `import gateway` binds the process to the owner's real Application
+# Support, and every file imported after it inherits that (10 contract tests then failed on
+# a database that already held their idempotency keys).
+from tests._isolation import sandbox_env  # noqa: E402
+
+_SANDBOX = sandbox_env()
+
 from gateway import concurrency  # noqa: E402
 from gateway import worker as worker_module  # noqa: E402
 from gateway.adapters import BackendError  # noqa: E402

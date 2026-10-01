@@ -455,6 +455,16 @@ def settle_result(job_id: str, result: Any, store: JobStore) -> None:
     # only the first made the rest unreachable. Artifact 0 keeps the original
     # `{job_id}.{ext}` name, so every single-artifact route and every file already
     # on disk is unchanged; the rest add an index.
+    # **Room first, so a full disk is a sentence and not a half-written file.** Nothing has been
+    # acknowledged to the Hub yet (the receipt goes out after the writes), so the Hub still
+    # holds the output while the job is failed retryable.
+    from . import diskguard
+
+    try:
+        diskguard.require_room(sum(len(a.content or b"") for a in result.artifacts))
+    except diskguard.DiskLow as low:
+        _fail(store, job_id, code="DISK_LOW", detail=low.sentence, retryable=True)
+        return
     stored: list[dict[str, Any]] = []
     for index, artifact in enumerate(result.artifacts):
         stem = job_id if index == 0 else f"{job_id}-{index}"

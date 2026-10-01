@@ -350,12 +350,49 @@ enum GatewayState {
     case failed(String)
 }
 
+/// Size-based rotation for the gateway's log (owner decision 2026-10-01: nothing bounded it).
+///
+/// Copy-truncate, because the Python child holds the file open: the live file is copied to
+/// `.1` (older ones shift to `.2`) and then truncated in place. That is only safe because the
+/// handle is opened `O_APPEND` (see `GatewayController.launch`), so the child's next write
+/// lands at the new end instead of at its old offset, which would leave a hole of NULs.
+enum LogRotation {
+    static let maxBytes: UInt64 = 8 * 1024 * 1024
+    static let keep = 2   // gateway-kh.log + .1 + .2 = 24 MB at most
+
+    @discardableResult
+    static func rotateIfNeeded(path: String, handle: FileHandle?, maxBytes: UInt64 = LogRotation.maxBytes) -> Bool {
+        let fm = FileManager.default
+        guard let size = (try? fm.attributesOfItem(atPath: path))?[.size] as? UInt64, size > maxBytes else {
+            return false
+        }
+        // Oldest first: .1 -> .2, then the live file -> .1.
+        for index in stride(from: keep, through: 2, by: -1) {
+            let older = "\(path).\(index)"
+            try? fm.removeItem(atPath: older)
+            try? fm.moveItem(atPath: "\(path).\(index - 1)", toPath: older)
+        }
+        let first = "\(path).1"
+        try? fm.removeItem(atPath: first)
+        guard (try? fm.copyItem(atPath: path, toPath: first)) != nil else { return false }
+        if let handle {
+            return ftruncate(handle.fileDescriptor, 0) == 0
+        }
+        if let writer = FileHandle(forWritingAtPath: path) {
+            defer { writer.closeFile() }
+            return ftruncate(writer.fileDescriptor, 0) == 0
+        }
+        return false
+    }
+}
+
 final class GatewayController {
     static let shared = GatewayController()
 
     private(set) var process: Process?
     private(set) var state: GatewayState = .stopped
     private var logHandle: FileHandle?
+    private var logRotationTimer: Timer?
     private var healthTimer: Timer?
     private var onStateChange: (() -> Void)?
     private var stopping = false
@@ -610,8 +647,18 @@ final class GatewayController {
         if !FileManager.default.fileExists(atPath: logPath) {
             FileManager.default.createFile(atPath: logPath, contents: nil)
         }
-        logHandle = try? FileHandle(forWritingTo: URL(fileURLWithPath: logPath))
-        logHandle?.seekToEndOfFile()
+        // O_APPEND so a truncation by `LogRotation` cannot leave the child writing at a stale
+        // offset past the new end of file.
+        LogRotation.rotateIfNeeded(path: logPath, handle: nil)
+        let logDescriptor = open(logPath, O_WRONLY | O_APPEND | O_CREAT, 0o644)
+        logHandle = logDescriptor >= 0 ? FileHandle(fileDescriptor: logDescriptor, closeOnDealloc: true) : nil
+        logRotationTimer?.invalidate()
+        let rotation = Timer(timeInterval: 600, repeats: true) { [weak self] _ in
+            guard let self else { return }
+            LogRotation.rotateIfNeeded(path: self.logPath, handle: self.logHandle)
+        }
+        RunLoop.main.add(rotation, forMode: .common)
+        logRotationTimer = rotation
         if let handle = logHandle {
             task.standardOutput = handle
             task.standardError = handle
@@ -620,6 +667,8 @@ final class GatewayController {
         task.terminationHandler = { [weak self] finished in
             guard let self else { return }
             self.process = nil
+            self.logRotationTimer?.invalidate()
+            self.logRotationTimer = nil
             self.logHandle?.closeFile()
             self.logHandle = nil
 
@@ -672,6 +721,8 @@ final class GatewayController {
         restartAttempts = 0
         healthTimer?.invalidate()
         healthTimer = nil
+        logRotationTimer?.invalidate()
+        logRotationTimer = nil
         publish(.stopped)
 
         if let task = process {

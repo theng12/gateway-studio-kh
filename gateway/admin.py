@@ -2425,6 +2425,15 @@ def fleet_snapshot(force: bool = False) -> dict[str, Any]:
     return out
 
 
+@router.get("/api/fleet/disk", dependencies=[Depends(require_admin)])
+def fleet_disk() -> dict[str, Any]:
+    """Every Mac's disk, least free space first, plus this gateway Mac's own.
+
+    Compact, and a cache read like the fleet snapshot: the banner polls it.
+    """
+    return fleet.disk_summary(fleet.snapshot(allow_stale=True).get("machines") or [])
+
+
 @router.get("/api/fleet/controllers", dependencies=[Depends(require_admin)])
 def fleet_controllers() -> dict[str, Any]:
     return {"controllers": fleet.controllers()}

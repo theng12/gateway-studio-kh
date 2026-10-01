@@ -481,6 +481,74 @@ func fleetDecode<T: Decodable>(_ payload: [String: Any]) -> T? {
 
 // MARK: - Machine
 
+/// One top consumer of a Mac's disk, as the Hub reports it.
+struct FleetDiskTop: Decodable {
+    var name: String?
+    var gb: Double?
+}
+
+/// One Mac's disk as the gateway normalises it (`machine_disk` in `fleet.py`).
+///
+/// `state` is `green|amber|red|stop`. `stateSource` is `hub` when the Hub stated it and
+/// `derived` when the gateway worked it out from the free/total sizes of a Hub that predates
+/// the `disk` object; routing only ever acts on a stated `stop`. Every field is optional and
+/// decoded on its own, so a Hub that adds or drops one never costs the machine its row.
+struct FleetDisk: Decodable {
+    var state: String?
+    var stateSource: String?
+    var freeGb: Double?
+    var totalGb: Double?
+    var trashGb: Double?
+    var swapUsedGb: Double?
+    var top: [FleetDiskTop] = []
+    var lastSweep: FleetScalar?
+    var warnings: [String] = []
+
+    private enum CodingKeys: String, CodingKey {
+        case state, stateSource, freeGb, totalGb, trashGb, swapUsedGb, top, lastSweep, warnings
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        state = try? c.decode(String.self, forKey: .state)
+        stateSource = try? c.decode(String.self, forKey: .stateSource)
+        freeGb = try? c.decode(Double.self, forKey: .freeGb)
+        totalGb = try? c.decode(Double.self, forKey: .totalGb)
+        trashGb = try? c.decode(Double.self, forKey: .trashGb)
+        swapUsedGb = try? c.decode(Double.self, forKey: .swapUsedGb)
+        top = (try? c.decode([FleetDiskTop].self, forKey: .top)) ?? []
+        lastSweep = try? c.decode(FleetScalar.self, forKey: .lastSweep)
+        warnings = (try? c.decode([String].self, forKey: .warnings)) ?? []
+    }
+
+    var isLow: Bool { ["amber", "red", "stop"].contains((state ?? "").lowercased()) }
+
+    /// "models 61 GB, outputs 20 GB", or nil when the Hub named none.
+    var topText: String? {
+        let parts = top.compactMap { item -> String? in
+            guard let name = item.name, !name.isEmpty else { return nil }
+            return item.gb.map { "\(name) \(FleetFormat.gb($0))" } ?? name
+        }
+        return parts.isEmpty ? nil : parts.joined(separator: ", ")
+    }
+
+    /// What the Disk column draws: free space and the state beside it.
+    var columnText: String {
+        let free = FleetFormat.gb(freeGb)
+        guard let state, !state.isEmpty else { return free }
+        return free == "—" ? state : "\(free) · \(state)"
+    }
+
+    var colour: NSColor {
+        switch (state ?? "").lowercased() {
+        case "amber": return .systemOrange
+        case "red", "stop": return .systemRed
+        case "green": return .systemGreen
+        default: return .labelColor
+        }
+    }
+}
+
 struct FleetMachine: Decodable {
     var locationId: String?
     var location: String?
@@ -502,6 +570,9 @@ struct FleetMachine: Decodable {
     var availableGb: Double?
     var diskFreeGb: Double?
     var diskTotalGb: Double?
+    /// The Mac's disk state and top consumers (see `FleetDisk`); nil from a gateway that
+    /// predates the field, in which case `diskFreeGb` still draws.
+    var disk: FleetDisk?
     var health: String?
     /// The node roster's own facts, when this machine is a node of a controller.
     /// `nodeDetail` is the controller's sentence about why it cannot reach the

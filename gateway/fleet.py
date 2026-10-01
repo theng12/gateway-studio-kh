@@ -1918,6 +1918,137 @@ def _limitation_fields(entry: dict) -> dict:
     }
 
 
+_DISK_STATES = ("green", "amber", "red", "stop")
+
+
+def _num(value: object) -> float | None:
+    try:
+        number = float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) else None
+
+
+def _disk_top(raw: object) -> list[dict]:
+    """The Hub's biggest consumers as `[{name, gb}]`, at most five, whatever shape it sent."""
+    pairs: list[tuple[str, float | None]] = []
+    if isinstance(raw, dict):
+        pairs = [(str(k), _num(v)) for k, v in raw.items()]
+    elif isinstance(raw, list):
+        for item in raw:
+            if isinstance(item, dict):
+                name = item.get("name") or item.get("label") or item.get("path")
+                gb = _num(item.get("gb", item.get("size_gb")))
+                if gb is None and _num(item.get("bytes")) is not None:
+                    gb = _num(item.get("bytes")) / 1024**3  # type: ignore[operator]
+                if name:
+                    pairs.append((str(name), gb))
+            elif isinstance(item, (list, tuple)) and len(item) >= 2:
+                pairs.append((str(item[0]), _num(item[1])))
+    return [{"name": n, "gb": None if g is None else round(g, 2)} for n, g in pairs[:5]]
+
+
+def machine_disk(machine: dict) -> dict | None:
+    """One Mac's disk, normalised from whatever the Hub sent. `None` when it said nothing.
+
+    Reads the Hub's `disk` object defensively (state, free_gb, total_gb, trash_gb, top
+    consumers, swap_used_gb, last_sweep, warnings); a Hub that predates it sends only
+    `disk_free_gb` / `disk_total_gb`. `state` is `green|amber|red|stop` (`black` is the Hub's
+    older word for `stop`). When the Hub states none but the sizes are known it is **derived**
+    from the same thresholds the gateway uses for its own disk, and marked `state_source:
+    "derived"` -- shown, but never acted on by routing.
+    """
+    raw = machine.get("disk")
+    raw = raw if isinstance(raw, dict) else {}
+    free = _num(raw.get("free_gb"))
+    if free is None:
+        free = _num(machine.get("disk_free_gb"))
+    total = _num(raw.get("total_gb"))
+    if total is None:
+        total = _num(machine.get("disk_total_gb"))
+    state = str(raw.get("state") or "").strip().lower()
+    state = "stop" if state in {"black", "stopped"} else state
+    source = "hub" if state in _DISK_STATES else None
+    if source is None:
+        state = ""
+        if free is not None and total:
+            from . import diskguard
+
+            gb = diskguard.GB
+            state = diskguard.state_of(int(total * gb), int(free * gb))
+            if free * gb < diskguard.REFUSE_FREE_BYTES:
+                state = "stop"
+            source = "derived"
+    if free is None and not raw:
+        return None
+    warnings = raw.get("warnings")
+    if isinstance(warnings, (str, dict)):
+        warnings = [warnings]
+    clean = []
+    for warning in warnings if isinstance(warnings, list) else []:
+        text = warning.get("message") or warning.get("text") if isinstance(warning, dict) else warning
+        if text and str(text).strip():
+            clean.append(str(text).strip())
+    swap = _num(raw.get("swap_used_gb"))
+    trash = _num(raw.get("trash_gb"))
+    return {
+        "state": state or None,
+        "state_source": source,
+        "free_gb": None if free is None else round(free, 2),
+        "total_gb": None if total is None else round(total, 2),
+        "trash_gb": None if trash is None else round(trash, 2),
+        "swap_used_gb": None if swap is None else round(swap, 2),
+        "top": _disk_top(raw.get("top", raw.get("top_consumers"))),
+        "last_sweep": raw.get("last_sweep", raw.get("last_sweep_at")),
+        "warnings": clean,
+    }
+
+
+def _location_disk_stopped(row: dict) -> bool:
+    """Every Mac at this location is **stated** `stop` by its Hub: nothing can be sent there.
+
+    A derived state never counts, and a location with one Mac still answering is not stopped:
+    the controller places the job on that Mac.
+    """
+    machines = [m for m in (row.get("machines") or []) if isinstance(m, dict)]
+    if not machines:
+        return False
+    for machine in machines:
+        disk = machine_disk(machine)
+        if not disk or disk["state"] != "stop" or disk["state_source"] != "hub":
+            return False
+    return True
+
+
+def disk_summary(machines: list[dict]) -> dict:
+    """The compact fleet disk view: every Mac that reported disk, least free space first."""
+    from . import diskguard
+
+    macs = []
+    for machine in machines:
+        disk = machine.get("disk") if "state_source" in (machine.get("disk") or {}) else machine_disk(machine)
+        if not disk:
+            continue
+        macs.append({
+            "location": machine.get("location"),
+            "location_id": machine.get("location_id"),
+            "machine": machine.get("machine"),
+            "label": machine.get("label") or machine.get("machine"),
+            "reachable": machine.get("reachable"),
+            **disk,
+        })
+    macs.sort(key=lambda m: (m["free_gb"] is None, m["free_gb"] if m["free_gb"] is not None else 0.0))
+    low = [m for m in macs if m["state"] in ("amber", "red", "stop")]
+    return {
+        "generated_at": time.time(),
+        "gateway": diskguard.status(),
+        "macs": macs,
+        "low": [m["label"] for m in low],
+        "worst": max((m["state"] for m in macs if m["state"]),
+                     key=_DISK_STATES.index, default=None),
+    }
+
+
 def machines_flat(rows: list[dict]) -> list[dict]:
     """Every machine in the fleet as one row, with its location attached.
 
@@ -1985,6 +2116,7 @@ def machines_flat(rows: list[dict]) -> list[dict]:
                 "available_gb": machine.get("available_gb"),
                 "disk_free_gb": machine.get("disk_free_gb"),
                 "disk_total_gb": machine.get("disk_total_gb"),
+                "disk": machine_disk(machine),
                 "health": machine.get("health"),
                 "modalities": machine.get("modalities") or {},
                 **_limitation_fields(entry),
@@ -2009,7 +2141,7 @@ def machines_flat(rows: list[dict]) -> list[dict]:
                 "average_seconds": None,
                 "median_runtime_s": entry.get("median_runtime_s"),
                 "chip": None, "memory_gb": None, "available_gb": None,
-                "disk_free_gb": None, "disk_total_gb": None, "health": None,
+                "disk_free_gb": None, "disk_total_gb": None, "disk": None, "health": None,
                 "modalities": {},
                 **_limitation_fields(entry),
                 **node_fields(mid),
@@ -2700,6 +2832,10 @@ def _takes_customer_jobs(row: dict) -> bool:
     # **A paused location is skipped by routing** (Q7). The row is still there, its models are
     # still published, and every per-model decision survives — it simply stops being offered.
     if row.get("paused_at"):
+        return False
+    # **A location whose every Mac is out of disk (`stop`) is unavailable** -- it would only
+    # answer 507 -- so routing re-routes to another location, as it does for a drained one.
+    if _location_disk_stopped(row):
         return False
     return row.get("drained") is not True
 
