@@ -90,6 +90,25 @@ _UPLOAD_TTL_S = 3600.0
 #: way TTS limits are read from `maximum_text_length_per_request`.
 _MAX_UPLOAD_BYTES = 25 * 1024 * 1024
 
+#: What a **Studio Hub** transcription takes: Story Studio's own ceiling, 100 MiB (the Hub itself
+#: accepts 2 GiB). The 25 MB above is a cloud API's cap and was applied to every model, so a
+#: narration past about 35 minutes at Story's 96 kbps MP3 could never be subtitled by the local
+#: Whisper that handles it easily — a 413 Story does not retry (audit 2026-10-01).
+_MAX_UPLOAD_BYTES_HUB = 100 * 1024 * 1024
+
+
+def upload_limit_bytes(model_id: str | None) -> int:
+    """The largest audio upload the model named will take: the Hub's, or a cloud API's 25 MB."""
+    from .providers.definitions import KIND_STUDIO_HUB
+
+    try:
+        definition, _ = catalog.resolve("transcription", str(model_id or ""))
+    except Exception:  # noqa: BLE001 - an unreadable model id gets the conservative ceiling
+        definition = None
+    if definition is not None and definition.kind == KIND_STUDIO_HUB:
+        return _MAX_UPLOAD_BYTES_HUB
+    return _MAX_UPLOAD_BYTES
+
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
@@ -570,9 +589,15 @@ def _contract_fields(job: dict[str, Any]) -> dict[str, Any]:
                    "since": _iso(waiting.get("since"))}
     else:
         waiting = None
+    # **A job waiting for a Mac is cancellable too.** The Hub answers a DELETE for an item that is
+    # still `queued` by cancelling it on the spot (nothing ran), and the poll then sees
+    # `cancelled` and settles the job. Story already offers Cancel for "dispatched + waiting +
+    # cancellable" (`job-control.ts`), but this field was only ever true before dispatch, so a job
+    # that could sit in a queue for hours (QUEUE_WAIT_CEILING_S) had no way out (audit 2026-10-01).
     return {
         "dispatch_state": "pre_dispatch" if pre else "dispatched",
-        "cancellable": state not in TERMINAL_STATES and pre and not job.get("cancel_requested"),
+        "cancellable": (state not in TERMINAL_STATES and not job.get("cancel_requested")
+                        and (pre or waiting is not None)),
         "cancellation_requested": bool(job.get("cancel_requested")),
         "cancelled": state == "cancelled",
         "waiting": waiting,
@@ -918,6 +943,22 @@ def _submit(
     on the single path every generation route funnels through, rather than a check per route that
     the next route would forget.
     """
+    # **A replay is not a new submission, so it is answered before anything can refuse it.** A
+    # caller whose 202 was lost re-POSTs the same key; the job already exists, and a full queue,
+    # a model that went offline since, or an unresolvable id must not turn "here is the job you
+    # made" into a 429/503/404 (and a 429 puts Story on an account-wide hold). The same
+    # cross-modality guard as below applies.
+    if idempotency_key:
+        already = store.find_by_idempotency_key(idempotency_key)
+        if already is not None:
+            if already["modality"] != modality:
+                raise GatewayError(
+                    409,
+                    f"That Idempotency-Key was already used for a {already['modality']} request. "
+                    f"A key identifies one request; use a new one for this {modality} request.",
+                    "IDEMPOTENCY_KEY_REUSED",
+                )
+            return already, False
     _refuse_when_the_queue_is_full()
     definition, model = catalog.resolve(
         modality, compound_id, only_location=_pinned_location(params),
@@ -1952,11 +1993,12 @@ async def transcription_quote(
         # exhaust the process — but it would still be written, staged and queued
         # against a provider that is going to refuse it, and the caller would get
         # a provider-shaped failure instead of the one sentence that explains it.
-        if len(content) > _MAX_UPLOAD_BYTES:
+        limit = upload_limit_bytes(body_model)
+        if len(content) > limit:
             raise GatewayError(
                 413,
                 f"That audio is {len(content) / (1024 * 1024):.1f} MB; the limit is "
-                f"{_MAX_UPLOAD_BYTES // (1024 * 1024)} MB per request.",
+                f"{limit // (1024 * 1024)} MB per request.",
                 "UPLOAD_TOO_LARGE",
             )
         _prune_uploads(now := time.time())

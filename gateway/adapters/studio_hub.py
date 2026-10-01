@@ -215,6 +215,31 @@ def _hub_refusal_code(response: httpx.Response) -> str | None:
     return str(code) if code else None
 
 
+def _hub_refusal_reason(response: httpx.Response) -> str:
+    """The Hub's own sentence for a refusal, or `""`.
+
+    The code says *what kind* of refusal it was; the Hub's `detail` says *why* ("managed output
+    storage has insufficient free space", "needs a ~16GB machine; this one has 8GB"). The adapter
+    built its message from the code alone, so the owner read "(OUTPUT_STORAGE_BLOCKED)" and never
+    that a Mac's disk was nearly full. Same two shapes as `_hub_refusal_code`.
+    """
+    try:
+        body = response.json()
+    except ValueError:
+        return ""
+    if not isinstance(body, dict):
+        return ""
+    detail = body.get("detail")
+    if isinstance(detail, dict):
+        detail = detail.get("detail")
+    return " ".join(str(detail).split())[:240] if isinstance(detail, str) else ""
+
+
+def _refusal_sentence(code: str | None, response: httpx.Response) -> str:
+    reason = _hub_refusal_reason(response)
+    return f"the location cannot serve this model right now ({code})" + (f": {reason}" if reason else "")
+
+
 def _uncertain_result(batch_id: str, item_index: int, item: dict[str, Any]) -> tuple[str, dict[str, Any]]:
     """The operator-facing description of an item the Hub cannot vouch for.
 
@@ -308,6 +333,7 @@ def _video_reference(request: BackendRequest) -> list[dict[str, Any]] | None:
         raise BackendError(
             "the source image for this video job is no longer held; upload it again and retry",
             code="INVALID_PARAMS",
+            upstream_accepted=False,
         )
     return [{"b64": base64.b64encode(asset["content"]).decode("ascii"),
              "mime": asset["media_type"]}]
@@ -337,8 +363,11 @@ def _resolve_base(request: BackendRequest) -> str:
     if not base:
         raise BackendError(
             "Studio Hub is not running (no hub-ready.json found)",
-            code="SITE_CAPACITY_UNAVAILABLE",
+            # A Hub that is not there is a site that is down: nothing was sent, so the worker may
+            # wait for it or try the next location -- not file an unknown outcome (audit 2026-10-01).
+            code="LOCATION_UNREACHABLE",
             retryable=True,
+            upstream_accepted=False,
         )
     return base.rstrip("/")
 
@@ -642,7 +671,8 @@ def _poll_batch(
                 # A controller older than Hub 0.6.111 fails a busy Mac as a terminal item. Nothing
                 # ran, and busy is a moment, so it is the same site property the submit path names.
                 raise BackendError(
-                    f"the location cannot serve this model right now ({hub_code})",
+                    f"the location cannot serve this model right now ({hub_code})"
+                    + (f": {message}" if message else ""),
                     code="LOCATION_NOT_READY",
                     retryable=True,
                     upstream_accepted=False,
@@ -1037,6 +1067,7 @@ def _voice_placement(
         raise BackendError(
             f"voice reference audio is missing for '{voice_id}'",
             code="VOICE_PROVIDER_RESULT_INVALID",
+            upstream_accepted=False,
         )
     # Read before the cache, not after it: which recording this is *is* part of the
     # question the cache answers. Hashing a reference clip per job is a few
@@ -1139,6 +1170,7 @@ def _verify_staged_reference(
             "the hub accepted the reference but described it differently: "
             + "; ".join(problems),
             code="VOICE_PROVIDER_RESULT_INVALID",
+            upstream_accepted=False,  # the clip is staged; no batch exists yet
         )
 
 
@@ -1192,11 +1224,21 @@ def _stage_voice_reference(
         response = client.post(
             f"{base}/api/hub/voice-references", headers=headers, files=files, data=data
         )
+    except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
+        raise BackendError(
+            f"could not reach the Hub to stage the voice reference ({type(exc).__name__})",
+            code="LOCATION_UNREACHABLE",
+            retryable=True,
+            upstream_accepted=False,
+        ) from exc
     except httpx.HTTPError as exc:
+        # Staging a clip is not a job: no batch exists yet, so whatever went wrong here cannot
+        # have started work, and the job must not be filed as an unknown outcome.
         raise BackendError(
             f"voice reference upload failed: {exc}",
             code="SITE_CAPACITY_UNAVAILABLE",
             retryable=True,
+            upstream_accepted=False,
         ) from exc
 
     if response.status_code >= 400:
@@ -1205,13 +1247,15 @@ def _stage_voice_reference(
             code="VOICE_PROVIDER_RESULT_INVALID",
             status=response.status_code,
             retryable=response.status_code >= 500,
+            upstream_accepted=False,
         )
 
     payload = response.json() or {}
     asset_id = str(payload.get("asset_id") or "")
     if not asset_id:
         raise BackendError(
-            "hub returned no voice reference asset_id", code="VOICE_PROVIDER_RESULT_INVALID"
+            "hub returned no voice reference asset_id", code="VOICE_PROVIDER_RESULT_INVALID",
+            upstream_accepted=False,
         )
     _verify_staged_reference(
         payload,
@@ -1238,7 +1282,8 @@ def _generate_image_or_voice(request: BackendRequest) -> BackendResult:
     supplied = request.params.get("params")
     if supplied is not None and not isinstance(supplied, dict):
         raise BackendError(
-            "'params' must be an object of Hub parameters.", code="INVALID_PARAMS"
+            "'params' must be an object of Hub parameters.", code="INVALID_PARAMS",
+            upstream_accepted=False,
         )
     item: dict[str, Any] = {"params": dict(supplied or {})}
     if request.modality in {"image", "music", "video"}:
@@ -1273,9 +1318,19 @@ def _generate_image_or_voice(request: BackendRequest) -> BackendResult:
                 item["params"]["reference_images"] = reference
     else:
         item["text"] = str(request.params.get("text") or "")
-        for key in ("speed", "voice_id", "language", "controls", "temperature", "seed"):
+        for key in ("speed", "voice_id", "language", "temperature", "seed"):
             if request.params.get(key) is not None:
                 item["params"][key] = request.params[key]
+        # **A control is a parameter, not a nested object.** Story sends the controls the catalogue
+        # published as `controls: {name: value}`; the Hub merges `item.params` into the worker's
+        # request body, whose model reads `temperature` (and its siblings) at the top level and
+        # drops an unknown `controls` key without a word -- so a value the caller chose reached no
+        # engine at all (audit 2026-10-01). An explicit top-level parameter still wins.
+        controls = request.params.get("controls")
+        if isinstance(controls, dict):
+            for name, value in controls.items():
+                if value is not None and isinstance(name, str) and name not in item["params"]:
+                    item["params"][name] = value
 
     body = {
         "modality": modality,
@@ -1325,7 +1380,7 @@ def _generate_image_or_voice(request: BackendRequest) -> BackendResult:
                 # location that offers the same model instead of calling the job
                 # failed (or, worse, holding it as an unknown outcome).
                 raise BackendError(
-                    f"the location cannot serve this model right now ({code})",
+                    _refusal_sentence(code, response),
                     code="LOCATION_NOT_READY",
                     status=response.status_code,
                     retryable=True,
@@ -1446,7 +1501,8 @@ def _generate_transcription(request: BackendRequest) -> BackendResult:
 
     audio_path = request.params.get("_upload_path")
     if not audio_path or not Path(audio_path).exists():
-        raise BackendError("transcription needs an uploaded audio file", code="PROVIDER_FAILED")
+        raise BackendError("transcription needs an uploaded audio file", code="PROVIDER_FAILED",
+                           upstream_accepted=False)
     audio = Path(audio_path).read_bytes()
 
     # Field names are `files` / `item_ids`, NOT `files[]` / `item_ids[]`. The
@@ -1496,7 +1552,7 @@ def _generate_transcription(request: BackendRequest) -> BackendResult:
             code = _hub_refusal_code(response)
             if code in _LOCATION_REFUSAL_CODES:
                 raise BackendError(
-                    f"the location cannot serve this model right now ({code})",
+                    _refusal_sentence(code, response),
                     code="LOCATION_NOT_READY",
                     status=response.status_code,
                     retryable=True,
@@ -1700,7 +1756,7 @@ def _generate_chat(request: BackendRequest) -> BackendResult:
         code = _hub_refusal_code(response)
         if code in _LOCATION_REFUSAL_CODES:
             raise BackendError(
-                f"the location cannot serve this model right now ({code})",
+                _refusal_sentence(code, response),
                 code="LOCATION_NOT_READY",
                 status=response.status_code,
                 retryable=True,
@@ -1765,6 +1821,7 @@ class StudioHubBackend:
         raise BackendError(
             f"Studio Hub does not serve '{request.modality}'",
             code="MODEL_MODALITY_MISMATCH",
+            upstream_accepted=False,
         )
 
     def discard(self, request: BackendRequest) -> dict[str, Any]:

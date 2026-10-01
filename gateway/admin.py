@@ -1320,7 +1320,7 @@ async def create_transcription(
     `_submit("transcription", …)` with a `_upload_path`, which is why this is a
     route and not a second implementation.
     """
-    from .api import GatewayError, _job_envelope, _submit, _MAX_UPLOAD_BYTES
+    from .api import GatewayError, _job_envelope, _submit, upload_limit_bytes
     from .config import ARTIFACT_DIR
     from pathlib import Path
 
@@ -1330,11 +1330,12 @@ async def create_transcription(
     # **413, never 402**, and with the number in it: every cloud transcription API
     # on this gateway caps one upload at 25 MB, so a bigger file is refused here
     # rather than staged, queued, and failed after the bytes have travelled.
-    if len(content) > _MAX_UPLOAD_BYTES:
+    limit = upload_limit_bytes(model_id)
+    if len(content) > limit:
         return _error(
             413,
-            f"That file is {len(content) // (1024 * 1024)} MB; this gateway accepts "
-            f"{_MAX_UPLOAD_BYTES // (1024 * 1024)} MB per request.",
+            f"That file is {len(content) // (1024 * 1024)} MB; this model accepts "
+            f"{limit // (1024 * 1024)} MB per request.",
         )
     name = file.filename or "upload.bin"
     upload_dir = Path(str(ARTIFACT_DIR)) / "uploads"
@@ -1371,11 +1372,19 @@ def create_status(job_id: str) -> Any:
 @router.post("/api/create/status/{job_id}/cancel", dependencies=[Depends(require_admin)])
 def create_cancel(job_id: str) -> Any:
     from .api import _job_envelope
+    from .worker import cancel_upstream
 
     job = store.get(job_id)
     if job is None:
         return _error(404, f"no job '{job_id}'")
-    return _job_envelope(store.cancel(job_id), native=True)
+    store.cancel(job_id)
+    # **Reach the work, not just the row.** This is the route the menu-bar Jobs window and the
+    # Create page both call, and it only stamped the cancel locally: a job already dispatched to a
+    # Hub kept rendering there while the app said "cancelling". The public `/v1/.../cancel` routes
+    # have always asked the Hub (`worker.cancel_upstream`); this one now does the same, with the
+    # row as it was before the cancel, as they do (audit 2026-10-01).
+    cancel_upstream(job, store)
+    return _job_envelope(store.get(job_id), native=True)
 
 
 @router.post("/api/jobs/{job_id}/discard-uncertain", dependencies=[Depends(require_admin)])

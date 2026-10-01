@@ -785,6 +785,9 @@ def publish(
                 if held is not None and not allow_downgrade and is_downgrade(target, held_version):
                     outcome = {
                         "ok": False, "status": None, "code": "RELEASE_DOWNGRADE",
+                        # The menu-bar app reads `downgrade` (not `code`) to show a refused downgrade
+                        # as an owner's decision, in orange, rather than a failure in red.
+                        "downgrade": True,
                         "detail": (
                             f"this controller holds {held_version}, which is newer than {target}. "
                             "Publishing would take it backwards; publish a newer build, or choose "
