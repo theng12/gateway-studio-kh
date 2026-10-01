@@ -213,6 +213,7 @@ class ReleasePublish(unittest.TestCase):
         outcome = self._publish()["locations"]["ctrl-1"]
         self.assertFalse(outcome["ok"], outcome)
         self.assertEqual(outcome["code"], "RELEASE_DOWNGRADE")
+        self.assertIs(outcome["downgrade"], True, "the menu-bar app colours a refusal by this flag")
         self.assertIn("0.6.51", outcome["detail"])
         self.assertIn("0.6.50", outcome["detail"])
         # Refused *before* the push: the controller still holds the newer release.

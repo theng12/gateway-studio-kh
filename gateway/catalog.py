@@ -1027,25 +1027,50 @@ def _tts_row(model_id: str, definition: ProviderDefinition, model: dict[str, Any
         # number up: the real concurrency for a lane comes from the location's own published
         # capacity and the operator's cap, both of which are already published and enforced. A
         # field whose only reader was itself is the same defect as `available_workers` (M11).
-        # ponytail: one invented temperature range for every TTS model that takes
+        # ponytail: one invented temperature range for every cloud TTS model that takes
         # one. Ceiling — a model with a narrower or wider range is described
         # wrongly, and the control fails at the provider outside its real bounds.
-        # The local MLX engines and Fish do accept a temperature, so the knob is
-        # real rather than decorative; only its range is assumed. Upgrade path —
-        # read it per model, and drop the control entirely where a provider states
-        # no `temperature` parameter.
-        "controls": [
-            {
-                "name": "temperature",
-                "label": "Temperature",
-                "type": "number",
-                "minimum": 0.1,
-                "maximum": 2.0,
-                "default": 0.7,
-                "step": 0.05,
-            }
-        ],
+        # Upgrade path — read it per model where a provider states a range.
+        #
+        # **A Studio Hub lane is different: it states its parameters, so it is read.** The
+        # old comment said "the local MLX engines and Fish do accept a temperature"; the
+        # voice worker reads a top-level `temperature` for Chatterbox only (Fish reads
+        # `fish_temperature`, Qwen3/VoxCPM2/Breeze/OmniVoice/Khmer read none) and no lane
+        # contract lists it, while the adapter forwards Story's `controls` as one nested
+        # object the worker's request model drops. A knob published on every Hub voice that
+        # changed nothing in any of them (audit 2026-10-01).
+        "controls": _tts_controls(definition, raw),
     }
+
+
+def _tts_controls(definition: ProviderDefinition, raw: dict[str, Any]) -> list[dict[str, Any]]:
+    """The TTS controls a row publishes: a Hub lane's own, or the cloud default."""
+    if definition.kind == KIND_STUDIO_HUB:
+        contract = raw.get("lane_contract") if isinstance(raw, dict) else None
+        declared = _hub_declared_parameter(contract, "temperature") if isinstance(contract, dict) else None
+        if declared is None:
+            return []
+        def number(key: str, fallback: float) -> float:
+            value = declared.get(key)
+            return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else fallback
+        return [{
+            "name": "temperature",
+            "label": "Temperature",
+            "type": "number",
+            "minimum": number("minimum", 0.1),
+            "maximum": number("maximum", 2.0),
+            "default": number("default", 0.7),
+            "step": 0.05,
+        }]
+    return [{
+        "name": "temperature",
+        "label": "Temperature",
+        "type": "number",
+        "minimum": 0.1,
+        "maximum": 2.0,
+        "default": 0.7,
+        "step": 0.05,
+    }]
 
 
 def _transcription_row(model_id: str, definition: ProviderDefinition, model: dict[str, Any]) -> dict[str, Any]:
@@ -1447,7 +1472,22 @@ def _music_row(model_id: str, definition: ProviderDefinition, model: dict[str, A
     max_prompt_characters, max_prompt_source = _limit_with_source(
         "max_prompt_characters", None, 2000, definition.id, model_id
     )
-    return {
+    # **What a Hub music lane states about lyrics, relayed.** YuE2's contract declares `lyrics`
+    # as `required: true` ("this engine sings; there is no instrumental switch") and the Hub
+    # refuses a request without them; Stable Audio 3 declares none. Published as
+    # `requires_lyrics` / `supports_vocals` / `supports_instrumental` — fields Story Studio
+    # already parses — because it picks the first catalogue row when the Music page names no
+    # model, and the first row here is YuE2 (audit 2026-10-01): every instrumental top-up
+    # would have been refused at the Hub. Only what the lane stated is published.
+    contract = raw.get("lane_contract") if isinstance(raw, dict) else None
+    lyrics = _hub_declared_parameter(contract, "lyrics") if isinstance(contract, dict) else None
+    vocal: dict[str, Any] = {}
+    if lyrics is not None:
+        vocal["supports_vocals"] = True
+        if lyrics.get("required") is True:
+            vocal["requires_lyrics"] = True
+            vocal["supports_instrumental"] = False
+    row = {
         "coming_soon": False,
         # ponytail: flat caps for every music model, deliberately at the
         # conservative end — the same trade the image lane records at
@@ -1467,6 +1507,8 @@ def _music_row(model_id: str, definition: ProviderDefinition, model: dict[str, A
         "supports_instrumental": instrumental if isinstance(instrumental, bool) else None,
         "supported_languages": languages,
     }
+    row.update(vocal)
+    return row
 
 
 _ROW_BUILDERS = {
