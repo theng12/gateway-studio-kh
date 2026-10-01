@@ -303,6 +303,21 @@ def _local_image_shape(raw: dict[str, Any]) -> dict[str, Any] | None:
     }
 
 
+def _output_formats(definition: ProviderDefinition, raw: dict[str, Any]) -> dict[str, list[str]]:
+    """`{"output_formats": [...]}` when a Studio Hub lane declares an `output_format` parameter.
+
+    Empty (the key is absent) for a lane that states none and for every cloud provider, which return
+    their native file. A hint only: the request field is ignored by a node that predates it, so
+    nothing depends on this being published.
+    """
+    if definition.kind != KIND_STUDIO_HUB or not isinstance(raw, dict):
+        return {}
+    contract = raw.get("lane_contract")
+    declared = _hub_declared_parameter(contract, "output_format") if isinstance(contract, dict) else None
+    values = [v for v in (declared or {}).get("enum") or [] if isinstance(v, str) and v]
+    return {"output_formats": list(dict.fromkeys(values))} if values else {}
+
+
 def _image_row(model_id: str, definition: ProviderDefinition, model: dict[str, Any]) -> dict[str, Any]:
     raw = model.get("raw") or {}
     local = _local_image_shape(raw) if definition.kind == KIND_STUDIO_HUB else None
@@ -436,6 +451,7 @@ def _image_row(model_id: str, definition: ProviderDefinition, model: dict[str, A
         "operations": operations,
         "requires_admission_permit": False,
         "availability_note": None,
+        **_output_formats(definition, raw),
     }
 
 
@@ -1040,6 +1056,7 @@ def _tts_row(model_id: str, definition: ProviderDefinition, model: dict[str, Any
         # object the worker's request model drops. A knob published on every Hub voice that
         # changed nothing in any of them (audit 2026-10-01).
         "controls": _tts_controls(definition, raw),
+        **_output_formats(definition, raw),
     }
 
 
@@ -1508,6 +1525,7 @@ def _music_row(model_id: str, definition: ProviderDefinition, model: dict[str, A
         "supported_languages": languages,
     }
     row.update(vocal)
+    row.update(_output_formats(definition, raw))
     return row
 
 

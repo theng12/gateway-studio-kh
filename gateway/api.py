@@ -924,6 +924,38 @@ def _refuse_when_the_queue_is_full() -> None:
     )
 
 
+#: The optional `output_format` request, per modality: the container a Studio Hub lane should
+#: deliver instead of its native WAV / PNG. Absent means native, which is what every caller before
+#: this field got. One fixed preset per name (AAC / JPEG) lives in the Hub; there is no quality knob.
+OUTPUT_FORMATS = {
+    "image": ("png", "jpeg"),
+    "music": ("wav", "m4a"),
+    "tts": ("wav", "m4a"),
+}
+
+
+def _validate_output_format(modality: str, payload: dict[str, Any]) -> None:
+    """Refuse an `output_format` the modality does not define, before anything is queued or charged.
+
+    Normalised in place (` JPEG ` -> `jpeg`) so the stored job and the Hub see one spelling. `null`
+    is the same as absent.
+    """
+    value = payload.get("output_format")
+    if value is None:
+        payload.pop("output_format", None)
+        return
+    allowed = OUTPUT_FORMATS[modality]
+    cleaned = value.strip().lower() if isinstance(value, str) else None
+    if cleaned not in allowed:
+        raise GatewayError(
+            400,
+            f"output_format must be one of {', '.join(allowed)} for a {modality} request; got {value!r}. "
+            "Omit it to receive the lane's native file.",
+            "INVALID_PARAMS",
+        )
+    payload["output_format"] = cleaned
+
+
 def _submit(
     modality: str,
     compound_id: str,
@@ -1525,6 +1557,7 @@ def create_image(
     caller: str | None = Depends(caller_hint),
 ) -> dict[str, Any]:
     key = _require_idempotency_key(idempotency_key)
+    _validate_output_format("image", payload)
     model_id = str(payload.get("model_id") or payload.get("model") or "")
     job, created = _submit("image", model_id, payload, key, caller=caller)
     if created:
@@ -1815,6 +1848,7 @@ def create_tts_job(
     caller: str | None = Depends(caller_hint),
 ) -> dict[str, Any]:
     key = _require_idempotency_key(idempotency_key)
+    _validate_output_format("tts", payload)
     model_id = str(payload.get("model_id") or payload.get("model") or "")
     job, created = _submit("tts", model_id, payload, key, caller=caller)
     if created:
@@ -1893,6 +1927,7 @@ def create_music(
     caller: str | None = Depends(caller_hint),
 ) -> dict[str, Any]:
     key = _require_idempotency_key(idempotency_key)
+    _validate_output_format("music", payload)
     model_id = str(payload.get("model_id") or payload.get("model") or "")
     job, created = _submit("music", model_id, payload, key, caller=caller)
     if created:

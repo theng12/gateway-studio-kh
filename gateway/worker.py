@@ -37,6 +37,7 @@ from .adapters import BackendError, BackendRequest, adapter_for
 from .adapters import studio_hub
 from .config import ARTIFACT_DIR
 from .providers import registry
+from .providers.definitions import KIND_STUDIO_HUB
 from .store import RECOVERY_UNKNOWN, JobStore
 from . import fleet
 
@@ -342,6 +343,14 @@ _EXT_BY_MEDIA = {
     "image/webp": "webp",
     "audio/wav": "wav",
     "audio/mpeg": "mp3",
+    # What a Hub lane returns for `output_format: m4a` (AAC in MP4) and for FLAC. Without these an
+    # AAC artifact is stored as `{job}.bin`: it still serves with the right type, but every tool that
+    # trusts the extension (Finder, an ffmpeg muxer guess, the admin download) would mislabel it.
+    "audio/mp4": "m4a",
+    "audio/x-m4a": "m4a",
+    "audio/aac": "aac",
+    "audio/flac": "flac",
+    "audio/x-flac": "flac",
     "audio/ogg": "ogg",
     "video/mp4": "mp4",
     "application/x-subrip": "srt",
@@ -351,6 +360,19 @@ _EXT_BY_MEDIA = {
 
 def _ext_for(media_type: str | None) -> str:
     return _EXT_BY_MEDIA.get((media_type or "").split(";")[0].strip(), "bin")
+
+
+def _params_for(definition: Any, params: dict[str, Any]) -> dict[str, Any]:
+    """The job's params as one provider should see them.
+
+    `output_format` is a request to a Studio Hub lane (`wav`/`m4a`, `png`/`jpeg`) and means nothing to
+    a cloud provider: ElevenLabs would put `m4a` into its own `?output_format=` query and refuse a
+    paid job, and a fal model that does not declare the field may reject it. Cloud lanes return their
+    native format, so they never see it; the stored job still records what was asked.
+    """
+    if "output_format" not in params or getattr(definition, "kind", None) == KIND_STUDIO_HUB:
+        return params
+    return {key: value for key, value in params.items() if key != "output_format"}
 
 
 def _unknown_detail(detail: str) -> str:
@@ -615,7 +637,7 @@ def execute_job(job: dict[str, Any], store: JobStore) -> None:
             provider_id=provider_id,
             model_id=model_id,
             modality=modality,
-            params=params,
+            params=_params_for(definition, params),
             values=registry.credentials.resolved(provider_id),
             base_url=definition.base_url,
             display_name=definition.display_name,
