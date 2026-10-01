@@ -1,0 +1,142 @@
+// Renders pages of the real Gateway app, offscreen, to PNG. A development tool, not a test.
+//
+//     menubar/render/render-page.sh [pages] [out-dir] [WxH ...]
+//
+// The app's own sources are compiled as they are (minus its entry point), the page is shown in the app's
+// own MainWindow — sidebar and all — in an NSWindow parked far off every screen, and the window's
+// content view is written out as a bitmap. Web console pages (Models, Providers, Content Packs) are
+// WKWebViews, which `cacheDisplay` cannot draw, so their `takeSnapshot` is composited over the shell.
+//
+// It talks only to the fixture gateway the driver starts (a random local port, a temp profile).
+import AppKit
+import WebKit
+
+// `arguments` and `launchWindow` are globals the app's own entry point declares; AppDelegate reads them.
+let arguments = CommandLine.arguments
+let launchWindow: String? = nil
+let pageNames = (arguments.count > 1 ? arguments[1] : "overview").split(separator: ",").map(String.init)
+let output = arguments.count > 2 ? arguments[2] : "/tmp/gateway-render"
+var sizes: [(CGFloat, CGFloat)] = []
+for size in arguments.dropFirst(3) {
+    let parts = size.lowercased().split(separator: "x")
+    if parts.count == 2, let w = Double(parts[0]), let h = Double(parts[1]) { sizes.append((CGFloat(w), CGFloat(h))) }
+}
+if sizes.isEmpty { sizes = [(1100, 800), (1600, 1000)] }
+// One appearance per process. Several views here paint a layer colour once, from `NSColor.cgColor`, at the
+// moment they are built (see the audit's dark/light list), so the appearance has to be set *before* the
+// window exists and a second appearance needs a second process; render-page.sh does that for `both`.
+let darkMode = ProcessInfo.processInfo.environment["GATEWAY_RENDER_APPEARANCE"] == "dark"
+let suffixForAppearance = darkMode ? "-dark" : ""
+
+let application = NSApplication.shared
+application.setActivationPolicy(.accessory)
+application.appearance = NSAppearance(named: darkMode ? .darkAqua : .aqua)
+try? FileManager.default.createDirectory(atPath: output, withIntermediateDirectories: true)
+GatewayController.shared.state = .running(providers: 24, models: 36)
+
+func spin(_ seconds: Double) {
+    let end = Date().addingTimeInterval(seconds)
+    while Date() < end { RunLoop.current.run(until: Date().addingTimeInterval(0.05)) }
+}
+
+/// `takeSnapshot` returns white for a view in a window that is not on any screen, so the page is asked for a PDF
+/// of itself instead: the same layout, drawn from the render tree rather than from the screen.
+func snapshot(_ web: WKWebView) -> NSImage? {
+    var image: NSImage?
+    var done = false
+    let configuration = WKPDFConfiguration()
+    configuration.rect = web.bounds
+    web.createPDF(configuration: configuration) { result in
+        if case .success(let data) = result { image = NSImage(data: data) }
+        done = true
+    }
+    let deadline = Date().addingTimeInterval(8)
+    while !done && Date() < deadline { RunLoop.current.run(until: Date().addingTimeInterval(0.05)) }
+    return image
+}
+
+func write(_ window: NSWindow, web: WKWebView?, to path: String) {
+    guard let view = window.contentView, let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { return }
+    // `cacheDisplay` paints the window's own background white, whatever the appearance, so a dark render would be
+    // white-on-white. Give the content view a layer filled with the real window colour, resolved in the appearance.
+    view.wantsLayer = true
+    window.effectiveAppearance.performAsCurrentDrawingAppearance {
+        view.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
+    }
+    view.cacheDisplay(in: view.bounds, to: rep)
+    let shot = web.flatMap { snapshot($0) }
+    let target = web.map { view.convert($0.bounds, from: $0) } ?? .zero
+    let composed = NSImage(size: view.bounds.size, flipped: false) { rect in
+        rep.draw(in: rect)
+        shot?.draw(in: target)
+        return true
+    }
+    guard let tiff = composed.tiffRepresentation, let merged = NSBitmapImageRep(data: tiff),
+          let png = merged.representation(using: .png, properties: [:]) else { return }
+    try? png.write(to: URL(fileURLWithPath: path))
+    print("wrote \(path)")
+}
+
+for page in pageNames {
+    // `fleet:locations` is the Fleet page on one of its inner tabs.
+    let parts = page.split(separator: ":").map(String.init)
+    let name = parts[0].replacingOccurrences(of: "-", with: " ")  // `fleet-groups` is the mock, `fleet:groups` would be a tab
+    let file = page.replacingOccurrences(of: ":", with: "-").replacingOccurrences(of: " ", with: "-")
+    do {
+        let suffix = suffixForAppearance
+        for size in sizes {
+            let isGroups = name == "fleet groups"
+            _ = MainWindow.shared.show(section: isGroups ? "fleet" : (name == "whatsnew" ? "what's new" : name))
+            guard let window = MainWindow.shared.window else { print("no window for \(page)"); continue }
+            if parts.count > 1, let tab = ["overview": 0, "locations": 1, "machines": 2, "models": 3, "jobs": 4][parts[1]],
+               let kind = FleetTab(rawValue: tab) {
+                FleetSection.shared.select(kind)
+            }
+            if isGroups {
+                // The proposed Groups tab replaces the Fleet page's body, inside the real window and sidebar.
+                var snapshot: FleetSnapshot?
+                var answered = false
+                GatewayAPI.get("/admin/api/fleet") { result in
+                    if case .success(let payload) = result { snapshot = FleetSnapshot.from(payload) }
+                    answered = true
+                }
+                while !answered { RunLoop.current.run(until: Date().addingTimeInterval(0.05)) }
+                let container = MainWindow.shared.container!
+                container.subviews.forEach { $0.removeFromSuperview() }
+                let mock = FleetGroupsPage(frame: .zero, problemsOnly: parts.count > 1 && parts[1] == "problems")
+                mock.translatesAutoresizingMaskIntoConstraints = false
+                container.addSubview(mock)
+                NSLayoutConstraint.activate([
+                    mock.topAnchor.constraint(equalTo: container.topAnchor), mock.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+                    mock.leadingAnchor.constraint(equalTo: container.leadingAnchor), mock.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+                ])
+                if let snapshot { mock.update(snapshot) }
+            }
+            window.setContentSize(NSSize(width: size.0, height: size.1))
+            window.setFrameOrigin(NSPoint(x: -20000, y: -20000))
+            window.makeKeyAndOrderFront(nil)  // a non-key window draws the selected sidebar row as a black slab
+            let isConsole = ["models", "providers", "content packs"].contains(name)
+            spin(isConsole ? 6.0 : 1.8)
+            window.contentView?.layoutSubtreeIfNeeded()
+            window.displayIfNeeded()
+            let web: WKWebView? = {
+                switch name {
+                case "models": return ConsoleSection.models.webView
+                case "providers": return ConsoleSection.providers.webView
+                case "content packs": return ConsoleSection.packs.webView
+                default: return nil
+                }
+            }()
+            if let web, ProcessInfo.processInfo.environment["GATEWAY_RENDER_DEBUG"] == "1" {
+                var js = "?"
+                var done = false
+                web.evaluateJavaScript("document.readyState + ' ' + document.body.innerText.length + ' ' + location.href") { r, e in js = "\(r ?? "nil") \(e.map { "\($0)" } ?? "")"; done = true }
+                while !done { RunLoop.current.run(until: Date().addingTimeInterval(0.05)) }
+                print("web: loading=\(web.isLoading) url=\(web.url?.absoluteString ?? "nil") frame=\(web.frame) window=\(web.window != nil) js=\(js)")
+            }
+            write(window, web: web, to: "\(output)/\(file)-\(Int(size.0))x\(Int(size.1))\(suffix).png")
+            window.orderOut(nil)
+        }
+    }
+}
+exit(0)
