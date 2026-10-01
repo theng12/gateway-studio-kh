@@ -43,6 +43,10 @@ def archive(extra=None, mutate=None):
 
 
 class ContentLibrary(unittest.TestCase):
+    def setUp(self):
+        from _isolation import isolate_content
+        isolate_content(self, Path(temporary.name) / "data")
+
     def test_integrity_is_not_install_or_ownership(self):
         row = content_packs.inspect_archive(archive())
         self.assertEqual(row["integrity"], "verified")

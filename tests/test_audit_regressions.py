@@ -79,7 +79,8 @@ class AuditRegressions(unittest.TestCase):
 
     @classmethod
     def tearDownClass(cls) -> None:
-        cls.api.store.close()
+        # Not `api.store.close()`: under `discover` gateway.api is imported once for the whole
+        # process (first test file wins), so closing its store broke every later API test.
         sys.path.remove(str(ROOT))
         cls._env.stop()
         cls._tmp.cleanup()

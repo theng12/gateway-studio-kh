@@ -176,6 +176,8 @@ class HandoffAPI(unittest.TestCase):
         # Unconfigured delivery must win over request-shape validation: a missing
         # story_version or body must not turn into 422/415 instead of the
         # documented CONTENT_STORE_NOT_CONNECTED.
+        from _isolation import isolate_content
+        isolate_content(self, base / "empty-content")
         for method, route in (("GET", "account"), ("GET", "receipts"), ("GET", "products"),
                               ("GET", "shelves"), ("GET", "public-key"),
                               ("POST", "quotes"), ("POST", "purchases"), ("POST", "downloads")):

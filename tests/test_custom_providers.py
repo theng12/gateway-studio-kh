@@ -63,9 +63,11 @@ class CustomProviderTests(unittest.TestCase):
         )
         cls._env.start()
         sys.path.insert(0, str(ROOT))
-        from gateway import admin
+        from gateway import admin, config
         cls.admin = admin
-        cls.path = Path(os.environ["GATEWAY_DATA"]) / "providers.local.json"
+        # What the gateway actually reads: frozen at first import, which under `discover` is
+        # another test file's temp dir, not this class's GATEWAY_DATA.
+        cls.path = Path(config.CUSTOM_PROVIDERS_PATH)
 
     @classmethod
     def tearDownClass(cls):

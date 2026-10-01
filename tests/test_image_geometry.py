@@ -296,7 +296,9 @@ class AvailabilityTests(unittest.TestCase):
                 patch.object(self.fleet, "usable_location_ids", lambda: set(answering)), \
                 patch.object(self.registry, "definitions", lambda: definitions):
             rebuilt = catalog.Catalog()
-        rows = [row for row in rebuilt.rows("image") if row["id"].endswith("::hub/model")]
+            # Read while still patched: `rows()` re-checks the registry signature, and outside the
+            # patches that is the real registry's, which differs once any earlier test enabled a provider.
+            rows = [row for row in rebuilt.rows("image") if row["id"].endswith("::hub/model")]
         self.assertEqual(len(rows), 1, rows)
         return rows[0]
 
