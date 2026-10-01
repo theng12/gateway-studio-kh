@@ -17,6 +17,7 @@ survives a restart even when a provider is briefly unreachable.
 from __future__ import annotations
 
 import json
+import threading
 import time
 from pathlib import Path
 from typing import Any, Callable
@@ -57,6 +58,10 @@ class ModelInventory:
         # owner added on the Fleet page.
         self._all = definitions_lookup
         self._data: dict[str, Any] = {"providers": {}, "enabled": {}, "user": {}}
+        #: Guards every mutation of `_data` and its serialisation. The fleet refresher thread
+        #: (`refresh`) and the admin toggles mutate it concurrently, and `json.dumps` over a dict
+        #: another thread is growing raises "dictionary changed size during iteration".
+        self._lock = threading.RLock()
         self._load()
 
     # -- persistence ------------------------------------------------------
@@ -75,7 +80,8 @@ class ModelInventory:
     def _save(self) -> None:
         # Not a secret file, but it does reveal which models are configured, so
         # it stays owner-only like everything else in data/.
-        write_secret(self.path, json.dumps(self._data, indent=2) + "\n")
+        with self._lock:
+            write_secret(self.path, json.dumps(self._data, indent=2) + "\n")
 
     # -- discovery --------------------------------------------------------
     def _every_definition(self) -> list[tuple[str, Any]]:
@@ -110,37 +116,38 @@ class ModelInventory:
         values = self.credentials.resolved(provider_id)
         result = discover(definition, values)
 
-        entry = self._data["providers"].setdefault(provider_id, {})
-        entry["fetched_at"] = result.fetched_at
-        entry["error"] = result.error
-        if result.error is None:
-            # A static provider's models are curated in code, so caching them
-            # only creates staleness: a model removed from the definition would
-            # survive in the cache and keep appearing — and, because the merge
-            # unions curated with cached, it would also stay enabled.
-            if definition.discovery == DISCOVERY_STATIC:
-                entry["models"] = []
-            else:
-                entry["models"] = [
-                    {
-                        "model_id": m.model_id,
-                        "display_name": m.display_name,
-                        "modality": m.modality,
-                        "raw": m.raw,
-                    }
-                    for m in result.models
-                ]
-            # What the provider listed that this gateway could not classify at
-            # all. Kept beside the models rather than folded into `error`: the
-            # discovery itself succeeded, and one unrecognised engine must not
-            # make a working provider read as broken.
-            entry["skipped"] = list(result.skipped)
-        if result.error is None and hub_version is not None:
-            # The build this list came from. Not on failure: a fetch that did not
-            # answer tells us nothing about the Hub, and recording a version
-            # beside rows we could not refresh would mark them current.
-            entry["hub_version"] = str(hub_version).strip()
-        self._save()
+        with self._lock:
+            entry = self._data["providers"].setdefault(provider_id, {})
+            entry["fetched_at"] = result.fetched_at
+            entry["error"] = result.error
+            if result.error is None:
+                # A static provider's models are curated in code, so caching them
+                # only creates staleness: a model removed from the definition would
+                # survive in the cache and keep appearing — and, because the merge
+                # unions curated with cached, it would also stay enabled.
+                if definition.discovery == DISCOVERY_STATIC:
+                    entry["models"] = []
+                else:
+                    entry["models"] = [
+                        {
+                            "model_id": m.model_id,
+                            "display_name": m.display_name,
+                            "modality": m.modality,
+                            "raw": m.raw,
+                        }
+                        for m in result.models
+                    ]
+                # What the provider listed that this gateway could not classify at
+                # all. Kept beside the models rather than folded into `error`: the
+                # discovery itself succeeded, and one unrecognised engine must not
+                # make a working provider read as broken.
+                entry["skipped"] = list(result.skipped)
+            if result.error is None and hub_version is not None:
+                # The build this list came from. Not on failure: a fetch that did not
+                # answer tells us nothing about the Hub, and recording a version
+                # beside rows we could not refresh would mark them current.
+                entry["hub_version"] = str(hub_version).strip()
+            self._save()
         return result
 
     def refresh_all(self, *, only_enabled: bool = False) -> dict[str, dict[str, Any]]:
@@ -157,7 +164,8 @@ class ModelInventory:
 
     # -- reads ------------------------------------------------------------
     def cached(self, provider_id: str) -> dict[str, Any]:
-        return dict(self._data["providers"].get(provider_id) or {})
+        with self._lock:
+            return dict(self._data["providers"].get(provider_id) or {})
 
     def _is_enabled(self, provider_id: str, model_id: str, definition: ProviderDefinition, source: str) -> bool:
         explicit = (self._data["enabled"].get(provider_id) or {}).get(model_id)
@@ -406,9 +414,10 @@ class ModelInventory:
         # the ones most likely to be switched on one at a time.
         if self._definition(provider_id) is None:
             raise KeyError(provider_id)
-        bucket = self._data["enabled"].setdefault(provider_id, {})
-        bucket[model_id] = bool(enabled)
-        self._save()
+        with self._lock:
+            bucket = self._data["enabled"].setdefault(provider_id, {})
+            bucket[model_id] = bool(enabled)
+            self._save()
 
     def set_many(self, provider_id: str, model_ids: list[str], enabled: bool) -> int:
         # Resolved through `_definition`, exactly like `set_model_enabled` above
@@ -419,10 +428,11 @@ class ModelInventory:
         # so those decisions outlived the locations they were made for.
         if self._definition(provider_id) is None:
             raise KeyError(provider_id)
-        bucket = self._data["enabled"].setdefault(provider_id, {})
-        for model_id in model_ids:
-            bucket[model_id] = bool(enabled)
-        self._save()
+        with self._lock:
+            bucket = self._data["enabled"].setdefault(provider_id, {})
+            for model_id in model_ids:
+                bucket[model_id] = bool(enabled)
+            self._save()
         return len(model_ids)
 
     def add_user_model(
@@ -462,34 +472,37 @@ class ModelInventory:
                 f"nothing on the gateway can serve '{modality}' for provider "
                 f"'{provider_id}', so a model added here could never run"
             )
-        bucket = self._data["user"].setdefault(provider_id, [])
-        bucket = [m for m in bucket if m.get("model_id") != model_id]
-        bucket.append(
-            {
-                "model_id": model_id,
-                "display_name": display_name or model_id,
-                "modality": modality,
-                "added_at": time.time(),
-            }
-        )
-        self._data["user"][provider_id] = bucket
-        self.set_model_enabled(provider_id, model_id, True)
+        with self._lock:
+            bucket = self._data["user"].setdefault(provider_id, [])
+            bucket = [m for m in bucket if m.get("model_id") != model_id]
+            bucket.append(
+                {
+                    "model_id": model_id,
+                    "display_name": display_name or model_id,
+                    "modality": modality,
+                    "added_at": time.time(),
+                }
+            )
+            self._data["user"][provider_id] = bucket
+            self.set_model_enabled(provider_id, model_id, True)
 
     def remove_user_model(self, provider_id: str, model_id: str) -> None:
-        bucket = self._data["user"].get(provider_id) or []
-        self._data["user"][provider_id] = [
-            m for m in bucket if m.get("model_id") != model_id
-        ]
-        (self._data["enabled"].get(provider_id) or {}).pop(model_id, None)
-        self._save()
+        with self._lock:
+            bucket = self._data["user"].get(provider_id) or []
+            self._data["user"][provider_id] = [
+                m for m in bucket if m.get("model_id") != model_id
+            ]
+            (self._data["enabled"].get(provider_id) or {}).pop(model_id, None)
+            self._save()
 
     def cached_provider_ids(self) -> list[str]:
         """Every provider id the cache holds anything for."""
-        return sorted(
-            set(self._data.get("providers", {}))
-            | set(self._data.get("enabled", {}))
-            | set(self._data.get("user", {}))
-        )
+        with self._lock:
+            return sorted(
+                set(self._data.get("providers", {}))
+                | set(self._data.get("enabled", {}))
+                | set(self._data.get("user", {}))
+            )
 
     def forget_provider(self, provider_id: str) -> int:
         """Drop every trace of a provider that no longer exists.
@@ -506,16 +519,17 @@ class ModelInventory:
         Returns how many cached models were dropped, and never raises: this runs
         on the removal path, and failing to tidy up must not block the removal.
         """
-        dropped = 0
-        cached = self._data.get("providers", {}).get(provider_id)
-        if isinstance(cached, dict):
-            models = cached.get("models")
-            dropped = len(models) if isinstance(models, list) else 0
-        self._data.get("providers", {}).pop(provider_id, None)
-        self._data.get("enabled", {}).pop(provider_id, None)
-        self._data.get("user", {}).pop(provider_id, None)
-        self._save()
-        return dropped
+        with self._lock:
+            dropped = 0
+            cached = self._data.get("providers", {}).get(provider_id)
+            if isinstance(cached, dict):
+                models = cached.get("models")
+                dropped = len(models) if isinstance(models, list) else 0
+            self._data.get("providers", {}).pop(provider_id, None)
+            self._data.get("enabled", {}).pop(provider_id, None)
+            self._data.get("user", {}).pop(provider_id, None)
+            self._save()
+            return dropped
 
     # -- projection -------------------------------------------------------
     def summary(self) -> dict[str, Any]:
