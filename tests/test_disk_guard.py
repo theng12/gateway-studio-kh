@@ -465,5 +465,35 @@ class SchedulerTests(unittest.TestCase):
             self.assertIsNotNone(chosen, state)
 
 
+class FleetDiskIssueTests(unittest.TestCase):
+    """Fleet Overview lists a Mac whose disk is red or stopped; an unreachable Mac's last reading does not count."""
+
+    @staticmethod
+    def _row(machines: list[dict]) -> dict:
+        return {"id": "ctl", "label": "Site", "local": False, "reachable": True, "machines": machines,
+                "nodes": [], "activity": {"machines": [{"machine": m["machine"], "state": "ready"} for m in machines],
+                                          "pulse": {}},
+                "running_jobs": [], "local_models": [], "workers": [], "probe_machines_hidden": 0}
+
+    def test_red_and_stop_macs_get_an_issue_each_green_and_amber_do_not(self) -> None:
+        def mac(mid, free, **extra):
+            return {"machine": mid, "label": mid, "reachable": True, "disk_free_gb": free,
+                    "disk_total_gb": 460.0, "disk": {"state": extra.pop("state"), "free_gb": free, "total_gb": 460.0}}
+        row = self._row([mac("a", 3.0, state="stop"), mac("b", 20.0, state="red"),
+                         mac("c", 40.0, state="amber"), mac("d", 300.0, state="green")])
+        issues = {i["code"]: i for i in fleet._issues_for(row) if i["code"].startswith("disk_")}
+        self.assertEqual(set(issues), {"disk_stop", "disk_red"})
+        self.assertEqual(issues["disk_stop"]["severity"], "error")
+        self.assertIn("a 3 GB free", issues["disk_stop"]["message"])
+        self.assertEqual(issues["disk_red"]["severity"], "warning")
+        self.assertIn("b 20 GB free", issues["disk_red"]["message"])
+        self.assertNotIn("c 40", issues["disk_red"]["message"])
+
+    def test_an_unreachable_mac_is_not_reported_for_its_stale_disk(self) -> None:
+        row = self._row([{"machine": "z", "label": "z", "reachable": False, "disk_free_gb": 0.0,
+                          "disk_total_gb": 256.0}])
+        self.assertEqual([i for i in fleet._issues_for(row) if i["code"].startswith("disk_")], [])
+
+
 if __name__ == "__main__":
     unittest.main()

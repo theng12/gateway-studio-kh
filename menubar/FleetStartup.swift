@@ -110,19 +110,12 @@ extension FleetStartup {
 
     // MARK: Table cell
 
-    /// The row's buttons, for a column with `cell:` set. Empty (with the reason in the badge tooltip)
-    /// for a Mac nothing can be sent to.
+    /// The row's startup cell: the compact badge and, when anything can be sent to this Mac, a small "…"
+    /// button whose menu holds the actions (Enable auto-start / Start services / Restart services). A Mac
+    /// nothing can be sent to shows the badge alone; its tooltip says why.
     static func cell(for machine: FleetMachine, window: @escaping () -> NSWindow?,
                      done: @escaping () -> Void) -> NSView {
-        let stack = NSStackView()
-        stack.orientation = .horizontal
-        stack.spacing = 4
-        for action in actions(for: machine) {
-            stack.addArrangedSubview(FleetClosureButton(title: action.title) {
-                run(machine, action, in: window(), done: done)
-            })
-        }
-        return stack
+        FleetStartupCell(machine: machine, window: window, done: done)
     }
 
     // MARK: Bulk
@@ -211,5 +204,68 @@ final class FleetStartupBar: NSStackView {
         label.textColor = off + offAway > 0 ? .systemOrange : .secondaryLabelColor
         button.isEnabled = off > 0
         isHidden = parts.isEmpty
+    }
+}
+
+/// Badge + "…" menu in one table cell. Owns the menu items' target, so the closures live as long as the cell.
+final class FleetStartupCell: NSView {
+    private let machine: FleetMachine
+    private let windowOf: () -> NSWindow?
+    private let done: () -> Void
+    private let acts: [FleetStartupAction]
+
+    init(machine: FleetMachine, window: @escaping () -> NSWindow?, done: @escaping () -> Void) {
+        self.machine = machine
+        self.windowOf = window
+        self.done = done
+        self.acts = FleetStartup.actions(for: machine)
+        super.init(frame: .zero)
+        let label = NSTextField(labelWithString: FleetStartup.shortBadge(machine.startup))
+        label.font = .systemFont(ofSize: 11.5)
+        label.lineBreakMode = .byTruncatingTail
+        if let colour = FleetStartup.colour(machine.startup) { label.textColor = colour }
+        label.toolTip = FleetStartup.tooltip(machine.startup)
+        label.translatesAutoresizingMaskIntoConstraints = false
+        label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        addSubview(label)
+        toolTip = label.toolTip
+        var trailing = trailingAnchor
+        if !acts.isEmpty {
+            let more = FleetClosureButton(title: "…") { }
+            more.target = self
+            more.action = #selector(showMenu(_:))
+            more.toolTip = "Startup actions for this Mac"
+            more.translatesAutoresizingMaskIntoConstraints = false
+            addSubview(more)
+            NSLayoutConstraint.activate([
+                more.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -2),
+                more.centerYAnchor.constraint(equalTo: centerYAnchor),
+                more.widthAnchor.constraint(equalToConstant: 30),
+            ])
+            trailing = more.leadingAnchor
+        }
+        NSLayoutConstraint.activate([
+            label.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 4),
+            label.trailingAnchor.constraint(lessThanOrEqualTo: trailing, constant: -4),
+            label.centerYAnchor.constraint(equalTo: centerYAnchor),
+        ])
+    }
+
+    required init?(coder: NSCoder) { fatalError("not used") }
+
+    @objc private func showMenu(_ sender: NSButton) {
+        let menu = NSMenu()
+        for (index, action) in acts.enumerated() {
+            let item = NSMenuItem(title: action.title, action: #selector(choose(_:)), keyEquivalent: "")
+            item.target = self
+            item.tag = index
+            menu.addItem(item)
+        }
+        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: sender.bounds.height + 2), in: sender)
+    }
+
+    @objc private func choose(_ item: NSMenuItem) {
+        guard item.tag >= 0, item.tag < acts.count else { return }
+        FleetStartup.run(machine, acts[item.tag], in: windowOf(), done: done)
     }
 }

@@ -2407,8 +2407,14 @@ def _issues_for(row: dict) -> list[dict]:
     unknown_state = 0
     offline_machines: set[str] = set()
     startup_off: list[str] = []
+    disk_low: dict[str, list[str]] = {"stop": [], "red": []}
     for machine in machines_flat([row]):
         machine_id = str(machine.get("machine") or "")
+        # A Mac that is not answering has no disk worth reporting (its last free-space reading is
+        # stale or a zero), so only a reachable Mac in red/stop counts.
+        disk = machine.get("disk") or {}
+        if machine.get("reachable") and disk.get("state") in disk_low and disk.get("free_gb") is not None:
+            disk_low[disk["state"]].append(f"{machine.get('label') or machine_id} {disk['free_gb']:g} GB free")
         fact = machine.get("startup")
         if fact and fact.get("start_services_on_launch") is False:
             startup_off.append(str(machine.get("label") or machine_id))
@@ -2497,6 +2503,18 @@ def _issues_for(row: dict) -> list[dict]:
             out.append(_issue(
                 "warning", "machine_limited", location_id, location, machines_text,
                 detail, "Fleet → Machines",
+            ))
+    for state, severity in (("stop", "error"), ("red", "warning")):
+        names = disk_low[state]
+        if names:
+            shown = "; ".join(sorted(names)[:4]) + (" and more" if len(names) > 4 else "")
+            consequence = ("The Hub refuses new work on it." if state == "stop"
+                           else "Free space is low; new work may be refused.")
+            out.append(_issue(
+                severity, f"disk_{state}", location_id, location,
+                f"{len(names)} machine" + ("" if len(names) == 1 else "s"),
+                f"Disk {state.upper()}: {shown}. {consequence}",
+                "Fleet → Machines (Disk column)",
             ))
     if startup_off:
         # One line per location, not per Mac: the fix is the same button on every one of them.

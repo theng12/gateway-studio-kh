@@ -1325,6 +1325,24 @@ final class FleetMachinesTab: NSView {
 
     private func columns() -> [FleetColumn] {
         func machine(_ any: Any) -> FleetMachine? { any as? FleetMachine }
+        /// The startup badge as a plain cell, for a tab nobody injected the menu cell into.
+        func plainCell(_ any: Any) -> NSView {
+            let cell = NSTableCellView()
+            let label = NSTextField(labelWithString: FleetStartup.shortBadge(machine(any)?.startup))
+            label.font = .systemFont(ofSize: 11.5)
+            label.lineBreakMode = .byTruncatingTail
+            if let colour = FleetStartup.colour(machine(any)?.startup) { label.textColor = colour }
+            label.toolTip = FleetStartup.tooltip(machine(any)?.startup)
+            label.translatesAutoresizingMaskIntoConstraints = false
+            cell.addSubview(label)
+            cell.textField = label
+            NSLayoutConstraint.activate([
+                label.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 4),
+                label.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -4),
+                label.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
+            ])
+            return cell
+        }
         return [
             FleetColumn(
                 id: "state", title: "State", width: 110,
@@ -1362,12 +1380,12 @@ final class FleetMachinesTab: NSView {
                 }
             ),
             FleetColumn(
-                id: "machine", title: "Machine", width: 170,
+                id: "machine", title: "Machine", width: 150,
                 text: { machine($0)?.label ?? machine($0)?.machine ?? "—" },
                 sortValue: { .text(machine($0)?.label ?? machine($0)?.machine ?? "") }
             ),
             FleetColumn(
-                id: "location", title: "Location", width: 150,
+                id: "location", title: "Location", width: 120,
                 text: { FleetFormat.text(machine($0)?.location) },
                 sortValue: { .text(machine($0)?.location ?? "") }
             ),
@@ -1419,50 +1437,6 @@ final class FleetMachinesTab: NSView {
                     return "The controller last heard from this Mac \(when)."
                 }
             ),
-            // Startup control: what this Mac starts when it starts, and the buttons to change it.
-            // Self-contained in FleetStartup.swift; a Groups view reuses `FleetStartup.cell`.
-            FleetColumn(
-                id: "startup", title: "Startup", width: 330,
-                text: { FleetStartup.badge(machine($0)?.startup) },
-                sortValue: { row in
-                    // Off first when sorted ascending: those are the Macs that need attention.
-                    switch machine(row)?.startup?.startServicesOnLaunch {
-                    case false?: return .number(0)
-                    case true?: return .number(2)
-                    default: return .number(1)
-                    }
-                },
-                colour: { FleetStartup.colour(machine($0)?.startup) },
-                tooltip: { FleetStartup.tooltip(machine($0)?.startup) }
-            ),
-            FleetColumn(
-                id: "startupActions", title: "Startup actions", width: 340, minWidth: 200, sortable: false,
-                text: { _ in "" },
-                cell: { [weak self] any in
-                    guard let self, let row = machine(any) else { return NSView() }
-                    return self.startupCell?(row) ?? NSView()
-                }
-            ),
-            FleetColumn(
-                id: "jobs", title: "Jobs (done/failed)", width: 140,
-                text: { row in
-                    guard let row = machine(row) else { return "—" }
-                    if row.completed == nil && row.failed == nil { return "—" }
-                    return "\(row.completed ?? 0) done, \(row.failed ?? 0) failed"
-                },
-                sortValue: { .number(Double(machine($0)?.completed ?? 0)) },
-                colour: { (machine($0)?.failed ?? 0) > 0 ? .systemOrange : .labelColor }
-            ),
-            FleetColumn(
-                id: "median", title: "Median", width: 100,
-                text: { row in
-                    guard let row = machine(row) else { return "—" }
-                    if let median = row.medianRuntimeS { return FleetFormat.seconds(median) + " med" }
-                    if let average = row.averageSeconds { return FleetFormat.seconds(average) + " avg" }
-                    return "—"
-                },
-                sortValue: { .number(machine($0)?.medianRuntimeS ?? machine($0)?.averageSeconds ?? 0) }
-            ),
             FleetColumn(
                 id: "disk", title: "Disk", width: 130,
                 // **Free space and the state beside it, coloured.** The Hub states
@@ -1488,6 +1462,47 @@ final class FleetMachinesTab: NSView {
                     lines.append(contentsOf: disk.warnings)
                     return lines.isEmpty ? nil : lines.joined(separator: "\n")
                 }
+            ),
+            // Startup control: what this Mac starts when it starts, with a "…" menu to change it, in one
+            // compact column. Self-contained in FleetStartup.swift; a Groups view reuses `FleetStartup.cell`.
+            FleetColumn(
+                id: "startup", title: "Startup", width: 240, minWidth: 150,
+                text: { FleetStartup.shortBadge(machine($0)?.startup) },
+                sortValue: { row in
+                    // Off first when sorted ascending: those are the Macs that need attention.
+                    switch machine(row)?.startup?.startServicesOnLaunch {
+                    case false?: return .number(0)
+                    case true?: return .number(2)
+                    default: return .number(1)
+                    }
+                },
+                colour: { FleetStartup.colour(machine($0)?.startup) },
+                tooltip: { FleetStartup.tooltip(machine($0)?.startup) },
+                // Without the injected cell (the layout test) the plain badge text above is drawn.
+                cell: { [weak self] any in
+                    guard let self, let row = machine(any), let make = self.startupCell else { return plainCell(any) }
+                    return make(row)
+                }
+            ),
+            FleetColumn(
+                id: "jobs", title: "Jobs (done/failed)", width: 140,
+                text: { row in
+                    guard let row = machine(row) else { return "—" }
+                    if row.completed == nil && row.failed == nil { return "—" }
+                    return "\(row.completed ?? 0) done, \(row.failed ?? 0) failed"
+                },
+                sortValue: { .number(Double(machine($0)?.completed ?? 0)) },
+                colour: { (machine($0)?.failed ?? 0) > 0 ? .systemOrange : .labelColor }
+            ),
+            FleetColumn(
+                id: "median", title: "Median", width: 100,
+                text: { row in
+                    guard let row = machine(row) else { return "—" }
+                    if let median = row.medianRuntimeS { return FleetFormat.seconds(median) + " med" }
+                    if let average = row.averageSeconds { return FleetFormat.seconds(average) + " avg" }
+                    return "—"
+                },
+                sortValue: { .number(machine($0)?.medianRuntimeS ?? machine($0)?.averageSeconds ?? 0) }
             ),
             FleetColumn(
                 id: "hardware", title: "Hardware", width: 240,
@@ -1587,6 +1602,12 @@ final class FleetMachinesTab: NSView {
         statusLabel.attributedStringValue = text
     }
 
+    /// True for a warning that only restates free space ("Only 14 GB free.", "14 GB free: low disk").
+    static func repeatsDiskLine(_ warning: String) -> Bool {
+        let text = warning.lowercased()
+        return text.contains("free") && !text.contains("update") && !text.contains("time machine")
+    }
+
     /// One line per concern: Macs low on disk (state, free space, biggest consumer), then any
     /// warning a Hub reported (macOS updates / Time Machine). Empty when every Mac is fine.
     static func diskBanner(for machines: [FleetMachine]) -> [(text: String, colour: NSColor)] {
@@ -1604,7 +1625,12 @@ final class FleetMachinesTab: NSView {
             lines.append((line, disk.colour))
         }
         for row in machines {
+            // A Hub's own low-disk warning ("Only 21 GB free.") says what the disk line above already
+            // said, so it is dropped when the Mac has a disk line; other warnings (macOS update, Time
+            // Machine) are kept.
+            let hasDiskLine = row.disk?.isLow == true
             for warning in row.disk?.warnings ?? [] {
+                if hasDiskLine && Self.repeatsDiskLine(warning) { continue }
                 lines.append(("\(row.label ?? row.machine ?? "a Mac"): \(warning)", .systemOrange))
             }
         }

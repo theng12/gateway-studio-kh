@@ -60,6 +60,14 @@ enum FleetStartup {
         return fact.stale == true ? text + " (last known)" : text
     }
 
+    /// The compact badge the Machines table draws: "Login ✓ · Auto-start ✗". Same marks and rules as `badge`.
+    static func shortBadge(_ fact: FleetStartupFact?) -> String {
+        guard let fact else { return "Not reported" }
+        func mark(_ value: Bool?) -> String { value == nil ? "?" : (value == true ? "✓" : "✗") }
+        let text = "Login \(mark(fact.openAtLogin)) · Auto-start \(mark(fact.startServicesOnLaunch))"
+        return fact.stale == true ? text + " (last known)" : text
+    }
+
     /// Orange when this Mac will not serve after a restart; plain otherwise.
     static func colour(_ fact: FleetStartupFact?) -> NSColor? {
         fact?.startServicesOnLaunch == false ? .systemOrange : nil
