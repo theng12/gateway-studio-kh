@@ -27,6 +27,7 @@ import os
 import ipaddress
 import shutil
 import stat
+import tempfile
 from pathlib import Path
 
 #: The gateway package's parent: `Contents/Resources/gateway` in the bundle, or
@@ -246,20 +247,30 @@ def get(key: str, default: str = "") -> str:
 
 
 def write_secret(path: Path, text: str) -> None:
-    """Write a file containing secrets, owner-only, without a world-readable window.
+    """Write a file containing secrets, owner-only, atomically and without a readable window.
 
-    `Path.write_text` creates with the process umask (often 0644), so a secret
-    would be briefly readable before any later chmod. Creating with 0600 up
-    front removes that window.
+    A temp file in the same directory is created 0600 (so no world-readable window), flushed to
+    disk, then renamed over the target. The old shape truncated the target and wrote into it, so a
+    gateway killed mid-write -- it is restarted often -- left `models_cache.json` (every model
+    toggle) or `credentials.json` empty or cut off, and the loaders read that as "nothing here".
     """
-    path.parent.mkdir(parents=True, exist_ok=True)
-    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
-    fd = os.open(path, flags, stat.S_IRUSR | stat.S_IWUSR)
+    target = Path(os.path.realpath(path))  # a symlinked file is written through, as before
+    target.parent.mkdir(parents=True, exist_ok=True)
+    fd, scratch = tempfile.mkstemp(dir=target.parent, prefix=target.name + ".", suffix=".tmp")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
             handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(scratch, target)
+    except BaseException:
+        try:
+            os.unlink(scratch)  # our own half-written temp, never the target
+        except OSError:
+            pass
+        raise
     finally:
-        secret_file_mode(path)
+        secret_file_mode(target)
 
 
 # ---------------------------------------------------------------------------

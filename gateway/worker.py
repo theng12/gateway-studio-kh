@@ -819,6 +819,7 @@ class Worker:
         self.pass_failures = 0
         #: When the hold reconciliation last ran, and what it found (Q8).
         self._last_hold_sweep = 0.0
+        self._sweeping = threading.Event()
         #: `(model, modality)` shapes for which a late rebind found no site with room this
         #: pass, so the rest of the queue behind them does not repeat the search. Cleared each pass.
         self._nowhere: set[tuple[str, str]] = set()
@@ -1081,12 +1082,16 @@ class Worker:
             # **The hold reconciliation rides the dispatch loop** (Q8). It is a network call per
             # hold, so it runs on its own timer rather than every 0.4 s pass — and it is wrapped
             # separately, because a hold that cannot be reconciled must not stop dispatch.
-            if time.time() - self._last_hold_sweep >= _HOLD_SWEEP_S:
+            #
+            # **On its own thread.** It used to run inline: each hold is up to 21 s of HTTP (6 s
+            # connect, 15 s read) and up to 50 holds are asked serially, so one unreachable
+            # Hub parked the dispatcher for minutes and every other job waited in `accepted`.
+            if (time.time() - self._last_hold_sweep >= _HOLD_SWEEP_S
+                    and not self._sweeping.is_set()):
                 self._last_hold_sweep = time.time()
-                try:
-                    self.hold_sweep = reconcile_holds(self.store)
-                except Exception:  # noqa: BLE001 - reconciliation is never allowed to stop work
-                    log.exception("recovery-hold reconciliation failed")
+                self._sweeping.set()
+                threading.Thread(target=self._sweep_holds, name="gateway-hold-sweep",
+                                 daemon=True).start()
 
             # **When the last pass finished, successful or not.** `worker_alive` alone is a
             # boolean an operator cannot date; this is the number that says whether dispatch is
@@ -1095,6 +1100,14 @@ class Worker:
             self.last_pass_at = time.time()
 
             self._stop.wait(self.interval_s)
+
+    def _sweep_holds(self) -> None:
+        try:
+            self.hold_sweep = reconcile_holds(self.store)
+        except Exception:  # noqa: BLE001 - reconciliation is never allowed to stop work
+            log.exception("recovery-hold reconciliation failed")
+        finally:
+            self._sweeping.clear()
 
     def liveness(self) -> dict[str, Any]:
         """Whether dispatch is actually moving, in the three fields `/health` publishes.

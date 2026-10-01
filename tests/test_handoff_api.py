@@ -93,14 +93,14 @@ class HandoffAPI(unittest.TestCase):
     def test_actual_read_deletion_is_typed_gone_on_both_surfaces(self):
         path = base / "race.png"
         job = {"id": "race", "state": "succeeded", "asset_path": str(path), "media_type": "image/png"}
-        real_read = Path.read_bytes
-        def disappear(target):
+        real_open = Path.open
+        def disappear(target, *args, **kwargs):
             if target == path:
                 target.unlink(missing_ok=True)
-            return real_read(target)
+            return real_open(target, *args, **kwargs)
         for surface in ("story", "admin"):
             path.write_bytes(b"fixture")
-            with patch.object(Path, "read_bytes", disappear):
+            with patch.object(Path, "open", disappear):
                 if surface == "story":
                     with self.assertRaises(api.GatewayError) as caught:
                         api._artifact_response(job, "image/png")
@@ -110,6 +110,19 @@ class HandoffAPI(unittest.TestCase):
                         response = self.client.get("/admin/api/artifacts/race/outputs/0")
                     self.assertEqual(response.status_code, 410)
                     self.assertEqual(response.json()["code"], "ARTIFACT_GONE")
+
+    def test_artifacts_are_streamed_whole_with_their_length(self):
+        path = base / "stream.wav"
+        data = bytes(range(256)) * 8192  # 2 MiB: more than one chunk
+        path.write_bytes(data)
+        job = {"id": "stream", "state": "succeeded", "asset_path": str(path), "media_type": "audio/wav"}
+        with patch.object(admin.store, "get", return_value=job):
+            response = self.client.get("/admin/api/artifacts/stream/outputs/0?download=1")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.content, data)
+        self.assertEqual(response.headers["content-length"], str(len(data)))
+        self.assertEqual(response.headers["content-type"], "audio/wav")
+        self.assertIn("attachment", response.headers["content-disposition"])
 
     def test_create_omits_model_when_key_is_absent(self):
         from gateway.providers.definitions import PROVIDERS_BY_ID
@@ -176,6 +189,8 @@ class HandoffAPI(unittest.TestCase):
         # Unconfigured delivery must win over request-shape validation: a missing
         # story_version or body must not turn into 422/415 instead of the
         # documented CONTENT_STORE_NOT_CONNECTED.
+        from _isolation import isolate_content
+        isolate_content(self, base / "empty-content")
         for method, route in (("GET", "account"), ("GET", "receipts"), ("GET", "products"),
                               ("GET", "shelves"), ("GET", "public-key"),
                               ("POST", "quotes"), ("POST", "purchases"), ("POST", "downloads")):

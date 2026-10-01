@@ -521,6 +521,7 @@ def _poll_batch(
     limit = float(deadline_seconds) if deadline_seconds else JOB_DEADLINE_S
     started = tick = time.monotonic()
     ran = 0.0  # seconds this item has spent running -- the only time the lane budget counts
+    queued_for = 0.0  # seconds it has spent queued -- the only time `QUEUE_WAIT_CEILING_S` counts
     running = False
     waiting_key: tuple[Any, ...] | None = None
     waiting_since = 0.0
@@ -533,8 +534,13 @@ def _poll_batch(
         now = time.monotonic()
         if running:
             ran += now - tick
+        else:
+            queued_for += now - tick
         tick = now
-        out_of_time = ran >= limit or now - started >= QUEUE_WAIT_CEILING_S
+        # The ceiling is for a batch that is *still queued*: measured from `started` it also
+        # withdrew (DELETE) an item that had waited 2 h 50 and then begun rendering, at the
+        # three-hour mark of wall time.
+        out_of_time = ran >= limit or (not running and queued_for >= QUEUE_WAIT_CEILING_S)
         if out_of_time:
             break
         # **A Mac that dies mid-poll is a named hold, not a raw `ConnectError`.** This call had no

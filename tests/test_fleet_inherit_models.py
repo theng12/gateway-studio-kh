@@ -164,7 +164,7 @@ class AddingALocationAgainstTheMockHub(unittest.TestCase):
         self.assertFalse(remote[switched_off], "a decision off here is a decision off there")
 
         # The decisions are in the one store, both directions recorded explicitly.
-        stored = json.loads(Path(os.environ["GATEWAY_MODEL_CACHE"]).read_text())["enabled"]
+        stored = json.loads(Path(registry.models.path).read_text())["enabled"]  # frozen at first import, not live env
         self.assertEqual(stored[provider_id][switched_off], False)
         self.assertTrue(all(stored[provider_id][m] is True for m in local_ids[1:]))
 

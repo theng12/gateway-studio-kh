@@ -49,6 +49,7 @@ from fastapi.testclient import TestClient
 from gateway.api import app
 from gateway.activity import story_activity
 from gateway import content_delivery, content_packs
+from _isolation import isolate_content
 
 
 # A 1x1 PNG: the smallest thing the lettering schema's preview asset can be.
@@ -101,6 +102,7 @@ def _topic_document(record: dict, title: str) -> dict:
 
 class ContentDeliveryTest(unittest.TestCase):
     def setUp(self) -> None:
+        isolate_content(self, SUPPORT / "data", "content-delivery-fixture-key")
         for path in (
             SUPPORT / "data" / "content-delivery",
             SUPPORT / "data" / "content-library",

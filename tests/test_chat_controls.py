@@ -18,6 +18,10 @@ from types import SimpleNamespace
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
+from _isolation import sandbox_env  # noqa: E402
+
+_SANDBOX = sandbox_env()  # never bind to the owner's real Application Support
+
 from gateway import catalog  # noqa: E402
 from gateway.providers.definitions import KIND_OPENAI_COMPATIBLE  # noqa: E402
 

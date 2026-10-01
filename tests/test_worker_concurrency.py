@@ -174,6 +174,33 @@ class _Harness:
         return False
 
 
+class AStuckHoldSweepDoesNotStallDispatchTest(unittest.TestCase):
+    """Hold reconciliation asks Hubs over HTTP (up to 21 s per hold, up to 50 holds, serially). It used
+    to run on the dispatch thread, so one unreachable Hub parked every other job in `accepted`."""
+
+    def setUp(self) -> None:
+        concurrency.reset_for_tests()
+        self.addCleanup(concurrency.reset_for_tests)
+
+    def test_a_blocked_sweep_leaves_dispatch_running(self) -> None:
+        release = threading.Event()
+        started = threading.Event()
+
+        def stuck(_store):
+            started.set()
+            release.wait(10)
+            return {}
+
+        self.addCleanup(release.set)
+        with patch.object(worker_module, "reconcile_holds", stuck), \
+                _Harness([], pool_size=2, hold=0.01) as h:
+            self.assertTrue(started.wait(3), "the sweep should have started on the first pass")
+            # Arrives after the sweep began: only a free dispatcher can pick it up.
+            with h.store._lock:
+                h.store._jobs["late"] = dict(_job("late"), state="accepted")
+            self.assertTrue(h.wait_for(1, timeout=3), "dispatch was blocked behind the hold sweep")
+
+
 class ThePoolRunsMoreThanOneTest(unittest.TestCase):
     def setUp(self) -> None:
         concurrency.reset_for_tests()

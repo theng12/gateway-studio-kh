@@ -209,7 +209,7 @@ def inventory(*, root: Path = LIBRARY) -> list[dict]:
             row = _json((folder / "metadata.json").read_bytes())
             if isinstance(row, dict) and row.get("archive_sha256") == folder.name:
                 try:
-                    read_archive(folder.name, root=root)
+                    _verify(folder.name, root)
                     integrity, detail = "verified", "Current archive SHA-256 matches the preserved original."
                 except PackError as exc:
                     integrity, detail = "unavailable", str(exc)
@@ -218,6 +218,29 @@ def inventory(*, root: Path = LIBRARY) -> list[dict]:
         except (OSError, PackError):
             rows.append({"archive_sha256": folder.name, "integrity": "unreadable", "installable": False})
     return rows
+
+
+#: `(root, digest) -> file stamp` of archives whose SHA-256 was last verified. `inventory` ran
+#: `read_archive` (read + hash up to 50 MB) per archive on every request: ~335 ms for the owner's
+#: library. The answer can only change when the file does, so it is keyed on the file's own stat.
+_VERIFIED: dict[tuple[str, str], tuple] = {}
+
+
+def _verify(digest: str, root: Path) -> None:
+    path = root / digest / "archive.sspack"
+    stamp = None
+    try:
+        info = path.lstat()
+        if stat.S_ISREG(info.st_mode) and not path.parent.is_symlink():
+            stamp = (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+    except OSError:
+        pass
+    key = (str(root), digest)
+    if stamp is not None and _VERIFIED.get(key) == stamp:
+        return
+    read_archive(digest, root=root)  # raises PackError when missing, symlinked or altered
+    if stamp is not None:
+        _VERIFIED[key] = stamp
 
 
 def read_archive(digest: str, *, root: Path = LIBRARY) -> bytes:

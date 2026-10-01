@@ -38,7 +38,7 @@ from typing import Any
 
 import httpx
 from fastapi import Depends, FastAPI, File, Form, Header, Query, Request, Response, UploadFile
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 
 from . import __version__
 from .build import build_id
@@ -970,7 +970,6 @@ def _submit(
 # ---------------------------------------------------------------------------
 @app.get("/health")
 def health() -> dict[str, Any]:
-    providers = registry.describe_all()
     return {
         "status": "ok",
         "service": "gateway-kh",
@@ -981,11 +980,7 @@ def health() -> dict[str, Any]:
         # only symptom is a feature quietly not working.
         "pid": os.getpid(),
         "build": build_id(),
-        "providers": {
-            "total": len(providers),
-            "configured": sum(1 for p in providers if p["configured"]),
-            "enabled": sum(1 for p in providers if p["enabled"]),
-        },
+        "providers": registry.provider_counts(),
         "models": registry.models.summary(),
         "jobs_processed": worker.processed,
         # **Whether dispatch is actually moving** (C1/M6). `/health` said `ok` while the
@@ -1540,12 +1535,29 @@ def _artifact_response(
                 "ARTIFACT_NOT_FOUND",
             )
 
-    path = Path(chosen["path"])
     try:
-        content = path.read_bytes()
+        return stream_file(Path(chosen["path"]), chosen.get("media_type") or default_media)
     except FileNotFoundError:
         raise GatewayError(410, "Artifact is gone.", "ARTIFACT_GONE")
-    return Response(content=content, media_type=chosen.get("media_type") or default_media)
+
+
+def stream_file(path: Path, media_type: str, headers: dict[str, str] | None = None) -> StreamingResponse:
+    """Serve a file from an already-open handle, 1 MiB at a time.
+
+    A finished chapter is 64 MB of WAV and `read_bytes()` held every concurrent fetch in memory
+    whole. Opening *here* keeps the typed 410 when the file is already gone (`FileNotFoundError`
+    reaches the caller) and a file removed after the open still finishes streaming (POSIX).
+    """
+    handle = path.open("rb")
+    size = os.fstat(handle.fileno()).st_size
+
+    def chunks():
+        with handle:
+            while block := handle.read(1 << 20):
+                yield block
+
+    return StreamingResponse(chunks(), media_type=media_type,
+                             headers={**(headers or {}), "Content-Length": str(size)})
 
 
 @app.get("/v1/images/{job_id}/file", dependencies=[Depends(require_auth)])

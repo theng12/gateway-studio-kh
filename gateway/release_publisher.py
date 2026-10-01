@@ -693,7 +693,7 @@ def _write_state(state: dict[str, Any]) -> None:
     path = _state_path()
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(state, indent=2, sort_keys=True), encoding="utf-8")
+        config.write_secret(path, json.dumps(state, indent=2, sort_keys=True))
     except OSError:
         pass
 
