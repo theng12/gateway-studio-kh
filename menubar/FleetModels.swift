@@ -584,6 +584,8 @@ struct FleetMachine: Decodable {
     var nodeRole: String?
     var nodeAddress: String?
     var nodeLastSeenAt: FleetScalar?
+    /// What this Mac says it starts when it starts (see `FleetStartup.swift`). `nil` is unknown.
+    var startup: FleetStartupFact?
     /// **Job counts per modality**, not a list of models the machine offers. The
     /// table labels the column "Work done by kind" so the two are never confused.
     var modalities: [String: Int]?

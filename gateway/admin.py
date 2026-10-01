@@ -42,6 +42,7 @@ from . import price_evidence
 from .pricing import row_price
 from . import qualification
 from . import release_publisher
+from . import startup_control
 from .config import is_loopback, request_is_loopback
 from .hub import hub_status
 from .providers import definitions, registry
@@ -2767,6 +2768,59 @@ def fleet_retry_job_item(
         "location": location.get("label"),
         "result": result,
     }
+
+
+# ---------------------------------------------------------------------------
+# Startup control — what each Mac starts when it starts, seen and changed from here
+#
+# `/api/fleet` carries a `startup` object on every machine row. These routes change it:
+# "Start services on startup", "Start at login", and starting or restarting a Mac's services.
+# Each goes to the Mac's *controller* with the Fleet token this gateway already holds (the same
+# credential as every other fleet action), is relayed to the node, and is refused by the node
+# while work is running unless `force` is true. Every request is appended to the audit log.
+# ---------------------------------------------------------------------------
+
+@router.post(
+    "/api/fleet/controllers/{controller_id}/machines/{machine_id}/startup",
+    dependencies=[Depends(require_admin)],
+)
+def fleet_machine_startup(controller_id: str, machine_id: str, payload: dict[str, Any]) -> Any:
+    """Change one Mac's startup setting, or start/restart its services.
+
+    Body: `{"action": "set_start_services_on_launch" | "set_open_at_login" | "start_services" |
+    "restart_services", "value": true|false (the two setters), "force": true|false}`. The answer is
+    the Hub's own: `state` is `applied`, `queued` (the app collects it on its next check),
+    `handed_to_app` (a restart), `already_running`, or `failed` with the app's reason. A refusal keeps
+    the Hub's status and code - `WORK_IN_PROGRESS` (409, with the running/queued counts) is the one a
+    restart meets on a busy Mac - and a Mac with no Hub running is `NODE_UNREACHABLE` with
+    `reason: no_hub`, which no remote action can fix.
+    """
+    try:
+        return startup_control.request(
+            controller_id, machine_id, payload.get("action"), payload.get("value"),
+            payload.get("force", False),
+        )
+    except startup_control.StartupError as error:
+        return JSONResponse(status_code=error.status, content=error.body)
+
+
+@router.post("/api/fleet/startup/enable-autostart", dependencies=[Depends(require_admin)])
+def fleet_enable_autostart(payload: dict[str, Any]) -> Any:
+    """Turn "Start services on startup" on for every Mac that reported it off.
+
+    `{"dry_run": true}` lists what it would do and touches nothing. Macs that said nothing (an older
+    Hub) are not touched, and a Mac that is not answering is listed with why, not tried.
+    """
+    dry_run = payload.get("dry_run", False)
+    if not isinstance(dry_run, bool):
+        return _error(400, "dry_run must be true or false", "BAD_REQUEST")
+    return startup_control.enable_autostart_where_off(dry_run=dry_run)
+
+
+@router.get("/api/fleet/startup/audit", dependencies=[Depends(require_admin)])
+def fleet_startup_audit(limit: int = 50) -> dict[str, Any]:
+    """The last startup requests this gateway sent, newest first."""
+    return {"audit": startup_control.recent_audit(limit)}
 
 
 # ---------------------------------------------------------------------------
