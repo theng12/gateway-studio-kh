@@ -41,68 +41,49 @@ static func makePage(notes: String, version: String, build: String) -> NSView {
     let document = NotesDocumentView()
     document.translatesAutoresizingMaskIntoConstraints = false
 
-    let column = NSStackView()
-    column.orientation = .vertical
-    column.alignment = .leading
-    column.spacing = 10
-    column.edgeInsets = NSEdgeInsets(
-        top: PageKit.pagePadding, left: PageKit.pagePadding,
-        bottom: PageKit.pagePadding, right: PageKit.pagePadding
-    )
-    column.translatesAutoresizingMaskIntoConstraints = false
-
-    // The header is Studio Hub's: the page title, the version in the same breath, and this
-    // build's own stamp pushed to the right where it annotates rather than interrupts.
-    let title = PageKit.label("What's New", size: 26, weight: .semibold)
-    let versionLabel = PageKit.label(version, size: 15, colour: .secondaryLabelColor)
-    versionLabel.font = .monospacedDigitSystemFont(ofSize: 15, weight: .regular)
-    let spacer = NSView()
-    spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
-    spacer.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-    let buildLabel = PageKit.label("Build \(build)", size: 11.5, colour: .tertiaryLabelColor)
-
-    let header = NSStackView(views: [title, versionLabel, spacer, buildLabel])
-    header.orientation = .horizontal
-    header.alignment = .firstBaseline
-    header.spacing = 10
-    header.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-
+    // The shared page scaffold, like every other page: title, one-line subtitle (the version and this
+    // build's stamp), then the notes. The page used to draw its own header bar and rule.
+    let column = PageKit.page()
+    column.spacing = DS.Space.s
+    let header = PageKit.heading("What's New", "Version \(version) · build \(build)")
     column.addArrangedSubview(header)
-    header.widthAnchor.constraint(equalTo: column.widthAnchor,
-                                  constant: -(PageKit.pagePadding * 2)).isActive = true
-    column.setCustomSpacing(12, after: header)
-    column.addArrangedSubview(separator())
-    column.setCustomSpacing(16, after: column.arrangedSubviews.last!)
+    column.setCustomSpacing(DS.Space.xl, after: header)
+    let wide = column.widthAnchor
+
+    func pin(_ view: NSView) {
+        view.widthAnchor.constraint(equalTo: wide, constant: -(PageKit.pagePadding * 2)).isActive = true
+    }
 
     for block in NotesMarkdown.blocks(from: notes) {
         switch block {
         case .heading(let level, let text):
-            let label = PageKit.label("", size: level <= 1 ? 22 : (level == 2 ? 19 : 15),
-                                      weight: .semibold, wrapping: true)
+            // The notes open with `#` (their own title, which the page heading already says); `##` is a
+            // release and `###` a feature inside it.
+            if level <= 1 { continue }
+            let label = PageKit.label("", level == 2 ? .section : .rowTitle, wrapping: true)
             label.attributedStringValue = NotesMarkdown.inline(text, base: label.font!)
+            if level == 2, column.arrangedSubviews.count > 1 {
+                column.setCustomSpacing(DS.Space.xl, after: column.arrangedSubviews.last!)
+            }
             column.addArrangedSubview(label)
-            label.widthAnchor.constraint(equalTo: column.widthAnchor,
-                                         constant: -(PageKit.pagePadding * 2)).isActive = true
-            column.setCustomSpacing(6, after: label)
+            pin(label)
+            column.setCustomSpacing(DS.Space.tight, after: label)
         case .paragraph(let text):
-            let label = PageKit.label("", size: 13, wrapping: true)
+            let label = PageKit.label("", .body, wrapping: true)
             label.attributedStringValue = NotesMarkdown.inline(text, base: label.font!)
             column.addArrangedSubview(label)
-            label.widthAnchor.constraint(equalTo: column.widthAnchor,
-                                         constant: -(PageKit.pagePadding * 2)).isActive = true
+            pin(label)
         case .bullet(let text):
-            let label = PageKit.label("", size: 13, wrapping: true)
-            label.attributedStringValue = NotesMarkdown.bullet(text, size: 13)
+            let label = PageKit.label("", .body, wrapping: true)
+            label.attributedStringValue = NotesMarkdown.bullet(text, base: label.font!)
             column.addArrangedSubview(label)
-            label.widthAnchor.constraint(equalTo: column.widthAnchor,
-                                         constant: -(PageKit.pagePadding * 2)).isActive = true
-            column.setCustomSpacing(6, after: label)
+            pin(label)
+            column.setCustomSpacing(DS.Space.tight, after: label)
         case .rule:
             let rule = separator()
             column.addArrangedSubview(rule)
-            rule.widthAnchor.constraint(equalTo: column.widthAnchor,
-                                        constant: -(PageKit.pagePadding * 2)).isActive = true
-            column.setCustomSpacing(14, after: rule)
+            pin(rule)
+            column.setCustomSpacing(DS.Space.m, after: rule)
         }
     }
 
@@ -233,17 +214,17 @@ enum NotesMarkdown {
 
     /// One bullet, with a hanging indent so a wrapped line starts under the text and not under the
     /// dot — which is the whole difference between a list and a paragraph that begins with a dot.
-    static func bullet(_ text: String, size: CGFloat) -> NSAttributedString {
+    static func bullet(_ text: String, base: NSFont) -> NSAttributedString {
         let style = NSMutableParagraphStyle()
         style.firstLineHeadIndent = 0
-        style.headIndent = 16
-        style.tabStops = [NSTextTab(textAlignment: .left, location: 16)]
+        style.headIndent = DS.Space.l
+        style.tabStops = [NSTextTab(textAlignment: .left, location: DS.Space.l)]
         style.lineSpacing = 2
         let dot = NSMutableAttributedString(
             string: "\u{2022}\t",
-            attributes: [.font: NSFont.systemFont(ofSize: size), .foregroundColor: NSColor.secondaryLabelColor]
+            attributes: [.font: base, .foregroundColor: NSColor.secondaryLabelColor]
         )
-        dot.append(inline(text, base: .systemFont(ofSize: size)))
+        dot.append(inline(text, base: base))
         dot.addAttribute(.paragraphStyle, value: style, range: NSRange(location: 0, length: dot.length))
         return dot
     }
@@ -281,7 +262,7 @@ enum NotesMarkdown {
             } else if let (inner, after) = span(in: rest, marker: "`") {
                 flush()
                 out.append(NSAttributedString(string: inner, attributes: [
-                    .font: NSFont.monospacedSystemFont(ofSize: base.pointSize - 0.5, weight: .regular),
+                    .font: TextRole.mono.font,
                     .foregroundColor: colour,
                     // A code span is a different *kind* of text, so it gets a different background
                     // rather than a louder colour; the notes use it for identifiers and flags.

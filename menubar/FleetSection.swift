@@ -14,8 +14,8 @@ import AppKit
 ///
 /// **The page is a shell around five inner tabs**, because the owner said the
 /// flat page was "a bit flat" and asked for "different tabs inside the fleet
-/// tab": Overview, Settings / Locations, Machines, Local Models and
-/// Jobs / Generations. The tab bar, the confirmation banner and the
+/// tab": Groups (one card per controller group, with every node in it),
+/// Settings / Locations, Machines, Local Models and Jobs / Generations. The tab bar, the confirmation banner and the
 /// location/search filters are the only parts that belong to every tab; each tab
 /// builds its own body (see `FleetTabs.swift`).
 final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableViewDelegate,
@@ -40,8 +40,8 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
     private var locations: [FleetLocation] = []
     /// The selected inner tab. Held here, not in the segmented control alone, so a
     /// reload — which rebuilds none of the tabs — never drops the owner back to
-    /// Overview.
-    private var selectedTab: FleetTab = .overview
+    /// the first one.
+    private var selectedTab: FleetTab = .groups
     private var filter = FleetFilter()
     private var failedRefreshProviderIDs: [String] = []
     private var adding = false
@@ -68,7 +68,7 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
 
     // MARK: Tabs
 
-    private lazy var overviewTab = FleetOverviewTab(frame: .zero)
+    private lazy var groupsTab = FleetGroupsTab(frame: .zero)
     private lazy var locationsTab = FleetLocationsTab(frame: .zero)
     private lazy var machinesTab = FleetMachinesTab(frame: .zero)
     private let startupBar = FleetStartupBar(frame: .zero)
@@ -94,16 +94,16 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
         let top = NSStackView()
         top.orientation = .vertical
         top.alignment = .leading
-        top.spacing = 10
+        top.spacing = DS.Space.m
         top.edgeInsets = NSEdgeInsets(
             top: PageKit.pagePadding, left: PageKit.pagePadding,
-            bottom: 6, right: PageKit.pagePadding
+            bottom: 0, right: PageKit.pagePadding
         )
         top.translatesAutoresizingMaskIntoConstraints = false
 
         top.addArrangedSubview(PageKit.heading(
             "Fleet",
-            "Every location this gateway can send work to, and what each one is doing now."
+            "Every group of Macs this gateway can send work to, and how each one is doing."
         ))
 
         tabControl.segmentStyle = .rounded
@@ -160,6 +160,7 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
         ])
 
         wireTabs()
+        select(selectedTab)
         return container
     }
 
@@ -180,11 +181,11 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
         searchField.widthAnchor.constraint(equalToConstant: 240).isActive = true
 
         let row = PageKit.row([
-            PageKit.label("Show", size: 11.5, colour: .secondaryLabelColor),
+            PageKit.label("Show", .secondary, colour: .secondaryLabelColor),
             locationPopup,
             searchField,
             NSView(),
-        ], spacing: 8)
+        ], spacing: DS.Space.s)
         filterRowHolder = row
         return row
     }
@@ -197,7 +198,7 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
 
     private func view(for tab: FleetTab) -> NSView {
         switch tab {
-        case .overview: return overviewTab
+        case .groups: return groupsTab
         case .locations: return locationsTab
         case .machines: return machinesTab
         case .models: return modelsTab
@@ -208,9 +209,24 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
     /// Point every tab's buttons at the shell. The tabs are views; the network,
     /// the alerts and the banner all belong here.
     private func wireTabs() {
-        overviewTab.onOpenTab = { [weak self] tab in self?.select(tab) }
-        overviewTab.onRefreshLocation = { [weak self] providerID in
-            self?.refreshProviders([providerID])
+        groupsTab.onRefresh = { [weak self] in self?.refreshEverything() }
+        groupsTab.onRefreshGroup = { [weak self] location in
+            if let providerID = location.providerId, !providerID.isEmpty { self?.refreshProviders([providerID]) }
+            else { self?.reload(force: true) }
+        }
+        groupsTab.onTest = { [weak self] location in self?.testController(location) }
+        groupsTab.onRename = { [weak self] location in self?.renameController(location) }
+        groupsTab.onCredentials = { [weak self] location in self?.editCredentials(location) }
+        groupsTab.onRemove = { [weak self] location in self?.removeController(location) }
+        groupsTab.onChangeAddress = { [weak self] location in self?.changeAddress(location) }
+        groupsTab.onResume = { [weak self] location in self?.resumeController(location) }
+        groupsTab.onOpenTab = { [weak self] tab in self?.select(tab) }
+        // Startup control (FleetStartup.swift): the per-node "…" menu and the banner's bulk button.
+        groupsTab.startupMenu = { [weak self] machine in
+            FleetStartup.menuButton(for: machine, window: { self?.view.window }, done: { self?.reload(force: true) })
+        }
+        groupsTab.onEnableAutostart = { [weak self] machines in
+            FleetStartup.enableEverywhere(machines: machines) { self?.reload(force: true) }
         }
 
         locationsTab.onRefresh = { [weak self] in self?.refreshEverything() }
@@ -234,15 +250,23 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
     // MARK: Tabs
 
     @objc private func tabChanged() {
-        select(FleetTab(rawValue: tabControl.selectedSegment) ?? .overview)
+        select(FleetTab(rawValue: tabControl.selectedSegment) ?? .groups)
     }
 
-    private func select(_ tab: FleetTab) {
+    func select(_ tab: FleetTab) {
         selectedTab = tab
         tabControl.selectedSegment = tab.rawValue
         for candidate in FleetTab.allCases {
             view(for: candidate).isHidden = candidate != tab
         }
+        // The location and search filter narrows the three tables; Groups and Locations have no use for it
+        // (Groups has its own search).
+        filterRowHolder.isHidden = ![.machines, .models, .jobs].contains(tab)
+    }
+
+    /// Groups tab: show only the groups that need attention (used by the render harness).
+    func showProblemsOnly(_ value: Bool) {
+        groupsTab.setProblemsOnly(value)
     }
 
     // MARK: Data
@@ -383,7 +407,7 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
         setStatus(
             "Refreshed \(succeeded). Could not discover at \(failures.count) "
             + "location\(failures.count == 1 ? "" : "s") — \(details)",
-            colour: .systemOrange
+            colour: Health.warn.text
         )
         report(
             .warning,
@@ -414,8 +438,7 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
                 providerIDs[id] = provider
             }
         }
-        overviewTab.setProviderIDs(providerIDs)
-        overviewTab.update(snapshot: snapshot, filter: filter)
+        groupsTab.update(snapshot: snapshot)
         locationsTab.update(locations: snapshot.locations)
         locationsTab.updateRelease(locations: snapshot.locations, state: snapshot.release)
         rebuildLocationPopup()
@@ -426,8 +449,7 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
         let empty = FleetSnapshot()
         snapshot = nil
         locations = []
-        overviewTab.update(snapshot: empty, filter: filter)
-        overviewTab.setStatus(error, colour: .systemOrange)
+        groupsTab.showError(error)
         locationsTab.update(locations: [])
         locationsTab.updateRelease(
             locations: [], state: nil,
@@ -464,7 +486,6 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
 
     private func applyFilter() {
         guard let snapshot else { return }
-        overviewTab.update(snapshot: snapshot, filter: filter)
         machinesTab.update(
             machines: snapshot.machines, studios: snapshot.studiosByMachine, filter: filter)
         startupBar.update(machines: snapshot.machines)
@@ -476,7 +497,7 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
     }
 
     private func setStatus(_ text: String, colour: NSColor = .secondaryLabelColor) {
-        overviewTab.setStatus(text, colour: colour)
+        groupsTab.setStatus(text, colour: colour)
         locationsTab.setStatus(text, colour: colour)
     }
 
@@ -653,7 +674,7 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
         ])
         form.orientation = .vertical
         form.alignment = .leading
-        form.spacing = 10
+        form.spacing = DS.Space.m
         form.frame = NSRect(x: 0, y: 0, width: 340, height: 150)
 
         let alert = NSAlert()
@@ -692,7 +713,7 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
                 + "Publishing \(version) would take them backwards. Continue only if "
                 + "that is what you want."
             confirm.alertStyle = .warning
-            confirm.addButton(withTitle: "Publish anyway")
+            confirm.addButton(withTitle: "Publish Anyway")
             confirm.addButton(withTitle: "Cancel")
             guard confirm.runModal() == .alertFirstButtonReturn else { return }
             publishRelease(
@@ -802,7 +823,7 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
                     title: "Could not publish the release",
                     detail: error.localizedDescription
                 )
-                self.setStatus("The release could not be published.", colour: .systemRed)
+                self.setStatus("The release could not be published.", colour: Health.bad.text)
             case .success(let payload):
                 self.reportPublish(payload, version: version, build: build)
             }
@@ -830,7 +851,7 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
                 title: "Signed \(version) (\(build)) — no controllers to send it to",
                 detail: "Add a location, then publish again."
             )
-            setStatus("Signed \(version) (\(build)); no controllers to send it to.", colour: .systemOrange)
+            setStatus("Signed \(version) (\(build)); no controllers to send it to.", colour: Health.warn.text)
             return
         }
         if push.allAccepted {
@@ -860,7 +881,7 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
         )
         setStatus(
             "Published \(version) (\(build)) to \(accepted) of \(total) controllers.",
-            colour: .systemOrange
+            colour: Health.warn.text
         )
     }
 
@@ -874,8 +895,8 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
         let colour: NSColor
         switch kind {
         case .success: colour = .secondaryLabelColor
-        case .warning: colour = .systemOrange
-        case .error: colour = .systemRed
+        case .warning: colour = Health.warn.text
+        case .error: colour = Health.bad.text
         case .idle: colour = .secondaryLabelColor
         }
         locationsTab.setAddStatus(detail.isEmpty ? title : "\(title) — \(detail)", colour: colour)
@@ -1044,7 +1065,7 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
         }
         func caption(_ text: String) -> NSTextField {
             let caption = NSTextField(labelWithString: text)
-            caption.font = .systemFont(ofSize: 11)
+            caption.font = TextRole.caption.font
             caption.textColor = .secondaryLabelColor
             caption.lineBreakMode = .byWordWrapping
             // Both captions spell out what a token is for; the Fleet one lists the
@@ -1070,7 +1091,7 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
         ])
         stack.orientation = .vertical
         stack.alignment = .leading
-        stack.spacing = 5
+        stack.spacing = DS.Space.xs
         stack.frame = NSRect(x: 0, y: 0, width: 320, height: 230)
 
         let alert = NSAlert()
@@ -1157,7 +1178,7 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
         token.translatesAutoresizingMaskIntoConstraints = false
         token.widthAnchor.constraint(equalToConstant: 320).isActive = true
         let result = NSTextField(wrappingLabelWithString: "Not tested yet.")
-        result.font = .systemFont(ofSize: 11)
+        result.font = TextRole.caption.font
         result.textColor = .secondaryLabelColor
         result.maximumNumberOfLines = 4
         result.preferredMaxLayoutWidth = 320
@@ -1170,7 +1191,7 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
         // The address the last *successful* test answered at; a confirm on anything else asks first.
         var testedOK: String?
         // The sheet is modal, so the test reports into the sheet itself.
-        let test = FleetClosureButton(title: "Test this address") {
+        let test = FleetClosureButton(title: "Test This Address") {
             let sent = body()
             result.stringValue = "Testing…"
             result.textColor = .secondaryLabelColor
@@ -1178,7 +1199,7 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
                 switch outcome {
                 case .failure(let error):
                     result.stringValue = "Test failed — \(error.localizedDescription)"
-                    result.textColor = .systemRed
+                    result.textColor = Health.bad.text
                 case .success(let payload):
                     if payload["reachable"] as? Bool == true {
                         testedOK = sent["url"] as? String
@@ -1187,10 +1208,10 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
                         result.stringValue = "Answered as \(role) on Hub \(version): "
                             + "\(payload["machines"] as? Int ?? 0) machines, "
                             + "\(payload["nodes"] as? Int ?? 0) nodes."
-                        result.textColor = .systemGreen
+                        result.textColor = Health.ok.text
                     } else {
                         result.stringValue = "No answer — \(payload["error"] as? String ?? "unknown reason")"
-                        result.textColor = .systemOrange
+                        result.textColor = Health.warn.text
                     }
                 }
             }
@@ -1198,7 +1219,7 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
         let stack = NSStackView(views: [address, token, test, result])
         stack.orientation = .vertical
         stack.alignment = .leading
-        stack.spacing = 6
+        stack.spacing = DS.Space.tight
         stack.frame = NSRect(x: 0, y: 0, width: 320, height: 130)
 
         let alert = NSAlert()
@@ -1208,7 +1229,7 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
             + "credential, its models and every enable decision stay with the location; the old "
             + "identity is dropped and the next probe reads the new one."
         alert.accessoryView = stack
-        alert.addButton(withTitle: "Change address")
+        alert.addButton(withTitle: "Change Address")
         alert.addButton(withTitle: "Cancel")
         alert.window.initialFirstResponder = address
 
@@ -1224,7 +1245,7 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
             sure.informativeText = "Change \(label) to \(url) anyway? Routing to it will fail until that Mac answers."
             sure.alertStyle = .warning
             sure.addButton(withTitle: "Cancel")
-            sure.addButton(withTitle: "Change anyway")
+            sure.addButton(withTitle: "Change Anyway")
             guard sure.runModal() == .alertSecondButtonReturn else { return }
         }
         setStatus("Changing the address of \(label)…")
@@ -1365,9 +1386,9 @@ final class FleetBanner: NSView {
 
         var tint: NSColor {
             switch self {
-            case .success: return .systemGreen
-            case .warning: return .systemOrange
-            case .error: return .systemRed
+            case .success: return Health.ok.text
+            case .warning: return Health.warn.text
+            case .error: return Health.bad.text
             case .idle: return .secondaryLabelColor
             }
         }
@@ -1390,16 +1411,16 @@ final class FleetBanner: NSView {
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
         wantsLayer = true
-        layer?.cornerRadius = 6
+        layer?.cornerRadius = DS.Radius.card
         layer?.borderWidth = 1
 
         icon.translatesAutoresizingMaskIntoConstraints = false
         icon.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 15, weight: .semibold)
         icon.setContentHuggingPriority(.required, for: .horizontal)
 
-        titleLabel.font = .systemFont(ofSize: 12.5, weight: .semibold)
+        titleLabel.font = TextRole.rowTitle.font
         titleLabel.lineBreakMode = .byTruncatingTail
-        detailLabel.font = .systemFont(ofSize: 11.5)
+        detailLabel.font = TextRole.secondary.font
         detailLabel.textColor = .secondaryLabelColor
         // Up to six lines so a publish can name each refusing controller in its
         // own sentence. The Release section below carries every refusal in full,
@@ -1411,14 +1432,14 @@ final class FleetBanner: NSView {
         let text = NSStackView(views: [titleLabel, detailLabel])
         text.orientation = .vertical
         text.alignment = .leading
-        text.spacing = 2
+        text.spacing = DS.Space.xs
         text.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
         let row = NSStackView(views: [icon, text])
         row.orientation = .horizontal
         row.alignment = .top
-        row.spacing = 9
-        row.edgeInsets = NSEdgeInsets(top: 9, left: 12, bottom: 9, right: 12)
+        row.spacing = DS.Space.s
+        row.edgeInsets = NSEdgeInsets(top: DS.Space.s, left: DS.Space.m, bottom: DS.Space.s, right: DS.Space.m)
         row.translatesAutoresizingMaskIntoConstraints = false
         addSubview(row)
         NSLayoutConstraint.activate([

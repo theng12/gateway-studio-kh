@@ -38,7 +38,8 @@ final class VoicesSection: NSObject, AppSection, NSTableViewDataSource, NSTableV
     private var addByOwnerField: NSTextField!
     private var summaryLabel: NSTextField!
     private var detailLabel: NSTextField!
-    private var addButton: NSButton!
+    /// "Add to My Account" in the More menu: only meaningful while searching the provider library.
+    private var addMenuItem: NSMenuItem?
     private var rows: [[String: Any]] = []
     private var providers: [(id: String, name: String, kind: String)] = []
     private var libraryMode = false
@@ -60,10 +61,16 @@ final class VoicesSection: NSObject, AppSection, NSTableViewDataSource, NSTableV
     private func buildContent() -> NSView {
         let root = PageKit.page()
 
-        root.addArrangedSubview(PageKit.heading(
+        // Stocking the library is a different act from ticking voices on and off, so it is the page's one
+        // primary action, beside Refresh in the heading rather than among the selection actions.
+        PageKit.addFull(PageKit.heading(
             "Voices",
-            "Only the voices you enable here are offered to Story Studio."
-        ))
+            "Only the voices you enable here are offered to Story Studio.",
+            actions: [
+                PageKit.primaryButton("Add Voices…", target: self, action: #selector(pickVoices)),
+                PageKit.button("Refresh", target: self, action: #selector(refreshVoices)),
+            ]
+        ), to: root)
 
         providerPopup = NSPopUpButton()
         providerPopup.target = self
@@ -82,24 +89,31 @@ final class VoicesSection: NSObject, AppSection, NSTableViewDataSource, NSTableV
         )
         libraryCheck.controlSize = .small
 
-        let refresh = NSButton(title: "Refresh", target: self, action: #selector(refreshVoices))
-        refresh.bezelStyle = .rounded
-        refresh.controlSize = .small
+        // ---- toolbar: what to show, then what to do with the rows that are ticked.
+        //
+        // Bulk controls belong above the table, not in a footer: the table is the part that scrolls, so a
+        // footer moved Enable/Disable off screen exactly when a long list made them most useful.
+        // "Select all shown" acts on the filtered rows the owner is looking at, which is the point of search.
+        // The rarer per-voice acts live in one "More" menu so the row fits the window at its minimum width.
+        summaryLabel = NSTextField(labelWithString: "Loading…")
+        summaryLabel.font = TextRole.secondary.font
+        summaryLabel.textColor = .secondaryLabelColor
+        summaryLabel.lineBreakMode = .byTruncatingTail
+        summaryLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
-        // Stocking the library, which is a different act from ticking voices on and
-        // off: it belongs beside Refresh, not among the selection actions.
-        let addVoices = NSButton(title: "Add voices…", target: self, action: #selector(pickVoices))
-        addVoices.bezelStyle = .rounded
-        addVoices.controlSize = .small
+        let filters = PageKit.toolbar([providerPopup, searchField, libraryCheck, NSView(), summaryLabel])
+        PageKit.addFull(filters, to: root)
 
-        let bar = NSStackView(views: [
-            providerPopup, searchField, libraryCheck, NSView(), addVoices, refresh,
+        let actions = PageKit.toolbar([
+            button("Select All Shown", #selector(selectAllShown)),
+            button("Select None", #selector(selectNone)),
+            button("Enable Selected", #selector(enableSelected)),
+            button("Disable Selected", #selector(disableSelected)),
+            NSView(),
+            moreMenu(),
         ])
-        bar.orientation = .horizontal
-        bar.spacing = 8
-        bar.alignment = .centerY
-        root.addArrangedSubview(bar)
-        bar.widthAnchor.constraint(equalTo: root.widthAnchor, constant: -56).isActive = true
+        actions.spacing = DS.Space.s
+        PageKit.addFull(actions, to: root)
 
         // ---- Add a voice by its id, without searching for it.
         //
@@ -120,107 +134,62 @@ final class VoicesSection: NSObject, AppSection, NSTableViewDataSource, NSTableV
         addByOwnerField.controlSize = .small
         addByOwnerField.widthAnchor.constraint(equalToConstant: 200).isActive = true
 
-        let addByIdButton = NSButton(title: "Add by ID", target: self, action: #selector(addByID))
-        addByIdButton.bezelStyle = .rounded
-        addByIdButton.controlSize = .small
-
-        let byIdBar = NSStackView(views: [
-            PageKit.label("Add by ID", size: 12, colour: .secondaryLabelColor),
-            addByIdField, addByOwnerField, addByIdButton, NSView(),
+        let byIdBar = PageKit.toolbar([
+            PageKit.label("Add by ID", .secondary, colour: .secondaryLabelColor),
+            addByIdField, addByOwnerField,
+            button("Add by ID", #selector(addByID)), NSView(),
         ])
-        byIdBar.orientation = .horizontal
-        byIdBar.spacing = 8
-        byIdBar.alignment = .centerY
-        root.addArrangedSubview(byIdBar)
-        byIdBar.widthAnchor.constraint(equalTo: root.widthAnchor, constant: -56).isActive = true
-
-        summaryLabel = NSTextField(labelWithString: "Loading…")
-        summaryLabel.font = .systemFont(ofSize: 11.5)
-        summaryLabel.textColor = .secondaryLabelColor
-        root.addArrangedSubview(summaryLabel)
-
-        // Bulk controls belong above the table, not in a footer: the table is the
-        // part that scrolls, so a footer moved Enable/Disable off screen exactly
-        // when a long list made them most useful. Two rows keep every control
-        // inside the window at its 860pt minimum. "Select all shown" acts on the
-        // filtered rows the owner is looking at, which is the point of the search.
-        let selectRow = NSStackView()
-        selectRow.orientation = .horizontal
-        selectRow.spacing = 8
-        selectRow.addArrangedSubview(button("Select all shown", #selector(selectAllShown)))
-        selectRow.addArrangedSubview(button("Select none", #selector(selectNone)))
-        selectRow.addArrangedSubview(button("Enable selected", #selector(enableSelected)))
-        selectRow.addArrangedSubview(button("Disable selected", #selector(disableSelected)))
-        selectRow.addArrangedSubview(NSView())
-        root.addArrangedSubview(selectRow)
-        selectRow.widthAnchor.constraint(equalTo: root.widthAnchor, constant: -56).isActive = true
-
-        let fleetRow = NSStackView()
-        fleetRow.orientation = .horizontal
-        fleetRow.spacing = 8
-        // Permission to clone and distribute is granted deliberately, never by a
-        // stray click, and it is per voice because some voices are private.
-        fleetRow.addArrangedSubview(button("Allow fleet sharing…", #selector(allowSharing)))
-        fleetRow.addArrangedSubview(button("Make private", #selector(makePrivate)))
-        fleetRow.addArrangedSubview(button("Share with fleet", #selector(shareWithFleet)))
-        addButton = button("Add to my account", #selector(addSelected))
-        fleetRow.addArrangedSubview(addButton)
-        // Three different things can happen to a recording — used whole, cut to a
-        // shorter aligned window, or refused — and from the outside they look the
-        // same. This is where the app says which, per model.
-        fleetRow.addArrangedSubview(button("Reference…", #selector(checkReference)))
-        fleetRow.addArrangedSubview(button("Stop preview", #selector(stopPreview)))
-        fleetRow.addArrangedSubview(NSView())
-        root.addArrangedSubview(fleetRow)
-        fleetRow.widthAnchor.constraint(equalTo: root.widthAnchor, constant: -56).isActive = true
+        PageKit.addFull(byIdBar, to: root)
 
         table = NSTableView()
         table.dataSource = self
         table.delegate = self
-        table.rowHeight = 30
-        table.usesAlternatingRowBackgroundColors = true
+        table.rowHeight = DS.Size.row
+        // Separators only, no zebra; the card around the table already says where it ends.
+        table.usesAlternatingRowBackgroundColors = false
+        table.backgroundColor = .clear
         table.allowsMultipleSelection = true
-        table.style = .inset
-        for (id, title, width) in [
-            ("on", "", 34),
-            ("preview", "", 30),
-            ("name", "Voice", 210),
-            ("language", "Language", 70),
-            ("fleet", "Fleet", 80),
-            ("details", "Description", 290),
-            ("source", "Source", 80),
-        ] {
+        table.style = .fullWidth
+        table.columnAutoresizingStyle = .noColumnAutoresizing
+        table.intercellSpacing = NSSize(width: DS.Space.xs, height: 0)
+        // The first two columns hold a checkbox and a play button; Voice and Description take the spare width.
+        for (id, title, width, flexes) in [
+            ("on", "", 34, false),
+            ("preview", "", 30, false),
+            ("name", "Voice", 210, true),
+            ("language", "Language", 80, false),
+            ("fleet", "Fleet", 80, false),
+            ("details", "Description", 280, true),
+            ("source", "Source", 80, false),
+        ] as [(String, String, Int, Bool)] {
             let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier(id))
             column.title = title
             column.width = CGFloat(width)
+            column.minWidth = flexes ? 120 : CGFloat(width)
             table.addTableColumn(column)
         }
 
         let scroll = NSScrollView()
         scroll.documentView = table
         scroll.hasVerticalScroller = true
-        scroll.borderType = .bezelBorder
-        scroll.translatesAutoresizingMaskIntoConstraints = false
-        root.addArrangedSubview(scroll)
-        NSLayoutConstraint.activate([
-            scroll.widthAnchor.constraint(equalTo: root.widthAnchor, constant: -56),
-            // A *required* 320pt floor was the whole reason this page could grow
-            // the window: the natural height came to ~630pt against ~532pt of
-            // content at the 860x560 minimum, and AppKit satisfies a required
-            // height by enlarging the window — measured at 1162pt on the Fleet
-            // page once already. The table is the thing that should absorb spare
-            // space, so its floor is only there to stop it collapsing.
-            scroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 140),
-        ])
+        let card = TableCard()
+        card.hold(table: scroll)
+        // Voice and Description take the spare width; the checkbox, play button and short columns keep theirs.
+        card.onLayout = { [weak self] in
+            guard let self else { return }
+            PageKit.fitColumns(of: self.table, in: scroll, flex: ["name": 1, "details": 1.4])
+        }
+        PageKit.addFull(card, to: root)
+        // A *required* floor was the whole reason this page could grow the window: the natural height came
+        // to ~630pt against ~532pt of content at the 860x560 minimum, and AppKit satisfies a required
+        // height by enlarging the window — measured at 1162pt on the Fleet page once already. The table is
+        // the thing that should absorb spare space, so its floor is only there to stop it collapsing.
+        card.heightAnchor.constraint(greaterThanOrEqualToConstant: 140).isActive = true
 
-        detailLabel = NSTextField(wrappingLabelWithString:
+        detailLabel = PageKit.help(
             "Local voices are yours and are on by default. Provider voices are opt-in — "
             + "tick the ones Story Studio should offer.")
-        detailLabel.font = .systemFont(ofSize: 11.5)
-        detailLabel.textColor = .secondaryLabelColor
-        detailLabel.translatesAutoresizingMaskIntoConstraints = false
-        root.addArrangedSubview(detailLabel)
-        detailLabel.widthAnchor.constraint(equalTo: root.widthAnchor, constant: -56).isActive = true
+        PageKit.addFull(detailLabel, to: root)
 
         let container = NSView()
         container.addSubview(root)
@@ -233,11 +202,33 @@ final class VoicesSection: NSObject, AppSection, NSTableViewDataSource, NSTableV
         return container
     }
 
+    /// The per-voice acts that are used less often, in one pull-down menu.
+    private func moreMenu() -> NSView {
+        let more = NSPopUpButton(frame: .zero, pullsDown: true)
+        more.controlSize = .small
+        more.addItem(withTitle: "More")
+        // Permission to clone and distribute is granted deliberately, never by a stray click, and it is
+        // per voice because some voices are private.
+        func add(_ title: String, _ action: Selector) {
+            let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
+            item.target = self
+            more.menu?.addItem(item)
+        }
+        add("Allow Fleet Sharing…", #selector(allowSharing))
+        add("Share with Fleet", #selector(shareWithFleet))
+        add("Make Private", #selector(makePrivate))
+        more.menu?.addItem(.separator())
+        add("Add to My Account", #selector(addSelected))
+        addMenuItem = more.menu?.items.last
+        // Three different things can happen to a recording — used whole, cut to a shorter aligned window,
+        // or refused — and from the outside they look the same. This is where the app says which, per model.
+        add("Reference…", #selector(checkReference))
+        add("Stop Preview", #selector(stopPreview))
+        return more
+    }
+
     private func button(_ title: String, _ action: Selector) -> NSButton {
-        let b = NSButton(title: title, target: self, action: action)
-        b.bezelStyle = .rounded
-        b.controlSize = .small
-        return b
+        PageKit.button(title, target: self, action: action)
     }
 
     // MARK: Data
@@ -259,7 +250,7 @@ final class VoicesSection: NSObject, AppSection, NSTableViewDataSource, NSTableV
             guard let self else { return }
             switch result {
             case .failure(let error):
-                self.summaryLabel.textColor = .systemOrange
+                self.summaryLabel.textColor = Health.warn.text
                 self.summaryLabel.stringValue = "Could not refresh voices — \(error.localizedDescription)"
             case .success(let payload):
                 let failures = (payload["outcomes"] as? [String: Any] ?? [:]).compactMap { provider, value -> String? in
@@ -269,7 +260,7 @@ final class VoicesSection: NSObject, AppSection, NSTableViewDataSource, NSTableV
                     return "\(provider): \(error)"
                 }
                 if !failures.isEmpty {
-                    self.summaryLabel.textColor = .systemOrange
+                    self.summaryLabel.textColor = Health.warn.text
                     self.summaryLabel.stringValue =
                         "Could not discover voices — \(failures.joined(separator: "; "))"
                 } else {
@@ -304,7 +295,7 @@ final class VoicesSection: NSObject, AppSection, NSTableViewDataSource, NSTableV
             guard let self else { return }
             switch result {
             case .failure(let error):
-                self.summaryLabel.textColor = .systemOrange
+                self.summaryLabel.textColor = Health.warn.text
                 self.summaryLabel.stringValue = "Could not add them — \(error.localizedDescription)"
             case .success(let payload):
                 let imported = payload["imported"] as? [[String: Any]] ?? []
@@ -357,7 +348,7 @@ final class VoicesSection: NSObject, AppSection, NSTableViewDataSource, NSTableV
         if let error = annotation["error"] as? String, !error.isEmpty {
             // The usual one: no Hub, so there is nothing to transcribe with. A
             // voice without segments cannot clone, so this is not cosmetic.
-            summaryLabel.textColor = .systemOrange
+            summaryLabel.textColor = Health.warn.text
             summaryLabel.stringValue = "\(line) — but they cannot be used yet: \(error)"
             return
         }
@@ -374,7 +365,7 @@ final class VoicesSection: NSObject, AppSection, NSTableViewDataSource, NSTableV
             guard let self else { return }
             guard case .success(let state) = result else {
                 if case .failure(let error) = result {
-                    self.summaryLabel.textColor = .systemOrange
+                    self.summaryLabel.textColor = Health.warn.text
                     self.summaryLabel.stringValue =
                         "Could not check transcription progress — \(error.localizedDescription). Retrying…"
                 }
@@ -408,7 +399,7 @@ final class VoicesSection: NSObject, AppSection, NSTableViewDataSource, NSTableV
                     "Ready — \(ok) voice\(ok == 1 ? "" : "s") transcribed and usable."
             } else {
                 // Name them. "Some failed" is not something anyone can act on.
-                self.summaryLabel.textColor = .systemOrange
+                self.summaryLabel.textColor = Health.warn.text
                 let why = failed.prefix(2).map {
                     "\($0["name"] as? String ?? "?") (\($0["detail"] as? String ?? "?"))"
                 }.joined(separator: "; ")
@@ -432,7 +423,7 @@ final class VoicesSection: NSObject, AppSection, NSTableViewDataSource, NSTableV
         let preserved = selection ?? selectedVoiceIDs()
         let providerId = selectedProviderId()
         let library = libraryCheck.state == .on && supportsLibrary(providerId)
-        addButton?.isEnabled = library
+        addMenuItem?.isEnabled = library
         reloadGeneration += 1
         let generation = reloadGeneration
 
@@ -475,7 +466,7 @@ final class VoicesSection: NSObject, AppSection, NSTableViewDataSource, NSTableV
                         + "voices enabled" + (parts.isEmpty ? "" : " · " + parts.joined(separator: ", "))
                 }
             case .failure(let error):
-                self.summaryLabel.textColor = .systemOrange
+                self.summaryLabel.textColor = Health.warn.text
                 self.summaryLabel.stringValue = "Could not load voices — \(error.localizedDescription)"
             }
             self.table.reloadData()
@@ -554,7 +545,7 @@ final class VoicesSection: NSObject, AppSection, NSTableViewDataSource, NSTableV
             switch result {
             case .failure(let error):
                 self.reload(preservingSelection: selection) {
-                    self.summaryLabel.textColor = .systemOrange
+                    self.summaryLabel.textColor = Health.warn.text
                     self.summaryLabel.stringValue =
                         "Could not change those voices — \(error.localizedDescription)"
                 }
@@ -562,7 +553,7 @@ final class VoicesSection: NSObject, AppSection, NSTableViewDataSource, NSTableV
                 let changed = payload["changed"] as? Int ?? 0
                 self.reload(preservingSelection: selection) {
                     if changed != ids.count {
-                        self.summaryLabel.textColor = .systemOrange
+                        self.summaryLabel.textColor = Health.warn.text
                         self.summaryLabel.stringValue =
                             "Changed \(changed) of \(ids.count) voices; the rest were not changed."
                     }
@@ -582,7 +573,7 @@ final class VoicesSection: NSObject, AppSection, NSTableViewDataSource, NSTableV
             .filter { ($0["provider_id"] as? String) == Self.localProviderId }
             .compactMap { $0["id"] as? String }
         guard !ids.isEmpty else {
-            summaryLabel.textColor = .systemOrange
+            summaryLabel.textColor = Health.warn.text
             summaryLabel.stringValue = "Select the voices to share first."
             return
         }
@@ -592,7 +583,7 @@ final class VoicesSection: NSObject, AppSection, NSTableViewDataSource, NSTableV
             guard let self else { return }
             switch result {
             case .failure(let error):
-                self.summaryLabel.textColor = .systemOrange
+                self.summaryLabel.textColor = Health.warn.text
                 self.summaryLabel.stringValue = "Could not share them — \(error.localizedDescription)"
             case .success(let payload):
                 let results = payload["results"] as? [[String: Any]] ?? []
@@ -609,11 +600,11 @@ final class VoicesSection: NSObject, AppSection, NSTableViewDataSource, NSTableV
                             "\($0["location"] as? String ?? "?") (\($0["detail"] as? String ?? "no reason given"))"
                         }.joined(separator: "; ")
                         line += " · could not take it: \(named)"
-                        self.summaryLabel.textColor = .systemOrange
+                        self.summaryLabel.textColor = Health.warn.text
                     }
                     self.summaryLabel.stringValue = line
                 } else {
-                    self.summaryLabel.textColor = .systemOrange
+                    self.summaryLabel.textColor = Health.warn.text
                     // Name the reason. The common one is a missing Hub token, and
                     // these routes refuse a fleet token on purpose.
                     let why = bad.first?["detail"] as? String ?? "no location accepted it"
@@ -632,7 +623,7 @@ final class VoicesSection: NSObject, AppSection, NSTableViewDataSource, NSTableV
         let chosen = selectedRows().filter { ($0["provider_id"] as? String) == Self.localProviderId }
         let ids = chosen.compactMap { $0["id"] as? String }
         guard !ids.isEmpty else {
-            summaryLabel.textColor = .systemOrange
+            summaryLabel.textColor = Health.warn.text
             summaryLabel.stringValue =
                 "Select the voices to share first — only this Mac's own voices can be shared."
             return
@@ -655,7 +646,7 @@ final class VoicesSection: NSObject, AppSection, NSTableViewDataSource, NSTableV
             + "distribute — anything you do not allow stays private and is never copied to "
             + "another machine."
             + (already > 0 ? "\n\n\(already) of them already allow it." : "")
-        alert.addButton(withTitle: "Allow sharing")
+        alert.addButton(withTitle: "Allow Sharing")
         alert.addButton(withTitle: "Cancel")
         guard alert.runModal() == .alertFirstButtonReturn else { return }
 
@@ -664,7 +655,7 @@ final class VoicesSection: NSObject, AppSection, NSTableViewDataSource, NSTableV
             guard let self else { return }
             switch result {
             case .failure(let error):
-                self.summaryLabel.textColor = .systemOrange
+                self.summaryLabel.textColor = Health.warn.text
                 self.summaryLabel.stringValue = "Could not record it — \(error.localizedDescription)"
             case .success:
                 self.summaryLabel.textColor = .secondaryLabelColor
@@ -686,7 +677,7 @@ final class VoicesSection: NSObject, AppSection, NSTableViewDataSource, NSTableV
                         body: ["items": ids, "acknowledged": false]) { [weak self] result in
             guard let self else { return }
             if case .failure(let error) = result {
-                self.summaryLabel.textColor = .systemOrange
+                self.summaryLabel.textColor = Health.warn.text
                 self.summaryLabel.stringValue = "Could not change it — \(error.localizedDescription)"
             } else {
                 self.summaryLabel.textColor = .secondaryLabelColor
@@ -831,7 +822,7 @@ final class VoicesSection: NSObject, AppSection, NSTableViewDataSource, NSTableV
 
         let text = NSTextView(frame: NSRect(x: 0, y: 0, width: 560, height: 330))
         text.isEditable = false
-        text.font = .monospacedSystemFont(ofSize: 11.5, weight: .regular)
+        text.font = TextRole.mono.font
         text.string = lines.joined(separator: "\n")
         text.isVerticallyResizable = true
         text.textContainer?.widthTracksTextView = true
@@ -852,7 +843,7 @@ final class VoicesSection: NSObject, AppSection, NSTableViewDataSource, NSTableV
 
     /// Say what happened, and make failure look like failure.
     private func report(_ message: String, ok: Bool) {
-        summaryLabel.textColor = ok ? .secondaryLabelColor : .systemRed
+        summaryLabel.textColor = ok ? .secondaryLabelColor : Health.bad.text
         summaryLabel.stringValue = message
     }
 
@@ -936,7 +927,7 @@ final class VoicesSection: NSObject, AppSection, NSTableViewDataSource, NSTableV
     private func preview(_ voiceId: String) {
         let path = "/admin/api/voices/\(voiceId.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? "")/preview"
         guard GatewayAPI.url(path) != nil else {
-            summaryLabel.textColor = .systemOrange
+            summaryLabel.textColor = Health.warn.text
             summaryLabel.stringValue = "Bad preview URL."
             return
         }
@@ -947,7 +938,7 @@ final class VoicesSection: NSObject, AppSection, NSTableViewDataSource, NSTableV
             guard let self else { return }
             switch result {
             case .failure(let error):
-                self.summaryLabel.textColor = .systemOrange
+                self.summaryLabel.textColor = Health.warn.text
                 switch error {
                 case .missingResource:
                     self.summaryLabel.stringValue = "No preview is available for that voice."
@@ -963,7 +954,7 @@ final class VoicesSection: NSObject, AppSection, NSTableViewDataSource, NSTableV
                 }
             case .success(let data):
                 guard let sound = NSSound(data: data) else {
-                    self.summaryLabel.textColor = .systemOrange
+                    self.summaryLabel.textColor = Health.warn.text
                     self.summaryLabel.stringValue = "The preview response was not valid audio."
                     return
                 }
@@ -973,7 +964,7 @@ final class VoicesSection: NSObject, AppSection, NSTableViewDataSource, NSTableV
                     self.summaryLabel.textColor = .secondaryLabelColor
                     self.summaryLabel.stringValue = "Playing preview…"
                 } else {
-                    self.summaryLabel.textColor = .systemOrange
+                    self.summaryLabel.textColor = Health.warn.text
                     self.summaryLabel.stringValue = "The preview could not be played."
                 }
             }
@@ -981,6 +972,10 @@ final class VoicesSection: NSObject, AppSection, NSTableViewDataSource, NSTableV
     }
 
     // MARK: Table
+
+    func tableView(_ tableView: NSTableView, rowViewForRow row: Int) -> NSTableRowView? {
+        SeparatorRowView()
+    }
 
     func numberOfRows(in tableView: NSTableView) -> Int { rows.count }
 
@@ -1034,12 +1029,12 @@ final class VoicesSection: NSObject, AppSection, NSTableViewDataSource, NSTableV
         }
 
         let field = NSTextField(labelWithString: "")
-        field.font = .systemFont(ofSize: 11.5)
+        field.font = TextRole.secondary.font
         field.lineBreakMode = .byTruncatingTail
         switch identifier {
         case "name":
             field.stringValue = voice["display_name"] as? String ?? "?"
-            field.font = .systemFont(ofSize: 12)
+            field.font = TextRole.secondary.font
         case "language":
             field.stringValue = (voice["language"] as? String ?? "").uppercased()
             field.textColor = .secondaryLabelColor
@@ -1076,8 +1071,8 @@ final class VoicesSection: NSObject, AppSection, NSTableViewDataSource, NSTableV
         cell.addSubview(field)
         cell.textField = field
         NSLayoutConstraint.activate([
-            field.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 4),
-            field.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -4),
+            field.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: DS.Space.xs),
+            field.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -DS.Space.xs),
             field.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
         ])
         return cell
@@ -1104,7 +1099,7 @@ final class VoicesSection: NSObject, AppSection, NSTableViewDataSource, NSTableV
                 }
                 sender.state = enabled ? .off : .on
                 self.summaryLabel.stringValue = "Could not change that voice — \(error.localizedDescription)"
-                self.summaryLabel.textColor = .systemRed
+                self.summaryLabel.textColor = Health.bad.text
             }
         }
     }

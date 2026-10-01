@@ -157,21 +157,19 @@ final class ConsoleSection: NSObject, AppSection, WKNavigationDelegate, WKUIDele
         loadOverlay = overlay
 
         loadStatusLabel = NSTextField(wrappingLabelWithString: "")
-        loadStatusLabel.font = .systemFont(ofSize: 13, weight: .semibold)
+        loadStatusLabel.font = TextRole.rowTitle.font
         loadStatusLabel.alignment = .center
         loadStatusLabel.maximumNumberOfLines = 3
         loadStatusLabel.lineBreakMode = .byWordWrapping
         loadStatusLabel.preferredMaxLayoutWidth = 420
 
-        retryButton = NSButton(title: "Retry", target: self, action: #selector(retryLoad))
-        retryButton.bezelStyle = .rounded
-        retryButton.controlSize = .small
+        retryButton = PageKit.primaryButton("Retry", target: self, action: #selector(retryLoad), regular: true)
         retryButton.isHidden = true
 
         let message = NSStackView(views: [loadStatusLabel, retryButton])
         message.orientation = .vertical
         message.alignment = .centerX
-        message.spacing = 12
+        message.spacing = DS.Space.m
         message.translatesAutoresizingMaskIntoConstraints = false
         overlay.addSubview(message)
 
@@ -186,8 +184,8 @@ final class ConsoleSection: NSObject, AppSection, WKNavigationDelegate, WKUIDele
             overlay.bottomAnchor.constraint(equalTo: host.bottomAnchor),
             message.centerXAnchor.constraint(equalTo: overlay.centerXAnchor),
             message.centerYAnchor.constraint(equalTo: overlay.centerYAnchor),
-            message.leadingAnchor.constraint(greaterThanOrEqualTo: overlay.leadingAnchor, constant: 24),
-            message.trailingAnchor.constraint(lessThanOrEqualTo: overlay.trailingAnchor, constant: -24),
+            message.leadingAnchor.constraint(greaterThanOrEqualTo: overlay.leadingAnchor, constant: DS.Space.xl),
+            message.trailingAnchor.constraint(lessThanOrEqualTo: overlay.trailingAnchor, constant: -DS.Space.xl),
         ])
         overlay.isHidden = true
         return host
@@ -413,7 +411,7 @@ final class MainWindow: NSObject, NSTableViewDataSource, NSTableViewDelegate {
     private var sections: [AppSection] = []
     private var currentIndex = -1
     private var timer: Timer?
-    private var statusDot = NSView()
+    private let statusDot = StatusDot(.tertiaryLabelColor)
     private let sidebarStatus = NSTextField(labelWithString: "…")
     private let sidebarVersion = NSTextField(wrappingLabelWithString: "")
     private var statusTimer: Timer?
@@ -579,7 +577,7 @@ final class MainWindow: NSObject, NSTableViewDataSource, NSTableViewDelegate {
         sidebar.dataSource = self
         sidebar.delegate = self
         sidebar.headerView = nil
-        sidebar.rowHeight = 28
+        sidebar.rowHeight = DS.Size.row
         sidebar.style = .sourceList
         sidebar.selectionHighlightStyle = .regular
         let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("section"))
@@ -597,23 +595,17 @@ final class MainWindow: NSObject, NSTableViewDataSource, NSTableViewDelegate {
         // driving is always on screen no matter which page you are on. Same
         // line here, same place. It replaced a Settings gear, because Settings
         // is now a row in the list rather than a lone button.
-        statusDot.wantsLayer = true
-        statusDot.layer?.cornerRadius = 4
-        statusDot.translatesAutoresizingMaskIntoConstraints = false
-        statusDot.widthAnchor.constraint(equalToConstant: 8).isActive = true
-        statusDot.heightAnchor.constraint(equalToConstant: 8).isActive = true
-
-        sidebarStatus.font = .systemFont(ofSize: 11)
+        sidebarStatus.font = TextRole.caption.font
         sidebarStatus.textColor = .secondaryLabelColor
         sidebarStatus.lineBreakMode = .byWordWrapping
-        sidebarStatus.preferredMaxLayoutWidth = 200
+        sidebarStatus.preferredMaxLayoutWidth = DS.Size.sidebar - 2 * DS.Space.l - DS.Space.s - 8
 
-        sidebarVersion.font = .systemFont(ofSize: 10.5)
+        sidebarVersion.font = TextRole.caption.font
         sidebarVersion.textColor = .secondaryLabelColor
         sidebarVersion.lineBreakMode = .byWordWrapping
         sidebarVersion.maximumNumberOfLines = 0
-        // Fixed 200pt sidebar minus its margins, status dot and gap.
-        sidebarVersion.preferredMaxLayoutWidth = 156
+        // The fixed sidebar minus its margins, status dot and gap.
+        sidebarVersion.preferredMaxLayoutWidth = DS.Size.sidebar - 2 * DS.Space.l - DS.Space.s - 8
         sidebarVersion.isSelectable = true
         sidebarVersion.stringValue = "App version \(GatewayController.shared.appVersion)\nBuild \(GatewayController.shared.appBuild)"
 
@@ -624,14 +616,14 @@ final class MainWindow: NSObject, NSTableViewDataSource, NSTableViewDelegate {
         let statusText = NSStackView(views: [sidebarStatus, sidebarVersion])
         statusText.orientation = .vertical
         statusText.alignment = .leading
-        statusText.spacing = 2
+        statusText.spacing = DS.Space.xs
         statusText.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         sidebarVersion.widthAnchor.constraint(equalTo: statusText.widthAnchor).isActive = true
 
         let statusRow = NSStackView(views: [statusDot, statusText])
         statusRow.orientation = .horizontal
         statusRow.alignment = .top
-        statusRow.spacing = 8
+        statusRow.spacing = DS.Space.s
         statusRow.translatesAutoresizingMaskIntoConstraints = false
 
         let statusDivider = NSBox()
@@ -650,11 +642,11 @@ final class MainWindow: NSObject, NSTableViewDataSource, NSTableViewDelegate {
 
             statusDivider.leadingAnchor.constraint(equalTo: sidebarHost.leadingAnchor),
             statusDivider.trailingAnchor.constraint(equalTo: sidebarHost.trailingAnchor),
-            statusDivider.bottomAnchor.constraint(equalTo: statusRow.topAnchor, constant: -10),
+            statusDivider.bottomAnchor.constraint(equalTo: statusRow.topAnchor, constant: -DS.Space.m),
 
-            statusRow.leadingAnchor.constraint(equalTo: sidebarHost.leadingAnchor, constant: 14),
-            statusRow.trailingAnchor.constraint(equalTo: sidebarHost.trailingAnchor, constant: -14),
-            statusRow.bottomAnchor.constraint(equalTo: sidebarHost.bottomAnchor, constant: -12),
+            statusRow.leadingAnchor.constraint(equalTo: sidebarHost.leadingAnchor, constant: DS.Space.l),
+            statusRow.trailingAnchor.constraint(equalTo: sidebarHost.trailingAnchor, constant: -DS.Space.l),
+            statusRow.bottomAnchor.constraint(equalTo: sidebarHost.bottomAnchor, constant: -DS.Space.m),
         ])
 
         // ---- detail
@@ -682,7 +674,7 @@ final class MainWindow: NSObject, NSTableViewDataSource, NSTableViewDelegate {
         // right edge and simply invisible. Pinning the sidebar and giving the
         // container "everything else" makes the content width predictable, which
         // is what every `root.widthAnchor - 56` inside the pages assumes.
-        let sidebarWidth: CGFloat = 200
+        let sidebarWidth = DS.Size.sidebar
         NSLayoutConstraint.activate([
             split.topAnchor.constraint(equalTo: content.topAnchor),
             split.leadingAnchor.constraint(equalTo: content.leadingAnchor),
@@ -782,15 +774,15 @@ final class MainWindow: NSObject, NSTableViewDataSource, NSTableViewDelegate {
     ) -> NSView? {
         switch Self.layout[row] {
         case .header(let title):
-            let label = NSTextField(labelWithString: title.uppercased())
-            label.font = .systemFont(ofSize: 11, weight: .semibold)
+            let label = NSTextField(labelWithString: title)
+            label.font = TextRole.captionStrong.font
             label.textColor = .secondaryLabelColor
             let cell = NSTableCellView()
             label.translatesAutoresizingMaskIntoConstraints = false
             cell.addSubview(label)
             cell.textField = label
             NSLayoutConstraint.activate([
-                label.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 4),
+                label.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: DS.Space.xs),
                 label.bottomAnchor.constraint(equalTo: cell.bottomAnchor, constant: -2),
             ])
             return cell
@@ -802,7 +794,7 @@ final class MainWindow: NSObject, NSTableViewDataSource, NSTableViewDelegate {
             image.image = NSImage(systemSymbolName: section.symbol, accessibilityDescription: nil)
             image.contentTintColor = .controlAccentColor
             let label = NSTextField(labelWithString: section.title)
-            label.font = .systemFont(ofSize: 13)
+            label.font = TextRole.body.font
 
             image.translatesAutoresizingMaskIntoConstraints = false
             label.translatesAutoresizingMaskIntoConstraints = false
@@ -814,9 +806,9 @@ final class MainWindow: NSObject, NSTableViewDataSource, NSTableViewDelegate {
             NSLayoutConstraint.activate([
                 image.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 2),
                 image.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
-                image.widthAnchor.constraint(equalToConstant: 18),
-                label.leadingAnchor.constraint(equalTo: image.trailingAnchor, constant: 7),
-                label.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -4),
+                image.widthAnchor.constraint(equalToConstant: DS.Size.rowIcon - DS.Space.xs),
+                label.leadingAnchor.constraint(equalTo: image.trailingAnchor, constant: DS.Space.s),
+                label.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -DS.Space.xs),
                 label.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
             ])
             return cell
@@ -859,8 +851,7 @@ final class MainWindow: NSObject, NSTableViewDataSource, NSTableViewDelegate {
         case .running: running = true
         default: running = false
         }
-        statusDot.layer?.backgroundColor =
-            (running ? NSColor.systemGreen : NSColor.tertiaryLabelColor).cgColor
+        statusDot.colour = (running ? Health.ok : Health.off).tint
         sidebarStatus.stringValue = GatewayController.shared.sidebarSummary
     }
 }

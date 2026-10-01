@@ -143,8 +143,14 @@ struct FleetLocation: Decodable {
     var pausedAt: Double?
     var pauseReason: String?
     var unreachableSince: Double?
+    /// The controller is draining (finishing its work, taking none): routing skips it.
+    var drained: Bool?
+    /// Set when the roster shown is the one remembered from before the group went quiet, and for how long.
+    var membersFrom: String?
+    var membersStaleSeconds: Double?
 
     private enum CodingKeys: String, CodingKey {
+        case drained, membersFrom, membersStaleSeconds
         case id, label, url, local, reachable, error, role, version, hubVersionRelation
         case providerId, latencyMs
         case machines, workers, localModels, modelHealth, machineSummary, runningJobs
@@ -176,6 +182,9 @@ struct FleetLocation: Decodable {
         pausedAt = try? c.decode(Double.self, forKey: .pausedAt)
         pauseReason = try? c.decode(String.self, forKey: .pauseReason)
         unreachableSince = try? c.decode(Double.self, forKey: .unreachableSince)
+        drained = try? c.decode(Bool.self, forKey: .drained)
+        membersFrom = try? c.decode(String.self, forKey: .membersFrom)
+        membersStaleSeconds = try? c.decode(Double.self, forKey: .membersStaleSeconds)
         if let count = try? c.decode(Int.self, forKey: .runningJobs) {
             runningJobs = count
         } else if let rows = try? c.decode([Lenient<FleetJob>].self, forKey: .runningJobs) {
@@ -539,14 +548,31 @@ struct FleetDisk: Decodable {
         return free == "—" ? state : "\(free) · \(state)"
     }
 
-    var colour: NSColor {
+    /// The state as the shared status vocabulary: amber is look soon, red and stop are act now.
+    var health: Health? {
         switch (state ?? "").lowercased() {
-        case "amber": return .systemOrange
-        case "red", "stop": return .systemRed
-        case "green": return .systemGreen
-        default: return .labelColor
+        case "amber": return .warn
+        case "red", "stop": return .bad
+        case "green": return .ok
+        default: return nil
         }
     }
+
+    /// Text colour for the Disk column: plain unless the state is a problem.
+    var colour: NSColor {
+        guard let health, health != .ok else { return .labelColor }
+        return health.text
+    }
+}
+
+/// The job a node is running right now, **when the Hub states it** (Gateway `machines_flat` republishes
+/// `current` and nothing else). Every field is optional: absent means unknown, never idle.
+struct FleetCurrentJob: Decodable {
+    var batchId: String?
+    var model: String?
+    var label: String?
+    var studio: String?
+    var startedAt: Double?
 }
 
 struct FleetMachine: Decodable {
@@ -586,6 +612,8 @@ struct FleetMachine: Decodable {
     var nodeLastSeenAt: FleetScalar?
     /// What this Mac says it starts when it starts (see `FleetStartup.swift`). `nil` is unknown.
     var startup: FleetStartupFact?
+    /// What this node is running now, when its Hub says so (Fleet Groups "Doing now"); `nil` is unknown.
+    var current: FleetCurrentJob?
     /// **Job counts per modality**, not a list of models the machine offers. The
     /// table labels the column "Work done by kind" so the two are never confused.
     var modalities: [String: Int]?
@@ -680,6 +708,70 @@ struct FleetMachine: Decodable {
     /// When the controller last heard from this Mac. `—` when it never has, which is
     /// a different fact from "a long time ago" and is what `last_seen_at` is for.
     var nodeLastSeenText: String { FleetFormat.relative(nodeLastSeenAt?.doubleValue) }
+}
+
+// MARK: - Disk and memory tiers
+
+/// Disk and memory against the shared tiers. Disk uses the Hub disk governor's own state when the Hub
+/// stated one (amber < 12 % free, red < 6 %, stop < 5 GB) and works the same thresholds out from the sizes
+/// when it did not. Memory is the owner's rule: amber under 20 % of RAM free, red under 10 % or 1.5 GB.
+extension FleetMachine {
+    var diskFree: Double? { disk?.freeGb ?? diskFreeGb }
+    var diskTotal: Double? { disk?.totalGb ?? diskTotalGb }
+
+    var diskHealth: Health {
+        if let stated = disk?.health { return stated }
+        guard let free = diskFree, let total = diskTotal, total > 0 else { return .off }
+        if free < 5 || free / total < 0.06 { return .bad }
+        if free / total < 0.12 { return .warn }
+        return .ok
+    }
+
+    var memoryHealth: Health {
+        guard let available = availableGb, let total = memoryGb, total > 0 else { return .off }
+        if available < 1.5 || available / total < 0.10 { return .bad }
+        if available / total < 0.20 { return .warn }
+        return .ok
+    }
+
+    /// How this Mac's activity reads: red for a refused credential or an offline Mac, grey for idle or unknown,
+    /// green for ready or working.
+    var activityHealth: Health {
+        let word = (state ?? "").lowercased()
+        if nodeStateIsUnauthorized || word == "offline" || reachable == false { return .bad }
+        if word == "long_idle" || word.isEmpty { return .off }
+        return .ok
+    }
+
+    /// The state word on a badge: Title Case, and **a refused credential is not "offline"** (different fault,
+    /// different fix).
+    var stateLabel: String {
+        if nodeStateIsUnauthorized { return "Credential refused" }
+        if reachable == false { return "Offline" }
+        switch (state ?? "").lowercased() {
+        case "long_idle": return "Idle"
+        case "offline": return "Offline"
+        case "": return reachable == true ? "Ready" : "Unknown"
+        default: return FleetFormat.words(state).capitalized
+        }
+    }
+
+    /// "Apple M4 · 16 GB", the hardware in one phrase.
+    var hardwareText: String {
+        [chip, memoryGb.map { FleetFormat.gb($0).replacingOccurrences(of: ".0 GB", with: " GB") }]
+            .compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " · ")
+    }
+
+    /// Share of the disk in use, for the bar; `nil` when either size is unknown.
+    var diskUsedFraction: Double? {
+        guard let free = diskFree, let total = diskTotal, total > 0 else { return nil }
+        return 1 - free / total
+    }
+
+    var memoryUsedFraction: Double? {
+        guard let available = availableGb, let total = memoryGb, total > 0 else { return nil }
+        return 1 - available / total
+    }
 }
 
 // MARK: - Worker
@@ -1131,6 +1223,15 @@ enum FleetFormat {
         return value >= 100 ? String(format: "%.0f GB", value) : String(format: "%.1f GB", value)
     }
 
+    /// How long something has been going, for "Doing now": `45 s`, `12 min`, `1 h 05 min`.
+    static func elapsed(_ seconds: Double?) -> String? {
+        guard let seconds, seconds >= 0 else { return nil }
+        if seconds < 60 { return "\(Int(seconds)) s" }
+        let minutes = Int(seconds / 60)
+        if minutes < 60 { return "\(minutes) min" }
+        return String(format: "%d h %02d min", minutes / 60, minutes % 60)
+    }
+
     /// Seconds for a runtime, minutes and seconds once it needs them.
     static func seconds(_ value: Double?) -> String {
         guard let value else { return "—" }
@@ -1165,12 +1266,7 @@ enum FleetFormat {
     }
 
     static func severityColour(_ severity: String?) -> NSColor {
-        switch severity?.lowercased() {
-        case "error", "critical": return .systemRed
-        case "warning", "warn": return .systemOrange
-        case "info", "notice": return .systemBlue
-        default: return .secondaryLabelColor
-        }
+        Health(severity: severity).tint
     }
 
     static func severitySymbol(_ severity: String?) -> String {

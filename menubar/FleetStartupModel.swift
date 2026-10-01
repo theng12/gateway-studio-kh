@@ -32,9 +32,9 @@ enum FleetStartupAction {
 
     var title: String {
         switch self {
-        case .enableAutostart: return "Enable auto-start"
-        case .startServices: return "Start services"
-        case .restartServices: return "Restart services"
+        case .enableAutostart: return "Enable Auto-Start"
+        case .startServices: return "Start Services"
+        case .restartServices: return "Restart Services"
         }
     }
 
@@ -68,9 +68,19 @@ enum FleetStartup {
         return fact.stale == true ? text + " (last known)" : text
     }
 
-    /// Orange when this Mac will not serve after a restart; plain otherwise.
+    /// Amber text when this Mac will not serve after a restart; plain otherwise.
     static func colour(_ fact: FleetStartupFact?) -> NSColor? {
-        fact?.startServicesOnLaunch == false ? .systemOrange : nil
+        fact?.startServicesOnLaunch == false ? Health.warn.text : nil
+    }
+
+    /// The Groups view's per-node startup badge: whether this Mac brings its services up by itself after a
+    /// restart. Unknown is grey, never green; the tooltip carries the full report.
+    static func health(_ fact: FleetStartupFact?) -> (health: Health, text: String) {
+        switch fact?.startServicesOnLaunch {
+        case true?: return (.ok, "Auto-start on")
+        case false?: return (.warn, "Auto-start off")
+        case nil: return (.off, "Not reported")
+        }
     }
 
     static func tooltip(_ fact: FleetStartupFact?) -> String {

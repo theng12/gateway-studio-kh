@@ -65,7 +65,7 @@ assert(!all.compactMap { $0 as? NSScrollView }.isEmpty, "the notes page has no s
 
 // 2. The header is Studio Hub's: the title, the version beside it, the build stamp.
 assert(texts.contains("What's New"), "the page title is missing: \(texts.prefix(6))")
-assert(texts.contains("9.9.9"), "the version is missing from the header")
+assert(joined.contains("9.9.9"), "the version is missing from the header")
 assert(joined.contains("abc1234-202601010000"), "the build stamp is missing")
 
 // 3. **The markdown is rendered, not printed.** The defect this page was rebuilt for was literal

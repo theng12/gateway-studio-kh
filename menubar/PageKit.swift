@@ -1,5 +1,109 @@
 import AppKit
 
+// MARK: - Design tokens
+
+/// **The one source of type, spacing, radii and status colour for every native page.** The sibling Studio
+/// Hub app follows the same scale (`Design.swift` there), so the two read as one product. A page asks for a
+/// role (`TextRole.body`), a step (`DS.Space.l`), a radius (`DS.Radius.card`) and a state (`Health.warn`);
+/// it never types a point size or a colour. Approved spec: `_orchestra/audit-20261001/design/README.md`.
+enum DS {
+    /// 4 pt grid; `tight` (6) is the one allowed half-step, for title-to-subtitle and label-to-control.
+    enum Space {
+        static let xs: CGFloat = 4
+        static let tight: CGFloat = 6
+        static let s: CGFloat = 8
+        static let m: CGFloat = 12
+        static let l: CGFloat = 16
+        static let xl: CGFloat = 24
+        static let page: CGFloat = 28
+    }
+    enum Radius {
+        /// Cards, panels, banners, previews.
+        static let card: CGFloat = 8
+        /// Buttons, fields, thumbnails, code blocks, table containers.
+        static let control: CGFloat = 6
+        static let sheet: CGFloat = 12
+    }
+    enum Size {
+        /// The sidebar, in both apps.
+        static let sidebar: CGFloat = 220
+        static let row: CGFloat = 28
+        static let smallControl: CGFloat = 22
+        static let regularControl: CGFloat = 28
+        static let badge: CGFloat = 20
+        static let meter: CGFloat = 4
+        static let rowIcon: CGFloat = 22
+    }
+}
+
+/// The type scale: eight roles, no half points, no bold. See README 2.1.
+enum TextRole {
+    case pageTitle, section, rowTitle, body, secondary, caption, captionStrong, figure, mono
+
+    var font: NSFont {
+        switch self {
+        case .pageTitle: return .systemFont(ofSize: 26, weight: .semibold)
+        case .section: return .systemFont(ofSize: 15, weight: .semibold)
+        case .rowTitle: return .systemFont(ofSize: 13, weight: .semibold)
+        case .body: return .systemFont(ofSize: 13)
+        case .secondary: return .systemFont(ofSize: 12)
+        case .caption: return .systemFont(ofSize: 11)
+        case .captionStrong: return .systemFont(ofSize: 11, weight: .semibold)
+        case .figure: return .monospacedDigitSystemFont(ofSize: 22, weight: .semibold)
+        case .mono: return .monospacedSystemFont(ofSize: 12, weight: .regular)
+        }
+    }
+}
+
+/// The one status vocabulary. Green is fine, amber means look soon, red means act now, grey is idle or
+/// unknown, blue is a fact (never an alarm). Colour is only ever used for state, never for decoration.
+enum Health: Int, Comparable {
+    case ok, off, info, warn, bad
+    static func < (a: Health, b: Health) -> Bool { a.rawValue < b.rawValue }
+
+    var tint: NSColor {
+        switch self {
+        case .ok: return .systemGreen
+        case .warn: return .systemOrange
+        case .bad: return .systemRed
+        case .off: return .systemGray
+        case .info: return .systemBlue
+        }
+    }
+
+    /// Text in a status colour. Plain `systemOrange` on a white card is about 2.3:1; blending 40 % toward the
+    /// label colour darkens it in light mode and lightens it in dark mode, so one token reads in both.
+    var text: NSColor {
+        let base = tint
+        let fraction: CGFloat = self == .off ? 0.2 : 0.4
+        return NSColor(name: nil) { appearance in
+            let dark = appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+            return base.blended(withFraction: fraction, of: dark ? .white : .black) ?? base
+        }
+    }
+
+    var symbol: String {
+        switch self {
+        case .ok: return "checkmark.circle.fill"
+        case .warn: return "exclamationmark.triangle.fill"
+        case .bad: return "xmark.octagon.fill"
+        case .off: return "moon.zzz.fill"
+        case .info: return "info.circle.fill"
+        }
+    }
+
+    /// The gateway's issue severities (`error`, `warning`, `info`).
+    init(severity: String?) {
+        switch severity?.lowercased() {
+        case "error", "critical", "bad", "red", "stop": self = .bad
+        case "warning", "warn", "amber": self = .warn
+        case "info", "notice": self = .info
+        case "ok", "green": self = .ok
+        default: self = .off
+        }
+    }
+}
+
 /// Shared page furniture, so every page in the window reads the same way.
 ///
 /// These mirror the sibling **Studio Hub KH** app's SwiftUI `heading`,
@@ -36,11 +140,10 @@ enum PageKit {
         }
     }
 
-    /// Studio Hub pads every page body by 28. The pages here previously used
-    /// 18/20 and 14/16, which made switching sections look like switching apps.
-    static let pagePadding: CGFloat = 28
+    /// Every page pads its body by 28 on all four sides (web console included).
+    static let pagePadding: CGFloat = DS.Space.page
     /// The gap between major blocks on a page.
-    static let blockSpacing: CGFloat = 22
+    static let blockSpacing: CGFloat = DS.Space.xl
     /// Descriptions and empty-state text wrap at this width. A width is needed
     /// because a wrapping `NSTextField` inside an `NSStackView` has no other way
     /// to learn where to break.
@@ -48,15 +151,14 @@ enum PageKit {
 
     static func label(
         _ text: String,
-        size: CGFloat,
-        weight: NSFont.Weight = .regular,
+        _ role: TextRole,
         colour: NSColor = .labelColor,
         wrapping: Bool = false
     ) -> NSTextField {
         let field = wrapping
             ? NSTextField(wrappingLabelWithString: text)
             : NSTextField(labelWithString: text)
-        field.font = .systemFont(ofSize: size, weight: weight)
+        field.font = role.font
         field.textColor = colour
         // A label is never why a page needs more width, and never the thing that
         // should grow when there is spare height.
@@ -69,21 +171,39 @@ enum PageKit {
         return field
     }
 
-    /// Page title plus its one-line purpose, the way every Studio Hub page opens.
-    static func heading(_ title: String, _ description: String) -> NSView {
-        let stack = NSStackView(views: [
-            label(title, size: 26, weight: .semibold),
-            label(description, size: 13, colour: .secondaryLabelColor, wrapping: true),
+    /// Page title plus its one-line purpose; the title always matches the sidebar row. `actions` sit at the
+    /// trailing edge of the title block (small buttons), so a page's own verbs live in one predictable place.
+    static func heading(_ title: String, _ description: String, actions: [NSView] = []) -> NSView {
+        let text = NSStackView(views: [
+            label(title, .pageTitle),
+            label(description, .body, colour: .secondaryLabelColor, wrapping: true),
         ])
-        stack.orientation = .vertical
-        stack.alignment = .leading
-        stack.spacing = 6
-        return stack
+        text.orientation = .vertical
+        text.alignment = .leading
+        text.spacing = DS.Space.tight
+        guard !actions.isEmpty else { return text }
+        let strip = NSStackView(views: actions)
+        strip.orientation = .horizontal
+        strip.spacing = DS.Space.s
+        let row = NSStackView(views: [text, NSView(), strip])
+        row.orientation = .horizontal
+        row.alignment = .top
+        row.spacing = DS.Space.m
+        return row
     }
 
     /// A section title within a page.
     static func sectionTitle(_ text: String) -> NSTextField {
-        label(text, size: 15, weight: .semibold)
+        label(text, .section)
+    }
+
+    /// A row of filters or view controls, 12 below the heading (spec 2.7b "toolbar slot").
+    static func toolbar(_ views: [NSView]) -> NSStackView {
+        let row = NSStackView(views: views)
+        row.orientation = .horizontal
+        row.alignment = .centerY
+        row.spacing = DS.Space.m
+        return row
     }
 
     /// What a page shows when it has nothing to show yet.
@@ -93,16 +213,25 @@ enum PageKit {
         icon.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 28, weight: .light)
         icon.contentTintColor = .secondaryLabelColor
 
-        let stack = NSStackView(views: [
-            icon,
-            label(title, size: 13, weight: .semibold),
-            label(detail, size: 12, colour: .secondaryLabelColor, wrapping: true),
-        ])
+        let blurb = label(detail, .secondary, colour: .secondaryLabelColor, wrapping: true)
+        blurb.preferredMaxLayoutWidth = 440
+        blurb.alignment = .center
+        let stack = NSStackView(views: [icon, label(title, .rowTitle), blurb])
         stack.orientation = .vertical
         stack.alignment = .centerX
-        stack.spacing = 10
-        stack.edgeInsets = NSEdgeInsets(top: 32, left: 32, bottom: 32, right: 32)
+        stack.spacing = DS.Space.s
+        stack.edgeInsets = NSEdgeInsets(top: DS.Space.xl, left: DS.Space.xl, bottom: DS.Space.xl, right: DS.Space.xl)
         return stack
+    }
+
+    /// First load: a small spinner and a caption, never a blank page.
+    static func loading(_ what: String = "Loading…") -> NSView {
+        let spinner = NSProgressIndicator()
+        spinner.style = .spinning
+        spinner.controlSize = .small
+        spinner.isIndeterminate = true
+        spinner.startAnimation(nil)
+        return row([spinner, label(what, .secondary, colour: .secondaryLabelColor)], spacing: DS.Space.s)
     }
 
     /// A page body: vertical stack with Studio Hub's padding and spacing.
@@ -125,6 +254,12 @@ enum PageKit {
         return root
     }
 
+    /// Add a view to a `page()` at the full width inside the margins.
+    static func addFull(_ view: NSView, to page: NSStackView) {
+        page.addArrangedSubview(view)
+        view.widthAnchor.constraint(equalTo: page.widthAnchor, constant: -pagePadding * 2).isActive = true
+    }
+
     /// The width of the label column in a form, so every control starts at the
     /// same x no matter how long its label is.
     static let formLabelWidth: CGFloat = 150
@@ -137,18 +272,18 @@ enum PageKit {
     }
 
     static func formRow(_ caption: String, _ controls: [NSView]) -> NSView {
-        let label = self.label(caption, size: 12, colour: .secondaryLabelColor)
+        let label = self.label(caption, .secondary, colour: .secondaryLabelColor)
         label.alignment = .left
 
         let column = NSStackView(views: controls)
         column.orientation = .vertical
         column.alignment = .leading
-        column.spacing = 6
+        column.spacing = DS.Space.tight
 
         let row = NSStackView(views: [label, column])
         row.orientation = .vertical
         row.alignment = .leading
-        row.spacing = 5
+        row.spacing = DS.Space.xs
         row.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         return row
     }
@@ -156,7 +291,7 @@ enum PageKit {
     /// Secondary explanatory text, Studio Hub's `.callout` +
     /// `.foregroundStyle(.secondary)`.
     static func help(_ text: String) -> NSTextField {
-        label(text, size: 11.5, colour: .secondaryLabelColor, wrapping: true)
+        label(text, .secondary, colour: .secondaryLabelColor, wrapping: true)
     }
 
     /// A confirmation for something that cannot be taken back. Cancel is the
@@ -174,19 +309,174 @@ enum PageKit {
     }
 
     /// A full-width row inside a `page()`.
-    static func row(_ views: [NSView], spacing: CGFloat = 10) -> NSStackView {
+    static func row(_ views: [NSView], spacing: CGFloat = DS.Space.s) -> NSStackView {
         let row = NSStackView(views: views)
         row.orientation = .horizontal
         row.alignment = .centerY
         row.spacing = spacing
         return row
     }
+
+    // MARK: Buttons
+
+    /// A bordered secondary button, `.small` for row and toolbar actions and `.regular` for forms and
+    /// dialogs. **Title Case** ("Open Data Folder"); an ellipsis only when a dialog follows.
+    @discardableResult
+    static func button(_ title: String, target: AnyObject? = nil, action: Selector? = nil,
+                       regular: Bool = false) -> NSButton {
+        let button = NSButton(title: title, target: target, action: action)
+        button.bezelStyle = .rounded
+        button.controlSize = regular ? .regular : .small
+        return button
+    }
+
+    /// The one primary action of a page region: accent-filled.
+    static func primaryButton(_ title: String, target: AnyObject? = nil, action: Selector? = nil,
+                              regular: Bool = false) -> NSButton {
+        let button = PrimaryButton(title: title, target: target, action: action)
+        button.controlSize = regular ? .regular : .small
+        return button
+    }
+}
+
+/// A card around a table (radius 8, separator border) whose layout pass re-fits the table's flexible columns.
+final class TableCard: CardView {
+    var onLayout: (() -> Void)?
+    override func layout() { super.layout(); onLayout?() }
+
+    /// Put `scroll` inside the card, 1 pt in so the border shows and the corners clip.
+    func hold(table scroll: NSScrollView) {
+        scroll.borderType = .noBorder
+        scroll.drawsBackground = false
+        scroll.wantsLayer = true
+        scroll.layer?.cornerRadius = DS.Radius.card - 1
+        scroll.layer?.masksToBounds = true
+        scroll.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(scroll)
+        NSLayoutConstraint.activate([
+            scroll.topAnchor.constraint(equalTo: topAnchor, constant: 1),
+            scroll.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 1),
+            scroll.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -1),
+            scroll.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -1),
+        ])
+    }
+}
+
+/// A table row that draws its own bottom separator, so the lines stop with the data (a table's grid lines
+/// keep going down through the empty space below the last row).
+final class SeparatorRowView: NSTableRowView {
+    override func drawBackground(in dirtyRect: NSRect) {
+        super.drawBackground(in: dirtyRect)
+        NSColor.separatorColor.setFill()
+        NSRect(x: 0, y: isFlipped ? bounds.height - 1 : 0, width: bounds.width, height: 1).fill()
+    }
+}
+
+extension PageKit {
+    /// Share the width the fixed columns leave among the flexible ones (`flex` maps a column id to its weight;
+    /// each keeps at least its `minWidth`). A pane too narrow for even the minimums keeps them and scrolls: the
+    /// last resort, not the layout.
+    static func fitColumns(of table: NSTableView, in scroll: NSScrollView, flex: [String: CGFloat]) {
+        let available = scroll.contentSize.width
+        guard available > 0, !flex.isEmpty else { return }
+        let spacing = table.intercellSpacing.width * CGFloat(table.tableColumns.count)
+        let fixed = table.tableColumns.filter { flex[$0.identifier.rawValue] == nil }.reduce(0) { $0 + $1.width }
+        let remaining = max(0, available - fixed - spacing)
+        let weights = flex.values.reduce(0, +)
+        for column in table.tableColumns {
+            guard let weight = flex[column.identifier.rawValue] else { continue }
+            let width = max(column.minWidth, floor(remaining * weight / weights))
+            if abs(column.width - width) > 0.5 { column.width = width }
+        }
+    }
+}
+
+/// An accent-filled button (Studio Hub's `.borderedProminent`).
+///
+/// Drawn here rather than through `bezelColor`/`keyEquivalent`: the system only fills a default button while
+/// its app is active, so an offscreen render (and a window behind another app) would show it grey. Colour is
+/// resolved in `draw`, so it follows the accent colour and appearance.
+final class PrimaryButton: NSButton {
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        isBordered = false
+        setButtonType(.momentaryPushIn)
+        focusRingType = .exterior
+    }
+
+    convenience init(title: String, target: AnyObject?, action: Selector?) {
+        self.init(frame: .zero)
+        self.title = title
+        self.target = target
+        self.action = action
+    }
+
+    private var handler: (() -> Void)?
+
+    /// A primary button whose action is a closure.
+    convenience init(title: String, regular: Bool = true, handler: @escaping () -> Void) {
+        self.init(title: title, target: nil, action: nil)
+        controlSize = regular ? .regular : .small
+        self.handler = handler
+        target = self
+        action = #selector(fire)
+    }
+
+    @objc private func fire() { handler?() }
+
+    required init?(coder: NSCoder) { fatalError("not used") }
+
+    override var title: String {
+        didSet { invalidateIntrinsicContentSize(); needsDisplay = true }
+    }
+    override var isEnabled: Bool { didSet { needsDisplay = true } }
+    override var controlSize: NSControl.ControlSize {
+        didSet { invalidateIntrinsicContentSize(); needsDisplay = true }
+    }
+
+    private var role: TextRole { controlSize == .small ? .secondary : .body }
+    private var height: CGFloat {
+        switch controlSize {
+        case .small, .mini: return DS.Size.smallControl
+        case .large: return DS.Size.regularControl + DS.Space.xs
+        default: return DS.Size.regularControl
+        }
+    }
+
+    override var intrinsicContentSize: NSSize {
+        let text = (title as NSString).size(withAttributes: [.font: role.font])
+        return NSSize(width: ceil(text.width) + 2 * DS.Space.m, height: height)
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        let fill = NSColor.controlAccentColor
+        let shade: NSColor
+        if !isEnabled { shade = NSColor.labelColor.withAlphaComponent(0.12) }
+        else if isHighlighted { shade = fill.blended(withFraction: 0.25, of: .black) ?? fill }
+        else { shade = fill }
+        shade.setFill()
+        NSBezierPath(roundedRect: bounds, xRadius: DS.Radius.control, yRadius: DS.Radius.control).fill()
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.alignment = .center
+        let colour: NSColor = isEnabled ? .white : .disabledControlTextColor
+        let text = NSAttributedString(string: title, attributes: [
+            .font: NSFont.systemFont(ofSize: role.font.pointSize, weight: .medium),
+            .foregroundColor: colour, .paragraphStyle: paragraph,
+        ])
+        let size = text.size()
+        text.draw(in: NSRect(x: 0, y: (bounds.height - size.height) / 2, width: bounds.width, height: size.height))
+    }
 }
 
 /// A rounded panel that follows light/dark mode. A `CALayer` colour is fixed at the moment it is
 /// set, so a card that assigned `controlBackgroundColor.cgColor` once stayed light after the
 /// system went dark; `updateLayer` re-resolves it whenever the appearance changes.
-final class CardView: NSView {
+///
+/// `tint` turns it into a status banner (10 % fill, 35 % border) for the worst state it
+/// reports; without one it is the plain card: control background, 1 pt separator border, radius 8.
+class CardView: NSView {
+    var tint: NSColor? { didSet { needsDisplay = true } }
+
     override init(frame: NSRect) {
         super.init(frame: frame)
         wantsLayer = true
@@ -194,10 +484,116 @@ final class CardView: NSView {
     required init?(coder: NSCoder) { fatalError("not used") }
     override var wantsUpdateLayer: Bool { true }
     override func updateLayer() {
-        layer?.backgroundColor = NSColor.controlBackgroundColor.cgColor
-        layer?.borderColor = NSColor.separatorColor.cgColor
+        if let tint {
+            layer?.backgroundColor = tint.withAlphaComponent(0.10).cgColor
+            layer?.borderColor = tint.withAlphaComponent(0.35).cgColor
+        } else {
+            layer?.backgroundColor = NSColor.controlBackgroundColor.cgColor
+            layer?.borderColor = NSColor.separatorColor.cgColor
+        }
         layer?.borderWidth = 1
-        layer?.cornerRadius = 8
+        layer?.cornerRadius = DS.Radius.card
+    }
+
+    /// Put `content` inside the card with `inset` on every side.
+    func hold(_ content: NSView, inset: NSEdgeInsets = NSEdgeInsets(
+        top: DS.Space.m, left: DS.Space.l, bottom: DS.Space.m, right: DS.Space.l)) {
+        content.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(content)
+        NSLayoutConstraint.activate([
+            content.topAnchor.constraint(equalTo: topAnchor, constant: inset.top),
+            content.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -inset.bottom),
+            content.leadingAnchor.constraint(equalTo: leadingAnchor, constant: inset.left),
+            content.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -inset.right),
+        ])
+    }
+}
+
+/// A status badge: tinted capsule, 11 pt semibold, optional symbol. The badge text always names the state,
+/// so colour is never the only signal.
+final class Badge: NSView {
+    private let health: Health
+    private var natural = NSSize(width: 60, height: DS.Size.badge)
+
+    init(_ text: String, _ health: Health, symbol: Bool = false) {
+        self.health = health
+        super.init(frame: .zero)
+        wantsLayer = true
+        let label = NSTextField(labelWithString: text)
+        label.font = TextRole.captionStrong.font
+        label.textColor = health.text
+        label.lineBreakMode = .byTruncatingTail
+        var views: [NSView] = []
+        if symbol, let image = NSImage(systemSymbolName: health.symbol, accessibilityDescription: nil) {
+            let icon = NSImageView(image: image)
+            icon.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 10, weight: .semibold)
+            icon.contentTintColor = health.text
+            views.append(icon)
+        }
+        views.append(label)
+        let stack = NSStackView(views: views)
+        stack.spacing = DS.Space.xs
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.leadingAnchor.constraint(equalTo: leadingAnchor, constant: DS.Space.s),
+            stack.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -DS.Space.s),
+            stack.centerYAnchor.constraint(equalTo: centerYAnchor),
+        ])
+        natural = NSSize(width: stack.fittingSize.width + 2 * DS.Space.s, height: DS.Size.badge)
+        setContentHuggingPriority(.required, for: .horizontal)
+        setContentHuggingPriority(.required, for: .vertical)
+        setContentCompressionResistancePriority(.required, for: .horizontal)
+    }
+    required init?(coder: NSCoder) { fatalError("not used") }
+    override var intrinsicContentSize: NSSize { natural }
+    override var wantsUpdateLayer: Bool { true }
+    override func updateLayer() {
+        layer?.backgroundColor = health.tint.withAlphaComponent(0.14).cgColor
+        layer?.borderColor = health.tint.withAlphaComponent(0.35).cgColor
+        layer?.borderWidth = 1
+        layer?.cornerRadius = DS.Size.badge / 2
+    }
+}
+
+/// A thin usage bar. Drawn in `draw`, which always runs in the right appearance.
+final class Meter: NSView {
+    var fraction: CGFloat { didSet { needsDisplay = true } }
+    var health: Health { didSet { needsDisplay = true } }
+    /// Overrides the status colour (a plain proportion bar that is not a state).
+    var fill: NSColor? { didSet { needsDisplay = true } }
+    init(fraction: Double, health: Health) {
+        self.fraction = CGFloat(max(0, min(1, fraction)))
+        self.health = health
+        super.init(frame: .zero)
+        translatesAutoresizingMaskIntoConstraints = false
+        heightAnchor.constraint(equalToConstant: DS.Size.meter).isActive = true
+    }
+    required init?(coder: NSCoder) { fatalError() }
+    override func draw(_ dirtyRect: NSRect) {
+        let radius = bounds.height / 2
+        NSColor.quaternaryLabelColor.setFill()
+        NSBezierPath(roundedRect: bounds, xRadius: radius, yRadius: radius).fill()
+        (fill ?? health.tint).setFill()
+        NSBezierPath(roundedRect: NSRect(x: 0, y: 0, width: bounds.width * max(0, min(1, fraction)), height: bounds.height),
+                     xRadius: radius, yRadius: radius).fill()
+    }
+}
+
+/// A small filled circle in a status colour. Drawn, not layer-backed, so it follows the appearance.
+final class StatusDot: NSView {
+    var colour: NSColor { didSet { needsDisplay = true } }
+    init(_ colour: NSColor, diameter: CGFloat = 8) {
+        self.colour = colour
+        super.init(frame: .zero)
+        translatesAutoresizingMaskIntoConstraints = false
+        widthAnchor.constraint(equalToConstant: diameter).isActive = true
+        heightAnchor.constraint(equalToConstant: diameter).isActive = true
+    }
+    required init?(coder: NSCoder) { fatalError("not used") }
+    override func draw(_ dirtyRect: NSRect) {
+        colour.setFill()
+        NSBezierPath(ovalIn: bounds).fill()
     }
 }
 
@@ -215,14 +611,14 @@ final class CreatePageLayout: NSView {
     static let formMaxWidth: CGFloat = 440
     /// Below this the preview is too narrow to be a preview; the form gives way first.
     static let previewMinWidth: CGFloat = 260
-    static let gap: CGFloat = 24
+    static let gap: CGFloat = DS.Space.xl
 
     let form = NSStackView()
     let formScroll = NSScrollView()
     let preview = NSStackView()
     let previewActions = NSStackView()
     let previewCard = CardView()
-    let caption = PageKit.label("", size: 12, colour: .secondaryLabelColor, wrapping: true)
+    let caption = PageKit.label("", .secondary, colour: .secondaryLabelColor, wrapping: true)
     private(set) var content: NSView?
 
     init(title: String, blurb: String, previewTitle: String) {
@@ -231,7 +627,7 @@ final class CreatePageLayout: NSView {
 
         form.orientation = .vertical
         form.alignment = .leading
-        form.spacing = 18
+        form.spacing = DS.Space.l
         form.translatesAutoresizingMaskIntoConstraints = false
         let document = FlippedView()
         document.translatesAutoresizingMaskIntoConstraints = false
@@ -243,7 +639,7 @@ final class CreatePageLayout: NSView {
         formScroll.borderType = .noBorder
 
         previewActions.orientation = .horizontal
-        previewActions.spacing = 8
+        previewActions.spacing = DS.Space.s
         let title = PageKit.sectionTitle(previewTitle)
         // The title keeps its words; the buttons are what give way when the window is at its narrowest.
         title.setContentCompressionResistancePriority(.required, for: .horizontal)
@@ -252,7 +648,7 @@ final class CreatePageLayout: NSView {
         caption.isHidden = true
         preview.orientation = .vertical
         preview.alignment = .leading
-        preview.spacing = 12
+        preview.spacing = DS.Space.m
         for view in [header, previewCard, caption] { preview.addArrangedSubview(view) }
         header.widthAnchor.constraint(equalTo: preview.widthAnchor).isActive = true
         previewCard.widthAnchor.constraint(equalTo: preview.widthAnchor).isActive = true
@@ -291,8 +687,8 @@ final class CreatePageLayout: NSView {
             form.topAnchor.constraint(equalTo: document.topAnchor),
             form.leadingAnchor.constraint(equalTo: document.leadingAnchor),
             // Room for the overlay scroller, so it never sits on a control.
-            form.trailingAnchor.constraint(equalTo: document.trailingAnchor, constant: -16),
-            form.bottomAnchor.constraint(equalTo: document.bottomAnchor, constant: -20),
+            form.trailingAnchor.constraint(equalTo: document.trailingAnchor, constant: -DS.Space.l),
+            form.bottomAnchor.constraint(equalTo: document.bottomAnchor, constant: -DS.Space.xl),
             document.widthAnchor.constraint(equalTo: formScroll.contentView.widthAnchor),
         ])
     }
@@ -322,7 +718,7 @@ final class CreatePageLayout: NSView {
         let low = NSLayoutConstraint.Priority(1)
         view.setContentCompressionResistancePriority(low, for: .horizontal)
         view.setContentCompressionResistancePriority(low, for: .vertical)
-        let inset: CGFloat = 16
+        let inset = DS.Space.l
         NSLayoutConstraint.activate([
             view.topAnchor.constraint(equalTo: previewCard.topAnchor, constant: inset),
             view.leadingAnchor.constraint(equalTo: previewCard.leadingAnchor, constant: inset),
