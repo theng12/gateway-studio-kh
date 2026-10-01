@@ -1327,7 +1327,24 @@ def _chat_row(model_id: str, definition: ProviderDefinition, model: dict[str, An
     # not ours. `json_schema` stays correct on the *request* side, where it is the provider's
     # own `response_format.type` (`adapters/studio_hub.py`, `adapters/openai_compat.py`).
     # The two spellings are not interchangeable in either place.
-    if parameters is None or not structured:
+    # **A Hub lane now states its formats machine-readably** (`structured_output.formats`, Hub
+    # 0.6.126; the comment above predates it). Read, not guessed: a lane that takes `json_schema`
+    # is published as the strong mode Story sends a native schema for, one that takes only
+    # `json_object` as the plain one. The Hub validates the answer and repairs it once
+    # (`enforcement: prompt_validate_repair`), which is why this is "request" and not "enforced".
+    hub_formats = lane_contract.get("structured_output")
+    hub_formats = hub_formats.get("formats") if isinstance(hub_formats, dict) else None
+    hub_mode = None
+    if isinstance(hub_formats, list):
+        if "json_schema" in hub_formats:
+            hub_mode = "request_json_schema"
+        elif "json_object" in hub_formats:
+            hub_mode = "json_object"
+    if hub_mode is not None:
+        structured = True
+    if hub_mode is not None:
+        structured_mode = hub_mode
+    elif parameters is None or not structured:
         structured_mode = None
     elif "response_format" in parameters:
         structured_mode = "json_object"
@@ -1482,6 +1499,15 @@ def _music_row(model_id: str, definition: ProviderDefinition, model: dict[str, A
     contract = raw.get("lane_contract") if isinstance(raw, dict) else None
     lyrics = _hub_declared_parameter(contract, "lyrics") if isinstance(contract, dict) else None
     vocal: dict[str, Any] = {}
+    # The lane's own track-length bounds and default, so a caller can clamp and explain instead of
+    # being refused: Stable Audio 3 takes 1-380 s (default 30), YuE2 8-360 s (default 36).
+    length = _hub_declared_parameter(contract, "duration_seconds") if isinstance(contract, dict) else None
+    if length is not None:
+        for field, key in (("min_duration_seconds", "minimum"), ("max_duration_seconds", "maximum"),
+                           ("default_duration_seconds", "default")):
+            value = length.get(key)
+            if isinstance(value, (int, float)) and not isinstance(value, bool) and value > 0:
+                vocal[field] = int(value) if float(value).is_integer() else float(value)
     if lyrics is not None:
         vocal["supports_vocals"] = True
         if lyrics.get("required") is True:

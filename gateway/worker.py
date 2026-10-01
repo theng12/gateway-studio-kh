@@ -71,6 +71,12 @@ _MAX_DEFERRALS = concurrency.DEFAULT_MAX_DEFERRALS
 _DEFER_CAP_S = concurrency.DEFAULT_DEFER_CAP_S
 
 
+#: A job that ran past its own time limit is not retried on another Mac: the limit is the lane's
+#: ceiling for this work, so another machine would only spend the same time again. It is stopped on
+#: the Hub and reported.
+_NO_REROUTE_CODES = {"DEADLINE_EXCEEDED"}
+
+
 def _defer_delay(attempts: int, cap_s: float | None = None) -> float:
     """2s, 4s, 8s … capped. Long enough not to hammer a busy machine."""
     return min(2.0 ** max(int(attempts), 0), _DEFER_CAP_S if cap_s is None else float(cap_s))
@@ -690,7 +696,7 @@ def execute_job(job: dict[str, Any], store: JobStore) -> None:
             #
             # A pinned voice is excluded: its reference clip lives on one controller, so there is
             # no other machine that could serve it and a "retry" would only be a slower failure.
-            if not unknown and pinned is None:
+            if not unknown and pinned is None and exc.code not in _NO_REROUTE_CODES:
                 moved = _next_machine(
                     store, job_id, model_id, modality, provider_id,
                     code=exc.code, detail=detail,
@@ -1062,6 +1068,8 @@ class Worker:
                 for job in due:
                     if self._stop.is_set():
                         return
+                    if self._expired_in_queue(job):
+                        continue
                     # Reserve first, then claim: a claim that fails must not leave the
                     # budget holding a slot nobody will ever release.
                     if not self._admit(job) and not (self._rebind(job) and self._admit(job)):
@@ -1100,6 +1108,32 @@ class Worker:
             self.last_pass_at = time.time()
 
             self._stop.wait(self.interval_s)
+
+    def _expired_in_queue(self, job: dict[str, Any]) -> bool:
+        """End a job that has waited out the queue ceiling, with a typed failure -- no orphans.
+
+        **The Gateway decides when a job is over; Story Studio follows it.** `accepted` had no
+        maximum age: a job could be deferred for hours (240 deferrals) or wait for a lane that never
+        freed, long after Story had stopped looking. The owner's three-hour queue ceiling is now a
+        job-lifetime one for work waiting on a Hub location: past it the job fails `QUEUE_TIMEOUT`
+        with a sentence, nothing has been dispatched (so nothing to cancel upstream), and Story
+        shows it. Returns True when the job was ended here.
+        """
+        if job.get("state") != "accepted" or job.get("upstream_job_id"):
+            return False
+        if not fleet.is_location_provider(str(job.get("provider_id") or "")):
+            return False
+        ceiling = float(studio_hub.QUEUE_WAIT_CEILING_S)
+        waited = time.time() - float(job.get("created_at") or time.time())
+        if waited < ceiling:
+            return False
+        _fail(
+            self.store, job["id"], code="QUEUE_TIMEOUT", retryable=True,
+            detail=(f"No Mac was free for {int(waited // 3600)} hours, so the job was withdrawn from the "
+                    "queue before anything ran. Nothing was started or charged; run it again when the "
+                    "Macs are free."),
+        )
+        return True
 
     def _sweep_holds(self) -> None:
         try:

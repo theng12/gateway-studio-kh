@@ -1765,12 +1765,16 @@ class QueueWaitTests(_HubCase):
         self.assertEqual(waits[0]["next_try_at"], 1_700_000_030.0)
         self.assertIsNone(waits[-1], "the wait ends when a Mac starts rendering")
 
-    def test_running_time_still_bounds_the_job_and_a_running_item_is_never_cancelled(self) -> None:
+    def test_running_time_still_bounds_the_job_and_giving_up_cancels_it_on_the_hub(self) -> None:
+        # Owner decision 2026-10-02: when the Gateway gives up it sends a real cancel down, so no
+        # render is left running with nobody collecting it. (Was: "never DELETE a running item".)
+        # A Hub that never says the worker stopped leaves the outcome unknown.
         hub = _Hub(states=["queued"] * 5 + ["running"])
-        with self.assertRaises(BackendError) as caught:
-            self._poll(hub, deadline=10)
+        with patch.object(hub_module, "CANCEL_SETTLE_S", 0.0):
+            with self.assertRaises(BackendError) as caught:
+                self._poll(hub, deadline=10)
         self.assertEqual(caught.exception.code, "PROVIDER_SUBMISSION_UNCERTAIN")
-        self.assertEqual(hub.deletes, [], "never DELETE a running item on a guess")
+        self.assertEqual(hub.deletes, [f"/api/hub/jobs/{BATCH}"])
 
     def test_a_batch_queued_past_the_ceiling_is_withdrawn_and_may_be_rerouted(self) -> None:
         hub = _Hub(states=["queued"])

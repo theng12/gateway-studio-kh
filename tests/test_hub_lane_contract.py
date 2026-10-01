@@ -271,9 +271,9 @@ class ChatLimitTests(_MockHub):
         # fact could be published.
         row = self._chat_row("mock-hub/chat-model")
         self.assertIs(row.get("supports_structured_output"), True)
-        # The mode is unstated until the producer says it machine-readably, so it
-        # is null rather than this gateway picking one of the two.
-        self.assertIsNone(row.get("structured_output_mode"))
+        # The producer now says it machine-readably (`structured_output.formats`), so the mode is
+        # read from it (2026-10-02 decision): a lane taking `json_schema` is the strong mode.
+        self.assertEqual(row.get("structured_output_mode"), "request_json_schema")
 
     def test_a_lane_with_no_contract_publishes_no_structured_output(self) -> None:
         # `mock-hub/preset-model` carries no lane contract at all, so the field is
