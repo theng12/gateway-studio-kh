@@ -430,7 +430,7 @@ test('re-discovering reloads this page, not only the providers page', async () =
   assert.ok(calls.filter(c => c.startsWith('/models?')).length >= 1,
     're-discover must redraw the model list it just refreshed');
   assert.equal(button.disabled, false, 'the button must come back');
-  assert.equal(button.textContent, 'Re-discover models', 'the label must be restored');
+  assert.equal(button.textContent, 'Re-discover Models', 'the label must be restored');
 });
 
 test('the button is on the Models page itself', () => {

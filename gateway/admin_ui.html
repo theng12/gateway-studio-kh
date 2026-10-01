@@ -5,39 +5,64 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>gateway-kh — provider control</title>
 <style>
-  /* The same design language as the rest of the app.
+  /* The same design language as the rest of the app (design spec 2026-10-02, 2.1-2.7b).
      Everything here comes from system colours, so this page follows the Mac's
-     appearance and accent exactly as the native pages do — the two are used side
-     by side and previously looked like two different applications: this page had a
-     fixed dark-navy palette while every other page is neutral and system-driven.
-     Metrics mirror `menubar/PageKit.swift`: 28 padding, 26/600 page title, 13 body,
-     11.5 secondary, 6 radius for controls. */
+     appearance and accent exactly as the native pages do: Canvas/CanvasText and
+     `prefers-color-scheme` carry light and dark, there is no second palette to keep
+     in step. Metrics mirror `menubar/PageKit.swift`:
+       type    26/600 title, 15/600 section, 13 body (13/600 row title), 12 secondary and
+               table cells, 11 caption and table headers (11/600), 22 figures, mono 12.
+               No half sizes, no bold above 600.
+       space   4 / 6 / 8 / 12 / 16 / 24 / 28 (the --s* tokens); 28 is the page margin.
+       radius  8 cards and panels, 6 buttons, inputs, code and table containers,
+               pill for badges, chips and count pills, 12 modals.
+       edges   1px separator lines, no card shadows. */
   :root {
     color-scheme: light dark;
+    --s4: 4px; --s6: 6px; --s8: 8px; --s12: 12px; --s16: 16px; --s24: 24px; --s28: 28px;
+    --r-card: 8px; --r-ctl: 6px; --r-pill: 999px; --r-modal: 12px;
     --bg: Canvas; --panel: Canvas; --panel2: color-mix(in srgb, CanvasText 6%, Canvas);
     --line: color-mix(in srgb, CanvasText 16%, Canvas);
-    /* **A button has to look like a button, and a dead one must not.** These were
-       `--panel2` (6% of the text colour) with a 16% border, and on the dark palette
-       that is a flat near-black rectangle barely distinguishable from the card it
-       sits on — so every control looked like a dark label, and a *disabled* one
-       differed only by `opacity: .5` layered on top of an already-invisible fill.
-       The owner's words: "don't really know if it's clickable or greyed out."
-       Now the enabled state is raised — a fill you can see and a border you can
-       see — and the disabled state is **flat**: no fill, a faint outline, dimmer
-       text. Affordance and its absence are two different drawings rather than one
-       drawing at two opacities, so nothing has to be inferred. */
+    /* **A button has to look like a button, and a dead one must not.** The enabled
+       state is raised (a fill you can see and a border you can see); the disabled
+       state is flat (no fill, a faint outline, dimmer text). Affordance and its
+       absence are two different drawings rather than one drawing at two opacities,
+       so nothing has to be inferred. */
     --btn: color-mix(in srgb, CanvasText 14%, Canvas);
     --btn-hover: color-mix(in srgb, CanvasText 24%, Canvas);
     --btn-active: color-mix(in srgb, CanvasText 10%, Canvas);
     --btn-line: color-mix(in srgb, CanvasText 34%, Canvas);
     --btn-dead-line: color-mix(in srgb, CanvasText 10%, Canvas);
     --text: CanvasText; --dim: color-mix(in srgb, CanvasText 58%, Canvas);
-    --tertiary: color-mix(in srgb, CanvasText 40%, Canvas);
+    --tertiary: color-mix(in srgb, CanvasText 48%, Canvas);
     --accent: AccentColor; --on-accent: AccentColorText;
-    --ok: #1a7f37; --warn: #8a6100; --bad: #c0392b; --radius: 6px;
+    /* Status vocabulary: ok green, warn amber, bad red, off grey, info blue.
+       `--x` paints fills, dots and borders; `--x-text` is the same colour blended 40%
+       toward the label colour so status TEXT stays readable (plain amber on white is
+       about 2:1). Never colour a number merely because it is large. */
+    --ok: #34c759; --warn: #ff9500; --bad: #ff3b30; --off: #8e8e93; --info: #007aff;
+    --ok-text: color-mix(in srgb, #34c759 60%, #000);
+    --warn-text: color-mix(in srgb, #ff9500 60%, #000);
+    --bad-text: color-mix(in srgb, #ff3b30 60%, #000);
+    --info-text: color-mix(in srgb, #007aff 60%, #000);
+    /* Segmented control: a neutral track with a raised, white-ish thumb. */
+    --seg-track: color-mix(in srgb, CanvasText 8%, Canvas);
+    --seg-thumb: #fff;
+    --seg-thumb-line: color-mix(in srgb, CanvasText 12%, Canvas);
+    --seg-shadow: 0 1px 2px rgba(0, 0, 0, .14);
   }
   @media (prefers-color-scheme: dark) {
-    :root { --ok: #4ec97a; --warn: #e0b341; --bad: #ff6b6b; }
+    :root {
+      --ok: #30d158; --warn: #ff9f0a; --bad: #ff453a; --off: #98989d; --info: #0a84ff;
+      --ok-text: color-mix(in srgb, #30d158 60%, #fff);
+      --warn-text: color-mix(in srgb, #ff9f0a 60%, #fff);
+      --bad-text: color-mix(in srgb, #ff453a 60%, #fff);
+      --info-text: color-mix(in srgb, #0a84ff 60%, #fff);
+      --seg-track: color-mix(in srgb, CanvasText 10%, Canvas);
+      --seg-thumb: color-mix(in srgb, CanvasText 26%, Canvas);
+      --seg-thumb-line: color-mix(in srgb, CanvasText 14%, Canvas);
+      --seg-shadow: 0 1px 2px rgba(0, 0, 0, .5);
+    }
   }
   * { box-sizing: border-box; }
   body {
@@ -45,35 +70,38 @@
     font: 13px/1.5 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
     -webkit-font-smoothing: antialiased;
   }
-  /* A page heading, not a toolbar: the same 26pt title and one-line purpose every
-     other page in this window opens with. */
-  .heading { padding: 26px 28px 0; }
-  .heading h1 { font-size: 26px; margin: 0 0 6px; font-weight: 600; letter-spacing: -.2px; }
+  /* The page scaffold: ONE 28px margin on all four sides, owned by `main` alone. The
+     heading used to add its own 28px side padding inside `main`'s, which put the title,
+     tabs and cards 56px in while native pages sit at 28. */
+  main { margin: 0; padding: var(--s28); }
+  .heading { margin: 0 0 var(--s12); }
+  .heading h1 { margin: 0 0 var(--s6); }
   .heading p { margin: 0; font-size: 13px; color: var(--dim); max-width: 620px; }
-  .row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-  h1 { font-size: 26px; margin: 0 0 6px; font-weight: 600; letter-spacing: -.2px; }
+  h1 { font-size: 26px; line-height: 1.2; margin: 0 0 var(--s6); font-weight: 600; }
+  h2 { font-size: 15px; line-height: 1.3; margin: 0 0 var(--s8); font-weight: 600; }
+  h3 { font-size: 13px; line-height: 1.3; margin: 0 0 var(--s6); font-weight: 600; }
+  .row { display: flex; align-items: center; gap: var(--s8); flex-wrap: wrap; }
   .spacer { flex: 1; }
-  .stat { color: var(--dim); font-size: 11.5px; }
+  .stat { color: var(--dim); font-size: 12px; }
   .stat b { color: var(--text); font-weight: 600; }
-  /* Fills the pane, like every other page here. It was a centred 1240px column,
-     which left the table short of the right edge on a wide window. */
-  main { margin: 0; padding: 0 28px 60px; }
+  .muted { color: var(--dim); }
 
   button {
     background: var(--btn); color: var(--text); border: 1px solid var(--btn-line);
-    padding: 7px 13px; border-radius: 8px; cursor: pointer; font-size: 13px; font-weight: 500;
+    padding: var(--s6) var(--s12); border-radius: var(--r-ctl); cursor: pointer;
+    font: inherit; font-size: 13px; font-weight: 400; line-height: 1.3;
   }
   button:hover:not(:disabled) { background: var(--btn-hover); }
   button:active:not(:disabled) { background: var(--btn-active); }
   button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-  button.primary { background: var(--accent); border-color: transparent; color: var(--on-accent); font-weight: 500; }
-  button.primary:hover:not(:disabled) { filter: brightness(1.08); }
-  button.sm { padding: 4px 9px; font-size: 12px; }
-  /* Flat, not faded — and `opacity` is deliberately gone. Halving the opacity of a
-     dark fill left a disabled button looking like a quieter enabled one, which is
-     the whole complaint. A dead control keeps its shape as a slot but loses the
-     fill that says "press me", and its label drops to `--tertiary` so it reads as
-     inert even at a glance or at low contrast. */
+  /* Primary: the one accent-filled action of a page region. */
+  button.primary { background: var(--accent); border-color: transparent; color: var(--on-accent); }
+  button.primary:hover:not(:disabled) { background: var(--accent); filter: brightness(1.08); }
+  button.primary:active:not(:disabled) { background: var(--accent); filter: brightness(.94); }
+  button.sm { padding: var(--s4) var(--s8); font-size: 12px; }
+  /* Flat, not faded: a dead control keeps its shape as a slot but loses the fill that
+     says "press me", and its label drops to `--tertiary` so it reads as inert even at
+     a glance or at low contrast. */
   button:disabled {
     background: transparent; border-color: var(--btn-dead-line);
     color: var(--tertiary); opacity: 1; cursor: default;
@@ -83,12 +111,17 @@
     background: var(--btn-dead-line); border-color: transparent; color: var(--tertiary);
     filter: none;
   }
-  input[type=text], input[type=password], select {
+  input[type=text], input[type=password], input[type=number], select {
     background: color-mix(in srgb, CanvasText 4%, Canvas); color: var(--text);
     border: 1px solid var(--line);
-    border-radius: 8px; padding: 7px 10px; font-size: 13px; width: 100%;
-    font-family: ui-monospace, "SF Mono", monospace;
+    border-radius: var(--r-ctl); padding: var(--s6) var(--s8); font-size: 13px; width: 100%;
+    line-height: 1.3;
   }
+  /* Keys, ids and paths are monospace 12; the pickers and the search boxes are body text. */
+  input[type=text], input[type=password], input[type=number] {
+    font-family: ui-monospace, "SF Mono", monospace; font-size: 12px;
+  }
+  select, #m-q, #filter { font-family: inherit; font-size: 13px; }
   /* The border change alone was the whole focus signal on a text field, which is
      weaker than the 2px ring every button gets and easy to miss on a dark theme.
      Keep the accent border *and* ring it, so a keyboard user sees the same cue
@@ -97,184 +130,201 @@
   input:focus-visible, select:focus-visible, textarea:focus-visible {
     outline: 2px solid var(--accent); outline-offset: 2px;
   }
-  /* A control focused by keyboard is scrolled into view; without this it can land
-     underneath a sticky table header, which is focus you cannot see. */
-  button, input, select, textarea, a[href], [tabindex] { scroll-margin-top: 44px; scroll-margin-bottom: 16px; }
-  label.check { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--dim); white-space: nowrap; }
-  .shelf-section { margin-top: 24px; }
-  .shelf-section h2 { margin: 0 0 8px; font-size: 18px; }
-  .shelf-section h3 { margin: 0 0 6px; font-size: 15px; }
+  button, input, select, textarea, a[href], [tabindex] { scroll-margin-top: var(--s16); scroll-margin-bottom: var(--s16); }
+  label.check { display: flex; align-items: center; gap: var(--s6); font-size: 13px; color: var(--dim); white-space: nowrap; }
+  /* A section on the Content Packs page is a card: 8px radius, 1px border, a 15/600
+     title. It was a grey full-width box with a heavier title. */
+  .shelf-section { margin: 0 0 var(--s24); }
+  .shelf-section .body { border-top: 0; background: transparent; padding: var(--s16); }
+  .shelf-section h2 { margin: 0 0 var(--s8); }
+  .shelf-section h3 { margin: 0 0 var(--s6); }
   .shelf-section .body > p:first-child { margin-top: 0; }
-  label.check.shelf-ack { margin-top: 14px; white-space: normal; align-items: flex-start; }
-  label.check.shelf-ack input { flex: 0 0 auto; margin-top: 2px; }
-  .shelf-meta { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  .shelf-section .body p { margin: 0 0 var(--s8); }
+  label.check.shelf-ack { margin-top: var(--s12); white-space: normal; align-items: flex-start; }
+  label.check.shelf-ack input { flex: 0 0 auto; margin-top: var(--s4); }
+  .shelf-meta { display: flex; gap: var(--s8); flex-wrap: wrap; align-items: center; margin-bottom: var(--s8); }
+  .shelf-meta h2 { margin: 0; }
   .shelf-release-meta { overflow-wrap: anywhere; }
 
   .filters {
-    display: flex; gap: 10px; align-items: center; flex-wrap: wrap;
-    background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius);
-    padding: 12px 14px; margin-bottom: 12px;
+    display: flex; gap: var(--s8); align-items: center; flex-wrap: wrap;
+    background: var(--panel); border: 1px solid var(--line); border-radius: var(--r-card);
+    padding: var(--s12); margin-bottom: var(--s12);
   }
   .filters .grow { flex: 1; min-width: 220px; }
-  .filters select { width: auto; min-width: 150px; font-family: inherit; }
+  .filters select { width: auto; min-width: 150px; }
 
   /* ---- Models: operation/state chips, view controls, row type --------------
      The owner asked to sort by what a model *does*, so the operations are a row
      of pressed-or-not buttons with counts rather than a dropdown: one glance says
      how much of the catalogue is chat, image, video or transcription, and one
      click narrows to it. */
-  .chip-row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 0 0 10px; }
-  .chip-row .chip-label {
-    font-size: 11.5px; font-weight: 600; text-transform: uppercase; letter-spacing: .4px;
-    color: var(--dim); margin-right: 2px;
-  }
+  .chip-row { display: flex; flex-wrap: wrap; gap: var(--s6); align-items: center; margin: 0 0 var(--s8); }
+  .chip-row .chip-label { font-size: 11px; font-weight: 600; color: var(--dim); margin-right: var(--s4); }
   .chip {
-    display: inline-flex; align-items: center; gap: 7px;
-    border-radius: 99px; padding: 4px 12px; font-size: 12.5px; font-weight: 500;
+    display: inline-flex; align-items: center; gap: var(--s6);
+    border-radius: var(--r-pill); padding: var(--s4) var(--s12); font-size: 12px;
   }
   .chip[aria-pressed="true"] { background: var(--accent); border-color: transparent; color: var(--on-accent); }
   /* A pressed chip keeps its accent through hover and press: the generic button
      rules are more specific than the attribute selector, so without these the
      selected operation went grey the moment the pointer crossed it. */
-  .chip[aria-pressed="true"]:hover { background: var(--accent); filter: brightness(1.08); }
-  .chip[aria-pressed="true"]:active { background: var(--accent); filter: brightness(.94); }
+  .chip[aria-pressed="true"]:hover:not(:disabled) { background: var(--accent); filter: brightness(1.08); }
+  .chip[aria-pressed="true"]:active:not(:disabled) { background: var(--accent); filter: brightness(.94); }
   .chip .n {
     font-size: 11px; font-variant-numeric: tabular-nums; color: var(--dim);
-    padding: 0 5px; border-radius: 99px; background: color-mix(in srgb, CanvasText 8%, Canvas);
+    padding: 0 var(--s6); border-radius: var(--r-pill); background: color-mix(in srgb, CanvasText 8%, Canvas);
   }
   .chip[aria-pressed="true"] .n { color: inherit; background: color-mix(in srgb, Canvas 22%, transparent); }
   .controls label.check.inline { margin: 0; }
-  .controls select { width: auto; min-width: 0; font-family: inherit; }
+  .controls select { width: auto; min-width: 0; }
+  .ctl { display: inline-flex; align-items: center; gap: var(--s6); }
   /* Model rows: the name leads and the id supports it. The page is scanned, not
-     read, so the name is a touch heavier and the id drops to a quiet monospace
-     where the eye can find it without it competing. */
-  #m-q { font-family: inherit; }
-  #m-rows td { font-size: 13px; }
-  #m-rows .m-name { font-size: 13.5px; font-weight: 500; letter-spacing: -.05px; overflow-wrap: anywhere; }
+     read, so the name is the 13/600 row title and the id drops to a quiet 12px
+     monospace line under it; both wrap rather than truncate. */
+  #m-rows td { font-size: 12px; }
+  #m-rows .m-name { font-size: 13px; font-weight: 600; overflow-wrap: anywhere; }
   #m-rows .m-id {
-    font-family: ui-monospace, "SF Mono", monospace; font-size: 11.5px;
-    color: var(--tertiary); overflow-wrap: anywhere;
+    font-family: ui-monospace, "SF Mono", monospace; font-size: 12px;
+    color: var(--dim); overflow-wrap: anywhere;
   }
-  #m-rows .m-provider { font-size: 12.5px; }
+  #m-rows .m-provider { overflow-wrap: anywhere; }
+  #m-rows .m-provider .badge { margin-left: var(--s4); }
   #m-rows tr.m-group td {
-    background: var(--panel2); font-size: 11.5px; font-weight: 600; color: var(--dim);
-    text-transform: uppercase; letter-spacing: .4px; padding: 7px 10px;
+    background: var(--panel2); font-size: 11px; font-weight: 600; color: var(--dim);
   }
-  #m-rows tr.m-group .n { font-weight: 500; color: var(--tertiary); text-transform: none; letter-spacing: 0; }
+  #m-rows tr.m-group .n { font-weight: 400; color: var(--tertiary); }
   /* The per-Mac sub-row under a location's model. It is indented and quieter than
      the model row it belongs to, because it answers "which Mac?" only after the
      model row has answered "which model?" — and it carries the one checkbox that
      belongs to a single machine. */
-  #m-rows tr.m-machine td { padding-top: 3px; padding-bottom: 3px; border: 0; }
-  #m-rows tr.m-machine .m-machine-name { font-size: 12.5px; color: var(--dim); padding-left: 22px; }
-  #m-rows .m-machines { font-size: 12.5px; white-space: nowrap; }
-  #m-rows .m-machines .badge { margin-left: 4px; }
+  #m-rows tr.m-machine td { padding-top: var(--s4); padding-bottom: var(--s4); border: 0; overflow-wrap: anywhere; }
+  #m-rows tr.m-machine .m-machine-name { color: var(--dim); padding-left: var(--s16); }
+  #m-rows .m-machines .badge { margin-left: var(--s4); }
 
-  .card { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); margin-bottom: 12px; overflow: hidden; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: var(--r-card); margin-bottom: var(--s12); overflow: hidden; }
   .card.off { opacity: .62; }
-  /* Wrap instead of clipping: this console is a pane the owner resizes, and a
-     single fixed row pushed Configure/Disable off the right edge. */
-  .card-head { display: flex; align-items: center; gap: 10px; padding: 13px 15px; flex-wrap: wrap; }
-  .card-head > div:first-child { min-width: 0; flex: 1 1 240px; }
-  .name { font-weight: 620; overflow-wrap: anywhere; }
+  /* Name on the left, badges under it, and ONE fixed column of small buttons on the
+     right so Configure / Disable line up from card to card. Narrow panes wrap the
+     actions under the text rather than clipping them. */
+  .card-head { display: flex; align-items: flex-start; gap: var(--s12); padding: var(--s12) var(--s16); flex-wrap: wrap; }
+  .card-main { min-width: 0; flex: 1 1 320px; }
+  .card-actions { display: flex; gap: var(--s8); margin-left: auto; flex: 0 0 auto; }
+  .card-actions button { min-width: 80px; }
+  .card-badges { display: flex; flex-wrap: wrap; gap: var(--s6); margin-top: var(--s6); }
+  .name { font-weight: 600; overflow-wrap: anywhere; }
   .cat { color: var(--dim); font-size: 12px; overflow-wrap: anywhere; }
   .badge {
-    font-size: 11px; padding: 2px 8px; border-radius: 99px; border: 1px solid var(--line);
+    display: inline-block; font-size: 11px; font-weight: 600; line-height: 1.5; padding: 0 var(--s8);
+    border-radius: var(--r-pill); border: 1px solid var(--line);
     color: var(--dim); white-space: nowrap;
   }
-  .badge.ok { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 40%, transparent); background: color-mix(in srgb, var(--ok) 12%, transparent); }
-  .badge.warn { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 40%, transparent); background: color-mix(in srgb, var(--warn) 12%, transparent); }
-  .badge.bad { color: var(--bad); border-color: color-mix(in srgb, var(--bad) 40%, transparent); background: color-mix(in srgb, var(--bad) 12%, transparent); }
-  .desc { color: var(--dim); font-size: 12.5px; padding: 0 15px 10px; }
-  .body { border-top: 1px solid var(--line); padding: 14px 15px; background: var(--panel2); }
-  .fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(260px, 100%), 1fr)); gap: 12px; }
-  label { display: block; font-size: 12px; color: var(--dim); margin-bottom: 5px; }
-  .hint { font-size: 11.5px; color: var(--dim); margin-top: 5px; }
-  .actions { display: flex; gap: 8px; margin-top: 13px; flex-wrap: wrap; align-items: center; }
-  .msg { font-size: 12.5px; }
-  .msg.ok { color: var(--ok); } .msg.bad { color: var(--bad); }
+  .badge.ok { color: var(--ok-text); border-color: color-mix(in srgb, var(--ok) 35%, transparent); background: color-mix(in srgb, var(--ok) 14%, transparent); }
+  .badge.warn { color: var(--warn-text); border-color: color-mix(in srgb, var(--warn) 35%, transparent); background: color-mix(in srgb, var(--warn) 14%, transparent); }
+  .badge.bad { color: var(--bad-text); border-color: color-mix(in srgb, var(--bad) 35%, transparent); background: color-mix(in srgb, var(--bad) 14%, transparent); }
+  .badge.info { color: var(--info-text); border-color: color-mix(in srgb, var(--info) 35%, transparent); background: color-mix(in srgb, var(--info) 14%, transparent); }
+  .desc { color: var(--dim); font-size: 12px; padding: 0 var(--s16) var(--s12); }
+  .body { border-top: 1px solid var(--line); padding: var(--s12) var(--s16); background: var(--panel2); }
+  .fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(260px, 100%), 1fr)); gap: var(--s12); }
+  label { display: block; font-size: 12px; color: var(--dim); margin-bottom: var(--s4); }
+  .hint { font-size: 12px; color: var(--dim); margin-top: var(--s4); }
+  .actions { display: flex; gap: var(--s8); margin-top: var(--s12); flex-wrap: wrap; align-items: center; }
+  .msg { font-size: 12px; }
+  .msg.ok { color: var(--ok-text); } .msg.bad { color: var(--bad-text); }
 
+  /* Tables: header 11/600 secondary, cells 12, separators only (no zebra, nothing
+     sticky). The first text column is the flexible one and cells wrap rather than
+     truncate; numeric columns are right-aligned (`.num`). */
   table { width: 100%; border-collapse: collapse; }
   thead th {
-    text-align: left; font-size: 11.5px; font-weight: 600; color: var(--dim);
-    text-transform: uppercase; letter-spacing: .4px; padding: 8px 10px;
-    border-bottom: 1px solid var(--line); position: sticky; top: 0; background: var(--panel);
+    text-align: left; font-size: 11px; font-weight: 600; color: var(--dim);
+    padding: var(--s8); border-bottom: 1px solid var(--line); background: var(--panel);
   }
-  tbody td { padding: 6px 10px; border-bottom: 1px solid var(--line); vertical-align: middle; }
-  /* Alternating rows, the way every native table in this window reads. */
-  tbody tr:nth-child(even) { background: color-mix(in srgb, CanvasText 3%, Canvas); }
-  /* A fixed dark literal here read as black-on-black in light appearance; every
-     surface token follows Canvas/CanvasText so both appearances stay legible. */
-  tbody tr:hover { background: color-mix(in srgb, CanvasText 9%, Canvas); }
-  tbody tr.on { background: color-mix(in srgb, var(--ok) 14%, transparent); }
-  .mid { font-family: ui-monospace, monospace; font-size: 11.5px; color: var(--dim); }
-  .tablewrap { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; }
-  .scroll { max-height: calc(100vh - 340px); overflow: auto; }
-  .empty { color: var(--dim); font-size: 13px; padding: 26px; text-align: center; }
+  tbody td { font-size: 12px; padding: var(--s6) var(--s8); border-bottom: 1px solid var(--line); vertical-align: middle; overflow-wrap: anywhere; }
+  th:first-child, td:first-child { padding-left: var(--s12); }
+  th:last-child, td:last-child { padding-right: var(--s12); }
+  th.num, td.num { text-align: right; }
+  tbody tr:last-child td { border-bottom: 0; }
+  tbody tr:hover { background: color-mix(in srgb, CanvasText 5%, Canvas); }
+  tbody tr.on { background: color-mix(in srgb, var(--ok) 10%, transparent); }
+  .mid { font-family: ui-monospace, monospace; font-size: 12px; color: var(--dim); }
+  /* `overflow-x: auto` is the last resort for a table whose cells cannot wrap any
+     further, never the plan. */
+  .tablewrap { background: var(--panel); border: 1px solid var(--line); border-radius: var(--r-ctl); overflow-x: auto; }
+  .empty { color: var(--dim); font-size: 13px; padding: var(--s24); text-align: center; }
   .spin { display: inline-block; animation: sp 1s linear infinite; }
   @keyframes sp { to { transform: rotate(360deg); } }
-  code { font-family: ui-monospace, monospace; background: var(--panel2); padding: 1px 5px; border-radius: 4px; }
-  input[type=checkbox] { width: 15px; height: 15px; accent-color: var(--accent); cursor: pointer; }
+  code { font-family: ui-monospace, monospace; font-size: 12px; background: var(--panel2); padding: 1px var(--s4); border-radius: var(--r-ctl); }
+  input[type=checkbox] { width: 16px; height: 16px; accent-color: var(--accent); cursor: pointer; }
 
-  /* ---- Create ------------------------------------------------------------
-     Studio Hub's Create workspaces are a form on the left and the result on the
-     right, with the output area holding the empty state until there is something
-     to show. Same shape here, because it is the one the owner asked to match —
-     the difference is that these lanes are cloud models, so the copy says so
-     rather than claiming "locally". */
-  .tabs { display: flex; gap: 6px; margin: 0 0 15px; flex-wrap: wrap; }
-  .tabs button { border-radius: 99px; padding: 5px 14px; font-size: 12.5px; }
-  /* The Create tabs are aria-pressed toggles (S12), so the highlight has to key on
-     that attribute: it stayed on aria-selected and the selected tab lost its fill. */
-  .tabs button[aria-pressed="true"], .tabs button[aria-selected="true"] {
-    background: var(--accent); border-color: transparent; color: var(--on-accent);
+  /* ---- Segmented control (Providers sections, Create modalities, concurrency kinds) --
+     Neutral, like the native one: a grey track, and the selected segment is a raised
+     light thumb (lighter grey in dark), never accent blue. */
+  .tabs {
+    display: inline-flex; flex-wrap: wrap; gap: 2px; padding: 2px; margin: 0 0 var(--s24);
+    background: var(--seg-track); border-radius: var(--r-ctl); max-width: 100%;
+  }
+  .tabs button, .tabs button:hover:not(:disabled), .tabs button:active:not(:disabled) {
+    background: transparent; border: 1px solid transparent; border-radius: var(--r-ctl);
+    padding: var(--s4) var(--s12); font-size: 12px; color: var(--text);
+  }
+  .tabs button:hover:not(:disabled):not([aria-pressed="true"]):not([aria-selected="true"]) {
+    background: color-mix(in srgb, CanvasText 6%, transparent);
+  }
+  .tabs button[aria-pressed="true"], .tabs button[aria-selected="true"],
+  .tabs button[aria-pressed="true"]:hover:not(:disabled), .tabs button[aria-selected="true"]:hover:not(:disabled) {
+    background: var(--seg-thumb); border-color: var(--seg-thumb-line); box-shadow: var(--seg-shadow);
+    color: var(--text); font-weight: 600; filter: none;
   }
   /* A kind pill. One glance should say what a pack *is* without reading its title. */
   .pill {
-    display: inline-block; padding: 1px 8px; border-radius: 99px; font-size: 11px;
+    display: inline-block; padding: 0 var(--s8); border-radius: var(--r-pill); font-size: 11px;
     font-weight: 600; white-space: nowrap; color: var(--dim);
     border: 1px solid var(--line); background: color-mix(in srgb, CanvasText 4%, Canvas);
   }
-  .pill-row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 0 0 12px; }
-  .pill-row button { border-radius: 99px; padding: 3px 11px; font-size: 12px; }
+  .pill-row { display: flex; flex-wrap: wrap; gap: var(--s6); align-items: center; margin: 0 0 var(--s12); }
+  .pill-row button { border-radius: var(--r-pill); padding: var(--s4) var(--s12); font-size: 12px; }
   .pill-row button[aria-pressed="true"] { background: var(--accent); border-color: transparent; color: var(--on-accent); }
   /* Grouped rows instead of one card per pack: a card per release meant a page of
      scrolling for 140 current products. */
-  .pack-group { margin-top: 18px; }
+  .pack-group { margin-top: var(--s16); }
   .pack-group > h3 {
-    display: flex; align-items: center; gap: 8px; margin: 0 0 6px;
-    font-size: 11.5px; font-weight: 600; text-transform: uppercase; letter-spacing: .4px; color: var(--dim);
+    display: flex; align-items: center; gap: var(--s8); margin: 0 0 var(--s6);
+    font-size: 11px; font-weight: 600; color: var(--dim);
   }
-  .pack-row td { padding: 5px 10px; }
-  .pack-row .title { font-weight: 500; }
-  .pack-row .muted { color: var(--tertiary); font-size: 11.5px; white-space: nowrap; }
-  .split { display: grid; grid-template-columns: minmax(300px, 400px) minmax(0, 1fr); gap: 18px; align-items: start; }
+  .pack-row td { padding: var(--s6) var(--s8); }
+  .pack-row .title { font-weight: 600; }
+  .pack-row .muted { color: var(--dim); font-size: 11px; white-space: normal; }
+  .split { display: grid; grid-template-columns: minmax(300px, 400px) minmax(0, 1fr); gap: var(--s24); align-items: start; }
   @media (max-width: 920px) { .split { grid-template-columns: minmax(0, 1fr); } }
-  .pane { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 15px; }
-  .pane h2 { font-size: 14px; margin: 0 0 12px; }
+  .pane { background: var(--panel); border: 1px solid var(--line); border-radius: var(--r-card); padding: var(--s16); }
+  .pane h2 { margin: 0 0 var(--s12); }
+  /* The Providers sections are page content under the segmented control, not cards
+     (their provider rows already are): no second frame around them. */
+  #view-providers .pane { background: none; border: 0; border-radius: 0; padding: 0; }
+  #view-providers .pane > h2 { margin: 0 0 var(--s4); }
   textarea {
     background: color-mix(in srgb, CanvasText 4%, Canvas); color: var(--text);
-    border: 1px solid var(--line); border-radius: 8px; padding: 9px 10px;
+    border: 1px solid var(--line); border-radius: var(--r-ctl); padding: var(--s8);
     font-size: 13px; width: 100%; resize: vertical; font-family: inherit;
   }
   textarea:focus { border-color: var(--accent); }
   .results {
     min-height: 200px; background: var(--panel2); border: 1px solid var(--line);
-    border-radius: var(--radius); padding: 14px;
+    border-radius: var(--r-card); padding: var(--s16);
   }
-  .artifact { margin-bottom: 14px; }
-  .artifact img, .artifact video { max-width: 100%; max-height: 340px; border-radius: 6px; display: block; }
+  .artifact { margin-bottom: var(--s12); }
+  .artifact img, .artifact video { max-width: 100%; max-height: 340px; border-radius: var(--r-ctl); display: block; }
   .artifact audio { width: 100%; }
-  .artifact .row { margin-top: 8px; }
-  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .artifact .row { margin-top: var(--s8); }
   pre.out {
-    white-space: pre-wrap; word-break: break-word; font-size: 12.5px;
-    font-family: ui-monospace, monospace; margin: 0 0 10px; max-height: 340px; overflow: auto;
+    white-space: pre-wrap; word-break: break-word; font-size: 12px;
+    font-family: ui-monospace, monospace; margin: 0 0 var(--s8); max-height: 340px; overflow: auto;
   }
-  .recent { margin-top: 14px; }
+  .recent { margin-top: var(--s12); }
   .recent .item {
-    display: flex; gap: 8px; align-items: center; font-size: 12px;
-    padding: 5px 0; border-bottom: 1px solid var(--line);
+    display: flex; gap: var(--s8); align-items: center; font-size: 12px;
+    padding: var(--s4) 0; border-bottom: 1px solid var(--line);
   }
   .recent .item:last-child { border-bottom: 0; }
 </style>
@@ -290,9 +340,9 @@
       <div class="hint" style="margin-top:6px">This gateway is reachable from other
         devices, so its admin API asks for the gateway key — the one in the app under
         Settings. Paste it once and this browser remembers it.</div>
-      <div class="row" style="margin-top:10px">
+      <div class="row" style="margin-top:12px">
         <input type="password" id="token-input" placeholder="Gateway API key" style="max-width:340px">
-        <button class="primary" onclick="saveToken()">Use this key</button>
+        <button class="primary" onclick="saveToken()">Use This Key</button>
         <button onclick="document.getElementById('token-bar').style.display='none'">Dismiss</button>
       </div>
     </div>
@@ -314,7 +364,7 @@
          the server with every other filter already applied, so a chip never promises
          rows the page would not show. State is the same shape beside it because
          "what is actually switched on" is the other question asked here. -->
-    <div class="chip-row" id="m-modality-chips" style="margin-top:18px"></div>
+    <div class="chip-row" id="m-modality-chips"></div>
     <div class="chip-row" id="m-state-chips"></div>
 
     <div class="filters">
@@ -342,20 +392,20 @@
         <option value="on">Provider switched on</option>
         <option value="off">Provider switched off</option>
       </select>
-      <button class="sm" onclick="clearFilters()">Clear filters</button>
+      <button class="sm" onclick="clearFilters()">Clear Filters</button>
       <!-- Re-discover, on the page that shows what discovery produced.
            The owner asked for this in as many words: "i prefer a refresh button in the model's
            tab." He was standing on this page after enabling a model that had not reached the
            Chat picker, and the only re-discover control in the console was on the Providers
            tab — so the page listing models gave him no way to ask for a newer list, and no hint
            that the list it was showing could be days old. -->
-      <button class="sm" onclick="refreshModels(this)">Re-discover models</button>
+      <button class="sm" onclick="refreshModels(this)">Re-discover Models</button>
     </div>
 
-    <div class="row controls" style="margin-bottom:10px">
+    <div class="row controls" style="margin-bottom:12px">
       <div class="stat" id="m-count">…</div>
       <div class="spacer"></div>
-      <label class="check inline" for="m-sort">Sort</label>
+      <span class="ctl"><label class="check inline" for="m-sort">Sort</label>
       <select id="m-sort" aria-label="Sort models">
         <option value="">Catalogue order</option>
         <option value="modality">Operation</option>
@@ -363,43 +413,43 @@
         <option value="provider">Provider</option>
         <option value="status">Enabled first</option>
       </select>
-      <button class="sm" id="m-order" onclick="toggleModelOrder()" title="Sort ascending">↑</button>
-      <label class="check inline" for="m-group">Group</label>
+      <button class="sm" id="m-order" onclick="toggleModelOrder()" title="Sort ascending">↑</button></span>
+      <span class="ctl"><label class="check inline" for="m-group">Group</label>
       <select id="m-group" aria-label="Group models">
         <option value="">No grouping</option>
         <option value="modality">Operation</option>
         <option value="provider">Provider</option>
         <option value="state">Enabled state</option>
-      </select>
-      <label class="check inline" for="m-show">Show</label>
+      </select></span>
+      <span class="ctl"><label class="check inline" for="m-show">Show</label>
       <select id="m-show" aria-label="How many models to list">
         <option value="200">200</option>
         <option value="400" selected>400</option>
         <option value="1000">1000</option>
         <option value="2000">All (up to 2000)</option>
-      </select>
+      </select></span>
     </div>
 
-    <div class="row" style="margin-bottom:10px">
+    <div class="row" style="margin-bottom:12px">
       <div class="hint" style="margin:0">Bulk actions cover every match, not only the rows on screen.</div>
       <div class="spacer"></div>
-      <button class="primary sm" id="m-enable-all" onclick="bulk(true)">Enable all matching</button>
-      <button class="sm" id="m-disable-all" onclick="bulk(false)">Disable all matching</button>
+      <button class="primary sm" id="m-enable-all" onclick="bulk(true)">Enable All Matching</button>
+      <button class="sm" id="m-disable-all" onclick="bulk(false)">Disable All Matching</button>
     </div>
     <div class="tablewrap">
       <div class="scroll">
         <table>
           <thead><tr>
-            <th style="width:44px"></th><th>Model</th><th>Provider</th>
-            <th style="width:150px">Operation</th><th style="width:170px">Machines</th>
-            <th style="width:190px">Price</th>
+            <th style="width:32px"></th><th>Model</th><th>Provider</th>
+            <th style="width:120px">Operation</th><th style="width:136px">Machines</th>
+            <th class="num" style="width:150px">Price</th>
           </tr></thead>
           <tbody id="m-rows"></tbody>
         </table>
         <div class="empty" id="m-empty" style="display:none">No models match.</div>
       </div>
     </div>
-    <div class="hint" style="margin-top:10px">
+    <div class="hint" style="margin-top:12px">
       Only ticked models are offered to Story Studio. Everything else is discovered but hidden.
       Ticking a model switches it on for every machine that has it; each machine can still be
       switched off on its own row.
@@ -433,7 +483,7 @@
          cards long, so the only way to find the concurrency settings was to scroll
          past all of them — and the owner went looking and could not find them. A
          setting nobody can reach is the same defect as a control that does nothing. -->
-    <h2 style="margin:18px 0 4px">Concurrency</h2>
+    <h2>Concurrency</h2>
     <p class="hint" style="margin:0 0 12px">
       How much work the gateway runs at once. The <b>pool</b> is its total. A
       <b>cloud</b> provider's limit is what that lane will accept, so a tier that
@@ -455,7 +505,7 @@
          is actually holding each lane right now — the pool, the lane cap and each
          site's own budget, read from the running worker rather than re-derived. A
          position with no ceiling beside it is a number without a reason. -->
-    <h2 style="margin:18px 0 4px">Queue</h2>
+    <h2>Queue</h2>
     <p class="hint" style="margin:0 0 12px">
       Every job <b>waiting</b> right now — accepted but not yet dispatched, deferred or not —
       in the order the gateway will take them, with each one's position and the size of the
@@ -463,17 +513,17 @@
       cap, and each site's own budget as the worker last resolved it. A running job is not in
       this queue at all, so <b>position 3 of 7</b> counts only work still waiting.
     </p>
-    <div class="row" style="margin:0 0 10px">
+    <div class="row" style="margin:0 0 12px">
       <div class="stat" id="queue-summary">loading…</div>
       <div class="spacer"></div>
-      <button class="sm" type="button" onclick="loadQueue()">Refresh queue</button>
+      <button class="sm" type="button" onclick="loadQueue()">Refresh Queue</button>
     </div>
     <div id="queue-msg" class="msg" role="alert" aria-live="polite"></div>
     <div id="queue"></div>
     </div><!-- /provider-pane-queue -->
 
     <div class="pane" id="provider-pane-measured" style="display:none">
-    <h2 style="margin:18px 0 4px">Measured</h2>
+    <h2>Measured</h2>
     <p class="hint" style="margin:0 0 12px">
       What each model has <b>actually carried</b>, from real jobs this gateway has run —
       not what its maker advertises. The largest completion that really ran is the only
@@ -486,7 +536,7 @@
     </div><!-- /provider-pane-measured -->
 
     <div class="pane" id="provider-pane-pools" style="display:none">
-    <h2 style="margin:18px 0 4px">Model pools</h2>
+    <h2>Model pools</h2>
     <p class="hint" style="margin:0 0 12px">
       <b>One name for several models, tried in order.</b> A caller saves a single id and the
       gateway walks the list until one answers — so a spent free lane, a retired model or a
@@ -497,15 +547,15 @@
       walk — every other failure moves on. Edits take effect at once; nothing here needs a
       restart.
     </p>
-    <div class="card">
+    <div class="card" style="padding:16px">
       <div class="row" style="gap:8px;flex-wrap:wrap;align-items:flex-end">
         <label style="flex:0 0 190px">Name<br>
           <input id="pool-name" placeholder="free-all" style="width:100%"></label>
         <label style="flex:0 0 220px">Shown as<br>
           <input id="pool-display" placeholder="Free — every lane" style="width:100%"></label>
-        <button class="primary" onclick="addPool(this)">Add pool</button>
+        <button class="primary" onclick="addPool(this)">Add Pool</button>
       </div>
-      <label style="display:block;margin-top:10px">Members, one per line, first tried first<br>
+      <label style="display:block;margin-top:12px">Members, one per line, first tried first<br>
         <textarea id="pool-members" rows="5" style="width:100%;font-family:ui-monospace,Menlo,monospace"
           placeholder="google-ai-free::gemini-3.7-flash&#10;openrouter-main::some/model:free"></textarea></label>
       <div class="hint" style="margin-top:6px">
@@ -517,10 +567,10 @@
     </div><!-- /provider-pane-pools -->
 
     <div class="pane" id="provider-pane-list" style="display:none">
-    <h2 style="margin:18px 0 4px">Where work can run</h2>
-    <div id="local-note" class="hint" style="margin:10px 0 0"></div>
-    <div id="skipped-note" class="hint" style="margin:10px 0 0"></div>
-    <div class="row" style="margin:14px 0">
+    <h2>Where work can run</h2>
+    <div id="local-note" class="hint" style="margin:12px 0 0"></div>
+    <div id="skipped-note" class="hint" style="margin:12px 0 0"></div>
+    <div class="row" style="margin:12px 0">
       <div class="stat" id="hubline"></div>
       <div class="spacer"></div>
       <select id="key-filter" aria-label="Filter providers by key status" style="max-width:190px">
@@ -530,10 +580,10 @@
       </select>
       <span class="stat" id="keyless-count"></span>
       <input type="text" id="filter" placeholder="Filter providers…" style="max-width:260px">
-      <button class="sm" onclick="refreshAll(this)">Refresh all models</button>
+      <button class="sm" onclick="refreshAll(this)">Refresh All Models</button>
       <!-- Prices researched from each provider's own pricing page (a separate research session
            writes the JSON; the gateway only validates and stores it — nothing is fetched here). -->
-      <button class="sm" id="evidence-import" onclick="document.getElementById('evidence-file').click()">Import price research…</button>
+      <button class="sm" id="evidence-import" onclick="document.getElementById('evidence-file').click()">Import Price Research…</button>
       <input type="file" id="evidence-file" accept=".json,application/json" style="display:none" onchange="importEvidence(this)">
       <!-- **Add a provider, which until now meant editing a file by hand.**
            `providers.local.json` has been read at import since custom providers were supported, and
@@ -543,10 +593,10 @@
            that would make future providers really easy until we can update native support."*
            Behind a button so the page stays short, and it says plainly that a restart is needed —
            providers are read when the gateway starts. -->
-      <button class="sm" id="custom-provider-toggle" onclick="toggleCustomProviderForm()">+ Add a provider</button>
+      <button class="sm" id="custom-provider-toggle" onclick="toggleCustomProviderForm()">+ Add a Provider</button>
     </div>
-    <div id="custom-provider-panel" style="display:none; margin:0 0 14px"></div>
-    <div id="evidence-panel" class="hint" style="display:none; margin:0 0 14px" role="status" aria-live="polite"></div>
+    <div id="custom-provider-panel" style="display:none; margin:0 0 12px"></div>
+    <div id="evidence-panel" class="hint" style="display:none; margin:0 0 12px" role="status" aria-live="polite"></div>
     <div id="providers-msg" class="msg" role="alert" aria-live="polite"></div>
     <div id="providers"></div>
     </div><!-- /provider-pane-list -->
@@ -586,7 +636,7 @@
         <p class="hint">Setup creates a new private owner identity and uses the historical identity list this build ships to keep old Store packs out. It never changes the original Store account, receipts, keys, or installed content.</p>
         <label class="check shelf-ack"><input id="shelf-setup-ack" type="checkbox" onchange="updateShelfControls()"> I understand that setup creates a new private shelf authority and does not restore historical ownership.</label>
         <div class="row" style="margin-top:12px">
-          <button id="shelf-setup" class="primary" onclick="setupContentShelf()" disabled>Set up private shelf</button>
+          <button id="shelf-setup" class="primary" onclick="setupContentShelf()" disabled>Set Up Private Shelf</button>
           <button id="shelf-refresh" onclick="refreshContentPacks()">Refresh Content Packs</button>
         </div>
         <div id="shelf-message" class="msg" role="status" aria-live="polite"></div>
@@ -605,7 +655,7 @@
         <label for="received-pack-files">Pack file (.sspack, up to 50 MiB each)</label>
         <input id="received-pack-files" type="file" accept=".sspack" multiple>
         <div class="row" style="margin-top:12px">
-          <button id="received-pack-add" class="primary" onclick="addReceivedPack(this)">Add to shelf</button>
+          <button id="received-pack-add" class="primary" onclick="addReceivedPack(this)">Add to Shelf</button>
         </div>
         <div id="received-pack-message" class="msg" role="status" aria-live="polite"></div>
       </div>
@@ -615,7 +665,7 @@
         <h2 id="shelf-heading">Shelved</h2>
         <p>Private releases that Story Studio may discover through the configured Gateway. Discovery does not install anything; Story Studio’s existing Download/Install action remains explicit.</p>
         <p id="shelf-supported" class="hint">Supported types: checking…</p>
-        <div id="shelf-releases" style="margin-top:14px"></div>
+        <div id="shelf-releases" style="margin-top:12px"></div>
       </div>
     </section>
 
@@ -930,7 +980,7 @@ async function setupContentShelf() {
     shelfMessage('Setup did not complete. Refresh to inspect its state; nothing was published or installed.', true);
   } finally {
     shelfState.setupPending = false;
-    if (button) button.textContent = 'Set up private shelf';
+    if (button) button.textContent = 'Set Up Private Shelf';
     updateShelfControls();
   }
 }
@@ -977,7 +1027,7 @@ async function loadStatus() {
   try {
     const s = await api('/status');
     const m = s.models.by_modality || {};
-    const parts = Object.entries(m).map(([k,v]) => `${v} ${k}`).join(' · ') || 'no models enabled';
+    const parts = Object.entries(m).map(([k,v]) => `${v} ${k === 'tts' ? 'TTS' : k}`).join(' · ') || 'no models enabled';
     document.getElementById('stats').innerHTML =
       `<b>${s.providers.enabled}</b>/${s.providers.total} providers on · <b>${s.models.publishable_models}</b> models offered${s.models.withheld_models ? ` · ${s.models.withheld_models} withheld` : ''} · ${esc(parts)}`;
     const h = s.hub;
@@ -1049,7 +1099,7 @@ async function refreshModels(btn) {
     await api('/refresh-all', { method: 'POST' });
     await loadModels(); await loadFreshness(); await loadStatus(); await loadProviders();
   } catch (e) { alert(e.message); }
-  finally { btn.disabled = false; btn.textContent = 'Re-discover models'; }
+  finally { btn.disabled = false; btn.textContent = 'Re-discover Models'; }
 }
 
 // What a model *does*, in the owner's words rather than the catalogue's. The
@@ -1310,7 +1360,7 @@ function modelRow(r) {
       <td class="m-machines">${r.locations_enabled} of ${r.locations_total} machines
         ${every ? '<span class="badge ok">everywhere</span>'
                 : '<span class="badge warn">partial</span>'}</td>
-      <td class="m-price">${priceCell(r)}</td>
+      <td class="m-price num">${priceCell(r)}</td>
     </tr>` + r.locations.map(machine => machineRow(r, machine)).join('');
   }
   return `
@@ -1326,7 +1376,7 @@ function modelRow(r) {
         ${privacyBadge(r.data_use, r.free_lane)}</td>
       <td><span class="badge">${esc(modalityLabel(r.modality))}</span></td>
       <td class="muted">—</td>
-      <td class="m-price">${priceCell(r)}</td>
+      <td class="m-price num">${priceCell(r)}</td>
     </tr>`;
 }
 
@@ -1336,8 +1386,8 @@ function renderModels() {
   document.getElementById('m-count').innerHTML =
     `showing ${returned} of ${matched} matching · <b>${enabled_total}</b> of ${listable_total} enabled overall`
     + modelInventoryAge();
-  document.getElementById('m-enable-all').textContent = `Enable all ${matched} matching`;
-  document.getElementById('m-disable-all').textContent = `Disable all ${matched} matching`;
+  document.getElementById('m-enable-all').textContent = `Enable All ${matched} Matching`;
+  document.getElementById('m-disable-all').textContent = `Disable All ${matched} Matching`;
 
   const key = modelGroupKey(document.getElementById('m-group').value);
   if (key) {
@@ -1600,16 +1650,16 @@ function renderConcurrency(data) {
       </tr>`;
   }).join('');
   target.innerHTML = `
-    <div style="padding:12px;margin-bottom:14px;border:1px solid var(--line);border-radius:8px">
+    <div style="padding:12px;margin-bottom:16px;border:1px solid var(--line);border-radius:8px">
       <label for="conc-global"><b>Jobs running at once</b></label>
       <input type="number" min="1" step="1" id="conc-global"
-             style="max-width:110px;margin-left:10px"
+             style="max-width:110px;margin-left:12px"
              value="${pool.stated == null ? '' : esc(pool.stated)}"
              placeholder="${esc(pool.limit)}">
       <div class="hint" style="margin-top:6px">${esc(pool.detail || '')}</div>
     </div>
     <h3 style="margin:16px 0 6px">Lanes</h3>
-    <p class="hint" style="margin:0 0 10px">How much of the pool one kind of work may hold. A blank box means no cap: that lane may use the whole pool.</p>
+    <p class="hint" style="margin:0 0 8px">How much of the pool one kind of work may hold. A blank box means no cap: that lane may use the whole pool.</p>
     <table class="grid">
       <thead><tr><th>Lane</th><th>Limit</th><th>In force</th><th>Where it came from</th></tr></thead>
       <tbody>${laneRows || '<tr><td colspan="4" class="muted">No lanes.</td></tr>'}</tbody>
@@ -1624,7 +1674,7 @@ function renderConcurrency(data) {
       <tbody>${rows || '<tr><td colspan="4" class="muted">No providers.</td></tr>'}</tbody>
     </table>
     <div class="row" style="margin-top:12px">
-      <button class="sm" type="button" onclick="saveConcurrency()">Save concurrency</button>
+      <button class="sm" type="button" onclick="saveConcurrency()">Save Concurrency</button>
     </div>
     <div class="hint" style="margin-top:6px">${esc(data.path || '')}</div>`;
 }
@@ -1708,7 +1758,7 @@ function queueBudget(budget) {
   if (!budget) return '<span class="muted">not resolved yet</span>';
   const limit = budget.limit == null ? '<span class="muted">—</span>' : esc(budget.limit);
   return `${limit} <span class="muted">${esc(budget.source || '')}</span>`
-    + (budget.detail ? `<div class="hint" style="margin:2px 0 0">${esc(budget.detail)}</div>` : '');
+    + (budget.detail ? `<div class="hint" style="margin:4px 0 0">${esc(budget.detail)}</div>` : '');
 }
 
 // *attempt n of 3*, and the last machine's reason — the owner's decision E, stated
@@ -1759,17 +1809,17 @@ function renderQueue(data) {
       ? esc(job.defer_reason)
       : '<span class="muted">queued for the next free slot</span>')
       + (putBack
-        ? `<div class="hint" style="margin:2px 0 0">put back ${esc(putBack)} time${putBack === 1 ? '' : 's'}</div>`
+        ? `<div class="hint" style="margin:4px 0 0">put back ${esc(putBack)} time${putBack === 1 ? '' : 's'}</div>`
         : '')
       + (job.retry_in_s == null
         ? ''
-        : `<div class="hint" style="margin:2px 0 0">retry in ${esc(job.retry_in_s)}s</div>`);
+        : `<div class="hint" style="margin:4px 0 0">retry in ${esc(job.retry_in_s)}s</div>`);
     return `
       <tr>
         <td>${position}</td>
         <td>${esc(job.modality || '—')}</td>
-        <td>${esc(job.model_name || job.model_id || '—')}<div class="hint" style="margin:2px 0 0">${esc(job.provider_name || job.provider_id || '')}</div></td>
-        <td>${esc(ago(job.created_at))}<div class="hint" style="margin:2px 0 0">${esc(job.short_id || '')}</div></td>
+        <td>${esc(job.model_name || job.model_id || '—')}<div class="hint" style="margin:4px 0 0">${esc(job.provider_name || job.provider_id || '')}</div></td>
+        <td>${esc(ago(job.created_at))}<div class="hint" style="margin:4px 0 0">${esc(job.short_id || '')}</div></td>
         <td>${why}</td>
         <td title="${esc(job.attempt_policy || '')}">${queueAttemptText(job)}</td>
       </tr>`;
@@ -1789,12 +1839,12 @@ function renderQueue(data) {
         <td>${queueBudget(site.budget)}</td>
       </tr>`).join('');
   target.innerHTML = `
-    <h3 style="margin:16px 0 6px">Waiting jobs</h3>
+    <h3 style="margin:0 0 6px">Waiting jobs</h3>
     <div class="tablewrap"><div class="scroll">
       <table class="grid">
-        <thead><tr><th style="width:90px">Position</th><th style="width:90px">Operation</th>
-          <th>Model</th><th style="width:120px">Waiting</th>
-          <th style="width:300px">Why it is waiting</th><th style="width:280px">Tries</th></tr></thead>
+        <thead><tr><th>Position</th><th>Operation</th>
+          <th>Model</th><th>Waiting</th>
+          <th>Why it is waiting</th><th>Tries</th></tr></thead>
         <tbody>${jobRows || '<tr><td colspan="6" class="muted">Nothing is waiting. Every accepted job has been dispatched.</td></tr>'}</tbody>
       </table>
     </div></div>
@@ -1804,13 +1854,13 @@ function renderQueue(data) {
       ${esc(wait.defer_cap_seconds ?? '—')}s between them (${esc(wait.source || 'unknown')}).
       A position counts only jobs still waiting, in the order the gateway will take them.
     </div>
-    <h3 style="margin:18px 0 6px">What is bounding each lane</h3>
+    <h3 style="margin:24px 0 6px">What is bounding each lane</h3>
     <table class="grid">
       <thead><tr><th>Operation</th><th>Waiting</th><th>Running</th><th>Cap in force</th>
         <th>Where it came from</th></tr></thead>
       <tbody>${laneRows || '<tr><td colspan="5" class="muted">No lane is capped and nothing is waiting or running.</td></tr>'}</tbody>
     </table>
-    <h3 style="margin:18px 0 6px">Sites</h3>
+    <h3 style="margin:24px 0 6px">Sites</h3>
     <p class="hint" style="margin:0 0 8px">What each location running work right now will accept,
       as the worker last resolved it. A Studio Hub location sizes itself from the free machines it
       reports; “not resolved yet” means no job has been admitted to it since the gateway started.</p>
@@ -1977,7 +2027,7 @@ function rateLimitsHtml(id) {
   const tiers = ((state.evidence || {}).rate_limits || {})[id] || [];
   if (!tiers.length) return '';
   return `<div class="hint" style="margin-top:12px"><b>Rate limits (from pricing research)</b> — up to; informational, ` +
-    `changes nothing here<ul style="margin:4px 0 0 18px">${tiers.map(rateLimitLine).join('')}</ul></div>`;
+    `changes nothing here<ul style="margin:4px 0 0 16px">${tiers.map(rateLimitLine).join('')}</ul></div>`;
 }
 
 function providerCard(p) {
@@ -2029,38 +2079,39 @@ function providerCard(p) {
   return `
   <div class="card ${p.enabled ? '' : 'off'}">
     <div class="card-head">
-      <div>
+      <div class="card-main">
         <div class="name">${esc(p.display_name)}</div>
         <div class="cat">${esc(p.id)} · ${esc(p.kind)}${p.base_url ? ' · ' + esc(p.base_url) : ''}</div>
+        <div class="card-badges">${badges.join(' ')}</div>
       </div>
-      <div class="spacer"></div>
-      ${badges.join(' ')}
-      <button class="sm" onclick="toggleOpen('${esc(p.id)}')">${open ? 'Hide' : 'Configure'}</button>
-      <button class="sm" onclick="toggleEnabled('${esc(p.id)}', ${!p.enabled})">${p.enabled ? 'Disable' : 'Enable'}</button>
+      <div class="card-actions">
+        <button class="sm" onclick="toggleOpen('${esc(p.id)}')">${open ? 'Hide' : 'Configure'}</button>
+        <button class="sm" onclick="toggleEnabled('${esc(p.id)}', ${!p.enabled})">${p.enabled ? 'Disable' : 'Enable'}</button>
+      </div>
     </div>
     ${p.description ? `<div class="desc">${esc(p.description)}</div>` : ''}
     ${open ? `
     <div class="body">
       <div class="fields">${fields || '<div class="hint">This provider needs no credentials.</div>'}</div>
       <div class="actions">
-        <button class="primary sm" onclick="saveCreds('${esc(p.id)}', this)">Save &amp; discover models</button>
+        <button class="primary sm" onclick="saveCreds('${esc(p.id)}', this)">Save &amp; Discover Models</button>
         <button class="sm" onclick="refreshProvider('${esc(p.id)}', this)">Re-discover</button>
-        <button class="sm" onclick="clearCreds('${esc(p.id)}', this)">Clear key</button>
+        <button class="sm" onclick="clearCreds('${esc(p.id)}', this)">Clear Key</button>
         <span class="msg" id="msg-${esc(p.id)}"></span>
       </div>
-      <div class="actions" style="margin-top:14px">
-        <b style="font-size:12.5px">Models</b>
+      <div class="actions" style="margin-top:16px">
+        <span class="name">Models</span>
         <span class="stat">${models ? `${models.models.filter(m=>m.publishable).length} of ${models.models.length} offered` : ''}</span>
         <span class="stat">last refresh: ${ago(models && models.last_refresh)}</span>
         <div class="spacer"></div>
-        <button class="sm" onclick="openInBrowserFilter('${esc(p.id)}')">Browse in Models tab</button>
+        <button class="sm" onclick="openInBrowserFilter('${esc(p.id)}')">Browse in Models Tab</button>
       </div>
       ${modelsHtml}
       ${rateLimitsHtml(p.id)}
       <div class="actions">
         <input type="text" id="add-${esc(p.id)}-id" placeholder="model id" style="max-width:220px">
-        <select id="add-${esc(p.id)}-mod" style="max-width:130px">${p.modalities.map(m=>`<option>${esc(m)}</option>`).join('')}</select>
-        <button class="sm" onclick="addModel('${esc(p.id)}', this)">Add model manually</button>
+        <select id="add-${esc(p.id)}-mod" style="max-width:130px">${p.modalities.map(m=>`<option value="${esc(m)}">${esc(m === 'tts' ? 'TTS' : m)}</option>`).join('')}</select>
+        <button class="sm" onclick="addModel('${esc(p.id)}', this)">Add Model Manually</button>
       </div>
       <div class="hint">Use this when a provider ships a model their API does not list yet.</div>
     </div>` : ''}
@@ -2073,18 +2124,18 @@ function providerModelList(p, models) {
       ? `<div class="empty">Discovery failed: ${esc(models.last_error)}</div>`
       : '<div class="empty">No models yet. Save a key and re-discover, or add one manually below.</div>';
   }
-  return `<div class="body" style="padding:8px 0;background:transparent">` + models.models.map(m => `
+  return `<div class="body" style="padding:8px 0;background:transparent;border-top:0">` + models.models.map(m => `
     <div class="row" style="padding:4px 0;border-bottom:1px solid var(--line)">
       <input type="checkbox" ${m.enabled ? 'checked' : ''} onchange="setModel('${esc(p.id)}','${esc(m.model_id)}', this.checked)">
       <div style="flex:1;min-width:0">
-        <div style="font-size:13px">${esc(m.display_name)}</div>
+        <div style="font-size:13px;font-weight:600">${esc(m.display_name)}</div>
         <div class="mid">${esc(m.model_id)}</div>
       </div>
-      <div style="text-align:right;font-size:12.5px">${priceCell(m)}</div>
-      <span class="badge">${esc(m.modality)}</span>
+      <div style="text-align:right;font-size:12px">${priceCell(m)}</div>
+      <span class="badge">${esc(m.modality === 'tts' ? 'TTS' : m.modality)}</span>
       <span class="badge">${esc(m.source)}</span>
       ${m.publishable ? '' : `<span class="badge warn" title="${esc(m.withheld_reason || '')}">withheld</span>`}
-      ${m.source === 'user' ? `<button class="sm" onclick="removeModel('${esc(p.id)}','${esc(m.model_id)}')">remove</button>` : ''}
+      ${m.source === 'user' ? `<button class="sm" onclick="removeModel('${esc(p.id)}','${esc(m.model_id)}')">Remove</button>` : ''}
     </div>`).join('') + '</div>';
 }
 
@@ -2257,14 +2308,14 @@ async function loadPools() {
   catch (e) { host.innerHTML = `<div class="msg bad">${esc(e.message)}</div>`; return; }
   const pools = data.pools || [];
   if (!pools.length) {
-    host.innerHTML = `<p class="hint" style="margin-top:14px">No pools yet. A pool is worth
+    host.innerHTML = `<p class="hint" style="margin-top:12px">No pools yet. A pool is worth
       making when one lane can run out — free tiers especially — and the job matters more than
       which model writes it.</p>`;
     return;
   }
   host.innerHTML = pools.map(pool => `
     <div class="card" style="margin-top:12px">
-      <div class="row" style="justify-content:space-between;align-items:baseline;gap:10px">
+      <div class="row" style="justify-content:space-between;align-items:baseline;gap:8px">
         <div>
           <b>${esc(pool.display_name)}</b>
           <code style="margin-left:8px">pool::${esc(pool.name)}</code>
@@ -2275,12 +2326,12 @@ async function loadPools() {
         </div>
       </div>
       ${pool.description ? `<div class="hint" style="margin-top:4px">${esc(pool.description)}</div>` : ''}
-      <ol style="margin:8px 0 0 18px;padding:0">
-        ${pool.members_detail.map(m => `<li style="margin:3px 0">
+      <ol style="margin:8px 0 0 16px;padding:0">
+        ${pool.members_detail.map(m => `<li style="margin:4px 0">
           <code>${esc(m.id)}</code>
           ${m.resolves
             ? `<span class="hint">— ${esc(m.provider_name)}</span>`
-            : `<span class="msg bad" style="display:inline;padding:1px 6px">does not resolve</span>`}
+            : `<span class="msg bad" style="display:inline;padding:0 6px">does not resolve</span>`}
         </li>`).join('')}
       </ol>
     </div>`).join('');
@@ -2302,7 +2353,7 @@ async function addPool(btn) {
     document.getElementById('pool-members').value = '';
     await loadPools();
   } catch (e) { alert(e.message); }
-  finally { btn.disabled = false; btn.textContent = 'Add pool'; }
+  finally { btn.disabled = false; btn.textContent = 'Add Pool'; }
 }
 
 async function removePool(name, btn) {
@@ -2321,7 +2372,7 @@ function renderEvidence(title, r) {
     r.providers.map(p => `<div style="margin-top:6px"><strong>${esc(p.provider_id)}</strong> (${esc(p.status)}` +
       `${p.researched_at ? ', researched ' + esc(String(p.researched_at).slice(0, 10)) : ''}): ` +
       `${p.accepted_prices} prices, ${p.accepted_rate_limits} rate-limit tiers` +
-      (p.dropped.length ? `<ul style="margin:2px 0 0 18px">` + p.dropped.map(d =>
+      (p.dropped.length ? `<ul style="margin:4px 0 0 16px">` + p.dropped.map(d =>
         `<li>${esc(d.kind)} ${esc([d.model_id, d.unit, d.tier].filter(Boolean).join(' '))}: ${esc(d.reason)}</li>`).join('') + '</ul>' : '') +
       '</div>').join('');
 }
@@ -2357,7 +2408,7 @@ async function refreshAll(btn) {
   btn.disabled = true; btn.textContent = 'Refreshing…';
   try { await api('/refresh-all', { method: 'POST' }); await loadProviders(); await loadStatus(); }
   catch (e) { alert(e.message); }
-  finally { btn.disabled = false; btn.textContent = 'Refresh all models'; }
+  finally { btn.disabled = false; btn.textContent = 'Refresh All Models'; }
 }
 
 // ---------------------------------------------------------------------------
@@ -2393,9 +2444,9 @@ async function loadCustomProviders() {
         </tr>`).join('')}</tbody></table>`
     : '<div class="hint">You have not added any providers yourself yet.</div>';
   panel.innerHTML = `
-    <div class="card" style="padding:14px">
+    <div class="card" style="padding:16px">
       <h3 style="margin:0 0 4px">Add a provider</h3>
-      <p class="hint" style="margin:0 0 10px">
+      <p class="hint" style="margin:0 0 8px">
         For anything OpenAI-compatible the gateway does not know yet. Saved to
         <code>${esc(data.path)}</code>, and <b>the gateway must be restarted</b> before it appears —
         providers are read when it starts.
@@ -2409,7 +2460,7 @@ async function loadCustomProviders() {
         <button class="sm" onclick="addCustomProvider(this)">Add</button>
       </div>
       <div id="cp-msg" class="msg" role="alert" aria-live="polite"></div>
-      <h3 style="margin:14px 0 4px">Providers you added</h3>
+      <h3 style="margin:12px 0 4px">Providers you added</h3>
       ${list}
     </div>`;
 }
@@ -2420,7 +2471,7 @@ function toggleCustomProviderForm() {
   if (!panel) return;
   const opening = panel.style.display === 'none';
   panel.style.display = opening ? '' : 'none';
-  if (button) button.textContent = opening ? '− Hide' : '+ Add a provider';
+  if (button) button.textContent = opening ? '− Hide' : '+ Add a Provider';
   if (opening) loadCustomProviders();
 }
 
@@ -2629,7 +2680,7 @@ function renderCreateForm() {
          Enable one on the Models page and it appears here.</div>`;
 
   document.getElementById('create-form').innerHTML =
-    `<h2>${esc(t.title)}</h2><div class="hint" style="margin:-6px 0 14px">${esc(t.blurb)}</div>
+    `<h2>${esc(t.title)}</h2><div class="hint" style="margin:-4px 0 12px">${esc(t.blurb)}</div>
      ${picker}${upload}${body}
      <div class="row"><button class="primary" id="cf-go" onclick="submitCreate(this)">Generate</button>
        <span class="msg" id="cf-msg"></span></div>`;
@@ -2704,7 +2755,7 @@ async function submitCreate(btn) {
     msg.textContent = e.ambiguous
       ? `${e.message} Response status is unknown; retry uses the original model, fields and file to check the same job.`
       : e.message;
-    if (e.ambiguous) btn.textContent = 'Retry same request';
+    if (e.ambiguous) btn.textContent = 'Retry Same Request';
     else pendingCreateAttempt = null;
   } finally {
     btn.disabled = false;
@@ -2747,13 +2798,13 @@ function renderCreatePollError(id, error) {
   const box = document.getElementById('create-result');
   if (!box) return;
   box.innerHTML = `<div class="msg bad">Could not read job status: ${esc(error.message || 'temporary error')}
-    <button class="sm" type="button" onclick="pollCreate('${esc(id)}')">Retry status</button></div>`;
+    <button class="sm" type="button" onclick="pollCreate('${esc(id)}')">Retry Status</button></div>`;
 }
 
 function artifactsHtml(modality, outs, jobId) {
   if (!outs.length) return '<div class="empty">This job produced no artifact.</div>';
   const many = outs.length > 1
-    ? `<div class="hint" style="margin-bottom:10px">${outs.length} results — every one the model returned.</div>`
+    ? `<div class="hint" style="margin-bottom:8px">${outs.length} results — every one the model returned.</div>`
     : '';
   const html = many + outs.map(o => {
     let preview;
