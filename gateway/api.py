@@ -62,6 +62,9 @@ from .voices import story_row, tts_output_container, voice_registry, voices_for_
 # confirm. In memory on purpose: it is a single-process gateway and the payload
 # is a transient request body, not state worth persisting.
 _UPLOADS: dict[str, tuple[Any, ...]] = {}
+#: Idempotency-Key -> the quote it created, so a retried quote POST is answered, not repeated.
+_QUOTE_BY_KEY: dict[str, str] = {}
+_QUOTE_KEY_AT: dict[str, float] = {}
 #: A staged audio upload, held between the quote and the confirm.
 #:
 #: `content` is `None` for a quote that carried a model but no audio — the
@@ -545,6 +548,17 @@ _ADDRESS = re.compile(
 )
 
 
+_CONTROLLER_ID = re.compile(r"\bstudio-hub-[A-Za-z0-9][A-Za-z0-9_-]*")
+
+
+def _label_controller(match: "re.Match[str]") -> str:
+    """A location's own label where the owner has named it, else 'a Mac' -- never the id."""
+    try:
+        return fleet.label_for_provider(match.group(0)) or "a Mac"
+    except Exception:  # noqa: BLE001 - a label must never fail a publish
+        return "a Mac"
+
+
 def scrub(value: Any) -> Any:
     """Remove a Hub's `host:port` and `/api/hub/...` routes from anything about to be published.
 
@@ -553,7 +567,8 @@ def scrub(value: Any) -> Any:
     helper, applied to every published text field, so the next field cannot forget it.
     """
     if isinstance(value, str):
-        return _ADDRESS.sub("the location", _HUB_ROUTE.sub("the Hub", value))
+        return _CONTROLLER_ID.sub(
+            _label_controller, _ADDRESS.sub("the location", _HUB_ROUTE.sub("the Hub", value)))
     if isinstance(value, dict):
         return {key: scrub(item) for key, item in value.items()}
     if isinstance(value, list):
@@ -571,6 +586,10 @@ def _iso(moment: Any) -> str | None:
 #: and a fixed 1000 pinned Story to ~1 GET/s per job for the whole render.
 _POLL_AFTER_MS = {"chat": 1000, "tts": 1500, "image": 3000, "video": 5000, "music": 5000,
                   "transcription": 5000}
+
+
+#: Lanes whose running work a cancel really stops (Hub worker confirmed: voice ~5 s, music at once).
+_STOPPABLE_WHEN_RUNNING = frozenset({"tts", "music"})
 
 
 def _contract_fields(job: dict[str, Any]) -> dict[str, Any]:
@@ -595,10 +614,17 @@ def _contract_fields(job: dict[str, Any]) -> dict[str, Any]:
     # `cancelled` and settles the job. Story already offers Cancel for "dispatched + waiting +
     # cancellable" (`job-control.ts`), but this field was only ever true before dispatch, so a job
     # that could sit in a queue for hours (QUEUE_WAIT_CEILING_S) had no way out (audit 2026-10-01).
+    # **A running narration or music job is cancellable too** (owner decision 2026-10-01). The cancel
+    # goes down to the Hub (`DELETE /api/hub/jobs/{id}`), the Hub tells the worker, the voice worker
+    # stops within seconds and the music worker at once, both report `cancelled`, and the Mac is
+    # released the moment they do. Images and Whisper cannot be interrupted mid-render and chat has no
+    # batch to cancel, so they stay `false` and Story does not offer it.
+    stoppable = (state == "running" and job.get("modality") in _STOPPABLE_WHEN_RUNNING
+                 and bool(job.get("upstream_job_id")))
     return {
         "dispatch_state": "pre_dispatch" if pre else "dispatched",
         "cancellable": (state not in TERMINAL_STATES and not job.get("cancel_requested")
-                        and (pre or waiting is not None)),
+                        and (pre or waiting is not None or stoppable)),
         "cancellation_requested": bool(job.get("cancel_requested")),
         "cancelled": state == "cancelled",
         "waiting": waiting,
@@ -1986,6 +2012,22 @@ def cancel_music_job(job_id: str) -> dict[str, Any]:
 def _prune_uploads(now: float) -> None:
     for key in [k for k, v in _UPLOADS.items() if now - v[3] > _UPLOAD_TTL_S]:
         _UPLOADS.pop(key, None)
+    for key in [k for k, quote_id in _QUOTE_BY_KEY.items() if quote_id not in _UPLOADS]:
+        # Bound only while its quote is held (a quote still being written has no upload yet).
+        if now - _QUOTE_KEY_AT.get(key, now) > 60:
+            _QUOTE_BY_KEY.pop(key, None)
+            _QUOTE_KEY_AT.pop(key, None)
+
+
+def _quote_answer(quote_id: str, upload: tuple[Any, ...]) -> dict[str, Any]:
+    """The quote envelope for a held upload (same shape the first answer had)."""
+    return {
+        "id": quote_id,
+        "quoted_credit_cost": 0,
+        "price_version": "flat",
+        "expires_at": datetime.fromtimestamp(upload[3] + _UPLOAD_TTL_S, timezone.utc).isoformat(),
+        "model": upload[4],
+    }
 
 
 @app.post("/v1/audio/transcriptions/quotes", dependencies=[Depends(require_auth)])
@@ -1995,6 +2037,7 @@ async def transcription_quote(
     model: str | None = Form(default=None),
     language: str | None = Form(default=None),
     word_timestamps: str | None = Form(default=None),
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
 ) -> dict[str, Any]:
     """Accept the audio upload and quote it.
 
@@ -2010,7 +2053,21 @@ async def transcription_quote(
     """
     import uuid
 
+    # **A retried quote with the same key is the same quote.** Story sends the key on the upload and
+    # retries a timed-out POST up to four times; the gateway ignored it, so every retry held another
+    # full copy of the audio (up to 100 MiB each) for an hour and returned a different quote id. A key
+    # already bound to a quote whose audio is still held answers with that quote, untouched.
+    if idempotency_key:
+        held = _QUOTE_BY_KEY.get(idempotency_key)
+        if held is not None:
+            upload = _UPLOADS.get(held)
+            if upload is not None and time.time() - upload[3] <= _UPLOAD_TTL_S:
+                return _quote_answer(held, upload)
+            _QUOTE_BY_KEY.pop(idempotency_key, None)
     quote_id = str(uuid.uuid4())
+    if idempotency_key:
+        _QUOTE_BY_KEY[idempotency_key] = quote_id
+        _QUOTE_KEY_AT[idempotency_key] = time.time()
     body_model = model
     if file is None and request.headers.get("content-type", "").startswith("application/json"):
         # A body that cannot be read is the caller's problem, and it has to be

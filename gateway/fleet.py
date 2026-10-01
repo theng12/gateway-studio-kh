@@ -89,6 +89,24 @@ FLEET_DISPLAY_NAME = "Studio Hub"
 ID_SEPARATOR = "::"
 
 
+def label_for_provider(provider_id: str) -> str | None:
+    """The owner's own name for a location (`studio-hub-<id>`), or `None` when it has none.
+
+    Published text names a Mac by this label, never by its controller id: the id means nothing to the
+    owner (and Story's rule is that it never shows one).
+    """
+    controller_id = controller_id_from(str(provider_id or ""))
+    if controller_id is None:
+        return None
+    if controller_id == LOCAL_ID:
+        return local_label()
+    for row in _read():
+        if str(row.get("id") or "") == controller_id:
+            label = str(row.get("label") or "").strip()
+            return label or None
+    return None
+
+
 def is_location_provider(provider_id: str) -> bool:
     """True for the local Hub and for every configured controller."""
     return controller_id_from(provider_id) is not None
