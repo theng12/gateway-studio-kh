@@ -19,6 +19,7 @@ silent is an unknown outcome, is never re-run automatically, and stays a reconci
 """
 from __future__ import annotations
 
+import json
 import os
 import sys
 import tempfile
@@ -29,6 +30,13 @@ from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
+
+# Without this the first `import gateway` binds the process to the owner's real Application
+# Support, and every file imported after it inherits that (10 contract tests then failed on
+# a database that already held their idempotency keys).
+from tests._isolation import sandbox_env  # noqa: E402
+
+_SANDBOX = sandbox_env()
 
 from gateway import concurrency  # noqa: E402
 from gateway import worker as worker_module  # noqa: E402
@@ -267,22 +275,30 @@ class EndToEndThroughThreeSitesTest(unittest.TestCase):
             if self.behaviour == "busy":
                 raise BackendError("no free machine", code="MACHINE_BUSY", status=409,
                                    upstream_accepted=False, upstream_settled=True)
+            if self.behaviour == "memory":
+                raise BackendError("INSUFFICIENT_MEMORY: Mac mini 1101 needs about 3.2 GB free and has "
+                                   "about 3.0 GB free (it refused 3 times).",
+                                   code="INSUFFICIENT_MEMORY", retryable=True,
+                                   upstream_accepted=False, upstream_settled=True)
             if self.behaviour == "engine":
                 raise BackendError("ffmpeg not found on PATH", code="PROVIDER_FAILED",
                                    upstream_accepted=False, upstream_settled=True)
             return BackendResult(content=b"png", media_type="image/png")
 
-    def _run(self, behaviours: list[str]):
+    def _run_single_site(self, behaviour: str, *, params=None, extra_sites=False):
+        return self._run([behaviour], sites=["a", "b"] if extra_sites else ["a"], params=params)
+
+    def _run(self, behaviours: list[str], *, sites=None, params=None):
         store = _Store({
             "id": "job-e2e", "modality": "image", "model_id": "z-image-turbo-6b-mlx-4bit",
-            "provider_id": "studio-hub-a", "params": {}, "state": "running",
+            "provider_id": "studio-hub-a", "params": json.dumps(params or {}), "state": "running",
             "attempt_count": 1,
         })
         store.succeed = lambda job_id, **kwargs: store.succeeded.append(
             {"job_id": job_id, **kwargs})
         store.succeeded = []
         order = list(behaviours)
-        sites = [_Site("a"), _Site("b"), _Site("c")]
+        sites = [_Site(name) for name in (sites or ["a", "b", "c"])]
         dispatch: list[str] = []
 
         def adapter_for(definition):
@@ -304,6 +320,8 @@ class EndToEndThroughThreeSitesTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             with patch.object(worker_module, "adapter_for", adapter_for), \
                     patch.object(worker_module.fleet, "route", route), \
+                    patch.object(worker_module.fleet, "_location_takes_customer_jobs",
+                                 lambda location_id: True), \
                     patch.object(worker_module.registry, "definition",
                                  lambda provider_id: type("D", (), {
                                      "id": provider_id, "base_url": "",
@@ -328,6 +346,29 @@ class EndToEndThroughThreeSitesTest(unittest.TestCase):
         self.assertEqual([entry["location"] for entry in store.log],
                          ["studio-hub-a", "studio-hub-b"])
         self.assertEqual(store.routes, ["studio-hub-b", "studio-hub-c"])
+
+    def test_a_memory_handback_moves_the_job_to_another_machine_excluding_this_one(self) -> None:
+        store, dispatch = self._run(["memory", "ok"])
+        self.assertEqual(dispatch, ["studio-hub-a", "studio-hub-b"],
+                         "the job goes to another location, never back to the one that handed it back")
+        self.assertEqual(store.failed, [], "a hand-back is not a final failure")
+        self.assertEqual(store.log[0]["code"], "INSUFFICIENT_MEMORY")
+        self.assertEqual(store.deferred, [], "and it does not wait on the Mac that refused it")
+
+    def test_a_memory_handback_with_nowhere_else_fails_clearly_instead_of_waiting(self) -> None:
+        store, dispatch = self._run_single_site("memory")
+        self.assertEqual(dispatch, ["studio-hub-a"])
+        self.assertEqual(len(store.failed), 1)
+        self.assertEqual(store.failed[0]["code"], "INSUFFICIENT_MEMORY")
+        self.assertIn("needs about 3.2 GB free", store.failed[0]["detail"])
+        self.assertEqual(store.deferred, [])
+
+    def test_a_pinned_job_is_not_re_routed_and_fails_with_the_memory_sentence(self) -> None:
+        store, dispatch = self._run_single_site(
+            "memory", params={"voice_id": "studio-hub-a::raw-voice"}, extra_sites=True)
+        self.assertEqual(dispatch, ["studio-hub-a"], "a pinned job never moves")
+        self.assertEqual(len(store.failed), 1)
+        self.assertIn("INSUFFICIENT_MEMORY", store.failed[0]["detail"])
 
     def test_three_failures_produce_one_proper_failure_naming_all_three(self) -> None:
         store, dispatch = self._run(["busy", "engine", "engine"])

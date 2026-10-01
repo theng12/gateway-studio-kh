@@ -67,7 +67,7 @@ final class AudioPlayerView: NSView, PreviewStoppable {
     private var player: AVAudioPlayer?
     private let wave = WaveformView()
     private let playButton = NSButton()
-    private let time = PageKit.label("0:00 / 0:00", size: 14, colour: .secondaryLabelColor)
+    private let time = PageKit.label("0:00 / 0:00", .body, colour: .secondaryLabelColor)
     private var timer: Timer?
     /// False when the file could not be opened; the page says so and offers Open / Save instead.
     var canPlay: Bool { player != nil }
@@ -91,11 +91,11 @@ final class AudioPlayerView: NSView, PreviewStoppable {
             self?.tick()
         }
         time.stringValue = "0:00 / \(Self.clock(player?.duration ?? 0))"
-        let row = PageKit.row([playButton, time], spacing: 14)
+        let row = PageKit.row([playButton, time], spacing: DS.Space.m)
         let stack = NSStackView(views: [wave, row])
         stack.orientation = .vertical
         stack.alignment = .leading
-        stack.spacing = 16
+        stack.spacing = DS.Space.l
         stack.translatesAutoresizingMaskIntoConstraints = false
         addSubview(stack)
         wave.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
@@ -185,7 +185,7 @@ final class VideoPreviewView: NSView, PreviewStoppable {
 /// One large image, and a strip of thumbnails when the model returned several.
 final class ImageGalleryView: NSView {
     private let main = NSImageView()
-    private let loading = PageKit.label("Loading image…", size: 13, colour: .secondaryLabelColor)
+    private let loading = PageKit.label("Loading image…", .body, colour: .secondaryLabelColor)
     private var images: [NSImage?]
     private var thumbs: [NSButton] = []
     private(set) var selected = 0
@@ -215,14 +215,14 @@ final class ImageGalleryView: NSView {
         if count > 1 {
             let strip = NSStackView()
             strip.orientation = .horizontal
-            strip.spacing = 8
+            strip.spacing = DS.Space.s
             strip.translatesAutoresizingMaskIntoConstraints = false
             for index in 0..<count {
                 let thumb = NSButton()
                 thumb.isBordered = false
                 thumb.imageScaling = .scaleProportionallyUpOrDown
                 thumb.wantsLayer = true
-                thumb.layer?.cornerRadius = 4
+                thumb.layer?.cornerRadius = DS.Radius.control
                 thumb.tag = index
                 thumb.target = self
                 thumb.action = #selector(pick(_:))
@@ -236,7 +236,7 @@ final class ImageGalleryView: NSView {
             constraints += [
                 strip.leadingAnchor.constraint(equalTo: leadingAnchor),
                 strip.bottomAnchor.constraint(equalTo: bottomAnchor),
-                strip.topAnchor.constraint(equalTo: main.bottomAnchor, constant: 12),
+                strip.topAnchor.constraint(equalTo: main.bottomAnchor, constant: DS.Space.m),
             ]
         } else {
             constraints.append(main.bottomAnchor.constraint(equalTo: bottomAnchor))
@@ -288,9 +288,9 @@ enum TranscriptText {
         style.paragraphSpacing = 12
         style.lineSpacing = 3
         let body: [NSAttributedString.Key: Any] = [
-            .font: NSFont.systemFont(ofSize: 14), .foregroundColor: NSColor.labelColor, .paragraphStyle: style]
+            .font: TextRole.body.font, .foregroundColor: NSColor.labelColor, .paragraphStyle: style]
         let stamp: [NSAttributedString.Key: Any] = [
-            .font: NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .regular),
+            .font: TextRole.secondary.font,
             .foregroundColor: NSColor.secondaryLabelColor, .paragraphStyle: style]
         let text = raw.replacingOccurrences(of: "\r\n", with: "\n")
         for block in text.components(separatedBy: "\n\n") {
@@ -353,7 +353,7 @@ final class ConversationView: NSScrollView {
         document.translatesAutoresizingMaskIntoConstraints = false
         stack.orientation = .vertical
         stack.alignment = .leading
-        stack.spacing = 12
+        stack.spacing = DS.Space.m
         stack.translatesAutoresizingMaskIntoConstraints = false
         document.addSubview(stack)
         documentView = document
@@ -379,20 +379,20 @@ final class ConversationView: NSScrollView {
 
     private func bubble(_ turn: ChatTurn) -> NSView {
         let mine = turn.role == "user"
-        let who = PageKit.label(mine ? "You" : "Model", size: 12, weight: .semibold, colour: .secondaryLabelColor)
-        let words = PageKit.label(turn.text, size: 14, colour: turn.failed ? .systemRed : .labelColor, wrapping: true)
+        let who = PageKit.label(mine ? "You" : "Model", .rowTitle, colour: .secondaryLabelColor)
+        let words = PageKit.label(turn.text, .body, colour: turn.failed ? Health.bad.text : .labelColor, wrapping: true)
         words.preferredMaxLayoutWidth = 0
         let inner = NSStackView(views: [who, words])
         inner.orientation = .vertical
         inner.alignment = .leading
-        inner.spacing = 4
+        inner.spacing = DS.Space.xs
         inner.translatesAutoresizingMaskIntoConstraints = false
         words.widthAnchor.constraint(equalTo: inner.widthAnchor).isActive = true
         let box = BubbleView(highlighted: mine)
         box.addSubview(inner)
         NSLayoutConstraint.activate([
-            inner.topAnchor.constraint(equalTo: box.topAnchor, constant: 10),
-            inner.leadingAnchor.constraint(equalTo: box.leadingAnchor, constant: 12),
+            inner.topAnchor.constraint(equalTo: box.topAnchor, constant: DS.Space.s),
+            inner.leadingAnchor.constraint(equalTo: box.leadingAnchor, constant: DS.Space.m),
             inner.trailingAnchor.constraint(equalTo: box.trailingAnchor, constant: -12),
             inner.bottomAnchor.constraint(equalTo: box.bottomAnchor, constant: -10),
         ])
@@ -417,7 +417,7 @@ private final class BubbleView: NSView {
     required init?(coder: NSCoder) { fatalError("not used") }
     override var wantsUpdateLayer: Bool { true }
     override func updateLayer() {
-        layer?.cornerRadius = 8
+        layer?.cornerRadius = DS.Radius.card
         layer?.backgroundColor = (highlighted
             ? NSColor.controlAccentColor.withAlphaComponent(0.14)
             : NSColor.labelColor.withAlphaComponent(0.06)).cgColor

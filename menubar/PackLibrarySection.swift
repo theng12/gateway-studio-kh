@@ -7,15 +7,14 @@ final class PackLibrarySection: NSObject, AppSection {
     let title = "Content Packs"
     let symbol = "archivebox"
     let refreshesAutomatically = false
-    private let status = PageKit.label("", size: 12, colour: .secondaryLabelColor, wrapping: true)
+    private let status = PageKit.label("", .secondary, colour: .secondaryLabelColor, wrapping: true)
 
     lazy var view: NSView = {
         let page = PageKit.page()
         page.addArrangedSubview(PageKit.heading("Content Packs", "Set up the private shelf, author new packs, and review preserved archives."))
         page.addArrangedSubview(PageKit.help("The browser separates authoring drafts, shelved releases, and preserved archives. Add to the private shelf is always explicit; importing an archive does not establish ownership or install anything."))
         page.addArrangedSubview(PageKit.help("The first delivery slice supports Series Formula, Topic Pack, Visual Style, and Thumbnail Recipe packages. Topic Pack drafts use the local Story Studio authoring tools and registry reservation."))
-        let open = NSButton(title: "Open Content Packs in Browser", target: self, action: #selector(openLibrary))
-        open.bezelStyle = .rounded
+        let open = PageKit.primaryButton("Open Content Packs in Browser", target: self, action: #selector(openLibrary), regular: true)
         page.addArrangedSubview(open)
         page.addArrangedSubview(status)
         return page

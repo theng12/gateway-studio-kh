@@ -110,7 +110,7 @@ JOB_DEADLINE_S = 900.0
 #:
 #: **0.6.117 declared 2026-09-30** (owner/coordinator; the Hub release this gateway now publishes and
 #: pilots). It is a label, never a gate: 0.6.83 was stale by 34 releases and the Fleet page said so.
-SUPPORTED_STUDIO_HUB_VERSION = "0.6.117"
+SUPPORTED_STUDIO_HUB_VERSION = "0.6.126"
 
 #: The answers `hub_version_relation` can give. `match` is the tested pairing; the
 #: other two are informational — a newer Hub may serve things this gateway has no
@@ -353,6 +353,9 @@ _HUB_MUSIC_PARAMS = (
     "instrumental",
     "lyrics",
     "vocal_language",
+    # The delivery container (`wav`/`m4a`), validated at submit. Optional: absent keeps the lane's
+    # native file, and a node that predates it drops the field and answers with that native file.
+    "output_format",
 )
 
 
@@ -678,6 +681,22 @@ def _poll_batch(
                     upstream_accepted=False,
                     upstream_settled=True,
                 )
+            if hub_code == "INSUFFICIENT_MEMORY":
+                # The Mac refused this job for memory three times and the Hub handed it back
+                # (Hub 0.6.127+; owner decision 2026-10-01). Nothing ran, so it is a *known*
+                # failure of that Mac: the worker re-routes it to another location, excluding this
+                # one (`worker._next_machine`, up to the retry policy's attempts), and a job that
+                # is pinned - a voice's owning Hub - fails with this same sentence instead. Its
+                # own code, so the attempt log and the terminal reason say what happened; it is
+                # deliberately not a LOCATION_* code, which would make the worker wait on the
+                # same Mac rather than move or fail.
+                raise BackendError(
+                    f"INSUFFICIENT_MEMORY: {message or 'the Mac does not have enough free memory'}",
+                    code="INSUFFICIENT_MEMORY",
+                    retryable=True,
+                    upstream_accepted=False,
+                    upstream_settled=True,
+                )
             if hub_code:  # MODEL_PAUSED, MACHINE_DISABLED, ...: terminal, but say which
                 message = f"{hub_code}: {message or 'no detail'}"
             # **The Hub has finished this item, it produced nothing, and nothing is pending.**
@@ -714,12 +733,75 @@ def _poll_batch(
                 upstream_accepted=False,
                 upstream_settled=True,
             )
+    # **The run budget is spent. The Gateway gives up -- and tells the Hub to stop.** The lane's
+    # `deadline_seconds` is a number the Hub publishes but does not enforce for batch items, so
+    # walking away used to leave the render running on the Mac with nobody collecting it (and the
+    # Mac reserved). Now the give-up is a real cancel: ask the Hub to stop, take the worker's own
+    # answer, and end the job with a typed failure that is not a hold. Only a worker that does not
+    # answer stays an unknown outcome.
+    why = progress.why() if progress is not None else ""
+    if ran < limit:
+        # Still queued past the ceiling and the Hub did not confirm withdrawing it: unknown.
+        raise BackendError(
+            f"the Hub kept this queued for {int(QUEUE_WAIT_CEILING_S)}s and did not confirm withdrawing it",
+            code="PROVIDER_SUBMISSION_UNCERTAIN",
+            retryable=True,
+        )
+    kind = "transcription" if "transcription" in jobs_path else "image"
+    settled = _stop_hub_work(client, base, headers, batch_id, item_index, jobs_path, kind)
+    if settled is not None:
+        state = str((settled.get("item") or {}).get("state") or "").lower()
+        if state in _TERMINAL_OK:
+            return settled  # it finished while we were stopping it: the result is real, keep it
+        if state in _TERMINAL_BAD:
+            raise BackendError(
+                f"the job ran past its {int(limit)}s limit on the Mac and was stopped there{why}",
+                code="DEADLINE_EXCEEDED",
+                upstream_settled=True,
+            )
     raise BackendError(
         f"hub job did not finish within {int(limit)}s of running"
-        + (progress.why() if progress is not None else ""),
+        + (", and the Mac did not confirm it stopped" if settled is None else "")
+        + why,
         code="PROVIDER_SUBMISSION_UNCERTAIN",
         retryable=True,
     )
+
+
+#: How long the Gateway waits, after asking the Hub to stop a job it gave up on, for the worker's own
+#: answer. Music stops at once and narration within seconds; an image render ends with the render.
+CANCEL_SETTLE_S = 90.0
+
+
+def _stop_hub_work(client: httpx.Client, base: str, headers: dict[str, str], batch_id: str,
+                   item_index: int, jobs_path: str, kind: str) -> dict[str, Any] | None:
+    """DELETE the batch, then read the item until the worker has answered or the grace runs out.
+
+    Returns `{"summary", "item"}` once the item is terminal (`cancelled`, `error` or `done` if it
+    beat the cancel), or `None` when the Hub refused the cancel, stayed unreachable, or the worker
+    had not answered within `CANCEL_SETTLE_S` -- the cases where the outcome is truly unknown.
+    """
+    cancel = _cancel_batch(base, headers, batch_id, kind)
+    if not cancel.get("ok"):
+        return None
+    deadline = time.monotonic() + CANCEL_SETTLE_S
+    while True:
+        try:
+            response = client.get(f"{base}{jobs_path}/{batch_id}", headers=headers)
+            if response.status_code < 400:
+                summary = response.json() or {}
+                items = summary.get("items") or []
+                item = items[item_index] if item_index < len(items) else None
+                state = str((item or {}).get("state") or "").lower()
+                if state in _TERMINAL_OK or state in _TERMINAL_BAD:
+                    return {"summary": summary, "item": item or {}}
+                if state in _TERMINAL_UNCERTAIN:
+                    return None
+        except (httpx.HTTPError, ValueError):
+            pass
+        if time.monotonic() >= deadline:
+            return None
+        time.sleep(POLL_INTERVAL_S)
 
 
 #: Fetching a finished artifact: the file is still on the worker, so a transient error is worth
@@ -1292,7 +1374,7 @@ def _generate_image_or_voice(request: BackendRequest) -> BackendResult:
         # image-to-video path, a reference image the broker turns into multipart.
         item["prompt"] = str(request.params.get("prompt") or "")
         if request.modality == "image":
-            keys = ("seed", "width", "height", "aspect_ratio", "resolution")
+            keys = ("seed", "width", "height", "aspect_ratio", "resolution", "output_format")
         elif request.modality == "video":
             keys = _HUB_VIDEO_PARAMS
         else:
@@ -1318,7 +1400,7 @@ def _generate_image_or_voice(request: BackendRequest) -> BackendResult:
                 item["params"]["reference_images"] = reference
     else:
         item["text"] = str(request.params.get("text") or "")
-        for key in ("speed", "voice_id", "language", "temperature", "seed"):
+        for key in ("speed", "voice_id", "language", "temperature", "seed", "output_format"):
             if request.params.get(key) is not None:
                 item["params"][key] = request.params[key]
         # **A control is a parameter, not a nested object.** Story sends the controls the catalogue
@@ -1417,6 +1499,15 @@ def _generate_image_or_voice(request: BackendRequest) -> BackendResult:
         return _collect_batch(client, base, headers, request, batch_id, outcome, progress)
 
 
+#: The `output_format` vocabulary for a delivered media type (the names the callers use).
+_FORMAT_BY_MEDIA = {
+    "image/png": "png", "image/jpeg": "jpeg",
+    "audio/wav": "wav", "audio/x-wav": "wav", "audio/wave": "wav",
+    "audio/mp4": "m4a", "audio/x-m4a": "m4a",
+    "audio/flac": "flac", "audio/x-flac": "flac",
+}
+
+
 def _collect_batch(
     client: httpx.Client,
     base: str,
@@ -1476,6 +1567,11 @@ def _collect_batch(
         # reported no progress figure, which is a different answer from "it never
         # stalled". See `HubProgress`.
         "hub_progress": progress.as_payload(),
+        # **What the caller asked for and what the Hub delivered**, so a Jobs view can tell a node that
+        # honoured `output_format` from one that predates it and returned the native file. Never a
+        # failure either way: the artifact is stored and served as the Hub described it.
+        "output_format_requested": request.params.get("output_format"),
+        "output_format_applied": _FORMAT_BY_MEDIA.get(media_type),
     }
 
     def deliver() -> dict[str, Any]:

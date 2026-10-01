@@ -89,6 +89,24 @@ FLEET_DISPLAY_NAME = "Studio Hub"
 ID_SEPARATOR = "::"
 
 
+def label_for_provider(provider_id: str) -> str | None:
+    """The owner's own name for a location (`studio-hub-<id>`), or `None` when it has none.
+
+    Published text names a Mac by this label, never by its controller id: the id means nothing to the
+    owner (and Story's rule is that it never shows one).
+    """
+    controller_id = controller_id_from(str(provider_id or ""))
+    if controller_id is None:
+        return None
+    if controller_id == LOCAL_ID:
+        return local_label()
+    for row in _read():
+        if str(row.get("id") or "") == controller_id:
+            label = str(row.get("label") or "").strip()
+            return label or None
+    return None
+
+
 def is_location_provider(provider_id: str) -> bool:
     """True for the local Hub and for every configured controller."""
     return controller_id_from(provider_id) is not None
@@ -1866,9 +1884,16 @@ def _summarise(rows: list[dict]) -> dict:
             and not worker.get("quarantined")
         )
 
+    startups = [row.get("startup") for row in flat]
     return {
         "locations": len(rows),
         "locations_up": sum(1 for row in rows if row["reachable"]),
+        # **Which Macs will serve after a restart.** `off` is a Mac that said "Start services on
+        # startup" is off (including one repeating its last word from before it went quiet),
+        # `unknown` one that said nothing (an older Hub, or never heard from).
+        "startup_off": sum(1 for fact in startups if fact and fact["start_services_on_launch"] is False),
+        "startup_unknown": sum(1 for fact in startups
+                               if not fact or fact["start_services_on_launch"] is None),
         "machines": machines_total,
         "machines_online": online,
         "machines_offline": offline,
@@ -1916,6 +1941,187 @@ def _limitation_fields(entry: dict) -> dict:
         "limitation_since": entry.get("limitation_since"),
         "limitation_affects": entry.get("limitation_affects"),
     }
+
+
+_DISK_STATES = ("green", "amber", "red", "stop")
+
+
+def _num(value: object) -> float | None:
+    try:
+        number = float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) else None
+
+
+def _disk_top(raw: object) -> list[dict]:
+    """The Hub's biggest consumers as `[{name, gb}]`, at most five, whatever shape it sent."""
+    pairs: list[tuple[str, float | None]] = []
+    if isinstance(raw, dict):
+        pairs = [(str(k), _num(v)) for k, v in raw.items()]
+    elif isinstance(raw, list):
+        for item in raw:
+            if isinstance(item, dict):
+                name = item.get("name") or item.get("label") or item.get("path")
+                gb = _num(item.get("gb", item.get("size_gb")))
+                if gb is None and _num(item.get("bytes")) is not None:
+                    gb = _num(item.get("bytes")) / 1024**3  # type: ignore[operator]
+                if name:
+                    pairs.append((str(name), gb))
+            elif isinstance(item, (list, tuple)) and len(item) >= 2:
+                pairs.append((str(item[0]), _num(item[1])))
+    return [{"name": n, "gb": None if g is None else round(g, 2)} for n, g in pairs[:5]]
+
+
+def machine_disk(machine: dict) -> dict | None:
+    """One Mac's disk, normalised from whatever the Hub sent. `None` when it said nothing.
+
+    Reads the Hub's `disk` object defensively (state, free_gb, total_gb, trash_gb, top
+    consumers, swap_used_gb, last_sweep, warnings); a Hub that predates it sends only
+    `disk_free_gb` / `disk_total_gb`. `state` is `green|amber|red|stop` (`black` is the Hub's
+    older word for `stop`). When the Hub states none but the sizes are known it is **derived**
+    from the same thresholds the gateway uses for its own disk, and marked `state_source:
+    "derived"` -- shown, but never acted on by routing.
+    """
+    raw = machine.get("disk")
+    raw = raw if isinstance(raw, dict) else {}
+    free = _num(raw.get("free_gb"))
+    if free is None:
+        free = _num(machine.get("disk_free_gb"))
+    total = _num(raw.get("total_gb"))
+    if total is None:
+        total = _num(machine.get("disk_total_gb"))
+    state = str(raw.get("state") or "").strip().lower()
+    state = "stop" if state in {"black", "stopped"} else state
+    source = "hub" if state in _DISK_STATES else None
+    if source is None:
+        state = ""
+        if free is not None and total:
+            from . import diskguard
+
+            gb = diskguard.GB
+            state = diskguard.state_of(int(total * gb), int(free * gb))
+            if free * gb < diskguard.REFUSE_FREE_BYTES:
+                state = "stop"
+            source = "derived"
+    if free is None and not raw:
+        return None
+    warnings = raw.get("warnings")
+    if isinstance(warnings, (str, dict)):
+        warnings = [warnings]
+    clean = []
+    for warning in warnings if isinstance(warnings, list) else []:
+        text = warning.get("message") or warning.get("text") if isinstance(warning, dict) else warning
+        if text and str(text).strip():
+            clean.append(str(text).strip())
+    swap = _num(raw.get("swap_used_gb"))
+    trash = _num(raw.get("trash_gb"))
+    return {
+        "state": state or None,
+        "state_source": source,
+        "free_gb": None if free is None else round(free, 2),
+        "total_gb": None if total is None else round(total, 2),
+        "trash_gb": None if trash is None else round(trash, 2),
+        "swap_used_gb": None if swap is None else round(swap, 2),
+        "top": _disk_top(raw.get("top", raw.get("top_consumers"))),
+        "last_sweep": raw.get("last_sweep", raw.get("last_sweep_at")),
+        "warnings": clean,
+    }
+
+
+def _location_disk_stopped(row: dict) -> bool:
+    """Every Mac at this location is **stated** `stop` by its Hub: nothing can be sent there.
+
+    A derived state never counts, and a location with one Mac still answering is not stopped:
+    the controller places the job on that Mac.
+    """
+    machines = [m for m in (row.get("machines") or []) if isinstance(m, dict)]
+    if not machines:
+        return False
+    for machine in machines:
+        disk = machine_disk(machine)
+        if not disk or disk["state"] != "stop" or disk["state_source"] != "hub":
+            return False
+    return True
+
+
+def disk_summary(machines: list[dict]) -> dict:
+    """The compact fleet disk view: every Mac that reported disk, least free space first."""
+    from . import diskguard
+
+    macs = []
+    for machine in machines:
+        disk = machine.get("disk") if "state_source" in (machine.get("disk") or {}) else machine_disk(machine)
+        if not disk:
+            continue
+        macs.append({
+            "location": machine.get("location"),
+            "location_id": machine.get("location_id"),
+            "machine": machine.get("machine"),
+            "label": machine.get("label") or machine.get("machine"),
+            "reachable": machine.get("reachable"),
+            **disk,
+        })
+    macs.sort(key=lambda m: (m["free_gb"] is None, m["free_gb"] if m["free_gb"] is not None else 0.0))
+    low = [m for m in macs if m["state"] in ("amber", "red", "stop")]
+    return {
+        "generated_at": time.time(),
+        "gateway": diskguard.status(),
+        "macs": macs,
+        "low": [m["label"] for m in low],
+        "worst": max((m["state"] for m in macs if m["state"]),
+                     key=_DISK_STATES.index, default=None),
+    }
+
+
+#: The only keys of a Mac's `startup` report this gateway republishes. The Hub is somebody else's
+#: process, so what reaches the console is a fixed shape, never whatever the node chose to send.
+_STARTUP_KEYS = ("open_at_login", "open_at_login_saved", "start_services_on_launch", "app_version",
+                 "last_start_at", "app_reporting", "stale", "observed_at", "reported_at")
+
+
+def _startup_fact(machine: dict, node: dict) -> dict | None:
+    """What starts when this Mac starts, as the Hub reported it - or `None` when it did not.
+
+    `None` is *unknown*, never "off": a Hub older than 0.6.127 says nothing about it, and so does
+    a Mac nobody has heard from since. A report the controller is repeating from before the Mac
+    went quiet carries `stale: true`. The two settings are published as the booleans the Hub sent;
+    anything else becomes `None`.
+    """
+    raw = machine.get("startup") if isinstance(machine.get("startup"), dict) else node.get("startup")
+    if not isinstance(raw, dict):
+        return None
+    out: dict = {key: raw.get(key) for key in _STARTUP_KEYS}
+    for key in ("open_at_login", "open_at_login_saved", "start_services_on_launch", "app_reporting", "stale"):
+        if not isinstance(out[key], bool):
+            out[key] = None
+    running = raw.get("services_running")
+    out["services_running"] = (
+        {"up": running.get("up"), "total": running.get("total"), "studios": running.get("studios") or {}}
+        if isinstance(running, dict) else None)
+    return out
+
+
+def _current_job(machine: dict, entry: dict) -> dict | None:
+    """The job a node is running right now, **when the Hub says so** (Fleet Groups "Doing now").
+
+    The Hub reports a machine as `working` and the batches without saying which machine runs which, so
+    the Gateway cannot work this out. Hubs that state it carry `current` on the machine row or on its
+    activity entry as `{batch_id, model, label, started_at, studio}`; this republishes exactly those
+    keys and nothing the node chose to add. `None` is *unknown* - the page then shows the busy studios
+    only - and never "idle".
+    """
+    raw = machine.get("current") if isinstance(machine.get("current"), dict) else entry.get("current")
+    if not isinstance(raw, dict):
+        return None
+    out = {
+        "batch_id": raw.get("batch_id") or raw.get("id"),
+        "model": raw.get("model"),
+        "label": raw.get("label"),
+        "studio": raw.get("studio") or raw.get("modality"),
+        "started_at": raw.get("started_at") if isinstance(raw.get("started_at"), (int, float)) else None,
+    }
+    return out if any(value not in (None, "") for value in out.values()) else None
 
 
 def machines_flat(rows: list[dict]) -> list[dict]:
@@ -1985,10 +2191,13 @@ def machines_flat(rows: list[dict]) -> list[dict]:
                 "available_gb": machine.get("available_gb"),
                 "disk_free_gb": machine.get("disk_free_gb"),
                 "disk_total_gb": machine.get("disk_total_gb"),
+                "disk": machine_disk(machine),
                 "health": machine.get("health"),
                 "modalities": machine.get("modalities") or {},
                 **_limitation_fields(entry),
                 **node_fields(mid),
+                "startup": _startup_fact(machine, nodes.get(mid) or {}),
+                "current": _current_job(machine, entry),
             })
         # A machine the activity report knows about but the overview omitted is
         # still a machine.
@@ -2009,10 +2218,12 @@ def machines_flat(rows: list[dict]) -> list[dict]:
                 "average_seconds": None,
                 "median_runtime_s": entry.get("median_runtime_s"),
                 "chip": None, "memory_gb": None, "available_gb": None,
-                "disk_free_gb": None, "disk_total_gb": None, "health": None,
+                "disk_free_gb": None, "disk_total_gb": None, "disk": None, "health": None,
                 "modalities": {},
                 **_limitation_fields(entry),
                 **node_fields(mid),
+                "startup": _startup_fact({}, nodes.get(mid) or {}),
+                "current": _current_job({}, entry),
             })
     return out
 
@@ -2237,8 +2448,18 @@ def _issues_for(row: dict) -> list[dict]:
     limitations: dict[tuple[str, str, str], dict] = {}
     unknown_state = 0
     offline_machines: set[str] = set()
+    startup_off: list[str] = []
+    disk_low: dict[str, list[str]] = {"stop": [], "red": []}
     for machine in machines_flat([row]):
         machine_id = str(machine.get("machine") or "")
+        # A Mac that is not answering has no disk worth reporting (its last free-space reading is
+        # stale or a zero), so only a reachable Mac in red/stop counts.
+        disk = machine.get("disk") or {}
+        if machine.get("reachable") and disk.get("state") in disk_low and disk.get("free_gb") is not None:
+            disk_low[disk["state"]].append(f"{machine.get('label') or machine_id} {disk['free_gb']:g} GB free")
+        fact = machine.get("startup")
+        if fact and fact.get("start_services_on_launch") is False:
+            startup_off.append(str(machine.get("label") or machine_id))
         state = str(machine.get("state") or "").strip().lower()
         health = str(machine.get("health") or "").strip()
         unhealthy = bool(health) and health.lower() != "up"
@@ -2325,6 +2546,28 @@ def _issues_for(row: dict) -> list[dict]:
                 "warning", "machine_limited", location_id, location, machines_text,
                 detail, "Fleet → Machines",
             ))
+    for state, severity in (("stop", "error"), ("red", "warning")):
+        names = disk_low[state]
+        if names:
+            shown = "; ".join(sorted(names)[:4]) + (" and more" if len(names) > 4 else "")
+            consequence = ("The Hub refuses new work on it." if state == "stop"
+                           else "Free space is low; new work may be refused.")
+            out.append(_issue(
+                severity, f"disk_{state}", location_id, location,
+                f"{len(names)} machine" + ("" if len(names) == 1 else "s"),
+                f"Disk {state.upper()}: {shown}. {consequence}",
+                "Fleet → Machines (Disk column)",
+            ))
+    if startup_off:
+        # One line per location, not per Mac: the fix is the same button on every one of them.
+        shown = ", ".join(sorted(startup_off)[:4]) + (" and more" if len(startup_off) > 4 else "")
+        out.append(_issue(
+            "warning", "services_not_auto_start", location_id, location,
+            f"{len(startup_off)} machine" + ("" if len(startup_off) == 1 else "s"),
+            f"{shown}: \"Start services on startup\" is off, so after a restart the Mac opens "
+            "Studio Hub but serves nothing until someone starts the services by hand.",
+            "Fleet → Machines → Enable auto-start",
+        ))
     if unknown_state:
         machines_text = f"{unknown_state} machine" + ("" if unknown_state == 1 else "s")
         out.append(_issue(
@@ -2700,6 +2943,10 @@ def _takes_customer_jobs(row: dict) -> bool:
     # **A paused location is skipped by routing** (Q7). The row is still there, its models are
     # still published, and every per-model decision survives — it simply stops being offered.
     if row.get("paused_at"):
+        return False
+    # **A location whose every Mac is out of disk (`stop`) is unavailable** -- it would only
+    # answer 507 -- so routing re-routes to another location, as it does for a drained one.
+    if _location_disk_stopped(row):
         return False
     return row.get("drained") is not True
 
@@ -3101,6 +3348,19 @@ def refresh_models_when_hub_changes(rows: list[dict]) -> dict[str, str]:
 _refresher: threading.Thread | None = None
 
 
+_refresher_stop = threading.Event()
+
+
+def stop_refresher() -> None:
+    """Ask the background refresher to end (the app's lifespan calls this on shutdown).
+
+    A test that enters the app's lifespan used to leave the poller running for the rest of
+    the process, where it raced every later `snapshot(force=True)` (a refresh that finished
+    after the caller asked is returned instead of the caller's own).
+    """
+    _refresher_stop.set()
+
+
 def start_refresher(interval: float = 15.0) -> None:
     """Keep the snapshot warm in the background.
 
@@ -3115,11 +3375,12 @@ def start_refresher(interval: float = 15.0) -> None:
     call) never pays for it.
     """
     global _refresher
+    _refresher_stop.clear()  # before the liveness check: a stop that has not landed yet is undone
     if _refresher is not None and _refresher.is_alive():
         return
 
     def loop() -> None:
-        while True:
+        while not _refresher_stop.is_set():
             value = None
             try:
                 value = snapshot(force=True)
@@ -3134,7 +3395,7 @@ def start_refresher(interval: float = 15.0) -> None:
                     refresh_models_when_hub_changes(value.get("locations") or [])
                 except Exception:  # noqa: BLE001 - discovery must not kill the poller
                     pass
-            time.sleep(interval)
+            _refresher_stop.wait(interval)
 
     _refresher = threading.Thread(target=loop, name="fleet-refresh", daemon=True)
     _refresher.start()

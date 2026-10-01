@@ -303,6 +303,21 @@ def _local_image_shape(raw: dict[str, Any]) -> dict[str, Any] | None:
     }
 
 
+def _output_formats(definition: ProviderDefinition, raw: dict[str, Any]) -> dict[str, list[str]]:
+    """`{"output_formats": [...]}` when a Studio Hub lane declares an `output_format` parameter.
+
+    Empty (the key is absent) for a lane that states none and for every cloud provider, which return
+    their native file. A hint only: the request field is ignored by a node that predates it, so
+    nothing depends on this being published.
+    """
+    if definition.kind != KIND_STUDIO_HUB or not isinstance(raw, dict):
+        return {}
+    contract = raw.get("lane_contract")
+    declared = _hub_declared_parameter(contract, "output_format") if isinstance(contract, dict) else None
+    values = [v for v in (declared or {}).get("enum") or [] if isinstance(v, str) and v]
+    return {"output_formats": list(dict.fromkeys(values))} if values else {}
+
+
 def _image_row(model_id: str, definition: ProviderDefinition, model: dict[str, Any]) -> dict[str, Any]:
     raw = model.get("raw") or {}
     local = _local_image_shape(raw) if definition.kind == KIND_STUDIO_HUB else None
@@ -436,6 +451,7 @@ def _image_row(model_id: str, definition: ProviderDefinition, model: dict[str, A
         "operations": operations,
         "requires_admission_permit": False,
         "availability_note": None,
+        **_output_formats(definition, raw),
     }
 
 
@@ -475,7 +491,7 @@ def _local_video_canvases(contract: dict[str, Any]) -> list[dict[str, Any]] | No
 
     **The two parameter enums are not a set of canvases.** A lane can offer `448p` and `1:1` and
     `11:7` while the pair `448p + 16:9` does not exist, and the cross product offered exactly
-    that — measured on 2026-09-27 against the LTX lane, whose published 16:9 canvas is the one its
+    that — measured on 2026-09-27 against a Hub video lane, whose published 16:9 canvas is the one its
     pack floors to 2:1. So when the lane publishes the pairs, those pairs are the variants.
 
     `None` means the lane does not publish a canvas list at all (a worker older than 0.6.81);
@@ -506,7 +522,7 @@ def _local_video_controls(contract: dict[str, Any]) -> list[dict[str, Any]] | No
     """The lane's **switch** parameters, relayed so a caller can offer exactly those.
 
     A boolean lane parameter is a choice the lane honours, and the caller cannot know it exists
-    without being told: measured 2026-09-27, when Studio Hub gave its LTX lane an `audio` switch
+    without being told: measured 2026-09-27, when Studio Hub gave its video lane an `audio` switch
     (0.6.83) and this gateway published no trace of it, so Story Studio had no way to offer the
     one thing the owner asked for — a video with no sound.
 
@@ -1040,6 +1056,7 @@ def _tts_row(model_id: str, definition: ProviderDefinition, model: dict[str, Any
         # object the worker's request model drops. A knob published on every Hub voice that
         # changed nothing in any of them (audit 2026-10-01).
         "controls": _tts_controls(definition, raw),
+        **_output_formats(definition, raw),
     }
 
 
@@ -1327,7 +1344,24 @@ def _chat_row(model_id: str, definition: ProviderDefinition, model: dict[str, An
     # not ours. `json_schema` stays correct on the *request* side, where it is the provider's
     # own `response_format.type` (`adapters/studio_hub.py`, `adapters/openai_compat.py`).
     # The two spellings are not interchangeable in either place.
-    if parameters is None or not structured:
+    # **A Hub lane now states its formats machine-readably** (`structured_output.formats`, Hub
+    # 0.6.126; the comment above predates it). Read, not guessed: a lane that takes `json_schema`
+    # is published as the strong mode Story sends a native schema for, one that takes only
+    # `json_object` as the plain one. The Hub validates the answer and repairs it once
+    # (`enforcement: prompt_validate_repair`), which is why this is "request" and not "enforced".
+    hub_formats = lane_contract.get("structured_output")
+    hub_formats = hub_formats.get("formats") if isinstance(hub_formats, dict) else None
+    hub_mode = None
+    if isinstance(hub_formats, list):
+        if "json_schema" in hub_formats:
+            hub_mode = "request_json_schema"
+        elif "json_object" in hub_formats:
+            hub_mode = "json_object"
+    if hub_mode is not None:
+        structured = True
+    if hub_mode is not None:
+        structured_mode = hub_mode
+    elif parameters is None or not structured:
         structured_mode = None
     elif "response_format" in parameters:
         structured_mode = "json_object"
@@ -1482,6 +1516,15 @@ def _music_row(model_id: str, definition: ProviderDefinition, model: dict[str, A
     contract = raw.get("lane_contract") if isinstance(raw, dict) else None
     lyrics = _hub_declared_parameter(contract, "lyrics") if isinstance(contract, dict) else None
     vocal: dict[str, Any] = {}
+    # The lane's own track-length bounds and default, so a caller can clamp and explain instead of
+    # being refused: Stable Audio 3 takes 1-380 s (default 30), YuE2 8-360 s (default 36).
+    length = _hub_declared_parameter(contract, "duration_seconds") if isinstance(contract, dict) else None
+    if length is not None:
+        for field, key in (("min_duration_seconds", "minimum"), ("max_duration_seconds", "maximum"),
+                           ("default_duration_seconds", "default")):
+            value = length.get(key)
+            if isinstance(value, (int, float)) and not isinstance(value, bool) and value > 0:
+                vocal[field] = int(value) if float(value).is_integer() else float(value)
     if lyrics is not None:
         vocal["supports_vocals"] = True
         if lyrics.get("required") is True:
@@ -1508,6 +1551,7 @@ def _music_row(model_id: str, definition: ProviderDefinition, model: dict[str, A
         "supported_languages": languages,
     }
     row.update(vocal)
+    row.update(_output_formats(definition, raw))
     return row
 
 
@@ -2021,20 +2065,24 @@ class Catalog:
             str(row.get("id")): row
             for row in (fleet.snapshot(allow_stale=True).get("locations") or [])
         }
-        offline = cannot = 0
+        offline = cannot = full = 0
         for location_id in offered:
             row = rows.get(location_id) or {}
             if not row.get("reachable"):
                 offline += 1
+            elif fleet._location_disk_stopped(row):  # noqa: SLF001
+                full += 1
             elif not fleet._takes_customer_jobs(row):  # noqa: SLF001 - one rule, one place
                 cannot += 1
-        if not offline and not cannot:
+        if not offline and not cannot and not full:
             return "No location offering this model has a free slot right now."
         reasons: list[str] = []
         if offline:
             reasons.append(f"{offline} location{'' if offline == 1 else 's'} offline")
         if cannot:
             reasons.append(f"{cannot} that cannot take customer work")
+        if full:
+            reasons.append(f"{full} whose Mac{'' if full == 1 else 's'} ran out of disk space")
         return (
             "No location offering this model can take work right now — "
             + " and ".join(reasons) + "."

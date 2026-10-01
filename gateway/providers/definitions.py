@@ -859,7 +859,7 @@ PROVIDER_DEFINITIONS: tuple[ProviderDefinition, ...] = (
         base_url="",  # discovered at runtime from hub-ready.json
         modalities=("chat", "image", "tts", "music", "transcription", "video"),
         discovery=DISCOVERY_STUDIO_HUB,
-        description="Your own Apple Silicon runners: FLUX images, Qwen3/VoxCPM2/OmniVoice voice, YuE2 and Stable Audio 3 music, Whisper transcription, LTX and Lance video.",
+        description="Your own Apple Silicon runners: FLUX images, Qwen3/VoxCPM2/OmniVoice voice, YuE2 and Stable Audio 3 music, Whisper transcription. (Video is not offered: the local video models were retired.)",
         docs_url="",
         credential_fields=(
             CredentialField(

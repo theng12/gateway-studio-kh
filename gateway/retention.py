@@ -24,6 +24,14 @@ say when it arrived). Folders whose date is more than 15 days old are then purge
 that purge is the only hard delete in this module (owner-approved, 2026-09-30). A
 move that fails is skipped, never retried as an unlink.
 
+**The Trash Folder has a size cap as well as an age** (owner decision 2026-10-01):
+`min(10 GB, 5 % of the volume)`, measured in *physical* bytes (allocated blocks, not the
+length a file claims), oldest file first. At 15 days x a video burst the age alone let it
+reach hundreds of GB. When the volume itself is in the red (`diskguard`), `reclaim()` also
+frees the Trash and then the artifacts that are already past their age limit, hard-deleting
+them: a same-volume rename into the Trash frees nothing, so a low disk cannot be fixed by
+the normal move.
+
 Settings live in their own file rather than `.env`, which the menu bar app owns
 and rewrites when saving connection settings. Retention settings are read fresh
 at every prune, so an edit takes effect on the next pass. Credential/configuration
@@ -41,6 +49,7 @@ single count would let one masquerade as the other.
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import threading
 import time
@@ -65,6 +74,8 @@ GB = 1024**3
 #: counts it against `max_bytes`) and how long a moved-in file stays there.
 TRASH_DIR = Path(str(DATA_DIR)) / "trash"
 TRASH_DAYS = 15
+TRASH_CAP_BYTES = 10 * GB
+TRASH_CAP_PCT = 5.0
 
 #: Nothing newer than this is ever removed, whatever the limits say. An artifact is
 #: written when a job finishes and Story Studio fetches it seconds later; a staged
@@ -237,6 +248,12 @@ def _protected_input_paths(store: object | None = None) -> set[Path] | None:
         return None
 
 
+def _physical(info: os.stat_result) -> int:
+    """Bytes a file really occupies (allocated blocks), falling back to its length."""
+    blocks = getattr(info, "st_blocks", None)
+    return int(blocks) * 512 if blocks else int(info.st_size)
+
+
 def _trash_stats() -> tuple[int, int]:
     """(files, bytes) in the Trash Folder."""
     files = size = 0
@@ -248,6 +265,78 @@ def _trash_stats() -> tuple[int, int]:
         except OSError:
             continue
     return files, size
+
+
+def trash_cap_bytes(total: int | None = None) -> int:
+    """`min(10 GB, 5 % of the volume)`; the cap on the Trash Folder's physical size."""
+    if total is None:
+        from . import diskguard
+
+        try:
+            total = diskguard.disk_usage()[0]
+        except OSError:
+            total = 0
+    if total <= 0:
+        return TRASH_CAP_BYTES
+    return min(TRASH_CAP_BYTES, int(total * TRASH_CAP_PCT / 100.0))
+
+
+def _trash_files() -> list[tuple[str, float, int, Path]]:
+    """`(day folder, mtime, physical bytes, path)` for every file under a `YYYY-MM-DD` folder,
+    oldest first. Anything else in the Trash Folder is not ours to count or delete."""
+    out: list[tuple[str, float, int, Path]] = []
+    if not TRASH_DIR.is_dir():
+        return out
+    for folder in TRASH_DIR.iterdir():
+        try:
+            datetime.strptime(folder.name, "%Y-%m-%d")
+            if not folder.is_dir():
+                continue
+            for f in folder.rglob("*"):
+                if f.is_file():
+                    info = f.stat()
+                    out.append((folder.name, info.st_mtime, _physical(info), f))
+        except (OSError, ValueError):
+            continue
+    out.sort(key=lambda e: (e[0], e[1], str(e[3])))
+    return out
+
+
+def _drop_empty_dirs(root: Path) -> None:
+    if not root.exists():
+        return
+    for child in sorted(root.rglob("*"), reverse=True):
+        try:
+            if child.is_dir() and not any(child.iterdir()):
+                child.rmdir()
+        except OSError:
+            continue
+
+
+def _trim_trash(*, cap: int | None = None, need: int | None = None) -> tuple[int, int]:
+    """Hard-delete the oldest Trash files. `(files, physical bytes)` removed.
+
+    With `cap`: until what is left fits it. With `need`: until that many bytes are freed
+    (the low-disk sweep). Oldest day first, then oldest file within a day, so a burst that
+    overflows the cap keeps its newest files.
+    """
+    files = freed = 0
+    entries = _trash_files()
+    total = sum(e[2] for e in entries)
+    for _, _, size, path in entries:
+        if cap is not None and total <= cap:
+            break
+        if need is not None and freed >= need:
+            break
+        try:
+            path.unlink()
+        except OSError:
+            continue
+        files += 1
+        freed += size
+        total -= size
+    _drop_empty_dirs(TRASH_DIR)
+    return files, freed
 
 
 def _day(moment: float) -> str:
@@ -297,6 +386,56 @@ def _purge_trash(moment: float) -> tuple[int, int]:
     return files, size
 
 
+def reclaim(need_bytes: int, now: float | None = None, store: object | None = None) -> dict:
+    """Free at least `need_bytes` of the gateway's own disk use (the red-volume sweep).
+
+    Order: the Trash Folder oldest first, then artifacts **already past the age limit**
+    oldest first. Both are hard deletes (a rename into the Trash would free nothing). Never
+    touched: pinned artifacts, files younger than `PROTECTED_AGE_S`, staged inputs of live or
+    held jobs, and artifacts still inside the age limit. If input protection cannot be read
+    only the Trash is swept.
+    """
+    moment = time.time() if now is None else now
+    trash_files, freed = _trim_trash(need=max(int(need_bytes), 0))
+    artifact_files = artifact_bytes = 0
+    if freed < need_bytes:
+        protected_inputs = _protected_input_paths(store)
+        if protected_inputs is not None:
+            pinned = {p["path"] for p in kept() if p["present"]}
+            cutoff = moment - settings()["max_age_days"] * 86400.0
+            expired = sorted(
+                ((p, m) for p, m, _ in _files()
+                 if m < cutoff and (moment - m) > PROTECTED_AGE_S
+                 and str(p) not in pinned and p.resolve() not in protected_inputs),
+                key=lambda e: e[1],
+            )
+            for path, _ in expired:
+                if freed + artifact_bytes >= need_bytes:
+                    break
+                try:
+                    size = _physical(path.stat())
+                    path.unlink()
+                except OSError:
+                    continue
+                artifact_files += 1
+                artifact_bytes += size
+            _drop_empty_dirs(ARTIFACT_DIR)
+    return {
+        "trash_files": trash_files,
+        "trash_bytes": freed,
+        "artifact_files": artifact_files,
+        "artifact_bytes": artifact_bytes,
+        "freed_bytes": freed + artifact_bytes,
+        "enough": freed + artifact_bytes >= need_bytes,
+    }
+
+
+def _disk_status() -> dict:
+    from . import diskguard
+
+    return diskguard.status()
+
+
 def usage() -> dict:
     entries = _files()
     pins = kept()
@@ -311,6 +450,9 @@ def usage() -> dict:
         "trash_files": trash_files,
         "trash_bytes": trash_bytes,
         "trash_days": TRASH_DAYS,
+        "trash_physical_bytes": sum(e[2] for e in _trash_files()),
+        "trash_cap_bytes": trash_cap_bytes(),
+        "disk": _disk_status(),
         "trash_path": str(TRASH_DIR),
         # **Two questions, two numbers.** `protected_files` is "too new to touch";
         # `pinned_files` is "the owner asked me to keep this". One count answering
@@ -342,6 +484,11 @@ def prune(now: float | None = None, store: object | None = None) -> dict:
         pass
     limits = settings()
     purged_files, purged_bytes = _purge_trash(moment)
+    # The size cap, on what the age purge left. Before the artifact walk so a store whose
+    # input protection is unreadable (the early return below) still keeps its Trash bounded.
+    capped_files, capped_bytes = _trim_trash(cap=trash_cap_bytes())
+    purged_files += capped_files
+    purged_bytes += capped_bytes
     entries = _files()
     pinned = {p["path"] for p in kept() if p["present"]}
     protected_inputs = _protected_input_paths(store)
@@ -396,19 +543,14 @@ def prune(now: float | None = None, store: object | None = None) -> dict:
 
     # A staged upload lives in a subdirectory; remove the directories it leaves
     # behind, so the tree does not fill with empty folders.
-    if ARTIFACT_DIR.exists():
-        for child in sorted(ARTIFACT_DIR.rglob("*"), reverse=True):
-            try:
-                if child.is_dir() and not any(child.iterdir()):
-                    child.rmdir()
-            except OSError:
-                continue
+    _drop_empty_dirs(ARTIFACT_DIR)
 
     return {
         "deleted": deleted,  # moved to the Trash Folder, not unlinked
         "freed_bytes": freed,
         "purged_files": purged_files,
         "purged_bytes": purged_bytes,
+        "trash_capped_files": capped_files,
         "deleted_by_age": by_age,
         "deleted_by_size": by_size,
         "kept_files": len(entries) - deleted,
@@ -418,6 +560,32 @@ def prune(now: float | None = None, store: object | None = None) -> dict:
         "pinned_files": len(pinned),
         "protected_inputs": len(protected_inputs),
     }
+
+
+def _guard_and_compact() -> None:
+    """The rest of the hourly pass: the red-volume sweep and the job-database upkeep.
+
+    Each step is independent and none may stop the loop.
+    """
+    try:
+        from . import diskguard
+
+        swept = diskguard.sweep_if_red(force=True)
+        if swept and swept["freed_bytes"]:
+            print(f"[retention] disk is low: freed {swept['freed_bytes'] // (1024 * 1024)} MiB "
+                  f"(Trash {swept['trash_files']} file(s), expired artifacts "
+                  f"{swept['artifact_files']})", flush=True)
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        from .runtime import store as runtime_store
+
+        done = runtime_store.archive_old()
+        if done["archived"]:
+            print(f"[retention] archived {done['archived']} job(s) older than "
+                  f"{done['days']:g} days to {done['file_count']} file(s)", flush=True)
+    except Exception:  # noqa: BLE001
+        pass
 
 
 _pruner: threading.Thread | None = None
@@ -447,6 +615,7 @@ def start_pruner(interval: float = PRUNE_INTERVAL_S) -> None:
                         )
                 except Exception:  # noqa: BLE001 - a sweeper must not kill the gateway
                     pass
+                _guard_and_compact()
                 time.sleep(interval)
 
         _pruner = threading.Thread(target=loop, name="artifact-retention", daemon=True)

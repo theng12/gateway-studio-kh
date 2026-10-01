@@ -37,6 +37,7 @@ from .adapters import BackendError, BackendRequest, adapter_for
 from .adapters import studio_hub
 from .config import ARTIFACT_DIR
 from .providers import registry
+from .providers.definitions import KIND_STUDIO_HUB
 from .store import RECOVERY_UNKNOWN, JobStore
 from . import fleet
 
@@ -69,6 +70,12 @@ _TRANSIENT_SITE_CODES = {"LOCATION_NOT_READY", "LOCATION_UNREACHABLE"}
 #: refer to them.
 _MAX_DEFERRALS = concurrency.DEFAULT_MAX_DEFERRALS
 _DEFER_CAP_S = concurrency.DEFAULT_DEFER_CAP_S
+
+
+#: A job that ran past its own time limit is not retried on another Mac: the limit is the lane's
+#: ceiling for this work, so another machine would only spend the same time again. It is stopped on
+#: the Hub and reported.
+_NO_REROUTE_CODES = {"DEADLINE_EXCEEDED"}
 
 
 def _defer_delay(attempts: int, cap_s: float | None = None) -> float:
@@ -342,6 +349,14 @@ _EXT_BY_MEDIA = {
     "image/webp": "webp",
     "audio/wav": "wav",
     "audio/mpeg": "mp3",
+    # What a Hub lane returns for `output_format: m4a` (AAC in MP4) and for FLAC. Without these an
+    # AAC artifact is stored as `{job}.bin`: it still serves with the right type, but every tool that
+    # trusts the extension (Finder, an ffmpeg muxer guess, the admin download) would mislabel it.
+    "audio/mp4": "m4a",
+    "audio/x-m4a": "m4a",
+    "audio/aac": "aac",
+    "audio/flac": "flac",
+    "audio/x-flac": "flac",
     "audio/ogg": "ogg",
     "video/mp4": "mp4",
     "application/x-subrip": "srt",
@@ -351,6 +366,19 @@ _EXT_BY_MEDIA = {
 
 def _ext_for(media_type: str | None) -> str:
     return _EXT_BY_MEDIA.get((media_type or "").split(";")[0].strip(), "bin")
+
+
+def _params_for(definition: Any, params: dict[str, Any]) -> dict[str, Any]:
+    """The job's params as one provider should see them.
+
+    `output_format` is a request to a Studio Hub lane (`wav`/`m4a`, `png`/`jpeg`) and means nothing to
+    a cloud provider: ElevenLabs would put `m4a` into its own `?output_format=` query and refuse a
+    paid job, and a fal model that does not declare the field may reject it. Cloud lanes return their
+    native format, so they never see it; the stored job still records what was asked.
+    """
+    if "output_format" not in params or getattr(definition, "kind", None) == KIND_STUDIO_HUB:
+        return params
+    return {key: value for key, value in params.items() if key != "output_format"}
 
 
 def _unknown_detail(detail: str) -> str:
@@ -455,6 +483,16 @@ def settle_result(job_id: str, result: Any, store: JobStore) -> None:
     # only the first made the rest unreachable. Artifact 0 keeps the original
     # `{job_id}.{ext}` name, so every single-artifact route and every file already
     # on disk is unchanged; the rest add an index.
+    # **Room first, so a full disk is a sentence and not a half-written file.** Nothing has been
+    # acknowledged to the Hub yet (the receipt goes out after the writes), so the Hub still
+    # holds the output while the job is failed retryable.
+    from . import diskguard
+
+    try:
+        diskguard.require_room(sum(len(a.content or b"") for a in result.artifacts))
+    except diskguard.DiskLow as low:
+        _fail(store, job_id, code="DISK_LOW", detail=low.sentence, retryable=True)
+        return
     stored: list[dict[str, Any]] = []
     for index, artifact in enumerate(result.artifacts):
         stem = job_id if index == 0 else f"{job_id}-{index}"
@@ -615,7 +653,7 @@ def execute_job(job: dict[str, Any], store: JobStore) -> None:
             provider_id=provider_id,
             model_id=model_id,
             modality=modality,
-            params=params,
+            params=_params_for(definition, params),
             values=registry.credentials.resolved(provider_id),
             base_url=definition.base_url,
             display_name=definition.display_name,
@@ -690,7 +728,7 @@ def execute_job(job: dict[str, Any], store: JobStore) -> None:
             #
             # A pinned voice is excluded: its reference clip lives on one controller, so there is
             # no other machine that could serve it and a "retry" would only be a slower failure.
-            if not unknown and pinned is None:
+            if not unknown and pinned is None and exc.code not in _NO_REROUTE_CODES:
                 moved = _next_machine(
                     store, job_id, model_id, modality, provider_id,
                     code=exc.code, detail=detail,
@@ -1062,6 +1100,8 @@ class Worker:
                 for job in due:
                     if self._stop.is_set():
                         return
+                    if self._expired_in_queue(job):
+                        continue
                     # Reserve first, then claim: a claim that fails must not leave the
                     # budget holding a slot nobody will ever release.
                     if not self._admit(job) and not (self._rebind(job) and self._admit(job)):
@@ -1100,6 +1140,32 @@ class Worker:
             self.last_pass_at = time.time()
 
             self._stop.wait(self.interval_s)
+
+    def _expired_in_queue(self, job: dict[str, Any]) -> bool:
+        """End a job that has waited out the queue ceiling, with a typed failure -- no orphans.
+
+        **The Gateway decides when a job is over; Story Studio follows it.** `accepted` had no
+        maximum age: a job could be deferred for hours (240 deferrals) or wait for a lane that never
+        freed, long after Story had stopped looking. The owner's three-hour queue ceiling is now a
+        job-lifetime one for work waiting on a Hub location: past it the job fails `QUEUE_TIMEOUT`
+        with a sentence, nothing has been dispatched (so nothing to cancel upstream), and Story
+        shows it. Returns True when the job was ended here.
+        """
+        if job.get("state") != "accepted" or job.get("upstream_job_id"):
+            return False
+        if not fleet.is_location_provider(str(job.get("provider_id") or "")):
+            return False
+        ceiling = float(studio_hub.QUEUE_WAIT_CEILING_S)
+        waited = time.time() - float(job.get("created_at") or time.time())
+        if waited < ceiling:
+            return False
+        _fail(
+            self.store, job["id"], code="QUEUE_TIMEOUT", retryable=True,
+            detail=(f"No Mac was free for {int(waited // 3600)} hours, so the job was withdrawn from the "
+                    "queue before anything ran. Nothing was started or charged; run it again when the "
+                    "Macs are free."),
+        )
+        return True
 
     def _sweep_holds(self) -> None:
         try:

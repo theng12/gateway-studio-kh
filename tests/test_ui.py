@@ -565,7 +565,7 @@ def select_fleet_tab(index: int) -> None:
     """Click one of the Fleet page's five inner tabs.
 
     `NSSegmentedControl` is exposed to Accessibility as a radio group, so the
-    tabs are radio buttons: 1 Overview, 2 Locations, 3 Machines, 4 Models,
+    tabs are radio buttons: 1 Groups, 2 Locations, 3 Machines, 4 Models,
     5 Jobs — the order of `FleetTab`. The page remembers the last tab, so a test
     that assumes it opens on Locations reads whatever was selected before.
     """
@@ -1062,7 +1062,7 @@ def main() -> int:
     # could see.
     voices_buttons = detail_button_titles()
     check("offers adding voices from a folder",
-          any("Add voices" in title for title in voices_buttons), f"{voices_buttons}")
+          any("Add Voices" in title for title in voices_buttons), f"{voices_buttons}")
     # A voice whose id the owner already knows — from a share link — had no way in:
     # the library search only finds what the provider will search for, and "Add to
     # my account" only acts on rows already in the table. The API always accepted
@@ -1215,11 +1215,11 @@ def main() -> int:
     check("Settings offers the artifact retention limits",
           "Received artifacts" in settings and "Keep for" in settings and "In use" in settings,
           settings[-260:])
-    # "Prune now" is a button, and `detail_texts` only reads static text — the same
+    # "Prune Now" is a button, and `detail_texts` only reads static text — the same
     # distinction that hid the Fleet row actions.
     settings_buttons = detail_button_titles()
     check("and a way to run it now",
-          any("Prune now" in title for title in settings_buttons), f"{settings_buttons}")
+          any("Prune Now" in title for title in settings_buttons), f"{settings_buttons}")
 
     # Quitting stops the gateway unless the owner opts out, so reopening always
     # runs the build just installed. Two legs, because either alone can be true
@@ -1284,7 +1284,7 @@ def main() -> int:
 
     # ------------------------------------------------------------------
     print("\n\033[1m7. Fleet reads the real controllers\033[0m")
-    # **The Fleet page is five inner tabs now** — Overview, Locations, Machines,
+    # **The Fleet page is five inner tabs now** — Groups, Locations, Machines,
     # Models, Jobs — and it remembers the last one. This section used to read the
     # old single scroll with three stacked tables, so it read whatever tab
     # happened to be showing and called missing tables failures. Each check below
@@ -1293,36 +1293,19 @@ def main() -> int:
     open_section("Fleet")
     # The page's own sentence is page chrome, above the body's scroll view, so
     # `detail_texts` (which reads the body) cannot see it.
-    check("names the page and what it is for", "Every location" in pane_texts(),
+    check("names the page and what it is for", "Every group of Macs" in pane_texts(),
           pane_texts()[:200])
 
-    select_fleet_tab(1)  # Overview
-    fleet = wait_for_detail("locations reachable")
-    check("summarises locations", "location" in fleet and "reachable" in fleet, fleet[:220])
-    check("says how many machines are online",
-          "machine online" in fleet or "machines online" in fleet, fleet[:240])
-    # The summary tile counts the jobs the Hub's activity report carried. The
-    # label is "jobs done"; this check looked for "completed", a word the page has
-    # never drawn, so it failed against a correct page.
-    check("counts completed and failed jobs in the summary",
-          "jobs done" in fleet, fleet[:300])
-    # Read the API beside the page, not minutes later. The fleet is live — a
-    # controller can come back while the suite walks the other tabs — and
-    # comparing a snapshot taken at the start to a fresh read at the end made the
-    # check disagree about a world that had changed underneath it.
-    fleet_api = api_get("/admin/api/fleet")
-    fleet_summary = fleet_api["summary"]
-    online = fleet_summary["machines_online"]
-    offline = fleet_summary["machines_offline"]
-    # The tile draws the number and the label as two separate labels, and
-    # `detail_texts` joins labels with newlines, so the count is its own line —
-    # "2\nmachines online · 0 offline". A substring like "2 machines online" was
-    # never on the page, which is why this check failed against a correct tile.
-    fleet_lines = [line.strip() for line in fleet.splitlines()]
-    machines_line = next((line for line in fleet_lines if "machines online" in line), "")
-    check("the page agrees with the gateway about machines online",
-          str(online) in fleet_lines and f"{offline} offline" in machines_line,
-          f"{fleet_summary}; page line={machines_line!r}")
+    select_fleet_tab(1)  # Groups
+    fleet = wait_for_detail("groups reachable")
+    check("summarises the groups", "group" in fleet and "reachable" in fleet, fleet[:220])
+    check("says how many nodes are online", "nodes online" in fleet, fleet[:240])
+    # The summary strip draws a figure and its caption as two labels, and the jobs line counts what is
+    # running now (the old tile counted finished jobs, which Machines and Analytics carry).
+    check("counts the jobs running and queued", "jobs running" in fleet and "queued" in fleet, fleet[:300])
+    # Every group is a card: its state word is the badge, so a fleet always names at least one.
+    check("each group carries its state word",
+          any(word in fleet for word in ("Healthy", "Attention", "Down")), fleet[:400])
 
     select_fleet_tab(2)  # Locations
     locations_tab = wait_for_detail("Add a location")

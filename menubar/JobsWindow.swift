@@ -103,7 +103,7 @@ final class JobsSection: NSObject, AppSection, NSTableViewDataSource, NSTableVie
 
     private let columns: [(id: String, title: String, width: CGFloat)] = [
         ("time", "When", 70),
-        ("modality", "Type", 80),
+        ("modality", "Type", 104),
         ("provider", "Provider", 130),
         ("model", "Model", 180),
         ("state", "State", 130),
@@ -119,13 +119,14 @@ final class JobsSection: NSObject, AppSection, NSTableViewDataSource, NSTableVie
 
     private func buildContent() -> NSView {
         let root = PageKit.page()
-        root.addArrangedSubview(PageKit.heading(
+        PageKit.addFull(PageKit.heading(
             "Jobs",
-            "Revisit completed outputs, see why work stopped, and manage retained files."
-        ))
+            "Revisit completed outputs, see why work stopped, and manage retained files.",
+            actions: [PageKit.button("Refresh", target: self, action: #selector(reload))]
+        ), to: root)
 
         summaryLabel = NSTextField(labelWithString: "Loading…")
-        summaryLabel.font = .systemFont(ofSize: 12)
+        summaryLabel.font = TextRole.secondary.font
         summaryLabel.textColor = .secondaryLabelColor
         summaryLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
@@ -135,32 +136,28 @@ final class JobsSection: NSObject, AppSection, NSTableViewDataSource, NSTableVie
         filterPopup.action = #selector(reload)
         filterPopup.controlSize = .small
 
-        let refresh = NSButton(title: "Refresh", target: self, action: #selector(reload))
-        refresh.bezelStyle = .rounded
-        refresh.controlSize = .small
-
-        let bar = NSStackView(views: [summaryLabel, NSView(), filterPopup, refresh])
-        bar.orientation = .horizontal
-        bar.spacing = 8
-        bar.alignment = .centerY
-        root.addArrangedSubview(bar)
-        bar.widthAnchor.constraint(equalTo: root.widthAnchor, constant: -56).isActive = true
+        PageKit.addFull(PageKit.toolbar([filterPopup, NSView(), summaryLabel]), to: root)
 
         table = NSTableView()
         table.dataSource = self
         table.delegate = self
-        table.rowHeight = 24
-        table.usesAlternatingRowBackgroundColors = true
+        table.rowHeight = DS.Size.row
+        // Separators only, no zebra: the card around the table already says where it ends.
+        table.usesAlternatingRowBackgroundColors = false
+        table.backgroundColor = .clear
         table.allowsMultipleSelection = false
-        table.style = .inset
+        table.style = .fullWidth
         // Share the width between columns: there is no horizontal scroller, so a
         // wider list must truncate its cells rather than push them past a clipped
         // edge at the window's minimum size.
-        table.columnAutoresizingStyle = .uniformColumnAutoresizingStyle
+        table.columnAutoresizingStyle = .noColumnAutoresizing
+        table.intercellSpacing = NSSize(width: DS.Space.xs, height: 0)
         for column in columns {
             let tableColumn = NSTableColumn(identifier: NSUserInterfaceItemIdentifier(column.id))
             tableColumn.title = column.title
             tableColumn.width = column.width
+            // Provider and Model take the spare width (see `fitColumns`); the rest keep what their contents need.
+            tableColumn.minWidth = ["provider", "model"].contains(column.id) ? 100 : column.width
             table.addTableColumn(tableColumn)
         }
 
@@ -168,18 +165,23 @@ final class JobsSection: NSObject, AppSection, NSTableViewDataSource, NSTableVie
         tableScroll.documentView = table
         tableScroll.hasVerticalScroller = true
         tableScroll.hasHorizontalScroller = false
-        tableScroll.borderType = .bezelBorder
-        tableScroll.translatesAutoresizingMaskIntoConstraints = false
-        root.addArrangedSubview(tableScroll)
-        NSLayoutConstraint.activate([
-            tableScroll.widthAnchor.constraint(equalTo: root.widthAnchor, constant: -56),
-            tableScroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 112),
-        ])
+        let tableCard = TableCard()
+        tableCard.hold(table: tableScroll)
+        tableCard.heightAnchor.constraint(greaterThanOrEqualToConstant: 112).isActive = true
+        tableCard.onLayout = { [weak self] in
+            guard let self else { return }
+            PageKit.fitColumns(of: self.table, in: self.tableScroll, flex: ["provider": (1, 130), "model": (1.4, 180), "state": (0.5, 130)])
+        }
+        PageKit.addFull(tableCard, to: root)
 
         detailScroll = NSScrollView()
         detailScroll.hasVerticalScroller = true
         detailScroll.hasHorizontalScroller = false
-        detailScroll.borderType = .bezelBorder
+        detailScroll.borderType = .noBorder
+        detailScroll.drawsBackground = false
+        detailScroll.wantsLayer = true
+        detailScroll.layer?.cornerRadius = DS.Radius.card - 1
+        detailScroll.layer?.masksToBounds = true
         detailScroll.translatesAutoresizingMaskIntoConstraints = false
 
         let detailDocument = FlippedView()
@@ -187,8 +189,8 @@ final class JobsSection: NSObject, AppSection, NSTableViewDataSource, NSTableVie
         detailStack = NSStackView()
         detailStack.orientation = .vertical
         detailStack.alignment = .leading
-        detailStack.spacing = 8
-        detailStack.edgeInsets = NSEdgeInsets(top: 12, left: 12, bottom: 12, right: 12)
+        detailStack.spacing = DS.Space.s
+        detailStack.edgeInsets = NSEdgeInsets(top: DS.Space.m, left: DS.Space.m, bottom: DS.Space.m, right: DS.Space.m)
         detailStack.translatesAutoresizingMaskIntoConstraints = false
         detailDocument.addSubview(detailStack)
         detailScroll.documentView = detailDocument
@@ -200,11 +202,16 @@ final class JobsSection: NSObject, AppSection, NSTableViewDataSource, NSTableVie
             detailStack.bottomAnchor.constraint(equalTo: detailDocument.bottomAnchor),
         ])
 
-        root.addArrangedSubview(detailScroll)
+        let detailCard = CardView()
+        detailCard.addSubview(detailScroll)
         NSLayoutConstraint.activate([
-            detailScroll.widthAnchor.constraint(equalTo: root.widthAnchor, constant: -56),
-            detailScroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 156),
+            detailScroll.topAnchor.constraint(equalTo: detailCard.topAnchor, constant: 1),
+            detailScroll.leadingAnchor.constraint(equalTo: detailCard.leadingAnchor, constant: 1),
+            detailScroll.trailingAnchor.constraint(equalTo: detailCard.trailingAnchor, constant: -1),
+            detailScroll.bottomAnchor.constraint(equalTo: detailCard.bottomAnchor, constant: -1),
+            detailCard.heightAnchor.constraint(greaterThanOrEqualToConstant: 156),
         ])
+        PageKit.addFull(detailCard, to: root)
         renderPlaceholder()
 
         let container = NSView()
@@ -361,6 +368,10 @@ final class JobsSection: NSObject, AppSection, NSTableViewDataSource, NSTableVie
 
     // MARK: Table
 
+    func tableView(_ tableView: NSTableView, rowViewForRow row: Int) -> NSTableRowView? {
+        SeparatorRowView()
+    }
+
     func numberOfRows(in tableView: NSTableView) -> Int { rows.count }
 
     func tableView(
@@ -371,7 +382,7 @@ final class JobsSection: NSObject, AppSection, NSTableViewDataSource, NSTableVie
         guard let tableColumn, row >= 0, row < rows.count else { return nil }
         let job = rows[row]
         let field = NSTextField(labelWithString: "")
-        field.font = .systemFont(ofSize: 11.5)
+        field.font = TextRole.secondary.font
         field.lineBreakMode = .byTruncatingTail
 
         switch tableColumn.identifier.rawValue {
@@ -379,7 +390,7 @@ final class JobsSection: NSObject, AppSection, NSTableViewDataSource, NSTableVie
             field.stringValue = GatewayAPI.relativeTime(job["created_at"] as? Double)
             field.textColor = .secondaryLabelColor
         case "modality":
-            field.stringValue = (string(job["modality"]) ?? "").capitalized
+            field.stringValue = Self.typeName(string(job["modality"]))
         case "provider":
             // The gateway resolves the display name; fall back to the id it stored
             // so a provider removed from the registry still names the job.
@@ -388,8 +399,18 @@ final class JobsSection: NSObject, AppSection, NSTableViewDataSource, NSTableVie
         case "model":
             field.stringValue = string(job["model_name"]) ?? string(job["model_id"]) ?? "?"
         case "state":
-            field.stringValue = displayState(job)
-            field.textColor = stateColour(job)
+            // The state is a badge, like every other status in the app: the word and its colour together.
+            let word = displayState(job)
+            let badge = Badge(word.prefix(1).uppercased() + word.dropFirst(), stateHealth(job))
+            let cell = NSTableCellView()
+            badge.translatesAutoresizingMaskIntoConstraints = false
+            cell.addSubview(badge)
+            NSLayoutConstraint.activate([
+                badge.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: DS.Space.xs),
+                badge.trailingAnchor.constraint(lessThanOrEqualTo: cell.trailingAnchor, constant: -DS.Space.xs),
+                badge.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
+            ])
+            return cell
         case "outputs":
             let count = (job["outputs"] as? [[String: Any]])?.count ?? 0
             field.stringValue = count == 1 ? "1 file" : "\(count) files"
@@ -403,8 +424,8 @@ final class JobsSection: NSObject, AppSection, NSTableViewDataSource, NSTableVie
         cell.addSubview(field)
         cell.textField = field
         NSLayoutConstraint.activate([
-            field.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 4),
-            field.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -4),
+            field.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: DS.Space.xs),
+            field.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -DS.Space.xs),
             field.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
         ])
         return cell
@@ -527,7 +548,7 @@ final class JobsSection: NSObject, AppSection, NSTableViewDataSource, NSTableVie
                 line += ", trying again in \(Self.shortDuration(retry))"
             }
             let label = PageKit.help(waiting.isEmpty ? "\(line)." : "\(line). \(waiting)")
-            label.textColor = .systemOrange
+            label.textColor = Health.warn.text
             detailStack.addArrangedSubview(label)
         }
 
@@ -560,7 +581,7 @@ final class JobsSection: NSObject, AppSection, NSTableViewDataSource, NSTableVie
         if let text = string(job["output_text"]), !text.isEmpty {
             detailStack.addArrangedSubview(PageKit.sectionTitle("Text output"))
             let outputText = NSTextField(wrappingLabelWithString: text)
-            outputText.font = .systemFont(ofSize: 12)
+            outputText.font = TextRole.secondary.font
             outputText.textColor = .labelColor
             outputText.isSelectable = true
             outputText.preferredMaxLayoutWidth = PageKit.textWidth
@@ -582,9 +603,7 @@ final class JobsSection: NSObject, AppSection, NSTableViewDataSource, NSTableVie
 
         cancelButton = nil
         if canRequestCancellation(job) {
-            let cancel = NSButton(title: job["state"] as? String == "running" ? "Cancel running job" : "Cancel queued job", target: self, action: #selector(cancelSelectedJob))
-            cancel.bezelStyle = .rounded
-            cancel.controlSize = .small
+            let cancel = PageKit.button(job["state"] as? String == "running" ? "Cancel Running Job" : "Cancel Queued Job", target: self, action: #selector(cancelSelectedJob))
             detailStack.addArrangedSubview(cancel)
             cancelButton = cancel
         }
@@ -596,13 +615,11 @@ final class JobsSection: NSObject, AppSection, NSTableViewDataSource, NSTableVie
         discardButton = nil
         if let action = recoveryAction(job) {
             let closing = action == "close_hold"
-            let button = NSButton(
-                title: closing ? "Close this hold…" : "Discard uncertain attempt…",
+            let button = PageKit.button(
+                closing ? "Close This Hold…" : "Discard Uncertain Attempt…",
                 target: self,
                 action: #selector(discardSelectedJob)
             )
-            button.bezelStyle = .rounded
-            button.controlSize = .small
             button.toolTip = closing
                 ? "Close the gateway's own record of this attempt. Nothing is sent upstream — "
                     + "this lane has no discard route — and whatever the provider may still "
@@ -629,8 +646,8 @@ final class JobsSection: NSObject, AppSection, NSTableViewDataSource, NSTableVie
         if output.kept { state += " · Pinned" }
         let bytes = output.bytes.map(formatBytes) ?? "size unknown"
         let label = NSTextField(labelWithString: "\(output.assetID) · \(output.mediaType) · \(bytes) · \(state)")
-        label.font = .systemFont(ofSize: 11.5)
-        label.textColor = output.present ? .secondaryLabelColor : .systemOrange
+        label.font = TextRole.secondary.font
+        label.textColor = output.present ? .secondaryLabelColor : Health.warn.text
         label.lineBreakMode = .byTruncatingTail
         label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
@@ -644,7 +661,7 @@ final class JobsSection: NSObject, AppSection, NSTableViewDataSource, NSTableVie
         let row = NSStackView(views: controls)
         row.orientation = .horizontal
         row.alignment = .centerY
-        row.spacing = 6
+        row.spacing = DS.Space.tight
         detailStack.addArrangedSubview(row)
     }
 
@@ -880,8 +897,8 @@ final class JobsSection: NSObject, AppSection, NSTableViewDataSource, NSTableVie
             + "it again. Anything the provider still produces is not collected. This "
             + "cannot be undone."
         alert.alertStyle = .warning
-        alert.addButton(withTitle: "Close the hold")
-        alert.addButton(withTitle: "Keep it open")
+        alert.addButton(withTitle: "Close the Hold")
+        alert.addButton(withTitle: "Keep It Open")
         return alert.runModal() == .alertFirstButtonReturn
     }
 
@@ -896,7 +913,7 @@ final class JobsSection: NSObject, AppSection, NSTableViewDataSource, NSTableVie
             + "cannot be undone. Reconcile it instead if the result may still matter."
         alert.alertStyle = .warning
         alert.addButton(withTitle: "Discard")
-        alert.addButton(withTitle: "Keep waiting")
+        alert.addButton(withTitle: "Keep Waiting")
         return alert.runModal() == .alertFirstButtonReturn
     }
 
@@ -916,7 +933,7 @@ final class JobsSection: NSObject, AppSection, NSTableViewDataSource, NSTableVie
     private func setStatus(_ text: String, error: Bool) {
         guard detailStatusLabel != nil else { return }
         detailStatusLabel.stringValue = text
-        detailStatusLabel.textColor = error ? .systemRed : .secondaryLabelColor
+        detailStatusLabel.textColor = error ? Health.bad.text : .secondaryLabelColor
     }
 
     private func isCurrent(jobID: String, generation: Int) -> Bool {
@@ -995,18 +1012,28 @@ final class JobsSection: NSObject, AppSection, NSTableViewDataSource, NSTableVie
         return string(job["state"]) ?? "unknown"
     }
 
-    private func stateColour(_ job: [String: Any]) -> NSColor {
+    private func stateHealth(_ job: [String: Any]) -> Health {
+        if job["recovery_required"] as? Bool == true { return .warn }
         switch string(job["state"]) {
-        case "succeeded": return .systemGreen
-        case "failed": return .systemRed
-        case "cancelled": return .tertiaryLabelColor
-        default: return .systemYellow
+        case "succeeded", "running": return .ok
+        case "failed": return .bad
+        case "cancelled", "accepted", "queued": return .off
+        default: return .warn
+        }
+    }
+
+    /// "TTS", "Image", "Transcription": the acronym keeps its capitals (`capitalized` made it "Tts").
+    static func typeName(_ modality: String?) -> String {
+        switch (modality ?? "").lowercased() {
+        case "tts": return "TTS"
+        case "": return ""
+        case let word: return word.prefix(1).uppercased() + word.dropFirst()
         }
     }
 
     private func lifecycleColour(_ job: [String: Any]) -> NSColor {
-        if job["recovery_required"] as? Bool == true { return .systemOrange }
-        if job["cancel_requested"] as? Bool == true { return .systemYellow }
+        if job["recovery_required"] as? Bool == true { return Health.warn.text }
+        if job["cancel_requested"] as? Bool == true { return Health.warn.text }
         return .secondaryLabelColor
     }
 

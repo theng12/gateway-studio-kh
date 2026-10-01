@@ -34,6 +34,12 @@ now closed, and these are the parts that were expensive to work out.
   is instrumental only. The adapter forwards
   whichever parameters the caller set and **invents none** — which engine accepts
   what is the engine's own answer, and a guessed default would be silently wrong.
+- **No Hub video model is offered (2026-10-01, owner decision).** LTX-2.3 (package
+  `ltx-2-3-22b-ram-12gb-mlx`) and Lance are retired, and a Hub on a release without the Video
+  worker publishes no video package. The gateway keeps no retired-model list: a model leaves the
+  pickers on the next discovery after the Hub stops publishing it. The video lane in the adapter
+  stays so a video model a Hub adds later runs unchanged; until then Video offers only cloud
+  models, and with none at all the Create page says no model is switched on for the lane.
 - **A staged voice reference carries its metadata, and the answer is checked.** The
   Hub's `POST /api/hub/voice-references` accepts `language`, a declared `sha256`, a
   durable `source_asset_id` and `ttl_seconds`, and returns the digest, byte count,
@@ -65,3 +71,16 @@ now closed, and these are the parts that were expensive to work out.
   reconciled or discarded automatically: the hub keeps both **operator-initiated**,
   and from `639fcf9` the discard is reachable by a controller's fleet credential
   (above) as well as by the node's own operator.
+- **`output_format` asks a Hub lane to compress at the source — optional, validated, never a failure.**
+  Image `png|jpeg`, music `wav|m4a`, voice `wav|m4a` (JPEG q90 and AAC are one fixed preset each in the Hub;
+  there is no quality knob). `POST /v1/images/generations`, `/v1/music/generations` and `/v1/audio/jobs`
+  answer **400 `INVALID_PARAMS`** for any other value, before anything is queued or charged. Absent (or `null`)
+  is the request every caller sent before the field existed, byte for byte; a node that predates it drops the
+  field and returns its native WAV/PNG, which is recorded (`payload.output_format_requested` /
+  `output_format_applied`, the latter read from the delivered media type) and is **not** an error. The adapter
+  stores whatever media type the Hub states, so `audio/mp4` lands as `{job}.m4a` and `audio/flac` as `.flac`
+  (`worker._EXT_BY_MEDIA`) rather than `.bin`. Cloud providers never see the field (`worker._params_for`):
+  ElevenLabs would copy `m4a` into its own `?output_format=` query and refuse a paid job. Hub rows publish
+  `output_formats` when the lane declares an `output_format` parameter (a hint only). **Idempotency is by key
+  alone**, so a caller that changes the format for an otherwise identical request must change the key (Story
+  folds the format into it only when set).

@@ -291,8 +291,8 @@ final class CreateWorkspace: NSView {
     private var newDraftButton: NSButton?
 
     private let layout: CreatePageLayout
-    private let statusLabel = PageKit.label("", size: 12, colour: .secondaryLabelColor, wrapping: true)
-    private let generateButton = NSButton(title: "Generate", target: nil, action: nil)
+    private let statusLabel = PageKit.label("", .secondary, colour: .secondaryLabelColor, wrapping: true)
+    private let generateButton = PrimaryButton(title: "Generate", target: nil, action: nil)
     // The result pane's actions.
     private let saveButton = NSButton(title: "Save…", target: nil, action: nil)
     private let copyButton = NSButton(
@@ -353,11 +353,11 @@ final class CreateWorkspace: NSView {
     /// A titled block of the form: the title in Studio Hub's `.headline` weight, the control at the
     /// full width of the column, and an optional hint under it.
     private func section(_ title: String, _ control: NSView, hint: String = "", fullWidth: Bool = true) -> NSView {
-        let head = PageKit.label(title, size: 13, weight: .semibold)
+        let head = PageKit.label(title, .rowTitle)
         let stack = NSStackView(views: [head, control])
         stack.orientation = .vertical
         stack.alignment = .leading
-        stack.spacing = 6
+        stack.spacing = DS.Space.tight
         if fullWidth { control.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true }
         if !hint.isEmpty {
             let help = wrapped(PageKit.help(hint))
@@ -391,15 +391,14 @@ final class CreateWorkspace: NSView {
             target: self, action: #selector(refreshModels))
         refresh.bezelStyle = .rounded
         refresh.toolTip = "Refresh models"
-        let pickerRow = PageKit.row([picker, refresh], spacing: 8)
+        let pickerRow = PageKit.row([picker, refresh])
         picker.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
-        capabilityLabel = PageKit.help("Capabilities: unknown")
-        let manage = NSButton(title: "Manage \(lane.title) Models", target: self, action: #selector(openModels))
-        manage.bezelStyle = .rounded
+        capabilityLabel = PageKit.label("Capabilities: unknown", .caption, colour: .secondaryLabelColor, wrapping: true)
+        let manage = PageKit.button("Manage \(lane.title) Models", target: self, action: #selector(openModels), regular: true)
         let modelColumn = NSStackView(views: [pickerRow, manage])
         modelColumn.orientation = .vertical
         modelColumn.alignment = .leading
-        modelColumn.spacing = 10
+        modelColumn.spacing = DS.Space.s
         pickerRow.widthAnchor.constraint(equalTo: modelColumn.widthAnchor).isActive = true
         let modelBlock = section(
             "Model", modelColumn,
@@ -410,14 +409,13 @@ final class CreateWorkspace: NSView {
         layout.addForm(divider())
 
         if lane.isUpload {
-            let choose = NSButton(title: "Choose File…", target: self, action: #selector(pickFile))
-            choose.bezelStyle = .rounded
+            let choose = PageKit.button("Choose File…", target: self, action: #selector(pickFile), regular: true)
             fileButton = choose
             fileHelp = PageKit.help("No file chosen")
             let column = NSStackView(views: [choose, fileHelp!])
             column.orientation = .vertical
             column.alignment = .leading
-            column.spacing = 6
+            column.spacing = DS.Space.tight
             fileHelp!.preferredMaxLayoutWidth = 0
             fileHelp!.widthAnchor.constraint(equalTo: column.widthAnchor).isActive = true
             layout.addForm(section("Recording", column))
@@ -431,29 +429,24 @@ final class CreateWorkspace: NSView {
 
         generateButton.target = self
         generateButton.action = #selector(generate)
-        generateButton.bezelStyle = .rounded
         generateButton.controlSize = .large
         generateButton.keyEquivalent = "\r"
-        // Studio Hub's `.borderedProminent`: the one control the page is built around is the
-        // accent colour, also while the window is not key.
-        generateButton.bezelColor = .controlAccentColor
+        // The one control the page is built around is accent-filled (Studio Hub's `.borderedProminent`),
+        // like the primary action on every other page; `.large` is kept here and only here.
         generateButton.widthAnchor.constraint(greaterThanOrEqualToConstant: 110).isActive = true
-        cancelButton = NSButton(title: "Cancel", target: self, action: #selector(cancel))
-        cancelButton?.bezelStyle = .rounded
+        cancelButton = PageKit.button("Cancel", target: self, action: #selector(cancel), regular: true)
         cancelButton?.controlSize = .large
         cancelButton?.isHidden = true
-        retryAttemptButton = NSButton(title: "Retry same attempt", target: self, action: #selector(retryAttempt))
-        retryAttemptButton?.bezelStyle = .rounded
+        retryAttemptButton = PageKit.button("Retry Same Attempt", target: self, action: #selector(retryAttempt), regular: true)
         retryAttemptButton?.isHidden = true
-        newDraftButton = NSButton(title: "Start separate draft", target: self, action: #selector(startNewDraft))
-        newDraftButton?.bezelStyle = .rounded
+        newDraftButton = PageKit.button("Start Separate Draft", target: self, action: #selector(startNewDraft), regular: true)
         newDraftButton?.isHidden = true
         let actions = NSStackView(views: [
             PageKit.row([generateButton, cancelButton!]), retryAttemptButton!, newDraftButton!,
         ])
         actions.orientation = .vertical
         actions.alignment = .leading
-        actions.spacing = 8
+        actions.spacing = DS.Space.s
         layout.addForm(actions)
         layout.addForm(wrapped(statusLabel))
     }
@@ -462,9 +455,11 @@ final class CreateWorkspace: NSView {
         saveButton.target = self
         saveButton.action = #selector(saveArtifact)
         saveButton.bezelStyle = .rounded
+        saveButton.controlSize = .small
         copyButton.target = self
         copyButton.action = #selector(copyText)
         copyButton.bezelStyle = .rounded
+        copyButton.controlSize = .small
         copyButton.toolTip = "Copy the transcript"
 
         moreButton.addItem(withTitle: "")
@@ -490,7 +485,7 @@ final class CreateWorkspace: NSView {
         switch field.kind {
         case .script:
             let text = NSTextView()
-            text.font = .systemFont(ofSize: 14)
+            text.font = TextRole.body.font
             text.isRichText = false
             text.string = field.initial
             text.isVerticallyResizable = true
@@ -506,7 +501,7 @@ final class CreateWorkspace: NSView {
         case .number, .text:
             let entry = NSTextField(string: field.initial)
             entry.placeholderString = field.placeholder
-            entry.font = .systemFont(ofSize: 13)
+            entry.font = TextRole.body.font
             // A count is a short number; it should not stretch across the column.
             if field.kind == .number { entry.widthAnchor.constraint(equalToConstant: 90).isActive = true }
             return entry
@@ -514,7 +509,7 @@ final class CreateWorkspace: NSView {
             let combo = NSComboBox()
             combo.isEditable = true
             combo.completes = true
-            combo.font = .systemFont(ofSize: 13)
+            combo.font = TextRole.body.font
             combo.placeholderString = "Search compatible voices"
             combo.target = self
             combo.action = #selector(voiceChanged)
@@ -522,13 +517,13 @@ final class CreateWorkspace: NSView {
 
             let advanced = NSTextField()
             advanced.placeholderString = "Advanced provider voice ID (exact)"
-            advanced.font = .systemFont(ofSize: 13)
+            advanced.font = TextRole.body.font
             advancedVoiceField = advanced
 
             let stack = NSStackView(views: [combo, advanced])
             stack.orientation = .vertical
             stack.alignment = .leading
-            stack.spacing = 6
+            stack.spacing = DS.Space.tight
             combo.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
             advanced.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
             return stack
@@ -815,10 +810,11 @@ final class CreateWorkspace: NSView {
         } else if lane.modality == "chat" {
             lines.append("Context window: \(unknown(row["context_window_tokens"])) tokens (\(source(row, "context_window_tokens_source")))")
             lines.append("Output tokens: \(unknown(row["max_output_tokens"])) (\(source(row, "max_output_tokens_source")))")
-        } else {
+        } else if lane.modality != "transcription" {
+            // A transcription lane takes a recording, not a prompt: "Prompt characters: unknown" would be noise.
             lines.append("Prompt characters: \(unknown(row["max_prompt_characters"])) (\(source(row, "max_prompt_characters_source")))")
         }
-        label.stringValue = lines.joined(separator: "\n")
+        label.stringValue = lines.count == 1 ? "No capability limits stated for this model." : lines.joined(separator: "\n")
     }
 
     private func updateGenerateEnabled() {
@@ -1336,10 +1332,10 @@ final class CreateWorkspace: NSView {
             image.contentTintColor = colour
             icon = image
         }
-        let heading = PageKit.label(title, size: 15, weight: .semibold, colour: colour == .secondaryLabelColor ? .labelColor : colour)
+        let heading = PageKit.label(title, .section, colour: colour == .secondaryLabelColor ? .labelColor : colour)
         var views = [icon, heading]
         if !detail.isEmpty {
-            let words = PageKit.label(detail, size: 13, colour: .secondaryLabelColor, wrapping: true)
+            let words = PageKit.label(detail, .body, colour: .secondaryLabelColor, wrapping: true)
             words.alignment = .center
             words.preferredMaxLayoutWidth = 0
             words.widthAnchor.constraint(lessThanOrEqualToConstant: 440).isActive = true
@@ -1348,7 +1344,7 @@ final class CreateWorkspace: NSView {
         let stack = NSStackView(views: views)
         stack.orientation = .vertical
         stack.alignment = .centerX
-        stack.spacing = 10
+        stack.spacing = DS.Space.s
         stack.translatesAutoresizingMaskIntoConstraints = false
         let container = NSView()
         container.addSubview(stack)
@@ -1383,7 +1379,7 @@ final class CreateWorkspace: NSView {
                 spin.style = .spinning
                 spin.controlSize = .small
                 spin.startAnimation(nil)
-                footer = PageKit.row([spin, PageKit.label("The model is answering…", size: 13, colour: .secondaryLabelColor)])
+                footer = PageKit.row([spin, PageKit.label("The model is answering…", .body, colour: .secondaryLabelColor)])
             }
             let view = ConversationView(turns: chatTurns, footer: footer)
             layout.setPreview(view)
@@ -1413,7 +1409,7 @@ final class CreateWorkspace: NSView {
                 showConversation()
             } else {
                 outputs = []
-                showMessage("The generation failed", reason, symbol: "exclamationmark.triangle", colour: .systemRed)
+                showMessage("The generation failed", reason, symbol: "exclamationmark.triangle", colour: Health.bad.text)
                 updateActions()
             }
             return
@@ -1486,7 +1482,7 @@ final class CreateWorkspace: NSView {
             showMessage(
                 "The files are gone",
                 "The gateway no longer has these files. Reload the result after reattachment; no network request was made for the missing outputs.",
-                symbol: "exclamationmark.triangle", colour: .systemRed)
+                symbol: "exclamationmark.triangle", colour: Health.bad.text)
             updateCaption()
             updateActions()
             return
@@ -1522,7 +1518,7 @@ final class CreateWorkspace: NSView {
             layout.setPreview(picker(messageView(
                 "The file is gone",
                 "The gateway no longer has this file. Reload the result after reattachment; no network request was made for the missing output.",
-                symbol: "exclamationmark.triangle", colour: .systemRed)))
+                symbol: "exclamationmark.triangle", colour: Health.bad.text)))
             return
         }
         layout.setPreview(picker(messageView("Loading…", "", symbol: lane.symbol, spinning: true)))
@@ -1543,7 +1539,7 @@ final class CreateWorkspace: NSView {
         let stack = NSStackView(views: [segments, content])
         stack.orientation = .vertical
         stack.alignment = .leading
-        stack.spacing = 12
+        stack.spacing = DS.Space.m
         content.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
         content.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .vertical)
         return stack
@@ -1623,7 +1619,7 @@ final class CreateWorkspace: NSView {
                    self.lane.modality != "image" {
                     self.layout.setPreview(self.picker(self.messageView(
                         "Could not load this result", error.localizedDescription,
-                        symbol: "exclamationmark.triangle", colour: .systemRed)))
+                        symbol: "exclamationmark.triangle", colour: Health.bad.text)))
                 }
             case .success(let data):
                 let ext = PageKit.artifactExtension(output.mediaType)

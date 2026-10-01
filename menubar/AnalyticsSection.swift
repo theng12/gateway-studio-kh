@@ -55,28 +55,21 @@ final class AnalyticsSection: NSObject, AppSection {
     private func buildPage() -> NSView {
         let page = PageKit.page()
 
-        page.addArrangedSubview(PageKit.heading(
+        let heading = PageKit.heading(
             "Analytics",
-            "What this gateway has generated — by type, by model, and by the machine that ran it."
-        ))
-
-        let refreshButton = NSButton(
-            title: "Refresh", target: self, action: #selector(refreshPressed)
+            "What this gateway has generated — by type, by model, and by the machine that ran it.",
+            actions: [PageKit.button("Refresh", target: self, action: #selector(refreshPressed))]
         )
-        refreshButton.bezelStyle = .rounded
-        refreshButton.controlSize = .small
+        PageKit.addFull(heading, to: page)
 
-        status.font = .systemFont(ofSize: 11.5)
+        status.font = TextRole.secondary.font
         status.textColor = .secondaryLabelColor
-
-        let controls = PageKit.row([status, NSView(), refreshButton])
-        controls.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        page.addArrangedSubview(controls)
+        page.addArrangedSubview(status)
 
         body.orientation = .vertical
         body.alignment = .leading
         body.spacing = PageKit.blockSpacing
-        page.addArrangedSubview(body)
+        PageKit.addFull(body, to: page)
 
         // The same reason Overview and Fleet scroll: content with a required height pinned
         // straight to the host propagates outwards and grows the window.
@@ -101,10 +94,6 @@ final class AnalyticsSection: NSObject, AppSection {
             document.topAnchor.constraint(equalTo: scroll.contentView.topAnchor),
             document.widthAnchor.constraint(equalTo: scroll.contentView.widthAnchor),
         ])
-
-        // `controls` spans the page width so the Refresh button sits on the right edge.
-        controls.widthAnchor.constraint(equalTo: page.widthAnchor, constant: -2 * PageKit.pagePadding)
-            .isActive = true
 
         return scroll
     }
@@ -184,19 +173,16 @@ final class AnalyticsSection: NSObject, AppSection {
         blocks.append(contentsOf: table(
             title: "By generation type",
             firstHeader: "Type",
-            firstWidth: 150,
-            rows: rows(from: payload["by_modality"]) { $0 }
+            rows: rows(from: payload["by_modality"]) { Self.typeName($0) }
         ))
         blocks.append(contentsOf: table(
             title: "By model",
             firstHeader: "Model",
-            firstWidth: 300,
             rows: rows(from: payload["by_model"]) { self.modelNames[$0] ?? $0 }
         ))
         blocks.append(contentsOf: table(
             title: "By machine",
             firstHeader: "Machine",
-            firstWidth: 300,
             rows: rows(from: payload["by_machine"]) { key in
                 // "<machine> @ <provider id>"; the machine is already a name.
                 let parts = key.components(separatedBy: " @ ")
@@ -213,6 +199,7 @@ final class AnalyticsSection: NSObject, AppSection {
         }
 
         body.setViews(blocks, in: .top)
+        for block in blocks { block.widthAnchor.constraint(equalTo: body.widthAnchor).isActive = true }
     }
 
     // MARK: - Blocks
@@ -224,9 +211,9 @@ final class AnalyticsSection: NSObject, AppSection {
 
         var tiles: [NSView] = [
             tile("Jobs", "\(AnalyticsSection.count(totals["jobs"]))"),
-            tile("Succeeded", "\(succeeded)"),
+            tile("OK", "\(succeeded)"),
             tile("Failed", "\(failed)"),
-            tile("Success rate", String(format: "%.0f%%", 100 * Double(succeeded) / Double(settled))),
+            tile("Success", String(format: "%.0f%%", 100 * Double(succeeded) / Double(settled))),
             tile("Median", AnalyticsSection.seconds(totals["seconds_median"])),
             tile("Mean", AnalyticsSection.seconds(totals["seconds_mean"])),
             tile("Output", AnalyticsSection.bytes(totals["bytes"])),
@@ -235,22 +222,27 @@ final class AnalyticsSection: NSObject, AppSection {
             tiles[6] = tile("Output", "—")
         }
 
-        let row = PageKit.row(tiles, spacing: 18)
+        let row = NSStackView(views: tiles)
+        row.orientation = .horizontal
+        row.spacing = DS.Space.m
         row.distribution = .fillEqually
         return row
     }
 
+    /// A figure over its caption, in the same card the Overview tiles use.
     private func tile(_ caption: String, _ value: String) -> NSView {
-        let valueLabel = PageKit.label(value, size: 19, weight: .semibold)
-        let stack = NSStackView(views: [
-            PageKit.label(caption.uppercased(), size: 10, weight: .medium,
-                          colour: .secondaryLabelColor),
-            valueLabel,
-        ])
-        stack.orientation = .vertical
-        stack.alignment = .leading
-        stack.spacing = 3
-        return stack
+        let tile = StatTile(title: caption)
+        tile.set(value: value, title: caption)
+        return tile
+    }
+
+    /// "tts" reads as "Tts" through `capitalized`; the acronym keeps its capitals everywhere.
+    static func typeName(_ key: String) -> String {
+        switch key.lowercased() {
+        case "tts": return "TTS"
+        case "": return key
+        default: return key.prefix(1).uppercased() + key.dropFirst()
+        }
     }
 
     /// Each row is its cells plus the raw id, which the first cell's tooltip carries.
@@ -275,30 +267,48 @@ final class AnalyticsSection: NSObject, AppSection {
         }
     }
 
-    private func table(
-        title: String, firstHeader: String, firstWidth: CGFloat, rows: [(cells: [String], id: String)]
-    ) -> [NSView] {
-        var views: [NSView] = [PageKit.sectionTitle(title)]
-        guard !rows.isEmpty else {
-            views.append(PageKit.help("Nothing recorded in this group yet."))
-            return views
-        }
+    /// One column grid for all three tables, so their numbers line up under each other: the first column
+    /// takes whatever width is left, the numeric ones are fixed and right-aligned.
+    private static let numericWidths: [CGFloat] = [52, 44, 52, 80, 80, 88]
 
-        let widths: [CGFloat] = [firstWidth, 62, 62, 62, 92, 92, 104]
-        let headers = [firstHeader, "Jobs", "OK", "Failed", "Median", "Mean", "Output"]
-        views.append(tableRow(headers, widths: widths, header: true))
-        for row in rows {
-            views.append(tableRow(row.cells, widths: widths, header: false, tip: row.id))
+    private func table(
+        title: String, firstHeader: String, rows: [(cells: [String], id: String)]
+    ) -> [NSView] {
+        let titleLabel = PageKit.sectionTitle(title)
+        guard !rows.isEmpty else {
+            return [titleLabel, PageKit.help("Nothing recorded in this group yet.")]
         }
-        return views
+        let headers = [firstHeader, "Jobs", "OK", "Failed", "Median", "Mean", "Output"]
+        let list = NSStackView()
+        list.orientation = .vertical
+        list.alignment = .leading
+        list.spacing = 0
+        func add(_ view: NSView) {
+            list.addArrangedSubview(view)
+            view.widthAnchor.constraint(equalTo: list.widthAnchor).isActive = true
+        }
+        add(tableRow(headers, header: true))
+        for row in rows {
+            let rule = NSBox()
+            rule.boxType = .separator
+            add(rule)
+            add(tableRow(row.cells, header: false, tip: row.id))
+        }
+        let card = CardView()
+        card.hold(list, inset: NSEdgeInsets(top: 0, left: DS.Space.l, bottom: 0, right: DS.Space.l))
+        // Title and card travel together, so the section gap (24) is between tables, not inside one.
+        let group = NSStackView(views: [titleLabel, card])
+        group.orientation = .vertical
+        group.alignment = .leading
+        group.spacing = DS.Space.m
+        card.widthAnchor.constraint(equalTo: group.widthAnchor).isActive = true
+        return [group]
     }
 
-    private func tableRow(_ cells: [String], widths: [CGFloat], header: Bool, tip: String? = nil) -> NSView {
+    private func tableRow(_ cells: [String], header: Bool, tip: String? = nil) -> NSView {
         let views: [NSView] = cells.enumerated().map { index, text in
             let field = PageKit.label(
-                text,
-                size: header ? 10.5 : 12,
-                weight: header ? .semibold : .regular,
+                text, header ? .captionStrong : .secondary,
                 colour: header ? .secondaryLabelColor : .labelColor
             )
             field.alignment = index == 0 ? .left : .right
@@ -306,13 +316,14 @@ final class AnalyticsSection: NSObject, AppSection {
             field.lineBreakMode = .byTruncatingTail
             if index == 0 { field.toolTip = tip }
             field.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-            field.widthAnchor.constraint(equalToConstant: widths[index]).isActive = true
+            // The first column takes whatever width the numeric ones leave, so their right edges line up
+            // from one row to the next and from one table to the next.
+            field.setContentHuggingPriority(index == 0 ? NSLayoutConstraint.Priority(1) : .required, for: .horizontal)
+            if index > 0 { field.widthAnchor.constraint(equalToConstant: Self.numericWidths[index - 1]).isActive = true }
             return field
         }
-        let row = PageKit.row(views, spacing: 10)
-        row.widthAnchor.constraint(
-            equalToConstant: widths.reduce(0, +) + 10 * CGFloat(max(0, widths.count - 1))
-        ).isActive = true
+        let row = PageKit.row(views, spacing: DS.Space.s)
+        row.heightAnchor.constraint(equalToConstant: DS.Size.row).isActive = true
         return row
     }
 

@@ -15,11 +15,11 @@ import AppKit
 // MARK: - Tabs
 
 enum FleetTab: Int, CaseIterable {
-    case overview, locations, machines, models, jobs
+    case groups, locations, machines, models, jobs
 
     var title: String {
         switch self {
-        case .overview: return "Overview"
+        case .groups: return "Groups"
         case .locations: return "Settings / Locations"
         case .machines: return "Machines"
         case .models: return "Local Models"
@@ -30,7 +30,7 @@ enum FleetTab: Int, CaseIterable {
     /// The short label the segmented control can fit.
     var shortTitle: String {
         switch self {
-        case .overview: return "Overview"
+        case .groups: return "Groups"
         case .locations: return "Locations"
         case .machines: return "Machines"
         case .models: return "Models"
@@ -87,6 +87,11 @@ struct FleetColumn {
     let title: String
     let width: CGFloat
     var minWidth: CGFloat = 60
+    /// A weight: the spare width of the pane is shared out by it, and a narrow pane shrinks the column toward
+    /// `minWidth`, so the table fits instead of scrolling sideways (`PageKit.fitColumns`). 0 is a fixed column.
+    var flex: CGFloat = 1
+    /// The pane width below which this (secondary) column is dropped, so the primary ones stay readable.
+    var hideBelow: CGFloat = 0
     var sortable: Bool = true
     var alignment: NSTextAlignment = .left
     /// The text drawn in a plain cell.
@@ -130,8 +135,8 @@ final class FleetClosureButton: NSButton {
 /// runs inside the effective appearance, so the tint follows the Mac and the text
 /// on top of it stays legible in both.
 final class FleetTintStack: NSStackView {
-    var tint: NSColor = .systemOrange
-    var tintAlpha: CGFloat = 0.08
+    var tint: NSColor = Health.warn.tint
+    var tintAlpha: CGFloat = 0.10
     var borderAlpha: CGFloat = 0.35
 
     override var wantsUpdateLayer: Bool { true }
@@ -140,7 +145,7 @@ final class FleetTintStack: NSStackView {
         layer?.backgroundColor = tint.withAlphaComponent(tintAlpha).cgColor
         layer?.borderColor = tint.withAlphaComponent(borderAlpha).cgColor
         layer?.borderWidth = borderAlpha > 0 ? 1 : 0
-        layer?.cornerRadius = 6
+        layer?.cornerRadius = DS.Radius.card
     }
 }
 
@@ -152,7 +157,7 @@ final class FleetTintStack: NSStackView {
 final class FleetTableController: NSObject, NSTableViewDataSource, NSTableViewDelegate {
     let table = NSTableView()
     let scrollView = NSScrollView()
-    let container = NSView()
+    let container = TableCard()
 
     private let columns: [FleetColumn]
     private let emptyLabel = NSTextField(wrappingLabelWithString: "")
@@ -165,7 +170,7 @@ final class FleetTableController: NSObject, NSTableViewDataSource, NSTableViewDe
     var onSelection: ((Any?) -> Void)?
     var emptyText = "Nothing to show."
 
-    init(columns: [FleetColumn], rowHeight: CGFloat = 22) {
+    init(columns: [FleetColumn], rowHeight: CGFloat = DS.Size.row) {
         self.columns = columns
         super.init()
         build(rowHeight: rowHeight)
@@ -175,7 +180,11 @@ final class FleetTableController: NSObject, NSTableViewDataSource, NSTableViewDe
         table.dataSource = self
         table.delegate = self
         table.rowHeight = rowHeight
-        table.usesAlternatingRowBackgroundColors = true
+        // Separators only (drawn by `SeparatorRowView`), no zebra: the card says where the table ends.
+        table.usesAlternatingRowBackgroundColors = false
+        table.backgroundColor = .clear
+        // The system's 17 pt between columns would eat a 1100 pt window's spare width; cells inset themselves.
+        table.intercellSpacing = NSSize(width: DS.Space.xs, height: 0)
         table.allowsMultipleSelection = false
         table.allowsEmptySelection = true
         table.columnAutoresizingStyle = .noColumnAutoresizing
@@ -197,13 +206,12 @@ final class FleetTableController: NSObject, NSTableViewDataSource, NSTableViewDe
         // A machine table is wider than the pane at a small window; a horizontal
         // scroller keeps every column reachable rather than clipping the last one.
         scrollView.hasHorizontalScroller = true
-        scrollView.borderType = .bezelBorder
         scrollView.translatesAutoresizingMaskIntoConstraints = false
 
         container.translatesAutoresizingMaskIntoConstraints = false
-        container.addSubview(scrollView)
+        container.hold(table: scrollView)
 
-        emptyLabel.font = .systemFont(ofSize: 12)
+        emptyLabel.font = TextRole.secondary.font
         emptyLabel.textColor = .secondaryLabelColor
         emptyLabel.alignment = .center
         emptyLabel.maximumNumberOfLines = 3
@@ -213,10 +221,6 @@ final class FleetTableController: NSObject, NSTableViewDataSource, NSTableViewDe
         container.addSubview(emptyLabel)
 
         NSLayoutConstraint.activate([
-            scrollView.topAnchor.constraint(equalTo: container.topAnchor),
-            scrollView.leadingAnchor.constraint(equalTo: container.leadingAnchor),
-            scrollView.trailingAnchor.constraint(equalTo: container.trailingAnchor),
-            scrollView.bottomAnchor.constraint(equalTo: container.bottomAnchor),
             emptyLabel.centerXAnchor.constraint(equalTo: container.centerXAnchor),
             emptyLabel.centerYAnchor.constraint(equalTo: container.centerYAnchor),
             emptyLabel.leadingAnchor.constraint(
@@ -224,7 +228,18 @@ final class FleetTableController: NSObject, NSTableViewDataSource, NSTableViewDe
             emptyLabel.trailingAnchor.constraint(
                 lessThanOrEqualTo: container.trailingAnchor, constant: -16),
         ])
+        container.onLayout = { [weak self] in self?.fitColumns() }
         updateEmptyState()
+    }
+
+    private func fitColumns() {
+        var flex: [String: (weight: CGFloat, base: CGFloat)] = [:]
+        var hiding: [String: CGFloat] = [:]
+        for spec in columns {
+            if spec.flex > 0 { flex[spec.id] = (spec.flex, spec.width) }
+            if spec.hideBelow > 0 { hiding[spec.id] = spec.hideBelow }
+        }
+        PageKit.fitColumns(of: table, in: scrollView, flex: flex, hiding: hiding)
     }
 
     // MARK: Data
@@ -278,7 +293,7 @@ final class FleetTableController: NSObject, NSTableViewDataSource, NSTableViewDe
 
         let cell = NSTableCellView()
         let label = NSTextField(labelWithString: column.text(item))
-        label.font = .systemFont(ofSize: 11.5)
+        label.font = TextRole.secondary.font
         label.lineBreakMode = .byTruncatingTail
         label.alignment = column.alignment
         if let colour = column.colour?(item) { label.textColor = colour }
@@ -290,11 +305,15 @@ final class FleetTableController: NSObject, NSTableViewDataSource, NSTableViewDe
         cell.addSubview(label)
         cell.textField = label
         NSLayoutConstraint.activate([
-            label.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 4),
-            label.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -4),
+            label.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: DS.Space.xs),
+            label.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -DS.Space.xs),
             label.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
         ])
         return cell
+    }
+
+    func tableView(_ tableView: NSTableView, rowViewForRow row: Int) -> NSTableRowView? {
+        SeparatorRowView()
     }
 
     func tableViewSelectionDidChange(_ notification: Notification) {
@@ -343,13 +362,13 @@ func fleetButtonCell(_ buttons: [NSButton]) -> NSView {
     let cell = NSTableCellView()
     let stack = NSStackView(views: buttons)
     stack.orientation = .horizontal
-    stack.spacing = 4
+    stack.spacing = DS.Space.xs
     stack.translatesAutoresizingMaskIntoConstraints = false
     cell.addSubview(stack)
     NSLayoutConstraint.activate([
-        stack.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 4),
+        stack.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: DS.Space.xs),
         stack.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
-        stack.trailingAnchor.constraint(lessThanOrEqualTo: cell.trailingAnchor, constant: -4),
+        stack.trailingAnchor.constraint(lessThanOrEqualTo: cell.trailingAnchor, constant: -DS.Space.xs),
     ])
     return cell
 }
@@ -357,23 +376,85 @@ func fleetButtonCell(_ buttons: [NSButton]) -> NSView {
 /// A cell whose text wraps to a couple of lines — for a fit hint or an error.
 /// The table's row height is raised to match, so the text is readable rather than
 /// elided at one line.
-func fleetWrappingCell(_ text: String, colour: NSColor = .labelColor) -> NSView {
+func fleetWrappingCell(_ text: String, colour: NSColor = .labelColor, lines: Int = 2) -> NSView {
     let cell = NSTableCellView()
     let label = NSTextField(wrappingLabelWithString: text)
-    label.font = .systemFont(ofSize: 11)
+    label.font = TextRole.caption.font
     label.textColor = colour
     label.isSelectable = true
-    label.maximumNumberOfLines = 2
+    label.maximumNumberOfLines = lines
     label.lineBreakMode = .byWordWrapping
-    label.preferredMaxLayoutWidth = 220
+    label.preferredMaxLayoutWidth = 0
+    // The full sentence stays one hover away when the cell has to cut it.
+    cell.toolTip = text
     label.translatesAutoresizingMaskIntoConstraints = false
     cell.addSubview(label)
     cell.textField = label
     NSLayoutConstraint.activate([
-        label.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 4),
-        label.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -4),
+        label.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: DS.Space.xs),
+        label.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -DS.Space.xs),
         label.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
     ])
+    return cell
+}
+
+/// Pin `content` inside a table cell: leading edge, vertically centred, never wider than the cell.
+private func fleetPinned(_ content: NSView) -> NSTableCellView {
+    let cell = NSTableCellView()
+    content.translatesAutoresizingMaskIntoConstraints = false
+    cell.addSubview(content)
+    NSLayoutConstraint.activate([
+        content.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: DS.Space.xs),
+        content.trailingAnchor.constraint(lessThanOrEqualTo: cell.trailingAnchor, constant: -DS.Space.xs),
+        content.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
+    ])
+    return cell
+}
+
+private func fleetColumnStack(_ views: [NSView]) -> NSStackView {
+    let stack = NSStackView(views: views)
+    stack.orientation = .vertical
+    stack.alignment = .leading
+    stack.spacing = 1
+    return stack
+}
+
+/// A cell with a title over a smaller grey caption: the way a table keeps a second fact without a second
+/// column (a machine's location and chip, a model's studio).
+func fleetTwoLineCell(_ title: String, _ caption: String?, titleColour: NSColor = .labelColor,
+                      tooltip: String? = nil) -> NSView {
+    let first = PageKit.label(title, .secondary, colour: titleColour)
+    first.lineBreakMode = .byTruncatingTail
+    var views: [NSView] = [first]
+    if let caption, !caption.isEmpty {
+        let second = PageKit.label(caption, .caption, colour: .secondaryLabelColor)
+        second.lineBreakMode = .byTruncatingTail
+        views.append(second)
+    }
+    let cell = fleetPinned(fleetColumnStack(views))
+    cell.toolTip = tooltip
+    return cell
+}
+
+/// A status badge, with an optional caption under it.
+func fleetBadgeCell(_ text: String, _ health: Health, caption: String? = nil, tooltip: String? = nil) -> NSView {
+    var views: [NSView] = [Badge(text, health)]
+    if let caption, !caption.isEmpty { views.append(PageKit.label(caption, .caption, colour: .secondaryLabelColor)) }
+    let cell = fleetPinned(fleetColumnStack(views))
+    cell.toolTip = tooltip
+    return cell
+}
+
+/// "21.0 GB free" over a usage bar in the tier colour: how much is left, and how worried to be.
+func fleetMeterCell(_ text: String, fraction: Double?, health: Health, tooltip: String? = nil) -> NSView {
+    guard let fraction else { return fleetTwoLineCell(text, nil, tooltip: tooltip) }
+    let value = PageKit.label(text, .secondary, colour: health == .ok || health == .off ? .labelColor : health.text)
+    let bar = Meter(fraction: fraction, health: health)
+    bar.widthAnchor.constraint(equalToConstant: 72).isActive = true
+    let stack = fleetColumnStack([value, bar])
+    stack.spacing = DS.Space.xs
+    let cell = fleetPinned(stack)
+    cell.toolTip = tooltip
     return cell
 }
 
@@ -416,280 +497,18 @@ class FleetTabView: NSView {
 
     required init?(coder: NSCoder) { fatalError("not used") }
 
+    /// A section title with the page's 16 pt to its content instead of the 24 pt between sections.
+    func addSection(_ title: String) {
+        let label = PageKit.sectionTitle(title)
+        page.addArrangedSubview(label)
+        page.setCustomSpacing(DS.Space.m, after: label)
+    }
+
     /// Pin a row to the usable width inside the page's padding.
     func fullWidth(_ view: NSView) {
         view.widthAnchor.constraint(
             equalTo: page.widthAnchor, constant: -PageKit.pagePadding * 2
         ).isActive = true
-    }
-}
-
-// MARK: - Overview
-
-/// The page at a glance: the headline numbers, the Hub's pulse, and the list of
-/// things that need fixing — errors before warnings before notes, each with the
-/// tab that can act on it.
-final class FleetOverviewTab: FleetTabView {
-    var onOpenTab: ((FleetTab) -> Void)?
-    /// Re-runs the model refresh for one location, by its provider id.
-    var onRefreshLocation: ((String) -> Void)?
-
-    private let tiles = NSStackView()
-    private let pulseLabel = PageKit.label("", size: 11.5, colour: .tertiaryLabelColor, wrapping: true)
-    private let statusLabel = PageKit.label("Loading…", size: 12, colour: .secondaryLabelColor, wrapping: true)
-    private let issuesStack = NSStackView()
-    /// Issue location id → provider id, so an issue can offer the right refresh.
-    private var providerIDs: [String: String] = [:]
-
-    override init(frame frameRect: NSRect) {
-        super.init(frame: frameRect)
-        page.addArrangedSubview(PageKit.sectionTitle("At a glance"))
-        tiles.orientation = .vertical
-        tiles.alignment = .leading
-        tiles.spacing = 10
-        page.addArrangedSubview(tiles)
-        page.addArrangedSubview(pulseLabel)
-        page.addArrangedSubview(statusLabel)
-        page.addArrangedSubview(PageKit.sectionTitle("Issues"))
-        issuesStack.orientation = .vertical
-        issuesStack.alignment = .leading
-        issuesStack.spacing = 8
-        page.addArrangedSubview(issuesStack)
-        fullWidth(pulseLabel)
-        fullWidth(statusLabel)
-        fullWidth(tiles)
-        fullWidth(issuesStack)
-    }
-
-    required init?(coder: NSCoder) { fatalError("not used") }
-
-    func setStatus(_ text: String, colour: NSColor = .secondaryLabelColor) {
-        statusLabel.stringValue = text
-        statusLabel.textColor = colour
-    }
-
-    func setProviderIDs(_ map: [String: String]) {
-        providerIDs = map
-    }
-
-    func update(snapshot: FleetSnapshot, filter: FleetFilter = FleetFilter()) {
-        rebuildTiles(summary: snapshot.summary, snapshot: snapshot)
-        pulseLabel.stringValue = pulseText(summary: snapshot.summary, snapshot: snapshot)
-        // The location filter is drawn above every tab, so it has to mean the same
-        // thing on this one: narrowing to one Mac must not leave another Mac's
-        // problems on screen.
-        rebuildIssues(snapshot.issues.filter { filter.matchesLocation($0.locationId) })
-    }
-
-    private func rebuildTiles(summary: FleetSummary?, snapshot: FleetSnapshot) {
-        clear(tiles)
-        let locationsUp = summary?.locationsUp ?? snapshot.locations.filter { $0.reachable == true }.count
-        let locationsTotal = summary?.locations ?? snapshot.locations.count
-        let online = summary?.machinesOnline ?? 0
-        let offline = summary?.machinesOffline ?? 0
-        let unknown = summary?.machinesUnknown ?? 0
-        let workersReady = summary?.workersReady
-        let workersTotal = summary?.workersTotal
-        let modelsAvailable = summary?.modelsAvailable
-        let modelsTotal = summary?.localModelsTotal
-        let done = summary?.jobsCompleted ?? 0
-        let failed = summary?.jobsFailed ?? 0
-        let running = summary?.runningJobs ?? snapshot.running.count
-
-        let data: [(String, String, NSColor?)] = [
-            ("\(locationsUp)/\(locationsTotal)", "locations reachable", nil),
-            ("\(online)",
-             "machines online · \(offline) offline" + (unknown > 0 ? " · \(unknown) no state" : ""),
-             offline > 0 ? .systemOrange : nil),
-            ("\(workersReady.map(String.init) ?? "—")/\(workersTotal.map(String.init) ?? "—")",
-             "workers ready", nil),
-            ("\(modelsAvailable.map(String.init) ?? "—")/\(modelsTotal.map(String.init) ?? "—")",
-             "local models available", nil),
-            ("\(done)", "jobs done" + (failed > 0 ? " · \(failed) failed" : ""),
-             failed > 0 ? .systemOrange : nil),
-            ("\(running)", "running now", nil),
-        ]
-        // Three per row: six across would need ~900pt and the page has about 700.
-        var rowViews: [NSView] = []
-        for (index, tile) in data.enumerated() {
-            rowViews.append(tileView(tile.0, tile.1, colour: tile.2))
-            if rowViews.count == 3 || index == data.count - 1 {
-                tiles.addArrangedSubview(PageKit.row(rowViews, spacing: 12))
-                rowViews = []
-            }
-        }
-        if let hidden = summary?.probeMachinesHidden, hidden > 0 {
-            tiles.addArrangedSubview(PageKit.help(
-                "\(hidden) Hub connectivity probe\(hidden == 1 ? "" : "s") hidden — those are not your machines."
-            ))
-        }
-    }
-
-    private func tileView(_ value: String, _ caption: String, colour: NSColor?) -> NSView {
-        let valueLabel = PageKit.label(value, size: 20, weight: .semibold, colour: colour ?? .labelColor)
-        let captionLabel = PageKit.label(caption, size: 11, colour: .secondaryLabelColor, wrapping: true)
-        captionLabel.preferredMaxLayoutWidth = 142
-        let stack = FleetTintStack(views: [valueLabel, captionLabel])
-        stack.orientation = .vertical
-        stack.alignment = .leading
-        stack.spacing = 2
-        stack.edgeInsets = NSEdgeInsets(top: 10, left: 12, bottom: 10, right: 12)
-        stack.wantsLayer = true
-        // A tile is a surface, not a status: no tint, no border, just the control
-        // background so it reads as a card in both appearances.
-        stack.tint = .controlBackgroundColor
-        stack.tintAlpha = 1
-        stack.borderAlpha = 0
-        stack.widthAnchor.constraint(equalToConstant: 166).isActive = true
-        return stack
-    }
-
-    /// The Hub's own view of what every machine is doing, shown verbatim rather
-    /// than re-derived. Falls back to the machine list when the pulse is absent.
-    private func pulseText(summary: FleetSummary?, snapshot: FleetSnapshot) -> String {
-        let pulse = summary?.pulse ?? [:]
-        let active = pulse.filter { $0.value > 0 && $0.key != "offline" }
-        if !active.isEmpty {
-            return active.sorted { $0.key < $1.key }
-                .map { "\($0.value) \($0.key.replacingOccurrences(of: "_", with: " "))" }
-                .joined(separator: " · ")
-        }
-        let offline = summary?.machinesOffline ?? 0
-        if offline > 0 {
-            return "\(offline) machine\(offline == 1 ? "" : "s") not reporting"
-        }
-        return snapshot.machines.isEmpty ? "No machines are reporting." : ""
-    }
-
-    private func rebuildIssues(_ issues: [FleetIssue]) {
-        clear(issuesStack)
-        guard !issues.isEmpty else {
-            issuesStack.addArrangedSubview(
-                PageKit.label("Nothing needs attention.", size: 12.5, colour: .secondaryLabelColor))
-            return
-        }
-        let ordered = issues.sorted {
-            let a = FleetFormat.severityRank($0.severity)
-            let b = FleetFormat.severityRank($1.severity)
-            if a != b { return a < b }
-            return ($0.location ?? "").localizedCaseInsensitiveCompare($1.location ?? "") == .orderedAscending
-        }
-        // **"Wants a person" and "informational" are drawn apart.** Under one
-        // heading they read the same, which is how a Hub measurement gap ("direct
-        // activity partially unavailable") was taken for something broken. The
-        // count leads each group, so the top of the list is only what is worth
-        // acting on.
-        let problems = ordered.filter { ($0.severity ?? "") != "info" }
-        let notes = ordered.filter { ($0.severity ?? "") == "info" }
-
-        func add(_ issue: FleetIssue) {
-            let row = issueRow(issue)
-            issuesStack.addArrangedSubview(row)
-            fullWidth(row)
-        }
-
-        if !problems.isEmpty {
-            issuesStack.addArrangedSubview(PageKit.label(
-                "\(problems.count) to look at", size: 11, weight: .semibold,
-                colour: .secondaryLabelColor))
-            problems.forEach(add)
-        }
-        if !notes.isEmpty {
-            issuesStack.addArrangedSubview(PageKit.label(
-                problems.isEmpty
-                    ? "\(notes.count) informational"
-                    : "\(notes.count) informational — nothing to fix",
-                size: 11, weight: .semibold, colour: .tertiaryLabelColor))
-            notes.forEach(add)
-        }
-    }
-
-    /// One issue, as a card: what is wrong, where, and the button that goes there.
-    ///
-    /// The whole point of this list is the owner's "some status update so i can go
-    /// and fix it as it tells me exactly what's wrong" — so the message and the
-    /// action phrase are always drawn, never summarised into a colour.
-    private func issueRow(_ issue: FleetIssue) -> NSView {
-        let colour = FleetFormat.severityColour(issue.severity)
-        let icon = NSImageView()
-        icon.image = NSImage(
-            systemSymbolName: FleetFormat.severitySymbol(issue.severity),
-            accessibilityDescription: issue.severity
-        )
-        icon.contentTintColor = colour
-        icon.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 14, weight: .semibold)
-
-        let subject = PageKit.label(FleetFormat.text(issue.subject), size: 12.5, weight: .semibold)
-        let whereLabel = PageKit.label(
-            "· \(FleetFormat.text(issue.location))", size: 11.5, colour: .secondaryLabelColor)
-        let heading = PageKit.row([subject, whereLabel, NSView()])
-        let message = PageKit.label(
-            FleetFormat.text(issue.message), size: 11.5, colour: .labelColor, wrapping: true)
-        message.maximumNumberOfLines = 4
-        var detailViews: [NSView] = [heading, message]
-        if let action = issue.action, !action.trimmingCharacters(in: .whitespaces).isEmpty {
-            detailViews.append(PageKit.label(
-                "Fix: \(action)", size: 11.5, colour: .secondaryLabelColor, wrapping: true))
-        }
-        let detail = NSStackView(views: detailViews)
-        detail.orientation = .vertical
-        detail.alignment = .leading
-        detail.spacing = 4
-        detail.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-
-        let target = issueTargetTab(issue)
-        let open = FleetClosureButton(title: "Open \(target.shortTitle)") { [weak self] in
-            self?.onOpenTab?(target)
-        }
-        var trailing: [NSView] = [open]
-        if let providerID = providerID(for: issue) {
-            // The refresh re-reads the location's models *and* reloads the fleet
-            // snapshot, so it is useful for any issue that names a location: a
-            // stalled batch clears if the Hub has since moved it on.
-            let title = target == .models ? "Refresh models" : "Refresh location"
-            trailing.append(FleetClosureButton(title: title) { [weak self] in
-                self?.onRefreshLocation?(providerID)
-            })
-        }
-
-        let row = FleetTintStack(views: [icon, detail, NSView()] + trailing)
-        row.orientation = .horizontal
-        row.alignment = .top
-        row.spacing = 10
-        row.edgeInsets = NSEdgeInsets(top: 10, left: 12, bottom: 10, right: 12)
-        row.wantsLayer = true
-        row.tint = colour
-        row.translatesAutoresizingMaskIntoConstraints = false
-        return row
-    }
-
-    /// Where an issue's fix lives.
-    ///
-    /// The gateway already routes each issue, in its `action` phrase — "Fleet →
-    /// Machines", "Studio Hub on that Mac" — so that is read first and the words
-    /// are only a fallback. Using the hub's own routing means a new issue code
-    /// lands on the right tab without this list being edited.
-    private func issueTargetTab(_ issue: FleetIssue) -> FleetTab {
-        let action = (issue.action ?? "").lowercased()
-        if action.contains("jobs") { return .jobs }
-        if action.contains("machines") { return .machines }
-        if action.contains("models") { return .models }
-        if action.contains("locations") { return .locations }
-        let haystack = "\(issue.code ?? "") \(issue.subject ?? "") \(issue.message ?? "")".lowercased()
-        if haystack.contains("machine") || haystack.contains("node") { return .machines }
-        if haystack.contains("model") || haystack.contains("package") || haystack.contains("catalog") {
-            return .models
-        }
-        return .locations
-    }
-
-    private func providerID(for issue: FleetIssue) -> String? {
-        guard let id = issue.locationId, !id.isEmpty else { return nil }
-        return providerIDs[id]
-    }
-
-    private func clear(_ stack: NSStackView) {
-        for view in stack.arrangedSubviews { view.removeFromSuperview() }
     }
 }
 
@@ -714,10 +533,10 @@ final class FleetLocationsTab: FleetTabView {
     /// builds without a gateway.
     var onPublishRelease: (() -> Void)?
 
-    private lazy var controller = FleetTableController(columns: columns())
-    private let statusLabel = PageKit.label("", size: 11.5, colour: .secondaryLabelColor, wrapping: true)
+    private lazy var controller = FleetTableController(columns: columns(), rowHeight: 44)
+    private let statusLabel = PageKit.label("", .secondary, colour: .secondaryLabelColor, wrapping: true)
     private lazy var retryButton: FleetClosureButton = {
-        let button = FleetClosureButton(title: "Retry failed") { [weak self] in
+        let button = FleetClosureButton(title: "Retry Failed") { [weak self] in
             self?.onRetryFailed?()
         }
         button.isHidden = true
@@ -725,19 +544,19 @@ final class FleetLocationsTab: FleetTabView {
     }()
     /// The per-controller release report, rebuilt on every fleet read.
     private let releaseStack = NSStackView()
-    private let releaseStatus = PageKit.label("", size: 11.5, colour: .secondaryLabelColor, wrapping: true)
+    private let releaseStatus = PageKit.label("", .secondary, colour: .secondaryLabelColor, wrapping: true)
     /// This gateway's own publisher fingerprint, so a controller that trusts it
     /// reads "this gateway" rather than an opaque hex string.
     private var identityFingerprint: String?
-    private lazy var publishButton: FleetClosureButton = {
-        FleetClosureButton(title: "Publish a Studio Hub release…") { [weak self] in
+    private lazy var publishButton: PrimaryButton = {
+        PrimaryButton(title: "Publish a Studio Hub Release…", regular: true) { [weak self] in
             self?.onPublishRelease?()
         }
     }()
     private let labelField = NSTextField(string: "")
     private let urlField = NSTextField(string: "")
     private let tokenField = NSSecureTextField(string: "")
-    private let addStatus = PageKit.label("", size: 11.5, colour: .secondaryLabelColor, wrapping: true)
+    private let addStatus = PageKit.label("", .secondary, colour: .secondaryLabelColor, wrapping: true)
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -761,7 +580,7 @@ final class FleetLocationsTab: FleetTabView {
         // two are different facts: a controller accepting a push is not the same as
         // a controller that stored it, and only the controller's own read-back
         // answers the second. A refusal is quoted word for word.
-        page.addArrangedSubview(PageKit.sectionTitle("Release"))
+        addSection("Release")
         page.addArrangedSubview(PageKit.help(
             "The Studio Hub app release this gateway signs and pushes to your controllers. "
             + "“Held” is what each controller reports it has now — not what was pushed. "
@@ -775,11 +594,13 @@ final class FleetLocationsTab: FleetTabView {
         page.addArrangedSubview(releaseStatus)
         releaseStack.orientation = .vertical
         releaseStack.alignment = .leading
-        releaseStack.spacing = 8
-        page.addArrangedSubview(releaseStack)
-        fullWidth(releaseStack)
+        releaseStack.spacing = DS.Space.m
+        let releaseCard = CardView()
+        releaseCard.hold(releaseStack, inset: NSEdgeInsets(top: DS.Space.m, left: DS.Space.l, bottom: DS.Space.m, right: DS.Space.l))
+        page.addArrangedSubview(releaseCard)
+        fullWidth(releaseCard)
 
-        page.addArrangedSubview(PageKit.sectionTitle("Add a location"))
+        addSection("Add a location")
         page.addArrangedSubview(PageKit.help(
             "Another Mac running Studio Hub. Standalone or controller, both work. "
             + "A new machine can be added while it is still standalone and keep working "
@@ -829,7 +650,7 @@ final class FleetLocationsTab: FleetTabView {
         urlField.widthAnchor.constraint(equalToConstant: 260).isActive = true
         tokenField.placeholderString = "the controller's Fleet token"
         tokenField.widthAnchor.constraint(equalToConstant: 260).isActive = true
-        let addButton = FleetClosureButton(title: "Add location") { [weak self] in
+        let addButton = PrimaryButton(title: "Add Location", regular: true) { [weak self] in
             guard let self else { return }
             self.onAddLocation?(
                 self.labelField.stringValue.trimmingCharacters(in: .whitespaces),
@@ -838,16 +659,24 @@ final class FleetLocationsTab: FleetTabView {
             )
         }
 
-        page.addArrangedSubview(PageKit.formRow("Name", labelField))
-        page.addArrangedSubview(PageKit.formRow("Address", urlField))
-        page.addArrangedSubview(PageKit.formRow(
-            "Fleet token",
-            [tokenField, PageKit.help(
-                "The token this gateway needs to send work to that Mac and collect the results."
-            )]
-        ))
-        page.addArrangedSubview(PageKit.formRow("", addButton))
-        page.addArrangedSubview(PageKit.formRow("", addStatus))
+        let form = NSStackView(views: [
+            PageKit.formRow("Name", labelField),
+            PageKit.formRow("Address", urlField),
+            PageKit.formRow(
+                "Fleet token",
+                [tokenField, PageKit.help(
+                    "The token this gateway needs to send work to that Mac and collect the results."
+                )]
+            ),
+            PageKit.row([addButton, addStatus]),
+        ])
+        form.orientation = .vertical
+        form.alignment = .leading
+        form.spacing = DS.Space.l
+        let formCard = CardView()
+        formCard.hold(form, inset: NSEdgeInsets(top: DS.Space.l, left: DS.Space.l, bottom: DS.Space.l, right: DS.Space.l))
+        page.addArrangedSubview(formCard)
+        fullWidth(formCard)
         // The status line wraps rather than pinning to the page width: it lives in
         // a form row beside a caption and its own width belongs to that column.
         addStatus.preferredMaxLayoutWidth = 520
@@ -855,28 +684,40 @@ final class FleetLocationsTab: FleetTabView {
 
     required init?(coder: NSCoder) { fatalError("not used") }
 
+    /// Seven columns that fit a 1100 pt window: the role and machine count are the location's caption, the
+    /// address and the controller's own sentence are the status, and the row actions are a "Test" button and
+    /// a "…" menu.
     private func columns() -> [FleetColumn] {
         func location(_ any: Any) -> FleetLocation? { any as? FleetLocation }
+        func models(_ row: FleetLocation) -> (offered: Int?, discovered: Int?) {
+            // The explicit counts when the gateway states them; otherwise derived from the (model, machine)
+            // rows it does send, so a location with models never reads as "—".
+            let offered = row.modelsPublishable ?? row.modelsEnabled
+                ?? (row.localModels.isEmpty ? nil : row.derivedModelsOffered)
+            let discovered = row.modelsDiscovered
+                ?? (row.localModels.isEmpty ? nil : row.derivedModelsDiscovered)
+            return (offered, discovered)
+        }
         return [
             FleetColumn(
-                id: "llocation", title: "Location", width: 160, minWidth: 90,
+                id: "llocation", title: "Location", width: 150, minWidth: 120, flex: 3,
                 text: { location($0)?.label ?? "—" },
-                sortValue: { .text(location($0)?.label ?? "") }
+                sortValue: { .text(location($0)?.label ?? "") },
+                cell: { any in
+                    guard let row = location(any) else { return NSView() }
+                    let count = row.machineSummary?.total ?? row.machines.count
+                    let machines = row.reachable == true ? "\(count) machine\(count == 1 ? "" : "s")" : nil
+                    let role = row.role.map { FleetFormat.words($0) }
+                    return fleetTwoLineCell(row.label ?? "—", [role, machines].compactMap { $0 }.joined(separator: " · "))
+                }
             ),
             FleetColumn(
-                id: "lrole", title: "Role", width: 90,
-                text: { FleetFormat.text(location($0)?.role) },
-                sortValue: { .text(location($0)?.role ?? "") }
-            ),
-            FleetColumn(
-                id: "lhub", title: "Hub", width: 110, sortable: false,
-                // **The version, and whether this gateway was built against it.**
-                // Studio Hub auto-updates itself, so a controller can move ahead
-                // of this app without anyone touching it; the relation is drawn
-                // rather than left in a tooltip, because "which of my Macs is on
-                // something this build has never seen?" is the question a drift
-                // raises. Nothing is refused on a mismatch — see
-                // `SUPPORTED_STUDIO_HUB_VERSION`.
+                id: "lhub", title: "Hub", width: 100, minWidth: 100, sortable: false,
+                // **The version, and whether this gateway was built against it.** Studio Hub auto-updates
+                // itself, so a controller can move ahead of this app without anyone touching it; the relation
+                // is drawn rather than left in a tooltip, because "which of my Macs is on something this
+                // build has never seen?" is the question a drift raises. Nothing is refused on a mismatch -
+                // see `SUPPORTED_STUDIO_HUB_VERSION`.
                 text: { row in
                     guard let row = location(row) else { return "—" }
                     let stated = FleetFormat.text(row.version)
@@ -888,8 +729,7 @@ final class FleetLocationsTab: FleetTabView {
                 },
                 colour: { row in
                     let relation = location(row)?.hubVersionRelation
-                    return relation == "older" || relation == "newer"
-                        ? .systemOrange : .labelColor
+                    return relation == "older" || relation == "newer" ? Health.warn.text : .labelColor
                 },
                 tooltip: { row in
                     guard let row = location(row) else { return nil }
@@ -909,75 +749,43 @@ final class FleetLocationsTab: FleetTabView {
                 }
             ),
             FleetColumn(
-                id: "lmachines", title: "Machines", width: 90,
-                text: { row in
-                    guard let row = location(row) else { return "—" }
-                    guard row.reachable == true else { return "—" }
-                    return "\(row.machineSummary?.total ?? row.machines.count)"
-                },
-                sortValue: { row in
-                    guard let row = location(row) else { return .none }
-                    return .number(Double(row.machineSummary?.total ?? row.machines.count))
-                }
-            ),
-            FleetColumn(
-                id: "lmembers", title: "Members", width: 130,
-                // **Who has joined this controller** (audit H10). The Hub publishes
-                // `node_summary` per location and this page never decoded it, so
-                // "able to see each member connected" meant opening Studio Hub on the
-                // controller. The fraction is the controller's own count of nodes that
-                // answered out of the roster it holds; a refused credential is spelled
-                // out rather than folded into "offline", because it is the one state
-                // with a fix a person has to perform.
-                text: { row in
-                    guard let row = location(row) else { return "—" }
-                    return row.membersText
-                },
+                id: "lmembers", title: "Members", width: 124, minWidth: 120,
+                // **Who has joined this controller** (audit H10). The fraction is the controller's own count
+                // of nodes that answered out of the roster it holds; a refused credential is spelled out
+                // rather than folded into "offline", because it is the one state with a fix a person has to
+                // perform.
+                text: { row in location(row)?.membersText ?? "—" },
                 sortValue: { row in
                     guard let count = location(row)?.memberCount else { return .none }
                     return .number(Double(count.reachable))
                 },
                 colour: { row in
                     guard let row = location(row) else { return .labelColor }
-                    if (row.nodeSummary?.unauthorized ?? 0) > 0 { return .systemRed }
+                    if (row.nodeSummary?.unauthorized ?? 0) > 0 { return Health.bad.text }
                     if let count = row.memberCount, count.total > 0, count.reachable == 0 {
-                        return .systemOrange
+                        return Health.warn.text
                     }
                     return .labelColor
                 },
                 tooltip: { row in location(row)?.membersTooltip }
             ),
             FleetColumn(
-                id: "lmodels", title: "Models (offered/discovered)", width: 170,
+                id: "lmodels", title: "Models", width: 70, minWidth: 56, hideBelow: 720,
                 text: { row in
                     guard let row = location(row) else { return "—" }
-                    // The explicit counts when the gateway states them; otherwise
-                    // derived from the (model, machine) rows it does send, so a
-                    // location with models never reads as "—".
-                    let offered = row.modelsPublishable ?? row.modelsEnabled
-                        ?? (row.localModels.isEmpty ? nil : row.derivedModelsOffered)
-                    let discovered = row.modelsDiscovered
-                        ?? (row.localModels.isEmpty ? nil : row.derivedModelsDiscovered)
-                    switch (offered, discovered) {
+                    switch models(row) {
                     case let (offered?, discovered?): return "\(offered) / \(discovered)"
                     case let (offered?, nil): return "\(offered) / —"
                     case let (nil, discovered?): return "— / \(discovered)"
                     default: return "—"
                     }
                 },
-                sortValue: { row in
-                    guard let row = location(row) else { return .none }
-                    let offered = row.modelsPublishable ?? row.modelsEnabled
-                        ?? (row.localModels.isEmpty ? nil : row.derivedModelsOffered)
-                    return .number(Double(offered ?? 0))
-                }
+                sortValue: { row in .number(Double(location(row).flatMap { models($0).offered } ?? 0)) },
+                tooltip: { _ in "Models offered, of the models discovered." }
             ),
             FleetColumn(
-                id: "lrelease", title: "Release", width: 150,
-                text: { row in
-                    guard let row = location(row) else { return "—" }
-                    return row.release?.versionBuild ?? "—"
-                },
+                id: "lrelease", title: "Release", width: 112, minWidth: 90, hideBelow: 720,
+                text: { row in location(row)?.release?.versionBuild ?? "—" },
                 sortValue: { row in
                     guard let release = location(row)?.release else { return .none }
                     return .text(release.versionBuild)
@@ -985,46 +793,51 @@ final class FleetLocationsTab: FleetTabView {
                 tooltip: { row in
                     guard let release = location(row)?.release else { return nil }
                     var parts: [String] = []
-                    if let filename = release.filename, !filename.isEmpty {
-                        parts.append(filename)
-                    }
+                    if let filename = release.filename, !filename.isEmpty { parts.append(filename) }
                     if let sha = release.sha256, !sha.isEmpty { parts.append("sha256 \(sha)") }
-                    if let key = release.publisherKeyId, !key.isEmpty {
-                        parts.append("signed by \(key)")
-                    }
-                    if let key = release.controllerKeyId, !key.isEmpty {
-                        parts.append("countersigned by \(key)")
-                    }
+                    if let key = release.publisherKeyId, !key.isEmpty { parts.append("signed by \(key)") }
+                    if let key = release.controllerKeyId, !key.isEmpty { parts.append("countersigned by \(key)") }
                     return parts.isEmpty ? nil : parts.joined(separator: "\n")
                 }
             ),
             FleetColumn(
-                id: "lstatus", title: "Status", width: 240, sortable: false,
+                id: "lstatus", title: "Status", width: 220, minWidth: 120, flex: 4, sortable: false,
                 text: { row in
                     guard let row = location(row) else { return "—" }
                     let address = FleetFormat.text(row.url)
-                    // A pause outranks the raw probe error: it says what the gateway did about
-                    // it (routing skips this location; nothing was removed) and how to undo it.
+                    // A pause outranks the raw probe error: it says what the gateway did about it (routing
+                    // skips this location; nothing was removed) and how to undo it.
                     if row.pausedAt != nil {
                         let reason = row.pauseReason ?? "Paused: unreachable."
                         return address.isEmpty ? reason : "\(address)\n\(reason)"
                     }
                     if row.reachable == true { return address }
-                    // **The address is what you need most when it is not answering.** This cell
-                    // used to *replace* the address with the reason, so "Nothing is listening on
-                    // that address" never said which address — and the only place the address was
-                    // ever printed was the branch you could not reach. The owner read three rows
-                    // saying exactly that and could not tell what the gateway had dialled.
-                    // `row.url` is present for an unreachable location too; it was simply dropped.
+                    // **The address is what you need most when it is not answering**, so it never replaces
+                    // the reason: "Nothing is listening on that address" must say which address.
                     let reason = row.error ?? "Not reachable"
                     return address.isEmpty ? reason : "\(address)\n\(reason)"
                 },
                 colour: { row in
-                    location(row)?.reachable == true ? .secondaryLabelColor : .systemOrange
+                    location(row)?.reachable == true ? .secondaryLabelColor : Health.warn.text
+                },
+                cell: { any in
+                    guard let row = location(any) else { return NSView() }
+                    let text: String
+                    let address = FleetFormat.text(row.url)
+                    if row.pausedAt != nil {
+                        let reason = row.pauseReason ?? "Paused: unreachable."
+                        text = address.isEmpty ? reason : "\(address)\n\(reason)"
+                    } else if row.reachable == true {
+                        text = address
+                    } else {
+                        let reason = row.error ?? "Not reachable"
+                        text = address.isEmpty ? reason : "\(address)\n\(reason)"
+                    }
+                    return fleetWrappingCell(text, colour: row.reachable == true ? .secondaryLabelColor : Health.warn.text, lines: 3)
                 }
             ),
             FleetColumn(
-                id: "lactions", title: "Actions", width: 420, minWidth: 400, sortable: false,
+                id: "lactions", title: "", width: 112, flex: 0, sortable: false,
                 text: { _ in "" },
                 cell: { [weak self] any in
                     guard let self, let row = location(any) else { return NSView() }
@@ -1034,33 +847,46 @@ final class FleetLocationsTab: FleetTabView {
         ]
     }
 
-    /// Test / Rename / Credentials / Change address / Resume (paused only) / Remove, per location.
-    ///
-    /// This Mac gets Rename only: it has no address to test and nothing to remove.
+    /// "Test" and, for a paused controller, "Resume" are buttons; Rename, Credentials, Change Address and
+    /// Remove are in the "…" menu beside them. This Mac gets Rename only: it has no address to test and
+    /// nothing to remove.
     private func actions(for row: FleetLocation) -> NSView {
-        var buttons: [NSButton] = []
+        var views: [NSView] = []
         if row.local != true {
-            buttons.append(FleetClosureButton(title: "Test") { [weak self] in self?.onTest?(row) })
-        }
-        buttons.append(FleetClosureButton(title: "Rename") { [weak self] in self?.onRename?(row) })
-        if row.local != true {
-            // One credentials action, not two: five buttons did not fit the cell,
-            // and the overflow was left out of the hierarchy entirely — so Remove
-            // was unreachable while its endpoint worked.
-            buttons.append(FleetClosureButton(title: "Credentials…") { [weak self] in
-                self?.onCredentials?(row)
-            })
-            // Handover, not Remove + Add: a second row orphans the first one's credential
-            // and every per-model enable decision (see the gateway's `replace_address`).
-            buttons.append(FleetClosureButton(title: "Change address…") { [weak self] in
-                self?.onChangeAddress?(row)
-            })
+            views.append(FleetClosureButton(title: "Test") { [weak self] in self?.onTest?(row) })
             if row.pausedAt != nil {
-                buttons.append(FleetClosureButton(title: "Resume") { [weak self] in self?.onResume?(row) })
+                views.append(FleetClosureButton(title: "Resume") { [weak self] in self?.onResume?(row) })
             }
-            buttons.append(FleetClosureButton(title: "Remove") { [weak self] in self?.onRemove?(row) })
         }
-        return fleetButtonCell(buttons)
+        let more = FleetMenuButton { [weak self] in
+            let menu = NSMenu()
+            menu.addItem(ClosureMenuItem("Rename…") { self?.onRename?(row) })
+            if row.local != true {
+                // One credentials action, not two: the overflow of five buttons was once left out of the
+                // hierarchy entirely, so Remove was unreachable while its endpoint worked.
+                menu.addItem(ClosureMenuItem("Credentials…") { self?.onCredentials?(row) })
+                // Handover, not Remove + Add: a second row orphans the first one's credential and every
+                // per-model enable decision (see the gateway's `replace_address`).
+                menu.addItem(ClosureMenuItem("Change Address…") { self?.onChangeAddress?(row) })
+                menu.addItem(.separator())
+                menu.addItem(ClosureMenuItem("Remove…") { self?.onRemove?(row) })
+            }
+            return menu
+        }
+        more.toolTip = "More actions for this location"
+        views.append(more)
+        let cell = NSTableCellView()
+        let stack = NSStackView(views: views)
+        stack.spacing = DS.Space.xs
+        stack.alignment = .centerY
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        cell.addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: DS.Space.xs),
+            stack.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
+            stack.trailingAnchor.constraint(lessThanOrEqualTo: cell.trailingAnchor, constant: -DS.Space.xs),
+        ])
+        return cell
     }
 
     func update(locations: [FleetLocation]) {
@@ -1083,14 +909,14 @@ final class FleetLocationsTab: FleetTabView {
             view.removeFromSuperview()
         }
         if let unavailable, !unavailable.isEmpty {
-            addReleaseLine(unavailable, colour: .systemOrange)
+            addReleaseLine(unavailable, colour: Health.warn.text)
             return
         }
         let report = state?.lastPush
         let reportKnown = state != nil
         identityFingerprint = state?.identity?.fingerprint
         if let error = state?.error, !error.isEmpty {
-            addReleaseLine(error, colour: .systemOrange)
+            addReleaseLine(error, colour: Health.warn.text)
         }
         if let report, let updated = report.updatedAt {
             addReleaseLine(
@@ -1104,7 +930,7 @@ final class FleetLocationsTab: FleetTabView {
             )
         } else {
             addReleaseLine(
-                "This gateway did not report a release status.", colour: .systemOrange
+                "This gateway did not report a release status.", colour: Health.warn.text
             )
         }
         // The local Mac is a location but not a controller: releases are pushed to
@@ -1114,9 +940,17 @@ final class FleetLocationsTab: FleetTabView {
             addReleaseLine("No controllers are configured yet.", colour: .secondaryLabelColor)
             return
         }
+        // **One line when every controller says the same thing about its trusted publisher** ("the Hub did not
+        // report one", three times over, said nothing the first did not).
+        let trusts = Set(controllers.map { trustedPublisherText(for: $0) })
+        let sharedTrust = trusts.count == 1 && controllers.count > 1 ? controllers.first : nil
+        if let sharedTrust {
+            addReleaseLine(trustedPublisherText(for: sharedTrust), colour: trustedPublisherColour(for: sharedTrust))
+        }
         for controller in controllers {
             let outcome = report?.outcomes[controller.id ?? ""]
-            let row = releaseRow(for: controller, outcome: outcome, reportKnown: reportKnown)
+            let row = releaseRow(for: controller, outcome: outcome, reportKnown: reportKnown,
+                                 showTrust: sharedTrust == nil)
             releaseStack.addArrangedSubview(row)
             row.widthAnchor.constraint(equalTo: releaseStack.widthAnchor).isActive = true
         }
@@ -1131,17 +965,17 @@ final class FleetLocationsTab: FleetTabView {
     }
 
     private func addReleaseLine(_ text: String, colour: NSColor) {
-        let label = PageKit.label(text, size: 11.5, colour: colour, wrapping: true)
+        let label = PageKit.label(text, .secondary, colour: colour, wrapping: true)
         label.preferredMaxLayoutWidth = 620
         releaseStack.addArrangedSubview(label)
         label.widthAnchor.constraint(equalTo: releaseStack.widthAnchor).isActive = true
     }
 
     private func releaseRow(
-        for location: FleetLocation, outcome: FleetPushOutcome?, reportKnown: Bool
+        for location: FleetLocation, outcome: FleetPushOutcome?, reportKnown: Bool, showTrust: Bool = true
     ) -> NSView {
         let name = PageKit.label(
-            location.label ?? location.id ?? "Controller", size: 12, weight: .semibold
+            location.label ?? location.id ?? "Controller", .rowTitle
         )
         name.lineBreakMode = .byTruncatingTail
         name.setContentHuggingPriority(.required, for: .horizontal)
@@ -1149,15 +983,15 @@ final class FleetLocationsTab: FleetTabView {
 
         let heldText = location.release.map { "held \($0.versionBuild)" } ?? "held none"
         let held = PageKit.label(
-            heldText, size: 11.5,
+            heldText, .secondary,
             colour: location.release == nil ? .secondaryLabelColor : .labelColor
         )
         held.lineBreakMode = .byTruncatingTail
-        let top = PageKit.row([name, held, NSView()], spacing: 8)
+        let top = PageKit.row([name, held, NSView()])
 
         let outcomeLabel = PageKit.label(
             releaseOutcomeText(outcome, for: location, reportKnown: reportKnown),
-            size: 11.5, colour: releaseOutcomeColour(outcome, reportKnown: reportKnown),
+            .secondary, colour: releaseOutcomeColour(outcome, reportKnown: reportKnown),
             wrapping: true
         )
         outcomeLabel.preferredMaxLayoutWidth = 620
@@ -1167,14 +1001,14 @@ final class FleetLocationsTab: FleetTabView {
         // after a refusal.
         let trustLabel = PageKit.label(
             trustedPublisherText(for: location),
-            size: 11.5, colour: trustedPublisherColour(for: location), wrapping: true
+            .secondary, colour: trustedPublisherColour(for: location), wrapping: true
         )
         trustLabel.preferredMaxLayoutWidth = 620
 
-        let stack = NSStackView(views: [top, trustLabel, outcomeLabel])
+        let stack = NSStackView(views: showTrust ? [top, trustLabel, outcomeLabel] : [top, outcomeLabel])
         stack.orientation = .vertical
         stack.alignment = .leading
-        stack.spacing = 2
+        stack.spacing = DS.Space.xs
         stack.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         return stack
     }
@@ -1203,8 +1037,8 @@ final class FleetLocationsTab: FleetTabView {
             return .secondaryLabelColor
         }
         let fingerprint = (trust.fingerprint ?? "").trimmingCharacters(in: .whitespaces)
-        guard !fingerprint.isEmpty else { return .systemOrange }
-        return fingerprint == identityFingerprint ? .systemGreen : .systemOrange
+        guard !fingerprint.isEmpty else { return Health.warn.text }
+        return fingerprint == identityFingerprint ? Health.ok.text : Health.warn.text
     }
 
     /// The last push's outcome for one controller. A refusal is the gateway's or
@@ -1237,13 +1071,13 @@ final class FleetLocationsTab: FleetTabView {
         _ outcome: FleetPushOutcome?, reportKnown: Bool
     ) -> NSColor {
         guard let outcome else {
-            return reportKnown ? .secondaryLabelColor : .systemOrange
+            return reportKnown ? .secondaryLabelColor : Health.warn.text
         }
-        if outcome.ok == true { return .systemGreen }
+        if outcome.ok == true { return Health.ok.text }
         // A refused downgrade is a decision for the owner, not a failure: orange,
         // and the detail says what it holds and how to publish anyway.
-        if outcome.downgrade == true { return .systemOrange }
-        return outcome.status == 409 ? .systemOrange : .systemRed
+        if outcome.downgrade == true { return Health.warn.text }
+        return outcome.status == 409 ? Health.warn.text : Health.bad.text
     }
 
     func setStatus(_ text: String, colour: NSColor = .secondaryLabelColor) {
@@ -1271,41 +1105,61 @@ final class FleetLocationsTab: FleetTabView {
 
 /// Every machine in the fleet, with what it has done and what it can serve.
 ///
-/// Two columns are easy to confuse and are deliberately named apart: **Studios**
-/// is which worker modalities the machine serves (from the workers list), while
-/// **Work done by kind** is the count of jobs it has completed per modality. The
-/// second is not "models offered" and says so in its header.
+/// **Six columns that fit a 1100 pt window, and a detail strip for the rest.** The table used to have
+/// thirteen (about 2,200 pt), so disk and memory, the figures this page exists to show, were clipped off
+/// the right edge. State, Disk, Memory and Startup come first, as two-line cells (a machine's location and
+/// hardware under its name, when the controller last heard from it under its state); the rarely used facts
+/// (workers, work done by kind, the Hub's limitation sentence, the node's address) are in the strip under
+/// the table for the selected row. **Studios** is which worker modalities the machine serves, while **work
+/// done by kind** is the count of jobs it has completed per modality, and the two are named apart.
 final class FleetMachinesTab: NSView {
-    private lazy var controller = FleetTableController(columns: columns())
-    private let statusLabel = PageKit.label("", size: 11.5, colour: .secondaryLabelColor, wrapping: true)
+    private lazy var controller = FleetTableController(columns: columns(), rowHeight: 44)
+    private let statusLabel = PageKit.label("", .secondary, colour: .secondaryLabelColor, wrapping: true)
+    private let detail = PageKit.label("", .secondary, colour: .secondaryLabelColor, wrapping: true)
+    private let detailCard = CardView()
     private var studios: [String: [String]] = [:]
+    /// Injected by the Fleet page (FleetStartup.swift): the per-machine startup badge and "…" menu, and the
+    /// strip above the table that holds the bulk "Enable Auto-Start" bar. Left empty, the tab only shows the
+    /// badge, which is all the layout test needs.
+    var startupCell: ((FleetMachine) -> NSView)?
+    let startupAccessory = NSStackView()
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
-        let title = PageKit.sectionTitle("Machines")
-        title.translatesAutoresizingMaskIntoConstraints = false
+        startupAccessory.translatesAutoresizingMaskIntoConstraints = false
+        startupAccessory.orientation = .vertical
+        startupAccessory.alignment = .leading
         statusLabel.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(title)
+        detail.preferredMaxLayoutWidth = 0
+        detail.isHidden = false
+        detailCard.hold(detail, inset: NSEdgeInsets(top: DS.Space.s, left: DS.Space.m, bottom: DS.Space.s, right: DS.Space.m))
+        detailCard.translatesAutoresizingMaskIntoConstraints = false
         addSubview(statusLabel)
+        addSubview(startupAccessory)
         addSubview(controller.container)
+        addSubview(detailCard)
+        let pad = PageKit.pagePadding
         NSLayoutConstraint.activate([
-            title.topAnchor.constraint(equalTo: topAnchor, constant: 24),
-            title.leadingAnchor.constraint(equalTo: leadingAnchor, constant: PageKit.pagePadding),
-            statusLabel.topAnchor.constraint(equalTo: title.bottomAnchor, constant: 6),
-            statusLabel.leadingAnchor.constraint(equalTo: title.leadingAnchor),
-            statusLabel.trailingAnchor.constraint(
-                lessThanOrEqualTo: trailingAnchor, constant: -PageKit.pagePadding),
-            controller.container.topAnchor.constraint(equalTo: statusLabel.bottomAnchor, constant: 10),
-            controller.container.leadingAnchor.constraint(
-                equalTo: leadingAnchor, constant: PageKit.pagePadding),
-            controller.container.trailingAnchor.constraint(
-                equalTo: trailingAnchor, constant: -PageKit.pagePadding),
-            controller.container.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -24),
+            statusLabel.topAnchor.constraint(equalTo: topAnchor, constant: DS.Space.l),
+            statusLabel.leadingAnchor.constraint(equalTo: leadingAnchor, constant: pad),
+            statusLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -pad),
+            startupAccessory.topAnchor.constraint(equalTo: statusLabel.bottomAnchor, constant: DS.Space.s),
+            startupAccessory.leadingAnchor.constraint(equalTo: statusLabel.leadingAnchor),
+            startupAccessory.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -pad),
+            controller.container.topAnchor.constraint(equalTo: startupAccessory.bottomAnchor, constant: DS.Space.m),
+            controller.container.leadingAnchor.constraint(equalTo: leadingAnchor, constant: pad),
+            controller.container.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -pad),
+            detailCard.topAnchor.constraint(equalTo: controller.container.bottomAnchor, constant: DS.Space.m),
+            detailCard.leadingAnchor.constraint(equalTo: leadingAnchor, constant: pad),
+            detailCard.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -pad),
+            detailCard.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -pad),
             // A low floor keeps the table from collapsing without ever being the
             // reason the window wants to grow.
             controller.container.heightAnchor.constraint(greaterThanOrEqualToConstant: 120),
         ])
         controller.emptyText = "No machines are reporting. Add a location on the Locations tab."
+        controller.onSelection = { [weak self] any in self?.showDetail(any as? FleetMachine) }
+        showDetail(nil)
     }
 
     required init?(coder: NSCoder) { fatalError("not used") }
@@ -1314,188 +1168,144 @@ final class FleetMachinesTab: NSView {
         func machine(_ any: Any) -> FleetMachine? { any as? FleetMachine }
         return [
             FleetColumn(
-                id: "state", title: "State", width: 110,
-                text: { row in
-                    guard let row = machine(row) else { return "—" }
-                    // **A refused credential is not an offline machine.** The Hub puts
-                    // the node in its own `unauthorized` state precisely so a token
-                    // problem does not read as a network one; its activity word is
-                    // `offline` because nothing can be dispatched, and drawing that
-                    // sent the owner to the network for a credential.
-                    if row.nodeStateIsUnauthorized { return "credential refused" }
-                    return row.state.map { FleetFormat.words($0) }
-                        ?? (row.reachable == true ? "up" : "offline")
-                },
-                sortValue: { .text(machine($0)?.state ?? "") },
-                colour: { row in
-                    guard let row = machine(row) else { return .labelColor }
-                    if row.nodeStateIsUnauthorized { return .systemRed }
-                    return row.reachable == false ? .systemOrange : .labelColor
-                },
-                // **The reason, not just the verdict.** The Hub distinguishes a
-                // node it cannot reach from one whose Hub is not running, and the
-                // controller writes its own sentence about it; both sit here so
-                // "offline" is actionable. The Limitation column keeps its own
-                // tooltip, so this one only speaks for state and health.
-                tooltip: { row in
-                    let limitation = machine(row)?.limitation
-                    let reason = machine(row)?.stateReason
-                    switch (reason, limitation) {
-                    case let (reason?, limitation?): return reason + "\n\n" + limitation
-                    case let (reason?, nil): return reason
-                    case let (nil, limitation?): return limitation
-                    default: return nil
-                    }
-                }
-            ),
-            FleetColumn(
-                id: "machine", title: "Machine", width: 170,
+                id: "machine", title: "Machine", width: 170, minWidth: 110, flex: 3,
                 text: { machine($0)?.label ?? machine($0)?.machine ?? "—" },
-                sortValue: { .text(machine($0)?.label ?? machine($0)?.machine ?? "") }
-            ),
-            FleetColumn(
-                id: "location", title: "Location", width: 150,
-                text: { FleetFormat.text(machine($0)?.location) },
-                sortValue: { .text(machine($0)?.location ?? "") }
-            ),
-            FleetColumn(
-                id: "node", title: "Node", width: 110,
-                // **Which Macs are members, and which one this is.** The node roster
-                // was fetched per location and never joined onto its machine (H10/M21);
-                // `node_role` is the role the controller recorded when the Mac joined
-                // (`agent` today), and `member` marks a Mac whose controller stated no
-                // role rather than claiming it is not one. The controller's own Mac has
-                // no roster row and reads `—`.
-                text: { machine($0)?.nodeRoleText ?? "—" },
-                sortValue: { .text(machine($0)?.nodeRole ?? "") },
-                colour: { row in
-                    guard let row = machine(row) else { return .labelColor }
-                    if row.nodeStateIsUnauthorized { return .systemRed }
-                    if row.nodeState?.lowercased() == "unreachable" { return .systemOrange }
-                    return .labelColor
-                },
-                tooltip: { row in
-                    guard let row = machine(row) else { return nil }
-                    guard row.isNode else {
-                        return "This is the controller's own Mac: it is not a node of "
-                            + "another controller, so it has no roster row."
-                    }
-                    guard let role = row.nodeRole, !role.isEmpty else {
-                        return "Joined this controller; the controller stated no role for it."
-                    }
-                    return "Joined this controller as ‘\(role)’."
+                sortValue: { .text(machine($0)?.label ?? machine($0)?.machine ?? "") },
+                cell: { any in
+                    guard let row = machine(any) else { return NSView() }
+                    var facts = [row.location == row.label ? nil : row.location, row.hardwareText].compactMap { $0 }.filter { !$0.isEmpty }
+                    if !row.isNode { facts.append("controller") }
+                    return fleetTwoLineCell(row.label ?? row.machine ?? "—", facts.joined(separator: " · "),
+                                            tooltip: row.stateReason)
                 }
             ),
             FleetColumn(
-                id: "nodeSeen", title: "Node last seen", width: 130,
-                // **"Is that Mac switched off, or gone?"** (M20.) The Hub stamps
-                // `last_seen_at` on every probe that answers; nothing drew it, so a Mac
-                // that was off and one that was scrapped looked the same. `—` means the
-                // controller has never heard from it, which is not "a long time ago".
-                text: { row in
-                    guard let row = machine(row), row.isNode else { return "—" }
-                    return row.nodeLastSeenText
-                },
-                sortValue: { .number(machine($0)?.nodeLastSeenAt?.doubleValue ?? 0) },
-                tooltip: { row in
-                    guard let row = machine(row), row.isNode else { return nil }
-                    let when = row.nodeLastSeenText
-                    if row.nodeLastSeenAt?.doubleValue == nil {
-                        return "The controller has not recorded a probe from this Mac."
-                    }
-                    return "The controller last heard from this Mac \(when)."
+                id: "state", title: "State", width: 132, minWidth: 120,
+                text: { machine($0)?.stateLabel ?? "—" },
+                // **A refused credential is not an offline machine.** The Hub puts the node in its own
+                // `unauthorized` state precisely so a token problem does not read as a network one; its
+                // activity word is `offline` because nothing can be dispatched, and drawing that sent the
+                // owner to the network for a credential.
+                sortValue: { .text(machine($0)?.stateLabel ?? "") },
+                cell: { any in
+                    guard let row = machine(any) else { return NSView() }
+                    // **The reason, not just the verdict**, and "is it switched off, or gone?": the Hub's own
+                    // sentence for why it cannot reach the node, and when the controller last heard from it.
+                    var tips = [row.stateReason, row.limitation].compactMap { $0 }
+                    if row.isNode { tips.append("The controller last heard from this Mac \(row.nodeLastSeenText).") }
+                    return fleetBadgeCell(row.stateLabel, row.activityHealth,
+                                          caption: row.isNode ? "seen \(row.nodeLastSeenText)" : nil,
+                                          tooltip: tips.isEmpty ? nil : tips.joined(separator: "\n\n"))
                 }
             ),
             FleetColumn(
-                id: "jobs", title: "Jobs (done/failed)", width: 140,
+                id: "disk", title: "Disk", width: 116, minWidth: 96,
+                text: { row in machine(row).map { "\(FleetFormat.gb($0.diskFree)) free" } ?? "—" },
+                sortValue: { .number(machine($0)?.diskFree ?? -1) },
+                cell: { any in
+                    guard let row = machine(any) else { return NSView() }
+                    if row.reachable == false { return fleetTwoLineCell("—", nil) }
+                    return fleetMeterCell("\(FleetFormat.gb(row.diskFree)) free", fraction: row.diskUsedFraction,
+                                          health: row.diskHealth, tooltip: FleetMachinesTab.diskTooltip(row))
+                }
+            ),
+            FleetColumn(
+                id: "memory", title: "Memory", width: 108, minWidth: 92,
+                // **Free is what the Hub's own admission counts**, beside the total: "Apple M4 · 17.18 GB"
+                // next to "118 GB free" used to read as though the memory were free too.
+                text: { row in machine(row).map { "\(FleetFormat.gb($0.availableGb)) free" } ?? "—" },
+                sortValue: { .number(machine($0)?.availableGb ?? -1) },
+                cell: { any in
+                    guard let row = machine(any) else { return NSView() }
+                    if row.reachable == false { return fleetTwoLineCell("—", nil) }
+                    return fleetMeterCell("\(FleetFormat.gb(row.availableGb)) free", fraction: row.memoryUsedFraction,
+                                          health: row.memoryHealth,
+                                          tooltip: row.memoryGb.map { "Total \(FleetFormat.gb($0)). Free is what the Hub's own admission counts." })
+                }
+            ),
+            // Startup control: what this Mac starts when it starts, with a "…" menu to change it, in one
+            // compact column. Self-contained in FleetStartup.swift; the Groups view reuses it.
+            FleetColumn(
+                id: "startup", title: "Startup", width: 150, minWidth: 132,
+                text: { FleetStartup.health(machine($0)?.startup).text },
+                sortValue: { row in
+                    // Off first when sorted ascending: those are the Macs that need attention.
+                    switch machine(row)?.startup?.startServicesOnLaunch {
+                    case false?: return .number(0)
+                    case true?: return .number(2)
+                    default: return .number(1)
+                    }
+                },
+                tooltip: { FleetStartup.tooltip(machine($0)?.startup) },
+                // Without the injected cell (the layout test) the plain badge is drawn.
+                cell: { [weak self] any in
+                    guard let row = machine(any) else { return NSView() }
+                    if let make = self?.startupCell { return make(row) }
+                    let (health, text) = FleetStartup.health(row.startup)
+                    return fleetBadgeCell(text, health, tooltip: FleetStartup.tooltip(row.startup))
+                }
+            ),
+            FleetColumn(
+                id: "jobs", title: "Jobs", width: 128, minWidth: 112, hideBelow: 700,
                 text: { row in
                     guard let row = machine(row) else { return "—" }
                     if row.completed == nil && row.failed == nil { return "—" }
                     return "\(row.completed ?? 0) done, \(row.failed ?? 0) failed"
                 },
                 sortValue: { .number(Double(machine($0)?.completed ?? 0)) },
-                colour: { (machine($0)?.failed ?? 0) > 0 ? .systemOrange : .labelColor }
-            ),
-            FleetColumn(
-                id: "median", title: "Median", width: 100,
-                text: { row in
-                    guard let row = machine(row) else { return "—" }
-                    if let median = row.medianRuntimeS { return FleetFormat.seconds(median) + " med" }
-                    if let average = row.averageSeconds { return FleetFormat.seconds(average) + " avg" }
-                    return "—"
-                },
-                sortValue: { .number(machine($0)?.medianRuntimeS ?? machine($0)?.averageSeconds ?? 0) }
-            ),
-            FleetColumn(
-                id: "hardware", title: "Hardware", width: 240,
-                text: { row in
-                    guard let row = machine(row) else { return "—" }
-                    var parts: [String] = []
-                    if let chip = row.chip, !chip.isEmpty { parts.append(chip) }
-                    // **Total and free are two numbers, and the column says which
-                    // is which.** It read "Apple M4 · 17.18 GB · 118.11 GB free" —
-                    // the disk labelled and the memory not — so a machine with
-                    // 7.14 GB actually available looked as though all 17.18 GB
-                    // were free. The Hub states both; this draws both.
-                    if let memory = row.memoryGb {
-                        parts.append(row.availableGb.map {
-                            "\(FleetFormat.gb(memory)) (\(FleetFormat.gb($0)) free)"
-                        } ?? FleetFormat.gb(memory))
-                    }
-                    if let free = row.diskFreeGb { parts.append(FleetFormat.gb(free) + " free") }
-                    return parts.isEmpty ? "—" : parts.joined(separator: " · ")
-                },
-                sortValue: { .text(machine($0)?.chip ?? "") }
-            ),
-            FleetColumn(
-                id: "studios", title: "Studios (workers)", width: 220,
-                text: { [weak self] row in
-                    guard let row = machine(row) else { return "—" }
-                    let studios = self?.studios(for: row) ?? []
-                    return studios.isEmpty ? "—" : studios.joined(separator: ", ")
-                },
-                sortValue: { .text(machine($0)?.label ?? "") }
-            ),
-            FleetColumn(
-                id: "workDone", title: "Work done by kind", width: 230,
-                text: { row in
-                    guard let row = machine(row), let kinds = row.modalities, !kinds.isEmpty else {
-                        return "—"
-                    }
-                    return kinds.sorted { $0.key < $1.key }
-                        .map { "\($0.value) \($0.key)" }
-                        .joined(separator: ", ")
-                },
-                sortValue: { row in
-                    .number(Double((machine(row)?.modalities ?? [:]).values.reduce(0, +)))
-                },
-                tooltip: { row in
-                    guard let row = machine(row), let kinds = row.modalities, !kinds.isEmpty else {
-                        return nil
-                    }
-                    return "Jobs completed by kind: "
-                        + kinds.sorted { $0.key < $1.key }
-                            .map { "\($0.value) \($0.key)" }.joined(separator: ", ")
-                }
-            ),
-            FleetColumn(
-                id: "limitation", title: "Limitation", width: 260,
-                text: { machine($0)?.limitationText ?? "—" },
-                sortValue: { .text(machine($0)?.limitationReason ?? machine($0)?.limitation ?? "") },
-                tooltip: { row in
-                    // The Hub's own sentence stays reachable even when the column
-                    // shows its shorter phrase.
-                    let machine = machine(row)
-                    return machine?.limitation ?? machine?.limitationText
+                cell: { any in
+                    guard let row = machine(any) else { return NSView() }
+                    if row.completed == nil && row.failed == nil { return fleetTwoLineCell("—", nil) }
+                    var median: String?
+                    if let value = row.medianRuntimeS { median = FleetFormat.seconds(value) + " median" }
+                    else if let value = row.averageSeconds { median = FleetFormat.seconds(value) + " average" }
+                    return fleetTwoLineCell("\(row.completed ?? 0) done · \(row.failed ?? 0) failed", median)
                 }
             ),
         ]
+    }
+
+    /// What the Disk cell's tooltip adds: the volume, the Hub's own state and its largest consumers.
+    static func diskTooltip(_ machine: FleetMachine) -> String? {
+        guard let disk = machine.disk else { return machine.diskTotal.map { "Volume: \(FleetFormat.gb($0))" } }
+        var lines: [String] = []
+        if let total = disk.totalGb { lines.append("Volume: \(FleetFormat.gb(total))") }
+        if disk.stateSource == "derived" {
+            lines.append("State worked out here from free space; this Hub does not report one.")
+        }
+        if let top = disk.topText { lines.append("Largest: " + top) }
+        if let trash = disk.trashGb { lines.append("Trash: " + FleetFormat.gb(trash)) }
+        if let swap = disk.swapUsedGb { lines.append("Swap in use: " + FleetFormat.gb(swap)) }
+        if let sweep = disk.lastSweep?.display { lines.append("Last clean-up: " + sweep) }
+        lines.append(contentsOf: disk.warnings)
+        return lines.isEmpty ? nil : lines.joined(separator: "\n")
     }
 
     private func studios(for row: FleetMachine) -> [String] {
         if let key = row.machine, let found = studios[key], !found.isEmpty { return found }
         if let key = row.label, let found = studios[key], !found.isEmpty { return found }
         return []
+    }
+
+    /// The facts that did not fit a column, for the selected machine.
+    private func showDetail(_ row: FleetMachine?) {
+        guard let row else {
+            detail.stringValue = "Select a machine to see its studios, the work it has done by kind, and what the Hub says it cannot read."
+            return
+        }
+        var lines: [String] = []
+        let served = studios(for: row)
+        lines.append("Studios (workers): " + (served.isEmpty ? "—" : served.joined(separator: ", ")))
+        if let kinds = row.modalities, !kinds.isEmpty {
+            lines.append("Work done by kind: " + kinds.sorted { $0.key < $1.key }
+                .map { "\($0.value) \($0.key == "tts" ? "TTS" : $0.key)" }.joined(separator: ", "))
+        }
+        if row.isNode {
+            lines.append("Node: \(row.nodeRoleText)" + (row.nodeAddress.map { " at \($0)" } ?? "")
+                         + " · last seen \(row.nodeLastSeenText)")
+        }
+        if row.limitationText != "—" { lines.append("Limitation: " + row.limitationText) }
+        detail.stringValue = lines.joined(separator: "\n")
     }
 
     func update(machines: [FleetMachine], studios: [String: [String]], filter: FleetFilter) {
@@ -1507,9 +1317,56 @@ final class FleetMachinesTab: NSView {
                 ])
         }
         controller.setRows(rows)
-        statusLabel.stringValue = rows.count == machines.count
+        showDetail(controller.table.selectedRow >= 0 ? controller.rows[controller.table.selectedRow] as? FleetMachine : nil)
+        let summary = rows.count == machines.count
             ? "\(machines.count) machine\(machines.count == 1 ? "" : "s")."
             : "\(rows.count) of \(machines.count) machines match the filter."
+        let text = NSMutableAttributedString(
+            string: summary,
+            attributes: [.font: TextRole.secondary.font, .foregroundColor: NSColor.secondaryLabelColor])
+        // The disk banner is about the whole fleet, so it ignores the filter: a Mac that is
+        // filling up must not disappear because a search hid it.
+        for line in Self.diskBanner(for: machines) {
+            text.append(NSAttributedString(
+                string: "\n" + line.text,
+                attributes: [.font: TextRole.secondary.font, .foregroundColor: line.colour]))
+        }
+        statusLabel.attributedStringValue = text
+    }
+
+    /// True for a warning that only restates free space ("Only 14 GB free.", "14 GB free: low disk").
+    static func repeatsDiskLine(_ warning: String) -> Bool {
+        let text = warning.lowercased()
+        return text.contains("free") && !text.contains("update") && !text.contains("time machine")
+    }
+
+    /// One line per concern: Macs low on disk (state, free space, biggest consumer), then any
+    /// warning a Hub reported (macOS updates / Time Machine). Empty when every Mac is fine.
+    static func diskBanner(for machines: [FleetMachine]) -> [(text: String, colour: NSColor)] {
+        var lines: [(text: String, colour: NSColor)] = []
+        let low = machines.filter { $0.disk?.isLow == true }
+            .sorted { ($0.disk?.freeGb ?? 0) < ($1.disk?.freeGb ?? 0) }
+        for row in low {
+            guard let disk = row.disk else { continue }
+            let name = row.label ?? row.machine ?? "a Mac"
+            var line = "\(name): disk \((disk.state ?? "").uppercased()), \(FleetFormat.gb(disk.freeGb)) free"
+            if let top = disk.top.first(where: { $0.name?.isEmpty == false }), let what = top.name {
+                line += " (largest: \(what)\(top.gb.map { " " + FleetFormat.gb($0) } ?? ""))"
+            }
+            if (disk.state ?? "").lowercased() == "stop" { line += ". It is not being sent work." }
+            lines.append((line, disk.colour))
+        }
+        for row in machines {
+            // A Hub's own low-disk warning ("Only 21 GB free.") says what the disk line above already
+            // said, so it is dropped when the Mac has a disk line; other warnings (macOS update, Time
+            // Machine) are kept.
+            let hasDiskLine = row.disk?.isLow == true
+            for warning in row.disk?.warnings ?? [] {
+                if hasDiskLine && Self.repeatsDiskLine(warning) { continue }
+                lines.append(("\(row.label ?? row.machine ?? "a Mac"): \(warning)", Health.warn.text))
+            }
+        }
+        return lines
     }
 }
 
@@ -1544,13 +1401,13 @@ struct FleetModelAggregate {
 /// cannot serve when it cannot (`fit.hint`, `catalogError`), and the Hub's exact
 /// wording rather than a dot.
 final class FleetModelsTab: FleetTabView {
-    private let master = FleetTableController(columns: FleetModelsTab.masterColumns(), rowHeight: 22)
+    private let master = FleetTableController(columns: FleetModelsTab.masterColumns())
     // Built in `init`: the Worker column reads the per-worker catalogue, which is
     // instance state (set by `update`), so the closure captures the tab.
     private var detail: FleetTableController!
     private let masterTitle = PageKit.sectionTitle("Local models")
     private let detailTitle = PageKit.sectionTitle("Machines serving this model")
-    private let statusLabel = PageKit.label("", size: 11.5, colour: .secondaryLabelColor, wrapping: true)
+    private let statusLabel = PageKit.label("", .secondary, colour: .secondaryLabelColor, wrapping: true)
 
     private var aggregates: [FleetModelAggregate] = []
     private var selectedModel: String?
@@ -1565,7 +1422,7 @@ final class FleetModelsTab: FleetTabView {
                 guard let self else { return "—" }
                 let key = "\(row.machine ?? "")|\(row.modelId ?? row.model ?? "")"
                 return self.workerLookup[key] ?? "—"
-            }), rowHeight: 36)
+            }), rowHeight: 44)
         // Master and detail sit inside this tab's own scroll view, with fixed
         // heights in the document. That keeps the tab's required height out of the
         // window: a plain stack of two fixed tables grew the window at the app's
@@ -1574,9 +1431,11 @@ final class FleetModelsTab: FleetTabView {
         master.container.heightAnchor.constraint(equalToConstant: 220).isActive = true
         detail.container.heightAnchor.constraint(equalToConstant: 220).isActive = true
         page.addArrangedSubview(masterTitle)
+        page.setCustomSpacing(DS.Space.m, after: masterTitle)
         page.addArrangedSubview(statusLabel)
         page.addArrangedSubview(master.container)
         page.addArrangedSubview(detailTitle)
+        page.setCustomSpacing(DS.Space.m, after: detailTitle)
         page.addArrangedSubview(detail.container)
         fullWidth(statusLabel)
         fullWidth(master.container)
@@ -1692,53 +1551,45 @@ final class FleetModelsTab: FleetTabView {
         }
     }
 
+    /// Eight columns that fit a 1100 pt window. "Modality" repeated "Studio", "Available" repeated the
+    /// numerator of "Machines serving", and "Cached" moved to the per-machine table below.
     private static func masterColumns() -> [FleetColumn] {
         func aggregate(_ any: Any) -> FleetModelAggregate? { any as? FleetModelAggregate }
         return [
             FleetColumn(
-                id: "model", title: "Model", width: 260,
+                id: "model", title: "Model", width: 200, minWidth: 140, flex: 3,
                 text: { aggregate($0)?.label ?? "—" },
                 sortValue: { .text(aggregate($0)?.label ?? "") },
                 tooltip: { aggregate($0)?.model }
             ),
             FleetColumn(
-                id: "studio", title: "Studio", width: 110,
+                id: "studio", title: "Studio", width: 90, minWidth: 70,
                 text: { aggregate($0)?.studio ?? "—" },
                 sortValue: { .text(aggregate($0)?.studio ?? "") }
             ),
             FleetColumn(
-                id: "modality", title: "Modality", width: 110,
-                text: { aggregate($0)?.modality ?? "—" },
-                sortValue: { .text(aggregate($0)?.modality ?? "") }
-            ),
-            FleetColumn(
-                id: "locations", title: "Locations", width: 90,
+                id: "locations", title: "Locations", width: 76, minWidth: 60, hideBelow: 700,
                 text: { "\(aggregate($0)?.locations.count ?? 0)" },
                 sortValue: { .number(Double(aggregate($0)?.locations.count ?? 0)) },
                 tooltip: { aggregate($0)?.locations.joined(separator: ", ") }
             ),
             FleetColumn(
-                id: "serving", title: "Machines serving", width: 140,
+                id: "serving", title: "Serving", width: 84, minWidth: 70,
                 text: { row in
                     guard let row = aggregate(row) else { return "—" }
-                    return "\(row.machinesServing) / \(row.machinesReporting)"
+                    return "\(row.machinesServing) of \(row.machinesReporting)"
                 },
                 sortValue: { .number(Double(aggregate($0)?.machinesServing ?? 0)) },
-                colour: { (aggregate($0)?.machinesServing ?? 0) > 0 ? .labelColor : .systemOrange }
+                colour: { (aggregate($0)?.machinesServing ?? 0) > 0 ? .labelColor : Health.warn.text },
+                tooltip: { _ in "Machines that can serve this model right now, of the machines that report it." }
             ),
             FleetColumn(
-                id: "available", title: "Available", width: 90,
-                text: { "\(aggregate($0)?.available ?? 0)" },
-                sortValue: { .number(Double(aggregate($0)?.available ?? 0)) },
-                colour: { (aggregate($0)?.available ?? 0) > 0 ? .labelColor : .systemOrange }
-            ),
-            FleetColumn(
-                id: "bestfit", title: "Best fit", width: 120,
+                id: "bestfit", title: "Best fit", width: 120, minWidth: 90,
                 text: { aggregate($0)?.bestFit ?? "—" },
                 sortValue: { .text(aggregate($0)?.bestFit ?? "") }
             ),
             FleetColumn(
-                id: "memory", title: "Memory floor", width: 110,
+                id: "memory", title: "Memory floor", width: 100, minWidth: 92,
                 text: { row in
                     guard let value = aggregate(row)?.memoryFloor else { return "—" }
                     return FleetFormat.gb(value)
@@ -1746,93 +1597,77 @@ final class FleetModelsTab: FleetTabView {
                 sortValue: { .number(aggregate($0)?.memoryFloor ?? 0) }
             ),
             FleetColumn(
-                id: "cached", title: "Cached", width: 80,
-                text: { "\(aggregate($0)?.cached ?? 0)" },
-                sortValue: { .number(Double(aggregate($0)?.cached ?? 0)) }
-            ),
-            FleetColumn(
-                id: "dispatch", title: "Dispatch", width: 110,
+                id: "dispatch", title: "Dispatch", width: 96, minWidth: 80, hideBelow: 700,
                 text: { aggregate($0)?.dispatch ?? "—" },
                 sortValue: { .text(aggregate($0)?.dispatch ?? "") }
             ),
             FleetColumn(
-                id: "issues", title: "Issues", width: 80,
+                id: "issues", title: "Issues", width: 60, minWidth: 50,
                 text: { "\(aggregate($0)?.issues ?? 0)" },
                 sortValue: { .number(Double(aggregate($0)?.issues ?? 0)) },
-                colour: { (aggregate($0)?.issues ?? 0) > 0 ? .systemRed : .labelColor }
+                colour: { (aggregate($0)?.issues ?? 0) > 0 ? Health.bad.text : .labelColor }
             ),
         ]
     }
 
+    /// One row per machine serving the model: the machine with its location and worker under it, the three
+    /// yes/no gates, the fit, and the Hub's own note wrapped across two lines.
     private static func detailColumns(
         worker: @escaping (FleetLocalModel) -> String
     ) -> [FleetColumn] {
         func row(_ any: Any) -> FleetLocalModel? { any as? FleetLocalModel }
         return [
+            // **Which worker actually serves it**, from the worker's own catalogue. The machine is where the
+            // hardware is; the worker is what would run the job, and on a Mac with four studios those are
+            // not the same answer.
             FleetColumn(
-                id: "dlocation", title: "Location", width: 140,
-                text: { FleetFormat.text(row($0)?.location ?? row($0)?.locationId) },
-                sortValue: { .text(row($0)?.location ?? "") }
-            ),
-            FleetColumn(
-                id: "dmachine", title: "Machine", width: 170,
+                id: "dmachine", title: "Machine", width: 170, minWidth: 130, flex: 3,
                 text: { row($0)?.machine ?? "—" },
-                sortValue: { .text(row($0)?.machine ?? "") }
-            ),
-            // **Which worker actually serves it**, from the worker's own catalogue.
-            // The machine is where the hardware is; the worker is what would run the
-            // job, and on a Mac with four studios those are not the same answer.
-            FleetColumn(
-                id: "dworker", title: "Worker", width: 170,
-                text: { any in row(any).map(worker) ?? "—" },
-                sortValue: { any in .text(row(any).map(worker) ?? "") }
-            ),
-            FleetColumn(
-                id: "davailable", title: "Available", width: 80,
-                text: { fleetFlag(row($0)?.available) },
-                sortValue: { .number((row($0)?.available == true) ? 1 : 0) },
-                colour: { row($0)?.available == true ? .labelColor : .systemOrange }
-            ),
-            FleetColumn(
-                id: "druntime", title: "Runtime ready", width: 100,
-                text: { fleetFlag(row($0)?.runtimeReady) },
-                sortValue: { .number((row($0)?.runtimeReady == true) ? 1 : 0) }
-            ),
-            FleetColumn(
-                id: "dmemory", title: "Memory eligible", width: 110,
-                text: { fleetFlag(row($0)?.memoryEligible) },
-                sortValue: { .number((row($0)?.memoryEligible == true) ? 1 : 0) }
-            ),
-            FleetColumn(
-                id: "dfit", title: "Fit label", width: 130,
-                text: { row($0)?.fitLabel ?? "—" },
-                sortValue: { .text(row($0)?.fitLabel ?? "") }
-            ),
-            FleetColumn(
-                id: "dhint", title: "Fit hint", width: 240, sortable: false,
-                text: { FleetFormat.text(row($0)?.fit?.hint) },
+                sortValue: { .text(row($0)?.machine ?? "") },
                 cell: { any in
-                    fleetWrappingCell(
-                        FleetFormat.text(row(any)?.fit?.hint), colour: .secondaryLabelColor)
+                    guard let row = row(any) else { return NSView() }
+                    let place = FleetFormat.text(row.location ?? row.locationId)
+                    let served = worker(row)
+                    return fleetTwoLineCell(row.machine ?? "—", served == "—" ? place : "\(place) · \(served)")
                 }
             ),
             FleetColumn(
-                id: "dcached", title: "Cached", width: 90,
-                text: { row($0)?.cacheState ?? "—" },
-                sortValue: { .text(row($0)?.cacheState ?? "") }
+                id: "davailable", title: "Available", width: 74, minWidth: 66,
+                text: { fleetFlag(row($0)?.available) },
+                sortValue: { .number((row($0)?.available == true) ? 1 : 0) },
+                colour: { row($0)?.available == true ? .labelColor : Health.warn.text }
             ),
             FleetColumn(
-                id: "dpackage", title: "Package / dispatch", width: 140,
-                text: { FleetFormat.words(row($0)?.dispatchState) },
-                sortValue: { .text(row($0)?.dispatchState ?? "") }
+                id: "druntime", title: "Runtime", width: 70, minWidth: 62,
+                text: { fleetFlag(row($0)?.runtimeReady) },
+                sortValue: { .number((row($0)?.runtimeReady == true) ? 1 : 0) },
+                tooltip: { _ in "Runtime ready" }
             ),
             FleetColumn(
-                id: "dnote", title: "Note", width: 260, sortable: false,
+                id: "dmemory", title: "Memory", width: 70, minWidth: 62,
+                text: { fleetFlag(row($0)?.memoryEligible) },
+                sortValue: { .number((row($0)?.memoryEligible == true) ? 1 : 0) },
+                tooltip: { _ in "Memory eligible" }
+            ),
+            FleetColumn(
+                id: "dfit", title: "Fit", width: 150, minWidth: 120,
+                text: { row($0)?.fitLabel ?? "—" },
+                sortValue: { .text(row($0)?.fitLabel ?? "") },
+                cell: { any in
+                    guard let row = row(any) else { return NSView() }
+                    var caption = [FleetFormat.words(row.dispatchState), row.cacheState].compactMap { $0 }
+                        .filter { $0 != "—" && !$0.isEmpty }.joined(separator: " · ")
+                    if caption.isEmpty { caption = "" }
+                    return fleetTwoLineCell(row.fitLabel, caption, tooltip: "Dispatch state and cache state")
+                }
+            ),
+            FleetColumn(
+                id: "dnote", title: "Note", width: 200, minWidth: 120, flex: 4, sortable: false,
                 text: { FleetFormat.text(row($0)?.issueText ?? row($0)?.fit?.hint) },
                 cell: { any in
                     guard let row = row(any) else { return NSView() }
                     if let error = row.issueText {
-                        return fleetWrappingCell(error, colour: .systemRed)
+                        return fleetWrappingCell(error, colour: Health.bad.text)
                     }
                     return fleetWrappingCell(
                         FleetFormat.text(row.fit?.hint), colour: .secondaryLabelColor)
@@ -1871,7 +1706,7 @@ final class FleetJobsTab: FleetTabView {
     // Built in `init` rather than inline: the Cancel column's button captures the
     // tab, and `self` is not available until after `super.init`.
     private var running: FleetTableController!
-    private let activity = FleetTableController(columns: FleetJobsTab.activityColumns())
+    private let activity = FleetTableController(columns: FleetJobsTab.activityColumns(), rowHeight: 44)
     private let runningTitle = PageKit.sectionTitle("Running now")
     private let activityTitle = PageKit.sectionTitle("Work by machine")
     private let problemsTitle = PageKit.sectionTitle("Needs attention")
@@ -1880,11 +1715,11 @@ final class FleetJobsTab: FleetTabView {
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
         running = FleetTableController(columns: FleetJobsTab.runningColumns(
-            cancel: { [weak self] job in self?.onCancel?(job) }))
+            cancel: { [weak self] job in self?.onCancel?(job) }), rowHeight: 44)
         running.emptyText = "Nothing is running right now."
         activity.emptyText = "No machine has reported any work."
-        running.container.heightAnchor.constraint(equalToConstant: 220).isActive = true
-        activity.container.heightAnchor.constraint(equalToConstant: 170).isActive = true
+        running.container.heightAnchor.constraint(equalToConstant: 240).isActive = true
+        activity.container.heightAnchor.constraint(equalToConstant: 280).isActive = true
 
         let refresh = FleetClosureButton(title: "Refresh") { [weak self] in self?.onRefresh?() }
         let header = PageKit.row([runningTitle, NSView(), refresh])
@@ -1893,12 +1728,21 @@ final class FleetJobsTab: FleetTabView {
         page.addArrangedSubview(running.container)
         fullWidth(running.container)
         page.addArrangedSubview(activityTitle)
+        page.setCustomSpacing(DS.Space.m, after: activityTitle)
         page.addArrangedSubview(activity.container)
         fullWidth(activity.container)
         page.addArrangedSubview(problemsTitle)
+        page.setCustomSpacing(DS.Space.m, after: problemsTitle)
         problems.orientation = .vertical
         problems.alignment = .leading
-        problems.spacing = 8
+        problems.spacing = DS.Space.s
+        // Said once for every card below: what Retry, Cancel and Refresh each do.
+        let advice = PageKit.help(
+            "Retry re-queues a failed item — the Hub accepts only an item in an error state, and refuses a "
+            + "cancelled batch or an uncertain item (discard that first). Cancel asks the Hub to stop the "
+            + "batch; Refresh re-reads its list.")
+        page.addArrangedSubview(advice)
+        fullWidth(advice)
         page.addArrangedSubview(problems)
         fullWidth(problems)
     }
@@ -1931,7 +1775,7 @@ final class FleetJobsTab: FleetTabView {
             problems.addArrangedSubview(PageKit.label(
                 "No stalled or failed batches. A batch that stops making progress appears here "
                 + "with the Hub's own reason.",
-                size: 11.5, colour: .secondaryLabelColor, wrapping: true))
+                .secondary, colour: .secondaryLabelColor, wrapping: true))
             return
         }
         for job in broken {
@@ -1942,11 +1786,11 @@ final class FleetJobsTab: FleetTabView {
     }
 
     private func problemCard(_ job: FleetJob) -> NSView {
-        let stalled = job.stalled == true
-        let colour: NSColor = stalled ? .systemOrange : .systemRed
+        let health: Health = job.stalled == true ? .warn : .bad
+        let colour = health.text
         let heading = PageKit.label(
             "\(FleetFormat.text(job.location)) · \(FleetFormat.words(job.modality)) · \(FleetFormat.text(job.model))",
-            size: 12.5, weight: .semibold
+            .rowTitle
         )
         let reason: String
         if let note = job.governorNote, !note.trimmingCharacters(in: .whitespaces).isEmpty {
@@ -1963,27 +1807,20 @@ final class FleetJobsTab: FleetTabView {
         } else {
             reason = "The Hub lists this batch as stalled and has not marked it finished."
         }
-        let message = PageKit.label(reason, size: 11.5, colour: colour, wrapping: true)
+        let message = PageKit.label(reason, .secondary, colour: colour, wrapping: true)
         message.maximumNumberOfLines = 4
-        let hint = PageKit.label(
-            "Fix: Retry re-queues a failed item — the Hub accepts only an item in an error state, and "
-            + "refuses a cancelled batch or an uncertain item (discard that first). Cancel asks the Hub "
-            + "to stop the batch; Refresh re-reads its list.",
-            size: 11, colour: .secondaryLabelColor, wrapping: true
-        )
-        hint.maximumNumberOfLines = 3
         let progress = PageKit.label(
             Self.progressText(job) + Self.troubleText(job) + " · started "
             + FleetFormat.relative(job.startedAt),
-            size: 11, colour: .tertiaryLabelColor
+            .caption, colour: .tertiaryLabelColor
         )
-        let stack = FleetTintStack(views: [heading, message, hint, progress])
+        let stack = FleetTintStack(views: [heading, message, progress])
         stack.orientation = .vertical
         stack.alignment = .leading
-        stack.spacing = 4
-        stack.edgeInsets = NSEdgeInsets(top: 10, left: 12, bottom: 10, right: 12)
+        stack.spacing = DS.Space.xs
+        stack.edgeInsets = NSEdgeInsets(top: DS.Space.m, left: DS.Space.m, bottom: DS.Space.m, right: DS.Space.m)
         stack.wantsLayer = true
-        stack.tint = colour
+        stack.tint = health.tint
         stack.translatesAutoresizingMaskIntoConstraints = false
 
         // **The failed items, named and retryable.** From Hub 0.6.48 the batch row
@@ -1992,16 +1829,16 @@ final class FleetJobsTab: FleetTabView {
         // offer the one action that applies to it.
         for item in job.failedItems {
             let index = item.itemIndex.map { "Item \($0)" } ?? "Item"
-            let label = PageKit.label("\(index) · \(item.text)", size: 11,
+            let label = PageKit.label("\(index) · \(item.text)", .caption,
                                       colour: .secondaryLabelColor, wrapping: true)
             label.maximumNumberOfLines = 3
             let retry = FleetClosureButton(title: "Retry") { [weak self] in
                 self?.onRetry?(job, item)
             }
-            let row = PageKit.row([label, NSView(), retry], spacing: 8)
+            let row = PageKit.row([label, NSView(), retry])
             stack.addArrangedSubview(row)
             row.widthAnchor.constraint(
-                equalTo: stack.widthAnchor, constant: -24
+                equalTo: stack.widthAnchor, constant: -2 * DS.Space.m
             ).isActive = true
         }
         return stack
@@ -2046,55 +1883,69 @@ final class FleetJobsTab: FleetTabView {
         return job.stalled == true ? "stalled" : "in flight"
     }
 
+    /// Six columns that fit a 1100 pt window: the model carries its modality and label as a caption, the
+    /// state is a badge, and the progress is two short lines.
     private static func runningColumns(cancel: @escaping (FleetJob) -> Void) -> [FleetColumn] {
         func job(_ any: Any) -> FleetJob? { any as? FleetJob }
+        func health(_ job: FleetJob) -> Health {
+            if job.cancelled == true { return .off }
+            if (job.errorCount ?? 0) > 0 || (job.uncertain ?? 0) > 0 { return .bad }
+            if job.stalled == true || (job.cancelRequested ?? 0) > 0 { return .warn }
+            return .ok
+        }
         return [
             FleetColumn(
-                id: "jlocation", title: "Location", width: 160,
+                id: "jmodel", title: "Model", width: 200, minWidth: 130, flex: 3,
+                text: { FleetFormat.text(job($0)?.model ?? job($0)?.label) },
+                sortValue: { .text(job($0)?.model ?? "") },
+                tooltip: { job($0)?.label },
+                cell: { any in
+                    guard let job = job(any) else { return NSView() }
+                    let model = FleetFormat.text(job.model ?? job.label)
+                    let short = model.split(separator: "/").last.map(String.init) ?? model
+                    let kind = FleetJobsTab.typeName(job.modality)
+                    return fleetTwoLineCell(short, [kind, job.label].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " · "),
+                                            tooltip: model)
+                }
+            ),
+            FleetColumn(
+                id: "jlocation", title: "Location", width: 130, minWidth: 100,
                 text: { FleetFormat.text(job($0)?.location) },
                 sortValue: { .text(job($0)?.location ?? "") }
             ),
             FleetColumn(
-                id: "jmodality", title: "Modality", width: 110,
-                text: { FleetFormat.words(job($0)?.modality) },
-                sortValue: { .text(job($0)?.modality ?? "") }
-            ),
-            FleetColumn(
-                id: "jmodel", title: "Model", width: 240,
-                text: { FleetFormat.text(job($0)?.model ?? job($0)?.label) },
-                sortValue: { .text(job($0)?.model ?? "") },
-                tooltip: { job($0)?.label }
-            ),
-            FleetColumn(
-                id: "jprogress", title: "Progress", width: 260,
+                id: "jprogress", title: "Progress", width: 150, minWidth: 130,
                 text: { row in
                     guard let job = job(row) else { return "—" }
                     return FleetJobsTab.progressText(job)
                 },
-                sortValue: { .number(Double(job($0)?.running ?? 0)) }
+                sortValue: { .number(Double(job($0)?.running ?? 0)) },
+                tooltip: { job($0).map(FleetJobsTab.progressText) },
+                cell: { any in
+                    guard let job = job(any) else { return NSView() }
+                    return fleetTwoLineCell("\(job.done ?? 0) of \(job.total ?? 0) done",
+                                            "\(job.running ?? 0) running · \(job.queued ?? 0) queued"
+                                            + ((job.retrying ?? 0) > 0 ? " · \(job.retrying ?? 0) retrying" : ""),
+                                            tooltip: FleetJobsTab.progressText(job))
+                }
             ),
             FleetColumn(
-                id: "jstate", title: "State", width: 220,
+                id: "jstate", title: "State", width: 128, minWidth: 110,
                 text: { row in
                     guard let job = job(row) else { return "—" }
                     return FleetJobsTab.stateText(job)
                 },
                 sortValue: { .text(job($0).map(FleetJobsTab.stateText) ?? "") },
-                colour: { row in
-                    guard let job = job(row) else { return .labelColor }
-                    if job.cancelled == true { return .secondaryLabelColor }
-                    if (job.errorCount ?? 0) > 0 || (job.uncertain ?? 0) > 0 {
-                        return .systemRed
-                    }
-                    if job.stalled == true || (job.cancelRequested ?? 0) > 0 {
-                        return .systemOrange
-                    }
-                    return .labelColor
-                },
-                tooltip: { job($0)?.governorNote }
+                tooltip: { job($0)?.governorNote },
+                cell: { any in
+                    guard let job = job(any) else { return NSView() }
+                    let word = FleetJobsTab.stateText(job)
+                    return fleetBadgeCell(word.prefix(1).uppercased() + word.dropFirst(), health(job),
+                                          tooltip: job.governorNote)
+                }
             ),
             FleetColumn(
-                id: "jstarted", title: "Started", width: 100,
+                id: "jstarted", title: "Started", width: 80, minWidth: 70, hideBelow: 700,
                 text: { FleetFormat.relative(job($0)?.startedAt) },
                 sortValue: { .number(job($0)?.startedAt ?? 0) }
             ),
@@ -2103,7 +1954,7 @@ final class FleetJobsTab: FleetTabView {
             // been asked to stop it; the answer comes back as a request, not a
             // promise, and the banner says which.
             FleetColumn(
-                id: "jcancel", title: "", width: 96, sortable: false,
+                id: "jcancel", title: "", width: 76, flex: 0, sortable: false,
                 text: { _ in "" },
                 cell: { any in
                     let cell = NSTableCellView()
@@ -2116,7 +1967,7 @@ final class FleetJobsTab: FleetTabView {
                     button.translatesAutoresizingMaskIntoConstraints = false
                     cell.addSubview(button)
                     NSLayoutConstraint.activate([
-                        button.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 4),
+                        button.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: DS.Space.xs),
                         button.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
                     ])
                     return cell
@@ -2125,32 +1976,40 @@ final class FleetJobsTab: FleetTabView {
         ]
     }
 
+    /// "TTS", "Image", "Transcription": the acronym keeps its capitals (`capitalized` made it "Tts").
+    static func typeName(_ modality: String?) -> String {
+        let word = FleetFormat.words(modality)
+        switch word.lowercased() {
+        case "tts", "voice.tts": return "TTS"
+        case "—", "": return ""
+        default: return word.prefix(1).uppercased() + word.dropFirst()
+        }
+    }
+
     private static func activityColumns() -> [FleetColumn] {
         func machine(_ any: Any) -> FleetMachine? { any as? FleetMachine }
         return [
             FleetColumn(
-                id: "amachine", title: "Machine", width: 180,
+                id: "amachine", title: "Machine", width: 170, minWidth: 130, flex: 3,
                 text: { machine($0)?.label ?? machine($0)?.machine ?? "—" },
-                sortValue: { .text(machine($0)?.label ?? "") }
+                sortValue: { .text(machine($0)?.label ?? "") },
+                cell: { any in
+                    guard let row = machine(any) else { return NSView() }
+                    return fleetTwoLineCell(row.label ?? row.machine ?? "—", row.location == row.label ? nil : row.location)
+                }
             ),
             FleetColumn(
-                id: "alocation", title: "Location", width: 160,
-                text: { FleetFormat.text(machine($0)?.location) },
-                sortValue: { .text(machine($0)?.location ?? "") }
-            ),
-            FleetColumn(
-                id: "adone", title: "Done", width: 80,
+                id: "adone", title: "Done", width: 70, minWidth: 56,
                 text: { FleetFormat.count(machine($0)?.completed) },
                 sortValue: { .number(Double(machine($0)?.completed ?? 0)) }
             ),
             FleetColumn(
-                id: "afailed", title: "Failed", width: 80,
+                id: "afailed", title: "Failed", width: 70, minWidth: 56,
                 text: { FleetFormat.count(machine($0)?.failed) },
-                sortValue: { .number(Double(machine($0)?.failed ?? 0)) },
-                colour: { (machine($0)?.failed ?? 0) > 0 ? .systemOrange : .labelColor }
+                sortValue: { .number(Double(machine($0)?.failed ?? 0)) }
             ),
             FleetColumn(
-                id: "amedian", title: "Median", width: 100,
+                id: "amedian", title: "Median", width: 100, minWidth: 90,
                 text: { row in
                     guard let machine = machine(row) else { return "—" }
                     if let median = machine.medianRuntimeS { return FleetFormat.seconds(median) + " med" }
@@ -2160,11 +2019,12 @@ final class FleetJobsTab: FleetTabView {
                 sortValue: { .number(machine($0)?.medianRuntimeS ?? machine($0)?.averageSeconds ?? 0) }
             ),
             FleetColumn(
-                id: "alimitation", title: "Limitation", width: 240,
+                id: "alimitation", title: "Limitation", width: 220, minWidth: 120, flex: 3,
                 text: { FleetFormat.text(machine($0)?.limitation) },
                 sortValue: { .text(machine($0)?.limitation ?? "") },
                 tooltip: { machine($0)?.limitation }
             ),
         ]
     }
+
 }

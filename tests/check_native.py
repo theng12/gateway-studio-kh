@@ -148,8 +148,8 @@ def check_jobs_recovery() -> tuple[bool, str]:
 
     Read-only: it opens Jobs, selects the first row and reads what is drawn. There
     are two actions now, because the gateway decides which one a hold can have —
-    *Discard uncertain attempt…* asks a Hub to release the machine an uncertain item
-    reserved, and *Close this hold…* closes the gateway's own record for a lane with
+    *Discard Uncertain Attempt…* asks a Hub to release the machine an uncertain item
+    reserved, and *Close This Hold…* closes the gateway's own record for a lane with
     no discard route (every cloud provider). The invariant is therefore "at most one
     action, and only on a hold", never a particular title.
     """
@@ -169,7 +169,7 @@ def check_jobs_recovery() -> tuple[bool, str]:
         f"tell {MAIN_WINDOW} to tell splitter group 1 to return (title of every button)"
     )
     offered = [
-        action for action in ("Discard uncertain attempt", "Close this hold")
+        action for action in ("Discard Uncertain Attempt", "Close This Hold")
         if action in titles
     ]
     on_hold = "Manual recovery required" in detail

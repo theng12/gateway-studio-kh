@@ -297,7 +297,7 @@ struct CreateWorkspaceCheck {
         assert(labels(urlErrorWorkspace).contains { $0.localizedCaseInsensitiveContains("unknown") }, "URLError was treated as a definite submit failure")
         assert(descendants(urlErrorWorkspace).compactMap { $0 as? NSButton }.contains { $0.title.contains("Retry") && !$0.isHidden }, "URLError lost the retryable attempt")
         GatewayAPI.ambiguousSubmitError = nil
-        let separateDraft = descendants(urlErrorWorkspace).compactMap { $0 as? NSButton }.first { $0.title == "Start separate draft" }
+        let separateDraft = descendants(urlErrorWorkspace).compactMap { $0 as? NSButton }.first { $0.title == "Start Separate Draft" }
         separateDraft?.performClick(nil)
 
         GatewayAPI.state = "succeeded"
