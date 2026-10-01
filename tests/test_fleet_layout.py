@@ -417,7 +417,8 @@ enum GatewayAPI {
             fixture.write_text(json.dumps(FIXTURE))
             compiled = subprocess.run(
                 ["swiftc", "-swift-version", "5", "-framework", "AppKit",
-                 "menubar/PageKit.swift", "menubar/FleetModels.swift", "menubar/FleetTabs.swift",
+                 "menubar/PageKit.swift", "menubar/FleetModels.swift", "menubar/FleetStartupModel.swift",
+                 "menubar/FleetTabs.swift",
                  str(source), "-o", str(binary)],
                 cwd=ROOT, capture_output=True, text=True)
             self.assertEqual(compiled.returncode, 0, compiled.stderr)

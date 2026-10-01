@@ -1866,9 +1866,16 @@ def _summarise(rows: list[dict]) -> dict:
             and not worker.get("quarantined")
         )
 
+    startups = [row.get("startup") for row in flat]
     return {
         "locations": len(rows),
         "locations_up": sum(1 for row in rows if row["reachable"]),
+        # **Which Macs will serve after a restart.** `off` is a Mac that said "Start services on
+        # startup" is off (including one repeating its last word from before it went quiet),
+        # `unknown` one that said nothing (an older Hub, or never heard from).
+        "startup_off": sum(1 for fact in startups if fact and fact["start_services_on_launch"] is False),
+        "startup_unknown": sum(1 for fact in startups
+                               if not fact or fact["start_services_on_launch"] is None),
         "machines": machines_total,
         "machines_online": online,
         "machines_offline": offline,
@@ -1916,6 +1923,34 @@ def _limitation_fields(entry: dict) -> dict:
         "limitation_since": entry.get("limitation_since"),
         "limitation_affects": entry.get("limitation_affects"),
     }
+
+
+#: The only keys of a Mac's `startup` report this gateway republishes. The Hub is somebody else's
+#: process, so what reaches the console is a fixed shape, never whatever the node chose to send.
+_STARTUP_KEYS = ("open_at_login", "open_at_login_saved", "start_services_on_launch", "app_version",
+                 "last_start_at", "app_reporting", "stale", "observed_at", "reported_at")
+
+
+def _startup_fact(machine: dict, node: dict) -> dict | None:
+    """What starts when this Mac starts, as the Hub reported it - or `None` when it did not.
+
+    `None` is *unknown*, never "off": a Hub older than 0.6.127 says nothing about it, and so does
+    a Mac nobody has heard from since. A report the controller is repeating from before the Mac
+    went quiet carries `stale: true`. The two settings are published as the booleans the Hub sent;
+    anything else becomes `None`.
+    """
+    raw = machine.get("startup") if isinstance(machine.get("startup"), dict) else node.get("startup")
+    if not isinstance(raw, dict):
+        return None
+    out: dict = {key: raw.get(key) for key in _STARTUP_KEYS}
+    for key in ("open_at_login", "open_at_login_saved", "start_services_on_launch", "app_reporting", "stale"):
+        if not isinstance(out[key], bool):
+            out[key] = None
+    running = raw.get("services_running")
+    out["services_running"] = (
+        {"up": running.get("up"), "total": running.get("total"), "studios": running.get("studios") or {}}
+        if isinstance(running, dict) else None)
+    return out
 
 
 def machines_flat(rows: list[dict]) -> list[dict]:
@@ -1989,6 +2024,7 @@ def machines_flat(rows: list[dict]) -> list[dict]:
                 "modalities": machine.get("modalities") or {},
                 **_limitation_fields(entry),
                 **node_fields(mid),
+                "startup": _startup_fact(machine, nodes.get(mid) or {}),
             })
         # A machine the activity report knows about but the overview omitted is
         # still a machine.
@@ -2013,6 +2049,7 @@ def machines_flat(rows: list[dict]) -> list[dict]:
                 "modalities": {},
                 **_limitation_fields(entry),
                 **node_fields(mid),
+                "startup": _startup_fact({}, nodes.get(mid) or {}),
             })
     return out
 
@@ -2237,8 +2274,12 @@ def _issues_for(row: dict) -> list[dict]:
     limitations: dict[tuple[str, str, str], dict] = {}
     unknown_state = 0
     offline_machines: set[str] = set()
+    startup_off: list[str] = []
     for machine in machines_flat([row]):
         machine_id = str(machine.get("machine") or "")
+        fact = machine.get("startup")
+        if fact and fact.get("start_services_on_launch") is False:
+            startup_off.append(str(machine.get("label") or machine_id))
         state = str(machine.get("state") or "").strip().lower()
         health = str(machine.get("health") or "").strip()
         unhealthy = bool(health) and health.lower() != "up"
@@ -2325,6 +2366,16 @@ def _issues_for(row: dict) -> list[dict]:
                 "warning", "machine_limited", location_id, location, machines_text,
                 detail, "Fleet → Machines",
             ))
+    if startup_off:
+        # One line per location, not per Mac: the fix is the same button on every one of them.
+        shown = ", ".join(sorted(startup_off)[:4]) + (" and more" if len(startup_off) > 4 else "")
+        out.append(_issue(
+            "warning", "services_not_auto_start", location_id, location,
+            f"{len(startup_off)} machine" + ("" if len(startup_off) == 1 else "s"),
+            f"{shown}: \"Start services on startup\" is off, so after a restart the Mac opens "
+            "Studio Hub but serves nothing until someone starts the services by hand.",
+            "Fleet → Machines → Enable auto-start",
+        ))
     if unknown_state:
         machines_text = f"{unknown_state} machine" + ("" if unknown_state == 1 else "s")
         out.append(_issue(

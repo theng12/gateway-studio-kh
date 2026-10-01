@@ -71,6 +71,7 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
     private lazy var overviewTab = FleetOverviewTab(frame: .zero)
     private lazy var locationsTab = FleetLocationsTab(frame: .zero)
     private lazy var machinesTab = FleetMachinesTab(frame: .zero)
+    private let startupBar = FleetStartupBar(frame: .zero)
     private lazy var modelsTab = FleetModelsTab(frame: .zero)
     private lazy var jobsTab = FleetJobsTab(frame: .zero)
 
@@ -123,6 +124,15 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
         pinWidth(filterRowHolder, to: top)
 
         container.addSubview(top)
+
+        // Startup control (FleetStartup.swift): the per-machine buttons and the bulk bar are injected here,
+        // and a change reloads the page from the gateway.
+        let reloadAfterStartup: () -> Void = { [weak self] in self?.reload(force: true) }
+        startupBar.onChange = reloadAfterStartup
+        machinesTab.startupAccessory.addArrangedSubview(startupBar)
+        machinesTab.startupCell = { [weak self] row in
+            FleetStartup.cell(for: row, window: { self?.view.window }, done: reloadAfterStartup)
+        }
 
         for tab in FleetTab.allCases {
             let child = view(for: tab)
@@ -424,6 +434,7 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
             unavailable: "The release status could not be read; the Fleet read failed."
         )
         machinesTab.update(machines: [], studios: [:], filter: filter)
+        startupBar.update(machines: [])
         modelsTab.update(models: [], workers: [], filter: filter)
         jobsTab.update(snapshot: empty, filter: filter)
         // A location filter that outlived its locations would hide the next read's
@@ -456,6 +467,7 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
         overviewTab.update(snapshot: snapshot, filter: filter)
         machinesTab.update(
             machines: snapshot.machines, studios: snapshot.studiosByMachine, filter: filter)
+        startupBar.update(machines: snapshot.machines)
         modelsTab.update(
             models: snapshot.allLocalModels,
             workers: snapshot.locations.flatMap { $0.workers },

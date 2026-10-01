@@ -1279,10 +1279,19 @@ final class FleetMachinesTab: NSView {
     private lazy var controller = FleetTableController(columns: columns())
     private let statusLabel = PageKit.label("", size: 11.5, colour: .secondaryLabelColor, wrapping: true)
     private var studios: [String: [String]] = [:]
+    /// Injected by the Fleet page (FleetStartup.swift): the per-machine startup buttons, and the strip
+    /// above the table that holds the bulk "Enable auto-start" bar. Left empty, the tab only shows the
+    /// badge, which is all the layout test needs.
+    var startupCell: ((FleetMachine) -> NSView)?
+    let startupAccessory = NSStackView()
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
         let title = PageKit.sectionTitle("Machines")
+        startupAccessory.translatesAutoresizingMaskIntoConstraints = false
+        startupAccessory.orientation = .vertical
+        startupAccessory.alignment = .leading
+        addSubview(startupAccessory)
         title.translatesAutoresizingMaskIntoConstraints = false
         statusLabel.translatesAutoresizingMaskIntoConstraints = false
         addSubview(title)
@@ -1295,7 +1304,11 @@ final class FleetMachinesTab: NSView {
             statusLabel.leadingAnchor.constraint(equalTo: title.leadingAnchor),
             statusLabel.trailingAnchor.constraint(
                 lessThanOrEqualTo: trailingAnchor, constant: -PageKit.pagePadding),
-            controller.container.topAnchor.constraint(equalTo: statusLabel.bottomAnchor, constant: 10),
+            startupAccessory.topAnchor.constraint(equalTo: statusLabel.bottomAnchor, constant: 8),
+            startupAccessory.leadingAnchor.constraint(equalTo: title.leadingAnchor),
+            startupAccessory.trailingAnchor.constraint(
+                lessThanOrEqualTo: trailingAnchor, constant: -PageKit.pagePadding),
+            controller.container.topAnchor.constraint(equalTo: startupAccessory.bottomAnchor, constant: 10),
             controller.container.leadingAnchor.constraint(
                 equalTo: leadingAnchor, constant: PageKit.pagePadding),
             controller.container.trailingAnchor.constraint(
@@ -1404,6 +1417,30 @@ final class FleetMachinesTab: NSView {
                         return "The controller has not recorded a probe from this Mac."
                     }
                     return "The controller last heard from this Mac \(when)."
+                }
+            ),
+            // Startup control: what this Mac starts when it starts, and the buttons to change it.
+            // Self-contained in FleetStartup.swift; a Groups view reuses `FleetStartup.cell`.
+            FleetColumn(
+                id: "startup", title: "Startup", width: 330,
+                text: { FleetStartup.badge(machine($0)?.startup) },
+                sortValue: { row in
+                    // Off first when sorted ascending: those are the Macs that need attention.
+                    switch machine(row)?.startup?.startServicesOnLaunch {
+                    case false?: return .number(0)
+                    case true?: return .number(2)
+                    default: return .number(1)
+                    }
+                },
+                colour: { FleetStartup.colour(machine($0)?.startup) },
+                tooltip: { FleetStartup.tooltip(machine($0)?.startup) }
+            ),
+            FleetColumn(
+                id: "startupActions", title: "Startup actions", width: 340, minWidth: 200, sortable: false,
+                text: { _ in "" },
+                cell: { [weak self] any in
+                    guard let self, let row = machine(any) else { return NSView() }
+                    return self.startupCell?(row) ?? NSView()
                 }
             ),
             FleetColumn(
