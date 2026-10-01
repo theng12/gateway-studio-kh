@@ -38,6 +38,15 @@ from .definitions import (
 from .discovery import DiscoveryResult, DiscoveredModel, discover
 
 
+#: Models the owner has retired. Matched case-insensitively against a row's model id and the
+#: Hub's `package_id`, so a Hub that has not yet dropped one still has it withheld here.
+#: LTX-2.3 (local video), retired 2026-10-01. Do not add a model that is only a dependency.
+RETIRED_MODEL_IDS: tuple[str, ...] = (
+    "ltx-2-3-22b-ram-12gb-mlx",
+    "baa-ai/ltx-2.3-22b-ram-12gb-mlx",
+)
+
+
 class ModelInventory:
     def __init__(
         self,
@@ -243,6 +252,11 @@ class ModelInventory:
           4. does the Hub itself say the model is not runnable **there**.
         """
         from ..adapters import serves
+
+        retired_ids = {str(model.get("model_id") or "").lower(),
+                       str((model.get("raw") or {}).get("package_id") or "").lower()}
+        if retired_ids & set(RETIRED_MODEL_IDS):
+            return "this model has been retired and is no longer offered"
 
         modality = str(model.get("modality") or "")
         if modality not in definition.modalities:
