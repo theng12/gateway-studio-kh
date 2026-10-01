@@ -53,6 +53,29 @@ final class SettingsSection: NSObject, AppSection {
 
     // MARK: Layout
 
+    /// Every text field on the page is one of two widths, so the controls line up down the page.
+    private static let fieldWidth: CGFloat = 420
+    private static let numberWidth: CGFloat = 100
+
+    /// A titled card holding a section's rows. Sections are full width, 24 apart, like every other page.
+    private func section(_ title: String, _ rows: [NSView], in root: NSStackView) {
+        let inner = NSStackView(views: rows)
+        inner.orientation = .vertical
+        inner.alignment = .leading
+        inner.spacing = DS.Space.l
+        for row in rows where row is NSBox {
+            row.widthAnchor.constraint(equalTo: inner.widthAnchor).isActive = true
+        }
+        let card = CardView()
+        card.hold(inner, inset: NSEdgeInsets(top: DS.Space.l, left: DS.Space.l, bottom: DS.Space.l, right: DS.Space.l))
+        let group = NSStackView(views: [PageKit.sectionTitle(title), card])
+        group.orientation = .vertical
+        group.alignment = .leading
+        group.spacing = DS.Space.m
+        card.widthAnchor.constraint(equalTo: group.widthAnchor).isActive = true
+        PageKit.addFull(group, to: root)
+    }
+
     private func buildContent() -> NSView {
         let root = PageKit.page()
 
@@ -62,44 +85,40 @@ final class SettingsSection: NSObject, AppSection {
         ))
 
         // ---- gateway
-        root.addArrangedSubview(PageKit.sectionTitle("Gateway"))
-
         runtimeLabel = PageKit.label(
-            GatewayController.shared.runtimeDescription, size: 12,
+            GatewayController.shared.runtimeDescription, .secondary,
             colour: .secondaryLabelColor, wrapping: true
         )
-        root.addArrangedSubview(PageKit.formRow("Runtime", runtimeLabel))
-
-        dataLabel = PageKit.label(AppPaths.data.path, size: 11, colour: .secondaryLabelColor)
-        dataLabel.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
+        dataLabel = PageKit.label(AppPaths.data.path, .mono, colour: .secondaryLabelColor)
         dataLabel.lineBreakMode = .byTruncatingMiddle
-        dataLabel.widthAnchor.constraint(equalToConstant: 420).isActive = true
-        root.addArrangedSubview(PageKit.formRow("Data folder", dataLabel))
+        dataLabel.widthAnchor.constraint(equalToConstant: Self.fieldWidth).isActive = true
 
         portField = NSTextField(string: String(ConfigStore.shared.config.port))
-        portField.widthAnchor.constraint(equalToConstant: 100).isActive = true
-        root.addArrangedSubview(PageKit.formRow("Port", [
-            portField,
-            PageKit.help("Changing this restarts the gateway. Story Studio must match."),
-        ]))
-
-        root.addArrangedSubview(divider())
+        portField.widthAnchor.constraint(equalToConstant: Self.numberWidth).isActive = true
+        section("Gateway", [
+            PageKit.formRow("Runtime", runtimeLabel),
+            PageKit.formRow("Data folder", dataLabel),
+            PageKit.formRow("Port", [
+                portField,
+                PageKit.help("Changing this restarts the gateway. Story Studio must match."),
+            ]),
+        ], in: root)
 
         // ---- API key
-        root.addArrangedSubview(PageKit.sectionTitle("API key"))
-        root.addArrangedSubview(PageKit.help(
-            "Story Studio presents this key. Paste it there once, and it never needs "
-            + "to appear in a terminal."
-        ))
-
         keyField = NSTextField(string: EnvFile.apiKey())
-        keyField.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
-        keyField.widthAnchor.constraint(equalToConstant: 320).isActive = true
+        keyField.font = TextRole.mono.font
+        keyField.widthAnchor.constraint(equalToConstant: Self.fieldWidth).isActive = true
         let keyButtons = PageKit.row([
-            NSButton(title: "Copy", target: self, action: #selector(copyKey)),
-            NSButton(title: "Regenerate", target: self, action: #selector(regenerateKey)),
-        ], spacing: 8)
-        root.addArrangedSubview(PageKit.formRow("Key", [keyField, keyButtons] as [NSView]))
+            PageKit.button("Copy", target: self, action: #selector(copyKey)),
+            PageKit.button("Regenerate", target: self, action: #selector(regenerateKey)),
+        ])
+        section("API key", [
+            PageKit.help(
+                "Story Studio presents this key. Paste it there once, and it never needs "
+                + "to appear in a terminal."
+            ),
+            PageKit.formRow("Key", [keyField, keyButtons] as [NSView]),
+        ], in: root)
 
         // ---- where Story Studio should point
         //
@@ -108,23 +127,22 @@ final class SettingsSection: NSObject, AppSection {
         // on this Mac. Bound beyond loopback the useful address is the Tailscale
         // one, and the owner should not have to read it off a terminal to paste it
         // into the other machine.
-        root.addArrangedSubview(PageKit.sectionTitle("Story Studio"))
         storyBaseField = NSTextField(labelWithString:
             LocalAddresses.storyBaseURL(port: ConfigStore.shared.config.port))
-        storyBaseField.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
+        storyBaseField.font = TextRole.mono.font
         storyBaseField.lineBreakMode = .byTruncatingMiddle
-        storyBaseField.widthAnchor.constraint(equalToConstant: 320).isActive = true
+        storyBaseField.widthAnchor.constraint(equalToConstant: Self.fieldWidth).isActive = true
         let baseButtons = PageKit.row([
-            NSButton(title: "Copy", target: self, action: #selector(copyBaseURL)),
-        ], spacing: 8)
-        root.addArrangedSubview(PageKit.formRow("Base URL", [storyBaseField, baseButtons] as [NSView]))
-        root.addArrangedSubview(PageKit.help(
-            EnvFile.bindsBeyondLoopback()
-                ? "Paste this and the key into Story Studio → Settings → This Mac on the other machine."
-                : "This Mac only. Set GATEWAY_HOST=0.0.0.0 in .env to reach it from another machine."
-        ))
-
-        root.addArrangedSubview(divider())
+            PageKit.button("Copy", target: self, action: #selector(copyBaseURL)),
+        ])
+        section("Story Studio", [
+            PageKit.formRow("Base URL", [storyBaseField, baseButtons] as [NSView]),
+            PageKit.help(
+                EnvFile.bindsBeyondLoopback()
+                    ? "Paste this and the key into Story Studio → Settings → This Mac on the other machine."
+                    : "This Mac only. Set GATEWAY_HOST=0.0.0.0 in .env to reach it from another machine."
+            ),
+        ], in: root)
 
         // ---- Studio Hub app releases
         //
@@ -133,70 +151,66 @@ final class SettingsSection: NSObject, AppSection {
         // its owner installed with POST /api/hub/release/trust. Both values are
         // public; the private half never leaves the gateway, and this page never
         // asks for it.
-        root.addArrangedSubview(PageKit.sectionTitle("Studio Hub app releases"))
-        root.addArrangedSubview(PageKit.help(
-            "This is this gateway's signing identity. Install its fingerprint on a "
-            + "controller so that controller accepts releases pushed from here. The "
-            + "fingerprint and the public key are safe to share; the private key is "
-            + "never shown."
-        ))
         publisherFingerprintLabel = PageKit.label(
-            "Reading the publisher identity…", size: 13, wrapping: true
+            "Reading the publisher identity…", .mono, wrapping: true
         )
-        publisherFingerprintLabel.font = .monospacedSystemFont(ofSize: 13, weight: .semibold)
         publisherFingerprintLabel.lineBreakMode = .byCharWrapping
         publisherFingerprintLabel.maximumNumberOfLines = 2
-        publisherFingerprintLabel.preferredMaxLayoutWidth = 420
-        publisherFingerprintLabel.widthAnchor.constraint(equalToConstant: 420).isActive = true
-        root.addArrangedSubview(PageKit.formRow("Fingerprint", publisherFingerprintLabel))
+        publisherFingerprintLabel.preferredMaxLayoutWidth = Self.fieldWidth
+        publisherFingerprintLabel.widthAnchor.constraint(equalToConstant: Self.fieldWidth).isActive = true
 
         publisherKeyBase64Label = identityField()
-        root.addArrangedSubview(PageKit.formRow("Public key (base64)", publisherKeyBase64Label))
         publisherKeyHexLabel = identityField()
-        root.addArrangedSubview(PageKit.formRow("Public key (hex)", publisherKeyHexLabel))
-        publisherIDLabel = PageKit.label("—", size: 11.5, colour: .secondaryLabelColor)
+        publisherIDLabel = PageKit.label("—", .secondary, colour: .secondaryLabelColor)
         publisherIDLabel.isSelectable = true
-        root.addArrangedSubview(PageKit.formRow("Publisher", publisherIDLabel))
         releaseIdentityStatus = PageKit.label(
-            "", size: 11.5, colour: .secondaryLabelColor, wrapping: true
+            "", .secondary, colour: .secondaryLabelColor, wrapping: true
         )
         releaseIdentityStatus.preferredMaxLayoutWidth = 520
-        root.addArrangedSubview(PageKit.formRow("", releaseIdentityStatus))
-
-        root.addArrangedSubview(divider())
+        section("Studio Hub app releases", [
+            PageKit.help(
+                "This is this gateway's signing identity. Install its fingerprint on a "
+                + "controller so that controller accepts releases pushed from here. The "
+                + "fingerprint and the public key are safe to share; the private key is "
+                + "never shown."
+            ),
+            PageKit.formRow("Fingerprint", publisherFingerprintLabel),
+            PageKit.formRow("Public key (base64)", publisherKeyBase64Label),
+            PageKit.formRow("Public key (hex)", publisherKeyHexLabel),
+            PageKit.formRow("Publisher", publisherIDLabel),
+            releaseIdentityStatus,
+        ], in: root)
 
         // ---- received artifacts
         //
         // The gateway only *receives* these: a node renders them, this Mac hands
         // them to Story Studio, and Story Studio keeps the copy that matters. So
         // they are temporary here — and nothing removed them at all before this.
-        root.addArrangedSubview(PageKit.sectionTitle("Received artifacts"))
-        root.addArrangedSubview(PageKit.help(
-            "Images, audio and subtitles pass through this Mac on their way to Story Studio, "
-            + "which keeps its own copy. They are moved to the Trash Folder when either limit is "
-            + "reached — whichever comes first, oldest first — and the Trash Folder empties itself "
-            + "after 15 days. A file newer than an hour is never touched, so work in flight is safe."
-        ))
         retentionDaysField = NSTextField(string: "")
-        retentionDaysField.widthAnchor.constraint(equalToConstant: 70).isActive = true
+        retentionDaysField.widthAnchor.constraint(equalToConstant: Self.numberWidth).isActive = true
         retentionGBField = NSTextField(string: "")
-        retentionGBField.widthAnchor.constraint(equalToConstant: 70).isActive = true
-        root.addArrangedSubview(PageKit.formRow("Keep for", [
-            retentionDaysField,
-            PageKit.label("days, or", size: 12, colour: .secondaryLabelColor),
-            retentionGBField,
-            PageKit.label("GB", size: 12, colour: .secondaryLabelColor),
-        ]))
-        retentionUsageLabel = PageKit.label("", size: 11.5, colour: .secondaryLabelColor, wrapping: true)
-        root.addArrangedSubview(PageKit.formRow("In use", [
-            retentionUsageLabel,
-            NSButton(title: "Prune now", target: self, action: #selector(pruneNow)),
-        ] as [NSView]))
-
-        root.addArrangedSubview(divider())
+        retentionGBField.widthAnchor.constraint(equalToConstant: Self.numberWidth).isActive = true
+        retentionUsageLabel = PageKit.label("", .secondary, colour: .secondaryLabelColor, wrapping: true)
+        section("Received artifacts", [
+            PageKit.help(
+                "Images, audio and subtitles pass through this Mac on their way to Story Studio, "
+                + "which keeps its own copy. They are moved to the Trash Folder when either limit is "
+                + "reached — whichever comes first, oldest first — and the Trash Folder empties itself "
+                + "after 15 days. A file newer than an hour is never touched, so work in flight is safe."
+            ),
+            PageKit.formRow("Keep for", [PageKit.row([
+                retentionDaysField,
+                PageKit.label("days, or", .secondary, colour: .secondaryLabelColor),
+                retentionGBField,
+                PageKit.label("GB", .secondary, colour: .secondaryLabelColor),
+            ])]),
+            PageKit.formRow("In use", [
+                retentionUsageLabel,
+                PageKit.button("Prune Now", target: self, action: #selector(pruneNow)),
+            ] as [NSView]),
+        ], in: root)
 
         // ---- startup
-        root.addArrangedSubview(PageKit.sectionTitle("Startup"))
         loginCheck = NSButton(
             checkboxWithTitle: "Launch at login",
             target: self, action: #selector(toggleLogin)
@@ -212,24 +226,28 @@ final class SettingsSection: NSObject, AppSection {
             checkboxWithTitle: "Keep the gateway running after I quit",
             target: self, action: #selector(toggleKeepRunning)
         )
-        root.addArrangedSubview(PageKit.formRow("Login", [loginCheck, autoStartCheck]))
-        root.addArrangedSubview(PageKit.formRow("On quit", [keepRunningCheck]))
-        root.addArrangedSubview(PageKit.help(
-            "Off: quitting stops the gateway and frees the port, so reopening always "
-            + "runs the build you just installed. On: the gateway keeps serving Story "
-            + "Studio while this app is closed — but a rebuild will not take effect "
-            + "until you press Restart Gateway."
-        ))
-
-        root.addArrangedSubview(divider())
+        section("Startup", [
+            PageKit.formRow("Login", [loginCheck, autoStartCheck]),
+            PageKit.formRow("On quit", [keepRunningCheck]),
+            PageKit.help(
+                "Off: quitting stops the gateway and frees the port, so reopening always "
+                + "runs the build you just installed. On: the gateway keeps serving Story "
+                + "Studio while this app is closed — but a rebuild will not take effect "
+                + "until you press Restart Gateway."
+            ),
+        ], in: root)
 
         let actions = PageKit.row([
-            NSButton(title: "Save", target: self, action: #selector(save)),
-            NSButton(title: "Open provider console", target: self, action: #selector(openConsole)),
-            NSButton(title: "Reveal data folder", target: self, action: #selector(revealData)),
-        ], spacing: 8)
-        statusLabel = PageKit.label("", size: 11.5, colour: .secondaryLabelColor, wrapping: true)
-        root.addArrangedSubview(PageKit.formRow("", [actions, statusLabel] as [NSView]))
+            PageKit.primaryButton("Save", target: self, action: #selector(save), regular: true),
+            PageKit.button("Open Provider Console", target: self, action: #selector(openConsole), regular: true),
+            PageKit.button("Reveal Data Folder", target: self, action: #selector(revealData), regular: true),
+        ])
+        statusLabel = PageKit.label("", .secondary, colour: .secondaryLabelColor, wrapping: true)
+        let footer = NSStackView(views: [actions, statusLabel])
+        footer.orientation = .vertical
+        footer.alignment = .leading
+        footer.spacing = DS.Space.s
+        root.addArrangedSubview(footer)
 
         // A form has a natural height, and it *must not* be able to grow the
         // window — but `lessThanOrEqualTo` only stops the growth. It left the
@@ -271,31 +289,16 @@ final class SettingsSection: NSObject, AppSection {
         return container
     }
 
-    /// A small caption above its control, matching the "label then field" rhythm
-    /// the Settings window already used.
-    private func divider() -> NSBox {
-        let box = NSBox()
-        box.boxType = .separator
-        box.translatesAutoresizingMaskIntoConstraints = false
-        box.widthAnchor.constraint(equalToConstant: 500).isActive = true
-        // A separator has no intrinsic height, so in a stack view it is the first
-        // thing asked to absorb spare vertical space and renders as a huge blank
-        // band. Pin it to its real thickness and let it hug.
-        box.heightAnchor.constraint(equalToConstant: 1).isActive = true
-        box.setContentHuggingPriority(.required, for: .vertical)
-        return box
-    }
-
     /// A read-only, selectable line for the public half of the identity.
     ///
     /// Monospaced and middle-truncated: the string is long, but its start and end
     /// are what identify it, and it must stay selectable so it can be copied whole.
     private func identityField() -> NSTextField {
-        let field = PageKit.label("—", size: 11)
-        field.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
+        let field = PageKit.label("—", .caption)
+        field.font = TextRole.mono.font
         field.isSelectable = true
         field.lineBreakMode = .byTruncatingMiddle
-        field.widthAnchor.constraint(equalToConstant: 420).isActive = true
+        field.widthAnchor.constraint(equalToConstant: Self.fieldWidth).isActive = true
         return field
     }
 

@@ -146,7 +146,7 @@ class Task4Native(unittest.TestCase):
         self.assertIn("No jobs yet.", overview)
         self.assertIn("Could not load recent activity", overview)
         self.assertIn("Could not discover", fleet)
-        self.assertIn("Retry failed", fleet_tabs)
+        self.assertIn("Retry Failed", fleet_tabs)
         self.assertIn("Could not change those voices", voices)
         self.assertIn("Retrying", voices)
         self.assertIn("download(", voices)

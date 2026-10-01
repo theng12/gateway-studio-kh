@@ -2102,6 +2102,28 @@ def _startup_fact(machine: dict, node: dict) -> dict | None:
     return out
 
 
+def _current_job(machine: dict, entry: dict) -> dict | None:
+    """The job a node is running right now, **when the Hub says so** (Fleet Groups "Doing now").
+
+    The Hub reports a machine as `working` and the batches without saying which machine runs which, so
+    the Gateway cannot work this out. Hubs that state it carry `current` on the machine row or on its
+    activity entry as `{batch_id, model, label, started_at, studio}`; this republishes exactly those
+    keys and nothing the node chose to add. `None` is *unknown* - the page then shows the busy studios
+    only - and never "idle".
+    """
+    raw = machine.get("current") if isinstance(machine.get("current"), dict) else entry.get("current")
+    if not isinstance(raw, dict):
+        return None
+    out = {
+        "batch_id": raw.get("batch_id") or raw.get("id"),
+        "model": raw.get("model"),
+        "label": raw.get("label"),
+        "studio": raw.get("studio") or raw.get("modality"),
+        "started_at": raw.get("started_at") if isinstance(raw.get("started_at"), (int, float)) else None,
+    }
+    return out if any(value not in (None, "") for value in out.values()) else None
+
+
 def machines_flat(rows: list[dict]) -> list[dict]:
     """Every machine in the fleet as one row, with its location attached.
 
@@ -2175,6 +2197,7 @@ def machines_flat(rows: list[dict]) -> list[dict]:
                 **_limitation_fields(entry),
                 **node_fields(mid),
                 "startup": _startup_fact(machine, nodes.get(mid) or {}),
+                "current": _current_job(machine, entry),
             })
         # A machine the activity report knows about but the overview omitted is
         # still a machine.
@@ -2200,6 +2223,7 @@ def machines_flat(rows: list[dict]) -> list[dict]:
                 **_limitation_fields(entry),
                 **node_fields(mid),
                 "startup": _startup_fact({}, nodes.get(mid) or {}),
+                "current": _current_job({}, entry),
             })
     return out
 

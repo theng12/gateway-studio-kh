@@ -7,37 +7,39 @@
 import Cocoa
 
 /// A boxed number with a caption. Used for the headline stats.
-final class StatTile: NSView {
+///
+/// A card (`CardView`), so the fill and border are re-resolved whenever the appearance changes; this view
+/// used to assign `controlBackgroundColor.cgColor` once at build time and stayed light on a dark page. The
+/// figure is the label colour unless `health` says the number itself is a problem: colour is state, never
+/// decoration.
+final class StatTile: CardView {
     private let valueLabel = NSTextField(labelWithString: "—")
     private let titleLabel = NSTextField(labelWithString: "")
-    private let accent: NSColor
+    private let health: Health
 
-    init(title: String, accent: NSColor) {
-        self.accent = accent
+    init(title: String, health: Health = .ok) {
+        self.health = health
         super.init(frame: .zero)
-        wantsLayer = true
-        layer?.backgroundColor = NSColor.controlBackgroundColor.cgColor
-        layer?.cornerRadius = 10
-        layer?.borderWidth = 1
-        layer?.borderColor = NSColor.separatorColor.cgColor
 
-        valueLabel.font = .monospacedDigitSystemFont(ofSize: 26, weight: .semibold)
-        valueLabel.textColor = accent
-        titleLabel.font = .systemFont(ofSize: 11, weight: .medium)
+        valueLabel.font = TextRole.figure.font
+        valueLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        titleLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        valueLabel.textColor = health == .ok ? .labelColor : health.text
+        titleLabel.font = TextRole.caption.font
         titleLabel.textColor = .secondaryLabelColor
         titleLabel.lineBreakMode = .byTruncatingTail
 
         let stack = NSStackView(views: [valueLabel, titleLabel])
         stack.orientation = .vertical
         stack.alignment = .leading
-        stack.spacing = 1
+        stack.spacing = 0
         stack.translatesAutoresizingMaskIntoConstraints = false
         addSubview(stack)
         NSLayoutConstraint.activate([
-            stack.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 12),
-            stack.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -12),
+            stack.leadingAnchor.constraint(equalTo: leadingAnchor, constant: DS.Space.l),
+            stack.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -DS.Space.l),
             stack.centerYAnchor.constraint(equalTo: centerYAnchor),
-            heightAnchor.constraint(equalToConstant: 66),
+            heightAnchor.constraint(equalToConstant: 72),
         ])
     }
 
@@ -68,37 +70,27 @@ final class ModalityBar: NSView {
     private static let countWidth: CGFloat = 44
     static let rowHeight: CGFloat = 18
     /// The row's natural width, so callers do not have to guess one.
-    static let rowWidth = nameWidth + 8 + trackWidth + 8 + countWidth
+    static let rowWidth = nameWidth + DS.Space.s + trackWidth + DS.Space.s + countWidth
 
     private let name = NSTextField(labelWithString: "")
     private let count = NSTextField(labelWithString: "")
-    private let track = NSView()
-    private let bar = NSView()
-    private var barWidth: NSLayoutConstraint!
+    private let track = Meter(fraction: 0, health: .info)
 
     init() {
         super.init(frame: .zero)
-        name.font = .systemFont(ofSize: 12)
+        name.font = TextRole.secondary.font
         name.lineBreakMode = .byTruncatingTail
         name.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        count.font = .monospacedDigitSystemFont(ofSize: 12, weight: .medium)
+        count.font = TextRole.secondary.font
         count.textColor = .secondaryLabelColor
         count.alignment = .right
 
-        track.wantsLayer = true
-        track.layer?.backgroundColor = NSColor.quaternaryLabelColor.cgColor
-        track.layer?.cornerRadius = 3
-        bar.wantsLayer = true
-        bar.layer?.backgroundColor = NSColor.controlAccentColor.cgColor
-        bar.layer?.cornerRadius = 3
-        track.addSubview(bar)
+        track.fill = .controlAccentColor
 
         for view in [name, count, track] {
             view.translatesAutoresizingMaskIntoConstraints = false
             addSubview(view)
         }
-        bar.translatesAutoresizingMaskIntoConstraints = false
-        barWidth = bar.widthAnchor.constraint(equalToConstant: 0)
 
         NSLayoutConstraint.activate([
             // Without this the row has no height and the stack view crushes it.
@@ -108,19 +100,13 @@ final class ModalityBar: NSView {
             name.widthAnchor.constraint(equalToConstant: Self.nameWidth),
             name.centerYAnchor.constraint(equalTo: centerYAnchor),
 
-            track.leadingAnchor.constraint(equalTo: name.trailingAnchor, constant: 8),
+            track.leadingAnchor.constraint(equalTo: name.trailingAnchor, constant: DS.Space.s),
             track.widthAnchor.constraint(equalToConstant: Self.trackWidth),
-            track.heightAnchor.constraint(equalToConstant: 7),
             track.centerYAnchor.constraint(equalTo: centerYAnchor),
 
-            count.leadingAnchor.constraint(equalTo: track.trailingAnchor, constant: 8),
+            count.leadingAnchor.constraint(equalTo: track.trailingAnchor, constant: DS.Space.s),
             count.widthAnchor.constraint(equalToConstant: Self.countWidth),
             count.centerYAnchor.constraint(equalTo: centerYAnchor),
-
-            bar.leadingAnchor.constraint(equalTo: track.leadingAnchor),
-            bar.topAnchor.constraint(equalTo: track.topAnchor),
-            bar.bottomAnchor.constraint(equalTo: track.bottomAnchor),
-            barWidth,
         ])
     }
 
@@ -130,8 +116,8 @@ final class ModalityBar: NSView {
         name.stringValue = label
         count.stringValue = "\(value)"
         let fraction = maxValue > 0 ? CGFloat(value) / CGFloat(maxValue) : 0
-        // Proportional to the real track, so a full bar exactly fills it.
-        barWidth.constant = max(3, Self.trackWidth * fraction)
+        // Proportional to the real track, so a full bar exactly fills it; a tiny count still shows a sliver.
+        track.fraction = max(3 / Self.trackWidth, fraction)
     }
 }
 
@@ -153,12 +139,12 @@ final class OverviewSection: NSObject, AppSection {
         "music": "Music",
     ]
 
-    private var statusDot = NSView()
+    private let statusDot = StatusDot(.tertiaryLabelColor, diameter: 10)
     private var statusLabel = NSTextField(labelWithString: "…")
     private var subtitleLabel = NSTextField(labelWithString: "")
     private var tiles: [String: StatTile] = [:]
     private var modalityStack = NSStackView()
-    private var hubLabel = NSTextField(labelWithString: "—")
+    private var hubBadge = NSStackView()
     private var buildLabel: NSTextField!
     private var guidanceLabel: NSTextField!
     private var activityStack = NSStackView()
@@ -181,20 +167,20 @@ final class OverviewSection: NSObject, AppSection {
     private func buildContent() -> NSView {
         let root = PageKit.page()
 
+        // The page's own verbs sit beside its title: the console is the one primary action.
         root.addArrangedSubview(PageKit.heading(
             "Overview",
-            "One endpoint in front of every local runner and cloud provider."
+            "One endpoint in front of every local runner and cloud provider.",
+            actions: [
+                PageKit.primaryButton("Open Provider Console", target: self, action: #selector(openConsole)),
+                PageKit.button("Refresh", target: self, action: #selector(refreshNow)),
+            ]
         ))
+        root.arrangedSubviews[0].widthAnchor.constraint(equalTo: root.widthAnchor, constant: -2 * PageKit.pagePadding).isActive = true
 
         // ---- live status line
-        statusDot.wantsLayer = true
-        statusDot.layer?.cornerRadius = 5
-        statusDot.translatesAutoresizingMaskIntoConstraints = false
-        statusDot.widthAnchor.constraint(equalToConstant: 10).isActive = true
-        statusDot.heightAnchor.constraint(equalToConstant: 10).isActive = true
-
-        statusLabel.font = .systemFont(ofSize: 17, weight: .semibold)
-        subtitleLabel.font = .systemFont(ofSize: 12)
+        statusLabel.font = TextRole.section.font
+        subtitleLabel.font = TextRole.secondary.font
         subtitleLabel.textColor = .secondaryLabelColor
 
         let statusText = NSStackView(views: [statusLabel, subtitleLabel])
@@ -205,35 +191,38 @@ final class OverviewSection: NSObject, AppSection {
         let header = NSStackView(views: [statusDot, statusText])
         header.orientation = .horizontal
         header.alignment = .centerY
-        header.spacing = 10
+        header.spacing = DS.Space.m
         root.addArrangedSubview(header)
 
         // ---- onboarding hint, shown only while there is something to do
         guidanceLabel = NSTextField(wrappingLabelWithString: "")
-        guidanceLabel.font = .systemFont(ofSize: 12)
+        guidanceLabel.font = TextRole.secondary.font
         guidanceLabel.textColor = .labelColor
         guidanceLabel.isHidden = true
         guidanceLabel.translatesAutoresizingMaskIntoConstraints = false
-        guidanceLabel.widthAnchor.constraint(equalToConstant: 580).isActive = true
         root.addArrangedSubview(guidanceLabel)
+        // As wide as the text column when there is room, and as wide as the pane when there is not: a required
+        // 620 here would make a window at its minimum width grow.
+        guidanceLabel.preferredMaxLayoutWidth = 0
+        guidanceLabel.widthAnchor.constraint(lessThanOrEqualToConstant: PageKit.textWidth).isActive = true
+        let fit = guidanceLabel.widthAnchor.constraint(equalTo: root.widthAnchor, constant: -2 * PageKit.pagePadding)
+        fit.priority = NSLayoutConstraint.Priority(400)
+        fit.isActive = true
 
         // ---- stat tiles
         let tileRow = NSStackView()
         tileRow.orientation = .horizontal
         tileRow.distribution = .fillEqually
-        tileRow.spacing = 10
-        // One palette, three meanings: accent for "on offer", green for "good",
-        // orange for "needs attention". "Jobs succeeded" used to be teal next to
-        // a green "Models live", which were two different colours for the same
-        // idea and read as an accident. The dot colours in the status line use
-        // the same meanings (green / yellow starting / red failed).
-        for (key, title, colour) in [
-            ("providers", "Providers on", NSColor.controlAccentColor),
-            ("models", "Models live", NSColor.systemGreen),
-            ("succeeded", "Jobs succeeded", NSColor.systemGreen),
-            ("failed", "Jobs failed", NSColor.systemOrange),
+        tileRow.spacing = DS.Space.m
+        // Neutral figures: a count is not a status, so none of them is coloured. (They used to be accent,
+        // green, green and orange, which made "Jobs failed" look like a warning on every Mac with history.)
+        for (key, title) in [
+            ("providers", "Providers on"),
+            ("models", "Models live"),
+            ("succeeded", "Jobs succeeded"),
+            ("failed", "Jobs failed"),
         ] {
-            let tile = StatTile(title: title, accent: colour)
+            let tile = StatTile(title: title)
             tiles[key] = tile
             tileRow.addArrangedSubview(tile)
         }
@@ -242,7 +231,7 @@ final class OverviewSection: NSObject, AppSection {
         // window (this Mac runs the app at 1920pt) four cards would each be over
         // 400pt of mostly empty card, which reads as broken alignment rather than
         // as a dashboard. Cap the row and let the page grow instead.
-        let tileWidth = tileRow.widthAnchor.constraint(equalTo: root.widthAnchor, constant: -56)
+        let tileWidth = tileRow.widthAnchor.constraint(equalTo: root.widthAnchor, constant: -2 * PageKit.pagePadding)
         tileWidth.priority = .defaultHigh
         tileWidth.isActive = true
         tileRow.widthAnchor.constraint(lessThanOrEqualToConstant: 900).isActive = true
@@ -251,30 +240,31 @@ final class OverviewSection: NSObject, AppSection {
         root.addArrangedSubview(sectionTitle("Offered to Story Studio"))
         modalityStack.orientation = .vertical
         modalityStack.alignment = .leading
-        modalityStack.spacing = 6
+        modalityStack.spacing = DS.Space.tight
         root.addArrangedSubview(modalityStack)
 
         // ---- local runner
         root.addArrangedSubview(sectionTitle("Local runner"))
-        hubLabel.font = .systemFont(ofSize: 12)
-        root.addArrangedSubview(hubLabel)
+        hubBadge.orientation = .horizontal
+        hubBadge.spacing = DS.Space.s
+        hubBadge.alignment = .centerY
+        root.addArrangedSubview(hubBadge)
 
         // ---- recent activity
         root.addArrangedSubview(sectionTitle("Recent activity"))
         activityStack.orientation = .vertical
         activityStack.alignment = .leading
-        activityStack.spacing = 3
+        activityStack.spacing = DS.Space.xs
         root.addArrangedSubview(activityStack)
 
-        // ---- actions
+        // ---- gateway maintenance
+        root.addArrangedSubview(sectionTitle("Gateway"))
         let actions = NSStackView()
         actions.orientation = .horizontal
-        actions.spacing = 8
-        actions.addArrangedSubview(button("Open Provider Console", #selector(openConsole)))
-        actions.addArrangedSubview(button("Refresh", #selector(refreshNow)))
+        actions.spacing = DS.Space.s
         // "Am I running the latest?" used to be unanswerable from the app, and a
         // stale gateway adopted on launch had no symptom but a feature quietly not
-        // working. These two are that answer.
+        // working. The first two are that answer.
         actions.addArrangedSubview(button("Check Gateway", #selector(checkGateway)))
         actions.addArrangedSubview(button("Restart Gateway", #selector(restartGateway)))
         actions.addArrangedSubview(button("What's New", #selector(showWhatsNew)))
@@ -285,7 +275,7 @@ final class OverviewSection: NSObject, AppSection {
         // The build check reports here, next to the other status text rather than
         // in a dialog: an answer you have to dismiss is one you stop asking for.
         buildLabel = NSTextField(labelWithString: "")
-        buildLabel.font = .systemFont(ofSize: 11.5)
+        buildLabel.font = TextRole.secondary.font
         buildLabel.textColor = .secondaryLabelColor
         buildLabel.lineBreakMode = .byTruncatingTail
         root.addArrangedSubview(buildLabel)
@@ -336,10 +326,7 @@ final class OverviewSection: NSObject, AppSection {
     }
 
     private func button(_ title: String, _ action: Selector) -> NSButton {
-        let b = NSButton(title: title, target: self, action: action)
-        b.bezelStyle = .rounded
-        b.controlSize = .small
-        return b
+        PageKit.button(title, target: self, action: action)
     }
 
     // MARK: Data
@@ -349,16 +336,16 @@ final class OverviewSection: NSObject, AppSection {
     func refresh() {
         switch GatewayController.shared.state {
         case .running:
-            statusDot.layer?.backgroundColor = NSColor.systemGreen.cgColor
+            statusDot.colour = Health.ok.tint
             statusLabel.stringValue = "Gateway running"
         case .starting:
-            statusDot.layer?.backgroundColor = NSColor.systemYellow.cgColor
+            statusDot.colour = Health.warn.tint
             statusLabel.stringValue = "Gateway starting…"
         case .stopped:
-            statusDot.layer?.backgroundColor = NSColor.tertiaryLabelColor.cgColor
+            statusDot.colour = Health.off.tint
             statusLabel.stringValue = "Gateway stopped"
         case .failed(let reason):
-            statusDot.layer?.backgroundColor = NSColor.systemRed.cgColor
+            statusDot.colour = Health.bad.tint
             statusLabel.stringValue = reason
         }
 
@@ -477,13 +464,12 @@ final class OverviewSection: NSObject, AppSection {
             // that is already starting.
             let hub = payload["hub"] as? [String: Any] ?? [:]
             if hub["running"] as? Bool == true {
-                self.hubLabel.stringValue =
-                    "Studio Hub is running — \(hub["base_url"] as? String ?? "")"
+                self.setHub(.ok, "Running", hub["base_url"] as? String ?? "")
             } else if hub["advertised"] as? Bool == true {
-                self.hubLabel.stringValue = "Studio Hub is not answering — "
-                    + (hub["probe"] as? String ?? "it published a ready-file but did not answer.")
+                self.setHub(.warn, "Not answering",
+                            hub["probe"] as? String ?? "It published a ready-file but did not answer.")
             } else {
-                self.hubLabel.stringValue = "Studio Hub is not running — start it to use local models."
+                self.setHub(.off, "Not running", "Start Studio Hub to use local models.")
             }
 
             self.loadActivity()
@@ -497,9 +483,18 @@ final class OverviewSection: NSObject, AppSection {
             tile.blank()
         }
         modalityStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
-        hubLabel.stringValue = "—"
+        hubBadge.arrangedSubviews.forEach { $0.removeFromSuperview() }
         guidanceLabel.isHidden = true
         activityStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
+    }
+
+    /// The local runner as a state badge and the Hub's own sentence beside it.
+    private func setHub(_ health: Health, _ state: String, _ detail: String) {
+        hubBadge.arrangedSubviews.forEach { $0.removeFromSuperview() }
+        let text = PageKit.label(detail, .secondary, colour: .secondaryLabelColor)
+        text.lineBreakMode = .byTruncatingTail
+        hubBadge.addArrangedSubview(Badge(state, health, symbol: true))
+        hubBadge.addArrangedSubview(text)
     }
 
     private func loadActivity() {
@@ -511,7 +506,7 @@ final class OverviewSection: NSObject, AppSection {
                 let label = self.dim(
                     "Could not load recent activity — \(error.localizedDescription). Use Refresh to try again."
                 )
-                label.textColor = .systemOrange
+                label.textColor = Health.warn.text
                 self.activityStack.addArrangedSubview(label)
                 return
             case .success(let payload):
@@ -519,7 +514,7 @@ final class OverviewSection: NSObject, AppSection {
                     let label = self.dim(
                         "Could not read recent activity — the gateway returned an unexpected response."
                     )
-                    label.textColor = .systemOrange
+                    label.textColor = Health.warn.text
                     self.activityStack.addArrangedSubview(label)
                     return
                 }
@@ -544,38 +539,36 @@ final class OverviewSection: NSObject, AppSection {
             }
             let colour: NSColor
             switch state {
-            case "succeeded": colour = .systemGreen
-            case "failed": colour = .systemRed
+            case "succeeded": colour = Health.ok.text
+            case "failed": colour = Health.bad.text
             default: colour = .secondaryLabelColor
             }
 
             let line = NSMutableAttributedString()
             line.append(NSAttributedString(string: "\(symbol) ", attributes: [
-                .foregroundColor: colour, .font: NSFont.systemFont(ofSize: 12, weight: .bold),
+                .foregroundColor: colour, .font: TextRole.rowTitle.font,
             ]))
             line.append(NSAttributedString(
                 string: "\(job["model_name"] as? String ?? "?")  ",
-                attributes: [.font: NSFont.systemFont(ofSize: 12)]
+                attributes: [.font: TextRole.secondary.font]
             ))
-            let detail = "\(job["modality"] as? String ?? "") · \(state) · "
+            let kind = job["modality"] as? String ?? ""
+            let detail = "\(Self.modalityLabels[kind.lowercased()] ?? kind) · \(state) · "
                 + "\(GatewayAPI.duration(job["duration_s"] as? Double))"
             line.append(NSAttributedString(string: detail, attributes: [
-                .font: NSFont.systemFont(ofSize: 11), .foregroundColor: NSColor.tertiaryLabelColor,
+                .font: TextRole.caption.font, .foregroundColor: NSColor.tertiaryLabelColor,
             ]))
 
             let label = NSTextField(labelWithAttributedString: line)
             label.lineBreakMode = .byTruncatingTail
             label.translatesAutoresizingMaskIntoConstraints = false
-            label.widthAnchor.constraint(lessThanOrEqualToConstant: 580).isActive = true
+            label.widthAnchor.constraint(lessThanOrEqualToConstant: PageKit.textWidth).isActive = true
             activityStack.addArrangedSubview(label)
         }
     }
 
     private func dim(_ text: String) -> NSTextField {
-        let label = NSTextField(labelWithString: text)
-        label.font = .systemFont(ofSize: 12)
-        label.textColor = .tertiaryLabelColor
-        return label
+        PageKit.label(text, .secondary, colour: .secondaryLabelColor)
     }
 
     // MARK: Actions
@@ -585,7 +578,7 @@ final class OverviewSection: NSObject, AppSection {
         buildLabel.stringValue = "Checking the gateway…"
         GatewayController.shared.buildReport { [weak self] message, ok in
             guard let self else { return }
-            self.buildLabel.textColor = ok ? .secondaryLabelColor : .systemOrange
+            self.buildLabel.textColor = ok ? .secondaryLabelColor : Health.warn.text
             self.buildLabel.stringValue = message
         }
     }

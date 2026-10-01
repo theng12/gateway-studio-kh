@@ -373,7 +373,9 @@ own **Hub token** is needed only to manage shared voices. See
 discovers the Hub, so a single-Mac install shows something true with nothing configured.
 
 The **Fleet** page (⌘6) answers three questions: *how many machines are online*, *which machine did
-the work*, and *what is running right now*.
+the work*, and *what is running right now*. Its first tab, **Groups**, is one card per controller
+group: a needs-attention banner, then every node with its state, what it is doing, free disk and
+memory (amber under 12 % disk or 20 % memory, red under 6 % or 10 %), and what it starts at login.
 
 It is built to hold **hundreds** of locations and machines:
 
@@ -746,12 +748,13 @@ tests/test_e2e.py             the end-to-end suite
 tests/test_ui.py              drives the real app through the accessibility layer
 menubar/main.swift            app shell: gateway supervision, status menu, launch agent
 menubar/MainWindow.swift      the one window: grouped sidebar, status line, console sections
-menubar/PageKit.swift         shared page furniture (heading / sectionTitle / empty), from Studio Hub
+menubar/PageKit.swift         design tokens (DS, TextRole, Health) and shared page furniture (heading, cards, badges, buttons)
 menubar/OverviewWindow.swift  Overview page, including the modality bars
 menubar/JobsWindow.swift      Jobs page
 menubar/VoicesWindow.swift    Voices page
 menubar/SettingsSection.swift Settings page: two-column form for port, API key, startup
 menubar/FleetSection.swift    Fleet page: locations, machines, running work
+menubar/FleetGroups.swift     Fleet > Groups: one card per controller group, with its nodes
 tests/test_fleet_standalone.py   proves a standalone Hub works as a location
 menubar/GatewayAPI.swift      authenticated admin client + formatting helpers
 menubar/build.sh              compiles and installs the .app

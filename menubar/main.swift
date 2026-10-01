@@ -1424,7 +1424,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             .credits: NSAttributedString(
                 string: "A personal model gateway.\n\nConsole: http://127.0.0.1:\(GatewayController.shared.port)/admin",
                 attributes: [
-                    .font: NSFont.systemFont(ofSize: 11),
+                    .font: TextRole.caption.font,
                     .foregroundColor: NSColor.secondaryLabelColor,
                 ]
             ),

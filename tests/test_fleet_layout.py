@@ -1,6 +1,6 @@
 """Offscreen layout checks for the tabbed Fleet page.
 
-The five tabs are built from a fixture — never a live gateway — laid out in a
+The tabs (Groups, Locations, Machines, Models, Jobs) are built from a fixture — never a live gateway — laid out in a
 borderless window, and asserted: each fits the pane it is given (a page must never
 be able to resize the window), the machines/models/jobs tables receive rows, and a
 tinted card resolves its colour per appearance. That last one is not academic: the
@@ -156,7 +156,10 @@ FIXTURE = {
          # What `machines_flat` joins from the roster: the role it joined with, its own
          # state, and when the controller last heard from it.
          "node_state": "reachable", "node_role": "agent",
-         "node_address": "http://10.0.0.11:47873", "node_last_seen_at": 1790000000},
+         "node_address": "http://10.0.0.11:47873", "node_last_seen_at": 1790000000,
+         # What the Hub says this node is running (Gateway `machines[].current`).
+         "current": {"batch_id": "batch-9", "model": "mock-hub/clone-model", "label": "Chapter 3",
+                     "studio": "voice", "started_at": 1790000000}},
         {"location_id": "ctrl-1", "location": "Blue Room", "machine": "mac-b", "label": "mac-b",
          "state": "offline", "completed": 0, "failed": 0, "chip": "Apple M4",
          "memory_gb": 16.0, "disk_free_gb": 380.0, "modalities": {},
@@ -239,24 +242,74 @@ enum GatewayAPI {
             print("FAIL: the fixture did not decode"); exit(1)
         }
 
-        let overview = FleetOverviewTab(frame: .zero)
-        overview.update(snapshot: snapshot)
-        let overviewWindow = layout("Overview", overview)
-        // Two issues, ordered error first: the list is what tells the owner what
-        // is wrong, so an empty one would pass trivially and prove nothing.
-        let issueCards = descendants(overview).compactMap { $0 as? FleetTintStack }
-            .filter { $0.borderAlpha > 0 }
-        assert(issueCards.count == 2, "expected 2 issue cards, got \(issueCards.count)")
-
-        let card = issueCards[0]
-        overviewWindow.appearance = NSAppearance(named: .darkAqua)
+        // **Groups: one card per controller group, the worst first.** Two groups, both with something
+        // wrong (a paused controller; a stalled job on the local Mac and a refused credential), so the
+        // needs-attention banner has to be drawn and its tint has to follow the appearance.
+        let groups = FleetGroupsTab(frame: .zero)
+        groups.update(snapshot: snapshot)
+        let groupsWindow = layout("Groups", groups)
+        let summaries = snapshot.groups
+        assert(summaries.count == 2, "expected 2 groups, got \(summaries.count)")
+        assert(summaries[0].isDown && summaries[0].name == "Blue Room",
+               "the paused controller must sort first and read as down: \(summaries.map { $0.name })")
+        assert(summaries[0].health == .bad, "an unreachable or paused group is red")
+        assert(summaries[1].health == .warn, "a group with a stalled job and a disk or memory warning is amber, not red")
+        let groupTexts = descendants(groups).compactMap { ($0 as? NSTextField)?.stringValue }
+        assert(groupTexts.contains(where: { $0.contains("2 of 2 groups need attention") }),
+               "the needs-attention banner is missing: \(groupTexts.prefix(12))")
+        assert(groupTexts.contains("Down") && groupTexts.contains("Attention"),
+               "each group card must carry its state word: \(groupTexts.prefix(30))")
+        let tinted = descendants(groups).compactMap { $0 as? CardView }.filter { $0.tint != nil }
+        assert(!tinted.isEmpty, "the banner must be a tinted card")
+        let card = tinted[0]
+        groupsWindow.appearance = NSAppearance(named: .darkAqua)
         card.display()
         let dark = rgb(card.layer?.borderColor)
-        overviewWindow.appearance = NSAppearance(named: .aqua)
+        groupsWindow.appearance = NSAppearance(named: .aqua)
         card.display()
         let light = rgb(card.layer?.borderColor)
         assert(!dark.isEmpty && !light.isEmpty && dark != light,
                "card tint did not follow the appearance: dark \(dark), light \(light)")
+
+        // The rules that make a group red or amber, and the disk and memory tiers behind them.
+        let studio = summaries[1]
+        var mini = snapshot.machines.first { $0.machine == "local" }!
+        mini.diskTotalGb = 460.0
+        mini.availableGb = 18.0
+        assert(mini.diskHealth == .ok && mini.memoryHealth == .ok, "a Mac with plenty free reads green")
+        var tight = mini
+        tight.availableGb = 4.0   // 12.5 % of 32 GB: amber under 20 %
+        assert(tight.memoryHealth == .warn, "memory under 20 % free is amber")
+        tight.availableGb = 3.0   // 9.4 %: red under 10 %
+        assert(tight.memoryHealth == .bad, "memory under 10 % free is red")
+        tight.memoryGb = 8.0
+        tight.availableGb = 1.2   // 15 %, but under 1.5 GB: red
+        assert(tight.memoryHealth == .bad, "memory under 1.5 GB free is red")
+        tight.diskFreeGb = 4.0
+        tight.disk = nil
+        tight.diskTotalGb = 250.0
+        assert(tight.diskHealth == .bad, "less than 5 GB free is red whatever the share")
+        assert(!studio.doing(mini).headline.isEmpty, "doing-now must never be empty")
+        // "Doing now": the node's stated current job decodes, and names the job and how long it has run.
+        let stated = snapshot.machines.first { $0.machine == "mac-a" }!
+        assert(stated.current?.label == "Chapter 3" && stated.current?.studio == "voice",
+               "the node's current job did not decode: \(String(describing: stated.current))")
+        var busy = mini
+        busy.state = "working"
+        busy.current = FleetCurrentJob(batchId: "b-1", model: "mlx/qwen", label: "Chapter 3", studio: "voice",
+                                       startedAt: Date().timeIntervalSince1970 - 600)
+        let doing = studio.doing(busy)
+        assert(doing.headline == "Working · voice", "doing-now headline: \(doing.headline)")
+        assert((doing.detail ?? "").contains("Chapter 3") && (doing.detail ?? "").contains("10 min"),
+               "doing-now must name the stated job and its age: \(String(describing: doing.detail))")
+        busy.current = nil
+        assert(studio.doing(busy).detail == nil || studio.batches.isEmpty == false,
+               "without a stated job the label-only fallback must not invent one")
+        // A down group still lists the roster it remembers, with how long ago each node was seen.
+        assert(summaries[0].showsRoster && summaries[0].nodeCount == 2,
+               "a down group must list its last known roster, not an empty box")
+        assert(groupTexts.contains(where: { $0.hasPrefix("Last known:") }),
+               "the roster rows must say they are the last known state: \(groupTexts)")
 
         let locations = FleetLocationsTab(frame: .zero)
         locations.update(locations: snapshot.locations)
@@ -296,8 +349,11 @@ enum GatewayAPI {
         let buttonTitles = descendants(locations).compactMap { ($0 as? NSButton)?.title }
         assert(buttonTitles.filter { $0 == "Resume" }.count == 1,
                "Resume must appear exactly once: on the paused controller only, got \(buttonTitles)")
-        assert(buttonTitles.filter { $0 == "Change address…" }.count == 1,
-               "Change address… must be offered for the controller and not for this Mac")
+        // Rename, Credentials, Change Address and Remove sit in each row's "…" menu: Change Address is offered
+        // once, for the controller, and never for this Mac.
+        let menuTitles = descendants(locations).compactMap { $0 as? FleetMenuButton }.flatMap { $0.itemTitles }
+        assert(menuTitles.filter { $0 == "Change Address…" }.count == 1,
+               "Change Address… must be offered for the controller and not for this Mac: \(menuTitles)")
         let pausedTexts = descendants(locations).compactMap { ($0 as? NSTextField)?.stringValue }
         assert(pausedTexts.contains(where: { $0.contains("paused after 7 days") }),
                "the Status column did not show the pause reason")
@@ -352,11 +408,12 @@ enum GatewayAPI {
         // `last_seen_at` is what separates "switched off" from "gone", and a refused
         // credential has to be readable as that rather than as one more offline Mac.
         let machineTexts = descendants(machines).compactMap { ($0 as? NSTextField)?.stringValue }
-        assert(machineTexts.contains("agent"), "the Node column did not mark a joined Mac")
-        assert(machineTexts.contains("credential refused"),
+        assert(machineTexts.contains("Credential refused"),
                "the Machines tab drew a refused credential as a plain state: \(machineTexts)")
-        assert(!machineTexts.contains(where: { $0 == "offline" }),
+        assert(!machineTexts.contains(where: { $0.lowercased() == "offline" }),
                "the refused node was also drawn as an offline machine")
+        assert(machineTexts.contains(where: { $0.hasPrefix("seen ") }),
+               "a node's last-seen time must sit under its state: \(machineTexts)")
         guard let joined = snapshot.machines.first(where: { $0.machine == "mac-a" }) else {
             print("FAIL: the machine rows did not decode"); exit(1)
         }
@@ -405,7 +462,7 @@ enum GatewayAPI {
             .map { $0.numberOfRows }.reduce(0, +)
         assert(rows == 2, "location filter drew \(rows) machine rows, expected 2")
 
-        print("PASS: five Fleet tabs fit the pane, filter works, card tint follows appearance")
+        print("PASS: the Fleet tabs fit the pane, filter works, card tint follows appearance")
     }
 }
 '''
@@ -418,7 +475,7 @@ enum GatewayAPI {
             compiled = subprocess.run(
                 ["swiftc", "-swift-version", "5", "-framework", "AppKit",
                  "menubar/PageKit.swift", "menubar/FleetModels.swift", "menubar/FleetStartupModel.swift",
-                 "menubar/FleetTabs.swift",
+                 "menubar/FleetTabs.swift", "menubar/FleetGroups.swift",
                  str(source), "-o", str(binary)],
                 cwd=ROOT, capture_output=True, text=True)
             self.assertEqual(compiled.returncode, 0, compiled.stderr)

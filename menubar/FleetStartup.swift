@@ -91,7 +91,7 @@ extension FleetStartup {
             force.messageText = "\(name) is busy"
             force.informativeText = first.sentence + "\n\nRestart anyway and interrupt that work?"
             force.addButton(withTitle: "Wait")
-            force.addButton(withTitle: "Restart anyway")
+            force.addButton(withTitle: "Restart Anyway")
             guard force.runModal() == .alertSecondButtonReturn else { done(); return }
             request(machine, action, force: true) { forced in
                 if !forced.ok { show("\(action.title) failed on \(name)", forced.sentence) }
@@ -118,6 +118,27 @@ extension FleetStartup {
         FleetStartupCell(machine: machine, window: window, done: done)
     }
 
+    /// The "…" button alone, for a view that draws its own badge (the Groups view). `nil` when nothing can be
+    /// sent to this Mac: a Mac that is not answering has no actions, and its badge tooltip says why.
+    static func menuButton(for machine: FleetMachine, window: @escaping () -> NSWindow?,
+                           done: @escaping () -> Void) -> NSView? {
+        let actions = FleetStartup.actions(for: machine)
+        guard !actions.isEmpty else { return nil }
+        let button = FleetMenuButton {
+            let menu = NSMenu()
+            let heading = NSMenuItem(title: FleetStartup.badge(machine.startup), action: nil, keyEquivalent: "")
+            heading.isEnabled = false
+            menu.addItem(heading)
+            menu.addItem(.separator())
+            for action in actions {
+                menu.addItem(ClosureMenuItem(action.title) { FleetStartup.run(machine, action, in: window(), done: done) })
+            }
+            return menu
+        }
+        button.toolTip = "Startup actions for this Mac"
+        return button
+    }
+
     // MARK: Bulk
 
     /// "Enable auto-start on all Macs where it's off", with a count and a confirm that lists what it will
@@ -138,7 +159,7 @@ extension FleetStartup {
         sure.informativeText = "After a restart those Macs will bring Studio Hub's services up by themselves. "
             + (unreachable > 0 ? "\(unreachable) more are not answering and will be skipped. " : "")
             + "Nothing is restarted now."
-        sure.addButton(withTitle: "Enable auto-start")
+        sure.addButton(withTitle: "Enable Auto-Start")
         sure.addButton(withTitle: "Cancel")
         guard sure.runModal() == .alertFirstButtonReturn else { return }
         GatewayAPI.post("/admin/api/fleet/startup/enable-autostart", body: [:], timeout: 120) { result in
@@ -168,7 +189,7 @@ extension FleetStartup {
 /// A slim bar for the top of the Machines tab (and the Groups view): the count and the one button.
 final class FleetStartupBar: NSStackView {
     private let label = NSTextField(wrappingLabelWithString: "")
-    private lazy var button = FleetClosureButton(title: "Enable auto-start on all Macs where it's off") { [weak self] in
+    private lazy var button = FleetClosureButton(title: "Enable Auto-Start on All Macs") { [weak self] in
         guard let self else { return }
         FleetStartup.enableEverywhere(machines: self.machines) { self.onChange?() }
     }
@@ -180,9 +201,10 @@ final class FleetStartupBar: NSStackView {
         super.init(frame: frameRect)
         orientation = .horizontal
         alignment = .centerY
-        spacing = 10
-        label.font = .systemFont(ofSize: 11.5)
+        spacing = DS.Space.m
+        label.font = TextRole.secondary.font
         label.textColor = .secondaryLabelColor
+        label.preferredMaxLayoutWidth = PageKit.textWidth
         addArrangedSubview(label)
         addArrangedSubview(button)
         isHidden = true
@@ -201,71 +223,34 @@ final class FleetStartupBar: NSStackView {
         }
         if unknown > 0 { parts.append("\(unknown) not reporting (older Studio Hub or unreachable)") }
         label.stringValue = parts.joined(separator: " · ")
-        label.textColor = off + offAway > 0 ? .systemOrange : .secondaryLabelColor
+        label.textColor = off + offAway > 0 ? Health.warn.text : .secondaryLabelColor
         button.isEnabled = off > 0
         isHidden = parts.isEmpty
     }
 }
 
-/// Badge + "…" menu in one table cell. Owns the menu items' target, so the closures live as long as the cell.
+/// Badge + "…" menu in one table cell. `FleetStartup.menuButton` owns the menu and its closures, so the cell
+/// is only layout.
 final class FleetStartupCell: NSView {
-    private let machine: FleetMachine
-    private let windowOf: () -> NSWindow?
-    private let done: () -> Void
-    private let acts: [FleetStartupAction]
-
     init(machine: FleetMachine, window: @escaping () -> NSWindow?, done: @escaping () -> Void) {
-        self.machine = machine
-        self.windowOf = window
-        self.done = done
-        self.acts = FleetStartup.actions(for: machine)
         super.init(frame: .zero)
-        let label = NSTextField(labelWithString: FleetStartup.shortBadge(machine.startup))
-        label.font = .systemFont(ofSize: 11.5)
-        label.lineBreakMode = .byTruncatingTail
-        if let colour = FleetStartup.colour(machine.startup) { label.textColor = colour }
-        label.toolTip = FleetStartup.tooltip(machine.startup)
-        label.translatesAutoresizingMaskIntoConstraints = false
-        label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        addSubview(label)
-        toolTip = label.toolTip
-        var trailing = trailingAnchor
-        if !acts.isEmpty {
-            let more = FleetClosureButton(title: "…") { }
-            more.target = self
-            more.action = #selector(showMenu(_:))
-            more.toolTip = "Startup actions for this Mac"
-            more.translatesAutoresizingMaskIntoConstraints = false
-            addSubview(more)
-            NSLayoutConstraint.activate([
-                more.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -2),
-                more.centerYAnchor.constraint(equalTo: centerYAnchor),
-                more.widthAnchor.constraint(equalToConstant: 30),
-            ])
-            trailing = more.leadingAnchor
-        }
+        let (health, text) = FleetStartup.health(machine.startup)
+        let badge = Badge(text, health)
+        badge.toolTip = FleetStartup.tooltip(machine.startup)
+        toolTip = badge.toolTip
+        var views: [NSView] = [badge]
+        if let more = FleetStartup.menuButton(for: machine, window: window, done: done) { views.append(more) }
+        let row = NSStackView(views: views)
+        row.spacing = DS.Space.xs
+        row.alignment = .centerY
+        row.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(row)
         NSLayoutConstraint.activate([
-            label.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 4),
-            label.trailingAnchor.constraint(lessThanOrEqualTo: trailing, constant: -4),
-            label.centerYAnchor.constraint(equalTo: centerYAnchor),
+            row.leadingAnchor.constraint(equalTo: leadingAnchor, constant: DS.Space.xs),
+            row.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -DS.Space.xs),
+            row.centerYAnchor.constraint(equalTo: centerYAnchor),
         ])
     }
 
     required init?(coder: NSCoder) { fatalError("not used") }
-
-    @objc private func showMenu(_ sender: NSButton) {
-        let menu = NSMenu()
-        for (index, action) in acts.enumerated() {
-            let item = NSMenuItem(title: action.title, action: #selector(choose(_:)), keyEquivalent: "")
-            item.target = self
-            item.tag = index
-            menu.addItem(item)
-        }
-        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: sender.bounds.height + 2), in: sender)
-    }
-
-    @objc private func choose(_ item: NSMenuItem) {
-        guard item.tag >= 0, item.tag < acts.count else { return }
-        FleetStartup.run(machine, acts[item.tag], in: windowOf(), done: done)
-    }
 }
