@@ -14,6 +14,29 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.91 — 2026-10-01
+
+A reliability release from a full audit of how the gateway, Story Studio and Studio Hub talk to each other.
+
+- **Nothing freezes when a Hub is unreachable.** Dispatch used to wait on a Hub that was switched off or off the network and hold up everything
+  behind it. It now gives up on that Hub quickly and the job is routed elsewhere.
+- **The 3-hour queue limit only counts time spent waiting.** A job that had already started could be cancelled for having been "queued" too
+  long. The limit now measures queued time only, so running jobs are never cancelled by it.
+- **Settings saves are crash-safe.** Settings and secrets are written to a temporary file and swapped in, so a crash or power cut mid-save can
+  no longer leave a half-written file.
+- **Downloads are streamed** instead of loaded into memory first, so large results use far less memory.
+- **Status refreshes faster**, and a rare race that could lose a model-list save when two saves overlapped is fixed.
+- **Music picks a model that can actually serve the request.** The gateway now publishes which music models need lyrics and which support
+  vocals or instrumental-only, so a request for an instrumental, or one with no lyrics, is no longer sent to a model that cannot do it.
+- **A failed pre-flight check re-routes the job** to another model or location instead of turning into a hold you have to clear by hand.
+- **Uploads up to 100 MiB** are accepted for Hub transcription (long recordings used to be refused).
+- **Cancel works while a job is waiting for a Mac**, and Cancel in the menu bar now reaches the Hub, so the work really stops there too.
+- **Voice controls only appear when the chosen lane supports them**, so you no longer see speed or voice options that do nothing.
+- **Repeated requests are answered from the first result.** A retried request that was already accepted is replayed before anything else is
+  checked, so it never creates a duplicate job or a spurious refusal.
+- **A Hub's own refusal wording is kept**, so the reason you see is the Hub's full sentence, not a shortened summary.
+- **A downgrade refusal is shown in orange**, as a warning, instead of the red used for real errors.
+
 ## 0.2.90 — 2026-10-01
 
 - **Whisper large-v3 turbo is now offered for subtitles.** Studio Hub marks Whisper turbo as a "dependency" because two Qwen3 voice models also
