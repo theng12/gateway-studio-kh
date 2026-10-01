@@ -1220,19 +1220,18 @@ def download_artifact(
             404, f"job '{job_id}' has no artifact '{asset_id}'; it has {len(rows)}"
         )
     path = Path(str(chosen["path"]))
-    try:
-        content = path.read_bytes()
-    except FileNotFoundError:
-        return _error(410, "the artifact file is gone — it was pruned or removed", "ARTIFACT_GONE")
     headers: dict[str, str] = {}
     if download:
         stem = f"{job.get('modality') or 'artifact'}-{str(job_id)[:8]}-{asset_id}"
         headers["Content-Disposition"] = f'attachment; filename="{stem}{path.suffix}"'
-    return Response(
-        content=content,
-        media_type=str(chosen.get("media_type") or "application/octet-stream"),
-        headers=headers,
-    )
+    from .api import stream_file
+
+    try:
+        return stream_file(
+            path, str(chosen.get("media_type") or "application/octet-stream"), headers
+        )
+    except FileNotFoundError:
+        return _error(410, "the artifact file is gone — it was pruned or removed", "ARTIFACT_GONE")
 
 
 # ---------------------------------------------------------------------------
