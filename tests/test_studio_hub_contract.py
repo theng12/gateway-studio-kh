@@ -1685,6 +1685,20 @@ class HubContractHardeningTests(_HubCase):
         self.assertIs(caught.exception.upstream_accepted, False)
         self.assertTrue(caught.exception.upstream_settled)
 
+    def test_a_memory_handback_is_its_own_known_failure_not_a_wait(self) -> None:
+        text = "Mac mini 1101 needs about 3.2 GB free and has about 3.0 GB free for m (it refused 3 times)."
+        hub = _Hub(states=["error"], item={"state": "error", "error_code": "INSUFFICIENT_MEMORY",
+                                           "error": text})
+        with self.assertRaises(BackendError) as caught:
+            self.generate(hub, self.request(modality="image", params={"prompt": "x"}))
+        error = caught.exception
+        self.assertEqual(error.code, "INSUFFICIENT_MEMORY")
+        self.assertIn("needs about 3.2 GB free", str(error))
+        self.assertTrue(error.upstream_settled, "the Hub finished with it: nothing is pending")
+        self.assertIs(error.upstream_accepted, False)
+        self.assertNotEqual(error.code, "LOCATION_NOT_READY",
+                            "a LOCATION_* code would make the worker wait on the same Mac")
+
     def test_an_operator_decision_item_stays_terminal_and_names_its_code(self) -> None:
         hub = _Hub(states=["error"], item={"state": "error", "error_code": "MODEL_PAUSED",
                                            "error": "paused by the owner"})
