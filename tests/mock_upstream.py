@@ -633,7 +633,7 @@ class Handler(BaseHTTPRequestHandler):
                 # the catalogue's own `hub_modality` remains the thing that places it, and
                 # the package-stated path is pinned separately by `clone-model`.
                 {"package_id": "video-model", "model_id": "mock-hub/video-model",
-                 "engine": "video-ltx", "files_state": "files_verified",
+                 "engine": "video-mlx", "files_state": "files_verified",
                  "dispatch_state": "eligible", "revision": "f" * 40,
                  "lane_contract": {
                      "schema": "studiohub.lane-contract.v1",
@@ -699,7 +699,7 @@ class Handler(BaseHTTPRequestHandler):
                 # location would refuse. This is the tier, asserted at the public surface rather
                 # than only in a unit test.
                 {"package_id": "video-toobig-model", "model_id": "mock-hub/video-toobig-model",
-                 "engine": "video-ltx", "files_state": "files_verified",
+                 "engine": "video-mlx", "files_state": "files_verified",
                  "dispatch_state": "eligible", "revision": "9" * 40,
                  "modality": "video",
                  "lane_contract": {
@@ -781,7 +781,7 @@ class Handler(BaseHTTPRequestHandler):
                 # package row predates 0.6.61 and states none). The capabilities are the
                 # broker's own tokens — `img2video` is the one its reference-image gate
                 # reads — and `generates_audio` is tri-state: `true` here because the
-                # LTX pack's own runs carry an audio track.
+                # mock lane's own runs carry an audio track.
                 {"repo": "mock-hub/video-model", "family": "mock-video",
                  "hub_modality": "video",
                  "capabilities": ["img2video", "txt2video"],

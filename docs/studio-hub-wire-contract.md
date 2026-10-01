@@ -34,6 +34,12 @@ now closed, and these are the parts that were expensive to work out.
   is instrumental only. The adapter forwards
   whichever parameters the caller set and **invents none** — which engine accepts
   what is the engine's own answer, and a guessed default would be silently wrong.
+- **No Hub video model is offered (2026-10-01, owner decision).** LTX-2.3 (package
+  `ltx-2-3-22b-ram-12gb-mlx`) and Lance are retired, and a Hub on a release without the Video
+  worker publishes no video package. The gateway keeps no retired-model list: a model leaves the
+  pickers on the next discovery after the Hub stops publishing it. The video lane in the adapter
+  stays so a video model a Hub adds later runs unchanged; until then Video offers only cloud
+  models, and with none at all the Create page says no model is switched on for the lane.
 - **A staged voice reference carries its metadata, and the answer is checked.** The
   Hub's `POST /api/hub/voice-references` accepts `language`, a declared `sha256`, a
   durable `source_asset_id` and `ttl_seconds`, and returns the digest, byte count,
