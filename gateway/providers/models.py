@@ -379,6 +379,14 @@ class ModelInventory:
         serves four of the six modalities Google declares, so a discovered video
         row published and then failed on use.
         """
+        return [(d, m) for d, m in self._enabled_walk() if m["modality"] == modality]
+
+    def _enabled_walk(self) -> list[tuple[ProviderDefinition, dict[str, Any]]]:
+        """`enabled_models` for every modality at once: one pass over the providers.
+
+        `summary()` (hit by `/health` every 3 s and by `/admin/api/status`) called
+        `enabled_models` once per modality, rebuilding every provider's merged model list six times.
+        """
         output: list[tuple[ProviderDefinition, dict[str, Any]]] = []
         for provider_id, definition in self._every_definition():
             if not self.credentials.is_enabled(provider_id):
@@ -386,8 +394,6 @@ class ModelInventory:
             if not self.credentials.is_configured(provider_id):
                 continue
             for model in self.models_for(provider_id, include_disabled=False):
-                if model["modality"] != modality:
-                    continue
                 if not self.can_publish(definition, model):
                     continue
                 output.append((definition, model))
@@ -563,11 +569,8 @@ class ModelInventory:
             for _provider_id, definition in self._every_definition()
             for modality in (definition.modalities or ())
         })
-        published = [
-            (definition, model)
-            for modality in modalities
-            for definition, model in self.enabled_models(modality)
-        ]
+        known = set(modalities)
+        published = [(d, m) for d, m in self._enabled_walk() if m["modality"] in known]
         offered: dict[str, int] = {}
         for _definition, model in published:
             offered[model["modality"]] = offered.get(model["modality"], 0) + 1

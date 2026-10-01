@@ -201,6 +201,19 @@ class ProviderRegistry:
             output.append(item)
         return output
 
+    def provider_counts(self) -> dict[str, int]:
+        """`total / configured / enabled` for the health and status headers.
+
+        Counts only: `describe_all()` also builds every provider's model list, which `/health`
+        (polled every 3 s by the menu bar) never reads.
+        """
+        defs = self.definitions()
+        return {
+            "total": len(defs),
+            "configured": sum(1 for d in defs if self.credentials.is_configured(d.id)),
+            "enabled": sum(1 for d in defs if self.credentials.is_enabled(d.id)),
+        }
+
     def describe(self, provider_id: str) -> dict[str, Any] | None:
         for item in self.describe_all():
             if item["id"] == provider_id:

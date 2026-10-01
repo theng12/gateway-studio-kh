@@ -970,7 +970,6 @@ def _submit(
 # ---------------------------------------------------------------------------
 @app.get("/health")
 def health() -> dict[str, Any]:
-    providers = registry.describe_all()
     return {
         "status": "ok",
         "service": "gateway-kh",
@@ -981,11 +980,7 @@ def health() -> dict[str, Any]:
         # only symptom is a feature quietly not working.
         "pid": os.getpid(),
         "build": build_id(),
-        "providers": {
-            "total": len(providers),
-            "configured": sum(1 for p in providers if p["configured"]),
-            "enabled": sum(1 for p in providers if p["enabled"]),
-        },
+        "providers": registry.provider_counts(),
         "models": registry.models.summary(),
         "jobs_processed": worker.processed,
         # **Whether dispatch is actually moving** (C1/M6). `/health` said `ok` while the

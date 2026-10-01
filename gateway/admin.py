@@ -116,18 +116,13 @@ def admin_ui() -> HTMLResponse:
 # ---------------------------------------------------------------------------
 @router.get("/api/status", dependencies=[Depends(require_admin)])
 def status() -> dict[str, Any]:
-    providers = registry.describe_all()
     return {
         "hub": hub_status(),
         # Proof of life for the integration question: did Story Studio call this
         # gateway, when, and did it authenticate?
         "story_studio": story_activity(),
         "models": registry.models.summary(),
-        "providers": {
-            "total": len(providers),
-            "configured": sum(1 for p in providers if p["configured"]),
-            "enabled": sum(1 for p in providers if p["enabled"]),
-        },
+        "providers": registry.provider_counts(),
         "jobs_processed": worker.processed,
         "jobs": store.stats(),
         "uptime_seconds": int(time.time() - STARTED_AT),
@@ -371,7 +366,8 @@ def list_providers(scope: str | None = None) -> dict[str, Any]:
     managed, not about who can generate.
     """
     items = []
-    for described in registry.describe_all():
+    every = registry.describe_all()
+    for described in every:
         if scope and described.get("scope") != scope:
             continue
         definition = registry.definition(described["id"])
@@ -408,8 +404,8 @@ def list_providers(scope: str | None = None) -> dict[str, Any]:
         # not load": the provider is simply not in the list, and nothing says why.
         "skipped_custom_providers": list(definitions.skipped_custom_providers()),
         "scopes": {
-            "cloud": sum(1 for p in registry.describe_all() if p.get("scope") == "cloud"),
-            "local": sum(1 for p in registry.describe_all() if p.get("scope") == "local"),
+            "cloud": sum(1 for p in every if p.get("scope") == "cloud"),
+            "local": sum(1 for p in every if p.get("scope") == "local"),
         },
     }
 

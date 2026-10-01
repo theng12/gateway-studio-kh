@@ -111,6 +111,20 @@ class ContentLibrary(unittest.TestCase):
             stored.unlink()
             self.assertNotEqual(content_packs.inventory(root=root)[0]["integrity"], "verified")
 
+    def test_inventory_hashes_an_unchanged_archive_once(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "library"
+            row = content_packs.import_archive(archive(), root=root)
+            digest = row["archive_sha256"]
+            content_packs._VERIFIED.clear()
+            with patch.object(content_packs, "read_archive", wraps=content_packs.read_archive) as read:
+                for _ in range(3):
+                    self.assertEqual(content_packs.inventory(root=root)[0]["integrity"], "verified")
+                self.assertEqual(read.call_count, 1, "unchanged archive was re-read and re-hashed")
+                stored = root / digest / "archive.sspack"
+                stored.write_bytes(stored.read_bytes()[:-1] + b"X")  # same size, new mtime
+                self.assertNotEqual(content_packs.inventory(root=root)[0]["integrity"], "verified")
+
     def test_import_is_private_idempotent_and_download_checks_bytes(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory) / "library"

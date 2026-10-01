@@ -194,5 +194,23 @@ class RerouteTests(unittest.TestCase):
         self.assertIsNone(settled.get("error_code"), "a waiting job carries no failure")
 
 
+class HealthHeaderTests(unittest.TestCase):
+    """`/health` counts come from the cheap paths; they must agree with the full ones."""
+
+    def test_provider_counts_match_describe_all(self) -> None:
+        described = registry.describe_all()
+        self.assertEqual(registry.provider_counts(), {
+            "total": len(described),
+            "configured": sum(1 for p in described if p["configured"]),
+            "enabled": sum(1 for p in described if p["enabled"]),
+        })
+
+    def test_summary_offers_what_enabled_models_publishes(self) -> None:
+        summary = registry.models.summary()
+        for modality in {m for d in registry.definitions() for m in d.modalities}:
+            self.assertEqual(summary["by_modality"].get(modality, 0),
+                             len(registry.models.enabled_models(modality)), modality)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
