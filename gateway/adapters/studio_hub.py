@@ -678,6 +678,22 @@ def _poll_batch(
                     upstream_accepted=False,
                     upstream_settled=True,
                 )
+            if hub_code == "INSUFFICIENT_MEMORY":
+                # The Mac refused this job for memory three times and the Hub handed it back
+                # (Hub 0.6.127+; owner decision 2026-10-01). Nothing ran, so it is a *known*
+                # failure of that Mac: the worker re-routes it to another location, excluding this
+                # one (`worker._next_machine`, up to the retry policy's attempts), and a job that
+                # is pinned - a voice's owning Hub - fails with this same sentence instead. Its
+                # own code, so the attempt log and the terminal reason say what happened; it is
+                # deliberately not a LOCATION_* code, which would make the worker wait on the
+                # same Mac rather than move or fail.
+                raise BackendError(
+                    f"INSUFFICIENT_MEMORY: {message or 'the Mac does not have enough free memory'}",
+                    code="INSUFFICIENT_MEMORY",
+                    retryable=True,
+                    upstream_accepted=False,
+                    upstream_settled=True,
+                )
             if hub_code:  # MODEL_PAUSED, MACHINE_DISABLED, ...: terminal, but say which
                 message = f"{hub_code}: {message or 'no detail'}"
             # **The Hub has finished this item, it produced nothing, and nothing is pending.**
