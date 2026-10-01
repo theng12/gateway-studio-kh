@@ -2021,20 +2021,24 @@ class Catalog:
             str(row.get("id")): row
             for row in (fleet.snapshot(allow_stale=True).get("locations") or [])
         }
-        offline = cannot = 0
+        offline = cannot = full = 0
         for location_id in offered:
             row = rows.get(location_id) or {}
             if not row.get("reachable"):
                 offline += 1
+            elif fleet._location_disk_stopped(row):  # noqa: SLF001
+                full += 1
             elif not fleet._takes_customer_jobs(row):  # noqa: SLF001 - one rule, one place
                 cannot += 1
-        if not offline and not cannot:
+        if not offline and not cannot and not full:
             return "No location offering this model has a free slot right now."
         reasons: list[str] = []
         if offline:
             reasons.append(f"{offline} location{'' if offline == 1 else 's'} offline")
         if cannot:
             reasons.append(f"{cannot} that cannot take customer work")
+        if full:
+            reasons.append(f"{full} whose Mac{'' if full == 1 else 's'} ran out of disk space")
         return (
             "No location offering this model can take work right now — "
             + " and ".join(reasons) + "."

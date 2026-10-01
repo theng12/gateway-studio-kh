@@ -1427,6 +1427,32 @@ final class FleetMachinesTab: NSView {
                 sortValue: { .number(machine($0)?.medianRuntimeS ?? machine($0)?.averageSeconds ?? 0) }
             ),
             FleetColumn(
+                id: "disk", title: "Disk", width: 130,
+                // **Free space and the state beside it, coloured.** The Hub states
+                // green/amber/red/stop; a Hub that predates the field draws just the free GB.
+                text: { row in
+                    guard let row = machine(row) else { return "—" }
+                    if let disk = row.disk { return disk.columnText }
+                    return FleetFormat.gb(row.diskFreeGb)
+                },
+                sortValue: { .number(machine($0)?.disk?.freeGb ?? machine($0)?.diskFreeGb ?? -1) },
+                colour: { machine($0)?.disk?.colour ?? .labelColor },
+                tooltip: { row in
+                    guard let disk = machine(row)?.disk else { return nil }
+                    var lines: [String] = []
+                    if let total = disk.totalGb { lines.append("Volume: \(FleetFormat.gb(total))") }
+                    if disk.stateSource == "derived" {
+                        lines.append("State worked out here from free space; this Hub does not report one.")
+                    }
+                    if let top = disk.topText { lines.append("Largest: " + top) }
+                    if let trash = disk.trashGb { lines.append("Trash: " + FleetFormat.gb(trash)) }
+                    if let swap = disk.swapUsedGb { lines.append("Swap in use: " + FleetFormat.gb(swap)) }
+                    if let sweep = disk.lastSweep?.display { lines.append("Last clean-up: " + sweep) }
+                    lines.append(contentsOf: disk.warnings)
+                    return lines.isEmpty ? nil : lines.joined(separator: "\n")
+                }
+            ),
+            FleetColumn(
                 id: "hardware", title: "Hardware", width: 240,
                 text: { row in
                     guard let row = machine(row) else { return "—" }
@@ -1507,9 +1533,45 @@ final class FleetMachinesTab: NSView {
                 ])
         }
         controller.setRows(rows)
-        statusLabel.stringValue = rows.count == machines.count
+        let summary = rows.count == machines.count
             ? "\(machines.count) machine\(machines.count == 1 ? "" : "s")."
             : "\(rows.count) of \(machines.count) machines match the filter."
+        let text = NSMutableAttributedString(
+            string: summary,
+            attributes: [.font: NSFont.systemFont(ofSize: 11.5), .foregroundColor: NSColor.secondaryLabelColor])
+        // The disk banner is about the whole fleet, so it ignores the filter: a Mac that is
+        // filling up must not disappear because a search hid it.
+        for line in Self.diskBanner(for: machines) {
+            text.append(NSAttributedString(
+                string: "\n" + line.text,
+                attributes: [.font: NSFont.systemFont(ofSize: 11.5, weight: .semibold),
+                             .foregroundColor: line.colour]))
+        }
+        statusLabel.attributedStringValue = text
+    }
+
+    /// One line per concern: Macs low on disk (state, free space, biggest consumer), then any
+    /// warning a Hub reported (macOS updates / Time Machine). Empty when every Mac is fine.
+    static func diskBanner(for machines: [FleetMachine]) -> [(text: String, colour: NSColor)] {
+        var lines: [(text: String, colour: NSColor)] = []
+        let low = machines.filter { $0.disk?.isLow == true }
+            .sorted { ($0.disk?.freeGb ?? 0) < ($1.disk?.freeGb ?? 0) }
+        for row in low {
+            guard let disk = row.disk else { continue }
+            let name = row.label ?? row.machine ?? "a Mac"
+            var line = "\(name): disk \((disk.state ?? "").uppercased()), \(FleetFormat.gb(disk.freeGb)) free"
+            if let top = disk.top.first(where: { $0.name?.isEmpty == false }), let what = top.name {
+                line += " (largest: \(what)\(top.gb.map { " " + FleetFormat.gb($0) } ?? ""))"
+            }
+            if (disk.state ?? "").lowercased() == "stop" { line += ". It is not being sent work." }
+            lines.append((line, disk.colour))
+        }
+        for row in machines {
+            for warning in row.disk?.warnings ?? [] {
+                lines.append(("\(row.label ?? row.machine ?? "a Mac"): \(warning)", .systemOrange))
+            }
+        }
+        return lines
     }
 }
 

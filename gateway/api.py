@@ -131,6 +131,7 @@ async def lifespan(_: FastAPI):
     try:
         yield
     finally:
+        fleet.stop_refresher()
         worker.stop()
 
 
@@ -924,6 +925,20 @@ def _refuse_when_the_queue_is_full() -> None:
     )
 
 
+def _refuse_when_the_disk_is_low(extra_bytes: int = 0) -> None:
+    """`503 DISK_LOW` when the Mac is under 5 GB free, before anything is written.
+
+    A red volume is swept first (`diskguard.require_room`), so the refusal is for a disk the
+    gateway could not clear itself. A sentence a person can act on, not a failed write.
+    """
+    from . import diskguard
+
+    try:
+        diskguard.require_room(extra_bytes)
+    except diskguard.DiskLow as low:
+        raise GatewayError(503, low.sentence, "DISK_LOW", headers={"Retry-After": "300"}) from low
+
+
 def _submit(
     modality: str,
     compound_id: str,
@@ -960,6 +975,7 @@ def _submit(
                 )
             return already, False
     _refuse_when_the_queue_is_full()
+    _refuse_when_the_disk_is_low()
     definition, model = catalog.resolve(
         modality, compound_id, only_location=_pinned_location(params),
         job_key=uuid.uuid4().hex,
@@ -1640,6 +1656,7 @@ async def upload_video_source_image(
             422, "Upload a source image (multipart field 'upload').", "INVALID_REQUEST"
         )
     content = await chosen.read()
+    _refuse_when_the_disk_is_low(len(content))
     if not content:
         raise GatewayError(422, "The source image is empty.", "INVALID_REQUEST")
     if len(content) > video_assets.MAX_SOURCE_IMAGE_BYTES:
@@ -1993,6 +2010,7 @@ async def transcription_quote(
         # exhaust the process — but it would still be written, staged and queued
         # against a provider that is going to refuse it, and the caller would get
         # a provider-shaped failure instead of the one sentence that explains it.
+        _refuse_when_the_disk_is_low(len(content))
         limit = upload_limit_bytes(body_model)
         if len(content) > limit:
             raise GatewayError(

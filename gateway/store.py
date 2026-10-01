@@ -66,6 +66,19 @@ CREATE TABLE IF NOT EXISTS jobs (
     defer_reason     TEXT
 );
 CREATE INDEX IF NOT EXISTS jobs_state_next ON jobs(state, next_action_at);
+-- What the Analytics page needs of a job after `archive_old` removed it: six scalars, never
+-- the prompt or the generated text. `generation_analytics` reads this beside `jobs`.
+CREATE TABLE IF NOT EXISTS job_summaries (
+    id           TEXT PRIMARY KEY,
+    created_at   REAL NOT NULL,
+    modality     TEXT,
+    model_id     TEXT,
+    provider_id  TEXT,
+    machine      TEXT,
+    state        TEXT NOT NULL,
+    seconds      REAL,
+    bytes        REAL
+);
 """
 
 # Columns added after the first release. Applied idempotently so an existing
@@ -1148,27 +1161,35 @@ class JobStore:
         Settled jobs only. A queued or running job has no duration yet, and counting one
         would drag every average toward zero.
         """
+        # `job_summaries` holds the jobs `archive_old` removed, so dropping a 90-day-old job
+        # from the table does not change the totals this page shows.
         rows = self._conn.execute(
             """
-            SELECT modality,
-                   model_id,
-                   provider_id,
-                   CASE WHEN json_valid(result_json)
-                        THEN json_extract(result_json, '$.payload.hub_machine') END
-                       AS machine,
-                   state,
-                   CASE WHEN json_valid(result_json)
-                         AND json_type(result_json, '$.payload.generation_seconds')
-                             IN ('integer', 'real')
-                        THEN json_extract(result_json, '$.payload.generation_seconds') END
-                       AS seconds,
-                   CASE WHEN json_valid(result_json)
-                         AND json_type(result_json, '$.payload.bytes')
-                             IN ('integer', 'real')
-                        THEN json_extract(result_json, '$.payload.bytes') END
-                       AS bytes
-              FROM jobs
-             WHERE state IN ('succeeded', 'failed', 'cancelled')
+            SELECT modality, model_id, provider_id, machine, state, seconds, bytes FROM (
+                SELECT created_at,
+                       modality,
+                       model_id,
+                       provider_id,
+                       CASE WHEN json_valid(result_json)
+                            THEN json_extract(result_json, '$.payload.hub_machine') END
+                           AS machine,
+                       state,
+                       CASE WHEN json_valid(result_json)
+                             AND json_type(result_json, '$.payload.generation_seconds')
+                                 IN ('integer', 'real')
+                            THEN json_extract(result_json, '$.payload.generation_seconds') END
+                           AS seconds,
+                       CASE WHEN json_valid(result_json)
+                             AND json_type(result_json, '$.payload.bytes')
+                                 IN ('integer', 'real')
+                            THEN json_extract(result_json, '$.payload.bytes') END
+                           AS bytes
+                  FROM jobs
+                 WHERE state IN ('succeeded', 'failed', 'cancelled')
+                UNION ALL
+                SELECT created_at, modality, model_id, provider_id, machine, state, seconds, bytes
+                  FROM job_summaries
+            )
              ORDER BY created_at DESC
              LIMIT ?
             """,
@@ -1255,6 +1276,88 @@ class JobStore:
             "sampled": len(rows),
         }
 
+    def archive_old(
+        self,
+        *,
+        days: float = 90.0,
+        now: float | None = None,
+        archive_dir: str | Path | None = None,
+    ) -> dict[str, Any]:
+        """Move settled jobs older than `days` out of the live table, then VACUUM.
+
+        Each job is first written in full to `job-archive/jobs-YYYY-MM.jsonl` (beside the
+        database; one file per month of the job's creation), its analytics scalars are kept in
+        `job_summaries`, and only then is the row deleted. A write that fails leaves the row
+        where it is. Jobs that are not settled, or that carry a recovery hold, are never
+        touched: a hold is a durable record of an unknown outcome.
+        """
+        moment = time.time() if now is None else now
+        cutoff = moment - float(days) * 86400.0
+        out_dir = Path(archive_dir) if archive_dir else Path(self.path).parent / "job-archive"
+        with self._lock:
+            rows = self._conn.execute(
+                """
+                SELECT * FROM jobs
+                 WHERE state IN ('succeeded', 'failed', 'cancelled')
+                   AND recovery_state IS NULL
+                   AND updated_at < ?
+                 ORDER BY created_at
+                """,
+                (cutoff,),
+            ).fetchall()
+            if not rows:
+                return {"archived": 0, "days": float(days), "file_count": 0, "vacuumed": False}
+            by_month: dict[str, list[sqlite3.Row]] = {}
+            for row in rows:
+                month = time.strftime("%Y-%m", time.gmtime(row["created_at"]))
+                by_month.setdefault(month, []).append(row)
+            done_ids: list[str] = []
+            files = 0
+            for month, group in by_month.items():
+                try:
+                    out_dir.mkdir(parents=True, exist_ok=True)
+                    with open(out_dir / f"jobs-{month}.jsonl", "a", encoding="utf-8") as handle:
+                        for row in group:
+                            handle.write(json.dumps(dict(row), default=str) + "\n")
+                except OSError:
+                    continue  # not archived, so not deleted
+                files += 1
+                done_ids.extend(row["id"] for row in group)
+            for start in range(0, len(done_ids), 500):
+                chunk = done_ids[start:start + 500]
+                marks = ",".join("?" * len(chunk))
+                self._conn.execute(
+                    f"""
+                    INSERT OR IGNORE INTO job_summaries
+                        (id, created_at, modality, model_id, provider_id, machine, state,
+                         seconds, bytes)
+                    SELECT id, created_at, modality, model_id, provider_id,
+                           CASE WHEN json_valid(result_json)
+                                THEN json_extract(result_json, '$.payload.hub_machine') END,
+                           state,
+                           CASE WHEN json_valid(result_json)
+                                 AND json_type(result_json, '$.payload.generation_seconds')
+                                     IN ('integer', 'real')
+                                THEN json_extract(result_json, '$.payload.generation_seconds') END,
+                           CASE WHEN json_valid(result_json)
+                                 AND json_type(result_json, '$.payload.bytes')
+                                     IN ('integer', 'real')
+                                THEN json_extract(result_json, '$.payload.bytes') END
+                      FROM jobs WHERE id IN ({marks})
+                    """,  # noqa: S608 - placeholders only
+                    chunk,
+                )
+                self._conn.execute(f"DELETE FROM jobs WHERE id IN ({marks})", chunk)  # noqa: S608
+            self._conn.commit()
+            vacuumed = False
+            pages = self._conn.execute("PRAGMA page_count").fetchone()[0]
+            free_pages = self._conn.execute("PRAGMA freelist_count").fetchone()[0]
+            if done_ids and pages and free_pages * 5 >= pages:  # >= 20 % reclaimable
+                self._conn.execute("VACUUM")
+                vacuumed = True
+        return {"archived": len(done_ids), "days": float(days), "file_count": files,
+                "vacuumed": vacuumed}
+
     def protected_input_paths(self) -> set[str]:
         """Inputs held by queued, running, or explicitly recoverable jobs."""
         rows = self._conn.execute(
@@ -1286,9 +1389,11 @@ class JobStore:
         newest = self._conn.execute(
             "SELECT MAX(created_at) AS t FROM jobs"
         ).fetchone()
+        archived = self._conn.execute("SELECT COUNT(*) AS n FROM job_summaries").fetchone()["n"]
         return {
             "by_state": by_state,
             "by_modality": by_modality,
             "total": sum(by_state.values()),
+            "archived": archived,
             "last_job_at": newest["t"] if newest else None,
         }
