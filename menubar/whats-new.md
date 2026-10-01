@@ -14,6 +14,12 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.90 — 2026-10-01
+
+- **Whisper large-v3 turbo is now offered for subtitles.** Studio Hub marks Whisper turbo as a "dependency" because two Qwen3 voice models also
+  use it, so the gateway hid it and the Subtitle model list was empty. The gateway now offers it, since the Hub also lists it as the Subtitle
+  model. Real helper files (tokenizers, codecs) stay hidden.
+
 ## 0.2.89 — 2026-09-30
 
 - **All six Create pages are redesigned to match Studio Hub's generator pages.** Audio, Subtitle, Image, Music, Video and Chat used to be a narrow

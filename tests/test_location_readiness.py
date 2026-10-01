@@ -123,6 +123,28 @@ class CanPublishReadinessTests(unittest.TestCase):
         self.assertTrue(self._publishable(None))
 
 
+class DependencyTypeTests(unittest.TestCase):
+    """The Hub types Whisper turbo `dependency` (two Qwen3 packages list it) yet catalogues it as
+    the Subtitle model; only the catalogued one may be offered. Real companions are uncatalogued."""
+
+    def _publishable(self, **raw) -> bool:
+        model = {"modality": "transcription", "model_id": "mlx-community/whisper-large-v3-turbo",
+                 "raw": {"package_type": "dependency", "dispatch_state": "eligible", **raw}}
+        return registry.models.can_publish(registry.definition("studio-hub-local"), model)
+
+    def test_a_dependency_the_catalogue_describes_is_offered(self) -> None:
+        self.assertTrue(self._publishable(catalogued=True, catalogue_type=None))
+
+    def test_a_dependency_the_catalogue_omits_stays_withheld(self) -> None:
+        self.assertFalse(self._publishable(catalogued=False))
+
+    def test_a_dependency_when_the_catalogue_did_not_answer_stays_withheld(self) -> None:
+        self.assertFalse(self._publishable())
+
+    def test_a_catalogue_that_says_dependency_stays_withheld(self) -> None:
+        self.assertFalse(self._publishable(catalogued=True, catalogue_type="dependency"))
+
+
 class RerouteTests(unittest.TestCase):
     def setUp(self) -> None:
         self.store = JobStore(_TEMP_ROOT / f"reroute-{id(self)}.sqlite3")

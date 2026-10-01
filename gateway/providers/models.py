@@ -322,8 +322,19 @@ class ModelInventory:
         # to rest entirely on the *catalogue* read, so a catalogue that timed out (it has
         # happened; `models.py` records the incident) left a tokenizer publishable while the
         # package list had already answered `dependency` in the first request.
-        if str(raw.get("catalogue_type") or "").strip().lower() == "dependency" \
-                or str(raw.get("package_type") or "").strip().lower() == "dependency":
+        # **A dependency of one studio can be the model of another.** The Hub types a package
+        # `dependency` when any other package lists it as a companion, and Whisper turbo is
+        # listed by two Qwen3 voice packages (it transcribes their reference clips) while also
+        # being the Subtitle studio's own default model — so the Hub typed it `dependency` and
+        # the picker had no transcription model at all. Every genuine companion (tokenizers,
+        # codecs, text encoders) is absent from the Hub's catalogue; Whisper turbo is the one
+        # that it describes. So a package row's `dependency` yields to a catalogue that
+        # lists the package and does not itself say `dependency`. A catalogue that did not
+        # answer sets no `catalogued` at all, so this never loosens the old rule then.
+        catalogue_type = str(raw.get("catalogue_type") or "").strip().lower()
+        package_type = str(raw.get("package_type") or "").strip().lower()
+        described_as_model = raw.get("catalogued") is True and catalogue_type != "dependency"
+        if catalogue_type == "dependency" or (package_type == "dependency" and not described_as_model):
             return ("the Hub describes this as a dependency of another model, not a model "
                     "to run")
         if raw.get("catalogued") is False:
