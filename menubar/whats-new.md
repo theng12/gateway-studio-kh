@@ -14,6 +14,28 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.92 — 2026-10-02
+
+A release about keeping the Macs healthy and making the fleet easier to see and control.
+
+- **Groups view.** A new Groups tab shows every Studio Hub group (controller plus its joined Macs) as one block, with what each Mac is
+  doing right now, its disk space and its startup setting.
+- **Disk guard and a Disk column.** The gateway now keeps its own Trash and logs small, warns before a disk gets full, and the Fleet table
+  has a Disk column so you can see which Mac is running low. Finished jobs are archived instead of piling up.
+- **Remote startup control and auto-start.** You can see, and change, whether a Mac starts Studio Hub when it logs in, from the Gateway,
+  without walking over to it. Fleet Macs now start automatically.
+- **Compressed files pass straight through.** When you ask for a compressed result (m4a audio, JPEG images) the gateway now hands that
+  request to the Hub and stores the file with its real extension, so what you get is the small file, not a re-encoded copy.
+- **Out-of-memory jobs are re-routed.** If a Mac reports it does not have enough memory for a job, the gateway now sends the job to a
+  different Mac or location instead of failing it. A job pinned to one location fails with a plain sentence saying why.
+- **The gateway decides time limits, and Cancel is real.** Time limits are now set by the gateway and told to the Hub, and Cancel stops
+  the work on the Mac, not only in the queue.
+- **Plain error text.** Failures now say what went wrong in ordinary words instead of showing internal codes.
+- **LTX video is removed.** The retired LTX video model is no longer offered, even if an older Hub still lists it. Having no local video
+  model is a normal, clean state.
+- **A design refresh.** Blue buttons, consistent spacing, type and status colours, Title Case labels, aligned tables, in both the menu bar
+  app and the web console.
+
 ## 0.2.91 — 2026-10-01
 
 A reliability release from a full audit of how the gateway, Story Studio and Studio Hub talk to each other.
