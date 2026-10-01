@@ -243,7 +243,7 @@ class ImportAndPublishTest(unittest.TestCase):
 class ProvidersPageTest(unittest.TestCase):
     def test_the_providers_page_has_the_import_button_and_reads_the_route(self) -> None:
         html = (ROOT / "gateway/admin_ui.html").read_text()
-        for needle in ("Import price research…", 'id="evidence-file"', "importEvidence", "'/pricing/evidence'"):
+        for needle in ("Import Price Research…", 'id="evidence-file"', "importEvidence", "'/pricing/evidence'"):
             self.assertIn(needle, html)
 
 
