@@ -407,6 +407,21 @@ class FleetDiskTests(unittest.TestCase):
         self.assertEqual(out["macs"][0]["state"], "stop")
 
 
+class RefresherLifecycleTests(unittest.TestCase):
+    def test_the_lifespans_refresher_ends_when_the_lifespan_does(self) -> None:
+        # A TestClient that entered the lifespan used to leave the poller alive for the whole
+        # run, where it raced later `snapshot(force=True)` calls (test_fleet_routing flaked).
+        with patch.object(fleet, "snapshot", return_value={"locations": []}), \
+                patch.object(fleet, "refresh_models_when_hub_changes"):
+            fleet.start_refresher(interval=60)
+            thread = fleet._refresher
+            self.assertTrue(thread.is_alive())
+            fleet.stop_refresher()
+            thread.join(timeout=5)
+            self.assertFalse(thread.is_alive())
+            fleet._refresher_stop.clear()
+
+
 def _location(location_id: str, machines: list[dict]) -> dict:
     return {"id": location_id, "label": location_id.title(), "reachable": True, "capacity": {},
             "model_supply": {}, "machines": machines, "machine_summary": {"reachable": len(machines)},

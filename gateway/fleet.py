@@ -3237,6 +3237,19 @@ def refresh_models_when_hub_changes(rows: list[dict]) -> dict[str, str]:
 _refresher: threading.Thread | None = None
 
 
+_refresher_stop = threading.Event()
+
+
+def stop_refresher() -> None:
+    """Ask the background refresher to end (the app's lifespan calls this on shutdown).
+
+    A test that enters the app's lifespan used to leave the poller running for the rest of
+    the process, where it raced every later `snapshot(force=True)` (a refresh that finished
+    after the caller asked is returned instead of the caller's own).
+    """
+    _refresher_stop.set()
+
+
 def start_refresher(interval: float = 15.0) -> None:
     """Keep the snapshot warm in the background.
 
@@ -3251,11 +3264,12 @@ def start_refresher(interval: float = 15.0) -> None:
     call) never pays for it.
     """
     global _refresher
+    _refresher_stop.clear()  # before the liveness check: a stop that has not landed yet is undone
     if _refresher is not None and _refresher.is_alive():
         return
 
     def loop() -> None:
-        while True:
+        while not _refresher_stop.is_set():
             value = None
             try:
                 value = snapshot(force=True)
@@ -3270,7 +3284,7 @@ def start_refresher(interval: float = 15.0) -> None:
                     refresh_models_when_hub_changes(value.get("locations") or [])
                 except Exception:  # noqa: BLE001 - discovery must not kill the poller
                     pass
-            time.sleep(interval)
+            _refresher_stop.wait(interval)
 
     _refresher = threading.Thread(target=loop, name="fleet-refresh", daemon=True)
     _refresher.start()

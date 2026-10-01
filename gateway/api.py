@@ -131,6 +131,7 @@ async def lifespan(_: FastAPI):
     try:
         yield
     finally:
+        fleet.stop_refresher()
         worker.stop()
 
 
