@@ -353,6 +353,9 @@ _HUB_MUSIC_PARAMS = (
     "instrumental",
     "lyrics",
     "vocal_language",
+    # The delivery container (`wav`/`m4a`), validated at submit. Optional: absent keeps the lane's
+    # native file, and a node that predates it drops the field and answers with that native file.
+    "output_format",
 )
 
 
@@ -1308,7 +1311,7 @@ def _generate_image_or_voice(request: BackendRequest) -> BackendResult:
         # image-to-video path, a reference image the broker turns into multipart.
         item["prompt"] = str(request.params.get("prompt") or "")
         if request.modality == "image":
-            keys = ("seed", "width", "height", "aspect_ratio", "resolution")
+            keys = ("seed", "width", "height", "aspect_ratio", "resolution", "output_format")
         elif request.modality == "video":
             keys = _HUB_VIDEO_PARAMS
         else:
@@ -1334,7 +1337,7 @@ def _generate_image_or_voice(request: BackendRequest) -> BackendResult:
                 item["params"]["reference_images"] = reference
     else:
         item["text"] = str(request.params.get("text") or "")
-        for key in ("speed", "voice_id", "language", "temperature", "seed"):
+        for key in ("speed", "voice_id", "language", "temperature", "seed", "output_format"):
             if request.params.get(key) is not None:
                 item["params"][key] = request.params[key]
         # **A control is a parameter, not a nested object.** Story sends the controls the catalogue
@@ -1433,6 +1436,15 @@ def _generate_image_or_voice(request: BackendRequest) -> BackendResult:
         return _collect_batch(client, base, headers, request, batch_id, outcome, progress)
 
 
+#: The `output_format` vocabulary for a delivered media type (the names the callers use).
+_FORMAT_BY_MEDIA = {
+    "image/png": "png", "image/jpeg": "jpeg",
+    "audio/wav": "wav", "audio/x-wav": "wav", "audio/wave": "wav",
+    "audio/mp4": "m4a", "audio/x-m4a": "m4a",
+    "audio/flac": "flac", "audio/x-flac": "flac",
+}
+
+
 def _collect_batch(
     client: httpx.Client,
     base: str,
@@ -1492,6 +1504,11 @@ def _collect_batch(
         # reported no progress figure, which is a different answer from "it never
         # stalled". See `HubProgress`.
         "hub_progress": progress.as_payload(),
+        # **What the caller asked for and what the Hub delivered**, so a Jobs view can tell a node that
+        # honoured `output_format` from one that predates it and returned the native file. Never a
+        # failure either way: the artifact is stored and served as the Hub described it.
+        "output_format_requested": request.params.get("output_format"),
+        "output_format_applied": _FORMAT_BY_MEDIA.get(media_type),
     }
 
     def deliver() -> dict[str, Any]:

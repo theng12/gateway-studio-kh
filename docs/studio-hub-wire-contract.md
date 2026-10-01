@@ -65,3 +65,16 @@ now closed, and these are the parts that were expensive to work out.
   reconciled or discarded automatically: the hub keeps both **operator-initiated**,
   and from `639fcf9` the discard is reachable by a controller's fleet credential
   (above) as well as by the node's own operator.
+- **`output_format` asks a Hub lane to compress at the source — optional, validated, never a failure.**
+  Image `png|jpeg`, music `wav|m4a`, voice `wav|m4a` (JPEG q90 and AAC are one fixed preset each in the Hub;
+  there is no quality knob). `POST /v1/images/generations`, `/v1/music/generations` and `/v1/audio/jobs`
+  answer **400 `INVALID_PARAMS`** for any other value, before anything is queued or charged. Absent (or `null`)
+  is the request every caller sent before the field existed, byte for byte; a node that predates it drops the
+  field and returns its native WAV/PNG, which is recorded (`payload.output_format_requested` /
+  `output_format_applied`, the latter read from the delivered media type) and is **not** an error. The adapter
+  stores whatever media type the Hub states, so `audio/mp4` lands as `{job}.m4a` and `audio/flac` as `.flac`
+  (`worker._EXT_BY_MEDIA`) rather than `.bin`. Cloud providers never see the field (`worker._params_for`):
+  ElevenLabs would copy `m4a` into its own `?output_format=` query and refuse a paid job. Hub rows publish
+  `output_formats` when the lane declares an `output_format` parameter (a hint only). **Idempotency is by key
+  alone**, so a caller that changes the format for an otherwise identical request must change the key (Story
+  folds the format into it only when set).

@@ -1857,5 +1857,186 @@ class AdoptedHoldTests(_HubCase):
         self.assertEqual(hub.acks, [], "an artifact that failed its check is never acknowledged")
 
 
+class OutputFormatTests(_HubCase):
+    """`output_format`: the optional request to compress at the Hub (AAC / JPEG).
+
+    Absent is today's request byte for byte; present travels in the Hub item's params, the delivered
+    media type decides what the artifact is called, and a node that ignored the field is not an error.
+    """
+
+    def _item_params(self, modality: str, params: dict[str, Any]) -> dict[str, Any]:
+        hub = _Hub()
+        self.generate_then_deliver(hub, self.request(modality=modality, params=params))
+        return hub.payloads[0]["items"][0]["params"]
+
+    def test_it_is_forwarded_for_image_music_and_voice(self) -> None:
+        self.assertEqual(
+            self._item_params("image", {"prompt": "x", "seed": 3, "output_format": "jpeg"}),
+            {"seed": 3, "output_format": "jpeg"})
+        self.assertEqual(
+            self._item_params("music", {"prompt": "x", "duration_seconds": 90, "output_format": "m4a"}),
+            {"duration_seconds": 90, "output_format": "m4a"})
+        self.assertEqual(
+            self._item_params("tts", {"text": "hi", "voice_id": "v", "output_format": "m4a"}),
+            {"voice_id": "v", "output_format": "m4a"})
+
+    def test_absent_leaves_the_request_exactly_as_it_was(self) -> None:
+        # The golden: no `output_format` key anywhere, so an old Story build and a toggled-off one
+        # produce the request every Hub has always received.
+        self.assertEqual(self._item_params("image", {"prompt": "x", "seed": 3}), {"seed": 3})
+        self.assertEqual(self._item_params("music", {"prompt": "x", "duration_seconds": 90}),
+                         {"duration_seconds": 90})
+        self.assertEqual(self._item_params("tts", {"text": "hi", "voice_id": "v"}), {"voice_id": "v"})
+
+    def test_a_compressed_artifact_is_recorded_as_delivered(self) -> None:
+        hub = _Hub(artifact=b"\x00\x00\x00\x1cftypM4A ", artifact_media_type="audio/mp4")
+        result = self.generate_then_deliver(
+            hub, self.request(modality="music", params={"prompt": "x", "output_format": "m4a"}))
+        self.assertEqual(result.media_type, "audio/mp4")
+        self.assertEqual(result.payload["output_format_requested"], "m4a")
+        self.assertEqual(result.payload["output_format_applied"], "m4a")
+
+    def test_a_node_that_ignored_the_request_still_succeeds_with_the_native_file(self) -> None:
+        hub = _Hub(artifact_media_type="audio/wav")
+        result = self.generate_then_deliver(
+            hub, self.request(modality="tts", params={"text": "hi", "output_format": "m4a"}))
+        self.assertEqual(result.media_type, "audio/wav")
+        self.assertEqual(result.payload["output_format_requested"], "m4a")
+        self.assertEqual(result.payload["output_format_applied"], "wav")
+        self.assertEqual(hub.acks, [f"/api/hub/jobs/{BATCH}/items/0/ack"])
+
+    def test_no_request_records_none_requested(self) -> None:
+        result = self.generate_then_deliver(
+            _Hub(artifact_media_type="image/png"), self.request(modality="image", params={"prompt": "x"}))
+        self.assertIsNone(result.payload["output_format_requested"])
+        self.assertEqual(result.payload["output_format_applied"], "png")
+
+    def test_media_types_map_to_real_extensions(self) -> None:
+        for media_type, ext in {
+            "audio/mp4": "m4a", "audio/x-m4a": "m4a", "audio/aac": "aac",
+            "audio/flac": "flac", "audio/x-flac": "flac", "image/jpeg": "jpg",
+            "audio/wav": "wav", "image/png": "png", "audio/mp4; codecs=mp4a.40.2": "m4a",
+        }.items():
+            self.assertEqual(worker_module._ext_for(media_type), ext, media_type)
+        self.assertEqual(worker_module._ext_for("application/x-nothing"), "bin")
+
+    def test_a_cloud_provider_never_sees_it(self) -> None:
+        # ElevenLabs would put `m4a` into its own `?output_format=` query and refuse a paid job.
+        params = {"text": "hi", "output_format": "m4a", "voice_id": "v"}
+        hub_definition = SimpleNamespace(kind="studio_hub")
+        cloud_definition = SimpleNamespace(kind="elevenlabs")
+        self.assertIs(worker_module._params_for(hub_definition, params), params)
+        stripped = worker_module._params_for(cloud_definition, params)
+        self.assertNotIn("output_format", stripped)
+        self.assertEqual(params["output_format"], "m4a", "the stored job still records the request")
+        plain = {"text": "hi"}
+        self.assertIs(worker_module._params_for(cloud_definition, plain), plain)
+
+    def test_the_artifact_is_stored_with_its_real_extension(self) -> None:
+        store = JobStore(_TEMP_ROOT / "output-format.sqlite3")
+        self.addCleanup(store.close)
+        row, _ = store.submit(
+            modality="music", model_id="model/test", params={"prompt": "x", "output_format": "m4a"},
+            idempotency_key="output-format-ext", provider_id="studio-hub-test")
+        self.assertTrue(store.mark_running(row["id"]))
+
+        class _M4a:
+            def generate(self, request: BackendRequest) -> BackendResult:
+                self.seen = dict(request.params)
+                return BackendResult(content=b"\x00\x00\x00\x1cftypM4A ", media_type="audio/mp4",
+                                     payload={"hub_batch_id": BATCH})
+
+        class _HubRegistry(_Registry):
+            @staticmethod
+            def definition(_provider_id: str) -> Any:
+                return SimpleNamespace(id="studio-hub-test", kind="studio_hub", base_url=HUB,
+                                       display_name="Hub")
+
+        adapter = _M4a()
+        with patch.object(worker_module, "registry", _HubRegistry()), patch.object(
+            worker_module, "adapter_for", return_value=adapter
+        ):
+            worker_module.execute_job(row, store)
+        job = store.get(row["id"])
+        self.assertEqual(job["state"], "succeeded")
+        self.assertTrue(job["asset_path"].endswith(f"{row['id']}.m4a"), job["asset_path"])
+        self.assertEqual(adapter.seen["output_format"], "m4a")
+
+
+class OutputFormatSubmitTests(unittest.TestCase):
+    """Unknown values are refused with 400 before anything is queued; good ones are normalised."""
+
+    def setUp(self) -> None:
+        from fastapi.testclient import TestClient
+
+        from gateway import api
+
+        self.api = api
+        self.client = TestClient(api.app, client=("127.0.0.1", 54321))
+        self.headers = {"Authorization": "Bearer fixture-key", "Idempotency-Key": f"ofmt-{self.id()}"}
+
+    def tearDown(self) -> None:
+        self.client.close()
+
+    ROUTES = {
+        "image": "/v1/images/generations",
+        "music": "/v1/music/generations",
+        "tts": "/v1/audio/jobs",
+    }
+
+    def _post(self, modality: str, extra: dict[str, Any]) -> Any:
+        body = {"model_id": "model/test", "prompt": "x", "text": "x", **extra}
+        return self.client.post(self.ROUTES[modality], json=body, headers=self.headers)
+
+    def test_unknown_values_are_a_400_for_every_modality(self) -> None:
+        bad = {
+            "image": ["webp", "m4a", "", 7, ["png"]],
+            "music": ["mp3", "jpeg", "flac", 1],
+            "tts": ["mp3", "png", "flac", "mp3_44100_128"],
+        }
+        for modality, values in bad.items():
+            for value in values:
+                with self.subTest(modality=modality, value=value):
+                    response = self._post(modality, {"output_format": value})
+                    self.assertEqual(response.status_code, 400, response.text)
+                    self.assertIn("INVALID_PARAMS", response.text)
+                    self.assertIn("output_format", response.text)
+
+    def test_good_values_reach_the_queue_normalised(self) -> None:
+        seen: list[tuple[str, dict[str, Any]]] = []
+
+        def fake_submit(modality: str, _model: str, params: dict[str, Any], *_a: Any, **_k: Any):
+            seen.append((modality, dict(params)))
+            return {"id": "job_x", "modality": modality, "state": "accepted"}, False
+
+        with patch.object(self.api, "_submit", side_effect=fake_submit), patch.object(
+            self.api, "_job_envelope", side_effect=lambda job: job
+        ):
+            for modality, value, expected in [
+                ("image", "jpeg", "jpeg"), ("image", " PNG ", "png"),
+                ("music", "m4a", "m4a"), ("music", "wav", "wav"),
+                ("tts", "M4A", "m4a"), ("tts", "wav", "wav"),
+            ]:
+                with self.subTest(modality=modality, value=value):
+                    self.assertEqual(self._post(modality, {"output_format": value}).status_code, 200)
+                    self.assertEqual(seen[-1], (modality, {
+                        "model_id": "model/test", "prompt": "x", "text": "x", "output_format": expected}))
+
+    def test_absent_and_null_are_the_same_native_request(self) -> None:
+        seen: list[dict[str, Any]] = []
+
+        def fake_submit(_modality: str, _model: str, params: dict[str, Any], *_a: Any, **_k: Any):
+            seen.append(dict(params))
+            return {"id": "job_x", "modality": "image", "state": "accepted"}, False
+
+        with patch.object(self.api, "_submit", side_effect=fake_submit), patch.object(
+            self.api, "_job_envelope", side_effect=lambda job: job
+        ):
+            self._post("image", {})
+            self._post("image", {"output_format": None})
+        self.assertEqual(seen[0], seen[1])
+        self.assertNotIn("output_format", seen[0])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

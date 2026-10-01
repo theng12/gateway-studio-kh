@@ -90,6 +90,36 @@ class TtsControlsTests(unittest.TestCase):
         self.assertEqual([c["name"] for c in self.controls(CLOUD_DEF, None)], ["temperature"])
 
 
+class OutputFormatsPublishedTests(unittest.TestCase):
+    """A Hub lane that declares `output_format` publishes its values; nothing else invents them."""
+
+    FMT = {"name": "output_format", "type": "string", "required": False,
+           "enum": ["wav", "m4a"], "request_only": True}
+
+    def test_music_tts_and_image_rows_relay_the_lane_declaration(self) -> None:
+        raw = {"lane_contract": _contract(self.FMT)}
+        self.assertEqual(catalog._music_row("m", HUB_DEF, {"raw": raw})["output_formats"], ["wav", "m4a"])
+        self.assertEqual(catalog._tts_row("m", HUB_DEF, {"raw": raw})["output_formats"], ["wav", "m4a"])
+        image_raw = {"lane_contract": _contract(
+            {"name": "output_format", "type": "string", "enum": ["png", "jpeg"]})}
+        self.assertEqual(catalog._image_row("m", HUB_DEF, {"raw": image_raw})["output_formats"], ["png", "jpeg"])
+
+    def test_a_lane_that_declares_none_publishes_none(self) -> None:
+        for raw in ({}, {"lane_contract": _contract({"name": "prompt", "type": "string"})}):
+            self.assertNotIn("output_formats", catalog._music_row("m", HUB_DEF, {"raw": raw}))
+            self.assertNotIn("output_formats", catalog._tts_row("m", HUB_DEF, {"raw": raw}))
+
+    def test_a_cloud_row_never_claims_it(self) -> None:
+        raw = {"lane_contract": _contract(self.FMT)}
+        self.assertNotIn("output_formats", catalog._tts_row("m", CLOUD_DEF, {"raw": raw}))
+
+    def test_the_singular_container_field_on_a_voice_row_is_untouched(self) -> None:
+        # `output_format` (one container, the voice row) is a different fact from `output_formats`.
+        from gateway.voices import tts_output_container  # noqa: F401  (still importable, unchanged)
+        row = catalog._tts_row("m", HUB_DEF, {"raw": {"lane_contract": _contract(self.FMT)}})
+        self.assertNotIn("output_format", row)
+
+
 class ControlsReachTheEngineTests(_HubCase):
     def test_a_story_control_is_forwarded_as_a_parameter_not_a_nested_object(self) -> None:
         hub = _Hub()
