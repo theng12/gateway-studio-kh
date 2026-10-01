@@ -103,7 +103,7 @@ final class JobsSection: NSObject, AppSection, NSTableViewDataSource, NSTableVie
 
     private let columns: [(id: String, title: String, width: CGFloat)] = [
         ("time", "When", 70),
-        ("modality", "Type", 80),
+        ("modality", "Type", 104),
         ("provider", "Provider", 130),
         ("model", "Model", 180),
         ("state", "State", 130),
@@ -170,7 +170,7 @@ final class JobsSection: NSObject, AppSection, NSTableViewDataSource, NSTableVie
         tableCard.heightAnchor.constraint(greaterThanOrEqualToConstant: 112).isActive = true
         tableCard.onLayout = { [weak self] in
             guard let self else { return }
-            PageKit.fitColumns(of: self.table, in: self.tableScroll, flex: ["provider": 1, "model": 1.4])
+            PageKit.fitColumns(of: self.table, in: self.tableScroll, flex: ["provider": (1, 130), "model": (1.4, 180), "state": (0.5, 130)])
         }
         PageKit.addFull(tableCard, to: root)
 
@@ -400,7 +400,8 @@ final class JobsSection: NSObject, AppSection, NSTableViewDataSource, NSTableVie
             field.stringValue = string(job["model_name"]) ?? string(job["model_id"]) ?? "?"
         case "state":
             // The state is a badge, like every other status in the app: the word and its colour together.
-            let badge = Badge(displayState(job), stateHealth(job))
+            let word = displayState(job)
+            let badge = Badge(word.prefix(1).uppercased() + word.dropFirst(), stateHealth(job))
             let cell = NSTableCellView()
             badge.translatesAutoresizingMaskIntoConstraints = false
             cell.addSubview(badge)

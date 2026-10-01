@@ -182,6 +182,8 @@ enum PageKit {
         text.alignment = .leading
         text.spacing = DS.Space.tight
         guard !actions.isEmpty else { return text }
+        // Beside buttons the description wraps at the width the row leaves it, not at the text-column width.
+        if let description = text.arrangedSubviews.last as? NSTextField { description.preferredMaxLayoutWidth = 0 }
         let strip = NSStackView(views: actions)
         strip.orientation = .horizontal
         strip.spacing = DS.Space.s
@@ -339,6 +341,18 @@ enum PageKit {
     }
 }
 
+extension PageKit {
+    /// A control that is `width` wide when the pane has room and gives way down to `min` when it has not. The
+    /// preference sits below `NSLayoutPriorityDragThatCanResizeWindow` (510), so it can never be the reason a
+    /// window at its minimum size grows ("a page must never be able to resize the window").
+    static func softWidth(_ view: NSView, _ width: CGFloat, min: CGFloat) {
+        let preferred = view.widthAnchor.constraint(equalToConstant: width)
+        preferred.priority = NSLayoutConstraint.Priority(400)
+        preferred.isActive = true
+        view.widthAnchor.constraint(greaterThanOrEqualToConstant: min).isActive = true
+    }
+}
+
 /// A card around a table (radius 8, separator border) whose layout pass re-fits the table's flexible columns.
 final class TableCard: CardView {
     var onLayout: (() -> Void)?
@@ -373,19 +387,36 @@ final class SeparatorRowView: NSTableRowView {
 }
 
 extension PageKit {
-    /// Share the width the fixed columns leave among the flexible ones (`flex` maps a column id to its weight;
-    /// each keeps at least its `minWidth`). A pane too narrow for even the minimums keeps them and scrolls: the
-    /// last resort, not the layout.
-    static func fitColumns(of table: NSTableView, in scroll: NSScrollView, flex: [String: CGFloat]) {
+    /// Fit a table's columns to its pane. `flex` maps a column id to its weight and its base width: when the pane is
+    /// wider than the bases and the fixed columns together, the spare width is shared out by weight; when it is
+    /// narrower, the flexible columns shrink toward their `minWidth` first. `hiding` maps a column id to the pane
+    /// width below which that column is dropped (a secondary column, so the primary ones keep readable widths).
+    /// A pane too narrow for even the minimums keeps them and scrolls: the last resort, not the layout.
+    static func fitColumns(of table: NSTableView, in scroll: NSScrollView,
+                           flex: [String: (weight: CGFloat, base: CGFloat)], hiding: [String: CGFloat] = [:]) {
         let available = scroll.contentSize.width
-        guard available > 0, !flex.isEmpty else { return }
-        let spacing = table.intercellSpacing.width * CGFloat(table.tableColumns.count)
-        let fixed = table.tableColumns.filter { flex[$0.identifier.rawValue] == nil }.reduce(0) { $0 + $1.width }
-        let remaining = max(0, available - fixed - spacing)
-        let weights = flex.values.reduce(0, +)
+        guard available > 0 else { return }
         for column in table.tableColumns {
-            guard let weight = flex[column.identifier.rawValue] else { continue }
-            let width = max(column.minWidth, floor(remaining * weight / weights))
+            if let threshold = hiding[column.identifier.rawValue] { column.isHidden = available < threshold }
+        }
+        let shown = table.tableColumns.filter { !$0.isHidden }
+        let flexible = shown.filter { flex[$0.identifier.rawValue] != nil }
+        guard !flexible.isEmpty else { return }
+        let spacing = table.intercellSpacing.width * CGFloat(shown.count)
+        let fixed = shown.filter { flex[$0.identifier.rawValue] == nil }.reduce(0) { $0 + $1.width }
+        let bases = flexible.reduce(0) { $0 + (flex[$1.identifier.rawValue]?.base ?? 0) }
+        let extra = available - fixed - spacing - bases
+        let weights = flexible.reduce(0) { $0 + (flex[$1.identifier.rawValue]?.weight ?? 0) }
+        let shrinkable = flexible.reduce(0) { $0 + max(0, (flex[$1.identifier.rawValue]?.base ?? 0) - $1.minWidth) }
+        for column in flexible {
+            guard let spec = flex[column.identifier.rawValue] else { continue }
+            var width = spec.base
+            if extra >= 0 {
+                width += floor(extra * spec.weight / weights)
+            } else if shrinkable > 0 {
+                width -= (spec.base - column.minWidth) * min(1, -extra / shrinkable)
+            }
+            width = max(column.minWidth, floor(width))
             if abs(column.width - width) > 0.5 { column.width = width }
         }
     }
@@ -610,7 +641,7 @@ final class CreatePageLayout: NSView {
     static let formIdealWidth: CGFloat = 390
     static let formMaxWidth: CGFloat = 440
     /// Below this the preview is too narrow to be a preview; the form gives way first.
-    static let previewMinWidth: CGFloat = 260
+    static let previewMinWidth: CGFloat = 240
     static let gap: CGFloat = DS.Space.xl
 
     let form = NSStackView()
@@ -697,8 +728,18 @@ final class CreatePageLayout: NSView {
 
     /// A full-width row of the form.
     func addForm(_ view: NSView) {
+        Self.yieldWidth(view)
         form.addArrangedSubview(view)
         view.widthAnchor.constraint(equalTo: form.widthAnchor).isActive = true
+    }
+
+    /// A popup, combo box, field or label in the form never asks for more width than its column has: its width
+    /// preference gives way (priority 250), so the form column can stay at 310 and the window at its 860 pt minimum.
+    private static func yieldWidth(_ view: NSView) {
+        if view is NSPopUpButton || view is NSComboBox || view is NSTextField || view is NSSegmentedControl {
+            view.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        }
+        view.subviews.forEach(yieldWidth)
     }
 
     /// Replace what the result card shows. The view fills the card, and must be able to shrink

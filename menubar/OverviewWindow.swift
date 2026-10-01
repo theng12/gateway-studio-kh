@@ -22,6 +22,8 @@ final class StatTile: CardView {
         super.init(frame: .zero)
 
         valueLabel.font = TextRole.figure.font
+        valueLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        titleLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         valueLabel.textColor = health == .ok ? .labelColor : health.text
         titleLabel.font = TextRole.caption.font
         titleLabel.textColor = .secondaryLabelColor
@@ -142,7 +144,6 @@ final class OverviewSection: NSObject, AppSection {
     private var subtitleLabel = NSTextField(labelWithString: "")
     private var tiles: [String: StatTile] = [:]
     private var modalityStack = NSStackView()
-    private var hubLabel = NSTextField(labelWithString: "—")
     private var hubBadge = NSStackView()
     private var buildLabel: NSTextField!
     private var guidanceLabel: NSTextField!
@@ -199,8 +200,14 @@ final class OverviewSection: NSObject, AppSection {
         guidanceLabel.textColor = .labelColor
         guidanceLabel.isHidden = true
         guidanceLabel.translatesAutoresizingMaskIntoConstraints = false
-        guidanceLabel.widthAnchor.constraint(equalToConstant: PageKit.textWidth).isActive = true
         root.addArrangedSubview(guidanceLabel)
+        // As wide as the text column when there is room, and as wide as the pane when there is not: a required
+        // 620 here would make a window at its minimum width grow.
+        guidanceLabel.preferredMaxLayoutWidth = 0
+        guidanceLabel.widthAnchor.constraint(lessThanOrEqualToConstant: PageKit.textWidth).isActive = true
+        let fit = guidanceLabel.widthAnchor.constraint(equalTo: root.widthAnchor, constant: -2 * PageKit.pagePadding)
+        fit.priority = NSLayoutConstraint.Priority(400)
+        fit.isActive = true
 
         // ---- stat tiles
         let tileRow = NSStackView()
@@ -238,7 +245,6 @@ final class OverviewSection: NSObject, AppSection {
 
         // ---- local runner
         root.addArrangedSubview(sectionTitle("Local runner"))
-        hubLabel.font = TextRole.secondary.font
         hubBadge.orientation = .horizontal
         hubBadge.spacing = DS.Space.s
         hubBadge.alignment = .centerY

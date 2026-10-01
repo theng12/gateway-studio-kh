@@ -211,9 +211,9 @@ final class AnalyticsSection: NSObject, AppSection {
 
         var tiles: [NSView] = [
             tile("Jobs", "\(AnalyticsSection.count(totals["jobs"]))"),
-            tile("Succeeded", "\(succeeded)"),
+            tile("OK", "\(succeeded)"),
             tile("Failed", "\(failed)"),
-            tile("Success rate", String(format: "%.0f%%", 100 * Double(succeeded) / Double(settled))),
+            tile("Success", String(format: "%.0f%%", 100 * Double(succeeded) / Double(settled))),
             tile("Median", AnalyticsSection.seconds(totals["seconds_median"])),
             tile("Mean", AnalyticsSection.seconds(totals["seconds_mean"])),
             tile("Output", AnalyticsSection.bytes(totals["bytes"])),
@@ -269,7 +269,7 @@ final class AnalyticsSection: NSObject, AppSection {
 
     /// One column grid for all three tables, so their numbers line up under each other: the first column
     /// takes whatever width is left, the numeric ones are fixed and right-aligned.
-    private static let numericWidths: [CGFloat] = [64, 64, 64, 92, 92, 104]
+    private static let numericWidths: [CGFloat] = [52, 44, 52, 80, 80, 88]
 
     private func table(
         title: String, firstHeader: String, rows: [(cells: [String], id: String)]
@@ -322,7 +322,7 @@ final class AnalyticsSection: NSObject, AppSection {
             if index > 0 { field.widthAnchor.constraint(equalToConstant: Self.numericWidths[index - 1]).isActive = true }
             return field
         }
-        let row = PageKit.row(views, spacing: DS.Space.m)
+        let row = PageKit.row(views, spacing: DS.Space.s)
         row.heightAnchor.constraint(equalToConstant: DS.Size.row).isActive = true
         return row
     }

@@ -81,7 +81,7 @@ final class VoicesSection: NSObject, AppSection, NSTableViewDataSource, NSTableV
         searchField.placeholderString = "Search voices…"
         searchField.delegate = self
         searchField.controlSize = .small
-        searchField.widthAnchor.constraint(equalToConstant: 220).isActive = true
+        PageKit.softWidth(searchField, 220, min: 120)
 
         libraryCheck = NSButton(
             checkboxWithTitle: "Search the provider's public library",
@@ -125,14 +125,14 @@ final class VoicesSection: NSObject, AppSection, NSTableViewDataSource, NSTableV
         addByIdField = NSTextField()
         addByIdField.placeholderString = "Voice ID (from a share link)"
         addByIdField.controlSize = .small
-        addByIdField.widthAnchor.constraint(equalToConstant: 240).isActive = true
+        PageKit.softWidth(addByIdField, 240, min: 120)
 
         // ElevenLabs is the one provider that needs more than an id: its library
         // import route is `/v1/voices/add/{owner_id}/{voice_id}`.
         addByOwnerField = NSTextField()
         addByOwnerField.placeholderString = "Owner ID (ElevenLabs only)"
         addByOwnerField.controlSize = .small
-        addByOwnerField.widthAnchor.constraint(equalToConstant: 200).isActive = true
+        PageKit.softWidth(addByOwnerField, 200, min: 120)
 
         let byIdBar = PageKit.toolbar([
             PageKit.label("Add by ID", .secondary, colour: .secondaryLabelColor),
@@ -177,7 +177,7 @@ final class VoicesSection: NSObject, AppSection, NSTableViewDataSource, NSTableV
         // Voice and Description take the spare width; the checkbox, play button and short columns keep theirs.
         card.onLayout = { [weak self] in
             guard let self else { return }
-            PageKit.fitColumns(of: self.table, in: scroll, flex: ["name": 1, "details": 1.4])
+            PageKit.fitColumns(of: self.table, in: scroll, flex: ["name": (1, 210), "details": (1.4, 280), "language": (0.3, 80), "fleet": (0.3, 80), "source": (0.3, 80)])
         }
         PageKit.addFull(card, to: root)
         // A *required* floor was the whole reason this page could grow the window: the natural height came

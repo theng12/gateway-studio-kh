@@ -72,7 +72,7 @@ import AVKit
                 assert(abs(form.maxY - preview.maxY) < 1, tag + "form and preview do not share a top")
                 assert(form.width >= 310 && form.width <= 440, tag + "form column \(form.width) outside 310...440")
                 assert(abs(preview.maxX - (host.contentView!.bounds.width - 28)) < 1.5, tag + "preview does not reach the right margin")
-                assert(preview.width >= 260, tag + "preview too narrow: \(preview.width)")
+                assert(preview.width >= 240, tag + "preview too narrow: \(preview.width)")
                 assert(form.height >= height - 200 && preview.height >= height - 200, tag + "columns do not fill the height")
                 if width >= 1100 { assert(preview.width > form.width * 1.5, tag + "preview does not take the extra width") }
                 assert(page.previewCard.frame.height >= 220, tag + "result card collapsed")

@@ -220,7 +220,6 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
         groupsTab.onRemove = { [weak self] location in self?.removeController(location) }
         groupsTab.onChangeAddress = { [weak self] location in self?.changeAddress(location) }
         groupsTab.onResume = { [weak self] location in self?.resumeController(location) }
-        groupsTab.onOpenTab = { [weak self] tab in self?.select(tab) }
         // Startup control (FleetStartup.swift): the per-node "…" menu and the banner's bulk button.
         groupsTab.startupMenu = { [weak self] machine in
             FleetStartup.menuButton(for: machine, window: { self?.view.window }, done: { self?.reload(force: true) })

@@ -87,9 +87,11 @@ struct FleetColumn {
     let title: String
     let width: CGFloat
     var minWidth: CGFloat = 60
-    /// 0 is a fixed column; a positive weight shares whatever width the fixed ones leave, so the table
-    /// fits the pane instead of scrolling sideways (`FleetTableController.fitColumns`).
-    var flex: CGFloat = 0
+    /// A weight: the spare width of the pane is shared out by it, and a narrow pane shrinks the column toward
+    /// `minWidth`, so the table fits instead of scrolling sideways (`PageKit.fitColumns`). 0 is a fixed column.
+    var flex: CGFloat = 1
+    /// The pane width below which this (secondary) column is dropped, so the primary ones stay readable.
+    var hideBelow: CGFloat = 0
     var sortable: Bool = true
     var alignment: NSTextAlignment = .left
     /// The text drawn in a plain cell.
@@ -231,9 +233,13 @@ final class FleetTableController: NSObject, NSTableViewDataSource, NSTableViewDe
     }
 
     private func fitColumns() {
-        var flex: [String: CGFloat] = [:]
-        for spec in columns where spec.flex > 0 { flex[spec.id] = spec.flex }
-        PageKit.fitColumns(of: table, in: scrollView, flex: flex)
+        var flex: [String: (weight: CGFloat, base: CGFloat)] = [:]
+        var hiding: [String: CGFloat] = [:]
+        for spec in columns {
+            if spec.flex > 0 { flex[spec.id] = (spec.flex, spec.width) }
+            if spec.hideBelow > 0 { hiding[spec.id] = spec.hideBelow }
+        }
+        PageKit.fitColumns(of: table, in: scrollView, flex: flex, hiding: hiding)
     }
 
     // MARK: Data
@@ -491,6 +497,13 @@ class FleetTabView: NSView {
 
     required init?(coder: NSCoder) { fatalError("not used") }
 
+    /// A section title with the page's 16 pt to its content instead of the 24 pt between sections.
+    func addSection(_ title: String) {
+        let label = PageKit.sectionTitle(title)
+        page.addArrangedSubview(label)
+        page.setCustomSpacing(DS.Space.m, after: label)
+    }
+
     /// Pin a row to the usable width inside the page's padding.
     func fullWidth(_ view: NSView) {
         view.widthAnchor.constraint(
@@ -567,7 +580,7 @@ final class FleetLocationsTab: FleetTabView {
         // two are different facts: a controller accepting a push is not the same as
         // a controller that stored it, and only the controller's own read-back
         // answers the second. A refusal is quoted word for word.
-        page.addArrangedSubview(PageKit.sectionTitle("Release"))
+        addSection("Release")
         page.addArrangedSubview(PageKit.help(
             "The Studio Hub app release this gateway signs and pushes to your controllers. "
             + "“Held” is what each controller reports it has now — not what was pushed. "
@@ -587,7 +600,7 @@ final class FleetLocationsTab: FleetTabView {
         page.addArrangedSubview(releaseCard)
         fullWidth(releaseCard)
 
-        page.addArrangedSubview(PageKit.sectionTitle("Add a location"))
+        addSection("Add a location")
         page.addArrangedSubview(PageKit.help(
             "Another Mac running Studio Hub. Standalone or controller, both work. "
             + "A new machine can be added while it is still standalone and keep working "
@@ -687,7 +700,7 @@ final class FleetLocationsTab: FleetTabView {
         }
         return [
             FleetColumn(
-                id: "llocation", title: "Location", width: 150, minWidth: 130, flex: 1,
+                id: "llocation", title: "Location", width: 150, minWidth: 120, flex: 3,
                 text: { location($0)?.label ?? "—" },
                 sortValue: { .text(location($0)?.label ?? "") },
                 cell: { any in
@@ -699,7 +712,7 @@ final class FleetLocationsTab: FleetTabView {
                 }
             ),
             FleetColumn(
-                id: "lhub", title: "Hub", width: 100, sortable: false,
+                id: "lhub", title: "Hub", width: 100, minWidth: 100, sortable: false,
                 // **The version, and whether this gateway was built against it.** Studio Hub auto-updates
                 // itself, so a controller can move ahead of this app without anyone touching it; the relation
                 // is drawn rather than left in a tooltip, because "which of my Macs is on something this
@@ -736,7 +749,7 @@ final class FleetLocationsTab: FleetTabView {
                 }
             ),
             FleetColumn(
-                id: "lmembers", title: "Members", width: 124,
+                id: "lmembers", title: "Members", width: 124, minWidth: 120,
                 // **Who has joined this controller** (audit H10). The fraction is the controller's own count
                 // of nodes that answered out of the roster it holds; a refused credential is spelled out
                 // rather than folded into "offline", because it is the one state with a fix a person has to
@@ -757,7 +770,7 @@ final class FleetLocationsTab: FleetTabView {
                 tooltip: { row in location(row)?.membersTooltip }
             ),
             FleetColumn(
-                id: "lmodels", title: "Models", width: 70,
+                id: "lmodels", title: "Models", width: 70, minWidth: 56, hideBelow: 720,
                 text: { row in
                     guard let row = location(row) else { return "—" }
                     switch models(row) {
@@ -771,7 +784,7 @@ final class FleetLocationsTab: FleetTabView {
                 tooltip: { _ in "Models offered, of the models discovered." }
             ),
             FleetColumn(
-                id: "lrelease", title: "Release", width: 112,
+                id: "lrelease", title: "Release", width: 112, minWidth: 90, hideBelow: 720,
                 text: { row in location(row)?.release?.versionBuild ?? "—" },
                 sortValue: { row in
                     guard let release = location(row)?.release else { return .none }
@@ -788,7 +801,7 @@ final class FleetLocationsTab: FleetTabView {
                 }
             ),
             FleetColumn(
-                id: "lstatus", title: "Status", width: 220, minWidth: 170, flex: 1.5, sortable: false,
+                id: "lstatus", title: "Status", width: 220, minWidth: 120, flex: 4, sortable: false,
                 text: { row in
                     guard let row = location(row) else { return "—" }
                     let address = FleetFormat.text(row.url)
@@ -824,7 +837,7 @@ final class FleetLocationsTab: FleetTabView {
                 }
             ),
             FleetColumn(
-                id: "lactions", title: "", width: 112, sortable: false,
+                id: "lactions", title: "", width: 112, flex: 0, sortable: false,
                 text: { _ in "" },
                 cell: { [weak self] any in
                     guard let self, let row = location(any) else { return NSView() }
@@ -1155,7 +1168,7 @@ final class FleetMachinesTab: NSView {
         func machine(_ any: Any) -> FleetMachine? { any as? FleetMachine }
         return [
             FleetColumn(
-                id: "machine", title: "Machine", width: 170, minWidth: 150, flex: 1,
+                id: "machine", title: "Machine", width: 170, minWidth: 110, flex: 3,
                 text: { machine($0)?.label ?? machine($0)?.machine ?? "—" },
                 sortValue: { .text(machine($0)?.label ?? machine($0)?.machine ?? "") },
                 cell: { any in
@@ -1167,7 +1180,7 @@ final class FleetMachinesTab: NSView {
                 }
             ),
             FleetColumn(
-                id: "state", title: "State", width: 132,
+                id: "state", title: "State", width: 132, minWidth: 120,
                 text: { machine($0)?.stateLabel ?? "—" },
                 // **A refused credential is not an offline machine.** The Hub puts the node in its own
                 // `unauthorized` state precisely so a token problem does not read as a network one; its
@@ -1186,7 +1199,7 @@ final class FleetMachinesTab: NSView {
                 }
             ),
             FleetColumn(
-                id: "disk", title: "Disk", width: 116,
+                id: "disk", title: "Disk", width: 116, minWidth: 96,
                 text: { row in machine(row).map { "\(FleetFormat.gb($0.diskFree)) free" } ?? "—" },
                 sortValue: { .number(machine($0)?.diskFree ?? -1) },
                 cell: { any in
@@ -1197,7 +1210,7 @@ final class FleetMachinesTab: NSView {
                 }
             ),
             FleetColumn(
-                id: "memory", title: "Memory", width: 108,
+                id: "memory", title: "Memory", width: 108, minWidth: 92,
                 // **Free is what the Hub's own admission counts**, beside the total: "Apple M4 · 17.18 GB"
                 // next to "118 GB free" used to read as though the memory were free too.
                 text: { row in machine(row).map { "\(FleetFormat.gb($0.availableGb)) free" } ?? "—" },
@@ -1213,7 +1226,7 @@ final class FleetMachinesTab: NSView {
             // Startup control: what this Mac starts when it starts, with a "…" menu to change it, in one
             // compact column. Self-contained in FleetStartup.swift; the Groups view reuses it.
             FleetColumn(
-                id: "startup", title: "Startup", width: 150,
+                id: "startup", title: "Startup", width: 150, minWidth: 132,
                 text: { FleetStartup.health(machine($0)?.startup).text },
                 sortValue: { row in
                     // Off first when sorted ascending: those are the Macs that need attention.
@@ -1233,7 +1246,7 @@ final class FleetMachinesTab: NSView {
                 }
             ),
             FleetColumn(
-                id: "jobs", title: "Jobs", width: 128,
+                id: "jobs", title: "Jobs", width: 128, minWidth: 112, hideBelow: 700,
                 text: { row in
                     guard let row = machine(row) else { return "—" }
                     if row.completed == nil && row.failed == nil { return "—" }
@@ -1418,9 +1431,11 @@ final class FleetModelsTab: FleetTabView {
         master.container.heightAnchor.constraint(equalToConstant: 220).isActive = true
         detail.container.heightAnchor.constraint(equalToConstant: 220).isActive = true
         page.addArrangedSubview(masterTitle)
+        page.setCustomSpacing(DS.Space.m, after: masterTitle)
         page.addArrangedSubview(statusLabel)
         page.addArrangedSubview(master.container)
         page.addArrangedSubview(detailTitle)
+        page.setCustomSpacing(DS.Space.m, after: detailTitle)
         page.addArrangedSubview(detail.container)
         fullWidth(statusLabel)
         fullWidth(master.container)
@@ -1542,24 +1557,24 @@ final class FleetModelsTab: FleetTabView {
         func aggregate(_ any: Any) -> FleetModelAggregate? { any as? FleetModelAggregate }
         return [
             FleetColumn(
-                id: "model", title: "Model", width: 200, minWidth: 150, flex: 1,
+                id: "model", title: "Model", width: 200, minWidth: 140, flex: 3,
                 text: { aggregate($0)?.label ?? "—" },
                 sortValue: { .text(aggregate($0)?.label ?? "") },
                 tooltip: { aggregate($0)?.model }
             ),
             FleetColumn(
-                id: "studio", title: "Studio", width: 90,
+                id: "studio", title: "Studio", width: 90, minWidth: 70,
                 text: { aggregate($0)?.studio ?? "—" },
                 sortValue: { .text(aggregate($0)?.studio ?? "") }
             ),
             FleetColumn(
-                id: "locations", title: "Locations", width: 76,
+                id: "locations", title: "Locations", width: 76, minWidth: 60, hideBelow: 700,
                 text: { "\(aggregate($0)?.locations.count ?? 0)" },
                 sortValue: { .number(Double(aggregate($0)?.locations.count ?? 0)) },
                 tooltip: { aggregate($0)?.locations.joined(separator: ", ") }
             ),
             FleetColumn(
-                id: "serving", title: "Serving", width: 84,
+                id: "serving", title: "Serving", width: 84, minWidth: 70,
                 text: { row in
                     guard let row = aggregate(row) else { return "—" }
                     return "\(row.machinesServing) of \(row.machinesReporting)"
@@ -1569,12 +1584,12 @@ final class FleetModelsTab: FleetTabView {
                 tooltip: { _ in "Machines that can serve this model right now, of the machines that report it." }
             ),
             FleetColumn(
-                id: "bestfit", title: "Best fit", width: 120,
+                id: "bestfit", title: "Best fit", width: 120, minWidth: 90,
                 text: { aggregate($0)?.bestFit ?? "—" },
                 sortValue: { .text(aggregate($0)?.bestFit ?? "") }
             ),
             FleetColumn(
-                id: "memory", title: "Memory floor", width: 100,
+                id: "memory", title: "Memory floor", width: 100, minWidth: 92,
                 text: { row in
                     guard let value = aggregate(row)?.memoryFloor else { return "—" }
                     return FleetFormat.gb(value)
@@ -1582,12 +1597,12 @@ final class FleetModelsTab: FleetTabView {
                 sortValue: { .number(aggregate($0)?.memoryFloor ?? 0) }
             ),
             FleetColumn(
-                id: "dispatch", title: "Dispatch", width: 96,
+                id: "dispatch", title: "Dispatch", width: 96, minWidth: 80, hideBelow: 700,
                 text: { aggregate($0)?.dispatch ?? "—" },
                 sortValue: { .text(aggregate($0)?.dispatch ?? "") }
             ),
             FleetColumn(
-                id: "issues", title: "Issues", width: 60,
+                id: "issues", title: "Issues", width: 60, minWidth: 50,
                 text: { "\(aggregate($0)?.issues ?? 0)" },
                 sortValue: { .number(Double(aggregate($0)?.issues ?? 0)) },
                 colour: { (aggregate($0)?.issues ?? 0) > 0 ? Health.bad.text : .labelColor }
@@ -1606,7 +1621,7 @@ final class FleetModelsTab: FleetTabView {
             // hardware is; the worker is what would run the job, and on a Mac with four studios those are
             // not the same answer.
             FleetColumn(
-                id: "dmachine", title: "Machine", width: 170, minWidth: 140, flex: 1,
+                id: "dmachine", title: "Machine", width: 170, minWidth: 130, flex: 3,
                 text: { row($0)?.machine ?? "—" },
                 sortValue: { .text(row($0)?.machine ?? "") },
                 cell: { any in
@@ -1617,25 +1632,25 @@ final class FleetModelsTab: FleetTabView {
                 }
             ),
             FleetColumn(
-                id: "davailable", title: "Available", width: 74,
+                id: "davailable", title: "Available", width: 74, minWidth: 66,
                 text: { fleetFlag(row($0)?.available) },
                 sortValue: { .number((row($0)?.available == true) ? 1 : 0) },
                 colour: { row($0)?.available == true ? .labelColor : Health.warn.text }
             ),
             FleetColumn(
-                id: "druntime", title: "Runtime", width: 70,
+                id: "druntime", title: "Runtime", width: 70, minWidth: 62,
                 text: { fleetFlag(row($0)?.runtimeReady) },
                 sortValue: { .number((row($0)?.runtimeReady == true) ? 1 : 0) },
                 tooltip: { _ in "Runtime ready" }
             ),
             FleetColumn(
-                id: "dmemory", title: "Memory", width: 70,
+                id: "dmemory", title: "Memory", width: 70, minWidth: 62,
                 text: { fleetFlag(row($0)?.memoryEligible) },
                 sortValue: { .number((row($0)?.memoryEligible == true) ? 1 : 0) },
                 tooltip: { _ in "Memory eligible" }
             ),
             FleetColumn(
-                id: "dfit", title: "Fit", width: 150,
+                id: "dfit", title: "Fit", width: 150, minWidth: 120,
                 text: { row($0)?.fitLabel ?? "—" },
                 sortValue: { .text(row($0)?.fitLabel ?? "") },
                 cell: { any in
@@ -1647,7 +1662,7 @@ final class FleetModelsTab: FleetTabView {
                 }
             ),
             FleetColumn(
-                id: "dnote", title: "Note", width: 200, minWidth: 160, flex: 1.2, sortable: false,
+                id: "dnote", title: "Note", width: 200, minWidth: 120, flex: 4, sortable: false,
                 text: { FleetFormat.text(row($0)?.issueText ?? row($0)?.fit?.hint) },
                 cell: { any in
                     guard let row = row(any) else { return NSView() }
@@ -1713,9 +1728,11 @@ final class FleetJobsTab: FleetTabView {
         page.addArrangedSubview(running.container)
         fullWidth(running.container)
         page.addArrangedSubview(activityTitle)
+        page.setCustomSpacing(DS.Space.m, after: activityTitle)
         page.addArrangedSubview(activity.container)
         fullWidth(activity.container)
         page.addArrangedSubview(problemsTitle)
+        page.setCustomSpacing(DS.Space.m, after: problemsTitle)
         problems.orientation = .vertical
         problems.alignment = .leading
         problems.spacing = DS.Space.s
@@ -1878,7 +1895,7 @@ final class FleetJobsTab: FleetTabView {
         }
         return [
             FleetColumn(
-                id: "jmodel", title: "Model", width: 200, minWidth: 150, flex: 1,
+                id: "jmodel", title: "Model", width: 200, minWidth: 130, flex: 3,
                 text: { FleetFormat.text(job($0)?.model ?? job($0)?.label) },
                 sortValue: { .text(job($0)?.model ?? "") },
                 tooltip: { job($0)?.label },
@@ -1892,12 +1909,12 @@ final class FleetJobsTab: FleetTabView {
                 }
             ),
             FleetColumn(
-                id: "jlocation", title: "Location", width: 130,
+                id: "jlocation", title: "Location", width: 130, minWidth: 100,
                 text: { FleetFormat.text(job($0)?.location) },
                 sortValue: { .text(job($0)?.location ?? "") }
             ),
             FleetColumn(
-                id: "jprogress", title: "Progress", width: 150,
+                id: "jprogress", title: "Progress", width: 150, minWidth: 130,
                 text: { row in
                     guard let job = job(row) else { return "—" }
                     return FleetJobsTab.progressText(job)
@@ -1913,7 +1930,7 @@ final class FleetJobsTab: FleetTabView {
                 }
             ),
             FleetColumn(
-                id: "jstate", title: "State", width: 128,
+                id: "jstate", title: "State", width: 128, minWidth: 110,
                 text: { row in
                     guard let job = job(row) else { return "—" }
                     return FleetJobsTab.stateText(job)
@@ -1928,7 +1945,7 @@ final class FleetJobsTab: FleetTabView {
                 }
             ),
             FleetColumn(
-                id: "jstarted", title: "Started", width: 80,
+                id: "jstarted", title: "Started", width: 80, minWidth: 70, hideBelow: 700,
                 text: { FleetFormat.relative(job($0)?.startedAt) },
                 sortValue: { .number(job($0)?.startedAt ?? 0) }
             ),
@@ -1937,7 +1954,7 @@ final class FleetJobsTab: FleetTabView {
             // been asked to stop it; the answer comes back as a request, not a
             // promise, and the banner says which.
             FleetColumn(
-                id: "jcancel", title: "", width: 76, sortable: false,
+                id: "jcancel", title: "", width: 76, flex: 0, sortable: false,
                 text: { _ in "" },
                 cell: { any in
                     let cell = NSTableCellView()
@@ -1973,7 +1990,7 @@ final class FleetJobsTab: FleetTabView {
         func machine(_ any: Any) -> FleetMachine? { any as? FleetMachine }
         return [
             FleetColumn(
-                id: "amachine", title: "Machine", width: 170, minWidth: 150, flex: 1,
+                id: "amachine", title: "Machine", width: 170, minWidth: 130, flex: 3,
                 text: { machine($0)?.label ?? machine($0)?.machine ?? "—" },
                 sortValue: { .text(machine($0)?.label ?? "") },
                 cell: { any in
@@ -1982,17 +1999,17 @@ final class FleetJobsTab: FleetTabView {
                 }
             ),
             FleetColumn(
-                id: "adone", title: "Done", width: 70,
+                id: "adone", title: "Done", width: 70, minWidth: 56,
                 text: { FleetFormat.count(machine($0)?.completed) },
                 sortValue: { .number(Double(machine($0)?.completed ?? 0)) }
             ),
             FleetColumn(
-                id: "afailed", title: "Failed", width: 70,
+                id: "afailed", title: "Failed", width: 70, minWidth: 56,
                 text: { FleetFormat.count(machine($0)?.failed) },
                 sortValue: { .number(Double(machine($0)?.failed ?? 0)) }
             ),
             FleetColumn(
-                id: "amedian", title: "Median", width: 100,
+                id: "amedian", title: "Median", width: 100, minWidth: 90,
                 text: { row in
                     guard let machine = machine(row) else { return "—" }
                     if let median = machine.medianRuntimeS { return FleetFormat.seconds(median) + " med" }
@@ -2002,7 +2019,7 @@ final class FleetJobsTab: FleetTabView {
                 sortValue: { .number(machine($0)?.medianRuntimeS ?? machine($0)?.averageSeconds ?? 0) }
             ),
             FleetColumn(
-                id: "alimitation", title: "Limitation", width: 220, minWidth: 160, flex: 1,
+                id: "alimitation", title: "Limitation", width: 220, minWidth: 120, flex: 3,
                 text: { FleetFormat.text(machine($0)?.limitation) },
                 sortValue: { .text(machine($0)?.limitation ?? "") },
                 tooltip: { machine($0)?.limitation }

@@ -156,7 +156,10 @@ FIXTURE = {
          # What `machines_flat` joins from the roster: the role it joined with, its own
          # state, and when the controller last heard from it.
          "node_state": "reachable", "node_role": "agent",
-         "node_address": "http://10.0.0.11:47873", "node_last_seen_at": 1790000000},
+         "node_address": "http://10.0.0.11:47873", "node_last_seen_at": 1790000000,
+         # What the Hub says this node is running (Gateway `machines[].current`).
+         "current": {"batch_id": "batch-9", "model": "mock-hub/clone-model", "label": "Chapter 3",
+                     "studio": "voice", "started_at": 1790000000}},
         {"location_id": "ctrl-1", "location": "Blue Room", "machine": "mac-b", "label": "mac-b",
          "state": "offline", "completed": 0, "failed": 0, "chip": "Apple M4",
          "memory_gb": 16.0, "disk_free_gb": 380.0, "modalities": {},
@@ -287,6 +290,21 @@ enum GatewayAPI {
         tight.diskTotalGb = 250.0
         assert(tight.diskHealth == .bad, "less than 5 GB free is red whatever the share")
         assert(!studio.doing(mini).headline.isEmpty, "doing-now must never be empty")
+        // "Doing now": the node's stated current job decodes, and names the job and how long it has run.
+        let stated = snapshot.machines.first { $0.machine == "mac-a" }!
+        assert(stated.current?.label == "Chapter 3" && stated.current?.studio == "voice",
+               "the node's current job did not decode: \(String(describing: stated.current))")
+        var busy = mini
+        busy.state = "working"
+        busy.current = FleetCurrentJob(batchId: "b-1", model: "mlx/qwen", label: "Chapter 3", studio: "voice",
+                                       startedAt: Date().timeIntervalSince1970 - 600)
+        let doing = studio.doing(busy)
+        assert(doing.headline == "Working · voice", "doing-now headline: \(doing.headline)")
+        assert((doing.detail ?? "").contains("Chapter 3") && (doing.detail ?? "").contains("10 min"),
+               "doing-now must name the stated job and its age: \(String(describing: doing.detail))")
+        busy.current = nil
+        assert(studio.doing(busy).detail == nil || studio.batches.isEmpty == false,
+               "without a stated job the label-only fallback must not invent one")
         // A down group still lists the roster it remembers, with how long ago each node was seen.
         assert(summaries[0].showsRoster && summaries[0].nodeCount == 2,
                "a down group must list its last known roster, not an empty box")

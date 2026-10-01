@@ -227,8 +227,6 @@ final class FleetGroupsTab: NSView, NSSearchFieldDelegate {
     var onEnableAutostart: (([FleetMachine]) -> Void)?
     /// The per-node "…" startup menu, injected by the shell (FleetStartup.swift): nil when nothing can be sent.
     var startupMenu: ((FleetMachine) -> NSView?)?
-    /// Open another Fleet tab (an issue's "fix it here").
-    var onOpenTab: ((FleetTab) -> Void)?
 
     private var snapshot: FleetSnapshot?
     private var groups: [GroupSummary] = []
@@ -248,7 +246,11 @@ final class FleetGroupsTab: NSView, NSSearchFieldDelegate {
     private let cardsHolder = NSStackView()
     private let filterControl = NSSegmentedControl()
     private let search = NSSearchField()
-    private let updated = PageKit.label("", .caption, colour: .secondaryLabelColor)
+    private let updated: NSTextField = {
+        let label = PageKit.label("", .caption, colour: .secondaryLabelColor)
+        label.lineBreakMode = .byTruncatingTail
+        return label
+    }()
 
     private static let compactBelow: CGFloat = 760
     private static let rowLimit = 40
@@ -280,7 +282,8 @@ final class FleetGroupsTab: NSView, NSSearchFieldDelegate {
         search.placeholderString = "Find a group or node"
         search.controlSize = .small
         search.delegate = self
-        search.widthAnchor.constraint(equalToConstant: 220).isActive = true
+        // 220 when there is room, never more than the pane can spare: a window at its minimum width must not grow.
+        PageKit.softWidth(search, 220, min: 120)
         let refresh = PageKit.button("Refresh", target: self, action: #selector(refreshPressed))
         let toolbar = PageKit.toolbar([filterControl, search, NSView(), updated, refresh])
 
@@ -465,7 +468,7 @@ final class FleetGroupsTab: NSView, NSSearchFieldDelegate {
                 cell.widthAnchor.constraint(equalToConstant: 112),
             ])
             let text = PageKit.label(reason.isEmpty ? "Needs a look" : reason, .secondary, wrapping: true)
-            text.maximumNumberOfLines = 2
+            text.maximumNumberOfLines = 3
             text.preferredMaxLayoutWidth = 0   // wrap at the width the row actually has
             let row = NSStackView(views: [cell, text])
             row.alignment = .centerY
@@ -524,6 +527,7 @@ final class FleetGroupsTab: NSView, NSSearchFieldDelegate {
             let figure = PageKit.label(value, .figure, colour: health == .ok || health == .off ? .labelColor : health.text)
             let text = PageKit.label(caption, .caption, colour: .secondaryLabelColor)
             text.lineBreakMode = .byTruncatingTail
+            figure.lineBreakMode = .byTruncatingTail
             let stack = NSStackView(views: [figure, text])
             stack.orientation = .vertical
             stack.alignment = .leading
@@ -552,16 +556,31 @@ final class FleetGroupsTab: NSView, NSSearchFieldDelegate {
         let title: String
         let width: CGFloat      // 0 = the flexible first column
         let wide: Bool          // dropped when the pane is narrow
+        var grows = false       // takes an equal share of the spare width, with the first column
     }
     private var columns: [Column] {
         [Column(title: "Node", width: 0, wide: false),
          Column(title: "State", width: 124, wide: false),
-         Column(title: "Doing now", width: 132, wide: true),
+         Column(title: "Doing now", width: 132, wide: true, grows: true),
          Column(title: "Disk", width: 96, wide: false),
          Column(title: "Memory", width: 92, wide: false),
          Column(title: "Startup", width: 108, wide: false)]
     }
-    private var activeColumns: [Column] { columns.filter { !compact || !$0.wide } }
+    private var activeColumns: [Column] {
+        guard compact else { return columns }
+        // Narrow pane: drop "Doing now" and tighten the rest so a window at its 860 pt minimum does not grow.
+        return columns.filter { !$0.wide }.map { column in
+            var tight = column
+            switch column.title {
+            case "State": tight = Column(title: column.title, width: 112, wide: false)
+            case "Disk": tight = Column(title: column.title, width: 88, wide: false)
+            case "Memory": tight = Column(title: column.title, width: 84, wide: false)
+            case "Startup": tight = Column(title: column.title, width: 104, wide: false)
+            default: break
+            }
+            return tight
+        }
+    }
     private static let actionsWidth: CGFloat = 28
 
     private func card(_ group: GroupSummary, needle: String) -> NSView {
@@ -627,7 +646,9 @@ final class FleetGroupsTab: NSView, NSSearchFieldDelegate {
         ])
 
         var titleViews: [NSView] = [PageKit.label(group.name, .rowTitle)]
-        if group.location.local == true { titleViews.append(PageKit.label("this Mac", .caption, colour: .secondaryLabelColor)) }
+        if group.location.local == true, group.name.lowercased() != "this mac" {
+            titleViews.append(PageKit.label("this Mac", .caption, colour: .secondaryLabelColor))
+        }
         let title = NSStackView(views: titleViews)
         title.spacing = DS.Space.s
         title.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
@@ -654,7 +675,8 @@ final class FleetGroupsTab: NSView, NSSearchFieldDelegate {
             stack.orientation = .vertical
             stack.alignment = .leading
             stack.spacing = DS.Space.xs
-            stack.widthAnchor.constraint(equalToConstant: width).isActive = true
+            stack.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+            self.pinned(stack, width)
             return stack
         }
         func plain(_ text: String, _ colour: NSColor = .labelColor) -> NSView { PageKit.label(text, .secondary, colour: colour) }
@@ -757,14 +779,15 @@ final class FleetGroupsTab: NSView, NSSearchFieldDelegate {
 
     /// One row of cells: a holder per column with a fixed width (the first one flexes), content pinned to the
     /// leading edge at its natural size, so a badge is never stretched to its column.
-    private func rowStack(_ cells: [NSView?], trailing: NSView? = nil) -> NSStackView {
+    private func rowStack(_ cells: [String: NSView], trailing: NSView? = nil) -> NSStackView {
         let row = NSStackView()
         row.spacing = DS.Space.s
         row.alignment = .centerY
         row.edgeInsets = NSEdgeInsets(top: DS.Space.s, left: DS.Space.l, bottom: DS.Space.s, right: DS.Space.l)
-        for (index, column) in activeColumns.enumerated() {
+        var sharing: [NSView] = []
+        for column in activeColumns {
             let holder = NSView()
-            if let cell = index < cells.count ? cells[index] : nil {
+            if let cell = cells[column.title] {
                 cell.translatesAutoresizingMaskIntoConstraints = false
                 holder.addSubview(cell)
                 NSLayoutConstraint.activate([
@@ -774,13 +797,29 @@ final class FleetGroupsTab: NSView, NSSearchFieldDelegate {
                     cell.bottomAnchor.constraint(equalTo: holder.bottomAnchor),
                 ])
             }
-            if column.width > 0 {
-                holder.widthAnchor.constraint(equalToConstant: column.width).isActive = true
-            } else {
-                holder.widthAnchor.constraint(greaterThanOrEqualToConstant: 96).isActive = true
+            if column.grows {
+                let atLeast = holder.widthAnchor.constraint(greaterThanOrEqualToConstant: column.width)
+                atLeast.priority = Self.widthPriority(compact)
+                atLeast.isActive = true
                 holder.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+                sharing.append(holder)
+            } else if column.width > 0 {
+                pinned(holder, column.width)
+            } else {
+                let atLeast = holder.widthAnchor.constraint(greaterThanOrEqualToConstant: compact ? 72 : 96)
+                atLeast.priority = Self.widthPriority(compact)
+                atLeast.isActive = true
+                holder.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+                sharing.append(holder)
             }
             row.addArrangedSubview(holder)
+        }
+        // The node and "Doing now" columns split the spare width, so a wide window does not leave the
+        // figures stranded at the right edge.
+        if sharing.count == 2 {
+            let equal = sharing[0].widthAnchor.constraint(equalTo: sharing[1].widthAnchor)
+            equal.priority = NSLayoutConstraint.Priority(700)
+            equal.isActive = true
         }
         let end = NSView()
         end.widthAnchor.constraint(equalToConstant: Self.actionsWidth).isActive = true
@@ -797,10 +836,26 @@ final class FleetGroupsTab: NSView, NSSearchFieldDelegate {
     }
 
     private func columnHeader() -> NSView {
-        let row = rowStack(activeColumns.map { PageKit.label($0.title, .captionStrong, colour: .secondaryLabelColor) })
+        var titles: [String: NSView] = [:]
+        for column in activeColumns { titles[column.title] = PageKit.label(column.title, .captionStrong, colour: .secondaryLabelColor) }
+        let row = rowStack(titles)
         row.edgeInsets.top = DS.Space.s
         row.edgeInsets.bottom = DS.Space.xs
         return row
+    }
+
+    /// **Why the wide layout's widths are soft.** A window grows to satisfy any required width, and `layout()`
+    /// only drops to the compact layout once it sees a narrow pane, so required widths in the wide layout would
+    /// stop the window ever getting narrow. Below `NSLayoutPriorityDragThatCanResizeWindow` (510) they are a
+    /// preference only; the compact layout, which fits the 860 pt minimum, uses them as hard widths.
+    private static func widthPriority(_ compact: Bool) -> NSLayoutConstraint.Priority {
+        compact ? .required : NSLayoutConstraint.Priority(400)
+    }
+
+    private func pinned(_ view: NSView, _ width: CGFloat) {
+        let constraint = view.widthAnchor.constraint(equalToConstant: width)
+        constraint.priority = Self.widthPriority(compact)
+        constraint.isActive = true
     }
 
     private func dash() -> NSView { PageKit.label("—", .secondary, colour: .secondaryLabelColor) }
@@ -855,7 +910,8 @@ final class FleetGroupsTab: NSView, NSSearchFieldDelegate {
         let startup = Badge(startupText, startupHealth)
         startup.toolTip = FleetStartup.tooltip(machine.startup)
 
-        let row = rowStack([name, state, doing, diskCell, memoryCell, startup], trailing: startupMenu?(machine))
+        let row = rowStack(["Node": name, "State": state, "Doing now": doing, "Disk": diskCell, "Memory": memoryCell, "Startup": startup],
+                          trailing: startupMenu?(machine))
         let sentence = [node?.detail ?? machine.nodeDetail].compactMap { $0 }.first(where: { !$0.isEmpty && health == .bad })
         guard let sentence else { return row }
         let wrapper = stack([row, noteRow(.bad, sentence, caption: true)])
@@ -885,19 +941,20 @@ final class FleetGroupsTab: NSView, NSSearchFieldDelegate {
         last.maximumNumberOfLines = 2
         last.preferredMaxLayoutWidth = 124
         let seen = PageKit.label(node.lastSeenAt?.doubleValue == nil ? "never seen" : "seen \(node.lastSeenText)", .caption, colour: .secondaryLabelColor)
-        return rowStack([name, stack([Badge("Unknown", .off), seen]), last, dash(), dash(), dash()])
+        return rowStack(["Node": name, "State": stack([Badge("Unknown", .off), seen]), "Doing now": last,
+                         "Disk": dash(), "Memory": dash(), "Startup": dash()])
     }
 
     private func noteRow(_ health: Health, _ text: String, caption: Bool = false) -> NSView {
         let label = PageKit.label(text, caption ? .caption : .secondary, colour: health.text, wrapping: true)
         label.maximumNumberOfLines = 3
-        label.preferredMaxLayoutWidth = 760
+        label.preferredMaxLayoutWidth = 0
         return padded(label, top: caption ? 0 : DS.Space.s, bottom: caption ? DS.Space.s : 0)
     }
 
     private func textRow(_ text: String, colour: NSColor) -> NSView {
         let label = PageKit.label(text, .secondary, colour: colour, wrapping: true)
-        label.preferredMaxLayoutWidth = 760
+        label.preferredMaxLayoutWidth = 0
         return padded(label, top: DS.Space.m, bottom: DS.Space.m)
     }
 

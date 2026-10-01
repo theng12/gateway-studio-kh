@@ -120,6 +120,18 @@ for page in pageNames {
                 while !done { RunLoop.current.run(until: Date().addingTimeInterval(0.05)) }
                 print("web: loading=\(web.isLoading) url=\(web.url?.absoluteString ?? "nil") frame=\(web.frame) window=\(web.window != nil) js=\(js)")
             }
+            if ProcessInfo.processInfo.environment["GATEWAY_RENDER_DEBUG"] == "width", let page = MainWindow.shared.container?.subviews.first {
+                // Which view makes the page ask for the width it asks for: follow the widest child down.
+                func drill(_ view: NSView, _ depth: Int) {
+                    let text = (view as? NSTextField).map { " \"\($0.stringValue.prefix(40))\"" } ?? ""
+                    print(String(repeating: "  ", count: depth) + "\(type(of: view)) fits \(Int(view.fittingSize.width))\(text)")
+                    guard depth < 16 else { return }
+                    let kids = (view as? NSStackView)?.arrangedSubviews ?? view.subviews
+                    if let widest = kids.max(by: { $0.fittingSize.width < $1.fittingSize.width }), widest.fittingSize.width > 200 { drill(widest, depth + 1) }
+                }
+                print("== \(page) content width \(Int(window.contentView?.bounds.width ?? 0))")
+                drill(page, 0)
+            }
             write(window, web: web, to: "\(output)/\(file)-\(Int(size.0))x\(Int(size.1))\(suffix).png")
             window.orderOut(nil)
         }
