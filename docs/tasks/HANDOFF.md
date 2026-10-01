@@ -254,8 +254,9 @@ project does not say why, and nobody should guess.
 >    only re-routes if the Hub confirms `queued_cancelled >= 1`. A running item is never DELETEd on a guess.
 > 3. **Envelope contract** (`CONTRACT-job-envelope.md`): every `_job_envelope` carries `dispatch_state`,
 >    `cancellable`, `cancellation_requested`, `cancelled`, `waiting`. A cancelled job is published
->    `state: "failed"`, `cancelled: true`, `failure_code: "CANCELLED"`. **`_job_envelope(job, native=True)` is the
->    menu bar app's reading** (keeps `state: "cancelled"`, does not scrub) - the admin routes use it. All published
+>    `state: "cancelled"`, `cancelled: true`, `failure_code: "CANCELLED"` (0.2.93: it used to say `failed`; Story maps
+>    both spellings to the same terminal fact). **`_job_envelope(job, native=True)` is the
+>    menu bar app's reading** (same state, does not scrub) - the admin routes use it. All published
 >    text goes through `api.scrub` (no `host:port`, no `/api/hub`).
 >
 > Also: `POST /v1/videos/{id}/cancel`, `/v1/transcriptions/{id}/cancel`; a cancel set before the batch id exists

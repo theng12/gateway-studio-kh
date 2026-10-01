@@ -639,19 +639,23 @@ def _cancel_upstream(job: dict[str, Any]) -> dict[str, Any] | None:
 def _job_envelope(job: dict[str, Any], *, native: bool = False) -> dict[str, Any]:
     """The job as Story Studio reads it.
 
-    `native=True` is the menu bar app's own reading: it keeps `state: "cancelled"` and does not
-    scrub, because the owner's operator views want the address and the app knows the state.
+    `native=True` is the menu bar app's own reading: it does not scrub, because the owner's
+    operator views want the address. Both readings publish the exact state: a cancelled job is
+    `state: "cancelled"` (what the database says), with `cancelled: true` kept beside it.
     """
     modality = job["modality"]
     result = _result_of(job)
     payload = result.get("payload") or {}
-    # Story Studio's `JobState` has no `cancelled`: a cancelled job is `failed` with `cancelled:
-    # true` (its own note, `genstudio-client.ts`), or it polls the job for hours.
-    cancelled_for_story = job["state"] == "cancelled" and not native
+    # A cancelled job is published as `state: "cancelled"` plus `cancelled: true` (audit 2026-10-02:
+    # it used to say `failed`, which disagreed with the record and with the menu bar app). Story
+    # Studio reads both spellings as the same terminal fact (`genstudio-client.ts` maps a
+    # `state: "cancelled"` body to failed + cancelled and settles on `cancelled: true`), so a
+    # caller keyed on either one still stops polling. `failure_code: CANCELLED` stays for them.
+    is_cancelled = job["state"] == "cancelled"
 
     body: dict[str, Any] = {
         "id": job["id"],
-        "state": "failed" if cancelled_for_story else job["state"],
+        "state": job["state"],
         "model_id": catalog_encode(job),
         "failure_code": None,
         "failure_class": None,
@@ -764,7 +768,7 @@ def _job_envelope(job: dict[str, Any], *, native: bool = False) -> dict[str, Any
         body["failure_code"] = job.get("error_code") or "PROVIDER_FAILED"
         body["failure_class"] = "provider_error"
         body["failure_reason"] = job.get("error_detail") or "generation failed"
-    elif cancelled_for_story:
+    elif is_cancelled:
         body["failure_code"] = "CANCELLED"
         body["failure_class"] = "cancelled"
         body["failure_reason"] = "The job was cancelled."
