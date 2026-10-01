@@ -33,7 +33,7 @@ from typing import Any
 
 import httpx
 
-from .config import DATA_DIR, VOICES_PATH, WRITABLE_VOICES_PATH
+from .config import DATA_DIR, VOICES_PATH, WRITABLE_VOICES_PATH, write_secret
 from .hub import hub_base_url, hub_probe, local_hub_headers
 
 #: Where imported clips are copied. A subdirectory per voice, so a voice is one
@@ -113,7 +113,7 @@ def _write_catalog(payload: dict) -> None:
         "Reference clips and transcripts drive Qwen3 Base cloning and are never "
         "exposed to Story Studio."
     )
-    path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    write_secret(path, json.dumps(payload, indent=2) + "\n")
 
 
 def voices() -> list[dict]:

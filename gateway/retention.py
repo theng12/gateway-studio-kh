@@ -47,7 +47,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .config import ARTIFACT_DIR, DATA_DIR
+from .config import ARTIFACT_DIR, DATA_DIR, write_secret
 
 SETTINGS_PATH = Path(str(DATA_DIR)) / "retention.json"
 
@@ -126,7 +126,7 @@ def save(*, max_age_days: object = None, max_bytes: object = None) -> dict:
         ),
     }
     SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
-    SETTINGS_PATH.write_text(json.dumps(updated, indent=2) + "\n", encoding="utf-8")
+    write_secret(SETTINGS_PATH, json.dumps(updated, indent=2) + "\n")
     return updated
 
 
@@ -144,7 +144,7 @@ def _kept_entries() -> list[dict]:
 
 def _write_kept(entries: list[dict]) -> None:
     KEPT_PATH.parent.mkdir(parents=True, exist_ok=True)
-    KEPT_PATH.write_text(json.dumps({"kept": entries}, indent=2) + "\n", encoding="utf-8")
+    write_secret(KEPT_PATH, json.dumps({"kept": entries}, indent=2) + "\n")
 
 
 def kept() -> list[dict]:
