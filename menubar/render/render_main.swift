@@ -80,37 +80,23 @@ func write(_ window: NSWindow, web: WKWebView?, to path: String) {
 for page in pageNames {
     // `fleet:locations` is the Fleet page on one of its inner tabs.
     let parts = page.split(separator: ":").map(String.init)
-    let name = parts[0].replacingOccurrences(of: "-", with: " ")  // `fleet-groups` is the mock, `fleet:groups` would be a tab
+    let name = parts[0].replacingOccurrences(of: "-", with: " ")
     let file = page.replacingOccurrences(of: ":", with: "-").replacingOccurrences(of: " ", with: "-")
     do {
         let suffix = suffixForAppearance
         for size in sizes {
-            let isGroups = name == "fleet groups"
-            _ = MainWindow.shared.show(section: isGroups ? "fleet" : (name == "whatsnew" ? "what's new" : name))
+            _ = MainWindow.shared.show(section: name == "whatsnew" ? "what's new" : name)
             guard let window = MainWindow.shared.window else { print("no window for \(page)"); continue }
-            if parts.count > 1, let tab = ["overview": 0, "locations": 1, "machines": 2, "models": 3, "jobs": 4][parts[1]],
+            if parts.count > 1, let tab = ["groups": 0, "groups-problems": 0, "locations": 1, "machines": 2, "models": 3, "jobs": 4][parts[1]],
                let kind = FleetTab(rawValue: tab) {
                 FleetSection.shared.select(kind)
+                FleetSection.shared.showProblemsOnly(parts[1] == "groups-problems")
             }
-            if isGroups {
-                // The proposed Groups tab replaces the Fleet page's body, inside the real window and sidebar.
-                var snapshot: FleetSnapshot?
-                var answered = false
-                GatewayAPI.get("/admin/api/fleet") { result in
-                    if case .success(let payload) = result { snapshot = FleetSnapshot.from(payload) }
-                    answered = true
-                }
-                while !answered { RunLoop.current.run(until: Date().addingTimeInterval(0.05)) }
-                let container = MainWindow.shared.container!
-                container.subviews.forEach { $0.removeFromSuperview() }
-                let mock = FleetGroupsPage(frame: .zero, problemsOnly: parts.count > 1 && parts[1] == "problems")
-                mock.translatesAutoresizingMaskIntoConstraints = false
-                container.addSubview(mock)
-                NSLayoutConstraint.activate([
-                    mock.topAnchor.constraint(equalTo: container.topAnchor), mock.bottomAnchor.constraint(equalTo: container.bottomAnchor),
-                    mock.leadingAnchor.constraint(equalTo: container.leadingAnchor), mock.trailingAnchor.constraint(equalTo: container.trailingAnchor),
-                ])
-                if let snapshot { mock.update(snapshot) }
+            // A titled window is clamped to the screen's height; GATEWAY_RENDER_TALL=1 draws a taller page
+            // (to read a long page in one image) by dropping the title bar, which the bitmap never included.
+            if ProcessInfo.processInfo.environment["GATEWAY_RENDER_TALL"] == "1" {
+                window.styleMask = [.borderless, .resizable]
+                window.setFrame(NSRect(x: -20000, y: -20000, width: size.0, height: size.1), display: true)
             }
             window.setContentSize(NSSize(width: size.0, height: size.1))
             window.setFrameOrigin(NSPoint(x: -20000, y: -20000))

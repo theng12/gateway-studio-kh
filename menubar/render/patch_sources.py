@@ -33,5 +33,4 @@ patch("MainWindow.swift", "    private var sections: [AppSection] = []", "    va
 patch("MainWindow.swift", "        window.makeKeyAndOrderFront(nil)\n        NSApp.activate(ignoringOtherApps: true)\n",
       "")
 patch("MainWindow.swift", "    private lazy var webView: WKWebView = {", "    lazy var webView: WKWebView = {")
-patch("FleetSection.swift", "    private func select(_ tab: FleetTab) {", "    func select(_ tab: FleetTab) {")
 patch("MainWindow.swift", "    private var container: NSView!", "    var container: NSView!")

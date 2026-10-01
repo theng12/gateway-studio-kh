@@ -30,11 +30,21 @@ def disk(free: float, total: float = 460.0) -> dict:
             "warnings": [] if state == "green" else [f"Only {free:g} GB free."]}
 
 
+def startup(*, login=True, services=True, stale=False):
+    """What a Mac says it starts when it starts (`machines[].startup`)."""
+    return {"open_at_login": login, "start_services_on_launch": services, "app_version": "0.6.126",
+            "app_reporting": True, "stale": stale}
+
+
 def machine(mid, label, chip, mem, avail, disk_free, *, reachable=True, health="up", modalities=None,
-            disk_total=460.0):
-    return {"machine": mid, "label": label, "reachable": reachable, "chip": chip, "memory_gb": mem,
-            "available_gb": avail, "disk_free_gb": disk_free, "disk_total_gb": disk_total, "health": health,
-            "modalities": modalities or {}, "disk": disk(disk_free, disk_total)}
+            disk_total=460.0, start=None, current=None):
+    row = {"machine": mid, "label": label, "reachable": reachable, "chip": chip, "memory_gb": mem,
+           "available_gb": avail, "disk_free_gb": disk_free, "disk_total_gb": disk_total, "health": health,
+           "modalities": modalities or {}, "disk": disk(disk_free, disk_total),
+           "startup": start if start is not None else startup()}
+    if current:
+        row["current"] = current
+    return row
 
 
 def activity(mid, state, completed, failed, median, limitation=None):
@@ -133,11 +143,13 @@ def build() -> dict:
     blue = location(
         "ctrl-blue", "Blue Room", "http://100.64.0.11:47873",
         machines=[machine("blue-ctl", "Blue Room mini", "Apple M4", 16.0, 7.1, 188.0, modalities={"voice": 40}),
-                  machine("blue-1", "Blue Room 1", "Apple M4", 16.0, 9.8, 142.0, modalities={"voice": 61, "image": 8}),
+                  machine("blue-1", "Blue Room 1", "Apple M4", 16.0, 9.8, 142.0, modalities={"voice": 61, "image": 8},
+                          current={"batch_id": "b-7355", "model": QWEN, "label": "Podcast ep 31", "studio": "voice",
+                                   "started_at": NOW - 9 * MIN}),
                   machine("blue-2", "Blue Room 2", "Apple M2", 8.0, 2.2, 21.0, health="up",
-                          modalities={"voice": 30}, disk_total=256.0),
+                          modalities={"voice": 30}, disk_total=256.0, start=startup(services=False)),
                   machine("blue-3", "Blue Room 3", "Apple M2", 8.0, 0.0, 0.0, reachable=False, health="down",
-                          modalities={}, disk_total=256.0)],
+                          modalities={}, disk_total=256.0, start=startup(services=False, stale=True))],
         activities=[activity("blue-ctl", "ready", 40, 0, 38.0), activity("blue-1", "working", 69, 1, 44.0),
                     activity("blue-2", "ready", 30, 3, 61.0, limitation="Direct activity partially unavailable"),
                     activity("blue-3", "offline", 0, 0, None)],
@@ -163,7 +175,7 @@ def build() -> dict:
                           disk_total=460.0),
                   machine("s2-1", "Studio 2 A", "Apple M4", 16.0, 11.0, 244.0, modalities={"image": 55}),
                   machine("s2-2", "Studio 2 B", "Apple M4", 16.0, 3.1, 14.0, health="up",
-                          modalities={"image": 41}, disk_total=256.0)],
+                          modalities={"image": 41}, disk_total=256.0, start=startup(services=False))],
         activities=[activity("s2-ctl", "long_idle", 102, 2, 70.0), activity("s2-1", "ready", 55, 0, 49.0),
                     activity("s2-2", "working", 41, 5, 58.0)],
         nodes=[node("s2-1", "reachable", address="http://100.64.0.22:47873", version="0.6.124", seen=6, studios=("image",)),
