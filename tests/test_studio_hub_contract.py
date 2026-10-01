@@ -1508,14 +1508,14 @@ class VideoLaneTests(_HubCase):
 
     def test_a_text_to_video_request_carries_the_lane_s_parameters(self) -> None:
         hub = _Hub(artifact=b"\x00\x00\x00\x18ftypmp42", artifact_media_type="video/mp4")
-        request = self.request(modality="video", model_id="baa-ai/LTX-2.3-22B-RAM-12GB-MLX",
+        request = self.request(modality="video", model_id="mock-hub/video-model",
                                params={"prompt": "a harbour at dawn",
                                        "aspect_ratio": "11:7", "resolution": "448p",
                                        "duration_seconds": 4})
         result = self.generate(hub, request)
         payload = hub.payloads[-1]
         self.assertEqual(payload["modality"], "video")
-        self.assertEqual(payload["model"], "baa-ai/LTX-2.3-22B-RAM-12GB-MLX")
+        self.assertEqual(payload["model"], "mock-hub/video-model")
         item = payload["items"][0]
         self.assertEqual(item["prompt"], "a harbour at dawn")
         self.assertNotIn("reference_images", item,
@@ -1534,7 +1534,7 @@ class VideoLaneTests(_HubCase):
         scene = b"\x89PNG\r\n\x1a\n" + b"scene-bytes" * 8
         asset_id = video_assets.store(scene, "scene.png", "image/png")
         hub = _Hub(artifact=b"\x00\x00\x00\x18ftypmp42", artifact_media_type="video/mp4")
-        request = self.request(modality="video", model_id="baa-ai/LTX-2.3-22B-RAM-12GB-MLX",
+        request = self.request(modality="video", model_id="mock-hub/video-model",
                                params={"prompt": "push in", "mode": "image-to-video",
                                        "reference_asset_id": asset_id})
         self.generate(hub, request)
@@ -1552,7 +1552,7 @@ class VideoLaneTests(_HubCase):
     def test_a_silent_request_is_forwarded_rather_than_dropped(self) -> None:
         """`audio: false` reaches the Hub's item body, and an unstated choice stays unstated.
 
-        Hub 0.6.83 gave its LTX lane an `audio` switch and publishes it on the lane contract, so
+        Hub 0.6.83 gave its video lane an `audio` switch and publishes it on the lane contract, so
         a caller may ask for a silent MP4. **A parameter this gateway publishes and then drops is
         a lie with a schema**: Story Studio would render a switch that changed nothing while the
         caller paid for a track it had asked not to be written. `false` is the value that must
@@ -1560,7 +1560,7 @@ class VideoLaneTests(_HubCase):
         the switch that a silent-video request is made of.
         """
         hub = _Hub(artifact=b"\x00\x00\x00\x18ftypmp42", artifact_media_type="video/mp4")
-        request = self.request(modality="video", model_id="baa-ai/LTX-2.3-22B-RAM-12GB-MLX",
+        request = self.request(modality="video", model_id="mock-hub/video-model",
                                params={"prompt": "a harbour at dawn", "aspect_ratio": "11:7",
                                        "resolution": "448p", "duration_seconds": 4,
                                        "audio": False})
@@ -1573,7 +1573,7 @@ class VideoLaneTests(_HubCase):
         # every request would override a lane whose default is the other way.
         quiet = _Hub(artifact=b"\x00\x00\x00\x18ftypmp42", artifact_media_type="video/mp4")
         self.generate(quiet, self.request(
-            modality="video", model_id="baa-ai/LTX-2.3-22B-RAM-12GB-MLX",
+            modality="video", model_id="mock-hub/video-model",
             params={"prompt": "a harbour at dawn", "duration_seconds": 4}))
         self.assertNotIn("audio", quiet.payloads[-1]["items"][0]["params"])
 

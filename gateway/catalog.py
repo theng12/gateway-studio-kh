@@ -491,7 +491,7 @@ def _local_video_canvases(contract: dict[str, Any]) -> list[dict[str, Any]] | No
 
     **The two parameter enums are not a set of canvases.** A lane can offer `448p` and `1:1` and
     `11:7` while the pair `448p + 16:9` does not exist, and the cross product offered exactly
-    that — measured on 2026-09-27 against the LTX lane, whose published 16:9 canvas is the one its
+    that — measured on 2026-09-27 against a Hub video lane, whose published 16:9 canvas is the one its
     pack floors to 2:1. So when the lane publishes the pairs, those pairs are the variants.
 
     `None` means the lane does not publish a canvas list at all (a worker older than 0.6.81);
@@ -522,7 +522,7 @@ def _local_video_controls(contract: dict[str, Any]) -> list[dict[str, Any]] | No
     """The lane's **switch** parameters, relayed so a caller can offer exactly those.
 
     A boolean lane parameter is a choice the lane honours, and the caller cannot know it exists
-    without being told: measured 2026-09-27, when Studio Hub gave its LTX lane an `audio` switch
+    without being told: measured 2026-09-27, when Studio Hub gave its video lane an `audio` switch
     (0.6.83) and this gateway published no trace of it, so Story Studio had no way to offer the
     one thing the owner asked for — a video with no sound.
 

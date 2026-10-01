@@ -182,8 +182,10 @@ _MODALITIES_BY_KIND: dict[str, frozenset[str]] = {
     KIND_MINIMAX: frozenset({"image", "video", "music", "tts"}),
     KIND_ELEVENLABS: frozenset({"tts"}),
     # Music is a real Hub lane (engine `music-mlx`, two engines, WAV artifacts) and
-    # Video joined it on 2026-09-26 (engines `video-ltx` and `video-lance`), so both a
-    # location's music and its video rows are offerable rather than published and refused.
+    # Video joined it on 2026-09-26, so a location's music and video rows are offerable rather
+    # than published and refused. The Hub's own video models are retired (2026-10-01) and a Hub
+    # now publishes none; the lane stays so a video model a Hub adds later runs without a change
+    # here. With none published, Video offers only the cloud providers' models.
     KIND_STUDIO_HUB: frozenset({"chat", "image", "tts", "music", "transcription", "video"}),
     # Chat is delegated to the OpenAI shim; image and video are native.
     KIND_XAI: frozenset({"chat", "image", "video"}),
