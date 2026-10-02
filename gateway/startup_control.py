@@ -176,6 +176,58 @@ def request(controller_id: str, machine_id: str, action: object, value: object =
     return answered
 
 
+def rename(controller_id: str, machine_id: str, name: object, *,
+           client: httpx.Client | None = None) -> dict[str, Any]:
+    """Rename one Mac (owner request 2026-10-02), through its controller like every action here.
+
+    The controller renames the Mac **on the Mac** first and then its roster row, so the Mac's own
+    Connections page, its controller and this Fleet page all show the new name, and the Mac's next
+    report does not undo it. A Mac that is off, or on a Hub without fleet renaming, keeps its name and
+    the answer says why. Only the name changes: the machine id, routing and membership never read it.
+    """
+    clean = str(name or "").strip()
+    if not 1 <= len(clean) <= 120 or not clean.isprintable():
+        raise StartupError(400, {"ok": False, "code": "BAD_NAME",
+                                 "detail": "A name is 1 to 120 characters, with no line breaks."})
+    if not _MACHINE_ID.fullmatch(machine_id or ""):
+        raise StartupError(400, {"ok": False, "code": "BAD_MACHINE", "detail": "machine id is not valid"})
+    base, token = _target(controller_id)
+    audit("rename_requested", controller=controller_id, machine=machine_id, name=clean)
+    owned = client is None
+    client = client or httpx.Client(timeout=_TIMEOUT)
+    try:
+        response = client.post(f"{base}/api/hub/fleet/nodes/{machine_id}/name",
+                               headers={"X-Hub-Token": token} if token else {}, json={"name": clean})
+    except httpx.HTTPError as exc:
+        raise StartupError(502, {"ok": False, "code": "CONTROLLER_UNREACHABLE",
+                                 "detail": "The controller did not answer: "
+                                           f"{type(exc).__name__}. Check it is awake and on the network."}) from exc
+    finally:
+        if owned:
+            client.close()
+    try:
+        answered = response.json()
+    except ValueError:
+        answered = {}
+    if not isinstance(answered, dict):
+        answered = {}
+    if response.status_code in (404, 405) and "code" not in answered:
+        answered = {"ok": False, "code": "HUB_TOO_OLD",
+                    "detail": "This controller's Studio Hub cannot rename its Macs yet. Update it first "
+                              "(Fleet > Release), or rename the Mac on the Mac itself (Connections)."}
+    elif response.status_code in (401, 403) and "code" not in answered:
+        answered = {"ok": False, "code": "CONTROLLER_REFUSED",
+                    "detail": "The controller refused this gateway's credential for renaming."}
+    answered.setdefault("ok", response.is_success)
+    answered["machine"] = machine_id
+    audit("rename_result", controller=controller_id, machine=machine_id, status=response.status_code,
+          code=answered.get("code"), ok=answered.get("ok"))
+    if not response.is_success:
+        raise StartupError(response.status_code if response.status_code < 500 else 502, answered)
+    fleet.invalidate()   # the next Fleet read shows the new name, not a cached old one
+    return answered
+
+
 def enable_autostart_where_off(*, dry_run: bool = False,
                                machines: list[dict[str, Any]] | None = None,
                                ask=request) -> dict[str, Any]:

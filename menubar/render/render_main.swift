@@ -77,7 +77,28 @@ func write(_ window: NSWindow, web: WKWebView?, to path: String) {
     print("wrote \(path)")
 }
 
-for page in pageNames {
+/// `fleet-rename`: the Fleet page's Rename sheet (an NSAlert, so not part of any page) for a sample node, and
+/// the titles of that node's "…" menu, so the sheet can be looked at without opening the app.
+func renderRenameSheet() {
+    let json = #"{"location_id":"ctl1","machine":"terranash-0108-m1-8-256-hub","label":"terranash-0108-m1-8-256","reachable":true}"#
+    let decoder = JSONDecoder()
+    decoder.keyDecodingStrategy = .convertFromSnakeCase
+    guard let machine = try? decoder.decode(FleetMachine.self, from: Data(json.utf8)) else { print("no sample machine"); return }
+    if let button = FleetStartup.menuButton(for: machine, window: { nil }, done: {}) as? FleetMenuButton {
+        print("menu: \(button.itemTitles)")
+    }
+    let (alert, field) = FleetStartup.renameAlert(for: machine)
+    field.stringValue = "terranash-1409-m1-8-256"
+    alert.layout()
+    alert.window.setFrameOrigin(NSPoint(x: -20000, y: -20000))
+    alert.window.orderFront(nil)
+    spin(0.8)
+    write(alert.window, web: nil, to: "\(output)/fleet-rename\(suffixForAppearance).png")
+    alert.window.orderOut(nil)
+}
+
+for page in pageNames where page == "fleet-rename" { renderRenameSheet() }
+for page in pageNames where page != "fleet-rename" {
     // `fleet:locations` is the Fleet page on one of its inner tabs.
     let parts = page.split(separator: ":").map(String.init)
     let name = parts[0].replacingOccurrences(of: "-", with: " ")

@@ -2905,6 +2905,23 @@ def fleet_machine_startup(controller_id: str, machine_id: str, payload: dict[str
         return JSONResponse(status_code=error.status, content=error.body)
 
 
+@router.post(
+    "/api/fleet/controllers/{controller_id}/machines/{machine_id}/name",
+    dependencies=[Depends(require_admin)],
+)
+def fleet_machine_rename(controller_id: str, machine_id: str, payload: dict[str, Any]) -> Any:
+    """Rename one Mac. Body `{"name": "…"}` (1-120 characters).
+
+    Relayed through the Mac's controller, which renames it on the Mac itself and then in its roster
+    (`startup_control.rename`). Answers `{"ok": true, "node", "name"}`, or the controller's refusal:
+    `NODE_UNREACHABLE` / `NODE_REFUSED` (the Mac keeps its name), `HUB_TOO_OLD`, `BAD_NAME`.
+    """
+    try:
+        return startup_control.rename(controller_id, machine_id, payload.get("name"))
+    except startup_control.StartupError as error:
+        return JSONResponse(status_code=error.status, content=error.body)
+
+
 @router.post("/api/fleet/startup/enable-autostart", dependencies=[Depends(require_admin)])
 def fleet_enable_autostart(payload: dict[str, Any]) -> Any:
     """Turn "Start services on startup" on for every Mac that reported it off.

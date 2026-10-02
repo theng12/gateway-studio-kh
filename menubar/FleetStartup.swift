@@ -123,20 +123,76 @@ extension FleetStartup {
     static func menuButton(for machine: FleetMachine, window: @escaping () -> NSWindow?,
                            done: @escaping () -> Void) -> NSView? {
         let actions = FleetStartup.actions(for: machine)
-        guard !actions.isEmpty else { return nil }
+        let renamable = canRename(machine)
+        guard !actions.isEmpty || renamable else { return nil }
         let button = FleetMenuButton {
             let menu = NSMenu()
-            let heading = NSMenuItem(title: FleetStartup.badge(machine.startup), action: nil, keyEquivalent: "")
-            heading.isEnabled = false
-            menu.addItem(heading)
-            menu.addItem(.separator())
-            for action in actions {
-                menu.addItem(ClosureMenuItem(action.title) { FleetStartup.run(machine, action, in: window(), done: done) })
+            if renamable {
+                menu.addItem(ClosureMenuItem("Rename…") { FleetStartup.rename(machine, done: done) })
+            }
+            if !actions.isEmpty {
+                if renamable { menu.addItem(.separator()) }
+                let heading = NSMenuItem(title: FleetStartup.badge(machine.startup), action: nil, keyEquivalent: "")
+                heading.isEnabled = false
+                menu.addItem(heading)
+                menu.addItem(.separator())
+                for action in actions {
+                    menu.addItem(ClosureMenuItem(action.title) { FleetStartup.run(machine, action, in: window(), done: done) })
+                }
             }
             return menu
         }
-        button.toolTip = "Startup actions for this Mac"
+        button.toolTip = "Actions for this Mac"
         return button
+    }
+
+    // MARK: Rename
+
+    /// A Mac can be renamed while it answers: the controller renames it on the Mac itself first, so a Mac
+    /// that is off keeps its name (and would only put the old one back when it returns).
+    static func canRename(_ machine: FleetMachine) -> Bool {
+        machine.reachable == true && machine.locationId != nil && machine.machine != nil
+    }
+
+    /// The Rename sheet. Only the name changes: the machine id, routing and membership never read it.
+    static func renameAlert(for machine: FleetMachine) -> (NSAlert, NSTextField) {
+        let current = machine.label ?? machine.machine ?? ""
+        let field = NSTextField(string: current)
+        field.frame = NSRect(x: 0, y: 0, width: 300, height: 24)
+        field.placeholderString = "Name shown everywhere for this Mac"
+        let alert = NSAlert()
+        alert.messageText = "Rename \(current)"
+        alert.informativeText = "The new name is set on the Mac itself, so its own Studio Hub, its controller "
+            + "and this page all show it. Its machine ID (\(machine.machine ?? "?")) stays the same, so "
+            + "nothing re-joins and no work is re-routed."
+        alert.accessoryView = field
+        alert.addButton(withTitle: "Rename")
+        alert.addButton(withTitle: "Cancel")
+        alert.window.initialFirstResponder = field
+        return (alert, field)
+    }
+
+    static func rename(_ machine: FleetMachine, done: @escaping () -> Void) {
+        guard let location = machine.locationId, let id = machine.machine,
+              let place = location.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed),
+              let node = id.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) else { return }
+        let (alert, field) = renameAlert(for: machine)
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        let name = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty, name.count <= 120 else {
+            show("A name is required", "Use 1 to 120 characters. The Mac was not renamed.")
+            return
+        }
+        guard name != (machine.label ?? "") else { return }
+        GatewayAPI.post("/admin/api/fleet/controllers/\(place)/machines/\(node)/name",
+                        body: ["name": name], timeout: 30) { result in
+            DispatchQueue.main.async {
+                if case .failure(let error) = result {
+                    show("Could not rename \(machine.label ?? id)", error.localizedDescription)
+                }
+                done()
+            }
+        }
     }
 
     // MARK: Bulk
