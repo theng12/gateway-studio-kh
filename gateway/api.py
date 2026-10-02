@@ -51,6 +51,7 @@ from .pricing import job_cost
 from .providers import registry
 from . import fleet
 from . import retention
+from .notifier import notifier
 from .activity import is_story_path, record
 from .runtime import store, worker
 from .store import TERMINAL_STATES, artifacts_of
@@ -121,6 +122,8 @@ async def lifespan(_: FastAPI):
     # The gateway only *receives* artifacts; Story Studio keeps the copy that
     # matters. Without this the directory grew without bound.
     retention.start_pruner()
+    # Telegram messages about the fleet. Does nothing until the owner sets a bot token and chat id.
+    notifier.start()
     # Cached models belonging to a location that is no longer on the roster. The
     # cache outlived the locations: six `studio-hub-*` providers were still in it
     # with no controllers configured, one carrying a switched-on model. Inert,
@@ -135,6 +138,7 @@ async def lifespan(_: FastAPI):
         yield
     finally:
         fleet.stop_refresher()
+        notifier.stop()
         worker.stop()
 
 

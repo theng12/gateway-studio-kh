@@ -1099,6 +1099,34 @@ def set_retention(payload: dict[str, Any]) -> Any:
     return {**saved, "usage": retention.usage()}
 
 
+@router.get("/api/settings/telegram", dependencies=[Depends(require_admin)])
+def get_telegram() -> dict[str, Any]:
+    """The Telegram notification settings. The bot token is never returned: `token_set` says only that one is saved."""
+    from .notifier import notifier
+
+    return notifier.public_settings()
+
+
+@router.put("/api/settings/telegram", dependencies=[Depends(require_admin)])
+def set_telegram(payload: dict[str, Any]) -> Any:
+    """Change them. A key that is absent is left alone; `bot_token` replaces the token, `clear_token` removes it."""
+    from .notifier import SettingsRefused, notifier
+
+    try:
+        return notifier.save_settings(payload)
+    except SettingsRefused as exc:
+        return _error(422, str(exc), "TELEGRAM_SETTINGS_REFUSED")
+
+
+@router.post("/api/settings/telegram/test", dependencies=[Depends(require_admin)])
+def test_telegram(payload: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Send one test message now. `bot_token` / `chat_id` in the body are tried without being saved."""
+    from .notifier import notifier
+
+    body = payload or {}
+    return notifier.send_test(body.get("bot_token"), body.get("chat_id"))
+
+
 @router.get("/api/settings/concurrency", dependencies=[Depends(require_admin)])
 def get_concurrency() -> dict[str, Any]:
     """How many jobs may run at once — the pool, each lane, and each provider.

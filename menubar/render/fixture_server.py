@@ -109,6 +109,13 @@ def seed(support: Path, upstream_port: int) -> dict:
                        "reference_path": str(reference), "reference_transcript": "The quick brown fox.",
                        "audio_sha256": f"{index:064d}", "permission_acknowledged": index % 2 == 0, "license": ""})
     (data / "voices.json").write_text(json.dumps({"voices": voices}))
+    # A fake Telegram setup so the Settings page draws its "saved" state. The token is not real and the
+    # notifier is kept from starting (GATEWAY_NOTIFIER_DISABLE below), so nothing can reach Telegram.
+    (data / "telegram.json").write_text(json.dumps({
+        "enabled": True, "bot_token": "123456789:RENDER_FIXTURE_NOT_A_REAL_TOKEN_000", "chat_id": "-1001234567890",
+        "events": {"disk_memory": True, "jobs_trouble": True},
+        "quiet_hours": {"enabled": True, "start": "22:00", "end": "07:00"}, "summary_time": "08:00"}))
+    (data / "telegram_state.json").write_text(json.dumps({"last_sent_at": time.time() - 3 * 3600}))
     (support / ".env").write_text("GATEWAY_API_KEY=render-fixture-key\n")
     (support / ".env").chmod(0o600)
     return {"GATEWAY_APP_SUPPORT": str(support), "GATEWAY_DATA": str(data), "GATEWAY_DB": str(data / "gateway.sqlite3"),
@@ -117,7 +124,7 @@ def seed(support: Path, upstream_port: int) -> dict:
             "GATEWAY_FLEET": str(data / "fleet.json"), "GATEWAY_VOICES": str(data / "voices.json"),
             "GATEWAY_VOICES_OUT": str(data / "voices.json"), "GATEWAY_NO_MIGRATE": "1",
             "STUDIOHUB_READY_FILE": str(support / "no-hub.json"), "GATEWAY_API_KEY": "render-fixture-key",
-            "GATEWAY_BUILD": "render-fixture"}
+            "GATEWAY_BUILD": "render-fixture", "GATEWAY_NOTIFIER_DISABLE": "1"}
 
 
 def seed_jobs(env: dict) -> None:
