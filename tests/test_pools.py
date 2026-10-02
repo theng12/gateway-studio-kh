@@ -89,6 +89,11 @@ class _TempEnv(unittest.TestCase):
         self.pools = pools
         self.path = pools.POOLS_PATH
         self.path.unlink(missing_ok=True)
+        from gateway import pool_cooldowns
+
+        self.cooldowns = pool_cooldowns
+        pool_cooldowns._path().unlink(missing_ok=True)
+        pool_cooldowns.reset()
 
 
 # ── the store ────────────────────────────────────────────────────────────
@@ -407,6 +412,190 @@ class PoolFailoverTests(_TempEnv):
         with self.assertRaises(BackendError) as caught:
             backend.generate(self._request("vanished"))
         self.assertEqual("POOL_EMPTY", caught.exception.code)
+
+
+# ── quota memory ─────────────────────────────────────────────────────────
+class PoolQuotaMemoryTests(_TempEnv):
+    """A member out of quota is skipped until its reset, across restarts, and never on a hunch."""
+
+    _backend = PoolFailoverTests._backend
+    _request = PoolFailoverTests._request
+
+    NOW = 1_800_000_000.0  # a fixed instant; the clock below only moves when a test says so
+
+    def setUp(self):
+        super().setUp()
+        self.now = self.NOW
+        patcher = patch.object(self.cooldowns, "_clock", lambda: self.now)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _quota(self, **kw):
+        from gateway.adapters.base import BackendError
+
+        return BackendError(
+            "g: HTTP 429: quota", code="PROVIDER_QUOTA_EXHAUSTED", status=429, retryable=True, **kw
+        )
+
+    def _ok(self, text):
+        from gateway.adapters.base import BackendResult
+
+        return BackendResult(text=text)
+
+    def test_an_exhausted_member_is_not_asked_again_until_its_reset(self):
+        self.pools.create("free", ["a::x", "b::x"])
+        backend, adapters = self._backend(
+            {"a::x": self._quota(retry_after=300), "b::x": self._ok("from b")}
+        )
+        self.assertEqual("from b", backend.generate(self._request()).text)
+        self.assertEqual(1, len(adapters["a::x"].calls))
+        self.now += 120  # still inside the 300 s the provider asked for
+        result = backend.generate(self._request())
+        self.assertEqual("from b", result.text)
+        self.assertEqual(1, len(adapters["a::x"].calls), "a cooling member costs no round-trip")
+        outcomes = {a["member"]: a["outcome"] for a in result.payload["pool"]["attempts"]}
+        self.assertEqual("cooling-down", outcomes["a::x"])
+
+    def test_the_member_is_tried_again_after_the_reset_and_a_success_clears_it(self):
+        from gateway.adapters.base import BackendResult
+
+        self.pools.create("free", ["a::x", "b::x"])
+        backend, adapters = self._backend(
+            {"a::x": self._quota(retry_after=300), "b::x": self._ok("from b")}
+        )
+        backend.generate(self._request())
+        self.now += 301
+        adapters["a::x"].outcome = BackendResult(text="a is back")
+        self.assertEqual("a is back", backend.generate(self._request()).text)
+        self.assertEqual(2, len(adapters["a::x"].calls))
+        self.assertIsNone(self.cooldowns.until("a::x"))
+        self.assertEqual({}, self.cooldowns.active())
+
+    def test_the_memory_survives_a_restart(self):
+        self.pools.create("free", ["a::x", "b::x"])
+        backend, adapters = self._backend(
+            {"a::x": self._quota(retry_after=600), "b::x": self._ok("from b")}
+        )
+        backend.generate(self._request())
+        self.assertTrue(self.cooldowns._path().exists())
+        self.cooldowns.reset()  # a new process: nothing in memory, only the file
+        self.now += 60
+        backend.generate(self._request())
+        self.assertEqual(1, len(adapters["a::x"].calls))
+        self.assertEqual(self.NOW + 600, self.cooldowns.until("a::x"))
+
+    def test_the_file_is_written_atomically_and_owner_only(self):
+        self.cooldowns.mark("a::x", self.NOW + 60, kind="minute", reason="r")
+        path = self.cooldowns._path()
+        self.assertEqual(0o600, path.stat().st_mode & 0o777)
+        self.assertEqual([], [p.name for p in path.parent.glob("*.tmp")])
+
+    def test_when_every_member_is_cooling_the_soonest_to_recover_is_tried(self):
+        self.pools.create("free", ["a::x", "b::x", "c::x"])
+        backend, adapters = self._backend(
+            {"a::x": self._ok("from a"), "b::x": self._ok("from b"), "c::x": self._ok("from c")}
+        )
+        self.cooldowns.mark("a::x", self.NOW + 900, kind="hint", reason="")
+        self.cooldowns.mark("b::x", self.NOW + 100, kind="hint", reason="")
+        self.cooldowns.mark("c::x", self.NOW + 500, kind="hint", reason="")
+        self.assertEqual("from b", backend.generate(self._request()).text)
+        self.assertEqual([], adapters["a::x"].calls + adapters["c::x"].calls)
+        self.assertIsNone(self.cooldowns.until("b::x"), "its success clears it")
+
+    def test_an_unresolvable_member_does_not_hide_the_all_cooling_rule(self):
+        self.pools.create("free", ["gone::x", "a::x"])
+        backend, _adapters = self._backend({"a::x": self._ok("from a")})
+        self.cooldowns.mark("a::x", self.NOW + 100, kind="hint", reason="")
+        self.assertEqual("from a", backend.generate(self._request()).text)
+
+    def test_non_quota_failures_do_not_start_a_cooldown(self):
+        from gateway.adapters.base import BackendError
+
+        self.pools.create("free", ["a::x", "b::x"])
+        for failure in (
+            BackendError("boom", code="PROVIDER_FAILED", status=500, retryable=True),
+            BackendError("timeout", code="PROVIDER_UNAVAILABLE", retryable=True),
+            BackendError("denied", code="PROVIDER_AUTH_FAILED", status=401),
+            BackendError("bad body", code="PROVIDER_FAILED", status=404),
+        ):
+            backend, adapters = self._backend({"a::x": failure, "b::x": self._ok("from b")})
+            backend.generate(self._request())
+            backend.generate(self._request())
+            self.assertEqual(2, len(adapters["a::x"].calls), f"{failure} must be retried every job")
+            self.assertEqual({}, self.cooldowns.active())
+
+    def test_a_provider_quota_word_counts_even_without_a_429(self):
+        from gateway.adapters.base import BackendError
+
+        self.pools.create("free", ["a::x", "b::x"])
+        backend, _ = self._backend(
+            {
+                "a::x": BackendError(
+                    "RESOURCE_EXHAUSTED: Quota exceeded", code="PROVIDER_FAILED", status=503
+                ),
+                "b::x": self._ok("from b"),
+            }
+        )
+        backend.generate(self._request())
+        self.assertIsNotNone(self.cooldowns.until("a::x"))
+
+    def test_a_per_minute_limit_without_a_hint_waits_sixty_seconds(self):
+        ends, kind = self.cooldowns.cooldown_until(self._quota(), self.NOW)
+        self.assertEqual((self.NOW + 60, "minute"), (ends, kind))
+
+    def test_a_daily_limit_waits_for_midnight_pacific_even_if_a_short_delay_is_given(self):
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+
+        ends, kind = self.cooldowns.cooldown_until(
+            self._quota(retry_after=34, quota_scope="day"), self.NOW
+        )
+        self.assertEqual("daily", kind)
+        local = datetime.fromtimestamp(ends, ZoneInfo("America/Los_Angeles"))
+        self.assertEqual((0, 0), (local.hour, local.minute))
+        self.assertGreater(ends, self.NOW)
+        self.assertLessEqual(ends - self.NOW, 24 * 3600 + 3600)
+
+    def test_the_providers_own_retry_hint_in_the_message_is_used(self):
+        from gateway.adapters.base import BackendError
+
+        exc = BackendError("g: HTTP 429: Please retry in 34.5s", status=429)
+        ends, kind = self.cooldowns.cooldown_until(exc, self.NOW)
+        self.assertEqual((self.NOW + 34.5, "hint"), (ends, kind))
+
+    def test_google_and_retry_after_headers_are_read_into_the_error(self):
+        from gateway.adapters.base import quota_hints
+
+        class _Response:
+            headers = {"retry-after": "42"}
+
+            def json(self):
+                return {
+                    "error": {
+                        "details": [
+                            {"violations": [{"quotaId": "GenerateRequestsPerDayPerProjectPerModel-FreeTier"}]},
+                            {"retryDelay": "34s"},
+                        ]
+                    }
+                }
+
+        self.assertEqual({"retry_after": 42.0, "quota_scope": "day"}, quota_hints(_Response()))
+
+        class _Wrapped(_Response):
+            headers = {}
+
+            def json(self):
+                return [super().json()]
+
+        self.assertEqual({"retry_after": 34.0, "quota_scope": "day"}, quota_hints(_Wrapped()))
+
+    def test_the_description_reports_who_is_cooling_and_why(self):
+        self.pools.create("free", ["a::x"])
+        self.cooldowns.mark("a::x", self.NOW + 60, kind="daily", reason="quota")
+        row = self.pools.describe("free")["members_detail"][0]
+        self.assertEqual(self.NOW + 60, row["cooldown_until"])
+        self.assertEqual("daily", row["cooldown_kind"])
+        self.assertEqual("missing", row["state"])
 
 
 # ── the admin surface ────────────────────────────────────────────────────

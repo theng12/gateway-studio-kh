@@ -15,7 +15,7 @@ from typing import Any
 
 import httpx
 
-from .base import BackendError, BackendRequest, BackendResult
+from .base import BackendError, BackendRequest, BackendResult, quota_hints
 from .openai_compat import ANTHROPIC_STOP_MAP, CHAT_TIMEOUT
 
 #: `max_tokens` is **required** by the Messages API, so a number has to be sent
@@ -110,6 +110,7 @@ class AnthropicBackend:
                 code=code,
                 status=status,
                 retryable=status in {408, 425, 429} or status >= 500,
+                **(quota_hints(response) if status == 429 else {}),
             )
 
         payload = response.json()

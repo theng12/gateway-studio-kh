@@ -32,6 +32,9 @@ ROOT = Path(__file__).resolve().parents[2]
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT))
 
+GEMINI_FREE = [f"gemini-{v}:free" for v in (
+    "3.8-flash", "3.8-flash-lite", "3.7-pro", "3.7-flash", "3.5-flash", "3.5-flash-lite", "3.5-pro",
+    "3.0-flash", "3.0-flash-lite", "2.5-flash", "2.5-flash-lite", "2.5-pro")]
 PROVIDERS = {
     "atlas": ("Atlas AI", ["chat", "image", "tts", "transcription"], [
         "atlas-chat-large", "atlas-chat-mini", "atlas-reason-1", "atlas-image-2", "atlas-tts-hd", "atlas-whisper-1"]),
@@ -45,6 +48,8 @@ PROVIDERS = {
         "voxline-tts-v3", "voxline-speech-turbo", "voxline-voice-clone-tts", "voxline-music-1", "voxline-music-long"]),
     "prism": ("Prism Media", ["image", "video"], [
         "prism-flux-pro", "prism-flux-dev", "prism-sdxl-lightning", "prism-video-1", "prism-hailuo-02", "prism-kling-2"]),
+    # The owner's live free lane, so Providers -> Pools can show the pool `gemini-free-all` it actually has.
+    "google-free-lane": ("Google AI (free tier)", ["chat"], GEMINI_FREE),
 }
 JOBS = [  # (modality, model, provider, state, minutes ago, caller, error)
     ("tts", "voxline-tts-v3", "voxline", "succeeded", 4, "story-studio", None),
@@ -96,6 +101,18 @@ def seed(support: Path, upstream_port: int) -> dict:
         "id": pid, "display_name": label, "kind": "openai_compatible", "category": "language" if mods == ["chat"] else "multi",
         "base_url": f"http://127.0.0.1:{upstream_port}/{pid}/v1", "modalities": mods,
     } for pid, (label, mods, _) in PROVIDERS.items()]))
+    # The pool the owner has live: 10 members, two of them out of quota (a daily and a per-minute limit).
+    members = [f"google-free-lane::{m}" for m in GEMINI_FREE[:10]]
+    (data / "pools.json").write_text(json.dumps({"version": 1, "pools": [{
+        "name": "gemini-free-all", "display_name": "Gemini, every free model",
+        "description": "Free lanes first, whichever still has quota", "members": members,
+        "created_at": time.time() - 5 * 86400, "updated_at": time.time() - 86400}]}))
+    from gateway.pool_cooldowns import next_midnight_pacific
+    (data / "pool_cooldowns.json").write_text(json.dumps({"version": 1, "members": {
+        members[1]: {"until": next_midnight_pacific(time.time()), "since": time.time() - 600, "kind": "daily",
+                     "reason": "Quota exceeded: GenerateRequestsPerDayPerProjectPerModel-FreeTier"},
+        members[4]: {"until": time.time() + 47 * 60, "since": time.time() - 13, "kind": "hint",
+                     "reason": "Please retry in 47m"}}}))
     voices = []
     for index, (name, language, engine) in enumerate(VOICES):
         reference = data / f"voice-{index}.wav"
@@ -131,7 +148,7 @@ def seed(support: Path, upstream_port: int) -> dict:
     return {"GATEWAY_APP_SUPPORT": str(support), "GATEWAY_DATA": str(data), "GATEWAY_DB": str(data / "gateway.sqlite3"),
             "GATEWAY_ARTIFACTS": str(data / "artifacts"), "GATEWAY_CREDENTIALS": str(data / "credentials.json"),
             "GATEWAY_MODEL_CACHE": str(data / "models_cache.json"), "GATEWAY_ENV_FILE": str(support / ".env"),
-            "GATEWAY_FLEET": str(data / "fleet.json"), "GATEWAY_VOICES": str(data / "voices.json"),
+            "GATEWAY_FLEET": str(data / "fleet.json"), "GATEWAY_POOLS": str(data / "pools.json"), "GATEWAY_VOICES": str(data / "voices.json"),
             "GATEWAY_VOICES_OUT": str(data / "voices.json"), "GATEWAY_NO_MIGRATE": "1",
             "STUDIOHUB_READY_FILE": str(support / "no-hub.json"), "GATEWAY_API_KEY": "render-fixture-key",
             "GATEWAY_BUILD": "render-fixture", "GATEWAY_NOTIFIER_DISABLE": "1",

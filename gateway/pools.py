@@ -198,9 +198,11 @@ def _with_health(pool: dict[str, Any]) -> dict[str, Any]:
     disabled" is knowable here and is the failure that otherwise shows up as a
     pool that mysteriously works less well than its list suggests.
     """
+    from . import pool_cooldowns
     from .catalog import catalog
 
     out = dict(pool)
+    cooling = pool_cooldowns.active()
     rows: list[dict[str, Any]] = []
     for member in pool["members"]:
         definition, model = catalog.resolve("chat", member)
@@ -209,13 +211,44 @@ def _with_health(pool: dict[str, Any]) -> dict[str, Any]:
                 "id": member,
                 "resolves": definition is not None and model is not None,
                 "provider_id": definition.id if definition else "",
-                "provider_name": definition.display_name if definition else "",
+                "provider_name": (
+                    definition.display_name if definition else _provider_name(member)
+                ),
                 "model_id": model["model_id"] if model else "",
+                # Out of quota until this epoch time (None when not cooling down).
+                "cooldown_until": cooling[member]["until"] if member in cooling else None,
+                "cooldown_kind": cooling[member]["kind"] if member in cooling else None,
+                "cooldown_reason": cooling[member]["reason"] if member in cooling else "",
+                "state": "ok" if (definition is not None and model is not None) else _why_unresolved(member),
+                "model_name": (model.get("display_name") or model["model_id"]) if model else "",
             }
         )
     out["members_detail"] = rows
+    out["cooling_count"] = sum(1 for r in rows if r["cooldown_until"])
     out["resolvable_count"] = sum(1 for r in rows if r["resolves"])
     return out
+
+
+def _provider_name(member: str) -> str:
+    """The provider's display name for a member that no longer resolves (its row still names it)."""
+    from .providers import registry
+
+    found = registry.definition(member.partition("::")[0])
+    return found.display_name if found else ""
+
+
+def _why_unresolved(member: str) -> str:
+    """`provider_off`, `disabled` (model switched off) or `missing` (provider/model unknown)."""
+    from .providers import registry
+
+    provider_id, _, model_id = member.partition("::")
+    definition = registry.definition(provider_id)
+    if definition is None:
+        return "missing"
+    if not registry.credentials.is_enabled(provider_id):
+        return "provider_off"
+    offered = {m["model_id"] for m in registry.models.models_for(provider_id, include_disabled=True)}
+    return "disabled" if model_id in offered else "missing"
 
 
 def create(

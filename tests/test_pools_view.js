@@ -10,6 +10,9 @@
  * 2. **The id a caller has to use is shown.** `pool::<name>` is what Story Studio saves; a pane
  *    that shows only the display name leaves the operator guessing at the thing they must type.
  *
+ * 3. **Members are picked, not typed**, kept in order, and an existing pool can be edited or
+ *    deleted. The picker offers only what the Models page says is enabled.
+ *
  * Nothing here touches the app or the running gateway: it is a VM over the page's own source.
  */
 const assert = require('node:assert/strict');
@@ -26,7 +29,9 @@ function poolsCode() {
   if (first < 0 || last < 0 || last < first) {
     throw new Error('the pools section moved; update this test');
   }
-  return source.slice(first, last) + `;globalThis.__p = { loadPools, addPool, removePool };`;
+  return source.slice(first, last)
+    + `;globalThis.__p = { loadPools, newPool, editPool, poolSearch, poolAddAt, poolDrop, poolMove,`
+    + ` savePool, removePool, closePoolEditor, state: () => poolEdit, results: () => poolResultRows };`;
 }
 
 function esc(s) {
@@ -35,7 +40,19 @@ function esc(s) {
 }
 
 function element(value = '') {
-  return { innerHTML: '', textContent: '', className: '', value, disabled: false };
+  return {
+    innerHTML: '', textContent: '', className: '', value, disabled: false,
+    querySelector: () => null, scrollIntoView() {},
+  };
+}
+
+function page(extra = []) {
+  return new Map([
+    ['pools', element()], ['pool-editor', element()], ['pool-edit-body', element()],
+    ['pool-members-list', element()], ['pool-results', element()], ['pool-count', element()],
+    ['pool-msg', element()], ['pool-name', element('')], ['pool-display', element('')],
+    ...extra,
+  ]);
 }
 
 function poolsContext(fetchImpl, nodes) {
@@ -43,6 +60,7 @@ function poolsContext(fetchImpl, nodes) {
     document: { getElementById: id => nodes.get(id) },
     esc,
     api: fetchImpl,
+    priceInfo: m => ({ text: m.free_lane ? 'Free (provider states $0)' : '$1.00 / $2.00 per 1M' }),
     alert: () => {},
     confirm: () => true,
   });
@@ -50,18 +68,45 @@ function poolsContext(fetchImpl, nodes) {
   return context;
 }
 
+const SOON = Math.floor(Date.now() / 1000) + 3600;
+
 function pool(overrides = {}) {
   return {
     name: 'free-all',
-    display_name: 'Free — every lane',
+    display_name: 'Free, every lane',
     description: 'whichever free lane still works',
-    members: ['google-ai-free::gemini-3.5-flash', 'openrouter-main::gone/model'],
+    members: ['g::flash', 'g::spent', 'g::off', 'o::gone'],
     members_detail: [
-      { id: 'google-ai-free::gemini-3.5-flash', resolves: true, provider_name: 'Google AI (free tier)' },
-      { id: 'openrouter-main::gone/model', resolves: false, provider_name: '' },
+      { id: 'g::flash', resolves: true, state: 'ok', provider_name: 'Google AI (free tier)', model_name: 'Gemini Flash' },
+      { id: 'g::spent', resolves: true, state: 'ok', provider_name: 'Google AI (free tier)', model_name: 'Gemini Spent',
+        cooldown_until: SOON, cooldown_kind: 'daily', cooldown_reason: 'quota' },
+      { id: 'g::off', resolves: false, state: 'disabled', provider_name: 'Google AI (free tier)', model_name: 'Gemini Off' },
+      { id: 'o::gone', resolves: false, state: 'provider_off', provider_name: 'OpenRouter', model_name: 'Gone' },
     ],
-    resolvable_count: 1,
+    resolvable_count: 2,
+    cooling_count: 1,
     ...overrides,
+  };
+}
+
+function models() {
+  return {
+    models: [
+      { provider_id: 'g', provider_name: 'Google AI (free tier)', model_id: 'flash', display_name: 'Gemini Flash', free_lane: true },
+      { provider_id: 'g', provider_name: 'Google AI (free tier)', model_id: 'pro', display_name: 'Gemini Pro', free_lane: true },
+      { provider_id: 'o', provider_name: 'OpenRouter', model_id: 'claude', display_name: 'Claude Sonnet', free_lane: false },
+      { provider_id: 'pool', provider_name: 'Model pools', model_id: 'free-all', display_name: 'free-all', free_lane: false },
+      { provider_id: 'studio-hub-local', provider_name: 'Hub', model_id: 'qwen', display_name: 'Qwen', locations: [{}] },
+    ],
+  };
+}
+
+function api(calls, { pools = [pool()] } = {}) {
+  return async (path_, options) => {
+    calls.push([path_, options && options.method, options && options.body]);
+    if (path_.startsWith('/models')) return models();
+    if (options && options.method) return {};
+    return { pools };
   };
 }
 
@@ -70,28 +115,29 @@ test('the pane is a section of the Providers page', () => {
   assert.match(source, /key: 'pools'/, 'and a tab must point at it');
 });
 
-test('every member is drawn, and one that no longer resolves says so', async () => {
-  const nodes = new Map([['pools', element()]]);
-  const ctx = poolsContext(async () => ({ pools: [pool()] }), nodes);
+test('every member is drawn with its health, and a spent one says when it is back', async () => {
+  const nodes = page();
+  const ctx = poolsContext(api([]), nodes);
   await ctx.__p.loadPools();
   const html = nodes.get('pools').innerHTML;
-  assert.match(html, /google-ai-free::gemini-3\.5-flash/, 'a resolving member is listed');
-  assert.match(html, /openrouter-main::gone\/model/, 'a stale member is listed too, not hidden');
-  assert.match(html, /does not resolve/, 'and it is marked -- the whole point of the health read');
-  assert.match(html, /1\/2 resolve/, 'the count is drawn beside the list');
+  assert.match(html, /Gemini Flash/);
+  assert.match(html, /Ready/, 'a healthy member says so');
+  assert.match(html, /Out of quota, back at \d{2}:\d{2}/, 'a cooling member says when it returns');
+  assert.match(html, /Model off/, 'a switched-off model is marked, not hidden');
+  assert.match(html, /Provider off/, 'and so is a switched-off provider');
+  assert.match(html, /2 of 4 members can answer, 1 out of quota/);
 });
 
 test('the id a caller must send is shown, not only the display name', async () => {
-  const nodes = new Map([['pools', element()]]);
-  const ctx = poolsContext(async () => ({ pools: [pool()] }), nodes);
+  const nodes = page();
+  const ctx = poolsContext(api([]), nodes);
   await ctx.__p.loadPools();
-  assert.match(nodes.get('pools').innerHTML, /pool::free-all/,
-    'Story Studio saves `pool::<name>`; the pane has to say what that is');
+  assert.match(nodes.get('pools').innerHTML, /pool::free-all/);
 });
 
 test('no pools reads as empty, and says what a pool is for', async () => {
-  const nodes = new Map([['pools', element()]]);
-  const ctx = poolsContext(async () => ({ pools: [] }), nodes);
+  const nodes = page();
+  const ctx = poolsContext(api([], { pools: [] }), nodes);
   await ctx.__p.loadPools();
   const html = nodes.get('pools').innerHTML;
   assert.match(html, /No pools yet/);
@@ -99,56 +145,105 @@ test('no pools reads as empty, and says what a pool is for', async () => {
 });
 
 test('a failed read is shown in words rather than as an empty list', async () => {
-  const nodes = new Map([['pools', element()]]);
+  const nodes = page();
   const ctx = poolsContext(async () => { throw new Error('gateway unreachable'); }, nodes);
   await ctx.__p.loadPools();
   assert.match(nodes.get('pools').innerHTML, /gateway unreachable/);
 });
 
-test('adding reads the members one per line, in order', async () => {
-  const nodes = new Map([
-    ['pools', element()],
-    ['pool-name', element('free-all')],
-    ['pool-display', element('Free')],
-    ['pool-members', element('a::one\n\n  b::two  \n')],
-  ]);
-  let sent = null;
-  const ctx = poolsContext(async (path_, options) => {
-    if (options && options.method === 'POST') sent = options.body;
-    return { pools: [] };
-  }, nodes);
-  await ctx.__p.addPool(element());
-  // `Array.from`, not a bare compare: the array was built inside the VM realm, and
-  // `deepStrictEqual` compares prototypes, so a cross-realm array never matches one
-  // made here even when the contents are identical.
-  assert.deepEqual(
-    Array.from(sent.members),
-    ['a::one', 'b::two'],
-    'blank lines dropped, whitespace trimmed, order kept -- order is the routing policy',
-  );
-  assert.equal(sent.name, 'free-all');
-});
-
-test('a pool with no members is refused before the request', async () => {
-  const nodes = new Map([
-    ['pools', element()],
-    ['pool-name', element('free-all')],
-    ['pool-display', element('')],
-    ['pool-members', element('   ')],
-  ]);
-  let called = false;
-  const ctx = poolsContext(async () => { called = true; return { pools: [] }; }, nodes);
-  await ctx.__p.addPool(element());
-  assert.equal(called, false, 'nothing to send, so nothing is sent');
-});
-
-test('removing names the url-encoded pool and says the models are untouched', async () => {
-  const nodes = new Map([['pools', element()]]);
+test('the picker offers enabled chat models only, with search across provider, name and free', async () => {
   const calls = [];
-  const ctx = poolsContext(async (path_, options) => {
-    calls.push([path_, options && options.method]);
-    return { pools: [] };
-  }, nodes);
+  const nodes = page();
+  const ctx = poolsContext(api(calls), nodes);
+  await ctx.__p.loadPools();
+  ctx.__p.newPool();
+  await new Promise(r => setTimeout(r, 0));
+  assert.ok(calls.some(c => /\/models\?modality=chat&status=enabled&provider_lane=on/.test(c[0])),
+    'asks for enabled chat models on enabled providers');
+  const ids = () => Array.from(ctx.__p.results()).map(r => `${r.provider_id}::${r.model_id}`);
+  assert.deepEqual(ids(), ['g::flash', 'g::pro', 'o::claude'], 'no pools, no merged Studio Hub rows');
+  ctx.__p.poolSearch('google free');
+  assert.deepEqual(ids(), ['g::flash', 'g::pro']);
+  ctx.__p.poolSearch('sonnet');
+  assert.deepEqual(ids(), ['o::claude']);
+  ctx.__p.poolSearch('paid');
+  assert.deepEqual(ids(), ['o::claude']);
+});
+
+test('adding appends, reordering moves, removing drops -- order is the routing policy', async () => {
+  const nodes = page();
+  const ctx = poolsContext(api([]), nodes);
+  await ctx.__p.loadPools();
+  ctx.__p.newPool();
+  await new Promise(r => setTimeout(r, 0));
+  ctx.__p.poolAddAt(0); ctx.__p.poolAddAt(1); ctx.__p.poolAddAt(2);
+  ctx.__p.poolAddAt(2); // adding the same model twice keeps it once
+  assert.deepEqual(Array.from(ctx.__p.state().members), ['g::flash', 'g::pro', 'o::claude']);
+  ctx.__p.poolMove(2, -1);
+  assert.deepEqual(Array.from(ctx.__p.state().members), ['g::flash', 'o::claude', 'g::pro']);
+  ctx.__p.poolMove(0, -1); // off the top: nothing happens
+  ctx.__p.poolDrop(0);
+  assert.deepEqual(Array.from(ctx.__p.state().members), ['o::claude', 'g::pro']);
+});
+
+test('creating sends the picked members in order', async () => {
+  const calls = [];
+  const nodes = page([['pool-name', element('mine')], ['pool-display', element('Mine')]]);
+  const ctx = poolsContext(api(calls), nodes);
+  ctx.__p.newPool();
+  await new Promise(r => setTimeout(r, 0));
+  ctx.__p.poolAddAt(2); ctx.__p.poolAddAt(0);
+  await ctx.__p.savePool(element());
+  const sent = calls.find(c => c[1] === 'POST');
+  assert.equal(sent[0], '/pools');
+  assert.deepEqual(Array.from(sent[2].members), ['o::claude', 'g::flash']);
+  assert.equal(sent[2].name, 'mine');
+});
+
+test('a pool with no members, or no name, is refused before the request', async () => {
+  const calls = [];
+  const nodes = page([['pool-name', element('mine')]]);
+  const ctx = poolsContext(api(calls), nodes);
+  ctx.__p.newPool();
+  await ctx.__p.savePool(element());
+  assert.match(nodes.get('pool-msg').innerHTML, /at least one member/);
+  assert.equal(calls.some(c => c[1] === 'POST'), false, 'nothing to send, so nothing is sent');
+});
+
+test('an existing pool opens with its members, and saving PATCHes them in the new order', async () => {
+  const calls = [];
+  const nodes = page([['pool-display', element('Renamed')]]);
+  const ctx = poolsContext(api(calls), nodes);
+  await ctx.__p.loadPools();
+  ctx.__p.editPool('free-all');
+  await new Promise(r => setTimeout(r, 0));
+  assert.deepEqual(Array.from(ctx.__p.state().members), ['g::flash', 'g::spent', 'g::off', 'o::gone']);
+  const list = nodes.get('pool-members-list').innerHTML;
+  assert.match(list, /Out of quota, back at/, 'the editor shows the cooldown too');
+  assert.match(list, /Provider off/);
+  ctx.__p.poolMove(1, -1);
+  ctx.__p.poolDrop(3);
+  await ctx.__p.savePool(element());
+  const sent = calls.find(c => c[1] === 'PATCH');
+  assert.equal(sent[0], '/pools/free-all');
+  assert.deepEqual(Array.from(sent[2].members), ['g::spent', 'g::flash', 'g::off']);
+  assert.equal(sent[2].display_name, 'Renamed');
+  assert.equal(ctx.__p.state(), null, 'the editor closes after a save');
+});
+
+test('deleting names the url-encoded pool and says the models are untouched', async () => {
+  const calls = [];
+  const nodes = page();
+  const ctx = poolsContext(api(calls), nodes);
   await ctx.__p.removePool('free/all', element());
-  assert.deepEqual(calls[0], ['/pools/free%2Fall', 'DELETE']);
+  assert.deepEqual(calls[0].slice(0, 2), ['/pools/free%2Fall', 'DELETE']);
+});
+
+test('a declined confirmation deletes nothing', async () => {
+  const calls = [];
+  const nodes = page();
+  const ctx = poolsContext(api(calls), nodes);
+  ctx.confirm = () => false;
+  await ctx.__p.removePool('free-all', element());
+  assert.equal(calls.length, 0);
 });

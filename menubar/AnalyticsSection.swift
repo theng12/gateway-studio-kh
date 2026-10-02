@@ -44,6 +44,26 @@ final class AnalyticsSection: NSObject, AppSection {
     private var modelNames: [String: String] = [:]
     private var providerNames: [String: String] = [:]
 
+    /// One table at a time, under the summary tiles. The tab is remembered (here and across launches),
+    /// so a refresh, or coming back to the page, never drops the owner back to the first table.
+    private enum Tab: Int, CaseIterable {
+        case type, model, machine
+
+        var title: String {
+            switch self {
+            case .type: return "By Type"
+            case .model: return "By Model"
+            case .machine: return "By Machine"
+            }
+        }
+    }
+
+    private static let tabDefaultsKey = "analytics.selectedTab"
+    private var selectedTab: Tab = Tab(rawValue: UserDefaults.standard.integer(forKey: AnalyticsSection.tabDefaultsKey)) ?? .type
+    private var tabControl = NSSegmentedControl()
+    private let tableHolder = NSStackView()
+    private var tables: [Tab: NSView] = [:]
+
     lazy var view: NSView = buildPage()
 
     func activated() {
@@ -170,26 +190,39 @@ final class AnalyticsSection: NSObject, AppSection {
         var blocks: [NSView] = []
         blocks.append(summary(totals))
 
-        blocks.append(contentsOf: table(
-            title: "By generation type",
-            firstHeader: "Type",
-            rows: rows(from: payload["by_modality"]) { Self.typeName($0) }
-        ))
-        blocks.append(contentsOf: table(
-            title: "By model",
-            firstHeader: "Model",
-            rows: rows(from: payload["by_model"]) { self.modelNames[$0] ?? $0 }
-        ))
-        blocks.append(contentsOf: table(
-            title: "By machine",
-            firstHeader: "Machine",
-            rows: rows(from: payload["by_machine"]) { key in
-                // "<machine> @ <provider id>"; the machine is already a name.
-                let parts = key.components(separatedBy: " @ ")
-                guard parts.count == 2, let name = self.providerNames[parts[1]] else { return key }
-                return "\(parts[0]) @ \(name)"
-            }
-        ))
+        tables = [
+            .type: table(
+                firstHeader: "Type",
+                rows: rows(from: payload["by_modality"]) { Self.typeName($0) }
+            ),
+            .model: table(
+                firstHeader: "Model",
+                rows: rows(from: payload["by_model"]) { self.modelNames[$0] ?? $0 }
+            ),
+            .machine: table(
+                firstHeader: "Machine",
+                rows: rows(from: payload["by_machine"]) { key in
+                    // "<machine> @ <provider id>"; the machine is already a name.
+                    let parts = key.components(separatedBy: " @ ")
+                    guard parts.count == 2, let name = self.providerNames[parts[1]] else { return key }
+                    return "\(parts[0]) @ \(name)"
+                }
+            ),
+        ]
+
+        tabControl = NSSegmentedControl(
+            labels: Tab.allCases.map { $0.title }, trackingMode: .selectOne,
+            target: self, action: #selector(tabChanged)
+        )
+        tabControl.segmentStyle = .rounded
+        tabControl.controlSize = .small
+        tabControl.selectedSegment = selectedTab.rawValue
+        blocks.append(tabControl)
+
+        tableHolder.orientation = .vertical
+        tableHolder.alignment = .leading
+        showSelectedTable()
+        blocks.append(tableHolder)
 
         if timed < sampled {
             blocks.append(PageKit.help(
@@ -199,7 +232,20 @@ final class AnalyticsSection: NSObject, AppSection {
         }
 
         body.setViews(blocks, in: .top)
-        for block in blocks { block.widthAnchor.constraint(equalTo: body.widthAnchor).isActive = true }
+        // The tab bar keeps its natural width; everything else fills the page.
+        for block in blocks where block !== tabControl { block.widthAnchor.constraint(equalTo: body.widthAnchor).isActive = true }
+    }
+
+    @objc private func tabChanged() {
+        selectedTab = Tab(rawValue: tabControl.selectedSegment) ?? .type
+        UserDefaults.standard.set(selectedTab.rawValue, forKey: Self.tabDefaultsKey)
+        showSelectedTable()
+    }
+
+    private func showSelectedTable() {
+        guard let table = tables[selectedTab] else { return }
+        tableHolder.setViews([table], in: .top)
+        table.widthAnchor.constraint(equalTo: tableHolder.widthAnchor).isActive = true
     }
 
     // MARK: - Blocks
@@ -267,16 +313,13 @@ final class AnalyticsSection: NSObject, AppSection {
         }
     }
 
-    /// One column grid for all three tables, so their numbers line up under each other: the first column
+    /// One column grid for all three tables, so their numbers line up when the tab changes: the first column
     /// takes whatever width is left, the numeric ones are fixed and right-aligned.
     private static let numericWidths: [CGFloat] = [52, 44, 52, 80, 80, 88]
 
-    private func table(
-        title: String, firstHeader: String, rows: [(cells: [String], id: String)]
-    ) -> [NSView] {
-        let titleLabel = PageKit.sectionTitle(title)
+    private func table(firstHeader: String, rows: [(cells: [String], id: String)]) -> NSView {
         guard !rows.isEmpty else {
-            return [titleLabel, PageKit.help("Nothing recorded in this group yet.")]
+            return PageKit.help("Nothing recorded in this group yet.")
         }
         let headers = [firstHeader, "Jobs", "OK", "Failed", "Median", "Mean", "Output"]
         let list = NSStackView()
@@ -296,13 +339,7 @@ final class AnalyticsSection: NSObject, AppSection {
         }
         let card = CardView()
         card.hold(list, inset: NSEdgeInsets(top: 0, left: DS.Space.l, bottom: 0, right: DS.Space.l))
-        // Title and card travel together, so the section gap (24) is between tables, not inside one.
-        let group = NSStackView(views: [titleLabel, card])
-        group.orientation = .vertical
-        group.alignment = .leading
-        group.spacing = DS.Space.m
-        card.widthAnchor.constraint(equalTo: group.widthAnchor).isActive = true
-        return [group]
+        return card
     }
 
     private func tableRow(_ cells: [String], header: Bool, tip: String? = nil) -> NSView {

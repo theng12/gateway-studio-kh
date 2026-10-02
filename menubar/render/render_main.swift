@@ -105,6 +105,20 @@ for page in pageNames {
             spin(isConsole ? 6.0 : 1.8)
             window.contentView?.layoutSubtreeIfNeeded()
             window.displayIfNeeded()
+            // `analytics:model` is Analytics on one tab; `providers:pools` / `providers:pools-edit` the Pools tab, the
+            // latter with the editor and picker open on the pool the owner has.
+            if name == "analytics", parts.count > 1, let tab = ["type": 0, "model": 1, "machine": 2][parts[1]] {
+                AnalyticsSection.shared.renderSelect(tab)
+                spin(0.5)
+            }
+            if name == "providers", parts.count > 1, let web = ConsoleSection.providers.webView as WKWebView? {
+                var js = "selectProviderTab('pools');"
+                if parts[1] == "pools-edit" {
+                    js += "setTimeout(() => { editPool('gemini-free-all'); setTimeout(() => { const q = document.getElementById('pool-q'); q.value = 'flash'; poolSearch('flash'); }, 1200); }, 800);"
+                }
+                web.evaluateJavaScript(js, completionHandler: nil)
+                spin(parts[1] == "pools-edit" ? 4.0 : 2.0)
+            }
             let web: WKWebView? = {
                 switch name {
                 case "models": return ConsoleSection.models.webView
