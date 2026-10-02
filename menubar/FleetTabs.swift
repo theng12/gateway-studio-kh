@@ -1115,6 +1115,13 @@ final class FleetMachinesTab: NSView {
     private let statusLabel = PageKit.label("", .secondary, colour: .secondaryLabelColor, wrapping: true)
     private let detail = PageKit.label("", .secondary, colour: .secondaryLabelColor, wrapping: true)
     private let detailCard = CardView()
+    /// Grouped fleet warnings above the table: one line per kind, capped in height (FleetBanner.swift).
+    let warningList = FleetWarningList()
+    private var warningTop: NSLayoutConstraint!
+    private var belowWarnings: NSLayoutConstraint!
+    private var belowStatus: NSLayoutConstraint!
+    /// The warning kinds the owner hid (`GET /admin/api/settings/fleet-warnings`); set by the Fleet page.
+    var hiddenWarningKinds: Set<String> = []
     private var studios: [String: [String]] = [:]
     /// Injected by the Fleet page (FleetStartup.swift): the per-machine startup badge and "…" menu, and the
     /// strip above the table that holds the bulk "Enable Auto-Start" bar. Left empty, the tab only shows the
@@ -1132,17 +1139,25 @@ final class FleetMachinesTab: NSView {
         detail.isHidden = false
         detailCard.hold(detail, inset: NSEdgeInsets(top: DS.Space.s, left: DS.Space.m, bottom: DS.Space.s, right: DS.Space.m))
         detailCard.translatesAutoresizingMaskIntoConstraints = false
+        warningList.translatesAutoresizingMaskIntoConstraints = false
         addSubview(statusLabel)
+        addSubview(warningList)
         addSubview(startupAccessory)
         addSubview(controller.container)
         addSubview(detailCard)
         let pad = PageKit.pagePadding
+        warningTop = warningList.topAnchor.constraint(equalTo: statusLabel.bottomAnchor, constant: DS.Space.s)
+        belowWarnings = startupAccessory.topAnchor.constraint(equalTo: warningList.bottomAnchor, constant: DS.Space.s)
+        belowStatus = startupAccessory.topAnchor.constraint(equalTo: statusLabel.bottomAnchor, constant: DS.Space.s)
+        belowStatus.isActive = true
         NSLayoutConstraint.activate([
+            warningTop,
+            warningList.leadingAnchor.constraint(equalTo: statusLabel.leadingAnchor),
+            warningList.trailingAnchor.constraint(equalTo: statusLabel.trailingAnchor),
             statusLabel.topAnchor.constraint(equalTo: topAnchor, constant: DS.Space.l),
             statusLabel.leadingAnchor.constraint(equalTo: leadingAnchor, constant: pad),
             statusLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -pad),
-            startupAccessory.topAnchor.constraint(equalTo: statusLabel.bottomAnchor, constant: DS.Space.s),
-            startupAccessory.leadingAnchor.constraint(equalTo: statusLabel.leadingAnchor),
+                        startupAccessory.leadingAnchor.constraint(equalTo: statusLabel.leadingAnchor),
             startupAccessory.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -pad),
             controller.container.topAnchor.constraint(equalTo: startupAccessory.bottomAnchor, constant: DS.Space.m),
             controller.container.leadingAnchor.constraint(equalTo: leadingAnchor, constant: pad),
@@ -1234,13 +1249,13 @@ final class FleetMachinesTab: NSView {
                     default: return .number(1)
                     }
                 },
-                tooltip: { FleetStartup.tooltip(machine($0)?.startup) },
+                tooltip: { FleetStartup.tooltip(machine($0)?.startup, name: machine($0)?.label ?? machine($0)?.machine ?? "This Mac") },
                 // Without the injected cell (the layout test) the plain badge is drawn.
                 cell: { [weak self] any in
                     guard let row = machine(any) else { return NSView() }
                     if let make = self?.startupCell { return make(row) }
                     let (health, text) = FleetStartup.health(row.startup)
-                    return fleetBadgeCell(text, health, tooltip: FleetStartup.tooltip(row.startup))
+                    return fleetBadgeCell(text, health, tooltip: FleetStartup.tooltip(row.startup, name: row.label ?? row.machine ?? "This Mac"))
                 }
             ),
             FleetColumn(
@@ -1322,49 +1337,14 @@ final class FleetMachinesTab: NSView {
         let text = NSMutableAttributedString(
             string: summary,
             attributes: [.font: TextRole.secondary.font, .foregroundColor: NSColor.secondaryLabelColor])
-        // The disk banner is about the whole fleet, so it ignores the filter: a Mac that is
-        // filling up must not disappear because a search hid it.
-        for line in Self.diskBanner(for: machines) {
-            text.append(NSAttributedString(
-                string: "\n" + line.text,
-                attributes: [.font: TextRole.secondary.font, .foregroundColor: line.colour]))
-        }
         statusLabel.attributedStringValue = text
-    }
-
-    /// True for a warning that only restates free space ("Only 14 GB free.", "14 GB free: low disk").
-    static func repeatsDiskLine(_ warning: String) -> Bool {
-        let text = warning.lowercased()
-        return text.contains("free") && !text.contains("update") && !text.contains("time machine")
-    }
-
-    /// One line per concern: Macs low on disk (state, free space, biggest consumer), then any
-    /// warning a Hub reported (macOS updates / Time Machine). Empty when every Mac is fine.
-    static func diskBanner(for machines: [FleetMachine]) -> [(text: String, colour: NSColor)] {
-        var lines: [(text: String, colour: NSColor)] = []
-        let low = machines.filter { $0.disk?.isLow == true }
-            .sorted { ($0.disk?.freeGb ?? 0) < ($1.disk?.freeGb ?? 0) }
-        for row in low {
-            guard let disk = row.disk else { continue }
-            let name = row.label ?? row.machine ?? "a Mac"
-            var line = "\(name): disk \((disk.state ?? "").uppercased()), \(FleetFormat.gb(disk.freeGb)) free"
-            if let top = disk.top.first(where: { $0.name?.isEmpty == false }), let what = top.name {
-                line += " (largest: \(what)\(top.gb.map { " " + FleetFormat.gb($0) } ?? ""))"
-            }
-            if (disk.state ?? "").lowercased() == "stop" { line += ". It is not being sent work." }
-            lines.append((line, disk.colour))
-        }
-        for row in machines {
-            // A Hub's own low-disk warning ("Only 21 GB free.") says what the disk line above already
-            // said, so it is dropped when the Mac has a disk line; other warnings (macOS update, Time
-            // Machine) are kept.
-            let hasDiskLine = row.disk?.isLow == true
-            for warning in row.disk?.warnings ?? [] {
-                if hasDiskLine && Self.repeatsDiskLine(warning) { continue }
-                lines.append(("\(row.label ?? row.machine ?? "a Mac"): \(warning)", Health.warn.text))
-            }
-        }
-        return lines
+        // The warnings are about the whole fleet, so they ignore the filter: a Mac that is filling up must
+        // not disappear because a search hid it. One line per kind; the area scrolls past ~5 lines.
+        warningList.set(FleetWarnings.build(machines: machines, hidden: hiddenWarningKinds))
+        // An empty banner takes no room: the accessory strip sits straight under the summary line.
+        belowWarnings.isActive = !warningList.isEmpty
+        belowStatus.isActive = warningList.isEmpty
+        needsLayout = true
     }
 }
 
