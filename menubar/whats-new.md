@@ -14,6 +14,27 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.97 — 2026-10-02
+
+Pools you can edit by picking models, pools that remember which models are out of quota, and tabs on Analytics.
+
+### Pools: pick models instead of typing ids
+Providers → Pools has a searchable model picker (enabled chat models, with Free/Paid and price), and each
+pool can be edited in place: add, reorder with ↑/↓, remove one member with ✕, rename, or Delete Pool
+(with a confirmation). Every member shows whether it can answer right now.
+
+### Pools skip models that are out of quota
+When a member runs out of quota, the pool remembers it and skips it until its limit resets — midnight
+Pacific for Google's daily free quotas, or the time the provider says — instead of trying it first on
+every job. If every member is out, the one that comes back soonest is tried. The Pools tab shows
+"Out of quota, back at 15:00".
+
+### Analytics has tabs
+By Type, By Model and By Machine each get their own tab under the summary tiles, and the page remembers
+the one you looked at last.
+
+---
+
 ## 0.2.96 — 2026-10-02
 
 The window stays the size you set.
