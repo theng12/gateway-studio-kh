@@ -38,6 +38,7 @@ final class SettingsSection: NSObject, AppSection {
     private var publisherKeyHexLabel: NSTextField!
     private var publisherIDLabel: NSTextField!
     private var releaseIdentityStatus: NSTextField!
+    private let backups = BackupPanel()
 
     /// What the retention fields last showed from the gateway, to tell a change from a re-read.
     private var loadedRetention: [String: Double] = [:]
@@ -210,6 +211,9 @@ final class SettingsSection: NSObject, AppSection {
             ] as [NSView]),
         ], in: root)
 
+        // ---- backups (keys, credentials, roster, voices): gateway/backup.py
+        section("Backups", backups.rows(), in: root)
+
         // ---- startup
         loginCheck = NSButton(
             checkboxWithTitle: "Launch at login",
@@ -313,6 +317,7 @@ final class SettingsSection: NSObject, AppSection {
         statusLabel?.stringValue = "Config: \(ConfigStore.shared.configPath)"
         loadRetention()
         loadReleaseIdentity()
+        backups.reload()
     }
 
     private func fill(_ field: NSTextField?, _ value: String) {

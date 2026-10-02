@@ -1137,6 +1137,61 @@ def set_concurrency(payload: dict[str, Any]) -> Any:
         return _error(422, exc.message, "SETTINGS_REFUSED")
 
 
+@router.get("/api/backup", dependencies=[Depends(require_admin)])
+def get_backup() -> dict[str, Any]:
+    """What a backup holds, where it goes, and how the last one went."""
+    from . import backup
+
+    return backup.status()
+
+
+@router.put("/api/settings/backup", dependencies=[Depends(require_admin)])
+def set_backup(payload: dict[str, Any]) -> Any:
+    from . import backup
+
+    try:
+        backup.save_settings(payload)
+    except backup.BackupError as exc:
+        return _error(422, str(exc), "BACKUP_SETTINGS_REFUSED")
+    return backup.status()
+
+
+@router.post("/api/backup/run", dependencies=[Depends(require_admin)])
+def run_backup() -> Any:
+    """Back Up Now. Small (tens of MB), so it answers when it is done."""
+    from . import backup
+
+    try:
+        result = backup.run("manual")
+    except backup.BackupError as exc:
+        return _error(409, str(exc), "BACKUP_BUSY")
+    return {"result": result, **backup.status()}
+
+
+@router.post("/api/backup/inspect", dependencies=[Depends(require_admin)])
+def inspect_backup(payload: dict[str, Any]) -> Any:
+    """Check a backup file before restoring it: what it holds, when and where it was made."""
+    from . import backup
+
+    try:
+        return backup.inspect(Path(str(payload.get("path") or "")))
+    except backup.BackupError as exc:
+        return _error(422, str(exc), "BACKUP_UNREADABLE")
+
+
+@router.post("/api/backup/restore", dependencies=[Depends(require_admin)])
+def restore_backup(payload: dict[str, Any]) -> Any:
+    """Restore a checked backup; every file it replaces is moved to _trash first."""
+    from . import backup
+
+    try:
+        return backup.restore(Path(str(payload.get("path") or "")))
+    except backup.BackupError as exc:
+        return _error(422, str(exc), "BACKUP_UNREADABLE")
+    except OSError as exc:
+        return _error(500, f"The restore stopped part way: {exc}", "BACKUP_RESTORE_FAILED")
+
+
 @router.post("/api/artifacts/prune", dependencies=[Depends(require_admin)])
 def prune_artifacts() -> dict[str, Any]:
     """Run the policy now, and report what it did rather than that it ran."""

@@ -111,13 +111,23 @@ def seed(support: Path, upstream_port: int) -> dict:
     (data / "voices.json").write_text(json.dumps({"voices": voices}))
     (support / ".env").write_text("GATEWAY_API_KEY=render-fixture-key\n")
     (support / ".env").chmod(0o600)
+    # Backups go to temp stand-ins for iCloud, ~/Developer/_backups and a KH-STUDIO drive.
+    (support / "CloudDocs").mkdir(exist_ok=True)
+    (support / "Volumes/KH-STUDIO-NOVA/_trash").mkdir(parents=True, exist_ok=True)
+    hub_voice = support / "hub/voice/voices/0616aec33b41"
+    hub_voice.mkdir(parents=True, exist_ok=True)
+    (hub_voice / "transcript.txt").write_text("The quick brown fox.")
+    (hub_voice / "reference.wav").write_bytes((data / "voice-0.wav").read_bytes())
     return {"GATEWAY_APP_SUPPORT": str(support), "GATEWAY_DATA": str(data), "GATEWAY_DB": str(data / "gateway.sqlite3"),
             "GATEWAY_ARTIFACTS": str(data / "artifacts"), "GATEWAY_CREDENTIALS": str(data / "credentials.json"),
             "GATEWAY_MODEL_CACHE": str(data / "models_cache.json"), "GATEWAY_ENV_FILE": str(support / ".env"),
             "GATEWAY_FLEET": str(data / "fleet.json"), "GATEWAY_VOICES": str(data / "voices.json"),
             "GATEWAY_VOICES_OUT": str(data / "voices.json"), "GATEWAY_NO_MIGRATE": "1",
             "STUDIOHUB_READY_FILE": str(support / "no-hub.json"), "GATEWAY_API_KEY": "render-fixture-key",
-            "GATEWAY_BUILD": "render-fixture"}
+            "GATEWAY_BUILD": "render-fixture",
+            "GATEWAY_BACKUP_ICLOUD": str(support / "CloudDocs/KH Backups"),
+            "GATEWAY_BACKUP_LOCAL": str(support / "_backups"), "GATEWAY_BACKUP_VOLUMES": str(support / "Volumes"),
+            "GATEWAY_BACKUP_TRASH": str(support / "trash"), "GATEWAY_BACKUP_HUB_DIR": str(support / "hub")}
 
 
 def seed_jobs(env: dict) -> None:
@@ -237,6 +247,8 @@ def main() -> None:
         found = [row["model_id"] for row in call("GET", f"/admin/api/providers/{pid}/models").get("models", [])]
         keep = [m for index, m in enumerate(found) if index % 4 != 3]  # leave some off
         call("POST", f"/admin/api/providers/{pid}/models/enabled", {"model_ids": keep, "enabled": True})
+
+    call("POST", "/admin/api/backup/run")  # so Settings → Backups shows a real last backup
 
     fleet_json = subprocess.run([sys.executable, str(HERE / "fleet_fixture.py")], cwd=ROOT, capture_output=True,
                                 check=True).stdout

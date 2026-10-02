@@ -121,6 +121,10 @@ async def lifespan(_: FastAPI):
     # The gateway only *receives* artifacts; Story Studio keeps the copy that
     # matters. Without this the directory grew without bound.
     retention.start_pruner()
+    # Nightly backup of keys, roster and voices; it only acts when the owner turned it on.
+    from . import backup
+
+    backup.start_scheduler()
     # Cached models belonging to a location that is no longer on the roster. The
     # cache outlived the locations: six `studio-hub-*` providers were still in it
     # with no controllers configured, one carrying a switched-on model. Inert,
