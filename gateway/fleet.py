@@ -1885,6 +1885,8 @@ def _summarise(rows: list[dict]) -> dict:
         )
 
     startups = [row.get("startup") for row in flat]
+    statuses = [row.get("version_status") for row in flat]
+    latest = next((row.get("hub_latest") for row in rows if isinstance(row.get("hub_latest"), dict)), None)
     return {
         "locations": len(rows),
         "locations_up": sum(1 for row in rows if row["reachable"]),
@@ -1907,6 +1909,15 @@ def _summarise(rows: list[dict]) -> dict:
         "probe_machines_hidden": sum(
             int(row.get("probe_machines_hidden") or 0) for row in rows
         ),
+        # **Which Macs are on the newest Studio Hub this Gateway published.** `hub_latest` is that
+        # version (`None`: nothing published here, so no verdict); `on_latest` of `version_known`
+        # (Macs that answered with a version), plus how many are updating, behind, or unknown.
+        "hub_latest": (latest or {}).get("version"),
+        "on_latest": statuses.count("latest"),
+        "version_known": sum(1 for status in statuses if status in {"latest", "updating", "behind"}),
+        "hub_updating": statuses.count("updating"),
+        "hub_behind": statuses.count("behind"),
+        "hub_unknown": statuses.count("unknown"),
         "jobs_completed": completed,
         "jobs_failed": failed,
         "running_jobs": sum(len(row["running_jobs"]) for row in rows),
@@ -2185,11 +2196,15 @@ def _current_job(machine: dict, entry: dict) -> dict | None:
     keys and nothing the node chose to add. `None` is *unknown* - the page then shows the busy studios
     only - and never "idle".
     """
-    raw = machine.get("current") if isinstance(machine.get("current"), dict) else entry.get("current")
+    # Hub 0.6.1xx names it `current_job` (`{job_id, modality, model, label, started_at}`) on the activity
+    # entry and the node row; `current` is the older spelling. Either is read.
+    raw = next((value for value in (machine.get("current"), machine.get("current_job"),
+                                    entry.get("current"), entry.get("current_job"))
+                if isinstance(value, dict)), None)
     if not isinstance(raw, dict):
         return None
     out = {
-        "batch_id": raw.get("batch_id") or raw.get("id"),
+        "batch_id": raw.get("batch_id") or raw.get("id") or raw.get("job_id"),
         "model": raw.get("model"),
         "label": raw.get("label"),
         "studio": raw.get("studio") or raw.get("modality"),
@@ -2227,6 +2242,185 @@ def machine_label(row: dict, machine: dict, node: dict | None = None) -> str:
         if not _is_generic_label(candidate):
             return candidate
     return str(row.get("label") or "").strip() or mid or "Mac"
+
+
+#: How long a Mac may stay behind after its controller received the newest release before it reads
+#: "Behind" rather than "Updating…". Measured 2026-10-01: idle Macs installed a published release
+#: within 5-15 minutes; a busy one waits for its work to finish, so a working Mac stays "Updating…".
+UPDATE_GRACE_S = 45 * 60
+
+#: How recent a failed job must be to make a Mac "need attention" (the Hub's own `JUST_FINISHED_S`).
+ATTENTION_ERROR_S = 15 * 60
+_LONG_IDLE_S = 2 * 3600
+
+
+def _version_key(version: object) -> tuple[int, ...] | None:
+    text = str(version or "").strip()
+    return tuple(int(part) for part in text.split(".")) if re.fullmatch(r"\d+(?:\.\d+)*", text) else None
+
+
+def latest_hub_release(rows: list[dict], push: dict | None = None) -> dict | None:
+    """The newest Studio Hub release **this Gateway has published**: `{version, published_at}`.
+
+    "Latest" is what the owner can install, not a constant compiled into this build (the old
+    `SUPPORTED_STUDIO_HUB_VERSION` comparison called every controller "newer" one release after the
+    Gateway was built). Two sources, newest wins: the publisher's own record of its last push
+    (`release_publisher.last_push()`, only the controllers named in that push), and the release each
+    controller reads back as holding — counted only when this Gateway's key signed it, because a
+    controller can hold a release from elsewhere. `None` when nothing was ever published here.
+    """
+    if push is None:
+        try:
+            from . import release_publisher
+            push = release_publisher.last_push()
+        except Exception:  # noqa: BLE001 - the page must render without a publisher
+            push = {}
+    push = push if isinstance(push, dict) else {}
+    fingerprint = str(push.get("fingerprint") or "")
+    candidates: list[tuple[tuple[int, ...], str, float | None]] = []
+
+    def add(release: object, at: object) -> None:
+        if not isinstance(release, dict):
+            return
+        key = _version_key(release.get("version"))
+        if key is not None:
+            candidates.append((key, str(release["version"]).strip(), _num(at)))
+
+    add(push.get("release"), push.get("updated_at"))
+    for row in rows:
+        held = row.get("release")
+        if not isinstance(held, dict):
+            continue
+        signer = str(held.get("publisher_key_id") or "")
+        if (signer and signer == fingerprint) or (not fingerprint and held.get("publisher_id") == "gatewaykh"):
+            add(held, held.get("published_at"))
+    if not candidates:
+        return None
+    best = max(candidate[0] for candidate in candidates)
+    times = [at for key, _, at in candidates if key == best and at is not None]
+    version = next(text for key, text, _ in candidates if key == best)
+    return {"version": version, "published_at": min(times) if times else None}
+
+
+def version_status(version: object, latest: dict | None, *, reachable: object = True,
+                   controller_holds_latest: bool = False, busy: bool = False,
+                   since: float | None = None, now: float | None = None) -> str | None:
+    """`latest` / `updating` / `behind` / `unknown` for one Mac, or `None` when nothing was published.
+
+    * **latest** — at (or past) the newest release this Gateway published.
+    * **updating** — behind, but its controller already holds the newest release and the Mac is
+      still inside the install window, or is busy (a Mac finishes its work before it installs).
+    * **behind** — behind and not getting there by itself: its controller lacks the release, or the
+      window passed (an app not in /Applications, a Mac that never went idle long enough).
+    * **unknown** — the Mac is not answering, or stated no version.
+
+    `since` is when *its* controller got the release (the signed `published_at` of the copy it holds:
+    each publish signs anew, so a group published to after the pilot has a later one); the newest
+    release's own time stands in when the controller did not say.
+    """
+    if not latest or _version_key(latest.get("version")) is None:
+        return None
+    mine = _version_key(version)
+    if reachable is False or mine is None:
+        return "unknown"
+    if mine >= _version_key(latest["version"]):  # type: ignore[operator]
+        return "latest"
+    if controller_holds_latest:
+        since = _num(since) if since is not None else _num(latest.get("published_at"))
+        moment = time.time() if now is None else now
+        if busy or since is None or moment - since < UPDATE_GRACE_S:
+            return "updating"
+    return "behind"
+
+
+def stamp_latest(rows: list[dict], push: dict | None = None) -> dict | None:
+    """Put the newest published release on every location row, so `machines_flat` can rate each Mac."""
+    latest = latest_hub_release(rows, push)
+    for row in rows:
+        row["hub_latest"] = latest
+    return latest
+
+
+def stamp_controller_versions(rows: list[dict], machines: list[dict]) -> None:
+    """Each location's own Mac's `version_status`, for the Locations tab and the group header."""
+    for row in rows:
+        own = next((m for m in machines if m.get("location_id") == row.get("id")
+                    and m.get("node_state") is None and m.get("node_role") is None), None)
+        row["version_status"] = (own or {}).get("version_status")
+
+
+def _running_studios(startup: dict | None) -> set[str] | None:
+    """The studios a Mac says it runs itself (`startup.services_running.studios`), or `None` if unsaid."""
+    if not isinstance(startup, dict) or startup.get("stale"):
+        return None
+    running = startup.get("services_running")
+    studios = running.get("studios") if isinstance(running, dict) else None
+    if not isinstance(studios, dict) or not studios:
+        return None
+    return {str(name).strip().lower() for name in studios}
+
+
+def _not_installed(worker: dict, running: set[str] | None) -> bool:
+    """A worker the controller lists for a Mac that does not run that studio at all.
+
+    Hub ≤ 0.6.132 froze a node's studios at join time, so every Mac that joined while Video shipped
+    kept a `video` worker on its controller after Video was retired: offline for ever, never seen,
+    on a Mac whose own report lists five studios and no Video. That is not a fault anyone can fix
+    on the Mac, and it is not shown as one (Hub 0.6.133 drops it from the roster itself).
+    """
+    if running is None or worker.get("online") is not False:
+        return False
+    names = {str(worker.get(key) or "").strip().lower() for key in ("modality", "studio")}
+    return not (names & running)
+
+
+def _studio_word(worker: dict) -> str:
+    name = str(worker.get("modality") or worker.get("studio") or "a").strip()
+    return {"transcription": "Subtitle", "tts": "Voice"}.get(name, name.capitalize())
+
+
+def _attention(entry: dict, workers: list[dict], phantom: list[dict], health: object,
+               now: float) -> tuple[str, str | None]:
+    """Re-read a Hub `needs_attention` against what can be seen: `(state, why)`.
+
+    The Hub says "needs attention" for a reachable Mac with any studio down, and (≤ 0.6.132) for any
+    Mac whose newest job failed, however long ago. Both made a healthy idle fleet read amber: the
+    "down" studio was a Video worker that no longer exists, and the failure was last night's. So
+    the verdict stands only with a cause someone can act on — a studio that should run and is not,
+    a failure in the last 15 minutes, a stalled job, a health word — and says which. When the only
+    cause is one of those two artefacts, the state is worked out again the way the Hub would.
+    """
+    latest = entry.get("latest") if isinstance(entry.get("latest"), dict) else {}
+    finished = _num(latest.get("finished_at")) or _num(latest.get("observed_at"))
+    age = None if finished is None else max(0.0, now - finished)
+    down = [w for w in workers if w.get("online") is False and w not in phantom]
+    if down:
+        names = ", ".join(sorted({_studio_word(w) for w in down}))
+        return "needs_attention", f"{names} studio not running"
+    stuck = [w for w in workers if w.get("online") and w.get("ready") is False and not w.get("busy")
+             and not w.get("drained") and not w.get("maintenance")]
+    if stuck:
+        return "needs_attention", ", ".join(sorted({_studio_word(w) for w in stuck})) + " studio not ready"
+    stalled = _num(entry.get("stalled_seconds"))
+    if stalled:
+        return "needs_attention", f"No progress for {int(stalled // 60)} min"
+    if str(health or "up").strip().lower() not in {"up", ""}:
+        return "needs_attention", f"Health: {health}"
+    failed_now = latest.get("state") == "error" and age is not None and age < ATTENTION_ERROR_S
+    if failed_now:
+        reason = str(latest.get("error_code") or "").strip()
+        return "needs_attention", "Last job failed" + (f": {reason[:80]}" if reason else "")
+    old_failure = latest.get("state") == "error"
+    if not phantom and not old_failure:
+        # The Hub saw something this Gateway cannot: keep its verdict, and say only that.
+        return "needs_attention", "Flagged by its Hub"
+    if isinstance(entry.get("current_job"), dict):
+        return "working", None
+    if age is None:
+        return "ready", None
+    if latest.get("state") == "done" and age < ATTENTION_ERROR_S:
+        return "just_finished", None
+    return ("long_idle" if age >= _LONG_IDLE_S else "ready"), None
 
 
 def machines_flat(rows: list[dict]) -> list[dict]:
@@ -2269,11 +2463,55 @@ def machines_flat(rows: list[dict]) -> list[dict]:
                 "node_address": node.get("address"),
             }
 
+        workers_by_machine: dict[str, list[dict]] = {}
+        for worker in row.get("workers") or []:
+            if isinstance(worker, dict):
+                workers_by_machine.setdefault(str(worker.get("machine") or ""), []).append(worker)
+        latest = row.get("hub_latest") if isinstance(row.get("hub_latest"), dict) else None
+        held = row.get("release") if isinstance(row.get("release"), dict) else {}
+        controller_holds_latest = bool(latest) and _version_key(held.get("version")) is not None \
+            and _version_key(held.get("version")) >= _version_key(latest.get("version"))  # type: ignore[operator]
+        now = time.time()
+
+        def health_fields(mid: str, machine: dict, entry: dict, startup: dict | None) -> dict:
+            """State (re-read where the Hub's verdict has no visible cause), version and its badge."""
+            node = nodes.get(mid) or {}
+            workers = workers_by_machine.get(mid, [])
+            phantom = [w for w in workers if _not_installed(w, _running_studios(startup))]
+            state, why = entry.get("state"), None
+            if str(state or "").lower() == "needs_attention":
+                state, why = _attention(entry, workers, phantom, machine.get("health"), now)
+            # A node's own Hub version, as its controller last read it; the controller's own Mac is
+            # the controller's version.
+            version = node.get("version") or (startup or {}).get("app_version") \
+                or (row.get("version") if not node else None)
+            limitation = _limitation_fields(entry)
+            # "Some reporters missing" on a Mac whose only silent reporter is a studio it does not run
+            # is that same artefact again, not a third finding.
+            if phantom and limitation.get("limitation_code") == "partial_read" and not any(
+                    w.get("online") is False and w not in phantom for w in workers):
+                limitation = {key: None for key in limitation}
+            reachable = machine.get("reachable") if machine else None
+            return {
+                "state": state,
+                "attention": why,
+                "hub_version": version,
+                "version_status": version_status(
+                    version, latest,
+                    reachable=False if str(state or "").lower() == "offline" else reachable,
+                    controller_holds_latest=controller_holds_latest,
+                    busy=str(state or "").lower() == "working",
+                    since=_num(held.get("published_at")), now=now),
+                "not_installed_studios": sorted({_studio_word(w) for w in phantom}) or None,
+                **limitation,
+            }
+
         seen: set[str] = set()
         for machine in row["machines"]:
             mid = str(machine.get("machine") or "")
             seen.add(mid)
             entry = activity.get(mid) or {}
+            startup = _startup_fact(machine, nodes.get(mid) or {})
             out.append({
                 "location_id": row["id"],
                 "location": row["label"],
@@ -2281,7 +2519,6 @@ def machines_flat(rows: list[dict]) -> list[dict]:
                 "location_reachable": row["reachable"],
                 "machine": mid,
                 "label": machine_label(row, machine, nodes.get(mid)),
-                "state": entry.get("state"),
                 "reachable": machine.get("reachable"),
                 "completed": entry.get("completed"),
                 "failed": entry.get("failed"),
@@ -2299,10 +2536,10 @@ def machines_flat(rows: list[dict]) -> list[dict]:
                 "disk": machine_disk(machine),
                 "health": machine.get("health"),
                 "modalities": machine.get("modalities") or {},
-                **_limitation_fields(entry),
                 **node_fields(mid),
-                "startup": _startup_fact(machine, nodes.get(mid) or {}),
+                "startup": startup,
                 "current": _current_job(machine, entry),
+                **health_fields(mid, machine, entry, startup),
             })
         # A machine the activity report knows about but the overview omitted is
         # still a machine.
@@ -2316,7 +2553,6 @@ def machines_flat(rows: list[dict]) -> list[dict]:
                 "location_reachable": row["reachable"],
                 "machine": mid,
                 "label": machine_label(row, {"machine": mid}, nodes.get(mid)),
-                "state": entry.get("state"),
                 "reachable": None,
                 "completed": entry.get("completed"),
                 "failed": entry.get("failed"),
@@ -2325,10 +2561,10 @@ def machines_flat(rows: list[dict]) -> list[dict]:
                 "chip": None, "memory_gb": None, "available_gb": None,
                 "disk_free_gb": None, "disk_total_gb": None, "disk": None, "health": None,
                 "modalities": {},
-                **_limitation_fields(entry),
                 **node_fields(mid),
                 "startup": _startup_fact({}, nodes.get(mid) or {}),
                 "current": _current_job({}, entry),
+                **health_fields(mid, {}, entry, _startup_fact({}, nodes.get(mid) or {})),
             })
     return out
 
@@ -2439,6 +2675,16 @@ def _offline_action(reason: str) -> str:
     return "Check that Mac"
 
 
+#: Catalogue errors that only say a machine could not be reached: the Hub's own word, and httpx's.
+_REACH_ERRORS = frozenset({"worker_unreachable", "ConnectError", "ConnectTimeout", "ReadTimeout", "ReadError",
+                           "WriteTimeout", "PoolTimeout", "TimeoutException", "NetworkError",
+                           "RemoteProtocolError"})
+
+
+def _is_reach_error(text: object) -> bool:
+    return str(text or "").strip().removeprefix("httpx.") in _REACH_ERRORS
+
+
 def _issue(
     severity: str, code: str, location_id: object, location: object,
     subject: str, message: str, action: str,
@@ -2491,33 +2737,31 @@ def _issues_for(row: dict) -> list[dict]:
             "Studio Hub on that Mac",
         ))
 
-    # **A Hub on another version keeps working, and is named.** Studio Hub
-    # auto-updates itself, so a fleet can move a version ahead of this gateway
-    # without anyone touching it. Refusing would turn that into an outage; saying
-    # nothing would hide the one fact that explains a lane this build has never
-    # heard of. `info`, deliberately: it is a statement of fact, not a fault, and
-    # `summary.issues` counts only errors and warnings.
-    relation = str(row.get("hub_version_relation") or "")
-    if row.get("reachable") and relation in {"older", "newer"}:
-        from .adapters.studio_hub import SUPPORTED_STUDIO_HUB_VERSION
-
-        version = str(row.get("version") or "an unstated version")
-        if relation == "newer":
-            detail = (
-                f"This controller runs Studio Hub {version}; gateway build targets "
-                f"{SUPPORTED_STUDIO_HUB_VERSION}. It keeps working — anything the newer "
-                "Hub serves in a lane this gateway does not know is listed as "
-                "unsupported rather than offered."
-            )
+    # **Behind the newest release, and not getting there by itself.** "Latest" is the newest Studio
+    # Hub this Gateway has published (`latest_hub_release`), not the release this build was compiled
+    # against: that comparison called every controller "newer" the day after a release, which is
+    # noise, and it never once said the one thing worth knowing — which Macs are not on the latest.
+    # A Mac whose controller already holds the release and is inside the install window is
+    # "updating", which is the normal state for a few minutes after a publish and not a warning.
+    flat = machines_flat([row])
+    behind = [m for m in flat if m.get("version_status") == "behind"]
+    if behind:
+        latest_version = str((row.get("hub_latest") or {}).get("version") or "the latest")
+        named = ", ".join(
+            f"{m.get('label') or m.get('machine')} ({m.get('hub_version') or '?'})"
+            for m in sorted(behind, key=lambda m: str(m.get("label") or m.get("machine")))[:4]
+        ) + (f" and {len(behind) - 4} more" if len(behind) > 4 else "")
+        held = (row.get("release") or {}).get("version") if isinstance(row.get("release"), dict) else None
+        if _version_key(held) is not None and _version_key(held) >= _version_key(latest_version):  # type: ignore[operator]
+            why = ("Its controller has the update, but these Macs have not installed it: open Studio Hub "
+                   "on that Mac, or run \u201cUpdate this Mac\u201d.")
         else:
-            detail = (
-                f"This controller runs Studio Hub {version}; gateway build targets "
-                f"{SUPPORTED_STUDIO_HUB_VERSION}. It keeps working, but a route or field "
-                "added after that release is not read here."
-            )
+            why = "Their controller does not hold it yet: publish the release to this group."
+        count = f"{len(behind)} Mac" + ("" if len(behind) == 1 else "s")
         out.append(_issue(
-            "info", "hub_version_drift", location_id, location, version, detail,
-            "Fleet → Locations",
+            "warning", "hub_behind", location_id, location, count,
+            f"{named}: behind Studio Hub {latest_version}. {why}",
+            "Open Studio Hub on that Mac, or run Update this Mac",
         ))
 
     # **A Hub condition repeated per machine is one issue, not one per machine.**
@@ -2555,7 +2799,7 @@ def _issues_for(row: dict) -> list[dict]:
     offline_machines: set[str] = set()
     startup_off: list[str] = []
     disk_low: dict[str, list[str]] = {"stop": [], "red": []}
-    for machine in machines_flat([row]):
+    for machine in flat:
         machine_id = str(machine.get("machine") or "")
         # A Mac that is not answering has no disk worth reporting (its last free-space reading is
         # stale or a zero), so only a reachable Mac in red/stop counts.
@@ -2605,7 +2849,8 @@ def _issues_for(row: dict) -> list[dict]:
                 "Studio Hub on that Mac",
             ))
         limitation = str(machine.get("limitation") or "").strip()
-        if limitation:
+        # An offline Mac reports nothing, so "evidence pending" on it is the offline row again.
+        if limitation and state != "offline" and machine_id not in rejected_nodes:
             key = (
                 limitation,
                 str(machine.get("limitation_code") or ""),
@@ -2647,8 +2892,12 @@ def _issues_for(row: dict) -> list[dict]:
                 detail += f" ({code})"
             if bucket["affects"]:
                 detail += "; missing " + ", ".join(sorted(bucket["affects"]))
+            # **Information, not a warning.** It says which activity *fields* the Hub could not
+            # read (a progress figure, a median), not that a Mac is unwell: a studio that is
+            # actually down is its own `worker_offline` row. As a warning it turned every group
+            # with an idle Mac amber.
             out.append(_issue(
-                "warning", "machine_limited", location_id, location, machines_text,
+                "info", "machine_limited", location_id, location, machines_text,
                 detail, "Fleet → Machines",
             ))
     for state, severity in (("stop", "error"), ("red", "warning")):
@@ -2692,6 +2941,7 @@ def _issues_for(row: dict) -> list[dict]:
     # and keeps its own row.
     seen_workers: set[tuple] = set()
     offline_workers: dict[str, int] = {}
+    running = {str(m.get("machine") or ""): _running_studios(m.get("startup")) for m in flat}
     for worker in row.get("workers") or []:
         if not isinstance(worker, dict):
             continue
@@ -2701,6 +2951,9 @@ def _issues_for(row: dict) -> list[dict]:
         seen_workers.add(worker_key)
         worker_id = str(worker.get("id") or worker.get("machine") or "worker")
         machine_id = str(worker.get("machine") or worker_id)
+        # A studio the Mac does not run at all (see `_not_installed`) is not a worker that is down.
+        if _not_installed(worker, running.get(machine_id)):
+            continue
         if _truthy(worker.get("quarantined")):
             out.append(_issue(
                 "error", "machine_quarantined", location_id, location, machine_id,
@@ -2712,7 +2965,9 @@ def _issues_for(row: dict) -> list[dict]:
             else:
                 out.append(_issue(
                     "warning", "worker_offline", location_id, location, worker_id,
-                    f"Worker {worker_id} is offline.", "Studio Hub on that Mac",
+                    f"Worker {worker_id} is offline: the Mac answers, but its "
+                    f"{_studio_word(worker)} studio is not running.",
+                    "Open Studio Hub on that Mac and restart its services",
                 ))
         if _truthy(worker.get("maintenance")):
             out.append(_issue(
@@ -2726,8 +2981,9 @@ def _issues_for(row: dict) -> list[dict]:
         machines_text = f"{len(offline_workers)} offline machine" + (
             "" if len(offline_workers) == 1 else "s")
         named = ", ".join(sorted(offline_workers))
+        # Counted for completeness, as information: each machine's own offline row is the warning.
         out.append(_issue(
-            "warning", "worker_offline", location_id, location, workers_text,
+            "info", "worker_offline", location_id, location, workers_text,
             f"{workers_text} on {machines_text}: {named}. Each machine's own row "
             "says why it is offline.",
             "Fleet → Machines",
@@ -2747,8 +3003,10 @@ def _issues_for(row: dict) -> list[dict]:
     for model in row.get("local_models") or []:
         if not isinstance(model, dict):
             continue
+        # `ConnectTimeout` / `ConnectError` / `ReadTimeout` are the same "could not reach it" in
+        # httpx's words (live: seven Whisper rows on two switched-off 1400 nodes).
         if (str(model.get("machine") or "") in offline_machines
-                and str(model.get("catalog_error") or "").strip() == "worker_unreachable"):
+                and _is_reach_error(model.get("catalog_error"))):
             continue
         name = str(model.get("model") or "")
         bucket = model_conditions.setdefault(
@@ -2890,9 +3148,14 @@ def snapshot(force: bool = False, *, allow_stale: bool = False) -> dict:
 def _refresh() -> dict:
     """One fan-out over every location, cached on the way out."""
     rows = locations()
+    # The newest release this Gateway published rides on every row, so each Mac can be rated
+    # against it (`machines_flat` → `version_status`).
+    stamp_latest(rows)
+    machines = machines_flat(rows)
+    stamp_controller_versions(rows, machines)
     value = {
         "locations": rows,
-        "machines": machines_flat(rows),
+        "machines": machines,
         "running": running_flat(rows),
         "summary": _summarise(rows),
         "issues": _issues(rows),

@@ -87,6 +87,14 @@ struct FleetSummary: Decodable {
     var workersTotal: Int?
     var workersReady: Int?
     var issues: Int?
+    /// **Studio Hub versions against the newest release this Gateway published** (`hubLatest`; nil when
+    /// nothing was published here). `onLatest` of `versionKnown` Macs that answered with a version.
+    var hubLatest: String?
+    var onLatest: Int?
+    var versionKnown: Int?
+    var hubUpdating: Int?
+    var hubBehind: Int?
+    var hubUnknown: Int?
     /// The Hub's own per-state machine counts. Kept because the pulse line is
     /// read verbatim from the gateway rather than re-derived here.
     var pulse: [String: Int]?
@@ -109,6 +117,9 @@ struct FleetLocation: Decodable {
     /// working (it auto-updates itself), and this is how the page says so instead
     /// of leaving a drift invisible.
     var hubVersionRelation: String?
+    /// The controller's own Mac against the newest published release: `latest`, `updating`, `behind`,
+    /// `unknown`, or nil when nothing was published (see `FleetMachine.versionStatus`).
+    var versionStatus: String?
     var providerId: String?
     var latencyMs: Int?
     var machines: [FleetMachine] = []
@@ -154,7 +165,7 @@ struct FleetLocation: Decodable {
 
     private enum CodingKeys: String, CodingKey {
         case drained, membersFrom, membersStaleSeconds
-        case id, label, url, local, reachable, error, role, version, hubVersionRelation
+        case id, label, url, local, reachable, error, role, version, hubVersionRelation, versionStatus
         case providerId, latencyMs
         case machines, workers, localModels, modelHealth, machineSummary, runningJobs
         case modelsDiscovered, modelsEnabled, modelsPublishable, release, trustedPublisher
@@ -173,6 +184,7 @@ struct FleetLocation: Decodable {
         role = try? c.decode(String.self, forKey: .role)
         version = try? c.decode(String.self, forKey: .version)
         hubVersionRelation = try? c.decode(String.self, forKey: .hubVersionRelation)
+        versionStatus = try? c.decode(String.self, forKey: .versionStatus)
         providerId = try? c.decode(String.self, forKey: .providerId)
         latencyMs = try? c.decode(Int.self, forKey: .latencyMs)
         machines = lenientArray(c, forKey: .machines)
@@ -653,6 +665,16 @@ struct FleetMachine: Decodable {
     var limitationSince: FleetScalar?
     /// The fields genuinely missing because of it, e.g. `["state", "median_runtime"]`.
     var limitationAffects: [String]?
+    /// **Why** a Mac needs attention, in a few words the Gateway worked out ("Voice studio not running",
+    /// "Last job failed: …"). Only set while `state` is `needs_attention`.
+    var attention: String?
+    /// This Mac's Studio Hub version, and how it stands against the newest release this Gateway published:
+    /// `latest`, `updating` (its controller holds the release; it installs when idle), `behind`, `unknown`
+    /// (not answering), or nil when nothing was published.
+    var hubVersion: String?
+    var versionStatus: String?
+    /// Studios the controller lists for this Mac that the Mac does not run at all (an old roster entry).
+    var notInstalledStudios: [String]?
 
     /// What the Limitation column draws: the Hub's phrase if it gave one, else its
     /// sentence, plus which readings are missing. A machine that reports fully
@@ -759,13 +781,37 @@ extension FleetMachine {
         return .ok
     }
 
-    /// How this Mac's activity reads: red for a refused credential or an offline Mac, grey for idle or unknown,
-    /// green for ready or working.
+    /// How this Mac's activity reads: red for a refused credential or an offline Mac, amber when it needs
+    /// attention (the Gateway only leaves that verdict standing with a cause it can name), grey for idle or
+    /// unknown, green for ready or working.
     var activityHealth: Health {
         let word = (state ?? "").lowercased()
         if nodeStateIsUnauthorized || word == "offline" || reachable == false { return .bad }
+        if word == "needs_attention" { return .warn }
         if word == "long_idle" || word.isEmpty { return .off }
         return .ok
+    }
+
+    /// The Version badge: "Latest", "Updating…", "Behind — 0.6.126", "Unknown"; nil when the Gateway has
+    /// published nothing to compare with (the cell then shows the bare version). `latest` is the newest
+    /// published release, for the tooltip.
+    func versionBadge(latest: String?) -> (text: String, health: Health, tooltip: String)? {
+        let mine = hubVersion ?? "an unstated version"
+        let newest = latest.map { "Studio Hub \($0)" } ?? "the newest release"
+        switch (versionStatus ?? "").lowercased() {
+        case "latest":
+            return ("Latest", .ok, "Studio Hub \(mine): the newest release this Gateway published.")
+        case "updating":
+            return ("Updating…", .info, "Studio Hub \(mine). Its controller holds \(newest); "
+                    + "the Mac installs it by itself as soon as it is idle.")
+        case "behind":
+            return ("Behind — \(hubVersion ?? "?")", .warn, "Studio Hub \(mine), behind \(newest), and not updating "
+                    + "by itself. Open Studio Hub on that Mac, or run “Update this Mac”.")
+        case "unknown":
+            return ("Unknown", .off, "This Mac is not answering, so its version is not known.")
+        default:
+            return nil
+        }
     }
 
     /// The state word on a badge: Title Case, and **a refused credential is not "offline"** (different fault,

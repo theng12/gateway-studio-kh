@@ -163,7 +163,127 @@ def many(rows: list) -> list:
     return [rows[0], rows[1], rows[2], big, rows[3]]
 
 
+LATEST = "0.6.132"
+FIVE = ("voice", "transcription", "chat", "music", "image")
+
+
+def health(flavour: str) -> tuple[list, dict]:
+    """GATEWAY_RENDER_FIXTURE=health-idle|health-mixed|health-problem: the live 2026-10-02 fleet shape.
+
+    Every node still carries the `video` worker its controller recorded at join (offline, never seen), its
+    Hub calls it `needs_attention` with a `partial_read` limitation, and three of them failed a job last
+    night - exactly what made a healthy idle fleet read "5 of 6 groups need attention". `health-idle` must
+    render all green; `health-mixed` adds Macs updating and one behind; `health-problem` adds real faults.
+    """
+    def start(version=LATEST, services=True):
+        return {"open_at_login": True, "start_services_on_launch": services, "app_version": version,
+                "app_reporting": True, "stale": None,
+                "services_running": {"up": 5, "total": 5, "studios": {s: "up" for s in FIVE}}}
+
+    def idle(mid, ago, *, error=False, state="needs_attention"):
+        return {"machine": mid, "state": state, "current_job": None, "stalled_seconds": None,
+                "latest": {"state": "error" if error else "done", "finished_at": NOW - ago, "observed_at": NOW - ago,
+                           "error_code": "HTTP 409: local is reserved for other work on this Mac" if error else None},
+                "completed": 6, "failed": int(error), "median_runtime_s": None,
+                "limitation": "Direct activity partially unavailable", "limitation_code": "partial_read",
+                "limitation_reason": "Some reporters missing", "limitation_since": None,
+                "limitation_affects": ["progress", "failed", "median_runtime"]}
+
+    def wk(mid, studio, online=True):
+        row = worker(mid, studio, online=online)
+        row["modality"] = studio
+        if studio == "video":
+            row["last_seen_at"] = None
+        return row
+
+    def site(lid, label, n, *, versions=None, offline=(), crashed=(), held=LATEST, startup_off=(), red=()):
+        versions = versions or {}
+        mids = [f"terranash-{label[-4:-2]}{i:02d}-m2-8-256" for i in range(1, n + 1)]
+        ctl = f"terranash-{label[-4:]}-m4-16-256"
+        machines = [machine("local", ctl, "Apple M4", 16.0, 9.8, 120.0, disk_total=245.0, start=start(versions.get("local", held)))]
+        machines[0]["label"] = ctl
+        activities = [idle("local", 15 * HOUR, state="long_idle")]
+        nodes, workers = [], [wk("local", s) for s in FIVE]
+        for i, mid in enumerate(mids):
+            off = mid in offline
+            version = versions.get(mid, LATEST)
+            row = machine(mid, mid, "Apple M2" if i % 2 else "Apple M1", 8.0 if i % 3 else 16.0, 3.9 + i % 3,
+                          9.0 if mid in red else 150.0 + 7 * i, disk_total=245.0, reachable=not off,
+                          health="unreachable" if off else "up", start=start(version, services=mid not in startup_off))
+            machines.append(row)
+            activities.append(idle(mid, (16 + i) * HOUR, error=i in (1, 2)) if not off else
+                              {**idle(mid, 30 * HOUR, state="offline"), "limitation_code": "waiting_for_worker",
+                               "limitation": "Activity evidence pending"})
+            nodes.append({**node(mid, "unreachable" if off else "reachable", address=f"http://100.64.{lid[-1]}.{i}:47873",
+                                 version=version, seen=6 * HOUR if off else 4,
+                                 detail="could not reach the node (unreachable)" if off else None,
+                                 studios=(*FIVE, "video")), "role": "agent"})
+            workers += [wk(mid, s, online=not off and (mid, s) not in crashed) for s in FIVE]
+            workers.append(wk(mid, "video", online=False))
+        release = {"version": held, "published_at": NOW - (300 if flavour == "health-mixed" else 6 * HOUR),
+                   "publisher_id": "gatewaykh", "publisher_key_id": "cd" * 32}
+        return location(lid, label, f"http://100.64.{lid[-1]}.1:47873", version=versions.get("local", held),
+                        machines=machines, activities=activities, nodes=nodes, workers=workers, release=release,
+                        hub_version_relation="newer")
+
+    local = location("local", "This Mac", "http://127.0.0.1:47873", local=True, version=LATEST,
+                     machines=[machine("local", "This Mac", "Apple M2 Max", 32.0, 18.4, 312.0, start=start())],
+                     activities=[idle("local", 10 * HOUR, state="long_idle")],
+                     workers=[wk("local", s) for s in FIVE],
+                     release={"version": LATEST, "published_at": NOW - 6 * HOUR, "publisher_id": "gatewaykh",
+                              "publisher_key_id": "cd" * 32})
+    for row in local["activity"]["machines"]:
+        row.update(limitation=None, limitation_code=None, limitation_reason=None, limitation_affects=None)
+    push_at = NOW - (300 if flavour == "health-mixed" else 6 * HOUR)
+    push = {"updated_at": push_at, "fingerprint": "cd" * 32,
+            "release": {"version": LATEST, "build": "e6a8b80", "filename": f"StudioHub-{LATEST}-e6a8b80.dmg",
+                        "bytes": 1_372_776_123, "sha256": "ef" * 32, "signature": "sig"},
+            "locations": {}}
+    if flavour == "health-mixed":
+        # Published five minutes ago to 1100 and 1200 (their Macs are still installing it); 1300 was not
+        # in that publish, so it and its Macs are behind and the line says to publish to that group.
+        rows = [local,
+                site("c1100", "terranash-1100", 10, versions={"terranash-1103-m2-8-256": "0.6.131",
+                                                          "terranash-1107-m2-8-256": "0.6.131"}),
+                site("c1200", "terranash-1200", 8, versions={"terranash-1205-m2-8-256": "0.6.126"}),
+                site("c1300", "terranash-1300", 9, held="0.6.131",
+                     versions={"local": "0.6.131", "terranash-1302-m2-8-256": "0.6.126",
+                               **{f"terranash-13{i:02d}-m2-8-256": "0.6.131" for i in (1, 3, 4, 5)}})]
+    elif flavour == "health-problem":
+        rows = [local,
+                site("c1100", "terranash-1100", 10, crashed={("terranash-1104-m2-8-256", "voice")},
+                     startup_off={"terranash-1109-m2-8-256"}),
+                site("c1200", "terranash-1200", 8, versions={"terranash-1205-m2-8-256": "0.6.126"},
+                     red={"terranash-1203-m2-8-256"}),
+                site("c1400", "terranash-1400", 8, offline={"terranash-1401-m2-8-256", "terranash-1402-m2-8-256"})]
+        rows[1]["running_jobs"] = [batch("b-9001", "voice", QWEN, "Chapter 4 narration", total=12, done=5, running=1,
+                                         queued=6, started=50 * MIN, stalled=True)]
+    else:
+        rows = [local, site("c1100", "terranash-1100", 10), site("c1200", "terranash-1200", 8),
+                site("c1300", "terranash-1300", 9), site("c1400", "terranash-1400", 8),
+                site("c1500", "terranash-1500", 3)]
+    return rows, push
+
+
+def assemble(rows: list, push: dict) -> dict:
+    """The snapshot exactly as `fleet._refresh` assembles it, plus the release block `admin.fleet` adds."""
+    fleet.stamp_latest(rows, push)
+    machines = fleet.machines_flat(rows)
+    fleet.stamp_controller_versions(rows, machines)
+    return {
+        "locations": rows, "machines": machines, "running": fleet.running_flat(rows),
+        "summary": fleet._summarise(rows), "issues": fleet._issues(rows), "generated_at": NOW,
+        "fleet_warnings": {"hidden": ["macos_updates"], "hideable": []},
+        "release": {"identity": {"algorithm": "ed25519", "public_key_base64": "A" * 44, "public_key_hex": "ab" * 32,
+                                 "fingerprint": "cd" * 32, "publisher_id": "gatewaykh"},
+                    "last_push": push},
+    }
+
+
 def build() -> dict:
+    flavour = os.environ.get("GATEWAY_RENDER_FIXTURE", "")
+    if flavour.startswith("health"):
+        return assemble(*health(flavour))
     local = location(
         "local", "This Mac", "http://127.0.0.1:47873", local=True, role="controller",
         machines=[machine("local", "This Mac", "Apple M2 Max", 32.0, 18.4, 61.0, disk_total=460.0,
@@ -237,13 +357,16 @@ def build() -> dict:
         unreachable_since=NOW - 4 * DAY, members_from="last_known", members_stale_seconds=4 * DAY,
     )
     rows = [local, blue, studio2, garage]
-    flavour = os.environ.get("GATEWAY_RENDER_FIXTURE", "")
     if flavour.startswith("many"):
         rows = many(rows)
+    fleet.stamp_latest(rows, {"fingerprint": "cd" * 32, "updated_at": NOW - 3 * HOUR,
+                              "release": {"version": "0.6.126"}})
+    machines = fleet.machines_flat(rows)
+    fleet.stamp_controller_versions(rows, machines)
     return {
         **({"fleet_warnings": {"hidden": ["macos_updates"], "hideable": []}} if flavour == "many-hidden" else {}),
         "locations": rows,
-        "machines": fleet.machines_flat(rows),
+        "machines": machines,
         "running": fleet.running_flat(rows),
         "summary": fleet._summarise(rows),
         "issues": fleet._issues(rows),
