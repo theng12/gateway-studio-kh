@@ -231,8 +231,14 @@ final class OverviewSection: NSObject, AppSection {
         // window (this Mac runs the app at 1920pt) four cards would each be over
         // 400pt of mostly empty card, which reads as broken alignment rather than
         // as a dashboard. Cap the row and let the page grow instead.
+        //
+        // **Below 500, never above.** AppKit gives the window's own size a priority of 500 (the
+        // "stay put" priority): a constraint stronger than that is satisfied by *resizing the
+        // window*. This one used to be `.defaultHigh` (750) against the 900 cap, so the moment
+        // Overview was shown the window snapped to ~1177pt wide whatever size the owner had set,
+        // and stayed there on every other page. 400 still wins over the row's own hugging.
         let tileWidth = tileRow.widthAnchor.constraint(equalTo: root.widthAnchor, constant: -2 * PageKit.pagePadding)
-        tileWidth.priority = .defaultHigh
+        tileWidth.priority = NSLayoutConstraint.Priority(400)
         tileWidth.isActive = true
         tileRow.widthAnchor.constraint(lessThanOrEqualToConstant: 900).isActive = true
 
