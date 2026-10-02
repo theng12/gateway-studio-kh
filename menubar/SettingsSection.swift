@@ -39,6 +39,7 @@ final class SettingsSection: NSObject, AppSection {
     private var publisherIDLabel: NSTextField!
     private var releaseIdentityStatus: NSTextField!
     private let telegram = TelegramSettings()
+    private let backups = BackupPanel()
 
     /// What the retention fields last showed from the gateway, to tell a change from a re-read.
     private var loadedRetention: [String: Double] = [:]
@@ -213,6 +214,8 @@ final class SettingsSection: NSObject, AppSection {
 
         // ---- Telegram: messages to the owner's phone about the fleet
         section("Telegram", telegram.rows, in: root)
+        // ---- backups (keys, credentials, roster, voices): gateway/backup.py
+        section("Backups", backups.rows(), in: root)
 
         // ---- startup
         loginCheck = NSButton(
@@ -318,6 +321,7 @@ final class SettingsSection: NSObject, AppSection {
         loadRetention()
         loadReleaseIdentity()
         telegram.load()
+        backups.reload()
     }
 
     private func fill(_ field: NSTextField?, _ value: String) {

@@ -124,6 +124,10 @@ async def lifespan(_: FastAPI):
     retention.start_pruner()
     # Telegram messages about the fleet. Does nothing until the owner sets a bot token and chat id.
     notifier.start()
+    # Nightly backup of keys, roster and voices; it only acts when the owner turned it on.
+    from . import backup
+
+    backup.start_scheduler()
     # Cached models belonging to a location that is no longer on the roster. The
     # cache outlived the locations: six `studio-hub-*` providers were still in it
     # with no controllers configured, one carrying a switched-on model. Inert,
