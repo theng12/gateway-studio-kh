@@ -14,6 +14,22 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.99 — 2026-10-03
+
+Rename a Mac from the Fleet page, and groups that missed a Studio Hub release catch up by themselves.
+
+### Rename a Mac from the Fleet page
+Fleet → a Mac's "…" menu → **Rename…**. The new name is set on the Mac itself, so its own Studio Hub, its
+group's main Mac and this page all show it. Its machine ID stays the same, so nothing re-joins and no work is
+re-routed. Needs Studio Hub 0.6.133 on the group; an older group says so instead of failing quietly.
+
+### Groups that are behind catch up automatically
+A group added after a release went out, or one that was offline at the time, is sent the newest Studio Hub
+release this gateway published — on its own, one group at a time, only the files that changed. It never sends
+an older version over a newer one, never touches a group that doesn't trust this gateway's key (it says why),
+and waits until a rollout has reached most groups so a test release on one group doesn't spread early.
+Fleet → Locations shows "Sent automatically at …", "Catching up…", or why it didn't.
+
 ## 0.2.98 — 2026-10-02
 
 Fleet stops crying wolf, and every Mac shows whether it is on the latest Studio Hub.
