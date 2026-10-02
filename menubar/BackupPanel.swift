@@ -87,6 +87,9 @@ final class BackupPanel: NSObject {
 
     // MARK: Showing
 
+    /// The backup manifest's name for this Mac's Studio Hub voices library (`gateway/backup.py`).
+    private static let hubVoices = "hub/voice/voices"
+
     private static func size(_ value: Any?) -> String {
         ByteCountFormatter.string(fromByteCount: Int64((value as? Double) ?? Double(value as? Int ?? 0)), countStyle: .file)
     }
@@ -109,8 +112,12 @@ final class BackupPanel: NSObject {
         if let included = payload["included"] as? [String: Any] {
             let files = included["files"] as? Int ?? 0
             var text = "\(files) files, \(Self.size(included["bytes"])) — signing keys, API keys, fleet roster, voices, Content Packs"
-            if let missing = included["missing"] as? [String], !missing.isEmpty {
-                text += "\nNot on this Mac (skipped): " + missing.joined(separator: ", ")
+            let missing = included["missing"] as? [String] ?? []
+            let others = missing.filter { $0 != Self.hubVoices }
+            if !others.isEmpty { text += "\nNot on this Mac (skipped): " + others.joined(separator: ", ") }
+            if missing.contains(Self.hubVoices) {
+                text += "\nStudio Hub voices are not in this backup: this Mac has no Hub voices library "
+                    + "(the Hub runs on another Mac). Back them up on that Mac - see docs/backup-restore.md."
             }
             contentsLabel.stringValue = text
         }

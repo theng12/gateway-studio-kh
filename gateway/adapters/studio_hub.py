@@ -1508,6 +1508,15 @@ _FORMAT_BY_MEDIA = {
 }
 
 
+def _audio_seconds(terminal: dict[str, Any]) -> float | None:
+    """The Hub's measured audio length in seconds, from `audio_duration_s` or `audio_duration_ms`."""
+    for key, scale in (("audio_duration_s", 1.0), ("audio_duration_ms", 1000.0)):
+        value = terminal.get(key)
+        if isinstance(value, (int, float)) and not isinstance(value, bool) and value > 0:
+            return float(value) / scale
+    return None
+
+
 def _collect_batch(
     client: httpx.Client,
     base: str,
@@ -1563,6 +1572,9 @@ def _collect_batch(
         # answered. Absent stays absent: `None` is "the Hub stated no runtime", which is
         # a different fact from zero and must not render as one.
         "generation_seconds": terminal.get("runtime_s"),
+        # The decoded length of the audio the Hub measured (voice and music), kept so the daily
+        # summary can total minutes for m4a/flac too. `None` when the Hub stated none.
+        "audio_duration_s": _audio_seconds(terminal),
         # **How the job went, not just that it finished** — `None` when the Hub
         # reported no progress figure, which is a different answer from "it never
         # stalled". See `HubProgress`.

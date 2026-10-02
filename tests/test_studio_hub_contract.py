@@ -303,6 +303,12 @@ class GenerationTimingTests(_HubCase):
         )
         self.assertEqual(result.payload["generation_seconds"], 12.25)
 
+    def test_the_measured_audio_length_is_recorded_for_the_daily_summary(self) -> None:
+        for terminal, expected in (({"audio_duration_s": 61.5}, 61.5), ({"audio_duration_ms": 90000}, 90.0), ({}, None)):
+            hub = _Hub(item={"terminal_result": {"machine_id": "node-b", **terminal}})
+            result = self.generate_then_deliver(hub, self.request(modality="tts", params={"text": "hello"}))
+            self.assertEqual(result.payload["audio_duration_s"], expected)
+
 
 class DeliveryReceiptTests(_HubCase):
     """Item 1 — a verified delivery is acknowledged, on the modality's own route."""

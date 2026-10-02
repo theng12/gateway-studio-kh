@@ -122,9 +122,12 @@ def seed(support: Path, upstream_port: int) -> dict:
     (support / "CloudDocs").mkdir(exist_ok=True)
     (support / "Volumes/KH-STUDIO-NOVA/_trash").mkdir(parents=True, exist_ok=True)
     hub_voice = support / "hub/voice/voices/0616aec33b41"
-    hub_voice.mkdir(parents=True, exist_ok=True)
-    (hub_voice / "transcript.txt").write_text("The quick brown fox.")
-    (hub_voice / "reference.wav").write_bytes((data / "voice-0.wav").read_bytes())
+    if os.environ.get("GATEWAY_RENDER_NO_HUB_VOICES"):  # a Gateway on a Mac without the Hub's data
+        (support / "hub").mkdir(parents=True, exist_ok=True)
+    else:
+        hub_voice.mkdir(parents=True, exist_ok=True)
+        (hub_voice / "transcript.txt").write_text("The quick brown fox.")
+        (hub_voice / "reference.wav").write_bytes((data / "voice-0.wav").read_bytes())
     return {"GATEWAY_APP_SUPPORT": str(support), "GATEWAY_DATA": str(data), "GATEWAY_DB": str(data / "gateway.sqlite3"),
             "GATEWAY_ARTIFACTS": str(data / "artifacts"), "GATEWAY_CREDENTIALS": str(data / "credentials.json"),
             "GATEWAY_MODEL_CACHE": str(data / "models_cache.json"), "GATEWAY_ENV_FILE": str(support / ".env"),

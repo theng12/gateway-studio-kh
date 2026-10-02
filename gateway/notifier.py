@@ -39,6 +39,7 @@ import os
 import queue
 import re
 import socket
+import struct
 import threading
 import time
 import urllib.error
@@ -981,23 +982,83 @@ def _artifact_list(row: dict) -> list:
     return parsed if isinstance(parsed, list) else []
 
 
-def _audio_minutes(rows: list[dict]) -> tuple[float, int]:
-    """Minutes of audio in the succeeded voice and music jobs, read from the WAV headers.
+def _mp4_seconds(f) -> float | None:
+    """Duration from the `moov/mvhd` box of an m4a/mp4 (the default narration and music format)."""
+    def find(kind: bytes, pos: int, end: int | None):
+        while end is None or pos + 8 <= end:
+            f.seek(pos)
+            head = f.read(8)
+            if len(head) < 8:
+                return None
+            size, name = struct.unpack(">I4s", head)
+            body = pos + 8
+            if size == 1:
+                size = struct.unpack(">Q", f.read(8))[0]
+                body += 8
+            if size < body - pos:
+                return None  # size 0 (to EOF) or garbage: not worth guessing
+            if name == kind:
+                return body, pos + size
+            pos += size
+        return None
 
-    Only the header is read. A file that is gone or is not a WAV is counted as unmeasured rather than
-    guessed from its size.
+    moov = find(b"moov", 0, None)
+    mvhd = moov and find(b"mvhd", moov[0], moov[1])
+    if not mvhd:
+        return None
+    f.seek(mvhd[0])
+    version = f.read(1)[0:1]
+    f.seek(3 + (16 if version == b"\x01" else 8), 1)
+    scale, = struct.unpack(">I", f.read(4))
+    length, = struct.unpack(">Q", f.read(8)) if version == b"\x01" else struct.unpack(">I", f.read(4))
+    return length / scale if scale else None
+
+
+def _flac_seconds(f) -> float | None:
+    """Duration from the STREAMINFO block (the first metadata block) of a FLAC file."""
+    f.seek(18)  # "fLaC" + block header + 10 bytes of block/frame sizes
+    packed, = struct.unpack(">Q", f.read(8))
+    rate, total = packed >> 44, packed & (2**36 - 1)
+    return total / rate if rate and total else None
+
+
+def _file_seconds(path: str) -> float | None:
+    """Audio length from the file's own header: WAV, m4a/mp4 or FLAC. Never decodes, never guesses."""
+    with open(path, "rb") as f:
+        magic = f.read(12)
+        if magic[:4] == b"fLaC":
+            return _flac_seconds(f)
+        if magic[4:8] == b"ftyp":
+            return _mp4_seconds(f)
+    with wave.open(path, "rb") as handle:
+        return handle.getnframes() / float(handle.getframerate() or 1)
+
+
+def _audio_minutes(rows: list[dict]) -> tuple[float, int]:
+    """Minutes of audio in the succeeded voice and music jobs.
+
+    The length the Hub measured and the job recorded (`audio_duration_s`) wins; otherwise the file's
+    own header is read (WAV, m4a, FLAC). A file that is gone or unreadable is counted as unmeasured
+    rather than guessed from its size.
     """
     seconds, unmeasured = 0.0, 0
     for row in rows:
         if row["modality"] not in ("tts", "music"):
             continue
+        recorded = row.get("audio_duration_s")
+        if isinstance(recorded, (int, float)) and recorded > 0:
+            seconds += recorded
+            continue
         paths = [a.get("path") for a in _artifact_list(row) if isinstance(a, dict)] or [row.get("asset_path")]
         for path in [p for p in paths if p]:
             try:
-                with wave.open(str(path), "rb") as handle:
-                    seconds += handle.getnframes() / float(handle.getframerate() or 1)
-            except (OSError, EOFError, wave.Error):
+                length = _file_seconds(str(path))
+            except (OSError, EOFError, wave.Error, struct.error, IndexError):
+                length = None
+            if length is None:
                 unmeasured += 1
+            else:
+                seconds += length
     return seconds / 60.0, unmeasured
 
 

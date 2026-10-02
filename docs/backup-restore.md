@@ -63,7 +63,14 @@ then `chmod 600` the key files. After the move to another Mac with a different u
 ## After the Gateway moves to its own Mac
 
 The Hub voices are read straight from disk, so they are only included while the Gateway and the
-Studio Hub voices share a Mac. Once they are on different Macs this Mac's Hub voices drop out of
-the backup (shown as "Not on this Mac"). Keeping them would need a small Hub-side export route
-(e.g. `GET /api/voices/export` returning a tar of `voice/voices/`) that the Gateway fetches with the
-fleet token.
+Studio Hub voices share a Mac. Once they are on different Macs the Gateway has no Hub voices to read,
+so they drop out of the backup. **Settings -> Backups says so**: "Studio Hub voices are not in this
+backup: this Mac has no Hub voices library". (`manifest.json` lists `hub/voice/voices` under `missing`.)
+
+What is still backed up on the Gateway's Mac: the Gateway's own voices catalogue and `voice-library/`
+(reference clips and transcripts), keys, fleet roster and Content Packs. What is not: the voices that
+live only inside Studio Hub (`StudioHub Standalone/voice/voices/`). Until a Hub-side export exists,
+copy that folder from the Hub's Mac yourself (or let Time Machine / that Mac's own backup cover it).
+
+Follow-up, not built yet: a small Hub-side export route (e.g. `GET /api/voices/export` returning a tar
+of `voice/voices/`) that the Gateway fetches with the fleet token.
