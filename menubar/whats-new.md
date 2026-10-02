@@ -16,7 +16,7 @@ every feature title, and they are left as they were written.
 
 ## 0.2.94 — 2026-10-02
 
-Telegram alerts, backups, and secrets that stay hidden until you ask.
+Telegram alerts, backups, secrets that stay hidden until you ask, and a calmer Fleet page.
 
 - **Telegram alerts.** Settings has a new Telegram card. Paste a bot token and chat ID and the Gateway messages your phone when a
   Mac or group goes offline (and again when it is back), when a disk or memory runs short, or when jobs keep failing or get
@@ -28,6 +28,9 @@ Telegram alerts, backups, and secrets that stay hidden until you ask.
   back, checking it first and moving anything it replaces to the trash.
 - **Secrets are masked, with an eye.** Every API key and token field in the app and in the console now shows dots until you click
   the eye to show it, and Copy works without revealing it.
+- **A calmer Fleet warning banner.** Warnings from many Macs are now grouped into one line per kind in a short, scrolling banner
+  instead of a wall of text. A controller's own row is no longer labelled "This Mac", and you can hide the macOS-update and Time
+  Machine warnings (disk-space warnings can never be hidden).
 
 ## 0.2.93 — 2026-10-02
 
