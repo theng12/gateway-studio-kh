@@ -1073,10 +1073,13 @@ class JobStore:
         """Jobs that finished (succeeded, failed or cancelled) in `[start, end)`, without their prose.
 
         Only the scalar columns the notifier needs; `result_json` holds the whole generated text and
-        is never read here. The window is on `updated_at`, which is when the job settled.
+        is never read here (bar the audio length of voice/music jobs). The window is on `updated_at`, which is when the job settled.
         """
         rows = self._conn.execute(
-            "SELECT id, modality, state, error_code, error_detail, asset_path, artifacts_json, updated_at "
+            "SELECT id, modality, state, error_code, error_detail, asset_path, artifacts_json, updated_at, "
+            # Only the one number out of result_json, never the generated text.
+            "CASE WHEN modality IN ('tts', 'music') AND json_valid(result_json) THEN json_extract(result_json, '$.payload.audio_duration_s') "
+            "END AS audio_duration_s "
             "FROM jobs WHERE updated_at >= ? AND updated_at < ? "
             "AND state IN ('succeeded', 'failed', 'cancelled')",
             (start, end),

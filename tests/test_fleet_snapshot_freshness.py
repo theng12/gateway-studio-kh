@@ -107,18 +107,29 @@ class FleetSnapshotFreshnessTests(unittest.TestCase):
     def test_the_read_does_not_wait_even_when_the_fan_out_is_slow(self):
         # The shape of the real failure: a busy Hub makes the fan-out take
         # seconds, and the reader that triggered it is the one that times out.
+        # Deterministic: the fan-out is held shut, so a read that waited on it would never return.
         self._reset_cache()
         with patch.object(self.fleet, "locations", self._fake_locations(delay=0.0)):
             self.fleet.snapshot(force=True)
-        with patch.object(self.fleet, "locations", self._fake_locations(delay=1.5)):
+        gate = threading.Event()
+
+        def stuck_fan_out():
+            gate.wait(timeout=20)
+            return []
+
+        with patch.object(self.fleet, "locations", stuck_fan_out):
             with self.fleet._cache_lock:
                 self.fleet._cache["at"] = time.time() - (self.fleet._CACHE_TTL * 10)
-            started = time.time()
-            self.fleet.snapshot()
-            self.assertLess(
-                time.time() - started, 0.5,
-                "a plain read must not wait on the fan-out it just scheduled",
-            )
+            reader = threading.Thread(target=self.fleet.snapshot)
+            reader.start()
+            reader.join(timeout=10)
+            returned = not reader.is_alive()
+            gate.set()
+            reader.join(timeout=10)
+            for t in threading.enumerate():
+                if t.name == "fleet-revalidate":
+                    t.join(timeout=10)
+        self.assertTrue(returned, "a plain read must not wait on the fan-out it just scheduled")
 
     def test_force_does_fan_out(self):
         # The Refresh button is the one path allowed to wait, so it must actually
@@ -148,18 +159,37 @@ class FleetSnapshotFreshnessTests(unittest.TestCase):
         )
 
     def test_a_stale_read_only_schedules_one_revalidation(self):
+        # Deterministic: the fan-out is held on an Event while all ten reads happen, so no wall-clock
+        # sleep can let one refresh finish (and the cache go fresh, or the flag clear) between reads.
         self._reset_cache()
-        with patch.object(self.fleet, "locations", self._fake_locations(delay=0.3)):
+        gate = threading.Event()
+        started = threading.Event()
+        hold = threading.Event()  # set once the stale cache is armed; the warm-up call must not block
+
+        def fan_out():
+            with self.calls_lock:
+                self.calls += 1
+            if hold.is_set():
+                started.set()
+                gate.wait(timeout=10)
+            return []
+
+        with patch.object(self.fleet, "locations", fan_out):
             self.fleet.snapshot(force=True)
             with self.fleet._cache_lock:
                 self.fleet._cache["at"] = time.time() - (self.fleet._CACHE_TTL * 10)
             before = self.calls
+            hold.set()
             for _ in range(10):
                 self.fleet.snapshot()
-            time.sleep(1.0)   # let any revalidation finish
-        self.assertLessEqual(
+            self.assertTrue(started.wait(timeout=10), "the first stale read must start a refresh")
+            gate.set()
+            for t in threading.enumerate():
+                if t.name == "fleet-revalidate":
+                    t.join(timeout=10)
+        self.assertEqual(
             self.calls - before, 1,
-            f"ten stale reads must schedule at most one refresh — {self.calls - before} ran",
+            f"ten stale reads must schedule exactly one refresh — {self.calls - before} ran",
         )
 
     # ── 3. the refresh path stays re-entrant ──────────────────────────

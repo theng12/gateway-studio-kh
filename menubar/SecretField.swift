@@ -6,8 +6,9 @@ import AppKit
 /// way: dots by default, the eye (`eye` / `eye.slash`, "Show" / "Hide" in the tooltip and to VoiceOver) to check
 /// the value, and Copy that works while it is still masked, so handing a key on never needs it on screen.
 ///
-/// While masked the value lives **only** in an `NSSecureTextField`, which draws dots and never gives its text to
-/// accessibility or the screen. The plain field is out of the view tree and empty; revealing moves the value
+/// While masked the value lives **only** in an `NSSecureTextField`, which never gives its text to accessibility or
+/// the screen, and which here draws a fixed-length mask (`MaskedSecureTextField`) so the dots do not reveal how
+/// long the secret is. The plain field is out of the view tree and empty; revealing moves the value
 /// across and hiding moves it back, so there is never a second, readable copy of a hidden secret.
 /// `tests/test_secret_field.swift` pins that.
 ///
@@ -18,7 +19,7 @@ import AppKit
 ///     token.stringValue                                                        // the value, either state
 final class SecretField: NSStackView, NSTextFieldDelegate {
     /// The field that holds the value while it is hidden.
-    let secureField = NSSecureTextField(string: "")
+    let secureField = MaskedSecureTextField(string: "")
     /// The field that holds the value while it is shown. Empty and detached while hidden.
     let plainField = NSTextField(string: "")
     let revealButton = NSButton()
@@ -121,5 +122,32 @@ final class SecretField: NSStackView, NSTextFieldDelegate {
         revealButton.contentTintColor = .secondaryLabelColor
         revealButton.toolTip = word
         revealButton.setAccessibilityLabel(word)
+    }
+}
+
+/// An `NSSecureTextField` that, when not being edited, draws the same fixed run of dots whatever the length of
+/// the secret (like the Hub's SecretMask), so a hidden key does not give away how long it is. While it is being
+/// typed into, the system field editor draws its usual one dot per character.
+final class MaskedSecureTextField: NSSecureTextField {
+    override class var cellClass: AnyClass? {
+        get { MaskedSecureTextFieldCell.self }
+        set {}
+    }
+}
+
+final class MaskedSecureTextFieldCell: NSSecureTextFieldCell {
+    static let mask = String(repeating: "\u{2022}", count: 12)
+
+    override func drawInterior(withFrame cellFrame: NSRect, in controlView: NSView) {
+        guard !stringValue.isEmpty, (controlView as? NSTextField)?.currentEditor() == nil else {
+            return super.drawInterior(withFrame: cellFrame, in: controlView)
+        }
+        let text = NSAttributedString(string: Self.mask, attributes: [
+            .font: font ?? TextRole.mono.font, .foregroundColor: NSColor.textColor])
+        var area = drawingRect(forBounds: cellFrame)
+        let height = text.size().height
+        area.origin.y += (area.height - height) / 2
+        area.size.height = height
+        text.draw(in: area)
     }
 }

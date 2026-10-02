@@ -262,5 +262,17 @@ class BackupTests(unittest.TestCase):
         self.assertEqual(os.stat(self.state_dir / "backup.json").st_mode & 0o777, 0o600)
 
 
+class HubVoicesSkippedNote(unittest.TestCase):
+    def test_the_backups_card_explains_skipped_hub_voices(self) -> None:
+        # The role the manifest reports as `missing` when the Hub's voices are on another Mac, and the
+        # card that must turn it into a plain sentence (not just a path in a "skipped" list).
+        root = Path(__file__).resolve().parents[1]
+        self.assertIn('("hub/voice/voices", HUB_DIR', (root / "gateway/backup.py").read_text().replace("\n", " "))
+        panel = (root / "menubar/BackupPanel.swift").read_text()
+        self.assertIn('hubVoices = "hub/voice/voices"', panel)
+        self.assertIn("Studio Hub voices are not in this backup", panel)
+        self.assertIn("Hub voices", (root / "docs/backup-restore.md").read_text())
+
+
 if __name__ == "__main__":
     unittest.main()

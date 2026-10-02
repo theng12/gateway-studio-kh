@@ -13,6 +13,7 @@ import tempfile
 import time
 import unittest
 import urllib.error
+import struct
 import wave
 from datetime import datetime
 from io import BytesIO
@@ -530,6 +531,40 @@ class DailySummary(Base):
         self.assertIn("PROVIDER_TIMEOUT ×2", text)
         self.assertIn("Offline now: Mini B", text)
         self.assertIn("Mini A red (9 GB free)", text)
+
+    def m4a(self, seconds: int, name: str = "a.m4a", version: int = 0) -> str:
+        def box(kind: bytes, body: bytes) -> bytes:
+            return struct.pack(">I4s", 8 + len(body), kind) + body
+        times = struct.pack(">QQ" if version else ">II", 0, 0)
+        length = struct.pack(">Q" if version else ">I", seconds * 1000)
+        mvhd = box(b"mvhd", bytes([version]) + b"\0\0\0" + times + struct.pack(">I", 1000) + length + b"\0" * 80)
+        path = self.dir / name
+        # mdat before moov: the layout of an un-faststarted file
+        path.write_bytes(box(b"ftyp", b"M4A \0\0\0\0") + box(b"mdat", b"x" * 500) + box(b"moov", mvhd))
+        return str(path)
+
+    def flac(self, seconds: int) -> str:
+        info = struct.pack(">HH", 4096, 4096) + b"\0" * 6 + struct.pack(">Q", (44100 << 44) | (1 << 41) | (15 << 36) | 44100 * seconds) + b"\0" * 16
+        path = self.dir / "a.flac"
+        path.write_bytes(b"fLaC" + bytes([0x80, 0, 0, 34]) + info)
+        return str(path)
+
+    def test_compressed_audio_is_measured_from_its_header(self) -> None:
+        when = at(15, day=1)
+        for path in (self.m4a(600), self.m4a(300, "b.m4a", version=1), self.flac(900)):
+            self.add_job("music", "succeeded", when, artifacts_json=json.dumps([{"path": path}]))
+        text = self.n.build_summary(at(8))
+        self.assertIn("Audio 30 min", text)
+        self.assertNotIn("not measured", text)
+
+    def test_the_duration_the_hub_recorded_wins_over_the_file(self) -> None:
+        when = at(15, day=1)
+        self.add_job("tts", "succeeded", when, artifacts_json=json.dumps([{"path": "/gone.m4a"}]),
+                     result_json=json.dumps({"text": None, "payload": {"audio_duration_s": 1800.0}}))
+        self.add_job("tts", "succeeded", when, artifacts_json=json.dumps([{"path": "/gone.m4a"}]),
+                     result_json="not json")
+        text = self.n.build_summary(at(8))
+        self.assertIn("Audio 30 min (1 files not measured)", text)
 
     def test_empty_day_and_healthy_fleet(self) -> None:
         text = self.n.build_summary(at(8))

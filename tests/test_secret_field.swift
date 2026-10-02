@@ -63,6 +63,22 @@ enum SecretFieldCheck {
         check(!readOnly.secureField.isEditable && !readableTexts(readOnly).contains { $0.contains(secret) },
               "a read-only secret is masked and not editable")
 
+        // Hidden secrets of different lengths draw identically: the mask does not reveal the length.
+        func pixels(_ value: String) -> Data? {
+            let hidden = SecretField(value, width: 320)
+            let win = NSWindow(contentRect: NSRect(x: -20000, y: -20000, width: 400, height: 40),
+                               styleMask: [.titled], backing: .buffered, defer: false)
+            win.contentView = hidden
+            hidden.layoutSubtreeIfNeeded()
+            let target = hidden.secureField
+            guard let rep = target.bitmapImageRepForCachingDisplay(in: target.bounds) else { return nil }
+            target.cacheDisplay(in: target.bounds, to: rep)
+            return rep.tiffRepresentation
+        }
+        let short = pixels("abc"), long = pixels(String(repeating: "k", count: 60)), empty = pixels("")
+        check(short != nil && short == long, "two different-length hidden secrets render identically")
+        check(short != empty, "a hidden secret still draws something (the mask) while an empty field does not")
+
         board.releaseGlobally()
         if failures > 0 { exit(1) }
         print("PASS: secret field")
