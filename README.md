@@ -51,7 +51,7 @@ models — it gets an empty picker, and these stop working outright:
 | TTS narration | row dropped without `credits_per_1000_characters` |
 | Video generation | variant dropped without `credits_per_video` + `price_version` |
 | Music generation | row dropped without `credits_per_request` |
-| Image-to-image | `chargeable` must be published truthy |
+| Image-to-image | `chargeable` must be published (truthful: `false` on local/free models; Story gates references on capability since fix/media-truth) |
 | Durable LLM lineup | fallback advances only on a *proven zero settlement* |
 | Paid replacement paths | need finite `credits` + non-empty `price_version` |
 
@@ -704,7 +704,7 @@ nothing here can make the catalogue less honest. Set `GATEWAY_MODEL_LIMITS` to p
 - **`cost_tier` is all-or-nothing.** One row missing it hides the entire tier-tab strip.
 - **Publish availability explicitly.** The transcription parser reads `available === true` (absent
   means unavailable) while reading `qualification_only !== false` (absent means hidden).
-- **`chargeable` must be explicit.** The TTS quote parser does `payload?.chargeable === true`.
+- **`chargeable` must be explicit — and true to the price.** The TTS quote parser does `payload?.chargeable === true`; a Studio Hub model says `false`.
 - **`paid_concurrency_limit` must be a valid integer** or the admission loader throws before
   falling back to its safe default.
 - **`catalog_status` must be exactly `'published'`** on voices; anything else hides them.

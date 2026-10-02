@@ -2951,9 +2951,13 @@ def main() -> int:
             shape = _zero_pricing("tts")
             check("every Story voice publishes the full price shape",
                   bool(story) and all(
-                      all(v.get(k) == value for k, value in shape.items())
+                      all(v.get(k) == value for k, value in shape.items() if k != "chargeable")
                       for v in story),
                   f"{shape} vs {[{k: v.get(k) for k in shape} for v in story[:2]]}")
+            # `chargeable` is the truth, not the shape: these are the owner's own Macs' voices.
+            check("and a local voice says it costs nothing (chargeable=false)",
+                  bool(story) and all(v.get("chargeable") is False for v in story),
+                  f"{[v.get('chargeable') for v in story[:4]]}")
             check("and no voice is published that Story Studio's parser would drop",
                   all(v["catalog_status"] == "published" and v["quote_enabled"]
                       and v["generation_enabled"] for v in story))

@@ -123,6 +123,10 @@ class CatalogRowTest(unittest.TestCase):
             row = self.build(kind, modality, raw)
             self.assertEqual(row["price_source"], source, (kind, modality))
             for key, value in zero_pricing(modality).items():
+                if key == "chargeable":
+                    # Truthful, not the shape: free on the owner's Macs, never free when unpublished.
+                    self.assertIs(row[key], source != "local", (kind, modality))
+                    continue
                 self.assertEqual(row[key], value, f"{key} on {kind}/{modality} must stay the zero shape")
 
     def test_no_number_is_published_without_a_provider_source(self) -> None:
