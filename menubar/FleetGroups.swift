@@ -53,6 +53,35 @@ struct GroupSummary {
     /// Macs that said their services will not start after a restart (any reachability: the fix is the same).
     var startupOff: Int { machines.filter { $0.startup?.startServicesOnLaunch == false }.count }
 
+    /// The controller's own Mac (the one row that is not a node).
+    var controller: FleetMachine? { machines.first { !$0.isNode } }
+
+    private func versions(_ word: String) -> Int { machines.filter { ($0.versionStatus ?? "") == word }.count }
+    var onLatest: Int { versions("latest") }
+    var updating: Int { versions("updating") }
+    var behind: Int { versions("behind") }
+    /// Macs that answered with a version (offline ones are unknown, and not counted either way).
+    var versionKnown: Int { onLatest + updating + behind }
+    var needsAttention: Int { machines.filter { ($0.state ?? "").lowercased() == "needs_attention" }.count }
+
+    /// "Hub 0.6.132 · Latest · 10 of 11 on latest" for the card header; the bare version when the Gateway
+    /// has published nothing to compare with.
+    var versionLine: (text: String, health: Health)? {
+        guard let version = location.version ?? controller?.hubVersion else { return nil }
+        var parts = ["Hub \(version)"]
+        var health = Health.off
+        if let badge = controller?.versionBadge(latest: nil) {
+            parts.append(badge.text.hasPrefix("Behind") ? "Behind" : badge.text)
+            health = badge.health == .ok ? .off : badge.health
+        }
+        if versionKnown > 0, controller?.versionStatus != nil {
+            parts.append("\(onLatest) of \(versionKnown) on latest")
+            if updating > 0 { parts.append("\(updating) updating") }
+            if behind > 0 { health = max(health, .warn) }
+        }
+        return (parts.joined(separator: " · "), health)
+    }
+
     /// Down (red) = the group is unreachable or paused. Attention (amber) = any node offline or refused, any
     /// disk or memory not green, a stalled job, a drained group, a Mac that will not auto-start, or any
     /// warning or error the Gateway raised. Red as well when the controller's own Mac has no disk left: the
@@ -110,11 +139,17 @@ struct GroupSummary {
         let stalled = batches.filter { $0.stalled == true }.count
         if refused > 0 { out.append(plural(refused, "credential refused", "credentials refused")) }
         if offline > 0 { out.append(plural(offline, "node offline", "nodes offline")) }
+        if needsAttention > 0 { out.append(plural(needsAttention, "node needs attention", "nodes need attention")) }
+        if behind > 0 { out.append(plural(behind, "Mac behind on Studio Hub", "Macs behind on Studio Hub")) }
         if disks > 0 { out.append(plural(disks, "node low on disk", "nodes low on disk")) }
         if memory > 0 { out.append(plural(memory, "node low on memory", "nodes low on memory")) }
         if startupOff > 0 { out.append(plural(startupOff, "node will not auto-start", "nodes will not auto-start")) }
         if stalled > 0 { out.append(plural(stalled, "job stalled", "jobs stalled")) }
         if location.drained == true { out.append("drained") }
+        // Never an empty reason on an amber group: the Gateway's own first warning, in its words.
+        if out.isEmpty, health != .ok, let first = FleetWarnings.group(issues: issues).first {
+            out.append(first.text)
+        }
         return out
     }
 
@@ -153,7 +188,9 @@ struct GroupSummary {
             guard let name else { return (headline, nil) }
             let elapsed = FleetFormat.elapsed(since.map { Date().timeIntervalSince1970 - $0 })
             return (headline, elapsed.map { "\(name) · \($0)" } ?? name)
-        case "ready", "long_idle", "offline": return ("—", nil)
+        case "ready", "long_idle", "offline", "just_finished": return ("—", nil)
+        // The Gateway's few words for *why*: "Voice studio not running", "Last job failed: …".
+        case "needs_attention": return (machine.attention ?? "Needs attention", nil)
         default: return (FleetFormat.words(machine.state), nil)
         }
     }
@@ -247,6 +284,8 @@ final class FleetGroupsTab: NSView, NSSearchFieldDelegate {
     private var showingAll: Set<String> = []
     private var error: String?
     private var compact = false
+    /// The Version column needs a wide pane (it costs ~130 pt); below that the version rides under the node name.
+    private var showVersion = false
 
     private let scroll = NSScrollView()
     private let body = NSStackView()
@@ -263,6 +302,7 @@ final class FleetGroupsTab: NSView, NSSearchFieldDelegate {
     }()
 
     private static let compactBelow: CGFloat = 760
+    private static let versionColumnFrom: CGFloat = 1000
     private static let rowLimit = 40
 
     override init(frame: NSRect) {
@@ -326,6 +366,11 @@ final class FleetGroupsTab: NSView, NSSearchFieldDelegate {
     override func layout() {
         super.layout()
         let narrow = bounds.width - 2 * PageKit.pagePadding < Self.compactBelow
+        let roomy = bounds.width - 2 * PageKit.pagePadding >= Self.versionColumnFrom
+        if roomy != showVersion, snapshot != nil {
+            showVersion = roomy
+            rebuild()
+        }
         if narrow != compact, snapshot != nil {
             compact = narrow
             rebuild()
@@ -345,6 +390,8 @@ final class FleetGroupsTab: NSView, NSSearchFieldDelegate {
             seeded = true
         }
         setStatus(snapshot.generatedAt.map { "Updated \(FleetFormat.relative($0))" } ?? "")
+        // `layout()` only reacts to a change of width, so the first data has to read the width itself.
+        if bounds.width > 0 { showVersion = bounds.width - 2 * PageKit.pagePadding >= Self.versionColumnFrom }
         rebuild()
     }
 
@@ -544,6 +591,7 @@ final class FleetGroupsTab: NSView, NSSearchFieldDelegate {
         let running = groups.reduce(0) { $0 + $1.running }
         let queued = groups.reduce(0) { $0 + $1.queued }
         let worst = groups.compactMap { $0.worstDisk }.min { ($0.diskFree ?? 0) < ($1.diskFree ?? 0) }
+        let summary = snapshot?.summary
 
         func stat(_ value: String, _ caption: String, _ health: Health = .ok) -> NSView {
             let figure = PageKit.label(value, .figure, colour: health == .ok || health == .off ? .labelColor : health.text)
@@ -561,6 +609,7 @@ final class FleetGroupsTab: NSView, NSSearchFieldDelegate {
             stat("\(up)/\(groups.count)", "groups reachable", up == groups.count ? .ok : .bad),
             stat("\(online)/\(nodes)", "nodes online", online == nodes ? .ok : .warn),
             stat("\(running)", "jobs running · \(queued) queued"),
+            Self.onLatestStat(summary, stat),
             stat(worst.map { FleetFormat.gb($0.diskFree) } ?? "—",
                  "least free disk" + (worst.map { " · " + ($0.label ?? $0.machine ?? "") } ?? ""),
                  worst.map { $0.diskHealth } ?? .off),
@@ -569,6 +618,19 @@ final class FleetGroupsTab: NSView, NSSearchFieldDelegate {
         row.spacing = DS.Space.xl
         panel.hold(row)
         return panel
+    }
+
+    /// "On latest 39/41 · Studio Hub 0.6.132": the fleet's version tile, amber while any Mac is behind.
+    static func onLatestStat(_ summary: FleetSummary?, _ stat: (String, String, Health) -> NSView) -> NSView {
+        guard let summary, let latest = summary.hubLatest else {
+            return stat("—", "on latest · nothing published", .off)
+        }
+        let known = summary.versionKnown ?? 0
+        let on = summary.onLatest ?? 0
+        var caption = "on Hub \(latest)"
+        if let updating = summary.hubUpdating, updating > 0 { caption += " · \(updating) updating" }
+        let health: Health = (summary.hubBehind ?? 0) > 0 ? .warn : .ok
+        return stat("\(on)/\(known)", caption, health)
     }
 
     // MARK: Group card
@@ -583,14 +645,16 @@ final class FleetGroupsTab: NSView, NSSearchFieldDelegate {
     private var columns: [Column] {
         [Column(title: "Node", width: 0, wide: false),
          Column(title: "State", width: 124, wide: false),
+         Column(title: "Version", width: 124, wide: true),
          Column(title: "Doing now", width: 132, wide: true, grows: true),
          Column(title: "Disk", width: 96, wide: false),
          Column(title: "Memory", width: 92, wide: false),
          Column(title: "Startup", width: 108, wide: false)]
     }
     private var activeColumns: [Column] {
-        guard compact else { return columns }
-        // Narrow pane: drop "Doing now" and tighten the rest so a window at its 860 pt minimum does not grow.
+        guard compact else { return columns.filter { $0.title != "Version" || showVersion } }
+        // Narrow pane: drop "Doing now" and "Version" (the version then rides under the node name) and tighten
+        // the rest so a window at its 860 pt minimum does not grow.
         return columns.filter { !$0.wide }.map { column in
             var tight = column
             switch column.title {
@@ -680,15 +744,16 @@ final class FleetGroupsTab: NSView, NSSearchFieldDelegate {
         title.spacing = DS.Space.s
         title.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         let problems = group.problems
-        // "Hub v0.6.126 · " (amber when it differs from the version this gateway targets), then the counted reasons.
+        // "Hub 0.6.132 · Latest · 10 of 11 on latest · " (against the newest release this Gateway published;
+        // amber while a Mac is behind), then the counted reasons.
         let sub = PageKit.label("", .secondary, wrapping: true)
         let statusColour = problems.isEmpty ? NSColor.secondaryLabelColor : (group.health == .bad ? Health.bad.text : Health.warn.text)
         let line = NSMutableAttributedString()
-        if let version = group.location.version {
-            let relation = group.location.hubVersionRelation
-            let drift = relation == "older" || relation == "newer"
-            line.append(NSAttributedString(string: "Hub v\(version)" + (relation == "older" ? " (older)" : relation == "newer" ? " (newer)" : "") + " · ",
-                                           attributes: [.font: TextRole.secondary.font, .foregroundColor: drift ? Health.warn.text : NSColor.secondaryLabelColor]))
+        if let version = group.versionLine {
+            let colour = version.health == .warn || version.health == .bad ? version.health.text
+                : version.health == .info ? Health.info.text : NSColor.secondaryLabelColor
+            line.append(NSAttributedString(string: version.text + " · ",
+                                           attributes: [.font: TextRole.secondary.font, .foregroundColor: colour]))
         }
         let words = problems.isEmpty ? "\(group.nodeCount) node\(group.nodeCount == 1 ? "" : "s") · \(group.lastAnswer)" : problems.joined(separator: " · ")
         line.append(NSAttributedString(string: words, attributes: [.font: TextRole.secondary.font, .foregroundColor: statusColour]))
@@ -906,9 +971,13 @@ final class FleetGroupsTab: NSView, NSSearchFieldDelegate {
 
         var facts = machine.hardwareText
         var factsColour = NSColor.secondaryLabelColor
-        if let version = node?.version, let controller = group.location.version, version != controller {
-            facts += (facts.isEmpty ? "" : " · ") + "v\(version)"
-            factsColour = Health.warn.text
+        let latest = snapshot?.summary?.hubLatest
+        let versionBadge = machine.versionBadge(latest: latest)
+        // No Version column (a pane under ~1000 pt): the version rides under the name, amber when behind.
+        if !showVersion || compact, let version = machine.hubVersion, machine.versionStatus != "unknown" {
+            let word = versionBadge.map { $0.text.hasPrefix("Behind") ? "behind" : $0.text.lowercased() }
+            facts += (facts.isEmpty ? "" : " · ") + "Hub \(version)" + (word.map { " \($0)" } ?? "")
+            if let badge = versionBadge, badge.health == .warn || badge.health == .info { factsColour = badge.health.text }
         }
         if !machine.isNode { facts += (facts.isEmpty ? "" : " · ") + "controller" }
         let name = stack([PageKit.label(machine.label ?? machine.machine ?? "node", .rowTitle),
@@ -923,7 +992,8 @@ final class FleetGroupsTab: NSView, NSSearchFieldDelegate {
         state.toolTip = machine.stateReason
 
         let (headline, detail) = group.doing(machine)
-        var doingViews = [PageKit.label(headline, .secondary, colour: health == .bad ? Health.bad.text : .labelColor)]
+        var doingViews = [PageKit.label(headline, .secondary,
+                                        colour: health == .bad || health == .warn ? health.text : .labelColor)]
         if let detail { doingViews.append(PageKit.label(detail, .caption, colour: .secondaryLabelColor)) }
         let doing = stack(doingViews)
         doing.toolTip = detail
@@ -937,7 +1007,10 @@ final class FleetGroupsTab: NSView, NSSearchFieldDelegate {
         let startup = Badge(startupText, startupHealth)
         startup.toolTip = FleetStartup.tooltip(machine.startup, name: machine.label ?? machine.machine ?? "This Mac")
 
-        let row = rowStack(["Node": name, "State": state, "Doing now": doing, "Disk": diskCell, "Memory": memoryCell, "Startup": startup],
+        let version = Self.versionCell(machine, versionBadge)
+
+        let row = rowStack(["Node": name, "State": state, "Version": version, "Doing now": doing, "Disk": diskCell,
+                            "Memory": memoryCell, "Startup": startup],
                           trailing: startupMenu?(machine))
         let sentence = [node?.detail ?? machine.nodeDetail].compactMap { $0 }.first(where: { !$0.isEmpty && health == .bad })
         guard let sentence else { return row }
@@ -945,6 +1018,24 @@ final class FleetGroupsTab: NSView, NSSearchFieldDelegate {
         wrapper.spacing = 0
         row.widthAnchor.constraint(equalTo: wrapper.widthAnchor).isActive = true
         return wrapper
+    }
+
+    /// The Version cell: the badge, and under it the version itself (a Behind badge already names it).
+    static func versionCell(_ machine: FleetMachine, _ badge: (text: String, health: Health, tooltip: String)?) -> NSView {
+        guard let badge else {
+            return PageKit.label(machine.hubVersion ?? "—", .secondary,
+                                 colour: machine.hubVersion == nil ? .secondaryLabelColor : .labelColor)
+        }
+        var views: [NSView] = [Badge(badge.text, badge.health)]
+        if let version = machine.hubVersion, !badge.text.contains(version) {
+            views.append(PageKit.label(version, .caption, colour: .secondaryLabelColor))
+        }
+        let stack = NSStackView(views: views)
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = DS.Space.xs / 2
+        stack.toolTip = badge.tooltip
+        return stack
     }
 
     /// What the Disk cell's tooltip adds: the volume, the Hub's own state and its largest consumers.
@@ -968,8 +1059,9 @@ final class FleetGroupsTab: NSView, NSSearchFieldDelegate {
         last.maximumNumberOfLines = 2
         last.preferredMaxLayoutWidth = 124
         let seen = PageKit.label(node.lastSeenAt?.doubleValue == nil ? "never seen" : "seen \(node.lastSeenText)", .caption, colour: .secondaryLabelColor)
-        return rowStack(["Node": name, "State": stack([Badge("Unknown", .off), seen]), "Doing now": last,
-                         "Disk": dash(), "Memory": dash(), "Startup": dash()])
+        return rowStack(["Node": name, "State": stack([Badge("Unknown", .off), seen]),
+                         "Version": PageKit.label(node.version ?? "—", .secondary, colour: .secondaryLabelColor),
+                         "Doing now": last, "Disk": dash(), "Memory": dash(), "Startup": dash()])
     }
 
     private func noteRow(_ health: Health, _ text: String, caption: Bool = false) -> NSView {

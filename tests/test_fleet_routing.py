@@ -446,8 +446,11 @@ class IssueDerivationTests(unittest.TestCase):
                 {"machine": "m2", "label": "M2"},
                 {"machine": "m3", "label": "M3"},
             ],
+            # The limitation sits on a Mac that answers: on an offline one it is the offline row again,
+            # and is not reported a second time (fix/fleet-health).
             "activity": {"pulse": {}, "machines": [
-                {"machine": "m2", "state": "offline", "limitation": "no disk"},
+                {"machine": "m2", "state": "offline", "limitation": "Activity evidence pending"},
+                {"machine": "m3", "state": "unknown", "limitation": "no disk"},
             ]},
             "running_jobs": [{"id": "job-1", "stalled": True}],
             "local_models": [], "workers": [], "probe_machines_hidden": 2,
@@ -889,33 +892,20 @@ class HubVersionReportTests(unittest.TestCase):
     gate stays a capability question.
     """
 
-    def test_a_newer_hub_is_reported_with_both_versions(self) -> None:
-        row = _node_site()
-        row["version"] = "0.6.99"
-        row["hub_version_relation"] = "newer"
-        drift = [i for i in fleet._issues([row]) if i["code"] == "hub_version_drift"]
-        self.assertEqual(len(drift), 1, drift)
-        self.assertEqual(drift[0]["severity"], "info")
-        self.assertEqual(drift[0]["subject"], "0.6.99")
-        self.assertIn(SUPPORTED_STUDIO_HUB_VERSION, drift[0]["message"])
-        self.assertIn("keeps working", drift[0]["message"])
-
-    def test_an_older_hub_is_reported_too(self) -> None:
-        row = _node_site()
-        row["version"] = "0.6.18"
-        row["hub_version_relation"] = "older"
-        drift = [i for i in fleet._issues([row]) if i["code"] == "hub_version_drift"]
-        self.assertEqual(len(drift), 1, drift)
-        self.assertIn("not read here", drift[0]["message"])
-
-    def test_a_matching_or_unstated_version_raises_nothing(self) -> None:
-        for relation in ("match", None, ""):
+    def test_a_hub_on_another_version_than_this_build_raises_no_issue(self) -> None:
+        # Replaced 2026-10-02 (fix/fleet-health): comparing against the release this build was
+        # compiled for called every controller "newer" the day after each release, on a fleet that
+        # was entirely up to date. What the owner needs is "which Macs are not on the latest
+        # *published* release" — `hub_behind`, tested in test_fleet_health.py.
+        for version, relation in (("0.6.99", "newer"), ("0.6.18", "older"),
+                                  (SUPPORTED_STUDIO_HUB_VERSION, "match"), (None, None)):
             with self.subTest(relation=relation):
                 row = _node_site()
-                row["version"] = SUPPORTED_STUDIO_HUB_VERSION
+                row["version"] = version
                 row["hub_version_relation"] = relation
                 codes = {i["code"] for i in fleet._issues([row])}
                 self.assertNotIn("hub_version_drift", codes, codes)
+                self.assertNotIn("hub_behind", codes, "nothing published: no verdict either way")
 
     def test_drift_never_moves_the_headline_or_a_route(self) -> None:
         # Not counted: `summary.issues` counts errors and warnings, and an

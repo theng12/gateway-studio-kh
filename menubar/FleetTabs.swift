@@ -710,39 +710,34 @@ final class FleetLocationsTab: FleetTabView {
                 }
             ),
             FleetColumn(
-                id: "lhub", title: "Hub", width: 100, minWidth: 100, sortable: false,
-                // **The version, and whether this gateway was built against it.** Studio Hub auto-updates
-                // itself, so a controller can move ahead of this app without anyone touching it; the relation
-                // is drawn rather than left in a tooltip, because "which of my Macs is on something this
-                // build has never seen?" is the question a drift raises. Nothing is refused on a mismatch -
-                // see `SUPPORTED_STUDIO_HUB_VERSION`.
+                id: "lhub", title: "Hub", width: 120, minWidth: 100, sortable: false,
+                // **The version, against the newest release this Gateway published** — not against the
+                // release this build was compiled for, which called every controller "newer" the day after
+                // a release. `versionStatus` is the controller's own Mac (fleet.stamp_controller_versions).
                 text: { row in
                     guard let row = location(row) else { return "—" }
                     let stated = FleetFormat.text(row.version)
-                    switch row.hubVersionRelation {
-                    case "older": return "\(stated) · older"
-                    case "newer": return "\(stated) · newer"
+                    switch row.versionStatus {
+                    case "latest": return "\(stated) · Latest"
+                    case "updating": return "\(stated) · Updating…"
+                    case "behind": return "\(stated) · Behind"
                     default: return stated
                     }
                 },
                 colour: { row in
-                    let relation = location(row)?.hubVersionRelation
-                    return relation == "older" || relation == "newer" ? Health.warn.text : .labelColor
+                    switch location(row)?.versionStatus {
+                    case "behind": return Health.warn.text
+                    case "updating": return Health.info.text
+                    default: return .labelColor
+                    }
                 },
                 tooltip: { row in
-                    guard let row = location(row) else { return nil }
-                    switch row.hubVersionRelation {
-                    case "older":
-                        return "Older than the Studio Hub this gateway build targets. "
-                            + "It keeps working; a route or field added since then is not read."
-                    case "newer":
-                        return "Newer than the Studio Hub this gateway build targets. It keeps "
-                            + "working; anything it serves in a lane this build does not know "
-                            + "is listed as unsupported rather than offered."
-                    case "match":
-                        return "The Studio Hub release this gateway build targets."
-                    default:
-                        return "The controller stated no Hub version."
+                    switch location(row)?.versionStatus {
+                    case "latest": return "The newest Studio Hub this Gateway has published."
+                    case "updating": return "The controller holds the newest release and installs it as soon as it is idle."
+                    case "behind": return "Behind the newest release, and not updating by itself. Open Studio Hub on "
+                        + "that Mac, or publish the release to this group."
+                    default: return "Nothing has been published from this Gateway to compare with."
                     }
                 }
             ),
@@ -1122,6 +1117,8 @@ final class FleetMachinesTab: NSView {
     private var belowStatus: NSLayoutConstraint!
     /// The warning kinds the owner hid (`GET /admin/api/settings/fleet-warnings`); set by the Fleet page.
     var hiddenWarningKinds: Set<String> = []
+    /// The fleet summary, for the newest published Studio Hub (Version column, status line); set by the page.
+    var summary: FleetSummary?
     private var studios: [String: [String]] = [:]
     /// Injected by the Fleet page (FleetStartup.swift): the per-machine startup badge and "…" menu, and the
     /// strip above the table that holds the bulk "Enable Auto-Start" bar. Left empty, the tab only shows the
@@ -1204,11 +1201,31 @@ final class FleetMachinesTab: NSView {
                     guard let row = machine(any) else { return NSView() }
                     // **The reason, not just the verdict**, and "is it switched off, or gone?": the Hub's own
                     // sentence for why it cannot reach the node, and when the controller last heard from it.
-                    var tips = [row.stateReason, row.limitation].compactMap { $0 }
+                    var tips = [row.attention, row.stateReason, row.limitation].compactMap { $0 }
                     if row.isNode { tips.append("The controller last heard from this Mac \(row.nodeLastSeenText).") }
                     return fleetBadgeCell(row.stateLabel, row.activityHealth,
                                           caption: row.isNode ? "seen \(row.nodeLastSeenText)" : nil,
                                           tooltip: tips.isEmpty ? nil : tips.joined(separator: "\n\n"))
+                }
+            ),
+            FleetColumn(
+                id: "version", title: "Version", width: 116, minWidth: 100, hideBelow: 640,
+                // Studio Hub on this Mac against the newest release this Gateway published.
+                text: { [weak self] any in
+                    guard let row = machine(any) else { return "—" }
+                    return row.versionBadge(latest: self?.summary?.hubLatest)?.text ?? row.hubVersion ?? "—"
+                },
+                sortValue: { any in
+                    let rank = ["behind": 0, "updating": 1, "unknown": 2, "latest": 3]
+                    return .number(Double(rank[machine(any)?.versionStatus ?? ""] ?? 4))
+                },
+                cell: { [weak self] any in
+                    guard let row = machine(any) else { return NSView() }
+                    guard let badge = row.versionBadge(latest: self?.summary?.hubLatest) else {
+                        return fleetTwoLineCell(row.hubVersion ?? "—", nil)
+                    }
+                    let caption = row.hubVersion.flatMap { badge.text.contains($0) ? nil : $0 }
+                    return fleetBadgeCell(badge.text, badge.health, caption: caption, tooltip: badge.tooltip)
                 }
             ),
             FleetColumn(
@@ -1259,7 +1276,7 @@ final class FleetMachinesTab: NSView {
                 }
             ),
             FleetColumn(
-                id: "jobs", title: "Jobs", width: 128, minWidth: 112, hideBelow: 700,
+                id: "jobs", title: "Jobs", width: 128, minWidth: 112, hideBelow: 800,
                 text: { row in
                     guard let row = machine(row) else { return "—" }
                     if row.completed == nil && row.failed == nil { return "—" }
@@ -1317,6 +1334,14 @@ final class FleetMachinesTab: NSView {
             lines.append("Node: \(row.nodeRoleText)" + (row.nodeAddress.map { " at \($0)" } ?? "")
                          + " · last seen \(row.nodeLastSeenText)")
         }
+        if let why = row.attention { lines.append("Needs attention: " + why) }
+        if let version = row.hubVersion {
+            let badge = row.versionBadge(latest: summary?.hubLatest)
+            lines.append("Studio Hub \(version)" + (badge.map { " · \($0.text)" } ?? ""))
+        }
+        if let ignored = row.notInstalledStudios, !ignored.isEmpty {
+            lines.append("Not run on this Mac (ignored): " + ignored.joined(separator: ", "))
+        }
         if row.limitationText != "—" { lines.append("Limitation: " + row.limitationText) }
         detail.stringValue = lines.joined(separator: "\n")
     }
@@ -1331,12 +1356,24 @@ final class FleetMachinesTab: NSView {
         }
         controller.setRows(rows)
         showDetail(controller.table.selectedRow >= 0 ? controller.rows[controller.table.selectedRow] as? FleetMachine : nil)
-        let summary = rows.count == machines.count
+        let count = rows.count == machines.count
             ? "\(machines.count) machine\(machines.count == 1 ? "" : "s")."
             : "\(rows.count) of \(machines.count) machines match the filter."
         let text = NSMutableAttributedString(
-            string: summary,
+            string: count,
             attributes: [.font: TextRole.secondary.font, .foregroundColor: NSColor.secondaryLabelColor])
+        // "On latest 39/41 (Studio Hub 0.6.132) · 2 behind · 6 not answering": the fleet's version line.
+        if let summary, let latest = summary.hubLatest {
+            var parts = ["On latest \(summary.onLatest ?? 0)/\(summary.versionKnown ?? 0) (Studio Hub \(latest))"]
+            if let n = summary.hubUpdating, n > 0 { parts.append("\(n) updating") }
+            if let n = summary.hubBehind, n > 0 { parts.append("\(n) behind") }
+            if let n = summary.hubUnknown, n > 0 { parts.append("\(n) not answering") }
+            let behind = (summary.hubBehind ?? 0) > 0
+            text.append(NSAttributedString(
+                string: " " + parts.joined(separator: " · ") + ".",
+                attributes: [.font: TextRole.secondary.font,
+                             .foregroundColor: behind ? Health.warn.text : NSColor.secondaryLabelColor]))
+        }
         statusLabel.attributedStringValue = text
         // The warnings are about the whole fleet, so they ignore the filter: a Mac that is filling up must
         // not disappear because a search hid it. One line per kind; the area scrolls past ~5 lines.

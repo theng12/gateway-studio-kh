@@ -502,6 +502,7 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
     private func applyFilter() {
         guard let snapshot else { return }
         machinesTab.hiddenWarningKinds = Set(snapshot.fleetWarnings?.hidden ?? [])
+        machinesTab.summary = snapshot.summary
         machinesTab.update(
             machines: snapshot.machines, studios: snapshot.studiosByMachine, filter: filter)
         startupBar.update(machines: snapshot.machines)

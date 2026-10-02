@@ -35,6 +35,11 @@ patch("MainWindow.swift", "        window.makeKeyAndOrderFront(nil)\n        NSA
 patch("MainWindow.swift", "    private lazy var webView: WKWebView = {", "    lazy var webView: WKWebView = {")
 patch("MainWindow.swift", "    private var container: NSView!", "    var container: NSView!")
 
+# GATEWAY_RENDER_EXPAND=1 opens every Fleet group card, so a healthy fleet's node rows can be seen.
+patch("FleetGroups.swift", "            if expanded.isEmpty, groups.count == 1 {",
+      "            if ProcessInfo.processInfo.environment[\"GATEWAY_RENDER_EXPAND\"] == \"1\" { expanded = Set(groups.map { $0.id }) }\n"
+      "            if expanded.isEmpty, groups.count == 1 {")
+
 # Analytics remembers a tab; the harness picks one without a click.
 patch("AnalyticsSection.swift", "    private func showSelectedTable() {",
       "    func renderSelect(_ index: Int) { selectedTab = Tab(rawValue: index) ?? .type; tabControl.selectedSegment = index; showSelectedTable() }\n\n    private func showSelectedTable() {")
