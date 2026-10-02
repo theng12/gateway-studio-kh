@@ -35,10 +35,11 @@ from typing import Any
 from . import concurrency
 from .adapters import BackendError, BackendRequest, adapter_for
 from .adapters import studio_hub
+from .adapters.base import requests_started
 from .config import ARTIFACT_DIR
 from .providers import registry
 from .providers.definitions import KIND_STUDIO_HUB
-from .store import RECOVERY_UNKNOWN, JobStore
+from .store import NEVER_SENT_SUFFIX, RECOVERY_UNKNOWN, JobStore
 from . import fleet
 
 #: Modality → the Hub's own operation name, for reading a site's per-operation
@@ -663,6 +664,7 @@ def execute_job(job: dict[str, Any], store: JobStore) -> None:
         adapter = adapter_for(definition)
         if job.get("waiting_json") or current.get("waiting_json"):
             on_wait(None)  # a fresh attempt is not waiting for anything yet
+        sends_before = requests_started()
         try:
             result = adapter.generate(request)
             break
@@ -670,6 +672,10 @@ def execute_job(job: dict[str, Any], store: JobStore) -> None:
             log.warning("job %s failed via %s: %s", job_id, provider_id, exc)
             current = store.get(job_id) if hasattr(store, "get") else job
             current = current or {}
+            # **Nothing was sent, so nothing can be outstanding.** `dispatch_started_at` is stamped
+            # before the adapter runs, so on its own it cannot tell "refused before any request"
+            # (a validation error, a pool with nothing to try) from "sent and went silent".
+            never_sent = requests_started() == sends_before
             # **A definite 4xx is the provider's own refusal — it accepted
             # nothing.** That is a settled failure, never a recovery hold, no
             # matter which adapter raised it. Without this a `400` such as
@@ -691,7 +697,7 @@ def execute_job(job: dict[str, Any], store: JobStore) -> None:
             # Only an adapter that polled its id to a terminal state sets this. Every path that may
             # still be running leaves it false — including a failure fetching an artifact for an
             # item that succeeded — and those keep the hold.
-            if exc.upstream_settled:
+            if exc.upstream_settled or never_sent:
                 unknown = False
             else:
                 unknown = bool(current.get("upstream_job_id")) or exc.upstream_accepted is True
@@ -782,6 +788,18 @@ def execute_job(job: dict[str, Any], store: JobStore) -> None:
             return
         except Exception as exc:  # noqa: BLE001 - a backend bug must not kill the worker
             log.exception("job %s raised unexpectedly", job_id)
+            if requests_started() == sends_before:
+                # **A gateway bug before any request is a plain failure, not an unknown outcome.**
+                # Nothing reached a provider, so there is nothing to reconcile and a retry cannot
+                # duplicate work (the 0.2.97 pool `AttributeError` is the case that taught this).
+                _fail(
+                    store,
+                    job_id,
+                    code="PROVIDER_FAILED",
+                    detail=(f"{type(exc).__name__}: {exc}"[:380] + NEVER_SENT_SUFFIX),
+                    retryable=True,
+                )
+                return
             getter = getattr(store, "get", None)
             current = getter(job_id) if getter is not None else job
             current = current or {}

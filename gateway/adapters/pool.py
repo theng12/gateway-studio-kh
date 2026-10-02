@@ -38,7 +38,7 @@ from __future__ import annotations
 from typing import Any
 
 from ..providers.definitions import KIND_POOL
-from .base import Backend, BackendError, BackendRequest, BackendResult
+from .base import Backend, BackendError, BackendRequest, BackendResult, requests_started
 
 
 def _is_request_shaped_failure(error: BackendError) -> bool:
@@ -52,6 +52,18 @@ def _is_request_shaped_failure(error: BackendError) -> bool:
     are reported so the answer is actionable rather than bare.
     """
     return error.status == 400 and not error.retryable
+
+
+def _outcome_known(error: BackendError, sent: bool) -> bool:
+    """Whether this member's failure leaves nothing outstanding upstream.
+
+    The worker's own rules, applied per member: nothing was sent, the provider refused it (a 4xx),
+    the adapter proved it accepted nothing, or it followed its own id to a terminal answer.
+    """
+    if error.code == "PROVIDER_SUBMISSION_UNCERTAIN":
+        return False
+    return (not sent or error.upstream_accepted is False or error.upstream_settled
+            or (isinstance(error.status, int) and 400 <= error.status < 500))
 
 
 class PoolBackend(Backend):
@@ -83,6 +95,9 @@ class PoolBackend(Backend):
         attempts: list[dict[str, Any]] = []
         last: BackendError | None = None
         tried = 0
+        #: Some member may have left work running upstream. Until one does, the pool's failure is
+        #: a known one — a member that failed before sending anything must not make it "unknown".
+        ambiguous = False
 
         # Resolve first, so "every member is cooling down" is judged over the members that
         # could answer at all (a disabled one is not a candidate and must not hide the rule).
@@ -126,9 +141,11 @@ class PoolBackend(Backend):
                 display_name=definition.display_name,
                 checkpoint=request.checkpoint,
             )
+            sends_before = requests_started()
             try:
                 result = self._adapter_for(definition).generate(member_request)
             except BackendError as exc:
+                ambiguous = ambiguous or not _outcome_known(exc, requests_started() != sends_before)
                 attempts.append(
                     {
                         "member": member,
@@ -149,6 +166,7 @@ class PoolBackend(Backend):
                 # An adapter bug on one member must not take the pool down with it.
                 # This is the same reasoning as the chat route's broad catch, one
                 # level in: the next member may well be a different code path.
+                ambiguous = ambiguous or requests_started() != sends_before
                 attempts.append(
                     {"member": member, "outcome": "error", "detail": f"{type(exc).__name__}: {exc}"[:400]}
                 )
@@ -176,6 +194,7 @@ class PoolBackend(Backend):
             code=(last.code if last else "POOL_EXHAUSTED"),
             status=(last.status if last else 502),
             retryable=bool(last.retryable) if last else False,
+            upstream_accepted=None if ambiguous else False,
         )
 
     def _credentials_for(self, provider_id: str) -> dict[str, str]:

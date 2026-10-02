@@ -20,9 +20,50 @@ return a result or raise `BackendError`.
 
 from __future__ import annotations
 
+import threading
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
+
+import httpx
+
+# ---------------------------------------------------------------------------
+# "Did anything leave the building?" — counted where every request goes through.
+#
+# A failure raised *before* an adapter's first request is a plain failure: nothing reached a
+# provider, so there is nothing to reconcile and a retry cannot duplicate work. Without this the
+# worker could only ask "had dispatch begun?", and `dispatch_started_at` is stamped before the
+# adapter is even called — so the 0.2.97 pool bug (`AttributeError` while resolving members, no
+# request ever made) parked twenty jobs as "Upstream outcome is unknown" and Story locked them.
+#
+# Every adapter speaks HTTP through `httpx.Client.send` (`httpx.post`/`get` build a Client and go
+# through it too), so one counter there sees every send without an adapter having to remember to
+# report it — a forgotten mark would read as "nothing sent", the unsafe direction. Counted per
+# thread because each job runs on its own worker thread; adapters do not spawn threads.
+# ponytail: counts request *attempts* (a refused connect counts as sent). Conservative by design.
+# ---------------------------------------------------------------------------
+_sends = threading.local()
+
+
+def requests_started() -> int:
+    """How many HTTP requests this thread has started. Compare before/after a call."""
+    return getattr(_sends, "count", 0)
+
+
+def note_request_started() -> None:
+    """Count one send. Called by the `httpx.Client.send` wrapper (and by test doubles that fake one)."""
+    _sends.count = getattr(_sends, "count", 0) + 1
+
+
+if not getattr(httpx.Client.send, "_gateway_counts_sends", False):
+    _original_send = httpx.Client.send
+
+    def _counted_send(self: httpx.Client, request: httpx.Request, **kwargs: Any) -> httpx.Response:
+        note_request_started()
+        return _original_send(self, request, **kwargs)
+
+    _counted_send._gateway_counts_sends = True  # type: ignore[attr-defined]
+    httpx.Client.send = _counted_send  # type: ignore[method-assign]
 
 
 @dataclass(slots=True, frozen=True)

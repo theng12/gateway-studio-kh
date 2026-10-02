@@ -19,12 +19,21 @@ What we drop: leases, fencing, permits, fairness ranking, admission capacity.
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 import threading
 import time
 import uuid
 from pathlib import Path
 from typing import Any
+
+log = logging.getLogger("gateway.store")
+
+#: Appended to a failure raised inside the gateway before any provider request was made.
+NEVER_SENT_SUFFIX = (
+    " Failed inside the gateway before any request was sent to a provider;"
+    " nothing to reconcile, safe to retry."
+)
 
 TERMINAL_STATES = frozenset({"succeeded", "failed", "cancelled"})
 UNKNOWN_OUTCOME_CODE = "UNKNOWN_OUTCOME"
@@ -219,6 +228,7 @@ class JobStore:
         self._ensure_columns()
         self._recover_interrupted()
         self._settle_late_successes()
+        self._relabel_never_sent_pool_failures()
         self._conn.commit()
 
     def _ensure_columns(self) -> None:
@@ -238,7 +248,11 @@ class JobStore:
         if "retryable" in result:
             result["retryable"] = bool(result["retryable"])
         result["cancel_requested"] = result.get("cancel_requested_at") is not None
-        result["recovery_required"] = bool(result.get("recovery_state"))
+        # **Only an unknown outcome needs reconciling.** `retryable` is also a recovery state (it
+        # keeps the job's inputs and its row out of the archive so it can be retried), but Story
+        # reads `recovery_required: true` as "held, do not resubmit" (`holdsUnknownOutcome`) — so a
+        # plain retryable failure published that way was locked as if its outcome were unknown.
+        result["recovery_required"] = result.get("recovery_state") == RECOVERY_UNKNOWN
         try:
             result["waiting"] = json.loads(result["waiting_json"]) if result.get("waiting_json") else None
         except ValueError:
@@ -275,6 +289,46 @@ class JobStore:
             """,
             (RECOVERY_UNKNOWN,),
         )
+
+    #: The exact failure gateway 0.2.97/0.2.98's pool adapter raised while resolving its members,
+    #: before it had sent anything anywhere.
+    _POOL_RESOLVE_BUG = "AttributeError: module 'gateway.catalog' has no attribute 'resolve'"
+
+    def _relabel_never_sent_pool_failures(self) -> list[str]:
+        """One-off repair (2026-10-03): the pool bug's jobs were never sent, so they are not holds.
+
+        Those builds recorded every pool job as "Upstream outcome is unknown; reconcile …" because
+        `dispatch_started_at` is stamped before the adapter runs, and Story correctly locked them.
+        Nothing reached a provider, so they become what the worker now records for that case: a
+        plain, retryable failure with nothing to reconcile. Matched on the exact error, the pool
+        provider and the absence of any upstream id, so no other hold is touched; idempotent,
+        because a relabelled row is no longer an `unknown_outcome`.
+        """
+        rows = self._conn.execute(
+            """
+            SELECT id, error_detail FROM jobs
+             WHERE state = 'failed' AND recovery_state = ? AND provider_id = 'pool'
+               AND COALESCE(upstream_job_id, '') = '' AND error_detail LIKE ?
+            """,
+            (RECOVERY_UNKNOWN, self._POOL_RESOLVE_BUG + "%"),
+        ).fetchall()
+        for row in rows:
+            self._conn.execute(
+                """
+                UPDATE jobs
+                   SET retryable = 1, recovery_state = ?, recovery_detail = NULL,
+                       recovery_context = NULL, error_detail = ?
+                 WHERE id = ?
+                """,
+                (RECOVERY_RETRYABLE,
+                 self._POOL_RESOLVE_BUG + " (gateway 0.2.97/0.2.98 pool bug)." + NEVER_SENT_SUFFIX,
+                 row["id"]),
+            )
+        ids = [row["id"] for row in rows]
+        if ids:
+            log.warning("relabelled %d never-sent pool failures as retryable: %s",
+                        len(ids), ", ".join(ids))
+        return ids
 
     def _recover_interrupted(self) -> int:
         """Close the unsafe restart window without ever replaying in-flight work.
