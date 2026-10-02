@@ -51,8 +51,8 @@ final class BackupPanel: NSObject {
         return [
             PageKit.help(
                 "One file with what cannot be recreated: the two signing keys, the API keys (.env and "
-                + "credentials), the fleet roster and the voices library. Jobs, generated files and caches "
-                + "are left out. The file is not encrypted — only you can read it on this Mac, so keep "
+                + "credentials), the fleet roster, the voices library and the Content Packs (the released "
+                + "packs the shelf serves). Jobs, generated files and caches are left out. The file is not encrypted — only you can read it on this Mac, so keep "
                 + "copies somewhere private."
             ),
             PageKit.formRow("Contents", contentsLabel),
@@ -104,11 +104,11 @@ final class BackupPanel: NSObject {
         let chosen = settings["destinations"] as? [String: Bool] ?? [:]
         nightlyCheck.state = (settings["nightly"] as? Bool ?? false) ? .on : .off
         if timeField.currentEditor() == nil { timeField.stringValue = settings["time"] as? String ?? "03:00" }
-        if keepField.currentEditor() == nil { keepField.stringValue = "\(settings["keep"] as? Int ?? 10)" }
+        if keepField.currentEditor() == nil { keepField.stringValue = "\(settings["keep"] as? Int ?? 5)" }
 
         if let included = payload["included"] as? [String: Any] {
             let files = included["files"] as? Int ?? 0
-            var text = "\(files) files, \(Self.size(included["bytes"])) — signing keys, API keys, fleet roster, voices"
+            var text = "\(files) files, \(Self.size(included["bytes"])) — signing keys, API keys, fleet roster, voices, Content Packs"
             if let missing = included["missing"] as? [String], !missing.isEmpty {
                 text += "\nNot on this Mac (skipped): " + missing.joined(separator: ", ")
             }
@@ -218,7 +218,7 @@ final class BackupPanel: NSObject {
             let files = info["files"] as? Int ?? 0
             guard PageKit.confirm(
                 "Restore the backup made \(info["created_at"] as? String ?? "?") on \(info["host"] as? String ?? "?")?",
-                "\(files) files (\(Self.size(info["bytes"]))): signing keys, API keys, fleet roster and voices. "
+                "\(files) files (\(Self.size(info["bytes"]))): signing keys, API keys, fleet roster, voices and Content Packs. "
                     + "Every current file it replaces is moved to ~/Developer/_trash first; files that are not in "
                     + "the backup are left alone. Restart the gateway and Studio Hub afterwards.",
                 ok: "Restore"

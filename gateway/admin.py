@@ -1158,7 +1158,7 @@ def set_backup(payload: dict[str, Any]) -> Any:
 
 @router.post("/api/backup/run", dependencies=[Depends(require_admin)])
 def run_backup() -> Any:
-    """Back Up Now. Small (tens of MB), so it answers when it is done."""
+    """Back Up Now. About 160 MB with the Content Packs, so it answers when it is done (seconds)."""
     from . import backup
 
     try:

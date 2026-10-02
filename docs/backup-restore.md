@@ -4,21 +4,21 @@ Settings → **Backups** in the Gateway app. Code: `gateway/backup.py`, tests: `
 
 ## What is in a backup
 
-Only what cannot be recreated (about 12 MB today):
+Only what cannot be recreated (about 170 MB today, almost all of it the Content Packs):
 
 | In the archive | On this Mac |
 |---|---|
 | `gateway/.env` | `~/Library/Application Support/gateway-kh/.env` (the API key Story Studio uses) |
 | `gateway/data/release-publisher.pem` | Hub release signing key — every Hub pinned its fingerprint |
 | `gateway/data/content-delivery/` | Content Pack shelf identity (`signing-key.pem`, `authority.json`, `initialized`) |
+| `gateway/data/content-library/` | the Content Packs: every released `<sha256>/archive.sspack` with its `metadata.json` (the shelf cannot serve a release without them) |
 | `gateway/data/credentials.json` | provider API keys and the controllers' fleet tokens |
 | `gateway/data/fleet.json` | fleet roster: controller ids, labels, addresses |
 | `gateway/data/voices.json`, `gateway/data/voice-library/` | the Gateway's voice catalogue, reference clips, transcripts |
 | `hub/voice/voices/` | this Mac's Studio Hub voices (`~/Library/Application Support/StudioHub Standalone/voice/voices/`) |
 | `manifest.json`, `SHA256SUMS` | file list, sizes, sha256, Gateway version, host, date |
 
-Not included: job history, analytics, generated audio/images, caches, settings, the released
-`.sspack` files (`content-library/`, re-downloadable), models, apps.
+Not included: job history, analytics, generated audio/images, caches, settings, models, apps.
 
 The file is **not encrypted**. It is created readable only by you (mode 600). Treat it like the
 keys it holds: do not share it or post it anywhere.
@@ -31,13 +31,13 @@ One file `kh-backup-YYYYMMDD-HHMMSS.tar.gz`, copied to each place that is ticked
 - every attached `KH-STUDIO-*` drive → `KH Backups/` (nothing else on the drive is touched)
 - this Mac → `~/Developer/_backups/`
 
-Each place keeps the newest 10 (setting). Older backups are moved to `~/Developer/_trash/kh-backups/`
+Each place keeps the newest 5 (setting; each is ~160 MB with the Content Packs, so mind the free space). Older backups are moved to `~/Developer/_trash/kh-backups/`
 (SSD: the drive's own `_trash/kh-backups/`, or deleted if the drive has no `_trash`). Only files
 named `kh-backup-…tar.gz` are ever pruned.
 
 **When:** Back Up Now, or tick "Back up every night at 03:00" (off by default). A Mac asleep at
-that time backs up when it is next awake. A Telegram alert is sent through `gateway/notify.py`
-once that module exists (branch `feat/telegram-alerts`).
+that time backs up when it is next awake. A Telegram alert is sent through
+`gateway.notifier.notify("backup", text)` when that module is present (it is skipped silently otherwise).
 
 ## Restore with the app
 

@@ -27,6 +27,9 @@ _SANDBOX = sandbox_env("gateway-backup-")
 from gateway import admin, backup, config  # noqa: E402
 
 
+_REAL_NOTIFY = backup.notify
+
+
 class BackupTests(unittest.TestCase):
     def setUp(self) -> None:
         tmp = tempfile.TemporaryDirectory(prefix="kh-backup-test-")
@@ -39,6 +42,8 @@ class BackupTests(unittest.TestCase):
             "gateway/data/release-publisher.pem": data / "release-publisher.pem",
             "gateway/data/content-delivery/signing-key.pem": data / "content-delivery/signing-key.pem",
             "gateway/data/content-delivery/authority.json": data / "content-delivery/authority.json",
+            "gateway/data/content-library/" + "a" * 64 + "/archive.sspack": data / "content-library" / ("a" * 64) / "archive.sspack",
+            "gateway/data/content-library/" + "a" * 64 + "/metadata.json": data / "content-library" / ("a" * 64) / "metadata.json",
             "gateway/data/credentials.json": data / "credentials.json",
             "gateway/data/fleet.json": data / "fleet.json",
             "gateway/data/voice-library/voice-a/reference.mp3": data / "voice-library/voice-a/reference.mp3",
@@ -50,11 +55,15 @@ class BackupTests(unittest.TestCase):
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(f"original {name}\n".encode() + os.urandom(64))
         (data / "voice-library/.DS_Store").write_bytes(b"junk")
+        staging = data / "content-library/.import-half/archive.sspack"  # an import in progress
+        staging.parent.mkdir(parents=True)
+        staging.write_bytes(b"half written")
         # voices.json is absent on purpose: it must be reported missing, not fail the backup.
         roles = [
             ("gateway/.env", self.live / ".env"),
             ("gateway/data/release-publisher.pem", data / "release-publisher.pem"),
             ("gateway/data/content-delivery", data / "content-delivery"),
+            ("gateway/data/content-library", data / "content-library"),
             ("gateway/data/credentials.json", data / "credentials.json"),
             ("gateway/data/fleet.json", data / "fleet.json"),
             ("gateway/data/voices.json", data / "voices.json"),
@@ -105,6 +114,8 @@ class BackupTests(unittest.TestCase):
             names = tar.getnames()
             manifest = json.loads(tar.extractfile("manifest.json").read())  # type: ignore[union-attr]
         self.assertNotIn("gateway/data/voice-library/.DS_Store", names)
+        self.assertFalse([n for n in names if ".import-" in n])
+        self.assertIn("gateway/data/content-library/" + "a" * 64 + "/archive.sspack", names)
         self.assertEqual({e["path"] for e in manifest["files"]}, set(self.files))
         self.assertIn("gateway_version", manifest)
         self.assertEqual(len(self.notes), 1)
@@ -134,6 +145,8 @@ class BackupTests(unittest.TestCase):
         key = self.files["gateway/data/release-publisher.pem"]
         key.write_bytes(b"a key someone regenerated")
         self.files["hub/voice/voices/abc/reference.wav"].unlink()
+        pack = self.files["gateway/data/content-library/" + "a" * 64 + "/archive.sspack"]
+        pack.unlink()  # a released Content Pack lost from the shelf
         newer = self.files["gateway/data/voice-library/voice-a/reference.mp3"].parent.parent / "voice-new/x.mp3"
         newer.parent.mkdir()
         newer.write_bytes(b"a voice added after the backup")
@@ -144,13 +157,32 @@ class BackupTests(unittest.TestCase):
             self.assertEqual(path.read_bytes(), originals[name], name)
         self.assertEqual(key.stat().st_mode & 0o777, 0o600)
         self.assertEqual(newer.read_bytes(), b"a voice added after the backup")  # never touched
-        self.assertEqual((result["written"], result["moved_to_trash"]), (2, 1))
+        self.assertEqual((result["written"], result["moved_to_trash"]), (3, 1))
         safety = Path(result["safety_copy"])
         self.assertEqual(safety.parent, self.root / "trash")
         self.assertEqual((safety / "gateway/data/release-publisher.pem").read_bytes(), b"a key someone regenerated")
         # A second restore of the same backup changes nothing.
         again = backup.restore(archive)
         self.assertEqual((again["written"], again["moved_to_trash"]), (0, 0))
+
+    def test_the_telegram_hook_is_gateway_notifier_and_optional(self) -> None:
+        import sys
+        from types import ModuleType
+        sent: list[tuple[str, str]] = []
+        fake = ModuleType("gateway.notifier")
+        fake.notify = lambda event, text: sent.append((event, text))  # type: ignore[attr-defined]
+        gateway_pkg = __import__("gateway")
+        patch.object(backup, "notify", _REAL_NOTIFY).start()  # setUp swapped in a recorder
+        self.addCleanup(patch.stopall)
+        with patch.dict(sys.modules, {"gateway.notifier": fake}), patch.object(gateway_pkg, "notifier", fake, create=True):
+            backup.notify("backup", "hello")
+        self.assertEqual(sent, [("backup", "hello")])
+        broken = ModuleType("gateway.notifier")
+        broken.notify = lambda event, text: 1 / 0  # type: ignore[attr-defined]
+        with patch.dict(sys.modules, {"gateway.notifier": broken}), patch.object(gateway_pkg, "notifier", broken, create=True):
+            backup.notify("backup", "never raises")
+        with patch.dict(sys.modules, {"gateway.notifier": None}), patch.object(gateway_pkg, "notifier", None, create=True):
+            backup.notify("backup", "silently skipped")
 
     def test_restore_by_hand_with_tar_and_shasum(self) -> None:
         """The documented no-app path: Finder/tar extracts it and `shasum -c` checks it."""

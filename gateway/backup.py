@@ -4,6 +4,9 @@
 
 * the two signing identities: `release-publisher.pem` (every Hub pinned its fingerprint) and
   `content-delivery/` (the Content Pack shelf identity Story Studio trusts);
+* the Content Packs themselves: `content-library/` holds the released `.sspack` bytes (and each
+  one's `metadata.json`). The shelf cannot serve a release without them, so a backup of the
+  identity alone would look like a recovery point and not be one (~160 MB today);
 * the API keys: `.env` (the key Story Studio presents) and `credentials.json` (provider keys and
   the controllers' fleet tokens);
 * the fleet roster `fleet.json` (controller ids, labels, addresses);
@@ -27,7 +30,8 @@ folders is ever touched.
 **When** - Back Up Now, plus an optional nightly run (off by default).
 
 **Restore** - `restore()` checks every hash first, moves each current file it would replace into
-`~/Developer/_trash/kh-backup-restore-<time>/`, then writes the backed-up copy (0600).
+`~/Developer/_trash/kh-backup-restore-<time>/`, then writes the backed-up copy (0600). Content
+Pack archives that are already on the shelf, byte for byte, are left alone.
 """
 
 from __future__ import annotations
@@ -49,11 +53,16 @@ from typing import Any
 
 from . import __version__, config
 
-try:  # feat/telegram-alerts provides it; until then a backup simply does not announce itself.
-    from .notify import notify  # type: ignore[attr-defined]
-except ImportError:  # pragma: no cover - depends on which branch is merged
-    def notify(event: str, text: str) -> None:  # noqa: ARG001 - same signature as the real one
-        return None
+def notify(event: str, text: str) -> None:
+    """Tell the owner on Telegram (`gateway.notifier`), when that module is there; never raises."""
+    try:
+        from . import notifier  # feat/telegram-alerts; absent on a build without it
+    except ImportError:
+        return
+    try:
+        notifier.notify(event, text)
+    except Exception:  # noqa: BLE001 - a backup must not fail because a message did
+        pass
 
 
 HOME = Path.home()
@@ -72,7 +81,7 @@ META = ("manifest.json", "SHA256SUMS")
 DEFAULTS: dict[str, Any] = {
     "nightly": False,
     "time": "03:00",
-    "keep": 10,
+    "keep": 5,
     "destinations": {"icloud": True, "ssd": True, "local": True},
 }
 CHECK_INTERVAL_S = 60.0
@@ -96,6 +105,7 @@ def sources() -> list[tuple[str, Path]]:
         ("gateway/.env", Path(config.ENV_PATH)),
         ("gateway/data/release-publisher.pem", data / "release-publisher.pem"),
         ("gateway/data/content-delivery", data / "content-delivery"),
+        ("gateway/data/content-library", data / "content-library"),
         ("gateway/data/credentials.json", Path(config.CREDENTIALS_PATH)),
         ("gateway/data/fleet.json", Path(fleet.FLEET_PATH)),
         ("gateway/data/voices.json", Path(config.WRITABLE_VOICES_PATH)),
@@ -113,8 +123,11 @@ def _files() -> tuple[list[tuple[str, Path]], list[str]]:
             found.append((role, path))
         elif path.is_dir() and not path.is_symlink():
             for item in sorted(path.rglob("*")):
+                rel = item.relative_to(path)
+                if rel.parts[0].startswith(".import-"):  # a Content Pack import still being staged
+                    continue
                 if item.is_file() and not item.is_symlink() and item.name != ".DS_Store":
-                    found.append((f"{role}/{item.relative_to(path).as_posix()}", item))
+                    found.append((f"{role}/{rel.as_posix()}", item))
         else:
             missing.append(role)
     return found, missing
@@ -251,7 +264,7 @@ def pack(raw: Any) -> dict[str, Any]:
     """Write the archive into an open binary file; returns its manifest."""
     files, missing = _files()
     entries = []
-    with tarfile.open(fileobj=raw, mode="w:gz") as tar:
+    with tarfile.open(fileobj=raw, mode="w:gz", compresslevel=3) as tar:
         for name, path in files:
             data = path.read_bytes()
             _add(tar, name, data, path.stat().st_mtime)
