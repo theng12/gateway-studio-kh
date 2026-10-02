@@ -122,6 +122,11 @@
     font-family: ui-monospace, "SF Mono", monospace; font-size: 12px;
   }
   select, #m-q, #filter { font-family: inherit; font-size: 13px; }
+  /* A secret input: masked by default, the eye shows or hides it (same control as the native app). */
+  .secret { display: flex; align-items: center; gap: var(--s4); }
+  .secret input { flex: 1 1 auto; min-width: 0; }
+  button.eye { flex: 0 0 auto; padding: var(--s4); border: 0; background: transparent; color: var(--dim); line-height: 0; }
+  button.eye:hover { color: var(--text); }
   /* The border change alone was the whole focus signal on a text field, which is
      weaker than the 2px ring every button gets and easy to miss on a dark theme.
      Keep the accent border *and* ring it, so a keyboard user sees the same cue
@@ -341,7 +346,7 @@
         devices, so its admin API asks for the gateway key — the one in the app under
         Settings. Paste it once and this browser remembers it.</div>
       <div class="row" style="margin-top:12px">
-        <input type="password" id="token-input" placeholder="Gateway API key" style="max-width:340px">
+        <span class="secret" style="max-width:370px;flex:1"><input type="password" id="token-input" placeholder="Gateway API key" autocomplete="off"><button type="button" class="eye" title="Show" aria-label="Show" onclick="toggleSecret(this)"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg></button></span>
         <button class="primary" onclick="saveToken()">Use This Key</button>
         <button onclick="document.getElementById('token-bar').style.display='none'">Dismiss</button>
       </div>
@@ -723,6 +728,20 @@ function showTokenPrompt(detail) {
   bar.style.display = '';
   const note = document.getElementById('token-detail');
   if (note && detail) note.textContent = detail;
+}
+
+// The eye beside a secret input: password <-> text, and the button says what pressing it will do.
+function toggleSecret(button) {
+  const input = button.previousElementSibling;
+  const show = input.type === 'password';
+  input.type = show ? 'text' : 'password';
+  button.title = show ? 'Hide' : 'Show';
+  button.setAttribute('aria-label', button.title);
+  button.classList.toggle('on', show);
+  button.innerHTML = show
+    ? button.innerHTML.replace('</svg>', '<path d="M3 3l18 18"/></svg>')
+    : button.innerHTML.replace('<path d="M3 3l18 18"/>', '');
+  input.focus();
 }
 
 function saveToken() {
@@ -2063,10 +2082,10 @@ function providerCard(p) {
   const fields = p.configured_fields.map(f => `
     <div>
       <label for="f-${esc(p.id)}-${esc(f.key)}">${esc(f.label)}${f.required ? '' : ' <span style="opacity:.6">(optional)</span>'}</label>
-      <input id="f-${esc(p.id)}-${esc(f.key)}" type="${f.secret ? 'password' : 'text'}"
-             data-provider="${esc(p.id)}" data-field="${esc(f.key)}"
+      ${f.secret ? '<span class="secret">' : ''}<input id="f-${esc(p.id)}-${esc(f.key)}" type="${f.secret ? 'password' : 'text'}"
+             data-provider="${esc(p.id)}" data-field="${esc(f.key)}" autocomplete="off"
              placeholder="${esc(f.source === 'env' ? 'from .env (' + f.env_var + ')' : (f.masked || f.placeholder || ''))}"
-             value="${f.secret ? '' : esc(f.masked)}">
+             value="${f.secret ? '' : esc(f.masked)}">${f.secret ? '<button type="button" class="eye" title="Show" aria-label="Show" onclick="toggleSecret(this)"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg></button></span>' : ''}
       <div class="hint">${f.present ? `configured (${esc(f.source)})` : `env var <code>${esc(f.env_var)}</code>`}${f.help_text ? ' · ' + esc(f.help_text) : ''}</div>
     </div>`).join('');
 

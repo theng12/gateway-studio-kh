@@ -1099,6 +1099,50 @@ def set_retention(payload: dict[str, Any]) -> Any:
     return {**saved, "usage": retention.usage()}
 
 
+@router.get("/api/settings/telegram", dependencies=[Depends(require_admin)])
+def get_telegram() -> dict[str, Any]:
+    """The Telegram notification settings. The bot token is never returned: `token_set` says only that one is saved."""
+    from .notifier import notifier
+
+    return notifier.public_settings()
+
+
+@router.put("/api/settings/telegram", dependencies=[Depends(require_admin)])
+def set_telegram(payload: dict[str, Any]) -> Any:
+    """Change them. A key that is absent is left alone; `bot_token` replaces the token, `clear_token` removes it."""
+    from .notifier import SettingsRefused, notifier
+
+    try:
+        return notifier.save_settings(payload)
+    except SettingsRefused as exc:
+        return _error(422, str(exc), "TELEGRAM_SETTINGS_REFUSED")
+
+
+@router.post("/api/settings/telegram/test", dependencies=[Depends(require_admin)])
+def test_telegram(payload: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Send one test message now. `bot_token` / `chat_id` in the body are tried without being saved."""
+    from .notifier import notifier
+
+    body = payload or {}
+    return notifier.send_test(body.get("bot_token"), body.get("chat_id"))
+
+
+@router.get("/api/settings/fleet-warnings", dependencies=[Depends(require_admin)])
+def get_fleet_warnings() -> dict[str, Any]:
+    """Which kinds of Fleet warning the owner hid (macOS automatic updates, Time Machine)."""
+    return fleet.warnings_setting()
+
+
+@router.put("/api/settings/fleet-warnings", dependencies=[Depends(require_admin)])
+def set_fleet_warnings(payload: dict[str, Any]) -> Any:
+    """Replace the hidden list. Disk-space warnings are never hideable: that is a 422."""
+    try:
+        fleet.set_hidden_warning_kinds(payload.get("hidden"))
+    except ValueError as exc:
+        return _error(422, str(exc), "WARNING_NOT_HIDEABLE")
+    return fleet.warnings_setting()
+
+
 @router.get("/api/settings/concurrency", dependencies=[Depends(require_admin)])
 def get_concurrency() -> dict[str, Any]:
     """How many jobs may run at once — the pool, each lane, and each provider.
@@ -1135,6 +1179,61 @@ def set_concurrency(payload: dict[str, Any]) -> Any:
         return concurrency.save_settings(payload)
     except concurrency.SettingsRefused as exc:
         return _error(422, exc.message, "SETTINGS_REFUSED")
+
+
+@router.get("/api/backup", dependencies=[Depends(require_admin)])
+def get_backup() -> dict[str, Any]:
+    """What a backup holds, where it goes, and how the last one went."""
+    from . import backup
+
+    return backup.status()
+
+
+@router.put("/api/settings/backup", dependencies=[Depends(require_admin)])
+def set_backup(payload: dict[str, Any]) -> Any:
+    from . import backup
+
+    try:
+        backup.save_settings(payload)
+    except backup.BackupError as exc:
+        return _error(422, str(exc), "BACKUP_SETTINGS_REFUSED")
+    return backup.status()
+
+
+@router.post("/api/backup/run", dependencies=[Depends(require_admin)])
+def run_backup() -> Any:
+    """Back Up Now. About 180 MB with the Content Packs, so it answers when it is done (seconds)."""
+    from . import backup
+
+    try:
+        result = backup.run("manual")
+    except backup.BackupError as exc:
+        return _error(409, str(exc), "BACKUP_BUSY")
+    return {"result": result, **backup.status()}
+
+
+@router.post("/api/backup/inspect", dependencies=[Depends(require_admin)])
+def inspect_backup(payload: dict[str, Any]) -> Any:
+    """Check a backup file before restoring it: what it holds, when and where it was made."""
+    from . import backup
+
+    try:
+        return backup.inspect(Path(str(payload.get("path") or "")))
+    except backup.BackupError as exc:
+        return _error(422, str(exc), "BACKUP_UNREADABLE")
+
+
+@router.post("/api/backup/restore", dependencies=[Depends(require_admin)])
+def restore_backup(payload: dict[str, Any]) -> Any:
+    """Restore a checked backup; every file it replaces is moved to _trash first."""
+    from . import backup
+
+    try:
+        return backup.restore(Path(str(payload.get("path") or "")))
+    except backup.BackupError as exc:
+        return _error(422, str(exc), "BACKUP_UNREADABLE")
+    except OSError as exc:
+        return _error(500, f"The restore stopped part way: {exc}", "BACKUP_RESTORE_FAILED")
 
 
 @router.post("/api/artifacts/prune", dependencies=[Depends(require_admin)])
@@ -2412,6 +2511,8 @@ def fleet_snapshot(force: bool = False) -> dict[str, Any]:
     # row touched are copied instead.
     out = dict(data)
     out["locations"] = [_enrich_location(row) for row in data.get("locations") or []]
+    # Read live, never from the cache: hiding a warning kind must show on the next read.
+    out["fleet_warnings"] = fleet.warnings_setting()
     # **What the fleet should hold, and what it does.** The publisher identity and
     # the last push travel with the fleet read so the page has one source for both
     # halves of the report — the version that was signed and the version each

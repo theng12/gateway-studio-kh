@@ -109,15 +109,32 @@ def seed(support: Path, upstream_port: int) -> dict:
                        "reference_path": str(reference), "reference_transcript": "The quick brown fox.",
                        "audio_sha256": f"{index:064d}", "permission_acknowledged": index % 2 == 0, "license": ""})
     (data / "voices.json").write_text(json.dumps({"voices": voices}))
+    # A fake Telegram setup so the Settings page draws its "saved" state. The token is not real and the
+    # notifier is kept from starting (GATEWAY_NOTIFIER_DISABLE below), so nothing can reach Telegram.
+    (data / "telegram.json").write_text(json.dumps({
+        "enabled": True, "bot_token": "123456789:RENDER_FIXTURE_NOT_A_REAL_TOKEN_000", "chat_id": "-1001234567890",
+        "events": {"disk_memory": True, "jobs_trouble": True},
+        "quiet_hours": {"enabled": True, "start": "22:00", "end": "07:00"}, "summary_time": "08:00"}))
+    (data / "telegram_state.json").write_text(json.dumps({"last_sent_at": time.time() - 3 * 3600}))
     (support / ".env").write_text("GATEWAY_API_KEY=render-fixture-key\n")
     (support / ".env").chmod(0o600)
+    # Backups go to temp stand-ins for iCloud, ~/Developer/_backups and a KH-STUDIO drive.
+    (support / "CloudDocs").mkdir(exist_ok=True)
+    (support / "Volumes/KH-STUDIO-NOVA/_trash").mkdir(parents=True, exist_ok=True)
+    hub_voice = support / "hub/voice/voices/0616aec33b41"
+    hub_voice.mkdir(parents=True, exist_ok=True)
+    (hub_voice / "transcript.txt").write_text("The quick brown fox.")
+    (hub_voice / "reference.wav").write_bytes((data / "voice-0.wav").read_bytes())
     return {"GATEWAY_APP_SUPPORT": str(support), "GATEWAY_DATA": str(data), "GATEWAY_DB": str(data / "gateway.sqlite3"),
             "GATEWAY_ARTIFACTS": str(data / "artifacts"), "GATEWAY_CREDENTIALS": str(data / "credentials.json"),
             "GATEWAY_MODEL_CACHE": str(data / "models_cache.json"), "GATEWAY_ENV_FILE": str(support / ".env"),
             "GATEWAY_FLEET": str(data / "fleet.json"), "GATEWAY_VOICES": str(data / "voices.json"),
             "GATEWAY_VOICES_OUT": str(data / "voices.json"), "GATEWAY_NO_MIGRATE": "1",
             "STUDIOHUB_READY_FILE": str(support / "no-hub.json"), "GATEWAY_API_KEY": "render-fixture-key",
-            "GATEWAY_BUILD": "render-fixture"}
+            "GATEWAY_BUILD": "render-fixture", "GATEWAY_NOTIFIER_DISABLE": "1",
+            "GATEWAY_BACKUP_ICLOUD": str(support / "CloudDocs/KH Backups"),
+            "GATEWAY_BACKUP_LOCAL": str(support / "_backups"), "GATEWAY_BACKUP_VOLUMES": str(support / "Volumes"),
+            "GATEWAY_BACKUP_TRASH": str(support / "trash"), "GATEWAY_BACKUP_HUB_DIR": str(support / "hub")}
 
 
 def seed_jobs(env: dict) -> None:
@@ -237,6 +254,8 @@ def main() -> None:
         found = [row["model_id"] for row in call("GET", f"/admin/api/providers/{pid}/models").get("models", [])]
         keep = [m for index, m in enumerate(found) if index % 4 != 3]  # leave some off
         call("POST", f"/admin/api/providers/{pid}/models/enabled", {"model_ids": keep, "enabled": True})
+
+    call("POST", "/admin/api/backup/run")  # so Settings → Backups shows a real last backup
 
     fleet_json = subprocess.run([sys.executable, str(HERE / "fleet_fixture.py")], cwd=ROOT, capture_output=True,
                                 check=True).stdout

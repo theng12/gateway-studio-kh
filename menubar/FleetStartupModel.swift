@@ -83,9 +83,9 @@ enum FleetStartup {
         }
     }
 
-    static func tooltip(_ fact: FleetStartupFact?) -> String {
+    static func tooltip(_ fact: FleetStartupFact?, name: String = "This Mac") -> String {
         guard let fact else {
-            return "This Mac did not report its startup settings: its Studio Hub is older than 0.6.127, "
+            return "\(name) did not report its startup settings: its Studio Hub is older than 0.6.127, "
                 + "or the controller has not heard from it since."
         }
         var lines: [String] = []
@@ -105,7 +105,7 @@ enum FleetStartup {
             lines.append("Services running now: \(up) of \(total).")
         }
         if let version = fact.appVersion, !version.isEmpty { lines.append("Studio Hub \(version).") }
-        if fact.stale == true { lines.append("This Mac is not answering; this is what it last reported.") }
+        if fact.stale == true { lines.append("\(name) is not answering; this is what it last reported.") }
         return lines.joined(separator: "\n")
     }
 

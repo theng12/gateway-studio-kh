@@ -130,6 +130,11 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
         let reloadAfterStartup: () -> Void = { [weak self] in self?.reload(force: true) }
         startupBar.onChange = reloadAfterStartup
         machinesTab.startupAccessory.addArrangedSubview(startupBar)
+        machinesTab.warningList.onHide = { [weak self] kind in
+            guard let self else { return }
+            self.setHiddenWarningKinds(Set(self.machinesTab.hiddenWarningKinds).union([kind]))
+        }
+        machinesTab.warningList.onShowHidden = { [weak self] in self?.setHiddenWarningKinds([]) }
         machinesTab.startupCell = { [weak self] row in
             FleetStartup.cell(for: row, window: { self?.view.window }, done: reloadAfterStartup)
         }
@@ -483,8 +488,20 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
         filter.locationID = locationPopup.selectedItem?.representedObject as? String
     }
 
+    /// Hide or show whole kinds of warning (macOS automatic updates, Time Machine). Applied here at once and
+    /// saved on the gateway, which refuses anything that is not hideable (disk space never is).
+    private func setHiddenWarningKinds(_ kinds: Set<String>) {
+        snapshot?.fleetWarnings = FleetWarningSetting(hidden: kinds.sorted())
+        applyFilter()
+        GatewayAPI.put("/admin/api/settings/fleet-warnings", body: ["hidden": kinds.sorted()]) { [weak self] result in
+            // A refusal or a failure puts the page back to what the gateway really holds.
+            if case .failure = result { self?.reload() }
+        }
+    }
+
     private func applyFilter() {
         guard let snapshot else { return }
+        machinesTab.hiddenWarningKinds = Set(snapshot.fleetWarnings?.hidden ?? [])
         machinesTab.update(
             machines: snapshot.machines, studios: snapshot.studiosByMachine, filter: filter)
         startupBar.update(machines: snapshot.machines)
@@ -1055,12 +1072,9 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
         guard let id = location.id else { return }
         let label = location.label ?? id
 
-        func field(_ placeholder: String) -> NSSecureTextField {
-            let field = NSSecureTextField(string: "")
-            field.placeholderString = placeholder
-            field.translatesAutoresizingMaskIntoConstraints = false
-            field.widthAnchor.constraint(equalToConstant: 320).isActive = true
-            return field
+        // 292 + the eye = the 320 the captions wrap at.
+        func field(_ placeholder: String) -> SecretField {
+            SecretField(placeholder: placeholder, width: 292)
         }
         func caption(_ text: String) -> NSTextField {
             let caption = NSTextField(labelWithString: text)
@@ -1101,7 +1115,7 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
         alert.accessoryView = stack
         alert.addButton(withTitle: "Save")
         alert.addButton(withTitle: "Cancel")
-        alert.window.initialFirstResponder = fleet
+        alert.window.initialFirstResponder = fleet.activeField
         guard alert.runModal() == .alertFirstButtonReturn else { return }
 
         let fleetToken = fleet.stringValue.trimmingCharacters(in: .whitespaces)
@@ -1172,10 +1186,7 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
         address.placeholderString = "http://100.64.0.9:47873"
         address.translatesAutoresizingMaskIntoConstraints = false
         address.widthAnchor.constraint(equalToConstant: 320).isActive = true
-        let token = NSSecureTextField(string: "")
-        token.placeholderString = "Fleet token (optional — empty keeps the stored one)"
-        token.translatesAutoresizingMaskIntoConstraints = false
-        token.widthAnchor.constraint(equalToConstant: 320).isActive = true
+        let token = SecretField(placeholder: "Fleet token (optional — empty keeps the stored one)", width: 292)
         let result = NSTextField(wrappingLabelWithString: "Not tested yet.")
         result.font = TextRole.caption.font
         result.textColor = .secondaryLabelColor

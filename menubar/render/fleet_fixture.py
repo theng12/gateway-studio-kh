@@ -9,6 +9,7 @@ the keys and derived fields `/admin/api/fleet` serves. Used only by the render h
 from __future__ import annotations
 
 import json
+import os
 import sys
 import time
 from pathlib import Path
@@ -124,6 +125,44 @@ WHISPER = "mlx-community/whisper-large-v3-turbo"
 STABLE = "stabilityai/stable-audio-3-optimized"
 
 
+UPDATES = ("macOS is set to download updates automatically (8-15 GB each). Turn it off in System Settings > "
+           "General > Software Update > Automatic Updates > Download new updates.")
+
+
+def many(rows: list) -> list:
+    """GATEWAY_RENDER_FIXTURE=many: 45 Macs in all, most of them saying the same Hub warning, as on the live fleet.
+
+    A big controller group ("Terranash") of 37 Macs: its own Mac comes through labelled "This Mac" (what a Hub
+    calls itself), 17 download macOS updates automatically, a few more carry the Time Machine and low-disk
+    warnings, eight are off.
+    """
+    names = [f"terranash-{1100 + i}-m4-16-256" for i in range(37)]
+    machines, activities, nodes = [], [], []
+    for i, name in enumerate(names):
+        free = 29.8 if i == 4 else 12.0 if i == 9 else 4.0 if i == 11 else 180.0 + i
+        row = machine(name, "This Mac" if i == 0 else name, "Apple M4", 16.0, 7.0 + i % 5, free,
+                      reachable=not (28 <= i < 36), modalities={"voice": 10 + i},
+                      start=startup(services=i % 6 != 0))
+        warnings = [w for w in row["disk"]["warnings"] if "free" not in w] if free > 40 else []
+        if i < 17:
+            warnings += [UPDATES, UPDATES] if i == 3 else [UPDATES]
+        if i in (20, 21):
+            warnings.append("Time Machine is backing up to this disk, so free space reads lower than it is.")
+        if i == 4:
+            row["disk"]["top"] = [{"name": "other", "gb": 373.0}]
+        row["disk"]["warnings"] = warnings
+        machines.append(row)
+        activities.append(activity(name, "offline" if 28 <= i < 36 else "working" if i % 7 == 0 else "ready",
+                                   40 + i, i % 4, 45.0))
+        if i:
+            nodes.append(node(name, "unreachable" if 28 <= i < 36 else "reachable",
+                              address=f"http://100.64.1.{i}:47873", seen=3 * HOUR if 28 <= i < 36 else 5,
+                              detail="could not reach the node: All connection attempts failed" if 28 <= i < 36 else None))
+    big = location("ctrl-terranash", "Terranash", "http://100.64.1.1:47873", machines=machines, activities=activities,
+                   nodes=nodes, workers=[worker(n, "voice", online=not (28 <= i < 36)) for i, n in enumerate(names)])
+    return [rows[0], rows[1], rows[2], big, rows[3]]
+
+
 def build() -> dict:
     local = location(
         "local", "This Mac", "http://127.0.0.1:47873", local=True, role="controller",
@@ -198,7 +237,11 @@ def build() -> dict:
         unreachable_since=NOW - 4 * DAY, members_from="last_known", members_stale_seconds=4 * DAY,
     )
     rows = [local, blue, studio2, garage]
+    flavour = os.environ.get("GATEWAY_RENDER_FIXTURE", "")
+    if flavour.startswith("many"):
+        rows = many(rows)
     return {
+        **({"fleet_warnings": {"hidden": ["macos_updates"], "hideable": []}} if flavour == "many-hidden" else {}),
         "locations": rows,
         "machines": fleet.machines_flat(rows),
         "running": fleet.running_flat(rows),

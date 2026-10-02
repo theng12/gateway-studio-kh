@@ -24,7 +24,7 @@ final class SettingsSection: NSObject, AppSection {
     private var runtimeLabel: NSTextField!
     private var dataLabel: NSTextField!
     private var portField: NSTextField!
-    private var keyField: NSTextField!
+    private var keyField: SecretField!
     private var storyBaseField: NSTextField!
     private var retentionDaysField: NSTextField!
     private var retentionGBField: NSTextField!
@@ -38,6 +38,8 @@ final class SettingsSection: NSObject, AppSection {
     private var publisherKeyHexLabel: NSTextField!
     private var publisherIDLabel: NSTextField!
     private var releaseIdentityStatus: NSTextField!
+    private let telegram = TelegramSettings()
+    private let backups = BackupPanel()
 
     /// What the retention fields last showed from the gateway, to tell a change from a re-read.
     private var loadedRetention: [String: Double] = [:]
@@ -105,9 +107,8 @@ final class SettingsSection: NSObject, AppSection {
         ], in: root)
 
         // ---- API key
-        keyField = NSTextField(string: EnvFile.apiKey())
-        keyField.font = TextRole.mono.font
-        keyField.widthAnchor.constraint(equalToConstant: Self.fieldWidth).isActive = true
+        // Masked like every secret in the app: the eye shows it, Copy works without showing it.
+        keyField = SecretField(EnvFile.apiKey(), width: Self.fieldWidth)
         let keyButtons = PageKit.row([
             PageKit.button("Copy", target: self, action: #selector(copyKey)),
             PageKit.button("Regenerate", target: self, action: #selector(regenerateKey)),
@@ -209,6 +210,11 @@ final class SettingsSection: NSObject, AppSection {
                 PageKit.button("Prune Now", target: self, action: #selector(pruneNow)),
             ] as [NSView]),
         ], in: root)
+
+        // ---- Telegram: messages to the owner's phone about the fleet
+        section("Telegram", telegram.rows, in: root)
+        // ---- backups (keys, credentials, roster, voices): gateway/backup.py
+        section("Backups", backups.rows(), in: root)
 
         // ---- startup
         loginCheck = NSButton(
@@ -313,13 +319,23 @@ final class SettingsSection: NSObject, AppSection {
         statusLabel?.stringValue = "Config: \(ConfigStore.shared.configPath)"
         loadRetention()
         loadReleaseIdentity()
+        telegram.load()
+        backups.reload()
     }
 
     private func fill(_ field: NSTextField?, _ value: String) {
         guard let field else { return }
-        let id = ObjectIdentifier(field)
-        if let last = written[id], field.stringValue != last { return }
-        field.stringValue = value
+        fill(ObjectIdentifier(field), get: { field.stringValue }, set: { field.stringValue = $0 }, value)
+    }
+
+    private func fill(_ field: SecretField?, _ value: String) {
+        guard let field else { return }
+        fill(ObjectIdentifier(field), get: { field.stringValue }, set: { field.stringValue = $0 }, value)
+    }
+
+    private func fill(_ id: ObjectIdentifier, get: () -> String, set: (String) -> Void, _ value: String) {
+        if let last = written[id], get() != last { return }
+        set(value)
         written[id] = value
     }
 

@@ -1973,6 +1973,78 @@ def _disk_top(raw: object) -> list[dict]:
     return [{"name": n, "gb": None if g is None else round(g, 2)} for n, g in pairs[:5]]
 
 
+#: Hub disk warnings that are not about free space, by what they are. The owner keeps macOS
+#: automatic updates on deliberately, so each *kind* can be hidden; a warning about **disk space**
+#: is never hideable (`HIDEABLE_WARNING_KINDS` is the whole list, and the setter refuses the rest).
+WARNING_KIND_TITLES = {
+    "macos_updates": "macOS automatic updates",
+    "time_machine": "Time Machine",
+    "disk_space": "Disk space",
+    "other": "Other",
+}
+HIDEABLE_WARNING_KINDS = ("macos_updates", "time_machine")
+FLEET_WARNINGS_PATH = Path(str(DATA_DIR)) / "fleet_warnings.json"
+_warnings_lock = threading.Lock()
+_warnings_cache: dict = {"stamp": None, "hidden": []}
+
+
+def warning_kind(text: object) -> str:
+    """What a Hub's disk warning is about: `macos_updates`, `time_machine`, `disk_space` or `other`."""
+    lowered = str(text or "").lower()
+    if "time machine" in lowered:
+        return "time_machine"
+    if "update" in lowered and ("automatic" in lowered or "download" in lowered):
+        return "macos_updates"
+    if "free" in lowered or "disk" in lowered or "space" in lowered:
+        return "disk_space"
+    return "other"
+
+
+def hidden_warning_kinds() -> list[str]:
+    """The warning kinds the owner hid, read fresh (cheap: re-read only when the file changes)."""
+    try:
+        info = FLEET_WARNINGS_PATH.stat()
+        stamp = (info.st_mtime_ns, info.st_size)
+    except OSError:
+        return []
+    with _warnings_lock:
+        if _warnings_cache["stamp"] == stamp:
+            return list(_warnings_cache["hidden"])
+        try:
+            raw = json.loads(FLEET_WARNINGS_PATH.read_text(encoding="utf-8")).get("hidden")
+        except (OSError, ValueError, AttributeError):
+            raw = []
+        hidden = [k for k in HIDEABLE_WARNING_KINDS if k in (raw if isinstance(raw, list) else [])]
+        _warnings_cache.update(stamp=stamp, hidden=hidden)
+        return list(hidden)
+
+
+def set_hidden_warning_kinds(kinds: object) -> list[str]:
+    """Replace the hidden list. Refuses anything that is not hideable, disk space above all."""
+    if not isinstance(kinds, list):
+        raise ValueError("`hidden` must be a list of warning kinds.")
+    refused = [str(k) for k in kinds if k not in HIDEABLE_WARNING_KINDS]
+    if refused:
+        raise ValueError(
+            f"Cannot hide {', '.join(refused)}: only {', '.join(HIDEABLE_WARNING_KINDS)} can be hidden. "
+            "Disk-space warnings are always shown.")
+    hidden = [k for k in HIDEABLE_WARNING_KINDS if k in kinds]
+    with _warnings_lock:
+        FLEET_WARNINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
+        scratch = FLEET_WARNINGS_PATH.with_name(FLEET_WARNINGS_PATH.name + ".tmp")
+        scratch.write_text(json.dumps({"hidden": hidden}, indent=2), encoding="utf-8")
+        os.replace(scratch, FLEET_WARNINGS_PATH)
+        _warnings_cache["stamp"] = None
+    return hidden
+
+
+def warnings_setting() -> dict:
+    return {
+        "hidden": hidden_warning_kinds(),
+        "hideable": [{"kind": k, "title": WARNING_KIND_TITLES[k]} for k in HIDEABLE_WARNING_KINDS],
+    }
+
+
 def machine_disk(machine: dict) -> dict | None:
     """One Mac's disk, normalised from whatever the Hub sent. `None` when it said nothing.
 
@@ -2009,14 +2081,16 @@ def machine_disk(machine: dict) -> dict | None:
     warnings = raw.get("warnings")
     if isinstance(warnings, (str, dict)):
         warnings = [warnings]
-    clean = []
+    clean: list[str] = []
     for warning in warnings if isinstance(warnings, list) else []:
         text = warning.get("message") or warning.get("text") if isinstance(warning, dict) else warning
-        if text and str(text).strip():
+        # A Hub that repeats a sentence (it re-adds the same warning each sweep) states it once.
+        if text and str(text).strip() and str(text).strip() not in clean:
             clean.append(str(text).strip())
     swap = _num(raw.get("swap_used_gb"))
     trash = _num(raw.get("trash_gb"))
     return {
+        "warning_items": [{"kind": warning_kind(text), "text": text} for text in clean],
         "state": state or None,
         "state_source": source,
         "free_gb": None if free is None else round(free, 2),
@@ -2124,6 +2198,37 @@ def _current_job(machine: dict, entry: dict) -> dict | None:
     return out if any(value not in (None, "") for value in out.values()) else None
 
 
+#: What a Hub calls its own Mac when nobody named it. A remote controller reports itself under this
+#: placeholder too, so on its own it says nothing about *which* Mac a row is.
+_GENERIC_MACHINE_LABELS = frozenset({"this mac", "this-mac", "this computer", "local", "localhost", "mac"})
+
+
+def _is_generic_label(text: object) -> bool:
+    clean = str(text or "").strip().lower()
+    return not clean or clean in _GENERIC_MACHINE_LABELS
+
+
+def machine_label(row: dict, machine: dict, node: dict | None = None) -> str:
+    """The name a machine is shown under: roster name, then the Hub's own label, then its hostname.
+
+    **"This Mac" is reserved for the Gateway's own Mac.** Every controller's own machine comes
+    through labelled "This Mac" (the Hub's default), so a fleet of 45 Macs read as 20 rows of
+    "This Mac"; a placeholder is skipped in favour of the roster name, the machine id (the
+    hostname) and, for a controller whose own id is just `local`, the controller's roster label.
+    Only the Gateway's own location -- and only its own row there, the one with no roster entry --
+    may be "This Mac", under whatever the owner renamed it to.
+    """
+    mid = str(machine.get("machine") or "").strip()
+    hub = str(machine.get("label") or "").strip()
+    roster = str((node or {}).get("name") or "").strip()
+    if row.get("local") and not node:
+        return hub if not _is_generic_label(hub) else (str(row.get("label") or "").strip() or local_label())
+    for candidate in (roster, hub, mid):
+        if not _is_generic_label(candidate):
+            return candidate
+    return str(row.get("label") or "").strip() or mid or "Mac"
+
+
 def machines_flat(rows: list[dict]) -> list[dict]:
     """Every machine in the fleet as one row, with its location attached.
 
@@ -2175,7 +2280,7 @@ def machines_flat(rows: list[dict]) -> list[dict]:
                 "location_local": row["local"],
                 "location_reachable": row["reachable"],
                 "machine": mid,
-                "label": machine.get("label") or mid,
+                "label": machine_label(row, machine, nodes.get(mid)),
                 "state": entry.get("state"),
                 "reachable": machine.get("reachable"),
                 "completed": entry.get("completed"),
@@ -2210,7 +2315,7 @@ def machines_flat(rows: list[dict]) -> list[dict]:
                 "location_local": row["local"],
                 "location_reachable": row["reachable"],
                 "machine": mid,
-                "label": mid,
+                "label": machine_label(row, {"machine": mid}, nodes.get(mid)),
                 "state": entry.get("state"),
                 "reachable": None,
                 "completed": entry.get("completed"),
@@ -2712,7 +2817,14 @@ def _issues(rows: list[dict]) -> list[dict]:
     Stable inside a severity by location and subject, so a page that refreshes
     does not reshuffle rows whose facts did not change.
     """
-    out = [issue for row in rows for issue in _issues_for(row)]
+    out: list[dict] = []
+    seen: set[tuple] = set()
+    for issue in (issue for row in rows for issue in _issues_for(row)):
+        # The same sentence about the same subject at the same location is one warning.
+        key = (issue.get("code"), issue.get("location_id"), issue.get("subject"), issue.get("message"))
+        if key not in seen:
+            seen.add(key)
+            out.append(issue)
     out.sort(key=lambda issue: (
         _ISSUE_SEVERITY.get(issue["severity"], 3),
         str(issue.get("location") or ""),
