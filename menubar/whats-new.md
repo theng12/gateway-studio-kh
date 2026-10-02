@@ -14,6 +14,22 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.100 — 2026-10-03
+
+Failed jobs tell the truth, so Story Studio can redo them.
+
+### A job that never reached a model is a plain failure
+If something went wrong inside the gateway before any model was asked, the job is now an ordinary failure you can
+redo — not "outcome unknown, check before retrying". Only a request that really left for a model and never came
+back stays held. The 20 Gemini pool jobs from the night of 3 October are released automatically.
+
+### Story Studio can tell free models from paid ones
+Each writing model now says whether it can cost money (a pool counts as paid if any model in it is), so Story Studio
+never quietly lands on a paid model when you chose free ones.
+
+### Repeats are labelled
+When Story Studio sends the same request twice, the gateway now says it is handing back the earlier job.
+
 ## 0.2.99 — 2026-10-03
 
 Rename a Mac from the Fleet page, and groups that missed a Studio Hub release catch up by themselves.
