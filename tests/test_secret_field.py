@@ -37,6 +37,9 @@ class SecretsUseTheControl(unittest.TestCase):
             source = path.read_text()
             self.assertNotIn("NSSecureTextField(", source,
                              f"{path.name}: use SecretField, which adds the eye, not a bare secure field")
+        # One component: the Telegram token field and the rest share SecretField.swift, not a second class.
+        self.assertNotIn("class SecretField", (MENUBAR / "PageKit.swift").read_text())
+        self.assertIn("SecretField(", (MENUBAR / "TelegramSettings.swift").read_text())
         settings = (MENUBAR / "SettingsSection.swift").read_text()
         self.assertIn("keyField = SecretField(EnvFile.apiKey()", settings,
                       "the gateway API key is shown masked")

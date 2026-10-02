@@ -16,7 +16,7 @@ import AppKit
 ///     let token = SecretField(placeholder: "Bot token", width: 320)            // editable, masked
 ///     let key = SecretField(EnvFile.apiKey(), editable: false, copy: true)    // read-only, masked, Copy
 ///     token.stringValue                                                        // the value, either state
-final class SecretField: NSStackView {
+final class SecretField: NSStackView, NSTextFieldDelegate {
     /// The field that holds the value while it is hidden.
     let secureField = NSSecureTextField(string: "")
     /// The field that holds the value while it is shown. Empty and detached while hidden.
@@ -28,6 +28,8 @@ final class SecretField: NSStackView {
     var onCopy: (() -> Void)?
     /// The clipboard Copy writes to; a test gives it a private one.
     var pasteboard: NSPasteboard = .general
+    /// Called whenever the text is edited (typed or pasted), so a card can tell it has unsaved changes.
+    var onChange: (() -> Void)?
 
     init(_ value: String = "", placeholder: String? = nil, editable: Bool = true,
          copy: Bool = false, width: CGFloat? = nil) {
@@ -39,6 +41,7 @@ final class SecretField: NSStackView {
         for field in [secureField, plainField] as [NSTextField] {
             field.font = TextRole.mono.font
             field.placeholderString = placeholder
+            field.delegate = self
             field.isEditable = editable
             field.isSelectable = editable
             field.lineBreakMode = .byTruncatingMiddle
@@ -98,6 +101,8 @@ final class SecretField: NSStackView {
         isRevealed = revealed
         updateEye()
     }
+
+    func controlTextDidChange(_ notification: Notification) { onChange?() }
 
     @objc private func toggle() { setRevealed(!isRevealed) }
 

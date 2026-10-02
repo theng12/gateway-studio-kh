@@ -49,7 +49,7 @@ final class TelegramSettings: NSObject, NSTextFieldDelegate {
         chatField.placeholderString = "-1001234567890"
         chatField.delegate = self
         chatField.widthAnchor.constraint(equalToConstant: 220).isActive = true
-        tokenField.placeholder = "123456789:AA…"
+        tokenField.placeholderString = "123456789:AA…"
         tokenField.onChange = { [weak self] in self?.dirty = true }
 
         for check in [enabledCheck, quietCheck] {
@@ -157,7 +157,7 @@ final class TelegramSettings: NSObject, NSTextFieldDelegate {
     private func apply(_ payload: [String: Any]) {
         enabledCheck.state = (payload["enabled"] as? Bool ?? true) ? .on : .off
         let saved = payload["token_set"] as? Bool ?? false
-        tokenField.placeholder = saved ? "Saved — paste a new token to replace it" : "123456789:AA…"
+        tokenField.placeholderString = saved ? "Saved — paste a new token to replace it" : "123456789:AA…"
         if let chat = payload["chat_id"] as? String, chatField.currentEditor() == nil { chatField.stringValue = chat }
 
         let events = (payload["events"] as? [[String: Any]]) ?? []
