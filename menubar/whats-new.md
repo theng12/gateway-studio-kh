@@ -14,6 +14,17 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.96 — 2026-10-02
+
+The window stays the size you set.
+
+### Overview no longer shrinks the window
+Opening Overview used to snap the main window back to a narrow size, and every page after it stayed
+that way. Switching pages now never changes the window: each page lays out inside whatever size you
+chose, and a test visits every page at a large, a medium and the minimum size to keep it that way.
+
+---
+
 ## 0.2.95 — 2026-10-02
 
 Smaller fixes: the daily summary counts all audio, hidden keys stay private, and backups explain themselves.
