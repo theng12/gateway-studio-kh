@@ -700,10 +700,29 @@ def _write_state(state: dict[str, Any]) -> None:
 
 def last_push() -> dict[str, Any]:
     """The last publish this gateway made, for the Fleet page."""
-    return _read_state()
+    state = _read_state()
+    if not _push_lock.locked():
+        # `pending` is only written while a push holds the lock, so one seen without it is a
+        # catch-up the Gateway stopped in the middle of; the next fleet pass tries it again.
+        for entry in (state.get("locations") or {}).values():
+            if isinstance(entry, dict) and entry.pop("pending", None):
+                entry.update(ok=False, code="CATCHUP_INTERRUPTED",
+                             detail="the automatic push was interrupted; it will be tried again")
+    return state
 
 
-def publish(
+#: One release push at a time, by hand or automatic. A manual publish waits for a catch-up in
+#: flight; a catch-up never waits, it tries again on the next fleet pass.
+_push_lock = threading.Lock()
+
+
+def publish(**kwargs: Any) -> dict[str, Any]:
+    """`_publish`, one push at a time (see `_push_lock`)."""
+    with _push_lock:
+        return _publish(**kwargs)
+
+
+def _publish(
     *,
     artifact_path: str | Path,
     version: str,
@@ -711,6 +730,7 @@ def publish(
     filename: str | None = None,
     allow_downgrade: bool = False,
     controller_ids: list[str] | None = None,
+    auto: bool = False,
 ) -> dict[str, Any]:
     """Sign one artifact and offer it to every configured controller (or only `controller_ids`).
 
@@ -826,9 +846,21 @@ def publish(
         lap("push")
 
     shown = delta_descriptor or descriptor
+    if auto:
+        # A catch-up completes the owner's last publish: its outcome joins that report, and the
+        # release, its time and the other controllers' outcomes stay as they were.
+        state = _read_state()
+        at = int(time.time())
+        state.setdefault("locations", {}).update(
+            {cid: {**outcome, "auto": True, "at": at} for cid, outcome in results.items()})
+        _write_state(state)
+        return state
     state = {
         "updated_at": int(time.time()),
         "fingerprint": fingerprint,
+        # The file itself, so a controller that missed this publish can be sent it later
+        # (`catch_up`); `release.sha256`/`bytes` say whether it is still the same file.
+        "artifact_path": str(path.resolve()),
         "release": {
             key: shown[key]
             for key in ("version", "build", "filename", "bytes", "sha256", "signature",
@@ -846,3 +878,186 @@ def publish(
     except Exception:  # noqa: BLE001 - telling the owner must never fail a release
         pass
     return state
+
+
+# ---------------------------------------------------------------------------
+# Catch-up: a controller that missed the newest release is sent it
+# ---------------------------------------------------------------------------
+
+#: After a failed catch-up a controller waits this long, doubling per failure up to the ceiling.
+_CATCHUP_BACKOFF = 15 * 60
+_CATCHUP_BACKOFF_MAX = 6 * 3600
+#: After a success: a fleet pass that read the controller before the push landed must not resend.
+_CATCHUP_SETTLE = 5 * 60
+#: Consecutive failures before Telegram is told it keeps failing (once per streak).
+_CATCHUP_KEEPS_FAILING = 3
+#: controller id -> (consecutive failures, not before). In memory: a Gateway restart retries at once.
+_catchup_backoff: dict[str, tuple[int, float]] = {}
+#: (path, size, mtime, recorded sha256) -> the file still hashes to the recorded sha256.
+_artifact_verdict: tuple[tuple[Any, ...], bool] | None = None
+
+
+def _held_key(row: dict[str, Any]) -> tuple[int, ...] | None:
+    held = row.get("release")
+    return version_key(str(held.get("version") or "")) if isinstance(held, dict) else None
+
+
+def _catchup_artifact(state: dict[str, Any], version: str) -> tuple[Path | None, str | None]:
+    """The file the newest release was published from, or why there is none to send."""
+    global _artifact_verdict
+    release = state.get("release") if isinstance(state.get("release"), dict) else {}
+    published = str(release.get("version") or "").strip()
+    if published != version:
+        return None, (f"the newest release, {version}, is not the one this Gateway last published "
+                      f"({published or 'none'}), so there is no file to send")
+    if not state.get("artifact_path"):
+        return None, (f"this Gateway did not record which file {version} was published from (it was "
+                      "published before automatic catch-up existed); publish it once more to turn it on")
+    path = Path(str(state["artifact_path"]))
+    try:
+        stat = path.stat()
+    except OSError:
+        return None, f"the file {version} was published from is gone ({path})"
+    key = (str(path), stat.st_size, stat.st_mtime_ns, release.get("sha256"))
+    if _artifact_verdict is None or _artifact_verdict[0] != key:
+        same = stat.st_size == release.get("bytes") and _hash_file(path)[0] == release.get("sha256")
+        _artifact_verdict = (key, same)
+    if not _artifact_verdict[1]:
+        return None, f"the file {version} was published from has changed since ({path}); publish again"
+    return path, None
+
+
+def _untrusted(row: dict[str, Any], fingerprint: str) -> str | None:
+    trust = row.get("trusted_publisher") if isinstance(row.get("trusted_publisher"), dict) else {}
+    held = str(trust.get("fingerprint") or "").lower()
+    if fingerprint and held == fingerprint.lower():
+        return None
+    if not trust.get("reported"):
+        return "it did not say which publisher key it trusts, so nothing was sent"
+    return ("it doesn't trust this gateway's key"
+            + (f" (it trusts {held[:12]}…)" if held else " (no key is installed)")
+            + f"; install this gateway's publisher fingerprint on that Mac: {fingerprint}")
+
+
+def catch_up(rows: list[dict[str, Any]], *, wait: bool = False) -> str | None:
+    """Send the newest release this Gateway published to one controller that is behind.
+
+    Called after each fleet pass (`fleet.start_refresher`) with that pass's location rows. A
+    controller qualifies when it answers, trusts this Gateway's key, and holds an older release or
+    none — never one holding something newer or unorderable. One push at a time (`_push_lock`, shared
+    with the manual publish), a growing per-controller back-off after a failure, and the outcome goes
+    into the last publish's report (`auto`, `at`) so the Fleet page shows it beside the others.
+
+    **Only once the release is out**: more than half of the configured controllers must already hold
+    it. A release pushed to one pilot controller is a pilot (the owner's rule: this Mac, then one
+    controller, then the rest), and catch-up must not finish a rollout he chose to stop.
+
+    Returns the id of the controller a push was started for. `wait` runs it here (tests).
+    """
+    latest = next((row["hub_latest"] for row in rows if isinstance(row.get("hub_latest"), dict)), None)
+    target = version_key(str((latest or {}).get("version") or ""))
+    if target is None:
+        return None
+    version = str(latest["version"]).strip()  # type: ignore[index]
+    controllers = [row for row in rows if not row.get("local") and row.get("id")]
+    on_latest = sum(1 for row in controllers if (_held_key(row) or ()) >= target)
+    # ponytail: "more than half" stands for "the rollout is finished"; an explicit "rolled out"
+    # flag on the publish is the upgrade if a half-done rollout should ever catch up by itself.
+    if on_latest * 2 <= len(controllers):
+        return None
+    behind = [
+        row for row in controllers
+        if row.get("reachable")
+        and (row.get("release") is None or ((held := _held_key(row)) is not None and held < target))
+    ]
+    if not behind or not _push_lock.acquire(blocking=False):
+        return None
+    started = False
+    try:
+        state = _read_state()
+        path, no_file = _catchup_artifact(state, version)
+        fingerprint = str(state.get("fingerprint") or "")
+        report = state.setdefault("locations", {})
+        now = time.time()
+        chosen: dict[str, Any] | None = None
+        changed = False
+        for row in behind:
+            cid = str(row["id"])
+            reason = no_file or _untrusted(row, fingerprint)
+            if reason:
+                old = report.get(cid) or {}
+                if not (old.get("skipped") and old.get("detail") == reason):
+                    print(f"[release] catch-up {row.get('label') or cid}: not sent, {reason}", flush=True)
+                    report[cid] = {"ok": False, "status": None, "code": "CATCHUP_SKIPPED", "skipped": True,
+                                   "auto": True, "at": int(now), "detail": reason, "release": None,
+                                   "label": row.get("label") or cid}
+                    changed = True
+            elif chosen is None and _catchup_backoff.get(cid, (0, 0.0))[1] <= now:
+                chosen = row
+        if chosen is not None:
+            cid = str(chosen["id"])
+            label = str(chosen.get("label") or cid)
+            report[cid] = {"ok": None, "pending": True, "auto": True, "at": int(now), "status": None,
+                           "code": None, "detail": None, "release": None, "label": label}
+            changed = True
+        if changed:
+            _write_state(state)
+        if chosen is None:
+            return None
+        release = state["release"]
+        print(f"[release] catch-up: sending {version} to {label} (it holds "
+              f"{(chosen.get('release') or {}).get('version') or 'none'})", flush=True)
+
+        def run() -> None:
+            try:
+                try:
+                    outcome = _publish(
+                        artifact_path=path, version=version, build=str(release.get("build") or ""),
+                        filename=release.get("filename"), controller_ids=[cid], auto=True,
+                    )["locations"][cid]
+                except Exception as exc:  # noqa: BLE001 - recorded and backed off, never raised
+                    outcome = {"ok": False, "status": None, "code": "RELEASE_PUSH_FAILED", "release": None,
+                               "detail": f"the push failed: {type(exc).__name__}: {exc}", "label": label,
+                               "auto": True, "at": int(time.time())}
+                    failed = _read_state()
+                    failed.setdefault("locations", {})[cid] = outcome
+                    _write_state(failed)
+                _catchup_settle(cid, label, version, outcome)
+            finally:
+                _push_lock.release()
+
+        started = True
+        if wait:
+            run()
+        else:
+            threading.Thread(target=run, name="release-catch-up", daemon=True).start()
+        return cid
+    finally:
+        if not started:
+            _push_lock.release()
+
+
+def _catchup_settle(cid: str, label: str, version: str, outcome: dict[str, Any]) -> None:
+    """Back off after a failure, and tell the owner about a success or a streak of failures."""
+    from . import notifier
+
+    now = time.time()
+    if outcome.get("ok"):
+        _catchup_backoff[cid] = (0, now + _CATCHUP_SETTLE)
+        notifier.notify("release", f"🚀 Studio Hub {version} was sent automatically to {label}, "
+                                   "which had missed it. Its Macs update themselves from here.")
+        return
+    failures = _catchup_backoff.get(cid, (0, 0.0))[0] + 1
+    wait = min(_CATCHUP_BACKOFF_MAX, _CATCHUP_BACKOFF * 2 ** (failures - 1))
+    _catchup_backoff[cid] = (failures, now + wait)
+    state = _read_state()
+    entry = (state.get("locations") or {}).get(cid)
+    if isinstance(entry, dict):
+        entry["retry_at"] = int(now + wait)
+        _write_state(state)
+    print(f"[release] catch-up {label}: failed ({outcome.get('code')}), try {failures}; "
+          f"next try in {int(wait // 60)} min", flush=True)
+    if failures == _CATCHUP_KEEPS_FAILING:
+        why = str(outcome.get("detail") or outcome.get("code") or "refused")[:140]
+        notifier.notify("release", f"⚠️ Sending Studio Hub {version} automatically to {label} keeps "
+                                   f"failing ({failures} tries): {why}")

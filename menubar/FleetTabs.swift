@@ -1043,6 +1043,20 @@ final class FleetLocationsTab: FleetTabView {
         guard let outcome else {
             return reportKnown ? "Not pushed from here yet." : "No push outcome was reported."
         }
+        if outcome.auto == true {
+            let at = outcome.at.map { " at \(Self.shortTime($0))" } ?? ""
+            if outcome.pending == true { return "Catching up… sending the newest release automatically." }
+            if outcome.ok == true {
+                let readBack = outcome.release?.versionBuild ?? location.release?.versionBuild ?? "—"
+                return "Sent automatically\(at) — it read back \(readBack)."
+            }
+            let why = (outcome.detail ?? outcome.code ?? "no reason given")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if outcome.skipped == true { return "Not sent automatically — \(why)" }
+            let stop = why.hasSuffix(".") ? "" : "."
+            let retry = outcome.retryAt.map { "\(stop) Next try at \(Self.shortTime($0))." } ?? ""
+            return "Automatic send failed\(at) — \(why)\(retry)"
+        }
         if outcome.ok == true {
             let readBack = outcome.release?.versionBuild ?? location.release?.versionBuild
             if let readBack, readBack != "—" {
@@ -1058,6 +1072,12 @@ final class FleetLocationsTab: FleetTabView {
         return "Last push refused — the controller gave no reason."
     }
 
+    private static func shortTime(_ epoch: Double) -> String {
+        DateFormatter.localizedString(
+            from: Date(timeIntervalSince1970: epoch), dateStyle: .none, timeStyle: .short
+        )
+    }
+
     /// 409 is the actionable "no trusted publisher key yet" case, so it stays
     /// orange; anything else is a harder failure and reads red.
     private func releaseOutcomeColour(
@@ -1066,7 +1086,9 @@ final class FleetLocationsTab: FleetTabView {
         guard let outcome else {
             return reportKnown ? .secondaryLabelColor : Health.warn.text
         }
+        if outcome.pending == true { return .secondaryLabelColor }
         if outcome.ok == true { return Health.ok.text }
+        if outcome.skipped == true { return Health.warn.text }
         // A refused downgrade is a decision for the owner, not a failure: orange,
         // and the detail says what it holds and how to publish anyway.
         if outcome.downgrade == true { return Health.warn.text }

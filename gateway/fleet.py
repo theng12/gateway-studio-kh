@@ -3770,6 +3770,14 @@ def start_refresher(interval: float = 15.0) -> None:
                     refresh_models_when_hub_changes(value.get("locations") or [])
                 except Exception:  # noqa: BLE001 - discovery must not kill the poller
                     pass
+                # A controller added after a release, or offline during it, is sent it here.
+                # The push runs on its own thread, one at a time, so this pass never waits on it.
+                try:
+                    from . import release_publisher
+
+                    release_publisher.catch_up(value.get("locations") or [])
+                except Exception:  # noqa: BLE001 - catch-up must not kill the poller
+                    pass
             _refresher_stop.wait(interval)
 
     _refresher = threading.Thread(target=loop, name="fleet-refresh", daemon=True)
