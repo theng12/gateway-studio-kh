@@ -555,7 +555,7 @@ final class FleetLocationsTab: FleetTabView {
     }()
     private let labelField = NSTextField(string: "")
     private let urlField = NSTextField(string: "")
-    private let tokenField = NSSecureTextField(string: "")
+    private let tokenField = SecretField(placeholder: "the controller's Fleet token", width: 260)
     private let addStatus = PageKit.label("", .secondary, colour: .secondaryLabelColor, wrapping: true)
 
     override init(frame frameRect: NSRect) {
@@ -648,8 +648,6 @@ final class FleetLocationsTab: FleetTabView {
         labelField.widthAnchor.constraint(equalToConstant: 220).isActive = true
         urlField.placeholderString = "http://10.0.0.5:47873"
         urlField.widthAnchor.constraint(equalToConstant: 260).isActive = true
-        tokenField.placeholderString = "the controller's Fleet token"
-        tokenField.widthAnchor.constraint(equalToConstant: 260).isActive = true
         let addButton = PrimaryButton(title: "Add Location", regular: true) { [weak self] in
             guard let self else { return }
             self.onAddLocation?(
