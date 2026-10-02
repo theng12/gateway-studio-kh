@@ -20,7 +20,7 @@ from typing import Any
 
 import httpx
 
-from .base import Artifact, BackendError, BackendRequest, BackendResult
+from .base import Artifact, BackendError, BackendRequest, BackendResult, quota_hints
 
 CHAT_TIMEOUT = httpx.Timeout(300.0, connect=10.0, read=300.0)
 MEDIA_TIMEOUT = httpx.Timeout(600.0, connect=10.0, read=600.0)
@@ -94,6 +94,7 @@ def _raise_for(response: httpx.Response, provider: str) -> None:
         code=code,
         status=status,
         retryable=retryable,
+        **(quota_hints(response) if status == 429 else {}),
     )
 
 

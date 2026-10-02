@@ -23,6 +23,11 @@ So the only condition that stops the walk is `status == 400` **and** not
 would reject for the same reason. Everything else — 401, 402, 403, 404, 429,
 5xx, a timeout, a connection error, a retryable 400 — advances.
 
+**Quota memory.** A member that fails with a quota or rate-limit signal is remembered
+(`pool_cooldowns.py`) and skipped by later jobs until its reset, so a spent free lane
+costs one round-trip, not one per job. If every member is cooling, the one recovering
+soonest is tried rather than failing outright; a success clears the memory.
+
 The members are resolved through `catalog.resolve`, never from the raw strings, so
 a member the owner has since disabled is skipped for the same reason it would be
 refused on its own: a toggle has to still be a toggle when the job runs.
@@ -62,7 +67,7 @@ class PoolBackend(Backend):
         self._adapter_for = adapter_for
 
     def generate(self, request: BackendRequest) -> BackendResult:
-        from .. import pools
+        from .. import pool_cooldowns, pools
 
         members = pools.members(request.model_id)
         if not members:
@@ -79,19 +84,37 @@ class PoolBackend(Backend):
         last: BackendError | None = None
         tried = 0
 
+        # Resolve first, so "every member is cooling down" is judged over the members that
+        # could answer at all (a disabled one is not a candidate and must not hide the rule).
+        candidates: list[tuple[str, Any, dict[str, Any]]] = []
         for member in members:
             definition, model = self._resolve("chat", member)
             if definition is None or model is None:
                 # Disabled, or the provider was switched off, since the pool was
                 # written. Recorded, not retried: nothing to call.
                 attempts.append({"member": member, "outcome": "unavailable"})
-                continue
-            if definition.kind == KIND_POOL:
+            elif definition.kind == KIND_POOL:
                 # Refused at the door when the pool is written; refused again here
                 # because a hand-edited pools.json is not the admin route.
                 attempts.append({"member": member, "outcome": "nested-pool-refused"})
-                continue
+            else:
+                candidates.append((member, definition, model))
 
+        # **Skip what is out of quota, until its reset.** A member that already said
+        # "quota" is not asked again every job. But never fail outright because of a
+        # memory: if every candidate is cooling, the one that recovers soonest is tried,
+        # since the provider's window may have lifted early.
+        cooling = {c[0]: pool_cooldowns.until(c[0]) for c in candidates}
+        ready = [c for c in candidates if cooling[c[0]] is None]
+        if not ready and candidates:
+            ready = [min(candidates, key=lambda c: cooling[c[0]] or 0.0)]
+        for member, _definition, _model in candidates:
+            if cooling[member] is not None and all(member != r[0] for r in ready):
+                attempts.append(
+                    {"member": member, "outcome": "cooling-down", "until": cooling[member]}
+                )
+
+        for member, definition, model in ready:
             tried += 1
             member_request = BackendRequest(
                 provider_id=definition.id,
@@ -117,6 +140,7 @@ class PoolBackend(Backend):
                     }
                 )
                 last = exc
+                pool_cooldowns.note_failure(member, exc)
                 if _is_request_shaped_failure(exc):
                     # The body is wrong. Every remaining member would say so too.
                     break
@@ -131,6 +155,7 @@ class PoolBackend(Backend):
                 last = BackendError(str(exc), code="BACKEND_ERROR", status=502)
                 continue
 
+            pool_cooldowns.clear(member)
             payload = dict(result.payload or {})
             payload["pool"] = {
                 "name": request.model_id,

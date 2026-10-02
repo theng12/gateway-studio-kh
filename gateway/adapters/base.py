@@ -102,11 +102,19 @@ class BackendError(Exception):
         upstream_accepted: bool | None = None,
         recovery: dict[str, Any] | None = None,
         upstream_settled: bool = False,
+        retry_after: float | None = None,
+        quota_scope: str | None = None,
     ) -> None:
         super().__init__(message)
         self.code = code
         self.status = status
         self.retryable = retryable
+        # What the provider said about when a quota/rate limit lifts: seconds from now
+        # (`Retry-After`, Google's `RetryInfo`), and whether the limit that was hit is a
+        # per-minute or a per-day one. Both `None` when it said nothing; a pool reads them
+        # to remember an exhausted member (`pool_cooldowns.py`).
+        self.retry_after = retry_after
+        self.quota_scope = quota_scope
         # `None` means the adapter did not establish whether the remote accepted
         # work; the worker must not infer that a retry is safe from `retryable`.
         self.upstream_accepted = upstream_accepted
@@ -122,6 +130,58 @@ class BackendError(Exception):
         # discard it. Carried so a recovery hold is actionable rather than a
         # failure an operator has to guess about.
         self.recovery = recovery
+
+
+def quota_hints(response: Any) -> dict[str, Any]:
+    """`retry_after` / `quota_scope` kwargs for a `BackendError`, read from a 429-ish response.
+
+    `Retry-After` is seconds or an HTTP date. Google's body carries `RetryInfo.retryDelay`
+    ("34s") and `QuotaFailure.violations[].quotaId` ("...PerDay...", "...PerMinute...").
+    Anything unreadable is simply absent: a hint is never worth failing the error over.
+    """
+    import json
+    import re
+    from email.utils import parsedate_to_datetime
+    from datetime import datetime, timezone
+
+    out: dict[str, Any] = {}
+    try:
+        header = response.headers.get("retry-after")
+    except Exception:  # noqa: BLE001
+        header = None
+    if header:
+        try:
+            out["retry_after"] = max(0.0, float(header))
+        except ValueError:
+            try:
+                when = parsedate_to_datetime(header)
+                if when.tzinfo is None:
+                    when = when.replace(tzinfo=timezone.utc)
+                out["retry_after"] = max(0.0, (when - datetime.now(timezone.utc)).total_seconds())
+            except (TypeError, ValueError):
+                pass
+    try:
+        body = response.json()
+    except Exception:  # noqa: BLE001
+        body = None
+    if isinstance(body, list) and body:  # Google's OpenAI-compatible route wraps the error in a list
+        body = body[0]
+    error = body.get("error") if isinstance(body, dict) else None
+    for detail in (error.get("details") if isinstance(error, dict) else None) or []:
+        if not isinstance(detail, dict):
+            continue
+        delay = detail.get("retryDelay")
+        if isinstance(delay, str) and "retry_after" not in out:
+            found = re.fullmatch(r"\s*(\d+(?:\.\d+)?)s\s*", delay)
+            if found:
+                out["retry_after"] = float(found.group(1))
+        for violation in detail.get("violations") or []:
+            quota_id = str((violation or {}).get("quotaId") or "")
+            if re.search(r"PerDay|Daily", quota_id, re.I):
+                out["quota_scope"] = "day"
+            elif re.search(r"PerMinute", quota_id, re.I) and "quota_scope" not in out:
+                out["quota_scope"] = "minute"
+    return out
 
 
 @dataclass(slots=True)

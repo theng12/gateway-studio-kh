@@ -207,6 +207,39 @@
   #m-rows tr.m-machine .m-machine-name { color: var(--dim); padding-left: var(--s16); }
   #m-rows .m-machines .badge { margin-left: var(--s4); }
 
+  /* Pools: one ordered list of models per pool, each with its health badge on the right. */
+  .pool-members { list-style: none; margin: 0; padding: 0 var(--s16) var(--s8); }
+  .pool-members li {
+    display: flex; align-items: center; gap: var(--s8); padding: var(--s6) 0;
+    border-top: 1px solid var(--line); font-size: 12px;
+  }
+  .pool-members li:first-child { border-top: 0; }
+  .pool-members { counter-reset: pm; }
+  .pool-members li:not(.muted)::before {
+    counter-increment: pm; content: counter(pm); width: 24px; flex: 0 0 24px;
+    text-align: right; color: var(--dim); font-variant-numeric: tabular-nums;
+  }
+  .pool-members .pm-main { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
+  .pool-members .pm-main b { font-size: 13px; font-weight: 600; }
+  .pool-editing {
+    padding: 0; border: 1px solid var(--line); border-radius: var(--r-card);
+    max-height: 300px; overflow-y: auto;
+  }
+  .pool-editing li { padding: var(--s6) var(--s8); }
+  .pool-editing li.muted { padding: var(--s12); }
+  .pool-editing .pm-ord { display: inline-flex; gap: var(--s4); }
+  .pm-label { font-size: 11px; font-weight: 600; color: var(--dim); margin: 0 0 var(--s6); }
+  .pool-results {
+    margin-top: var(--s8); max-height: 220px; overflow-y: auto;
+    border: 1px solid var(--line); border-radius: var(--r-card);
+  }
+  .pool-result {
+    display: flex; align-items: center; gap: var(--s8); padding: var(--s6) var(--s8);
+    border-top: 1px solid var(--line); font-size: 12px;
+  }
+  .pool-result:first-child { border-top: 0; }
+  .pool-result .pm-main { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
+  .pool-result .pm-main b { font-size: 13px; font-weight: 600; }
   .card { background: var(--panel); border: 1px solid var(--line); border-radius: var(--r-card); margin-bottom: var(--s12); overflow: hidden; }
   .card.off { opacity: .62; }
   /* Name on the left, badges under it, and ONE fixed column of small buttons on the
@@ -541,33 +574,18 @@
     </div><!-- /provider-pane-measured -->
 
     <div class="pane" id="provider-pane-pools" style="display:none">
-    <h2>Model pools</h2>
-    <p class="hint" style="margin:0 0 12px">
-      <b>One name for several models, tried in order.</b> A caller saves a single id and the
-      gateway walks the list until one answers — so a spent free lane, a retired model or a
-      provider refusing one account costs a retry instead of the job. A member is written as
-      this gateway's own id (<code>provider::model</code>), never a vendor's, so a pool cannot
-      name a model this gateway is unable to reach. Order is the policy: the first member is
-      tried first. Only a <b>400 the provider says is about the request itself</b> stops the
-      walk — every other failure moves on. Edits take effect at once; nothing here needs a
-      restart.
-    </p>
-    <div class="card" style="padding:16px">
-      <div class="row" style="gap:8px;flex-wrap:wrap;align-items:flex-end">
-        <label style="flex:0 0 190px">Name<br>
-          <input id="pool-name" placeholder="free-all" style="width:100%"></label>
-        <label style="flex:0 0 220px">Shown as<br>
-          <input id="pool-display" placeholder="Free — every lane" style="width:100%"></label>
-        <button class="primary" onclick="addPool(this)">Add Pool</button>
-      </div>
-      <label style="display:block;margin-top:12px">Members, one per line, first tried first<br>
-        <textarea id="pool-members" rows="5" style="width:100%;font-family:ui-monospace,Menlo,monospace"
-          placeholder="google-ai-free::gemini-3.7-flash&#10;openrouter-main::some/model:free"></textarea></label>
-      <div class="hint" style="margin-top:6px">
-        The list is checked when you add it. A member that does not resolve is shown but marked —
-        "this names a model you have since disabled" is worth seeing before a job finds out.
-      </div>
+    <div class="row" style="justify-content:space-between;align-items:flex-start;margin-bottom:var(--s8)">
+      <h2 style="margin:0">Model pools</h2>
+      <button class="primary" id="pool-new" onclick="newPool()">New Pool</button>
     </div>
+    <p class="hint" style="margin:0 0 12px;max-width:760px">
+      One name for several models, tried in order. A caller saves a single id and the gateway
+      walks the list until one answers, so a spent free lane or a retired model costs a retry
+      instead of the job. A member that runs out of quota is remembered and skipped until its
+      limit resets; if every member is out, the one that comes back soonest is tried. Edits take
+      effect at once.
+    </p>
+    <div id="pool-editor"></div>
     <div id="pools"></div>
     </div><!-- /provider-pane-pools -->
 
@@ -2316,70 +2334,290 @@ function selectProviderTab(key) {
 // ---------------------------------------------------------------------------
 // Pools -- one name for several models, tried in order.
 //
-// The pane shows each member's resolution rather than only the pool. A pool is a *list of
+// The pane shows each member's health rather than only the pool. A pool is a *list of
 // promises*, and the failure that costs an afternoon is a member that stopped resolving weeks
 // ago: the pool still works, just less often than its list suggests, and nothing said so.
+// Members are chosen from the enabled chat models (never typed), kept in the order they are
+// tried, and a member that ran out of quota says when it is back.
+let poolList = [];          // the pools the gateway has, with member health
+let poolModels = [];        // every enabled chat model that can be a member
+let poolEdit = null;        // { isNew, name, display, members: [id], query } while the editor is open
+let poolResultRows = [];    // the picker rows on screen, so a button needs only an index
+const POOL_RESULT_CAP = 60;
+
+function poolModelId(r) { return `${r.provider_id}::${r.model_id}`; }
+
+// "15:00", or "Fri 00:00" when the member is back on another day.
+function poolBackAt(ts) {
+  const d = new Date(Number(ts) * 1000);
+  const time = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
+  return d.toDateString() === new Date().toDateString()
+    ? time : `${d.toLocaleDateString([], { weekday: 'short' })} ${time}`;
+}
+
+// What the gateway knows about a member right now: its provider and model names, and one
+// health badge. `detail` is the server's row (state, cooldown); `model` is the picker's row.
+function poolMemberInfo(id, detail, model) {
+  const info = {
+    id,
+    name: (detail && detail.model_name) || (model && model.display_name) || id.split('::').slice(1).join('::') || id,
+    provider: (detail && detail.provider_name) || (model && model.provider_name) || id.split('::')[0],
+    free: model ? !!model.free_lane : null,
+    price: model ? priceInfo(model).text : '',
+    badge: '',
+  };
+  if (detail && detail.cooldown_until) {
+    info.badge = `<span class="badge warn" title="${esc(detail.cooldown_reason || '')}">Out of quota, back at ${esc(poolBackAt(detail.cooldown_until))}</span>`;
+  } else if (detail && !detail.resolves) {
+    const why = { provider_off: 'Provider off', disabled: 'Model off', missing: 'Not found' }[detail.state] || 'Does not resolve';
+    info.badge = `<span class="badge bad" title="This member can not answer. It is skipped when the pool runs.">${why}</span>`;
+  } else if (detail) {
+    info.badge = '<span class="badge ok">Ready</span>';
+  } else if (!model) {
+    info.badge = '<span class="badge bad" title="Not an enabled chat model right now.">Not enabled</span>';
+  }
+  return info;
+}
+
+function poolLaneBadge(free) {
+  if (free === null || free === undefined) return '';
+  return free ? '<span class="badge ok">Free</span>' : '<span class="badge">Paid</span>';
+}
+
 async function loadPools() {
   const host = document.getElementById('pools');
   if (!host) return;
   let data;
   try { data = await api('/pools'); }
   catch (e) { host.innerHTML = `<div class="msg bad">${esc(e.message)}</div>`; return; }
-  const pools = data.pools || [];
-  if (!pools.length) {
+  poolList = data.pools || [];
+  renderPoolList();
+}
+
+function renderPoolList() {
+  const host = document.getElementById('pools');
+  if (!host) return;
+  if (!poolList.length) {
     host.innerHTML = `<p class="hint" style="margin-top:12px">No pools yet. A pool is worth
-      making when one lane can run out — free tiers especially — and the job matters more than
+      making when one lane can run out (free tiers especially) and the job matters more than
       which model writes it.</p>`;
     return;
   }
-  host.innerHTML = pools.map(pool => `
-    <div class="card" style="margin-top:12px">
-      <div class="row" style="justify-content:space-between;align-items:baseline;gap:8px">
-        <div>
+  host.innerHTML = poolList.map(pool => {
+    const editing = poolEdit && !poolEdit.isNew && poolEdit.name === pool.name;
+    const cooling = pool.cooling_count || 0;
+    return `
+    <div class="card" style="margin-top:12px${editing ? ';opacity:.55' : ''}">
+      <div class="card-head">
+        <div class="card-main">
           <b>${esc(pool.display_name)}</b>
           <code style="margin-left:8px">pool::${esc(pool.name)}</code>
+          <div class="hint" style="margin-top:4px">
+            ${pool.resolvable_count} of ${pool.members.length} members can answer${cooling ? `, ${cooling} out of quota` : ''}
+            ${pool.description ? ` · ${esc(pool.description)}` : ''}
+          </div>
         </div>
-        <div class="row" style="gap:6px">
-          <span class="hint">${pool.resolvable_count}/${pool.members.length} resolve</span>
-          <button onclick="removePool('${esc(pool.name)}', this)">Remove</button>
+        <div class="card-actions">
+          <button onclick="editPool('${esc(pool.name)}')">Edit Pool</button>
+          <button onclick="removePool('${esc(pool.name)}', this)">Delete Pool</button>
         </div>
       </div>
-      ${pool.description ? `<div class="hint" style="margin-top:4px">${esc(pool.description)}</div>` : ''}
-      <ol style="margin:8px 0 0 16px;padding:0">
-        ${pool.members_detail.map(m => `<li style="margin:4px 0">
-          <code>${esc(m.id)}</code>
-          ${m.resolves
-            ? `<span class="hint">— ${esc(m.provider_name)}</span>`
-            : `<span class="msg bad" style="display:inline;padding:0 6px">does not resolve</span>`}
-        </li>`).join('')}
+      <ol class="pool-members">
+        ${pool.members_detail.map(m => {
+          const i = poolMemberInfo(m.id, m, null);
+          return `<li><span class="pm-main"><b>${esc(i.name)}</b>
+            <span class="muted">${esc(i.provider)}</span></span>${i.badge}</li>`;
+        }).join('')}
       </ol>
-    </div>`).join('');
+    </div>`;
+  }).join('');
 }
 
-async function addPool(btn) {
-  const name = document.getElementById('pool-name').value.trim();
-  const members = document.getElementById('pool-members').value
-    .split('\n').map(m => m.trim()).filter(Boolean);
-  if (!name || !members.length) { alert('A pool needs a name and at least one member.'); return; }
-  btn.disabled = true; btn.textContent = 'Adding…';
+// ---- the editor: one panel for a new pool and for changing an existing one ----
+async function ensurePoolModels() {
   try {
-    await api('/pools', { method: 'POST', body: {
-      name, members,
-      display_name: document.getElementById('pool-display').value.trim(),
-    }});
-    document.getElementById('pool-name').value = '';
-    document.getElementById('pool-display').value = '';
-    document.getElementById('pool-members').value = '';
+    const data = await api('/models?modality=chat&status=enabled&provider_lane=on&limit=2000');
+    poolModels = (data.models || [])
+      // A merged Studio Hub row is one model on several Macs, not a provider's own id.
+      .filter(r => r.provider_id !== 'pool' && !(Array.isArray(r.locations) && r.locations.length))
+      .sort((a, b) => (a.provider_name || '').localeCompare(b.provider_name || '')
+        || (a.display_name || '').localeCompare(b.display_name || ''));
+  } catch (e) {
+    poolModels = [];
+    const msg = document.getElementById('pool-msg');
+    if (msg) msg.innerHTML = `<div class="msg bad">Could not read the model list: ${esc(e.message)}</div>`;
+  }
+  renderPoolEditorBody();
+}
+
+function newPool() {
+  poolEdit = { isNew: true, name: '', display: '', members: [], query: '' };
+  openPoolEditor();
+}
+
+function editPool(name) {
+  const pool = poolList.find(p => p.name === name);
+  if (!pool) return;
+  poolEdit = { isNew: false, name: pool.name, display: pool.display_name, members: pool.members.slice(), query: '' };
+  openPoolEditor();
+}
+
+function openPoolEditor() {
+  const host = document.getElementById('pool-editor');
+  if (!host) return;
+  const e = poolEdit;
+  host.innerHTML = `
+    <div class="card" style="padding:16px">
+      <h3>${e.isNew ? 'New pool' : `Edit pool <code>pool::${esc(e.name)}</code>`}</h3>
+      <div class="row" style="gap:12px;flex-wrap:wrap;align-items:flex-end;margin-bottom:12px">
+        <label style="flex:0 0 220px">Name<br>
+          <input type="text" id="pool-name" placeholder="free-all" value="${esc(e.name)}"
+                 ${e.isNew ? '' : 'disabled title="The name is the id callers save, so it cannot change."'}
+                 style="width:100%"></label>
+        <label style="flex:0 0 280px">Shown as<br>
+          <input type="text" id="pool-display" placeholder="Free, every lane" value="${esc(e.display)}"
+                 style="width:100%;font-family:inherit;font-size:13px"></label>
+      </div>
+      <div id="pool-edit-body"></div>
+      <div id="pool-msg"></div>
+      <div class="row" style="margin-top:12px;gap:8px">
+        <button class="primary" id="pool-save" onclick="savePool(this)">${e.isNew ? 'Create Pool' : 'Save Pool'}</button>
+        <button onclick="closePoolEditor()">Cancel</button>
+      </div>
+    </div>`;
+  renderPoolEditorBody();
+  renderPoolList();
+  ensurePoolModels(); // re-read on every open: models are switched on and off elsewhere
+  host.scrollIntoView({ block: 'nearest' });
+}
+
+function closePoolEditor() {
+  poolEdit = null;
+  const host = document.getElementById('pool-editor');
+  if (host) host.innerHTML = '';
+  renderPoolList();
+}
+
+// Members (ordered) above the picker. Redrawn on every change; the search box is drawn once
+// so typing never loses focus -- only the results under it are redrawn per keystroke.
+function renderPoolEditorBody() {
+  const body = document.getElementById('pool-edit-body');
+  if (!body || !poolEdit) return;
+  const e = poolEdit;
+  const existing = e.isNew ? null : poolList.find(p => p.name === e.name);
+  const detailOf = id => existing && existing.members_detail.find(m => m.id === id);
+  const modelOf = id => poolModels.find(r => poolModelId(r) === id);
+  if (!body.querySelector('#pool-q')) {
+    body.innerHTML = `
+      <div class="pm-label">Members, tried first to last <span class="muted" id="pool-count"></span></div>
+      <div id="pool-members-list"></div>
+      <div class="pm-label" style="margin-top:12px">Add a model</div>
+      <input type="text" id="pool-q" placeholder="Search by provider, model or free / paid" value="${esc(e.query)}"
+             oninput="poolSearch(this.value)" autocomplete="off" style="width:100%;font-family:inherit;font-size:13px">
+      <div id="pool-results"></div>`;
+  }
+  document.getElementById('pool-count').textContent = `(${e.members.length})`;
+  document.getElementById('pool-members-list').innerHTML = `
+    <ol class="pool-members pool-editing">
+      ${e.members.length ? e.members.map((id, n) => {
+        const i = poolMemberInfo(id, detailOf(id), modelOf(id));
+        return `<li>
+          <span class="pm-ord">
+            <button class="sm" ${n === 0 ? 'disabled' : ''} title="Move up" aria-label="Move up" onclick="poolMove(${n}, -1)">↑</button>
+            <button class="sm" ${n === e.members.length - 1 ? 'disabled' : ''} title="Move down" aria-label="Move down" onclick="poolMove(${n}, 1)">↓</button>
+          </span>
+          <span class="pm-main"><b>${esc(i.name)}</b> <span class="muted">${esc(i.provider)}</span>
+            ${poolLaneBadge(i.free)}${i.price ? ` <span class="muted">${esc(i.price)}</span>` : ''}</span>
+          ${i.badge}
+          <button class="sm" title="Remove from this pool" aria-label="Remove ${esc(i.name)}" onclick="poolDrop(${n})">✕</button>
+        </li>`;
+      }).join('') : '<li class="muted">No members yet. Pick models below.</li>'}
+    </ol>`;
+  renderPoolResults();
+}
+
+function poolSearch(value) {
+  if (poolEdit) poolEdit.query = value;
+  renderPoolResults();
+}
+
+function renderPoolResults() {
+  const host = document.getElementById('pool-results');
+  if (!host || !poolEdit) return;
+  const have = new Set(poolEdit.members);
+  const tokens = (poolEdit.query || '').toLowerCase().split(/\s+/).filter(Boolean);
+  const matches = poolModels.filter(r => {
+    const hay = `${r.provider_name} ${r.display_name} ${r.model_id} ${r.free_lane ? 'free' : 'paid'}`.toLowerCase();
+    return tokens.every(t => hay.includes(t));
+  });
+  poolResultRows = matches.slice(0, POOL_RESULT_CAP);
+  if (!matches.length) {
+    host.innerHTML = `<p class="hint" style="margin:8px 0 0">${poolModels.length
+      ? 'No enabled chat model matches. Models switched off on the Models page are not offered.'
+      : 'Reading the enabled chat models…'}</p>`;
+    return;
+  }
+  host.innerHTML = `<div class="pool-results">${poolResultRows.map((r, n) => `
+      <div class="pool-result">
+        <span class="pm-main"><b>${esc(r.display_name)}</b>
+          <span class="muted">${esc(r.provider_name)}</span>
+          ${poolLaneBadge(!!r.free_lane)} <span class="muted">${esc(priceInfo(r).text)}</span></span>
+        <button class="sm" ${have.has(poolModelId(r)) ? 'disabled' : ''} onclick="poolAddAt(${n})">${have.has(poolModelId(r)) ? 'Added' : 'Add'}</button>
+      </div>`).join('')}</div>
+    <div class="hint" style="margin-top:4px">${matches.length > POOL_RESULT_CAP
+      ? `Showing ${POOL_RESULT_CAP} of ${matches.length}. Keep typing to narrow the list.`
+      : `${matches.length} enabled chat model${matches.length === 1 ? '' : 's'}`}</div>`;
+}
+
+function poolAddAt(n) {
+  const row = poolResultRows[n];
+  if (!row || !poolEdit) return;
+  const id = poolModelId(row);
+  if (!poolEdit.members.includes(id)) poolEdit.members.push(id);
+  renderPoolEditorBody();
+}
+
+function poolDrop(n) {
+  if (!poolEdit) return;
+  poolEdit.members.splice(n, 1);
+  renderPoolEditorBody();
+}
+
+function poolMove(n, by) {
+  if (!poolEdit) return;
+  const to = n + by, list = poolEdit.members;
+  if (to < 0 || to >= list.length) return;
+  [list[n], list[to]] = [list[to], list[n]];
+  renderPoolEditorBody();
+}
+
+async function savePool(btn) {
+  if (!poolEdit) return;
+  const e = poolEdit;
+  const msg = document.getElementById('pool-msg');
+  const say = text => { if (msg) msg.innerHTML = text ? `<div class="msg bad" style="margin-top:8px">${esc(text)}</div>` : ''; };
+  const name = e.isNew ? document.getElementById('pool-name').value.trim() : e.name;
+  const display = document.getElementById('pool-display').value.trim();
+  if (!name) return say('A pool needs a name.');
+  if (!e.members.length) return say('A pool needs at least one member. Pick a model below.');
+  const label = btn.textContent;
+  btn.disabled = true; btn.textContent = 'Saving…'; say('');
+  try {
+    if (e.isNew) await api('/pools', { method: 'POST', body: { name, members: e.members, display_name: display } });
+    else await api(`/pools/${encodeURIComponent(name)}`, { method: 'PATCH', body: { members: e.members, display_name: display } });
+    closePoolEditor();
     await loadPools();
-  } catch (e) { alert(e.message); }
-  finally { btn.disabled = false; btn.textContent = 'Add Pool'; }
+  } catch (err) { say(err.message); btn.disabled = false; btn.textContent = label; }
 }
 
 async function removePool(name, btn) {
-  if (!confirm(`Remove the pool "${name}"? The models in it are untouched.`)) return;
+  if (!confirm(`Delete the pool "${name}"? The models in it are untouched, but anything saved as pool::${name} stops resolving.`)) return;
   btn.disabled = true;
-  try { await api(`/pools/${encodeURIComponent(name)}`, { method: 'DELETE' }); await loadPools(); }
-  catch (e) { alert(e.message); btn.disabled = false; }
+  try {
+    await api(`/pools/${encodeURIComponent(name)}`, { method: 'DELETE' });
+    if (poolEdit && poolEdit.name === name) closePoolEditor();
+    await loadPools();
+  } catch (e) { alert(e.message); btn.disabled = false; }
 }
 
 // Import a price-research file: the gateway checks every number (source URL on the provider's own
