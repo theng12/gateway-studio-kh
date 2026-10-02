@@ -14,6 +14,17 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.95 — 2026-10-02
+
+Smaller fixes: the daily summary counts all audio, hidden keys stay private, and backups explain themselves.
+
+- **Daily summary counts compressed audio.** The Telegram summary now totals the minutes of narration and music even when the
+  files are m4a or FLAC, instead of saying "not measured".
+- **Hidden keys no longer reveal their length.** A masked API key or token now shows the same row of dots whatever its length.
+- **Backups explain when Hub voices live elsewhere.** If the Studio Hub's voices are on another Mac, the Backups card now says
+  they are not in this backup and where to find them.
+- **More reliable tests.** A test that sometimes failed under load now checks the same thing without depending on timing.
+
 ## 0.2.94 — 2026-10-02
 
 Telegram alerts, backups, secrets that stay hidden until you ask, and a calmer Fleet page.
