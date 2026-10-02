@@ -14,6 +14,22 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.98 — 2026-10-02
+
+Fleet stops crying wolf, and every Mac shows whether it is on the latest Studio Hub.
+
+### A healthy idle fleet reads green
+The Fleet page no longer flags idle Macs as "Needs Attention", no longer lists "workers offline" for the
+retired Video studio, and no longer shows "partial_read" or "(newer)" notes. A Mac is flagged only when there
+is a cause it can name — a studio that should run is down, a job failed in the last 15 minutes, a stalled job,
+or the Mac is offline — and the reason shows in "Doing now" and the tooltip.
+
+### Latest, Updating…, Behind
+Each Mac carries a version badge: **Latest** (on the newest Studio Hub this gateway published),
+**Updating…** (its controller holds the release and it is picking it up), **Behind — 0.6.126** (with what to
+do), or **Unknown** (offline). Group headers read "Hub 0.6.132 · Latest · 10 of 11 on latest", the summary
+has an "On latest 41/41" tile, and the Machines and Locations tabs show the same verdict.
+
 ## 0.2.97 — 2026-10-02
 
 Pools you can edit by picking models, pools that remember which models are out of quota, and tabs on Analytics.
