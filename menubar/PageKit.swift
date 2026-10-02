@@ -499,6 +499,94 @@ final class PrimaryButton: NSButton {
     }
 }
 
+/// A secret (a token, a key) typed into a masked field, with an **eye button** to reveal what was typed.
+///
+/// Masked by default (`NSSecureTextField`); the eye swaps in a plain field holding the same text, so a paste
+/// can be checked before it is saved. It only ever shows what is typed *here*: a secret already saved on the
+/// gateway is never sent back to the app, so `placeholder` is where "Saved" is said instead.
+final class SecretField: NSView, NSTextFieldDelegate {
+    private let masked = NSSecureTextField()
+    private let plain = NSTextField()
+    private let eye = NSButton()
+    private(set) var isRevealed = false
+
+    /// The text typed so far (whichever field is showing).
+    var stringValue: String {
+        get { isRevealed ? plain.stringValue : masked.stringValue }
+        set { masked.stringValue = newValue; plain.stringValue = newValue }
+    }
+    /// Shown while the field is empty.
+    var placeholder: String {
+        get { masked.placeholderString ?? "" }
+        set { masked.placeholderString = newValue; plain.placeholderString = newValue }
+    }
+    /// Called whenever the text changes.
+    var onChange: (() -> Void)?
+
+    init(width: CGFloat) {
+        super.init(frame: .zero)
+        for field in [masked, plain] {
+            field.font = TextRole.mono.font
+            field.delegate = self
+            field.translatesAutoresizingMaskIntoConstraints = false
+            addSubview(field)
+        }
+        plain.isHidden = true
+        eye.isBordered = false
+        eye.imagePosition = .imageOnly
+        eye.contentTintColor = .secondaryLabelColor
+        eye.target = self
+        eye.action = #selector(toggle)
+        eye.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(eye)
+        showEye()
+        translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            widthAnchor.constraint(equalToConstant: width),
+            heightAnchor.constraint(equalToConstant: DS.Size.regularControl),
+            eye.trailingAnchor.constraint(equalTo: trailingAnchor),
+            eye.centerYAnchor.constraint(equalTo: centerYAnchor),
+            eye.widthAnchor.constraint(equalToConstant: DS.Size.regularControl),
+            eye.heightAnchor.constraint(equalToConstant: DS.Size.regularControl),
+        ])
+        for field in [masked, plain] {
+            NSLayoutConstraint.activate([
+                field.leadingAnchor.constraint(equalTo: leadingAnchor),
+                field.trailingAnchor.constraint(equalTo: eye.leadingAnchor, constant: -DS.Space.xs),
+                field.centerYAnchor.constraint(equalTo: centerYAnchor),
+            ])
+        }
+    }
+    required init?(coder: NSCoder) { fatalError("not used") }
+
+    private func showEye() {
+        let name = isRevealed ? "eye.slash" : "eye"
+        let label = isRevealed ? "Hide" : "Show"
+        eye.image = NSImage(systemSymbolName: name, accessibilityDescription: label)
+        eye.toolTip = label
+        eye.setAccessibilityLabel(label)
+    }
+
+    @objc private func toggle() {
+        let text = stringValue
+        isRevealed.toggle()
+        masked.stringValue = text
+        plain.stringValue = text
+        masked.isHidden = isRevealed
+        plain.isHidden = !isRevealed
+        showEye()
+        window?.makeFirstResponder(isRevealed ? plain : masked)
+    }
+
+    func controlTextDidChange(_ notification: Notification) {
+        // Keep the hidden field in step, so the eye never shows stale text.
+        if let source = notification.object as? NSTextField {
+            (source === masked ? plain : masked).stringValue = source.stringValue
+        }
+        onChange?()
+    }
+}
+
 /// A rounded panel that follows light/dark mode. A `CALayer` colour is fixed at the moment it is
 /// set, so a card that assigned `controlBackgroundColor.cgColor` once stayed light after the
 /// system went dark; `updateLayer` re-resolves it whenever the appearance changes.

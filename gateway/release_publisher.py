@@ -839,4 +839,10 @@ def publish(
         "timings": timings,
     }
     _write_state(state)
+    try:
+        from . import notifier
+
+        notifier.notify("release", notifier.release_message(state))
+    except Exception:  # noqa: BLE001 - telling the owner must never fail a release
+        pass
     return state

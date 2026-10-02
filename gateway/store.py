@@ -66,6 +66,9 @@ CREATE TABLE IF NOT EXISTS jobs (
     defer_reason     TEXT
 );
 CREATE INDEX IF NOT EXISTS jobs_state_next ON jobs(state, next_action_at);
+-- The notifier asks "what settled in this window", and a window read must not walk every job's
+-- (large) result_json to find out.
+CREATE INDEX IF NOT EXISTS jobs_updated ON jobs(updated_at);
 -- What the Analytics page needs of a job after `archive_old` removed it: six scalars, never
 -- the prompt or the generated text. `generation_analytics` reads this beside `jobs`.
 CREATE TABLE IF NOT EXISTS job_summaries (
@@ -1065,6 +1068,36 @@ class JobStore:
             (*params, limit),
         ).fetchall()
         return [self._row_dict(r) for r in rows]
+
+    def settled_between(self, start: float, end: float) -> list[dict[str, Any]]:
+        """Jobs that finished (succeeded, failed or cancelled) in `[start, end)`, without their prose.
+
+        Only the scalar columns the notifier needs; `result_json` holds the whole generated text and
+        is never read here. The window is on `updated_at`, which is when the job settled.
+        """
+        rows = self._conn.execute(
+            "SELECT id, modality, state, error_code, error_detail, asset_path, artifacts_json, updated_at "
+            "FROM jobs WHERE updated_at >= ? AND updated_at < ? "
+            "AND state IN ('succeeded', 'failed', 'cancelled')",
+            (start, end),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def attempts_with_code(self, code: str, since: float) -> list[dict[str, Any]]:
+        """Every attempt-log entry with this failure `code` made at or after `since`.
+
+        `[{job_id, location, at}]`. Used to notice a Mac handing jobs back for memory repeatedly.
+        """
+        rows = self._conn.execute(
+            "SELECT id, attempt_log FROM jobs WHERE updated_at >= ? AND attempt_log LIKE ?",
+            (since, f"%{code}%"),
+        ).fetchall()
+        hits: list[dict[str, Any]] = []
+        for row in rows:
+            for entry in _loads_list(row["attempt_log"]):
+                if isinstance(entry, dict) and entry.get("code") == code and float(entry.get("at") or 0) >= since:
+                    hits.append({"job_id": row["id"], "location": entry.get("location"), "at": entry.get("at")})
+        return hits
 
     def usage_samples(self, *, limit: int = 500) -> list[dict[str, Any]]:
         """What each settled job measured, for the qualification record.
