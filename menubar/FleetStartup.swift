@@ -236,7 +236,7 @@ final class FleetStartupCell: NSView {
         super.init(frame: .zero)
         let (health, text) = FleetStartup.health(machine.startup)
         let badge = Badge(text, health)
-        badge.toolTip = FleetStartup.tooltip(machine.startup)
+        badge.toolTip = FleetStartup.tooltip(machine.startup, name: machine.label ?? machine.machine ?? "This Mac")
         toolTip = badge.toolTip
         var views: [NSView] = [badge]
         if let more = FleetStartup.menuButton(for: machine, window: window, done: done) { views.append(more) }

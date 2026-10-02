@@ -29,9 +29,11 @@ struct FleetSnapshot: Decodable {
     /// publishes them. Optional so a gateway from before this section still fills
     /// every other table on the page.
     var release: FleetReleaseState?
+    /// The warning kinds the owner hid; `nil` from a gateway that predates the setting.
+    var fleetWarnings: FleetWarningSetting?
 
     private enum CodingKeys: String, CodingKey {
-        case generatedAt, summary, locations, machines, running, issues, models, release
+        case generatedAt, summary, locations, machines, running, issues, models, release, fleetWarnings
     }
 
     /// An empty snapshot, for the "could not read the fleet" case: every table is
@@ -65,6 +67,7 @@ struct FleetSnapshot: Decodable {
         issues = lenientArray(c, forKey: .issues)
         models = lenientArray(c, forKey: .models)
         release = try? c.decode(FleetReleaseState.self, forKey: .release)
+        fleetWarnings = try? c.decode(FleetWarningSetting.self, forKey: .fleetWarnings)
     }
 }
 
@@ -496,6 +499,17 @@ struct FleetDiskTop: Decodable {
     var gb: Double?
 }
 
+/// One Hub warning about a Mac's disk, with the kind the gateway classified it as.
+struct FleetWarningItem: Decodable {
+    var kind: String
+    var text: String
+}
+
+/// Which kinds of Fleet warning the owner hid (`GET /admin/api/settings/fleet-warnings`, also on the snapshot).
+struct FleetWarningSetting: Decodable {
+    var hidden: [String] = []
+}
+
 /// One Mac's disk as the gateway normalises it (`machine_disk` in `fleet.py`).
 ///
 /// `state` is `green|amber|red|stop`. `stateSource` is `hub` when the Hub stated it and
@@ -512,9 +526,12 @@ struct FleetDisk: Decodable {
     var top: [FleetDiskTop] = []
     var lastSweep: FleetScalar?
     var warnings: [String] = []
+    /// The same warnings with what each is about (`disk_space`, `macos_updates`, `time_machine`, `other`), so a
+    /// banner can group them by kind. A gateway that predates the field gets a plain split between the two.
+    var warningItems: [FleetWarningItem] = []
 
     private enum CodingKeys: String, CodingKey {
-        case state, stateSource, freeGb, totalGb, trashGb, swapUsedGb, top, lastSweep, warnings
+        case state, stateSource, freeGb, totalGb, trashGb, swapUsedGb, top, lastSweep, warnings, warningItems
     }
 
     init(from decoder: Decoder) throws {
@@ -528,6 +545,14 @@ struct FleetDisk: Decodable {
         top = (try? c.decode([FleetDiskTop].self, forKey: .top)) ?? []
         lastSweep = try? c.decode(FleetScalar.self, forKey: .lastSweep)
         warnings = (try? c.decode([String].self, forKey: .warnings)) ?? []
+        warningItems = (try? c.decode([FleetWarningItem].self, forKey: .warningItems))
+            ?? warnings.map { FleetWarningItem(kind: Self.guessKind($0), text: $0) }
+    }
+
+    private static func guessKind(_ text: String) -> String {
+        let lowered = text.lowercased()
+        return lowered.contains("free") && !lowered.contains("update") && !lowered.contains("time machine")
+            ? "disk_space" : "other"
     }
 
     var isLow: Bool { ["amber", "red", "stop"].contains((state ?? "").lowercased()) }
@@ -667,7 +692,7 @@ struct FleetMachine: Decodable {
     var stateReason: String? {
         var parts: [String] = []
         if nodeStateIsUnauthorized {
-            parts.append("This Mac answered but refused this controller's credential.")
+            parts.append("\(label ?? machine ?? "This node") answered but refused this controller's credential.")
         } else if let health, !health.isEmpty, health.lowercased() != "up" {
             parts.append("The Hub reports its health as ‘\(health)’.")
         }

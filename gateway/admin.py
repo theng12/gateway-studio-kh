@@ -1099,6 +1099,22 @@ def set_retention(payload: dict[str, Any]) -> Any:
     return {**saved, "usage": retention.usage()}
 
 
+@router.get("/api/settings/fleet-warnings", dependencies=[Depends(require_admin)])
+def get_fleet_warnings() -> dict[str, Any]:
+    """Which kinds of Fleet warning the owner hid (macOS automatic updates, Time Machine)."""
+    return fleet.warnings_setting()
+
+
+@router.put("/api/settings/fleet-warnings", dependencies=[Depends(require_admin)])
+def set_fleet_warnings(payload: dict[str, Any]) -> Any:
+    """Replace the hidden list. Disk-space warnings are never hideable: that is a 422."""
+    try:
+        fleet.set_hidden_warning_kinds(payload.get("hidden"))
+    except ValueError as exc:
+        return _error(422, str(exc), "WARNING_NOT_HIDEABLE")
+    return fleet.warnings_setting()
+
+
 @router.get("/api/settings/concurrency", dependencies=[Depends(require_admin)])
 def get_concurrency() -> dict[str, Any]:
     """How many jobs may run at once — the pool, each lane, and each provider.
@@ -2412,6 +2428,8 @@ def fleet_snapshot(force: bool = False) -> dict[str, Any]:
     # row touched are copied instead.
     out = dict(data)
     out["locations"] = [_enrich_location(row) for row in data.get("locations") or []]
+    # Read live, never from the cache: hiding a warning kind must show on the next read.
+    out["fleet_warnings"] = fleet.warnings_setting()
     # **What the fleet should hold, and what it does.** The publisher identity and
     # the last push travel with the fleet read so the page has one source for both
     # halves of the report — the version that was signed and the version each

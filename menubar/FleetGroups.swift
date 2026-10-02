@@ -84,6 +84,16 @@ struct GroupSummary {
             .map { (Health(severity: $0.severity), $0.message ?? "") }
     }
 
+    /// The same, grouped by kind for the card body: "5 machines are offline — check them" once, with
+    /// [Show Macs], instead of one sentence per Mac (FleetBanner.swift).
+    var warnings: [FleetWarning] {
+        if isDown {
+            return [FleetWarning(id: "down", kind: "down", health: .bad,
+                                 text: location.pauseReason ?? location.error ?? "This group is not answering.", fix: nil)]
+        }
+        return FleetWarnings.group(issues: issues)
+    }
+
     /// Counted reasons, so a collapsed card still says what is wrong.
     var problems: [String] {
         if isDown {
@@ -455,8 +465,9 @@ final class FleetGroupsTab: NSView, NSSearchFieldDelegate {
         icon.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 16, weight: .semibold)
         icon.contentTintColor = worst.text
 
-        var lines: [NSView] = [PageKit.label("\(groups.count) of \(self.groups.count) group\(self.groups.count == 1 ? "" : "s") need\(groups.count == 1 ? "s" : "") attention", .rowTitle)]
-        for group in groups.prefix(5) {
+        let title = PageKit.label("\(groups.count) of \(self.groups.count) group\(self.groups.count == 1 ? "" : "s") need\(groups.count == 1 ? "s" : "") attention", .rowTitle)
+        var lines: [NSView] = []
+        for group in groups {
             let reason = group.problems.joined(separator: " · ")
             let badge = Badge(group.name, group.health)
             let cell = NSView()
@@ -475,7 +486,6 @@ final class FleetGroupsTab: NSView, NSSearchFieldDelegate {
             row.spacing = DS.Space.s
             lines.append(row)
         }
-        if groups.count > 5 { lines.append(PageKit.label("and \(groups.count - 5) more below", .caption, colour: .secondaryLabelColor)) }
 
         // The bulk fix the owner asked for: Macs that will not bring their services up after a restart.
         let everyMachine = snapshot?.machines ?? []
@@ -495,15 +505,27 @@ final class FleetGroupsTab: NSView, NSSearchFieldDelegate {
                 : "Those Macs are not answering; a Mac with no Studio Hub running needs its services started by hand once."
             actions.insert(enable, at: 0)
         }
-        let text = NSStackView(views: lines)
+        // However many groups need attention, the banner takes at most ~5 lines and scrolls past that, so the
+        // cards below keep the page.
+        let list = NSStackView(views: lines)
+        list.orientation = .vertical
+        list.alignment = .leading
+        list.spacing = DS.Space.tight
+        for line in lines { line.widthAnchor.constraint(equalTo: list.widthAnchor).isActive = true }
+        let clamp = FleetClampedScroll(maxHeight: FleetClampedScroll.groupsHeight)
+        clamp.setContent(list)
+        let text = NSStackView(views: [title, clamp])
         text.orientation = .vertical
         text.alignment = .leading
         text.spacing = DS.Space.tight
+        clamp.widthAnchor.constraint(equalTo: text.widthAnchor).isActive = true
         let buttons = NSStackView(views: actions)
         buttons.orientation = .vertical
         buttons.alignment = .trailing
         buttons.spacing = DS.Space.s
-        let row = NSStackView(views: [icon, text, NSView(), buttons])
+        // No spacer: the text column takes every point the icon and buttons leave, so its rows can wrap.
+        text.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        let row = NSStackView(views: [icon, text, buttons])
         row.alignment = .top
         row.spacing = DS.Space.m
         panel.hold(row)
@@ -602,7 +624,12 @@ final class FleetGroupsTab: NSView, NSSearchFieldDelegate {
             }
             func rule() { let line = NSBox(); line.boxType = .separator; add(line, inset: 0) }
             rule()
-            for note in group.notes where !note.text.isEmpty { add(noteRow(note.health, note.text)) }
+            let warnings = group.warnings.filter { !$0.text.isEmpty }
+            if !warnings.isEmpty {
+                let list = FleetWarningList(plain: true)
+                list.set(warnings: warnings)
+                add(list)
+            }
             add(columnHeader())
             if group.showsRoster {
                 for node in group.location.nodes { rule(); add(rosterRow(node, group)) }
@@ -908,7 +935,7 @@ final class FleetGroupsTab: NSView, NSSearchFieldDelegate {
 
         let (startupHealth, startupText) = FleetStartup.health(machine.startup)
         let startup = Badge(startupText, startupHealth)
-        startup.toolTip = FleetStartup.tooltip(machine.startup)
+        startup.toolTip = FleetStartup.tooltip(machine.startup, name: machine.label ?? machine.machine ?? "This Mac")
 
         let row = rowStack(["Node": name, "State": state, "Doing now": doing, "Disk": diskCell, "Memory": memoryCell, "Startup": startup],
                           trailing: startupMenu?(machine))
