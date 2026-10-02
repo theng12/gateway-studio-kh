@@ -1055,12 +1055,9 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
         guard let id = location.id else { return }
         let label = location.label ?? id
 
-        func field(_ placeholder: String) -> NSSecureTextField {
-            let field = NSSecureTextField(string: "")
-            field.placeholderString = placeholder
-            field.translatesAutoresizingMaskIntoConstraints = false
-            field.widthAnchor.constraint(equalToConstant: 320).isActive = true
-            return field
+        // 292 + the eye = the 320 the captions wrap at.
+        func field(_ placeholder: String) -> SecretField {
+            SecretField(placeholder: placeholder, width: 292)
         }
         func caption(_ text: String) -> NSTextField {
             let caption = NSTextField(labelWithString: text)
@@ -1101,7 +1098,7 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
         alert.accessoryView = stack
         alert.addButton(withTitle: "Save")
         alert.addButton(withTitle: "Cancel")
-        alert.window.initialFirstResponder = fleet
+        alert.window.initialFirstResponder = fleet.activeField
         guard alert.runModal() == .alertFirstButtonReturn else { return }
 
         let fleetToken = fleet.stringValue.trimmingCharacters(in: .whitespaces)
@@ -1172,10 +1169,7 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
         address.placeholderString = "http://100.64.0.9:47873"
         address.translatesAutoresizingMaskIntoConstraints = false
         address.widthAnchor.constraint(equalToConstant: 320).isActive = true
-        let token = NSSecureTextField(string: "")
-        token.placeholderString = "Fleet token (optional — empty keeps the stored one)"
-        token.translatesAutoresizingMaskIntoConstraints = false
-        token.widthAnchor.constraint(equalToConstant: 320).isActive = true
+        let token = SecretField(placeholder: "Fleet token (optional — empty keeps the stored one)", width: 292)
         let result = NSTextField(wrappingLabelWithString: "Not tested yet.")
         result.font = TextRole.caption.font
         result.textColor = .secondaryLabelColor
