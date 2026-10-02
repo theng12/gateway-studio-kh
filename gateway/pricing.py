@@ -123,6 +123,31 @@ def row_price(kind: str, modality: str, raw: dict[str, Any] | None,
     return {"price_source": "provider", "price_usd": stated, "price_as_of": as_of}
 
 
+def is_free_lane(free_tier: bool, model_id: str) -> bool:
+    """Whether a row is a provider's free offer, read from what is stated.
+
+    Two cases, and nothing guessed between them: the provider **is** the free tier (`free_tier` on
+    the definition), or the id carries the suffix its provider uses to mark a free route — `:free`
+    on OpenRouter and Token Harbor, `-free` on Fish. A model that is merely cheap is not free.
+    """
+    lowered = str(model_id or "").lower()
+    return bool(free_tier) or lowered.endswith(":free") or lowered.endswith("-free")
+
+
+def chargeable(free_tier: bool, model_id: str, price: dict[str, Any]) -> bool:
+    """Whether using this model can cost money — the Models page's Free/Paid, as one bool.
+
+    Free when it is a free lane, runs on the owner's Macs (`price_source: local`), or the provider
+    states a price of $0 for every unit. Anything else — including a price nobody published — is
+    paid: "nobody told us" is never read as free.
+    """
+    if is_free_lane(free_tier, model_id) or price.get("price_source") == "local":
+        return False
+    usd = price.get("price_usd")
+    stated = [v for v in usd.values() if v is not None] if isinstance(usd, dict) else []
+    return not (stated and all(float(v) == 0 for v in stated))
+
+
 def job_cost(payload: dict[str, Any] | None) -> dict[str, Any]:
     """`{cost_usd, cost_source}` when the provider's response states what it charged, else `{}`.
 

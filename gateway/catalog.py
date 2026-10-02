@@ -31,9 +31,10 @@ from datetime import datetime, timezone
 from typing import Any
 
 from . import limits
+from . import pools
 from . import voices
 from .constants import PRICE_VERSION, zero_pricing
-from .pricing import row_price
+from .pricing import chargeable, row_price
 from .providers import registry
 from .providers.definitions import (
     HUB_IMAGE_SIZE_BY_RATIO,
@@ -1798,6 +1799,14 @@ class Catalog:
                 _merge_capabilities(existing, row, modality)
             rows[modality] = list(merged.values())
 
+        # A pool can cost money only if a member that can answer can.
+        chat_by_id = {r["id"]: r for r in rows["chat"]}
+        for row in rows["chat"]:
+            provider_id, name = decode_model_id(row["id"])
+            if provider_id == pools.POOL_PROVIDER_ID:
+                members = [chat_by_id.get(m) for m in pools.members(name)]
+                row["chargeable"] = any(m["chargeable"] for m in members if m is not None)
+
         self._rows = rows
         self._signature = signature
         self._built_at = time.time()
@@ -1931,6 +1940,13 @@ class Catalog:
             None if is_location else registry.models.cached(definition.id).get("fetched_at"),
             definition.id, model["model_id"],
         ))
+        if modality == "chat":
+            # **Free or paid, truthfully, for chat** — the Models page's Free/Paid as a bool.
+            # `zero_pricing` publishes `chargeable: true` on every row as a shape; on image rows
+            # Story still reads that flag as "this product accepts reference images / can be the
+            # original of a paid replacement", so only chat (where nothing gates on it) carries
+            # the truth here. A pool's answer is its members', set once the chat rows exist.
+            row["chargeable"] = chargeable(getattr(definition, "free_tier", False), model["model_id"], row)
         return row
 
     # -- reads ------------------------------------------------------------

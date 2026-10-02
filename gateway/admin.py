@@ -39,6 +39,7 @@ from .adapters import BackendError, BackendRequest, adapter_for, serves, support
 from .catalog import MODALITIES, catalog, decode_model_id
 from . import fleet
 from . import price_evidence
+from . import pricing
 from .pricing import row_price
 from . import qualification
 from . import release_publisher
@@ -599,21 +600,9 @@ def remove_model(provider_id: str, model_id: str) -> Any:
 # on, rather than opening eighteen panels to do it.
 # ---------------------------------------------------------------------------
 def _is_free_lane(definition: Any, model_id: str) -> bool:
-    """Whether a row is a provider's free offer, read from what is stated.
-
-    Two cases, and nothing guessed between them: the provider **is** the free tier
-    (`free_tier`, set on the definition), or the id carries the suffix its provider
-    uses to mark a free route — `:free` on OpenRouter and Token Harbor, `-free` on
-    Fish.
-
-    A model that is merely cheap, or on a provider whose trial credits happen to be
-    unspent, is **not** free, and calling it that would be a number the owner acts
-    on. That is why this reads a declaration rather than inferring from a price.
-    """
-    if definition.free_tier:
-        return True
-    lowered = str(model_id or "").lower()
-    return lowered.endswith(":free") or lowered.endswith("-free")
+    """The Models page's Free badge; the rule lives in `pricing.is_free_lane` so the catalogue's
+    `chargeable` cannot disagree with it."""
+    return pricing.is_free_lane(definition.free_tier, model_id)
 
 
 def _model_row(

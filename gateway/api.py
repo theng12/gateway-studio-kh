@@ -1009,6 +1009,15 @@ def _validate_output_format(modality: str, payload: dict[str, Any]) -> None:
     payload["output_format"] = cleaned
 
 
+def _replay_marked(envelope: dict[str, Any], created: bool) -> dict[str, Any]:
+    """`idempotent_replay: true` when this POST handed back a job an earlier request already made.
+
+    Story used to infer it from the HTTP status (200 rather than 202); the body now says it.
+    """
+    envelope["idempotent_replay"] = not created
+    return envelope
+
+
 def _submit(
     modality: str,
     compound_id: str,
@@ -1422,7 +1431,7 @@ def create_chat_response(
         response.status_code = 202
         response.headers["Location"] = f"/v1/chat/responses/{job['id']}"
         response.headers["Retry-After"] = "1"
-    return _job_envelope(job)
+    return _replay_marked(_job_envelope(job), created)
 
 
 @app.get("/v1/chat/responses/by-idempotency-key/{key}", dependencies=[Depends(require_auth)])
@@ -1618,7 +1627,7 @@ def create_image(
         response.status_code = 202
         response.headers["Location"] = f"/v1/images/{job['id']}"
         response.headers["Retry-After"] = "1"
-    return _job_envelope(job)
+    return _replay_marked(_job_envelope(job), created)
 
 
 @app.get("/v1/images/by-idempotency-key/{key}", dependencies=[Depends(require_auth)])
@@ -1784,7 +1793,7 @@ def create_video(
         response.status_code = 202
         response.headers["Location"] = f"/v1/videos/{job['id']}"
         response.headers["Retry-After"] = "2"
-    return _job_envelope(job)
+    return _replay_marked(_job_envelope(job), created)
 
 
 @app.get("/v1/videos/by-idempotency-key/{key}", dependencies=[Depends(require_auth)])
@@ -1910,7 +1919,7 @@ def create_tts_job(
         response.status_code = 202
         response.headers["Location"] = f"/v1/jobs/{job['id']}"
         response.headers["Retry-After"] = "1"
-    return _job_envelope(job)
+    return _replay_marked(_job_envelope(job), created)
 
 
 @app.get("/v1/jobs/by-idempotency-key/{key}", dependencies=[Depends(require_auth)])
@@ -1989,7 +1998,7 @@ def create_music(
         response.status_code = 202
         response.headers["Location"] = f"/v1/music/jobs/{job['id']}"
         response.headers["Retry-After"] = "2"
-    return _job_envelope(job)
+    return _replay_marked(_job_envelope(job), created)
 
 
 @app.get("/v1/music/by-idempotency-key/{key}", dependencies=[Depends(require_auth)])
@@ -2236,7 +2245,7 @@ async def confirm_transcription(
     # Keep the quote until its TTL for compatibility with existing clients.
     # A retry with the confirmed key reattaches from SQLite above, even after
     # this in-memory upload expires or a restart discards it.
-    return _job_envelope(job)
+    return _replay_marked(_job_envelope(job), created)
 
 
 def _quote_model(quote_id: str, asked: str | None) -> str:

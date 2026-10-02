@@ -33,7 +33,7 @@ os.environ.update(
     }
 )
 
-from gateway.adapters.base import BackendError, BackendResult  # noqa: E402
+from gateway.adapters.base import BackendError, BackendResult, note_request_started  # noqa: E402
 from gateway.store import JobStore, artifacts_of  # noqa: E402
 import gateway.worker as worker_module  # noqa: E402
 
@@ -59,6 +59,9 @@ class _RetryingAdapter:
 
     def generate(self, request):
         self.calls += 1
+        # A dropped connection means a request went out; the worker only treats a failure as
+        # possibly-accepted when something was actually sent.
+        note_request_started()
         if self.checkpoint:
             request.checkpoint("upstream-123")
         raise BackendError(
