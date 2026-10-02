@@ -432,6 +432,15 @@ struct FleetPushOutcome: Decodable {
     /// The gateway refused this controller because it already holds a newer
     /// version; the owner can choose to publish anyway.
     var downgrade: Bool?
+    /// Sent by the Gateway's automatic catch-up (a controller that missed the publish), at `at`.
+    var auto: Bool?
+    var at: Double?
+    /// The catch-up push is in flight.
+    var pending: Bool?
+    /// The catch-up did not push, and `detail` says why (an untrusted key, a missing file).
+    var skipped: Bool?
+    /// After a failed catch-up, when it is tried again.
+    var retryAt: Double?
 }
 
 /// The result of one `POST /admin/api/release/publish` — also the shape of

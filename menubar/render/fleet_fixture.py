@@ -249,6 +249,31 @@ def health(flavour: str) -> tuple[list, dict]:
                 site("c1300", "terranash-1300", 9, held="0.6.131",
                      versions={"local": "0.6.131", "terranash-1302-m2-8-256": "0.6.126",
                                **{f"terranash-13{i:02d}-m2-8-256": "0.6.131" for i in (1, 3, 4, 5)}})]
+    elif flavour == "health-catchup":
+        # Automatic catch-up (fix/release-catchup): 1600 joined after the publish and was sent it by the
+        # Gateway, 1500 is being sent it now, 1400 trusts another key, 1300's push failed and backs off.
+        trusted = {"reported": True, "publisher_id": "gatewaykh", "fingerprint": "cd" * 32}
+        rows = [local, site("c1100", "terranash-1100", 4), site("c1600", "terranash-1600", 3),
+                site("c1500", "terranash-1500", 3, held="0.6.131", versions={"local": "0.6.131"}),
+                site("c1400", "terranash-1400", 3, held="0.6.131", versions={"local": "0.6.131"}),
+                site("c1300", "terranash-1300", 3, held="0.6.131", versions={"local": "0.6.131"}),
+                site("c1200", "terranash-1200", 4)]
+        for row in rows[1:]:
+            row["trusted_publisher"] = trusted
+        rows[4]["trusted_publisher"] = {**trusted, "fingerprint": "9f" * 32}
+        auto = {"auto": True, "status": None, "code": None, "detail": None, "release": None}
+        push["locations"] = {
+            "c1100": {"ok": True, "status": 200, "release": rows[1]["release"]},
+            "c1200": {"ok": True, "status": 200, "release": rows[6]["release"]},
+            "c1300": {**auto, "ok": False, "at": NOW - 40 * MIN, "retry_at": NOW + 20 * MIN,
+                      "code": "LOCATION_UNREACHABLE",
+                      "detail": "could not reach the controller at http://100.64.3.1:47873 (ConnectTimeout)"},
+            "c1400": {**auto, "ok": False, "skipped": True, "at": NOW - 2 * MIN, "code": "CATCHUP_SKIPPED",
+                      "detail": "it doesn't trust this gateway's key (it trusts 9f9f9f9f9f9f…); install this "
+                                "gateway's publisher fingerprint on that Mac: " + "cd" * 32},
+            "c1500": {**auto, "ok": None, "pending": True, "at": NOW - 30},
+            "c1600": {**auto, "ok": True, "status": 200, "at": NOW - 25 * MIN, "release": rows[2]["release"]},
+        }
     elif flavour == "health-problem":
         rows = [local,
                 site("c1100", "terranash-1100", 10, crashed={("terranash-1104-m2-8-256", "voice")},
