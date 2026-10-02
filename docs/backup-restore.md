@@ -4,7 +4,7 @@ Settings → **Backups** in the Gateway app. Code: `gateway/backup.py`, tests: `
 
 ## What is in a backup
 
-Only what cannot be recreated (about 170 MB today, almost all of it the Content Packs):
+Only what cannot be recreated (about 186 MB today, 178 MB as the archive; almost all of it the Content Packs):
 
 | In the archive | On this Mac |
 |---|---|
@@ -31,7 +31,7 @@ One file `kh-backup-YYYYMMDD-HHMMSS.tar.gz`, copied to each place that is ticked
 - every attached `KH-STUDIO-*` drive → `KH Backups/` (nothing else on the drive is touched)
 - this Mac → `~/Developer/_backups/`
 
-Each place keeps the newest 5 (setting; each is ~160 MB with the Content Packs, so mind the free space). Older backups are moved to `~/Developer/_trash/kh-backups/`
+Each place keeps the newest 5 (setting; each is ~180 MB with the Content Packs, so mind the free space). Older backups are moved to `~/Developer/_trash/kh-backups/`
 (SSD: the drive's own `_trash/kh-backups/`, or deleted if the drive has no `_trash`). Only files
 named `kh-backup-…tar.gz` are ever pruned.
 

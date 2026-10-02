@@ -14,6 +14,21 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.94 — 2026-10-02
+
+Telegram alerts, backups, and secrets that stay hidden until you ask.
+
+- **Telegram alerts.** Settings has a new Telegram card. Paste a bot token and chat ID and the Gateway messages your phone when a
+  Mac or group goes offline (and again when it is back), when a disk or memory runs short, or when jobs keep failing or get
+  stuck. You choose which events you want, set quiet hours, and get a daily summary of yesterday every morning. Nothing is sent
+  until you save a token and chat ID, and the token is never shown again once saved.
+- **Backups.** Settings has a new Backups card. **Back Up Now** makes one file holding what cannot be recreated: the signing keys,
+  the API keys, the fleet roster, the voices library and the Content Packs (about 180 MB). It saves to iCloud Drive, to every
+  attached KH-STUDIO drive and to this Mac, and can also run every night if you switch that on. **Import / Restore** puts a backup
+  back, checking it first and moving anything it replaces to the trash.
+- **Secrets are masked, with an eye.** Every API key and token field in the app and in the console now shows dots until you click
+  the eye to show it, and Copy works without revealing it.
+
 ## 0.2.93 — 2026-10-02
 
 A small release that fixes how cancelled jobs are reported and retires one more local model.
