@@ -1,8 +1,8 @@
 """The job envelope Story Studio reads: the 2026-09-30 contract and the Story<->gateway seam fixes.
 
 CONTRACT-job-envelope: every envelope carries `dispatch_state`, `cancellable`,
-`cancellation_requested`, `cancelled` and `waiting`; a cancelled job is published `failed` with
-`cancelled: true`; a held job whose result arrives is `succeeded`; no `host:port` or `/api/hub`
+`cancellation_requested`, `cancelled` and `waiting`; a cancelled job is published `cancelled` with
+`cancelled: true` beside it; a held job whose result arrives is `succeeded`; no `host:port` or `/api/hub`
 path ever appears in a published text field. Plus the routes and fields Story built against that
 the gateway did not serve (cancel for video and transcription, voice preview, the voice library,
 `paid_*_jobs`, transcription language, the video source image, the real version).
@@ -88,8 +88,10 @@ class EnvelopeContractTests(_Case):
         self.assertEqual(body["state"], "running", "a request is not proof the work stopped")
         self.assertIs(body["cancelled"], False)
 
-    def test_a_cancelled_job_is_published_failed_with_cancelled_true(self) -> None:
-        # Story's JobState has no `cancelled`: it polled such a job for hours.
+    def test_a_cancelled_job_is_published_cancelled_with_cancelled_true(self) -> None:
+        # The envelope says what the record says (`cancelled`); `cancelled: true` and
+        # `failure_code: CANCELLED` stay beside it for callers keyed on either (audit 2026-10-02:
+        # it used to say `failed`).
         for modality, path in (("video", "/v1/videos/{}/cancel"),
                                ("transcription", "/v1/transcriptions/{}/cancel"),
                                ("image", "/v1/images/{}/cancel")):
@@ -97,15 +99,20 @@ class EnvelopeContractTests(_Case):
             response = self.client.post(path.format(job["id"]), headers=READ)
             self.assertEqual(response.status_code, 200, (modality, response.text))
             body = response.json()
-            self.assertEqual((body["state"], body["cancelled"]), ("failed", True), modality)
+            self.assertEqual((body["state"], body["cancelled"]), ("cancelled", True), modality)
+            self.assertEqual(body["state"], api.store.get(job["id"])["state"], "envelope == record")
+            self.assertEqual(self.client.get(path.format(job["id"]).removesuffix("/cancel"), headers=READ).json()["state"],
+                             "cancelled", "a later poll agrees with the cancel answer")
             self.assertEqual(body["failure_code"], "CANCELLED")
             self.assertIs(body["cancellable"], False)
             self.assertEqual(api.store.get(job["id"])["state"], "cancelled", "the record is exact")
 
-    def test_the_native_readings_keep_the_exact_state(self) -> None:
+    def test_the_native_and_story_readings_publish_the_same_state(self) -> None:
         job = self.job()
         api.store.cancel(job["id"])
-        self.assertEqual(api._job_envelope(api.store.get(job["id"]), native=True)["state"], "cancelled")
+        row = api.store.get(job["id"])
+        self.assertEqual(api._job_envelope(row, native=True)["state"], "cancelled")
+        self.assertEqual(api._job_envelope(row)["state"], "cancelled")
 
     def test_a_cancel_for_another_modality_is_not_found(self) -> None:
         job = self.job("image")
