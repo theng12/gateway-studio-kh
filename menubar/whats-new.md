@@ -14,6 +14,14 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.93 — 2026-10-02
+
+A small release that fixes how cancelled jobs are reported and retires one more local model.
+
+- **Cancelled jobs say "cancelled".** A job you cancel is now reported to Story Studio and other apps as cancelled, instead of as a
+  failed job that happened to be cancelled, so it no longer shows up as an error.
+- **Gemma 3 12B is removed.** The Gemma 3 12B text model is retired and is no longer offered, even if an older Hub still lists it.
+
 ## 0.2.92 — 2026-10-02
 
 A release about keeping the Macs healthy and making the fleet easier to see and control.

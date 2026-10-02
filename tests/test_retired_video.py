@@ -64,6 +64,7 @@ _IMAGE_PACKAGE = {"package_id": "flux", "model_id": "mock-hub/image-model", "eng
                   "dispatch_state": "eligible"}
 #: The Gemma text encoder as the real Hub publishes it once LTX no longer lists it: a `model` on
 #: the retired video engine whose worker is absent. The Hub's catalogue does not describe it.
+#: Gemma 3 12B is itself retired (owner, 2026-10-02), so it is withheld by name, not only by shape.
 _GEMMA_PACKAGE = {"package_id": "gemma-3-12b-it-4bit", "model_id": GEMMA, "engine": "video-ltx",
                   "modality": "video", "type": "model", "worker_id": "video",
                   "worker_state": "unavailable", "dispatch_state": "ineligible",
@@ -161,14 +162,26 @@ class RetiredModelTests(unittest.TestCase):
         ):
             self.assertIn("retired", inventory.withhold_reason(HUB, model) or "", model)
 
+    def test_gemma_ids_are_retired_in_any_case_and_under_any_modality(self) -> None:
+        inventory = _inventory("gemma-case.json")
+        for model in (
+            {"model_id": GEMMA, "modality": "chat", "raw": {}},
+            {"model_id": GEMMA.upper(), "modality": "video", "raw": {}},
+            {"model_id": "something-else", "modality": "chat",
+             "raw": {"package_id": "Gemma-3-12B-IT-4bit"}},
+        ):
+            self.assertIn("retired", inventory.withhold_reason(HUB, model) or "", model)
+        # Gemma 4 and the like are different models and are not caught by it.
+        other = {"model_id": "google/gemma-4-26b", "modality": "chat", "raw": {}}
+        self.assertNotIn("retired", inventory.withhold_reason(HUB, other) or "")
+
     def test_gemma_on_the_real_hub_row_is_never_published_as_a_video_model(self) -> None:
         inventory = self._inventory("gemma.json")
         gemma = next(m for m in inventory.models_for(HUB.id) if m["model_id"] == GEMMA)
-        # Discovery placed it where the Hub says it is, and the retirement list does not name it.
+        # Discovery placed it where the Hub says it is; the retirement list now names it.
         self.assertEqual(gemma["modality"], "video")
         reason = inventory.withhold_reason(HUB, gemma)
-        self.assertIsNotNone(reason)
-        self.assertNotIn("retired", reason)
+        self.assertIn("retired", reason or "")
         self.assertIn(GEMMA, {m["model_id"] for m in inventory.models_for(HUB.id)})
         self.assertNotIn(GEMMA, [m["model_id"] for _d, m in inventory.enabled_models("video")])
         # Installed, with the worker still absent: still withheld (no lane contract, not catalogued).

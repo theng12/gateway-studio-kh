@@ -1,6 +1,6 @@
 # HANDOFF — gateway-kh
 
-**Read this first.** Updated 2026-09-30 for **VERSION `0.2.89`** (the release blocks below are
+**Read this first.** Updated 2026-10-02 for **VERSION `0.2.93`** (the release blocks below are
 newest first; 0.2.76-0.2.79 are recorded in `menubar/whats-new.md` and their commits). The running build
 stamp is on `/health` and in `/Applications/gateway-kh.app/Contents/Resources/gateway/BUILD`.
 If this file disagrees with the code, **the code wins — fix this file in the same change**.
@@ -8,6 +8,11 @@ Every path below is inside the Git checkout `repository/` unless it says otherwi
 `[MEASURED]` = observed in the session that wrote this; `[reason not recorded]` = the
 project does not say why, and nobody should guess.
 
+> **0.2.93 (2026-10-02) - cancelled jobs publish `state: cancelled`; Gemma 3 12B is retired.** `gateway/api.py` now publishes a cancelled job as `cancelled`
+> (it was `failed` + `cancelled: true`; Story still reads the legacy form). `gateway/providers/models.py` `RETIRED_MODEL_IDS` withholds LTX-2.3 **and** both
+> Gemma 3 12B ids (`gemma-3-12b-it-4bit`, `mlx-community/gemma-3-12b-it-4bit`) by id in any modality - keep it equal to the Hub's `components/retired_models.py`.
+> 0.2.90-0.2.92 are recorded in `menubar/whats-new.md` and their commits.
+>
 > **0.2.89 — every Create page redesigned to Studio Hub's generator shape; two root-cause fixes (`menubar/PageKit.swift`, `CreatePreview.swift`, `CreateSection.swift`).**
 > Owner: *"all the generators on the gateway is small and ugly. unlike how the studio hub is ... as the preview and everything too."*
 >
@@ -254,8 +259,9 @@ project does not say why, and nobody should guess.
 >    only re-routes if the Hub confirms `queued_cancelled >= 1`. A running item is never DELETEd on a guess.
 > 3. **Envelope contract** (`CONTRACT-job-envelope.md`): every `_job_envelope` carries `dispatch_state`,
 >    `cancellable`, `cancellation_requested`, `cancelled`, `waiting`. A cancelled job is published
->    `state: "failed"`, `cancelled: true`, `failure_code: "CANCELLED"`. **`_job_envelope(job, native=True)` is the
->    menu bar app's reading** (keeps `state: "cancelled"`, does not scrub) - the admin routes use it. All published
+>    `state: "cancelled"`, `cancelled: true`, `failure_code: "CANCELLED"` (0.2.93: it used to say `failed`; Story maps
+>    both spellings to the same terminal fact). **`_job_envelope(job, native=True)` is the
+>    menu bar app's reading** (same state, does not scrub) - the admin routes use it. All published
 >    text goes through `api.scrub` (no `host:port`, no `/api/hub`).
 >
 > Also: `POST /v1/videos/{id}/cancel`, `/v1/transcriptions/{id}/cancel`; a cancel set before the batch id exists
