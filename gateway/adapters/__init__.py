@@ -210,7 +210,9 @@ def _resolve_member(modality: str, compound: str):
     catalogue's own, so a member the owner has since disabled resolves to nothing
     here for exactly the reason it would be refused on its own.
     """
-    from .. import catalog
+    # The catalogue *instance*, not the `gateway.catalog` module: the module has no
+    # `resolve`, and importing it here sent every pool job to AttributeError.
+    from ..catalog import catalog
 
     return catalog.resolve(modality, compound)
 

@@ -639,5 +639,22 @@ class PoolAdminTests(_TempEnv):
         self.assertIn("namespaced", str(caught.exception))
 
 
+class PoolResolverWiringTests(unittest.TestCase):
+    """The resolver the live pool backend is attached to must be the catalogue's own.
+
+    Every other pool test attaches a fake resolver, which is how `from .. import catalog`
+    (the module, which has no `resolve`) shipped and failed every real pool job with
+    AttributeError in under a second.
+    """
+
+    def test_the_attached_resolver_reaches_the_catalogue_instance(self):
+        from unittest import mock
+        from gateway import adapters
+        from gateway.catalog import catalog
+        with mock.patch.object(catalog, "resolve", return_value=("d", "m")) as resolve:
+            self.assertEqual(adapters._resolve_member("chat", "p::m"), ("d", "m"))
+        resolve.assert_called_once_with("chat", "p::m")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

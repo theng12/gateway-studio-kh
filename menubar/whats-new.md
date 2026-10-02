@@ -18,6 +18,11 @@ every feature title, and they are left as they were written.
 
 Rename a Mac from the Fleet page, and groups that missed a Studio Hub release catch up by themselves.
 
+### Fixed: every Gemini pool request failed
+A request to a pool (such as "Gemini Free — all") failed in about a second with
+"module 'gateway.catalog' has no attribute 'resolve'" before any model was asked. Pools work again; jobs that
+failed this way can simply be retried.
+
 ### Rename a Mac from the Fleet page
 Fleet → a Mac's "…" menu → **Rename…**. The new name is set on the Mac itself, so its own Studio Hub, its
 group's main Mac and this page all show it. Its machine ID stays the same, so nothing re-joins and no work is
