@@ -1454,7 +1454,7 @@ def _generate_image_or_voice(request: BackendRequest) -> BackendResult:
         "modality": modality,
         "model": request.model_id,
         "items": [item],
-        "clientRequestId": str(request.params.get("_job_id") or ""),
+        "clientRequestId": str(request.params.get("_client_request_id") or request.params.get("_job_id") or ""),
         "label": "gateway-kh",
     }
 

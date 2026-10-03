@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -40,11 +41,14 @@ WORKSTATION = {
 class _YieldingFleet(_Fleet):
     """A accepts the batch, then its workstation Mac steps aside and the controller hands the item back."""
 
-    def __init__(self, **kwargs) -> None:
+    def __init__(self, yields: int = 10**6, **kwargs) -> None:
         super().__init__(a_dies=False, **kwargs)
+        self.yields_left = yields
 
     def handler(self, request: httpx.Request) -> httpx.Response:
-        if "hub-a" in request.url.host and request.method == "GET" and request.url.path == "/api/hub/jobs/batch-a":
+        if ("hub-a" in request.url.host and request.method == "GET" and request.url.path == "/api/hub/jobs/batch-a"
+                and self.yields_left > 0):
+            self.yields_left -= 1
             self.calls.append(("a", "GET", request.url.path))
             return httpx.Response(200, json={"items": [{"index": 0, "state": "error",
                                                         "error_code": "WORKSTATION_YIELDED", "error": YIELDED}]})
@@ -92,23 +96,64 @@ class RerouteTests(_Case):
             job = self.run_job(_YieldingFleet(), self.job("yield-2"))
         self.assertEqual((job["state"], job["provider_id"]), ("succeeded", B), job.get("error_detail"))
 
-    def test_with_nowhere_else_it_fails_plainly_retryable_and_never_held(self) -> None:
+    def test_with_nowhere_else_it_waits_for_a_free_mac_and_is_never_failed_or_held(self) -> None:
         self.next_site = []
         job = self.run_job(_YieldingFleet(), self.job("yield-3"))
-        self.assertEqual((job["state"], job["error_code"]), ("failed", "WORKSTATION_YIELDED"))
+        self.assertEqual(job["state"], "accepted", "queued, not failed with 'run it again'")
+        self.assertIsNone(job["error_code"])
         self.assertFalse(job["recovery_required"])
-        self.assertIn("stepped aside", job["error_detail"])
+        self.assertIn("waiting for a free Mac", job["defer_reason"])
+        self.assertIn("stepped aside", job["defer_reason"])
+        self.assertGreater(job["next_action_at"], time.time(), "on the queue-wait backoff ladder")
+        # What lets the next pass send it anywhere: no dead batch, no stale dispatch stamp, no tried list.
+        self.assertIsNone(job["upstream_job_id"])
+        self.assertIsNone(job["dispatch_started_at"])
+        self.assertEqual(self.store.attempted_locations(job["id"]), [])
+        self.assertEqual([a["code"] for a in self.store.attempts_of(job["id"])], ["WORKSTATION_YIELDED"])
+        self.assertTrue(self.store.rebind_unsent(job["id"], from_provider=A, to_provider=B),
+                        "another group with room can still take it")
+
+    def test_the_waiting_job_runs_at_the_same_mac_once_it_stops_standing_by_on_a_fresh_request_id(self) -> None:
+        self.next_site = []
+        fleet = _YieldingFleet(yields=1)
+        job = self.run_job(fleet, self.job("yield-4"))
+        self.assertEqual(job["state"], "accepted")
+        job = self.run_job(fleet, self.store.get(job["id"]))
+        self.assertEqual((job["state"], job["provider_id"]), ("succeeded", A), job.get("error_detail"))
+        self.assertEqual(fleet.created["a"], 2, "the Hub keeps a request id for good: a repeat would replay the dead batch")
+        self.assertEqual(sorted(k.split(":", 1)[1] for k in fleet.batches if k.startswith("a:")),
+                         [job["id"], job["id"] + "~1"])
+        self.assertIsNone(job["defer_reason"])
+
+    def test_a_job_that_waited_is_not_bound_by_the_locations_it_tried_before(self) -> None:
+        self.next_site = []
+        fleet = _YieldingFleet(yields=1)
+        job = self.run_job(fleet, self.job("yield-5"))
+        self.next_site = [B]
+        # A yields again on its next turn: B was never tried in the new round, so the job moves at once.
+        fleet.yields_left = 1
+        job = self.run_job(fleet, self.store.get(job["id"]))
+        self.assertEqual((job["state"], job["provider_id"]), ("succeeded", B), job.get("error_detail"))
+        self.assertEqual(self.routed[-1], {"a"})
+
+    def test_the_wait_ends_with_the_old_failure_once_the_queue_budget_is_spent(self) -> None:
+        self.next_site = []
+        row = self.job("yield-6")
+        self.store._conn.execute("UPDATE jobs SET attempt_count = 100000 WHERE id = ?", (row["id"],))
+        self.store._conn.commit()
+        job = self.run_job(_YieldingFleet(), self.store.get(row["id"]))
+        self.assertEqual((job["state"], job["error_code"]), ("failed", "WORKSTATION_YIELDED"))
         self.assertIn("Nothing was charged", job["error_detail"])
 
-    def test_a_pinned_voice_fails_with_the_plain_sentence(self) -> None:
+    def test_a_pinned_voice_waits_for_its_own_mac(self) -> None:
         self.modality = "tts"
         row = self.job("yield-pinned", {"text": "x", "voice_id": "studio-hub-a::clone"})
         with patch.object(worker_module.fleet, "pinned_location", lambda _p: A):
             job = self.run_job(_YieldingFleet(), row)
-        self.assertEqual((job["state"], job["error_code"]), ("failed", "WORKSTATION_YIELDED"))
+        self.assertEqual(job["state"], "accepted")
         self.assertFalse(job["recovery_required"])
         self.assertEqual(self.routed, [], "a pinned voice has nowhere else to go")
-        self.assertIn("This voice exists only on that location", job["error_detail"])
+        self.assertIn("waiting for a free Mac", job["defer_reason"])
 
     def test_a_paid_lane_is_never_offered_a_reroute(self) -> None:
         calls: list[str] = []

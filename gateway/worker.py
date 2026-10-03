@@ -85,6 +85,32 @@ _NO_REROUTE_CODES = {"DEADLINE_EXCEEDED"}
 #: ceiling** - the Mac was taken back by its owner's apps, the job did not fail. The exclusion list still grows with every yield, so it cannot bounce for ever.
 WORKSTATION_YIELDED = "WORKSTATION_YIELDED"
 
+#: A free Studio Hub job its Mac handed back: a workstation yield, or three memory refusals. Nothing
+#: ran to completion. When no other location can take it *right now* the job is not failed with "run
+#: it again": it waits for a free Mac on the same queue-wait ladder as any busy fleet, and goes to
+#: whichever location can take it first - the one that handed it back included (owner request 2026-10-03).
+_HANDBACK_CODES = frozenset({WORKSTATION_YIELDED, "INSUFFICIENT_MEMORY"})
+
+
+def _client_request_id(store: Any, job_id: str, provider_id: str) -> str:
+    """What the Hub dedupes a submit on. The job id - until that location has handed the job back.
+
+    The Hub keeps a client request id for good and answers a repeat with the batch it already made,
+    so after a hand-back the same id would replay the finished, errored batch even though the Mac is
+    free again. Each hand-back at a location therefore gets the next suffix; a submit that merely
+    timed out keeps its id, which is exactly what its replay relies on.
+    """
+    attempts_of = getattr(store, "attempts_of", None)
+    if attempts_of is None:
+        return job_id
+    here = fleet.controller_id_from(provider_id) or provider_id
+    handed_back = sum(
+        1 for entry in attempts_of(job_id)
+        if entry.get("code") in _HANDBACK_CODES
+        and (fleet.controller_id_from(str(entry.get("location") or "")) or entry.get("location")) == here
+    )
+    return f"{job_id}~{handed_back}" if handed_back else job_id
+
 
 def _defer_delay(attempts: int, cap_s: float | None = None) -> float:
     """2s, 4s, 8s … capped. Long enough not to hammer a busy machine."""
@@ -275,6 +301,8 @@ def _next_machine(store: JobStore, job_id: str, model_id: str, modality: str,
         chosen, _ = fleet.route(model_id, modality, exclude_locations=tried)
         return chosen.id if chosen is not None and _location(chosen.id) not in tried else None
     attempts = record(job_id, location_id=provider_id, code=code, detail=detail) or []
+    # Only this round: a job that waited for a free Mac (`defer(new_round=True)`) starts over.
+    attempts = [entry for entry in attempts if not entry.get("waited")]
     tried = {_location(entry.get("location")) for entry in attempts}
     tried.add(_location(provider_id))
     tried.discard("")
@@ -310,7 +338,7 @@ def _tried_everything_detail(attempts: list[dict[str, Any]], *, limit: int) -> s
 
 def _defer_if_transient(
     store: JobStore, job_id: str, exc: BackendError, current: dict[str, Any], *,
-    unknown: bool, replay: bool = False,
+    unknown: bool, replay: bool = False, handback: bool = False,
 ) -> bool:
     """Put the job back in our own queue when the fleet is merely busy.
 
@@ -340,13 +368,22 @@ def _defer_if_transient(
     # `replay`: a free Studio Hub submit that timed out. It may have been accepted, but the Hub
     # answers the same client request id with the batch it already made, so the retry at this same
     # location cannot run twice - which is the whole reason the two conditions below exist.
-    if not replay and (exc.code not in _TRANSIENT_SITE_CODES
-                       or exc.upstream_accepted is not False or unknown):
+    # `handback`: a free Studio Hub job its Mac handed back with no other location free (`_HANDBACK_CODES`);
+    # the Hub settled the item itself, so it is as safe to queue as a busy site.
+    if not (replay or handback) and (exc.code not in _TRANSIENT_SITE_CODES
+                                     or exc.upstream_accepted is not False or unknown):
         return False
     wait = concurrency.queue_wait_budget()
     attempts = int(current.get("attempt_count") or 0)
     if attempts > int(wait["max_deferrals"]):
         return False
+    if handback:
+        return bool(defer(
+            job_id,
+            delay_s=_defer_delay(attempts, wait["defer_cap_seconds"]),
+            reason=f"waiting for a free Mac - {exc}"[:300],
+            new_round=True,
+        ))
     return bool(defer(
         job_id,
         delay_s=_defer_delay(attempts, wait["defer_cap_seconds"]),
@@ -689,6 +726,7 @@ def _dispatch(job: dict[str, Any], store: JobStore, provider_id: str, model_id: 
                 detail=f"provider '{provider_id}' is disabled or unknown",
             )
             return
+        params["_client_request_id"] = _client_request_id(store, job_id, provider_id)
         request = BackendRequest(
             provider_id=provider_id,
             model_id=model_id,
@@ -837,6 +875,24 @@ def _dispatch(job: dict[str, Any], store: JobStore, provider_id: str, model_id: 
                     provider_id = moved
                     resume_id = ""  # a fresh submission at the next location
                     continue
+            # ── A free Mac handed the job back and no other location can take it now: wait ───────
+            #
+            # A workstation yield or a low-memory hand-back is a fact about *now*, so the job is queued
+            # in a plain "waiting for a free Mac" state on the queue-wait ladder (the same budget and
+            # backoff a busy fleet gets), not failed with "run it again". A late rebind sends it to any
+            # location with room; the Mac that handed it back is eligible again once it has a slot. A
+            # voice pinned to this Mac waits for it too. Paid lanes never come through here.
+            if (kind_is_hub and not unknown and exc.code in _HANDBACK_CODES
+                    and current.get("cancel_requested_at") is None):
+                if pinned is not None:  # `_next_machine` did not run, so note the hand-back itself
+                    record = getattr(store, "record_attempt", None)
+                    if record is not None:
+                        record(job_id, location_id=provider_id, code=exc.code, detail=detail)
+                if _defer_if_transient(store, job_id, exc, current, unknown=False, handback=True):
+                    log.warning("job %s: %s handed it back (%s) and no other location is free; waiting "
+                                "for a free Mac, attempt %s of %s", job_id, provider_id, exc.code,
+                                current.get("attempt_count"), _MAX_DEFERRALS)
+                    return
             # **A busy fleet is not a broken job** — see `_defer_if_transient` for
             # the whole rule and why each of its conditions is load-bearing. With the re-route
             # above in front of it, this is now the case where there is **nowhere else to go**:

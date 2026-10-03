@@ -756,7 +756,7 @@ class JobStore:
         return [str(value) for value in _loads_list(row["attempted_locations"])] \
             if row is not None else []
 
-    def defer(self, job_id: str, *, delay_s: float, reason: str) -> bool:
+    def defer(self, job_id: str, *, delay_s: float, reason: str, new_round: bool = False) -> bool:
         """Put an accepted-nothing job back in the queue instead of failing it.
 
         **A busy fleet is not a broken job.** A site with no free machine right now
@@ -774,21 +774,31 @@ class JobStore:
         request that may have reached a worker is a durable recovery hold and never
         an automatic retry; this method has no opinion on that, which is why it is
         not called from the unknown-outcome path.
+
+        `new_round`: a free Studio Hub job handed back by its Mac (workstation yield, low memory)
+        with nowhere else to go. The Hub has finished with that batch, so nothing is pending: the
+        dead batch id and the stale dispatch stamp are dropped (a late rebind and the queue ceiling
+        both ignore a job that carries them), the locations tried so far are forgotten, and the
+        attempt log's entries are marked `waited`, so when a Mac frees up *any* location -
+        including the one that handed it back - may take the job and the retry ceiling starts afresh.
         """
         with self._lock:
             row = self._conn.execute(
-                "SELECT state FROM jobs WHERE id = ?", (job_id,)
+                "SELECT state, attempt_log FROM jobs WHERE id = ?", (job_id,)
             ).fetchone()
             if row is None or row["state"] in TERMINAL_STATES:
                 return False
-            self._update_locked(
-                job_id,
-                {
-                    "state": "accepted",
-                    "next_action_at": time.time() + max(float(delay_s), 0.0),
-                    "defer_reason": reason[:300],
-                },
-            )
+            fields: dict[str, Any] = {
+                "state": "accepted",
+                "next_action_at": time.time() + max(float(delay_s), 0.0),
+                "defer_reason": reason[:300],
+            }
+            if new_round:
+                fields.update(
+                    upstream_job_id=None, dispatch_started_at=None, attempted_locations="[]",
+                    attempt_log=json.dumps([{**e, "waited": True} for e in _loads_list(row["attempt_log"])]),
+                )
+            self._update_locked(job_id, fields)
             self._conn.commit()
             return True
 

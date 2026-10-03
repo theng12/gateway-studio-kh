@@ -30,14 +30,38 @@ struct FleetWorkstation: Decodable {
     /// The shop has this Mac for now. A stale report says nothing about now.
     var isResting: Bool { stale != true && ["standing_by", "yielded", "quiet_hours"].contains(state ?? "") }
 
-    /// The state chip; nil when the mode is off or the state is unknown.
+    /// The state chip, short enough for the Machines table's State column at 1100 pt; nil when the mode is off or
+    /// the state is unknown.
     var chip: String? {
         switch state {
         case "working": return "Working"
-        case "standing_by": return "In use — standing by"
+        case "standing_by": return "Standing by"
         case "yielded": return "Stepped aside"
         case "quiet_hours": return "Quiet hours"
         default: return nil
+        }
+    }
+
+    /// The chip's full wording for a tooltip or a sentence.
+    var chipLong: String? { state == "standing_by" ? "In use — standing by" : chip }
+
+    /// What this Mac does with the shop's own use, said from its settings - so the sheet never claims "only when the
+    /// shop is not using it" for a Mac set to work through it.
+    var policySentence: String {
+        guard enabled == true else { return "Workstation mode is off, so this Mac takes fleet work whenever it is free." }
+        let minutes = idleMinutes ?? 3
+        let unit = minutes == 1 ? "minute" : "minutes"
+        switch (idleOnly == true, stepAside == true) {
+        case (true, true):
+            return "This Mac takes fleet work only after \(minutes) \(unit) without input, and if someone starts using it "
+                + "it finishes its current job, then pauses new work."
+        case (true, false):
+            return "This Mac takes fleet work only after \(minutes) \(unit) without input."
+        case (false, true):
+            return "This Mac takes fleet work at background priority; while someone is using it, it finishes its current "
+                + "job, then pauses new work."
+        case (false, false):
+            return "This Mac takes fleet work at background priority, even while someone is using it."
         }
     }
 
@@ -186,10 +210,10 @@ final class FleetWorkstationForm: NSObject {
         let form = FleetWorkstationForm(current)
         let alert = NSAlert()
         alert.messageText = "Workstation Mode — \(machine.label ?? machine.machine ?? "this Mac")"
-        var now = current.enabled == true ? (current.chip ?? "On") : "Off"
+        var now = current.enabled == true ? (current.chipLong ?? "On") : "Off"
         if let reason = current.reason, current.enabled == true { now += " (\(reason))" }
         if current.stale == true { now += ", as last reported by the Mac" }
-        alert.informativeText = "This Mac takes fleet work only when the shop is not using it. Now: \(now)."
+        alert.informativeText = "\(current.policySentence) Now: \(now)."
             + (current.today.map { " \($0)." } ?? "")
         alert.accessoryView = form.view
         alert.addButton(withTitle: "Save")
@@ -206,7 +230,7 @@ extension FleetMachine {
     /// this Mac). Today: 2 jobs · 0 step-asides."
     var workstationLine: String? {
         guard let workstation, workstation.enabled == true || workstation.isResting else { return nil }
-        var text = "Workstation mode: " + (workstation.chip ?? "on")
+        var text = "Workstation mode: " + (workstation.chipLong ?? "on")
         if let reason = workstation.reason, workstation.isResting { text += " (\(reason))" }
         if let today = workstation.today { text += ". \(today)" }
         return text + (workstation.stale == true ? " (as last reported by the Mac)." : ".")
