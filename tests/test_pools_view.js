@@ -128,6 +128,22 @@ test('every member is drawn with its health, and a spent one says when it is bac
   assert.match(html, /2 of 4 members can answer, 1 out of quota/);
 });
 
+test('a paid member at the end of a free pool is marked as the last resort, with the rule', async () => {
+  const mixed = pool();
+  mixed.members_detail = mixed.members_detail.map(m => ({ ...m, paid: m.resolves ? false : null }))
+    .concat([{ id: 'o::luna', resolves: true, state: 'ok', provider_name: 'OpenRouter', model_name: 'GPT-6 Luna', paid: true }]);
+  const nodes = page();
+  const ctx = poolsContext(api([], { pools: [{ ...mixed, paid_last_resort: true }] }), nodes);
+  await ctx.__p.loadPools();
+  const html = nodes.get('pools').innerHTML;
+  assert.match(html, /Paid members are used only when the free ones are out for the day/);
+  assert.equal((html.match(/Paid · last resort/g) || []).length, 1, 'only the paid member wears the chip');
+
+  const plain = page();
+  await poolsContext(api([]), plain).__p.loadPools();
+  assert.doesNotMatch(plain.get('pools').innerHTML, /last resort|out for the day/, 'an all-free pool says nothing');
+});
+
 test('the id a caller must send is shown, not only the display name', async () => {
   const nodes = page();
   const ctx = poolsContext(api([]), nodes);
