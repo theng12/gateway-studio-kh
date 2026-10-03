@@ -124,14 +124,21 @@ extension FleetStartup {
                            done: @escaping () -> Void) -> NSView? {
         let actions = FleetStartup.actions(for: machine)
         let renamable = canRename(machine)
-        guard !actions.isEmpty || renamable else { return nil }
+        let pausable = machine.isNode && machine.locationId != nil && machine.machine != nil
+        guard !actions.isEmpty || renamable || pausable else { return nil }
         let button = FleetMenuButton {
             let menu = NSMenu()
             if renamable {
                 menu.addItem(ClosureMenuItem("Rename…") { FleetStartup.rename(machine, done: done) })
             }
+            if pausable {
+                let paused = machine.nodePaused == true
+                menu.addItem(ClosureMenuItem(paused ? "Resume This Mac" : "Pause This Mac") {
+                    FleetStartup.pause(machine, !paused, done: done)
+                })
+            }
             if !actions.isEmpty {
-                if renamable { menu.addItem(.separator()) }
+                if renamable || pausable { menu.addItem(.separator()) }
                 let heading = NSMenuItem(title: FleetStartup.badge(machine.startup), action: nil, keyEquivalent: "")
                 heading.isEnabled = false
                 menu.addItem(heading)
@@ -189,6 +196,26 @@ extension FleetStartup {
             DispatchQueue.main.async {
                 if case .failure(let error) = result {
                     show("Could not rename \(machine.label ?? id)", error.localizedDescription)
+                }
+                done()
+            }
+        }
+    }
+
+    // MARK: Pause
+
+    /// Pause or resume one node by hand, through its controller: it gets no new work, jobs already running
+    /// there finish, and it stays joined and rejoins dispatch on Resume. A controller on a Hub older than
+    /// 0.6.135 answers with a sentence saying so.
+    static func pause(_ machine: FleetMachine, _ paused: Bool, done: @escaping () -> Void) {
+        guard let location = machine.locationId, let id = machine.machine,
+              let place = location.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed),
+              let node = id.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) else { return }
+        GatewayAPI.post("/admin/api/fleet/controllers/\(place)/machines/\(node)/pause",
+                        body: ["paused": paused], timeout: 30) { result in
+            DispatchQueue.main.async {
+                if case .failure(let error) = result {
+                    show("Could not \(paused ? "pause" : "resume") \(machine.label ?? id)", error.localizedDescription)
                 }
                 done()
             }

@@ -525,6 +525,7 @@ final class FleetLocationsTab: FleetTabView {
     var onChangeAddress: ((FleetLocation) -> Void)?
     /// Clear a pause. Only offered while the gateway reports the location paused.
     var onResume: ((FleetLocation) -> Void)?
+    var onPause: ((FleetLocation) -> Void)?
     var onRefresh: (() -> Void)?
     var onRetryFailed: (() -> Void)?
     var onAddLocation: ((String, String, String) -> Void)?
@@ -847,13 +848,14 @@ final class FleetLocationsTab: FleetTabView {
         var views: [NSView] = []
         if row.local != true {
             views.append(FleetClosureButton(title: "Test") { [weak self] in self?.onTest?(row) })
-            if row.pausedAt != nil {
-                views.append(FleetClosureButton(title: "Resume") { [weak self] in self?.onResume?(row) })
-            }
+        }
+        if row.pausedAt != nil {
+            views.append(FleetClosureButton(title: "Resume") { [weak self] in self?.onResume?(row) })
         }
         let more = FleetMenuButton { [weak self] in
             let menu = NSMenu()
             menu.addItem(ClosureMenuItem("Rename…") { self?.onRename?(row) })
+            if !row.isPausedByOwner { menu.addItem(ClosureMenuItem("Pause") { self?.onPause?(row) }) }
             if row.local != true {
                 // One credentials action, not two: the overflow of five buttons was once left out of the
                 // hierarchy entirely, so Remove was unreachable while its endpoint worked.

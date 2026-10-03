@@ -225,6 +225,7 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
         groupsTab.onRemove = { [weak self] location in self?.removeController(location) }
         groupsTab.onChangeAddress = { [weak self] location in self?.changeAddress(location) }
         groupsTab.onResume = { [weak self] location in self?.resumeController(location) }
+        groupsTab.onPause = { [weak self] location in self?.pauseController(location) }
         // Startup control (FleetStartup.swift): the per-node "…" menu and the banner's bulk button.
         groupsTab.startupMenu = { [weak self] machine in
             FleetStartup.menuButton(for: machine, window: { self?.view.window }, done: { self?.reload(force: true) })
@@ -245,6 +246,7 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
         locationsTab.onRemove = { [weak self] location in self?.removeController(location) }
         locationsTab.onChangeAddress = { [weak self] location in self?.changeAddress(location) }
         locationsTab.onResume = { [weak self] location in self?.resumeController(location) }
+        locationsTab.onPause = { [weak self] location in self?.pauseController(location) }
 
         jobsTab.onRefresh = { [weak self] in self?.refreshEverything() }
         jobsTab.onCancel = { [weak self] job in self?.cancelJob(job) }
@@ -1280,7 +1282,29 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
         }
     }
 
-    /// Un-pause a location the gateway paused after a long outage. Nothing else changes.
+    /// Pause a location by hand (this Mac included): it gets no new work, jobs already running there finish,
+    /// and nothing is removed. Kept across restarts; only Resume lifts it.
+    private func pauseController(_ location: FleetLocation) {
+        guard let id = location.id else { return }
+        let label = location.label ?? id
+        setStatus("Pausing \(label)…")
+        GatewayAPI.post("/admin/api/fleet/controllers/\(id)/pause", body: [:]) { [weak self] result in
+            guard let self else { return }
+            switch result {
+            case .failure(let error):
+                self.report(.error, title: "Could not pause \(label)", detail: error.localizedDescription)
+            case .success:
+                self.report(
+                    .success,
+                    title: "Paused \(label)",
+                    detail: "It gets no new work; jobs already running there finish. Resume it whenever you want it back."
+                )
+                self.reload()
+            }
+        }
+    }
+
+    /// Resume a location: one the owner paused by hand, or one the gateway paused after a long outage.
     private func resumeController(_ location: FleetLocation) {
         guard let id = location.id else { return }
         let label = location.label ?? id

@@ -19,7 +19,9 @@ struct GroupSummary {
     var name: String { location.label ?? location.id ?? "Location" }
     var id: String { location.id ?? name }
     /// Down = the controller does not answer, or the Gateway paused it after it stopped answering.
-    var isDown: Bool { location.reachable != true || location.pausedAt != nil }
+    /// A group the owner paused by hand is not down: it answers, it simply gets no new work.
+    var isDown: Bool { location.reachable != true || (location.pausedAt != nil && !location.isPausedByOwner) }
+    var isPausedByOwner: Bool { location.isPausedByOwner }
 
     /// What the table lists. A group that is down lists the roster the gateway remembers (last known
     /// state), never an empty box; a live one lists the machines it reports.
@@ -88,6 +90,7 @@ struct GroupSummary {
     /// group cannot be trusted. Everything else is healthy.
     var health: Health {
         if isDown { return .bad }
+        if isPausedByOwner { return .off }   // paused by you: quiet grey, never "needs attention"
         var worst = Health.ok
         for machine in machines where machine.reachable != false || machine.isNode {
             for state in [nodeHealth(machine), machine.diskHealth, machine.memoryHealth] where state == .warn || state == .bad {
@@ -101,8 +104,11 @@ struct GroupSummary {
         return worst
     }
 
+    /// Whether the banner and the "Needs attention" filter count this group. A group paused by hand is grey, not a fault.
+    var needsLook: Bool { health != .ok && !isPausedByOwner }
+
     /// The badge word for the group.
-    var stateWord: String { isDown ? "Down" : health == .ok ? "Healthy" : "Attention" }
+    var stateWord: String { isDown ? "Down" : isPausedByOwner ? "Paused" : health == .ok ? "Healthy" : "Attention" }
 
     /// The Gateway's own sentences for what is wrong (never paraphrased), for the expanded body.
     var notes: [(health: Health, text: String)] {
@@ -129,6 +135,7 @@ struct GroupSummary {
             let since = location.unreachableSince.map { " · last answered \(FleetFormat.relative($0))" } ?? ""
             return [(location.pausedAt != nil ? "Paused, not answering" : "Not answering") + since]
         }
+        if isPausedByOwner { return ["Paused by you · gets no new work"] }
         func plural(_ n: Int, _ one: String, _ many: String) -> String { "\(n) \(n == 1 ? one : many)" }
         var out: [String] = []
         let live = machines.filter { $0.reachable != false }
@@ -266,6 +273,7 @@ final class FleetGroupsTab: NSView, NSSearchFieldDelegate {
     var onRefreshGroup: ((FleetLocation) -> Void)?
     var onTest: ((FleetLocation) -> Void)?
     var onResume: ((FleetLocation) -> Void)?
+    var onPause: ((FleetLocation) -> Void)?
     var onChangeAddress: ((FleetLocation) -> Void)?
     var onRename: ((FleetLocation) -> Void)?
     var onCredentials: ((FleetLocation) -> Void)?
@@ -385,7 +393,7 @@ final class FleetGroupsTab: NSView, NSSearchFieldDelegate {
         groups = snapshot.groups
         // Problem groups open, healthy ones collapsed, the first time only: after that the person's own choice stands.
         if !seeded {
-            expanded = Set(groups.filter { $0.health != .ok }.map { $0.id })
+            expanded = Set(groups.filter { $0.needsLook }.map { $0.id })
             if expanded.isEmpty, groups.count == 1 { expanded = Set(groups.map { $0.id }) }
             seeded = true
         }
@@ -433,7 +441,7 @@ final class FleetGroupsTab: NSView, NSSearchFieldDelegate {
 
     private func rebuild() {
         clear(strip); clear(bannerHolder); clear(summaryHolder); clear(cardsHolder)
-        let attention = groups.filter { $0.health != .ok }
+        let attention = groups.filter { $0.needsLook }
         filterControl.setLabel("All groups (\(groups.count))", forSegment: 0)
         filterControl.setLabel("Needs attention (\(attention.count))", forSegment: 1)
         filterControl.selectedSegment = problemsOnly ? 1 : 0
@@ -747,7 +755,8 @@ final class FleetGroupsTab: NSView, NSSearchFieldDelegate {
         // "Hub 0.6.132 · Latest · 10 of 11 on latest · " (against the newest release this Gateway published;
         // amber while a Mac is behind), then the counted reasons.
         let sub = PageKit.label("", .secondary, wrapping: true)
-        let statusColour = problems.isEmpty ? NSColor.secondaryLabelColor : (group.health == .bad ? Health.bad.text : Health.warn.text)
+        let statusColour = problems.isEmpty || group.isPausedByOwner ? NSColor.secondaryLabelColor
+            : (group.health == .bad ? Health.bad.text : Health.warn.text)
         let line = NSMutableAttributedString()
         if let version = group.versionLine {
             let colour = version.health == .warn || version.health == .bad ? version.health.text
@@ -851,7 +860,12 @@ final class FleetGroupsTab: NSView, NSSearchFieldDelegate {
             let menu = NSMenu()
             menu.addItem(ClosureMenuItem("Test") { self.onTest?(location) })
             menu.addItem(ClosureMenuItem("Refresh Group") { self.onRefreshGroup?(location) })
-            if location.pausedAt != nil { menu.addItem(ClosureMenuItem("Resume") { self.onResume?(location) }) }
+            if location.isPausedByOwner {
+                menu.addItem(ClosureMenuItem("Resume Group") { self.onResume?(location) })
+            } else {
+                if location.pausedAt != nil { menu.addItem(ClosureMenuItem("Resume") { self.onResume?(location) }) }
+                menu.addItem(ClosureMenuItem("Pause Group") { self.onPause?(location) })
+            }
             if location.local != true {
                 menu.addItem(.separator())
                 menu.addItem(ClosureMenuItem("Rename…") { self.onRename?(location) })

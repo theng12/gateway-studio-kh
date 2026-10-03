@@ -155,10 +155,15 @@ struct FleetLocation: Decodable {
     /// window and routing skips it — the row, credential and enable decisions stay. Epoch
     /// seconds; `pauseReason` is the gateway's own sentence ("resume it from the Fleet page").
     var pausedAt: Double?
+    /// `owner` (paused by hand: grey, nothing wrong) or `outage` (the gateway's automatic pause after a long
+    /// silence). `nil` from a gateway that predates the field, which only ever paused for an outage.
+    var pausedBy: String?
     var pauseReason: String?
     var unreachableSince: Double?
     /// The controller is draining (finishing its work, taking none): routing skips it.
     var drained: Bool?
+    /// Paused by the owner: it gets no new work, and it is not a fault.
+    var isPausedByOwner: Bool { pausedAt != nil && pausedBy == "owner" }
     /// Set when the roster shown is the one remembered from before the group went quiet, and for how long.
     var membersFrom: String?
     var membersStaleSeconds: Double?
@@ -170,7 +175,7 @@ struct FleetLocation: Decodable {
         case machines, workers, localModels, modelHealth, machineSummary, runningJobs
         case modelsDiscovered, modelsEnabled, modelsPublishable, release, trustedPublisher
         case nodes, nodeSummary
-        case pausedAt, pauseReason, unreachableSince
+        case pausedAt, pausedBy, pauseReason, unreachableSince
     }
 
     init(from decoder: Decoder) throws {
@@ -195,6 +200,7 @@ struct FleetLocation: Decodable {
         nodes = lenientArray(c, forKey: .nodes)
         nodeSummary = try? c.decode(FleetNodeSummary.self, forKey: .nodeSummary)
         pausedAt = try? c.decode(Double.self, forKey: .pausedAt)
+        pausedBy = try? c.decode(String.self, forKey: .pausedBy)
         pauseReason = try? c.decode(String.self, forKey: .pauseReason)
         unreachableSince = try? c.decode(Double.self, forKey: .unreachableSince)
         drained = try? c.decode(Bool.self, forKey: .drained)
@@ -655,6 +661,9 @@ struct FleetMachine: Decodable {
     var nodeDetail: String?
     var nodeRole: String?
     var nodeAddress: String?
+    /// The owner paused this Mac by hand on its controller: no new work, still joined. `nil` when the Hub does
+    /// not say (older than 0.6.135), which is never read as "not paused".
+    var nodePaused: Bool?
     var nodeLastSeenAt: FleetScalar?
     /// What this Mac says it starts when it starts (see `FleetStartup.swift`). `nil` is unknown.
     var startup: FleetStartupFact?
@@ -795,6 +804,7 @@ extension FleetMachine {
     /// unknown, green for ready or working.
     var activityHealth: Health {
         let word = (state ?? "").lowercased()
+        if nodePaused == true { return .off }   // paused by you: quiet grey, not a fault
         if nodeStateIsUnauthorized || word == "offline" || reachable == false { return .bad }
         if word == "needs_attention" { return .warn }
         if word == "long_idle" || word.isEmpty { return .off }
@@ -826,6 +836,7 @@ extension FleetMachine {
     /// The state word on a badge: Title Case, and **a refused credential is not "offline"** (different fault,
     /// different fix).
     var stateLabel: String {
+        if nodePaused == true { return "Paused" }
         if nodeStateIsUnauthorized { return "Credential refused" }
         if reachable == false { return "Offline" }
         switch (state ?? "").lowercased() {

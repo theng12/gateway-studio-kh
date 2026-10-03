@@ -15,6 +15,11 @@ import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+# The gateway modules open their data directory when imported (and `fleet` reads the owner's pause file), so
+# a render must never see the real one: point it at a throwaway directory unless the caller chose one.
+if not os.environ.get("GATEWAY_APP_SUPPORT"):
+    import tempfile
+    os.environ["GATEWAY_APP_SUPPORT"] = tempfile.mkdtemp(prefix="gateway-fixture-")
 from gateway import fleet  # noqa: E402
 
 NOW = time.time()
@@ -382,6 +387,16 @@ def build() -> dict:
         unreachable_since=NOW - 4 * DAY, members_from="last_known", members_stale_seconds=4 * DAY,
     )
     rows = [local, blue, studio2, garage]
+    if flavour in ("paused", "paused-node"):
+        # GATEWAY_RENDER_FIXTURE=paused: this Mac paused by the owner (grey, nothing wrong) beside a group the
+        # gateway paused after an outage (red, with Resume). `paused-node`: one node of a group paused by hand.
+        # Few cards, so the whole page fits one render.
+        local.update(paused_at=NOW - 2 * HOUR, paused_by="owner", pause_reason=fleet.OWNER_PAUSE_REASON)
+        garage.update(paused_at=NOW - 3600, paused_by="outage",
+                      pause_reason="unreachable since 2026-09-29 — paused after 3 days. Routing skips it; nothing "
+                                   "was removed. Bring the Mac back, or resume it from the Fleet page.")
+        next(n for n in studio2["nodes"] if n["id"] == "s2-1")["paused"] = True
+        rows = [local, garage] if flavour == "paused" else [studio2]
     if flavour.startswith("many"):
         rows = many(rows)
     fleet.stamp_latest(rows, {"fingerprint": "cd" * 32, "updated_at": NOW - 3 * HOUR,
