@@ -918,10 +918,10 @@ def catalog_encode(job: dict[str, Any]) -> str:
 def _pinned_location(params: dict[str, Any]) -> str | None:
     """The location a request already names, if it names one.
 
-    A voice id carries its owner (`studio-hub-<controller>::<raw>`), so voice work
-    must go to that location and no other — the reference clip exists on one Hub,
-    not on the fleet. A voice from a cloud provider names no location and so pins
-    nothing.
+    A voice id carries its owner (`studio-hub-<controller>::<raw>`), so a voice whose
+    clip exists on one Hub only must go to that location. A clone from the gateway's
+    own library travels with the job (its clip is staged wherever it runs) and a
+    cloud voice names no location, so neither pins anything.
     """
     from . import fleet
 

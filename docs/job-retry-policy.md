@@ -71,12 +71,15 @@ Three further guarantees, each with a test in `tests/test_job_retry_policy.py`:
 - **Idempotency keys still hold.** A caller replaying a request cannot create a second job; the
   retry policy operates on the one job row and never inserts a new one.
 
-## Voices are pinned, so a voice failure is terminal
+## A clone's clip travels with the job; only a Hub-held voice is pinned
 
-A voice clone names its owner and its reference clip lives on one controller. There is no other
-machine that could serve it, so a pinned job is excluded from the re-route entirely
-(`pinned = fleet.pinned_location(params)`): a "retry elsewhere" would be a slower failure. A voice
-that fails is terminal after its own attempts.
+A clone voice from the gateway's own library (`studio-hub-local::voice-…`) is **not pinned**: the
+adapter stages its reference clip at whichever location runs the job (`POST
+/api/hub/voice-references`, sha256-checked by the Gateway, the Hub and the worker), so it routes,
+spreads and retries like any other job. Only a voice whose clip lives on one Hub alone (a
+controller's shared voice) keeps that location (`fleet.pinned_location`); there is no other
+machine that could serve it, so it is excluded from the re-route and a failure is terminal after
+its own attempts.
 
 ## What an operator sees
 

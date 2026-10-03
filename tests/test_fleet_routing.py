@@ -1218,6 +1218,31 @@ class VoicePinTests(unittest.TestCase):
                 fleet.pinned_location({"voice_id": "studio-hub-ghost::voice-a"}), "ghost"
             )
 
+    def _gateway_voice(self, clip: Path):
+        from gateway import voices
+        voice = types.SimpleNamespace(raw={"reference_path": str(clip)})
+        return patch.object(voices, "resolve", return_value=voice)
+
+    def test_a_clone_whose_clip_the_gateway_holds_is_not_pinned(self) -> None:
+        # Measured 2026-10-03: every Dreamlands chapter (Breeze + "Chris") ran on this Mac,
+        # one at a time, because the gateway's own voice read as "lives on the local Hub".
+        clip = _TEMP_ROOT / "chris.wav"
+        clip.write_bytes(b"clip")
+        rows = [_location("local", role="controller", drained=False)]
+        with patch.object(fleet, "snapshot", return_value={"locations": rows}), \
+                self._gateway_voice(clip):
+            self.assertIsNone(
+                fleet.pinned_location({"voice_id": "studio-hub-local::voice-cd07b21a2ccf"})
+            )
+
+    def test_a_library_entry_without_its_clip_keeps_the_pin(self) -> None:
+        rows = [_location("local", role="controller", drained=False)]
+        with patch.object(fleet, "snapshot", return_value={"locations": rows}), \
+                self._gateway_voice(_TEMP_ROOT / "missing.wav"):
+            self.assertEqual(
+                fleet.pinned_location({"voice_id": "studio-hub-local::voice-a"}), "local"
+            )
+
 
 
 

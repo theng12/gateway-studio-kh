@@ -393,8 +393,9 @@ def retry_policy_wording() -> str:
         "accepted the work and then went silent is an unknown outcome, is never re-run "
         "automatically, and waits for reconciliation. After the last attempt the job is declared "
         "failed to Story Studio with a reason naming every machine that was tried and why each "
-        "one failed. A clone pinned to the Hub holding its reference clip keeps its location, so "
-        "a voice failure is terminal after its own attempts."
+        "one failed. A clone voice's reference clip travels with the job, so it is retried like any "
+        "other job; only a voice whose clip lives on one Hub alone keeps that location, and its "
+        "failure there is terminal after its own attempts."
     ).format(n=retry_policy()["max_attempts"])
 
 
