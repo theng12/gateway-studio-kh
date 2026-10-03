@@ -807,8 +807,15 @@ class VoiceRegistry:
 
                 candidate = Path(str(path))
                 if candidate.exists():
-                    media = "audio/wav" if candidate.suffix == ".wav" else "audio/mpeg"
-                    return candidate.read_bytes(), media
+                    # By the bytes, not the name: a QuickTime container named `.mp3`
+                    # served as audio/mpeg is a clip the app's player cannot open.
+                    from . import voice_audio
+
+                    try:
+                        playable, media = voice_audio.playable(candidate)
+                    except RuntimeError as exc:
+                        raise KeyError(f"the reference clip could not be made playable: {exc}") from exc
+                    return playable.read_bytes(), media
 
         if voice.preview_url:
             response = httpx.get(voice.preview_url, timeout=PREVIEW_TIMEOUT, follow_redirects=True)

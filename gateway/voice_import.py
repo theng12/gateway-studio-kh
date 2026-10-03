@@ -24,6 +24,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
+import os
 import re
 import shutil
 import threading
@@ -33,8 +35,11 @@ from typing import Any
 
 import httpx
 
+from . import voice_audio
 from .config import DATA_DIR, VOICES_PATH, WRITABLE_VOICES_PATH, write_secret
 from .hub import hub_base_url, hub_probe, local_hub_headers
+
+log = logging.getLogger("gateway.voice_import")
 
 #: Where imported clips are copied. A subdirectory per voice, so a voice is one
 #: thing on disk and deleting it removes exactly that voice's audio.
@@ -162,6 +167,10 @@ def write_voice_files(entry: dict) -> None:
                 "language": entry.get("language"),
                 "gender": entry.get("gender"),
                 "audio_sha256": entry.get("audio_sha256"),
+                # The reference file this folder serves (a proper WAV after
+                # normalisation) and its own digest; `audio_sha256` names the original.
+                "reference_file": Path(str(entry["reference_path"])).name if entry.get("reference_path") else None,
+                "reference_sha256": entry.get("reference_sha256"),
                 # Whether this voice can clone at all: no segments, no reference.
                 "has_transcript": bool(transcript),
                 "segment_count": len(segments or []),
@@ -421,7 +430,11 @@ def push_fields(entry: dict) -> dict:
         # carries one id across every controller instead of one id per controller,
         # and the gateway's mapping stays one row per voice.
         "voice_id": shared_voice_id(entry),
-        "audio_sha256": str(entry.get("audio_sha256") or ""),
+        # The Hub checks this against the bytes uploaded, so it is the digest of the
+        # reference file itself. For a voice whose reference was normalised to WAV that is
+        # `reference_sha256`; `audio_sha256` keeps naming the *original* recording (the
+        # identity re-imports match on, and the shared id above).
+        "audio_sha256": str(entry.get("reference_sha256") or entry.get("audio_sha256") or ""),
         "name": str(entry.get("display_name") or "")[:200],
         # Verbatim. `shared_readiness` refuses a voice with no language before this
         # is reached, so a fallback here would only ever hide a claim — and "en" was
@@ -728,6 +741,96 @@ def _existing_id_for(by_id: dict[str, dict], item: dict, digest: str) -> str | N
     return None
 
 
+def place_reference(source: Path, directory: Path) -> tuple[Path, Path | None]:
+    """Copy a clip into a voice folder as a proper `reference.wav`.
+
+    Returns `(reference, original)`. A real WAV is copied as it is. Anything else is
+    decoded to WAV and the source is kept beside it as `original.<ext>`, so a voice never
+    again has a container the app's player cannot open (a QuickTime file named `.mp3`
+    previewed as nothing). **If it cannot be converted** the clip is copied unchanged, as it
+    was before, rather than losing the import; `original` is then None.
+    """
+    directory.mkdir(parents=True, exist_ok=True)
+    wav = directory / "reference.wav"
+    if voice_audio.sniff(source) == "wav":
+        if source.resolve() != wav.resolve():
+            shutil.copy2(source, wav)
+        return wav, None
+    try:
+        voice_audio.to_wav(source, wav)
+    except RuntimeError as exc:
+        log.warning("could not convert %s to WAV: %s", source, exc)
+        fallback = directory / f"reference{source.suffix.lower()}"
+        shutil.copy2(source, fallback)
+        return fallback, None
+    original = directory / f"original{source.suffix.lower()}"
+    shutil.copy2(source, original)
+    return wav, original
+
+
+def migrate_references() -> dict:
+    """Give every voice whose reference is not what its name says a proper `reference.wav`.
+
+    The one-off repair for clips that are QuickTime/ISO-media containers named `.mp3` (the
+    app's player cannot open them). Per voice: decode to `reference.wav`, move the old file
+    to `original.<ext>` (moved, never deleted), point `reference_path` at the WAV and record
+    `reference_sha256` -- the Hub-staging path hashes whatever `reference_path` names, so the
+    staged sha is of the new file. `audio_sha256` is left alone: it names the original
+    recording, which is what re-imports and the shared voice id are keyed on.
+
+    Idempotent (a voice already on a WAV is skipped) and recoverable (a run that stopped after
+    moving the old file finds `reference.wav` beside the missing path and repoints). One
+    voice failing does not stop the rest. Logged.
+    """
+    payload = _read_catalog()
+    migrated: list[str] = []
+    failed: list[dict] = []
+    for entry in payload.get("voices") or []:
+        if not isinstance(entry, dict) or not entry.get("reference_path"):
+            continue
+        clip = Path(str(entry["reference_path"]))
+        voice_id = str(entry.get("id") or "")
+        wav = clip.with_name("reference.wav")
+        try:
+            if clip.is_file() and voice_audio.plain_media_type(clip):
+                continue
+            if clip.is_file():
+                original = clip.with_name(f"original{clip.suffix.lower() or '.bin'}")
+                if original.exists():
+                    original = clip.with_name(f"original-{clip_digest(clip)[:8]}{clip.suffix.lower()}")
+                if clip == wav:
+                    # A MOV named `.wav`: the old bytes move aside first, the WAV is made from them.
+                    os.replace(clip, original)
+                    try:
+                        voice_audio.to_wav(original, wav)
+                    except RuntimeError:
+                        os.replace(original, clip)
+                        raise
+                else:
+                    if not (wav.is_file() and voice_audio.sniff(wav) == "wav"):
+                        voice_audio.to_wav(clip, wav)
+                    os.replace(clip, original)
+                entry["original_path"] = str(original)
+            elif wav.is_file() and voice_audio.sniff(wav) == "wav":
+                pass  # the old file was already moved aside; repoint
+            else:
+                continue  # nothing there to repair
+            entry["reference_path"] = str(wav)
+            entry["reference_sha256"] = clip_digest(wav)
+            migrated.append(voice_id)
+            log.info("voice %s: reference %s -> %s (sha256 %s)", voice_id, clip.name, wav.name,
+                     entry["reference_sha256"][:12])
+        except (OSError, RuntimeError) as exc:
+            failed.append({"id": voice_id, "detail": f"{type(exc).__name__}: {exc}"[:200]})
+            log.warning("voice %s: reference migration failed: %s", voice_id, exc)
+    if migrated:
+        _write_catalog(payload)
+        for entry in payload["voices"]:
+            if entry.get("id") in migrated:
+                write_voice_files(entry)
+    return {"migrated": migrated, "failed": failed}
+
+
 def import_folder(folder: Path) -> dict:
     """Copy every voice found into the library and add it to the catalogue.
 
@@ -749,12 +852,16 @@ def import_folder(folder: Path) -> dict:
         voice_id = _existing_id_for(by_id, item, digest) or str(item["id"])
         target_dir = LIBRARY_DIR / voice_id
         target_dir.mkdir(parents=True, exist_ok=True)
-        target = target_dir / f"reference{item['audio'].suffix.lower()}"
         try:
-            shutil.copy2(item["audio"], target)
+            target, original = place_reference(item["audio"], target_dir)
         except OSError as exc:
             skipped.append({"name": item["display_name"], "reason": f"Could not copy: {exc}"})
             continue
+        if target.suffix.lower() != ".wav" and voice_audio.plain_media_type(target) is None:
+            notes.append(
+                f"\u201c{item['display_name']}\u201d could not be converted to WAV, so its "
+                f"reference is kept as it came; it may not preview in the app."
+            )
 
         entry = {
             **{k: v for k, v in (by_id.get(voice_id) or {}).items()
@@ -784,8 +891,12 @@ def import_folder(folder: Path) -> dict:
             "reference_transcript": item["transcript"],
             # Stored so a location lookup can compare without reading the file:
             # it is the one field that means the same thing on both sides.
+            # (the *original* recording; `reference_sha256` is the reference file's.)
             "audio_sha256": digest,
+            "reference_sha256": clip_digest(target),
         }
+        if original is not None:
+            entry["original_path"] = str(original)
         # A re-import of changed audio invalidates segments measured against the
         # old clip; keeping them would describe audio that is no longer there.
         # The comparison **includes the case where the old row has no digest** —
