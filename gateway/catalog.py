@@ -1064,7 +1064,34 @@ def _tts_row(model_id: str, definition: ProviderDefinition, model: dict[str, Any
         # changed nothing in any of them (audit 2026-10-01).
         "controls": _tts_controls(definition, raw),
         **_output_formats(definition, raw),
+        **_tts_pause_parameters(definition, raw),
     }
+
+
+#: The optional join pauses a Studio Hub voice lane may declare (Hub, owner 2026-10-03: Sleep wants a
+#: 1.0 s pause at a paragraph break). The adapter forwards them; a node that predates them drops them.
+TTS_PAUSE_PARAMETERS = ("paragraph_pause_sec", "sentence_pause_sec")
+
+
+def _tts_pause_parameters(definition: ProviderDefinition, raw: dict[str, Any]) -> dict[str, Any]:
+    """`{"pause_parameters": [...]}` with the lane's own bounds and default, when the Hub declares them.
+
+    Absent for a lane that states none (an older Hub, every cloud provider), so a caller knows the
+    request field would do nothing there.
+    """
+    if definition.kind != KIND_STUDIO_HUB or not isinstance(raw, dict):
+        return {}
+    contract = raw.get("lane_contract")
+    published = []
+    for name in TTS_PAUSE_PARAMETERS:
+        declared = _hub_declared_parameter(contract, name) if isinstance(contract, dict) else None
+        if declared is None:
+            continue
+        published.append({"name": name, **{
+            key: declared[key] for key in ("minimum", "maximum", "default")
+            if isinstance(declared.get(key), (int, float)) and not isinstance(declared.get(key), bool)
+        }})
+    return {"pause_parameters": published} if published else {}
 
 
 def _tts_controls(definition: ProviderDefinition, raw: dict[str, Any]) -> list[dict[str, Any]]:

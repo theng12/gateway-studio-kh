@@ -44,7 +44,7 @@ from . import __version__
 from .build import build_id
 from .adapters import BackendError, BackendRequest, adapter_for
 from .adapters.studio_hub import SUPPORTED_STUDIO_HUB_VERSION
-from .catalog import MODALITIES, catalog, encode_model_id
+from .catalog import MODALITIES, TTS_PAUSE_PARAMETERS, catalog, encode_model_id
 from .config import ARTIFACT_DIR, gateway_api_key, is_loopback, request_is_loopback
 from .constants import CREDIT_BALANCE, ZERO_SETTLEMENT, admission
 from .pricing import definition_chargeable, job_cost
@@ -1014,6 +1014,22 @@ OUTPUT_FORMATS = {
 }
 
 
+def _validate_tts_pauses(payload: dict[str, Any]) -> None:
+    """Refuse a join pause that is not a number of seconds >= 0 before anything is queued.
+
+    The upper bound is the Hub lane's own (published on the row as `pause_parameters`); it refuses
+    a value past it by name. `null` is the same as absent.
+    """
+    for name in TTS_PAUSE_PARAMETERS:
+        value = payload.get(name)
+        if value is None:
+            payload.pop(name, None)
+            continue
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not 0 <= value < float("inf"):
+            raise GatewayError(
+                400, f"{name} must be a number of seconds, 0 or more; got {value!r}.", "INVALID_PARAMS")
+
+
 def _validate_output_format(modality: str, payload: dict[str, Any]) -> None:
     """Refuse an `output_format` the modality does not define, before anything is queued or charged.
 
@@ -1942,6 +1958,7 @@ def create_tts_job(
 ) -> dict[str, Any]:
     key = _require_idempotency_key(idempotency_key)
     _validate_output_format("tts", payload)
+    _validate_tts_pauses(payload)
     model_id = str(payload.get("model_id") or payload.get("model") or "")
     job, created = _submit("tts", model_id, payload, key, caller=caller)
     if created:
