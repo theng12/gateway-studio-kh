@@ -68,7 +68,13 @@ JOBS = [  # (modality, model, provider, state, minutes ago, caller, error)
     ("tts", "voice-clone-qwen3", "studio-hub-ctrl-blue", "cancelled", 260, "story-studio", None),
     ("image", "FLUX.2-klein-4B", "studio-hub-local", "succeeded", 400, "gateway-app", None),
     ("chat", "atlas-reason-1", "atlas", "succeeded", 700, "story-studio", None),
+    # In flight, waiting and held: stored as cancelled here (the live gateway would otherwise dispatch or sweep
+    # them while it starts) and flipped to their real state by `mix_states` once it is up.
+    ("tts", "voxline-tts-v3", "voxline", "running", 1, "story-studio", None),
+    ("image", "prism-flux-pro", "prism", "queued", 2, "story-studio", None),
+    ("video", "prism-hailuo-02", "prism", "held", 20, "story-studio", None),
 ]
+MIXED: list = []  # (job id, state) rows `mix_states` flips once the gateway is up
 VOICES = [("Marlowe", "en", "qwen3-tts"), ("Ines", "es", "qwen3-tts"), ("Okafor", "en", "kokoro"),
           ("Hana", "ja", "qwen3-tts"), ("Dmitri", "ru", "kokoro"), ("Brightwater (narrator)", "en", "qwen3-tts")]
 
@@ -176,10 +182,28 @@ def seed_jobs(env: dict) -> None:
             store.fail(row["id"], code=error[0], detail=error[1])
         else:
             store.cancel(row["id"])
+        if state in ("running", "queued", "held"):
+            MIXED.append((row["id"], state))
         created = now - minutes * 60
         with sqlite3.connect(env["GATEWAY_DB"]) as conn:
             conn.execute("UPDATE jobs SET created_at=?, updated_at=? WHERE id=?", (created, created + 40, row["id"]))
     store.close()
+
+
+def mix_states(env: dict) -> None:
+    """Make the seeded in-flight rows really running / accepted / held-with-unknown-outcome, so the Jobs page
+    draws every state colour. Plain SQL on the disposable database; the live gateway is never touched."""
+    far = time.time() + 86400
+    with sqlite3.connect(env["GATEWAY_DB"]) as conn:
+        for job_id, state in MIXED:
+            if state == "running":
+                conn.execute("UPDATE jobs SET state='running', next_action_at=NULL WHERE id=?", (job_id,))
+            elif state == "queued":
+                conn.execute("UPDATE jobs SET state='accepted', next_action_at=? WHERE id=?", (far, job_id))
+            else:
+                conn.execute("UPDATE jobs SET state='failed', error_code='UNKNOWN_OUTCOME', error_detail=?, "
+                             "recovery_state='unknown_outcome', recovery_detail=? WHERE id=?",
+                             ("The gateway restarted while this job was in flight.",) * 2 + (job_id,))
 
 
 class Overlay(BaseHTTPRequestHandler):
@@ -276,6 +300,7 @@ def main() -> None:
         keep = [m for index, m in enumerate(found) if index % 4 != 3]  # leave some off
         call("POST", f"/admin/api/providers/{pid}/models/enabled", {"model_ids": keep, "enabled": True})
 
+    mix_states(env)
     call("POST", "/admin/api/backup/run")  # so Settings → Backups shows a real last backup
 
     fleet_json = subprocess.run([sys.executable, str(HERE / "fleet_fixture.py")], cwd=ROOT, capture_output=True,

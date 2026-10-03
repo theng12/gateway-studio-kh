@@ -842,9 +842,14 @@ extension FleetMachine {
         return .ok
     }
 
+    /// The colour of the State badge. A Mac that is working is running a job, so it is amber like any running
+    /// state; `activityHealth` (below) is the fault verdict that groups count, and a working Mac is no fault.
+    var badgeHealth: Health { (state ?? "").lowercased() == "working" && nodePaused != true && reachable != false
+        ? Health(state: "working") : activityHealth }
+
     /// How this Mac's activity reads: red for a refused credential or an offline Mac, amber when it needs
     /// attention (the Gateway only leaves that verdict standing with a cause it can name), grey for idle or
-    /// unknown, green for ready or working.
+    /// unknown, green for ready or working. This is the fault verdict groups count; the State badge uses `badgeHealth`.
     var activityHealth: Health {
         let word = (state ?? "").lowercased()
         if nodePaused == true { return .off }   // paused by you: quiet grey, not a fault
@@ -862,9 +867,9 @@ extension FleetMachine {
         let newest = latest.map { "Studio Hub \($0)" } ?? "the newest release"
         switch (versionStatus ?? "").lowercased() {
         case "latest":
-            return ("Latest", .ok, "Studio Hub \(mine): the newest release this Gateway published.")
+            return ("Latest", Health(state: "latest"), "Studio Hub \(mine): the newest release this Gateway published.")
         case "updating":
-            return ("Updating…", .info, "Studio Hub \(mine). Its controller holds \(newest); "
+            return ("Updating…", Health(state: "updating"), "Studio Hub \(mine). Its controller holds \(newest); "
                     + "the Mac installs it by itself as soon as it is idle.")
         case "behind":
             return ("Behind — \(hubVersion ?? "?")", .warn, "Studio Hub \(mine), behind \(newest), and not updating "

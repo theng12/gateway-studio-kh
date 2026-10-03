@@ -1001,7 +1001,7 @@ final class FleetGroupsTab: NSView, NSSearchFieldDelegate {
         let offlineWhy = FleetOffline.why(machine)
 
         // The state badge, and under it when the controller last heard from this Mac (a node only).
-        let stateBadge = Badge(group.stateWord(machine), health)
+        let stateBadge = Badge(group.stateWord(machine), machine.badgeHealth)
         var stateViews: [NSView] = [stateBadge]
         if machine.isNode { stateViews.append(PageKit.label("seen \(machine.nodeLastSeenText)", .caption, colour: .secondaryLabelColor)) }
         let state = stack(stateViews)
@@ -1010,7 +1010,7 @@ final class FleetGroupsTab: NSView, NSSearchFieldDelegate {
 
         let (headline, detail) = group.doing(machine)
         var doingViews = [PageKit.label(headline, .secondary,
-                                        colour: health == .bad || health == .warn ? health.text : .labelColor)]
+                                        colour: machine.badgeHealth == .bad || machine.badgeHealth == .warn ? machine.badgeHealth.text : .labelColor)]
         if let detail { doingViews.append(PageKit.label(detail, .caption, colour: .secondaryLabelColor)) }
         let doing = stack(doingViews)
         doing.toolTip = detail

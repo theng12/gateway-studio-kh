@@ -102,6 +102,29 @@ enum Health: Int, Comparable {
         default: self = .off
         }
     }
+
+    /// **The one state -> colour mapping** for a job, batch, rollout step or node. Every state pill goes through
+    /// here, so a word never has two colours: running and everything that is still in flight is amber, a failure
+    /// (or an outcome the Gateway cannot know) is red, a finished good result is green, and a state the owner
+    /// chose (cancelled, paused) is neutral grey. An unrecognised word is grey, never a guessed colour.
+    init(state: String?) {
+        let word = (state ?? "").lowercased().replacingOccurrences(of: "_", with: " ")
+            .replacingOccurrences(of: "-", with: " ").trimmingCharacters(in: .whitespaces)
+        if ["failed", "error", "errored", "uncertain", "unknown outcome", "needs recovery", "recovery required"].contains(word)
+            || word.hasSuffix(" failed") || word.hasSuffix(" uncertain") {
+            self = .bad
+        } else if ["succeeded", "success", "done", "finished", "complete", "completed", "updated", "latest"].contains(word) {
+            self = .ok
+        } else if ["running", "queued", "accepted", "dispatching", "waiting", "updating", "updating…", "starting", "sending",
+                   "sent", "installing", "in flight", "in progress", "working", "pending", "retrying", "stalled",
+                   "stop requested", "cancellation requested", "cancelling"].contains(word)
+                    || word.hasPrefix("waiting") {
+            self = .warn
+        } else {
+            // cancelled, canceled, paused, stopped, skipped, idle, unknown, anything else.
+            self = .off
+        }
+    }
 }
 
 /// Shared page furniture, so every page in the window reads the same way.

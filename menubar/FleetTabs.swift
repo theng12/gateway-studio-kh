@@ -731,7 +731,7 @@ final class FleetLocationsTab: FleetTabView {
                 colour: { row in
                     switch location(row)?.versionStatus {
                     case "behind": return Health.warn.text
-                    case "updating": return Health.info.text
+                    case "updating": return Health(state: "updating").text
                     default: return .labelColor
                     }
                 },
@@ -990,7 +990,7 @@ final class FleetLocationsTab: FleetTabView {
         releaseStack.addArrangedSubview(head)
         head.widthAnchor.constraint(equalTo: releaseStack.widthAnchor).isActive = true
         if let reason = rollout.reason, !reason.isEmpty, !rollout.isRunning {
-            addReleaseLine("Stopped: \(reason).", colour: Health.warn.text)
+            addReleaseLine("Stopped: \(reason).", colour: (rollout.state == "failed" ? Health.bad : Health.warn).text)
         }
         for (_, step) in rollout.orderedSteps {
             let (text, health) = rolloutStepText(step, version: version)
@@ -1003,14 +1003,15 @@ final class FleetLocationsTab: FleetTabView {
         var text: String
         var health: Health?
         switch step.state {
-        case "sending": text = "sending the release…"; health = .info
-        case "sent": text = "sent; finishing its current work, then installing"; health = .info
-        case "installing": text = "installing and restarting"; health = .info
-        case "updated": text = "updated"; health = .ok
-        case "failed": text = detail.isEmpty ? "did not come back on \(version)" : detail; health = .bad
-        case "skipped": text = "skipped" + (detail.isEmpty ? "" : ": \(detail)"); health = .warn
+        case "sending": text = "sending the release…"
+        case "sent": text = "sent; finishing its current work, then installing"
+        case "installing": text = "installing and restarting"
+        case "updated": text = "updated"
+        case "failed": text = detail.isEmpty ? "did not come back on \(version)" : detail
+        case "skipped": text = "skipped" + (detail.isEmpty ? "" : ": \(detail)")
         default: text = detail.isEmpty ? "waiting" : "waiting: \(detail)"
         }
+        health = Health(state: step.state ?? "waiting")
         if let total = step.nodesTotal, total > 0, let on = step.nodesUpdated,
            ["sent", "installing", "updated"].contains(step.state ?? "") {
             text += " · \(on) of \(total) Mac\(total == 1 ? "" : "s") on \(version)"
@@ -1287,7 +1288,7 @@ final class FleetMachinesTab: NSView {
                     var tips = [FleetOffline.why(row), row.attention, row.stateReason, row.limitation].compactMap { $0 }
                     if let stop = FleetOffline.lastStopLine(row) { tips.append(stop) }
                     if row.isNode { tips.append("The controller last heard from this Mac \(row.nodeLastSeenText).") }
-                    return fleetBadgeCell(row.stateLabel, row.activityHealth,
+                    return fleetBadgeCell(row.stateLabel, row.badgeHealth,
                                           caption: row.isNode ? "seen \(row.nodeLastSeenText)" : nil,
                                           tooltip: tips.isEmpty ? nil : tips.joined(separator: "\n\n"))
                 }
@@ -1987,10 +1988,10 @@ final class FleetJobsTab: FleetTabView {
     private static func runningColumns(cancel: @escaping (FleetJob) -> Void) -> [FleetColumn] {
         func job(_ any: Any) -> FleetJob? { any as? FleetJob }
         func health(_ job: FleetJob) -> Health {
-            if job.cancelled == true { return .off }
+            // A cancelled batch that also errored is red; cancelled by the owner is grey; in flight is amber.
             if (job.errorCount ?? 0) > 0 || (job.uncertain ?? 0) > 0 { return .bad }
-            if job.stalled == true || (job.cancelRequested ?? 0) > 0 { return .warn }
-            return .ok
+            if job.cancelled == true { return Health(state: "cancelled") }
+            return Health(state: "running")
         }
         return [
             FleetColumn(

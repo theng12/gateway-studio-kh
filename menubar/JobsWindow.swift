@@ -400,7 +400,7 @@ final class JobsSection: NSObject, AppSection, NSTableViewDataSource, NSTableVie
             field.stringValue = string(job["model_name"]) ?? string(job["model_id"]) ?? "?"
         case "state":
             // The state is a badge, like every other status in the app: the word and its colour together.
-            let word = displayState(job)
+            let word = job["recovery_required"] as? Bool == true ? "needs recovery" : displayState(job)
             let badge = Badge(word.prefix(1).uppercased() + word.dropFirst(), stateHealth(job))
             let cell = NSTableCellView()
             badge.translatesAutoresizingMaskIntoConstraints = false
@@ -1012,14 +1012,10 @@ final class JobsSection: NSObject, AppSection, NSTableViewDataSource, NSTableVie
         return string(job["state"]) ?? "unknown"
     }
 
+    /// A failed job the Gateway holds because its outcome is unknown is red like any failure, with its own word.
     private func stateHealth(_ job: [String: Any]) -> Health {
-        if job["recovery_required"] as? Bool == true { return .warn }
-        switch string(job["state"]) {
-        case "succeeded", "running": return .ok
-        case "failed": return .bad
-        case "cancelled", "accepted", "queued": return .off
-        default: return .warn
-        }
+        if job["recovery_required"] as? Bool == true { return .bad }
+        return Health(state: displayState(job))
     }
 
     /// "TTS", "Image", "Transcription": the acronym keeps its capitals (`capitalized` made it "Tts").
@@ -1032,7 +1028,7 @@ final class JobsSection: NSObject, AppSection, NSTableViewDataSource, NSTableVie
     }
 
     private func lifecycleColour(_ job: [String: Any]) -> NSColor {
-        if job["recovery_required"] as? Bool == true { return Health.warn.text }
+        if job["recovery_required"] as? Bool == true { return Health.bad.text }
         if job["cancel_requested"] as? Bool == true { return Health.warn.text }
         return .secondaryLabelColor
     }

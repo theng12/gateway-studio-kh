@@ -3138,7 +3138,7 @@ function renderCreateResult(job) {
   }
   if (job.state !== 'succeeded') {
     box.innerHTML = `<div class="row"><span class="spin">◐</span>
-      <span>${esc(job.state)}…</span><span class="hint">${esc(job.id.slice(0, 8))}</span></div>`;
+      <span class="badge ${stateBadgeClass(job.state)}">${esc(job.state)}…</span><span class="hint">${esc(job.id.slice(0, 8))}</span></div>`;
     return;
   }
   if (modality === 'chat') {
@@ -3165,6 +3165,17 @@ function renderCreateResult(job) {
   box.innerHTML = artifactsHtml(modality, outs, job.id);
 }
 
+// One state -> colour mapping, the same as the menubar app's `Health(state:)`: running and everything in flight
+// is amber (warn), a failure is red (bad), a finished good result is green (ok), and cancelled or paused is
+// neutral grey (no class). An unrecognised word is grey.
+function stateBadgeClass(state) {
+  const word = String(state || '').toLowerCase().replace(/[_-]/g, ' ').trim();
+  if (/^(failed|error|errored|uncertain|unknown outcome|needs recovery|recovery required)$/.test(word)) return 'bad';
+  if (/^(succeeded|success|done|finished|complete|completed|updated|latest)$/.test(word)) return 'ok';
+  if (/^(running|queued|accepted|dispatching|waiting|updating|starting|sending|sent|installing|in flight|in progress|working|pending|retrying|stalled|stop requested|cancellation requested|cancelling)$/.test(word)) return 'warn';
+  return '';
+}
+
 async function renderCreateRecent() {
   const box = document.getElementById('create-recent');
   const modality = currentTab().modality;
@@ -3175,8 +3186,8 @@ async function renderCreateRecent() {
     box.innerHTML = '<div class="hint" style="margin-bottom:6px">Recent ' + esc(currentTab().title) + '</div>' +
       rows.map(j => `<div class="item">
         <span class="mid">${esc(j.short_id || j.id.slice(0, 8))}</span>
-        <span class="badge ${j.state === 'succeeded' ? 'ok' : (j.state === 'failed' ? 'bad' : '')}">${esc(j.state)}</span>
-        ${j.defer_reason ? `<span class="badge" title="${esc(j.defer_reason)}">waiting${j.queue_position ? ' #' + j.queue_position : ''}</span>` : ''}
+        <span class="badge ${stateBadgeClass(j.state)}">${esc(j.state)}</span>
+        ${j.defer_reason ? `<span class="badge warn" title="${esc(j.defer_reason)}">waiting${j.queue_position ? ' #' + j.queue_position : ''}</span>` : ''}
         <span class="hint">${esc(j.model_name || j.model_id || '')}</span>
         <button class="sm" onclick="openCreateJob('${j.id}')">Open</button>
       </div>`).join('');
