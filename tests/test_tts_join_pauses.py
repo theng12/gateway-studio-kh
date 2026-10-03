@@ -1,8 +1,9 @@
 """Join pauses for Studio Hub narration (`paragraph_pause_sec` / `sentence_pause_sec`, owner 2026-10-03).
 
-The Hub voice lane takes a caller's own pause at a paragraph break and after a sentence (Sleep: 1.0 s
-/ 0.3 s). The gateway forwards both to the Hub, publishes them on a voice row only when the lane
-declares them, and refuses a value that is not a number of seconds before anything is queued.
+The Hub voice lane takes a caller's own pause at a paragraph break and after a sentence; without one
+every model joins at 1.0 s / 0.6 s (owner 2026-10-03, the lane's published defaults). The gateway
+forwards both to the Hub, publishes them on a voice row (the lane's own bounds and defaults) only when
+the lane declares them, and refuses a value that is not a number of seconds before anything is queued.
 """
 from __future__ import annotations
 
@@ -18,10 +19,11 @@ from test_seam_20261001 import CLOUD_DEF, HUB_DEF, _contract  # noqa: E402
 from gateway import api, catalog  # noqa: E402
 from gateway.api import GatewayError  # noqa: E402
 
+# What Studio Hub publishes on every voice lane since the uniform rule (owner 2026-10-03).
 PARAGRAPH = {"name": "paragraph_pause_sec", "type": "number", "minimum": 0.0, "maximum": 3.0,
-             "default": 0.6, "request_only": True}
+             "default": 1.0, "request_only": True}
 SENTENCE = {"name": "sentence_pause_sec", "type": "number", "minimum": 0.0, "maximum": 3.0,
-            "default": 0.3, "request_only": True}
+            "default": 0.6, "request_only": True}
 
 
 class PublishedOnTheVoiceRowTests(unittest.TestCase):
@@ -32,8 +34,8 @@ class PublishedOnTheVoiceRowTests(unittest.TestCase):
     def test_a_lane_that_declares_them_publishes_its_own_bounds_and_defaults(self) -> None:
         row = self.row(HUB_DEF, _contract(PARAGRAPH, SENTENCE))
         self.assertEqual(row["pause_parameters"], [
-            {"name": "paragraph_pause_sec", "minimum": 0.0, "maximum": 3.0, "default": 0.6},
-            {"name": "sentence_pause_sec", "minimum": 0.0, "maximum": 3.0, "default": 0.3},
+            {"name": "paragraph_pause_sec", "minimum": 0.0, "maximum": 3.0, "default": 1.0},
+            {"name": "sentence_pause_sec", "minimum": 0.0, "maximum": 3.0, "default": 0.6},
         ])
 
     def test_an_older_hub_and_a_cloud_voice_publish_nothing(self) -> None:
