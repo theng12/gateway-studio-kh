@@ -1049,7 +1049,7 @@ def _tts_row(model_id: str, definition: ProviderDefinition, model: dict[str, Any
         # literal `1` on every TTS lane. Story Studio *does* read it — it is how many sections
         # of one narration it keeps in flight, and with it gone every narration ran one
         # section at a time — so a Studio Hub row now carries the location's live TTS total,
-        # written in `rebuild` (`_tts_slots_by_location`). A cloud row states nothing.
+        # written in `rebuild` (`_slots_by_location`). A cloud row states nothing.
         # ponytail: one invented temperature range for every cloud TTS model that takes
         # one. Ceiling — a model with a narrower or wider range is described
         # wrongly, and the control fails at the provider outside its real bounds.
@@ -1562,15 +1562,16 @@ def _music_row(model_id: str, definition: ProviderDefinition, model: dict[str, A
     return row
 
 
-def _tts_slots_by_location() -> dict[str, int]:
-    """Each Studio Hub location's live TTS total, as admission enforces it.
+def _slots_by_location(modality: str) -> dict[str, int]:
+    """Each Studio Hub location's live total for one modality, as admission enforces it.
 
-    Published per TTS row as `provider_submit_concurrency`, which Story Studio reads as how many
+    Published per row as `provider_submit_concurrency`. For TTS Story Studio reads it as how many
     sections of **one** narration it may have in flight (`resolveGenStudioTtsFanout`); absent, it
-    runs them one at a time. It is the same `live_capacity` figure `paid_concurrency_limit` sums
-    (the owner's decision D: "what the fleet can actually do"), per site rather than per model,
-    so a model the smaller Macs of a site cannot run is offered a little more than it gets; the
-    surplus waits in the gateway's queue, which re-binds it to whichever site frees first.
+    runs them one at a time. Images carry it the same way. It is the same `live_capacity` figure
+    `paid_concurrency_limit` sums (the owner's decision D: "what the fleet can actually do"), per
+    site rather than per model, so a model the smaller Macs of a site cannot run is offered a
+    little more than it gets; the surplus waits in the gateway's queue, which re-binds it to
+    whichever site frees first.
     """
     try:
         from . import concurrency  # lazy: concurrency reads the fleet, which reads this module
@@ -1578,7 +1579,7 @@ def _tts_slots_by_location() -> dict[str, int]:
     except Exception:  # noqa: BLE001 - a figure must never break the catalogue
         return {}
     return {
-        str(row.get("provider_id")): int((row.get("by_modality") or {}).get("tts") or 0)
+        str(row.get("provider_id")): int((row.get("by_modality") or {}).get(modality) or 0)
         for row in rows
     }
 
@@ -1681,6 +1682,14 @@ def _merge_capabilities(existing: dict[str, Any], row: dict[str, Any], modality:
                     existing[source_key] = row.get(source_key)
                 if detail_key in row:
                     existing[detail_key] = row.get(detail_key)
+    # **Summed, unlike every ceiling above**: each site offering the model adds its own Macs to
+    # how many sections of one narration (or images of one episode) can run at once. `None`
+    # (absent) when no site states one.
+    if "provider_submit_concurrency" in existing or "provider_submit_concurrency" in row:
+        existing["provider_submit_concurrency"] = (
+            (existing.get("provider_submit_concurrency") or 0)
+            + (row.get("provider_submit_concurrency") or 0)
+        ) or None
     if modality != "tts":
         return
     if row.get("supports_voice_cloning"):
@@ -1692,13 +1701,6 @@ def _merge_capabilities(existing: dict[str, Any], row: dict[str, Any], modality:
         incoming = row.get(key)
         if isinstance(current, (int, float)) and isinstance(incoming, (int, float)):
             existing[key] = pick(current, incoming)
-    # **Summed, unlike every ceiling above**: each site offering the model adds its own Macs to
-    # how many sections of one narration can run at once. `None` (absent) when no site states one.
-    if "provider_submit_concurrency" in existing or "provider_submit_concurrency" in row:
-        existing["provider_submit_concurrency"] = (
-            (existing.get("provider_submit_concurrency") or 0)
-            + (row.get("provider_submit_concurrency") or 0)
-        ) or None
 
 
 #: One stated upper bound, and the two keys that say where it came from.
@@ -1780,7 +1782,7 @@ class Catalog:
             measured = qualification.published_index(self._store)
 
         usable = fleet.usable_location_ids()
-        tts_slots = _tts_slots_by_location()
+        slots = {m: _slots_by_location(m) for m in ("tts", "image")}
         contributed: dict[str, float] = {}
         for modality in MODALITIES:
             # One row per model, however many locations offer it. A location is a
@@ -1799,8 +1801,8 @@ class Catalog:
                     if isinstance(fetched, (int, float)) and fetched > 0:
                         contributed[definition.id] = float(fetched)
                 row = self._story_row(modality, definition, model, usable=usable)
-                if modality == "tts" and definition.kind == KIND_STUDIO_HUB:
-                    row["provider_submit_concurrency"] = tts_slots.get(definition.id) or None
+                if modality in slots and definition.kind == KIND_STUDIO_HUB:
+                    row["provider_submit_concurrency"] = slots[modality].get(definition.id) or None
                 # **The publisher's number and ours, side by side and never merged.**
                 # `max_output_tokens` above stays exactly what the producer states;
                 # `measured` is this gateway's own record of what the lane has really
