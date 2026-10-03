@@ -14,6 +14,16 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.113 — 2026-10-03
+
+Every voice in your library can be previewed.
+
+### Aiden, Mark, Vincent and Samuel play again
+Their voice samples were QuickTime files saved with an ".mp3" name, which the player refused. The gateway now reads
+what a file really is: these four are converted once to a proper WAV at startup (the originals are kept next to
+them), new voices are converted when you add them, and previews always play. Narration with these voices uses the
+converted sample on every Mac.
+
 ## 0.2.112 — 2026-10-03
 
 Scene images go out across the whole fleet at once.
