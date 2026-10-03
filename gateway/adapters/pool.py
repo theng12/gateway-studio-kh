@@ -32,7 +32,9 @@ soonest is tried rather than failing outright; a success clears the memory.
 the catalogue's own rule (`pricing.model_chargeable`). In a pool that has both, the free members
 are walked first; when none is ready and one is only on a short limit (back within
 `FREE_WAIT_HORIZON_S`), the job **waits** for it rather than paying. A paid member is tried only
-when every free member is out for the day, unavailable, or failed this job for a non-quota reason.
+when every free member is out for the day, unavailable, or failed this job for a non-quota reason,
+or when the wait has reached `FREE_WAIT_CEILING_S` (15 min; owner decision 2026-10-03: past the
+ceiling the pool falls back to its paid member(s) in order rather than failing).
 
 The members are resolved through `catalog.resolve`, never from the raw strings, so
 a member the owner has since disabled is skipped for the same reason it would be
@@ -52,8 +54,8 @@ log = logging.getLogger(__name__)
 
 #: A free member back within this long is on a per-minute class of limit: wait for it, never pay.
 FREE_WAIT_HORIZON_S = 5 * 60.0
-#: The most one job waits for free members in total. Past it the pool fails (retryable) — still
-#: without paying, since every free member was only on a short limit.
+#: The most one job waits for free members in total. Past it the pool falls back to its paid
+#: member(s); a pool without paid members is not made to wait at all and fails as before.
 FREE_WAIT_CEILING_S = 15 * 60.0
 #: How often a wait looks for the job's cancellation.
 WAIT_STEP_S = 1.0
@@ -232,10 +234,14 @@ class PoolBackend(Backend):
             result = self._free_first(request, free, call, walk, attempts)
             if result is None and not walk["stop"]:
                 result = in_order(paid, True)
+                walk["ceiling_fallback"] = walk.get("ceiling") and result is not None
         else:
             result = in_order(candidates, bool(paid))
         if result is not None:
-            if free and result.payload["pool"]["paid"]:
+            if free and result.payload["pool"]["paid"] and walk.get("ceiling_fallback"):
+                log.warning("pool %s: free members rate-limited for %d min → used paid member %s",
+                            request.model_id, FREE_WAIT_CEILING_S // 60, result.payload["pool"]["used"])
+            elif free and result.payload["pool"]["paid"]:
                 # Money was spent while the pool has free members: say so where the owner looks.
                 log.warning("pool %s: free members out for the day → used paid member %s",
                             request.model_id, result.payload["pool"]["used"])
@@ -261,8 +267,9 @@ class PoolBackend(Backend):
 
         Returns the answer, or `None` when every free member is out for the day, unavailable or
         failed this job for a reason that is not quota — the only case a paid member may be used.
-        Waiting is bounded by `FREE_WAIT_CEILING_S`; past it the pool gives up *without* paying (the
-        owner's rule: a per-minute limit is never a reason to spend money).
+        Waiting is bounded by `FREE_WAIT_CEILING_S`; past it this returns `None` with `walk["ceiling"]`
+        set and the caller falls back to the paid members (never before: a brief limit is not a
+        reason to spend money).
         """
         from .. import pool_cooldowns
 
@@ -287,7 +294,7 @@ class PoolBackend(Backend):
                     attempts.append({"member": member, "outcome": "cooling-down", "until": until})
                 return None
             if back[soonest] - started > FREE_WAIT_CEILING_S:
-                walk["stop"] = True  # waited long enough; fail rather than pay for a minute's limit
+                walk["ceiling"] = True  # waited long enough; the caller now falls back to paid
                 attempts.append({"member": soonest, "outcome": "wait-ceiling", "until": back[soonest]})
                 return None
             attempts.append({"member": soonest, "outcome": "waited", "seconds": round(back[soonest] - now, 1)})
