@@ -14,6 +14,10 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.117 — 2026-10-04
+
+Work no longer waits at a group whose Macs are all paused; it goes to a group that can run it. If a job does end up queued there anyway, it is moved to another group within about ten minutes, with nothing charged. A job that can only run on a paused Mac stops straight away with "nothing was charged; run it again".
+
 ## 0.2.116 — 2026-10-04
 
 When a Mac turns a job down because it is short of memory, the job now really moves on to another Mac. Since 0.2.114 the re-sent job carried a name the Mac refuses, so it failed and had to be retried by hand.

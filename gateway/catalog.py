@@ -2159,7 +2159,7 @@ class Catalog:
                 offline += 1
             elif fleet._location_disk_stopped(row):  # noqa: SLF001
                 full += 1
-            elif fleet.owner_paused_at(location_id):
+            elif fleet.owner_paused_at(location_id) or fleet.no_free_mac(row, model_id):
                 paused += 1
             elif not fleet._takes_customer_jobs(row):  # noqa: SLF001 - one rule, one place
                 cannot += 1

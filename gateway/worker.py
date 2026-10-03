@@ -89,7 +89,12 @@ WORKSTATION_YIELDED = "WORKSTATION_YIELDED"
 #: ran to completion. When no other location can take it *right now* the job is not failed with "run
 #: it again": it waits for a free Mac on the same queue-wait ladder as any busy fleet, and goes to
 #: whichever location can take it first - the one that handed it back included (owner request 2026-10-03).
-_HANDBACK_CODES = frozenset({WORKSTATION_YIELDED, "INSUFFICIENT_MEMORY"})
+_HANDBACK_CODES = frozenset({WORKSTATION_YIELDED, "INSUFFICIENT_MEMORY", "NO_AVAILABLE_MACHINE"})
+
+#: Hand-backs that are no fault of the job, so they do not count against the retry ceiling: a
+#: workstation yield, and a group whose every Mac able to run the model is paused
+#: (`NO_AVAILABLE_MACHINE`, from the Hub or the Gateway's own stranded-queue check, 2026-10-04).
+_UNCOUNTED_CODES = frozenset({WORKSTATION_YIELDED, "NO_AVAILABLE_MACHINE"})
 
 
 def _client_request_id(store: Any, job_id: str, provider_id: str) -> str:
@@ -306,7 +311,7 @@ def _next_machine(store: JobStore, job_id: str, model_id: str, modality: str,
     tried = {_location(entry.get("location")) for entry in attempts}
     tried.add(_location(provider_id))
     tried.discard("")
-    if sum(entry.get("code") != WORKSTATION_YIELDED for entry in attempts) >= int(policy["max_attempts"]):
+    if sum(entry.get("code") not in _UNCOUNTED_CODES for entry in attempts) >= int(policy["max_attempts"]):
         # The ceiling the owner named. The failure path builds the sentence from this log.
         return None
     chosen, _note = fleet.route(model_id, modality, exclude_locations=tried)
@@ -919,7 +924,7 @@ def _dispatch(job: dict[str, Any], store: JobStore, provider_id: str, model_id: 
                 limit = int(concurrency.retry_policy()["max_attempts"])
                 if logged and len(logged) >= limit:
                     terminal_detail = _tried_everything_detail(logged, limit=limit)
-                elif exc.code == WORKSTATION_YIELDED:
+                elif exc.code in _UNCOUNTED_CODES:
                     terminal_detail = detail.rstrip(". ") + ". " + (
                         "This voice exists only on that location, so it was not moved to another Mac."
                         if pinned is not None else "No other location offering this model could take it."

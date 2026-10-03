@@ -195,7 +195,20 @@ _TERMINAL_UNCERTAIN = {"uncertain"}
 _LOCATION_REFUSAL_CODES = {
     "MODEL_NOT_READY", "MODEL_NOT_PACKAGED", "MACHINE_BUSY",
     "STUDIO_NOT_RUNNING", "OUTPUT_STORAGE_BLOCKED", "MODEL_CATALOG_UNAVAILABLE",
+    "NO_AVAILABLE_MACHINE",
 }
+
+#: The Hub has no unpaused Mac that can run this model (Hub 0.6.141, `INTERFACES-0141.md`): a 503 on
+#: create, or a queued item handed back with this `error_code`. Kept as its own code, not
+#: `LOCATION_NOT_READY`, so the worker treats it as a hand-back - moved at once, a fresh request id
+#: there, nothing charged, not counted against the retry ceiling - instead of waiting on that group.
+NO_AVAILABLE_MACHINE = "NO_AVAILABLE_MACHINE"
+
+#: A free job still queued after this long at a group whose fleet read shows no unpaused Mac able
+#: to run its model is withdrawn and handed back the same way: the safety net for a Hub too old to
+#: say `NO_AVAILABLE_MACHINE` itself (measured 2026-10-04: 21 TTS jobs queued ~7,000 s at a group
+#: whose every Mac was paused).
+STRANDED_QUEUE_S = 600.0
 
 
 def _hub_refusal_code(response: httpx.Response) -> str | None:
@@ -264,6 +277,33 @@ def _refusal_sentence(code: str | None, response: httpx.Response) -> str:
     reason = _hub_refusal_reason(response)
     what = f"cannot serve this model right now ({code})" if code else "has no capacity for this right now (HTTP 503)"
     return f"the location {what}" + (f": {reason}" if reason else "")
+
+
+def _refusal_error(code: str | None, response: httpx.Response) -> BackendError:
+    """A location refusal at submit: nothing was accepted, so the worker may try elsewhere."""
+    return BackendError(
+        _refusal_sentence(code, response),
+        code=NO_AVAILABLE_MACHINE if code == NO_AVAILABLE_MACHINE else "LOCATION_NOT_READY",
+        status=response.status_code,
+        retryable=True,
+        upstream_accepted=False,
+    )
+
+
+def _stranded(request: BackendRequest) -> Callable[[], bool]:
+    """Whether the fleet read shows no unpaused Mac at this job's location able to run its model."""
+    from ..fleet import location_has_no_free_mac
+
+    return lambda: location_has_no_free_mac(request.provider_id, request.model_id)
+
+
+def _withdrawn(base: str, headers: dict[str, str], batch_id: str, jobs_path: str) -> bool:
+    """Cancel a queued batch; True only when the Hub says it took it out of the queue unrun."""
+    kind = "transcription" if "transcription" in jobs_path else "image"
+    cancel = _cancel_batch(base, headers, batch_id, kind)
+    answer = cancel.get("answer") if isinstance(cancel.get("answer"), dict) else {}
+    return bool(cancel.get("ok")) and int(answer.get("queued_cancelled") or 0) >= 1 \
+        and not answer.get("running_signalled") and not answer.get("running_pending")
 
 
 def _uncertain_result(batch_id: str, item_index: int, item: dict[str, Any]) -> tuple[str, dict[str, Any]]:
@@ -578,6 +618,7 @@ def _poll_batch(
     progress: HubProgress | None = None,
     on_wait: Callable[[dict[str, Any] | None], None] | None = None,
     dispatched_at: float | None = None,
+    stranded: Callable[[], bool] | None = None,
 ) -> dict[str, Any]:
     """Poll a Hub batch to a terminal state.
 
@@ -617,6 +658,7 @@ def _poll_batch(
     waiting_key: tuple[Any, ...] | None = None
     waiting_since = 0.0
     caught_up = False  # `ran` has been seeded from the job's own start (`dispatched_at` fallback)
+    withdraw_after = 0.0  # queued seconds before the next try at withdrawing a stranded item
     last: dict[str, Any] = {}
     #: When the current run of consecutive poll failures began, or `None` while the
     #: Hub is answering. Reset by any successful poll, so a Hub that drops one
@@ -724,6 +766,23 @@ def _poll_batch(
                 waiting_key = None
                 on_wait(None)
 
+        # **Queued where no Mac will take it: hand it back.** The Hub says so itself
+        # (`NO_AVAILABLE_MACHINE` on the queued item), or - for an older Hub - the item has sat queued
+        # `STRANDED_QUEUE_S` while `stranded()` (the fleet read) shows no unpaused Mac here able to run
+        # it. A queued item has not run, so it is withdrawn, and only a confirmed withdrawal moves it.
+        if state == "queued" and queued_for >= withdraw_after and (
+                str((item or {}).get("error_code") or "") == NO_AVAILABLE_MACHINE
+                or (stranded is not None and queued_for >= STRANDED_QUEUE_S and stranded())):
+            if _withdrawn(base, headers, batch_id, jobs_path):
+                raise BackendError(
+                    f"{NO_AVAILABLE_MACHINE}: every Mac at this location that can run this model is "
+                    "paused; it was withdrawn from the queue before anything ran",
+                    code=NO_AVAILABLE_MACHINE,
+                    retryable=True,
+                    upstream_accepted=False,
+                    upstream_settled=True,
+                )
+            withdraw_after = queued_for + 60.0  # not confirmed: keep waiting, ask again in a minute
         if state in _TERMINAL_OK:
             return {"summary": summary, "item": item or {}}
         if state in _TERMINAL_UNCERTAIN:
@@ -752,7 +811,7 @@ def _poll_batch(
                     upstream_accepted=False,
                     upstream_settled=True,
                 )
-            if hub_code in ("INSUFFICIENT_MEMORY", "WORKSTATION_YIELDED"):
+            if hub_code in ("INSUFFICIENT_MEMORY", "WORKSTATION_YIELDED", NO_AVAILABLE_MACHINE):
                 # INSUFFICIENT_MEMORY: the Mac refused this job for memory three times and the Hub
                 # handed it back (Hub 0.6.127+; owner decision 2026-10-01). WORKSTATION_YIELDED: a
                 # shop's workstation Mac stopped it because macOS reported critical memory pressure
@@ -765,9 +824,10 @@ def _poll_batch(
                 # sentence instead. Its own code, so the attempt log and the terminal reason say what
                 # happened; deliberately not a LOCATION_* code, which would make the worker wait on
                 # the same Mac rather than move or fail.
-                said = (message or "").removeprefix(f"{hub_code}: ") or (
-                    "the Mac does not have enough free memory" if hub_code == "INSUFFICIENT_MEMORY"
-                    else "the Mac ran short of memory and stopped it; nothing was kept")
+                said = (message or "").removeprefix(f"{hub_code}: ") or {
+                    "INSUFFICIENT_MEMORY": "the Mac does not have enough free memory",
+                    NO_AVAILABLE_MACHINE: "every Mac at this location that can run this model is paused",
+                }.get(hub_code, "the Mac ran short of memory and stopped it; nothing was kept")
                 raise BackendError(
                     f"{hub_code}: {said}",
                     code=hub_code,
@@ -798,11 +858,7 @@ def _poll_batch(
         # Still queued after `QUEUE_WAIT_CEILING_S`. A queued item has provably not run, so it may
         # be cancelled -- and only if the Hub *says* it cancelled it from the queue is it safe to
         # let the worker try another location. A running item is never cancelled on a guess.
-        kind = "transcription" if "transcription" in jobs_path else "image"
-        cancel = _cancel_batch(base, headers, batch_id, kind)
-        answer = cancel.get("answer") if isinstance(cancel.get("answer"), dict) else {}
-        if cancel.get("ok") and int(answer.get("queued_cancelled") or 0) >= 1 \
-                and not answer.get("running_signalled") and not answer.get("running_pending"):
+        if _withdrawn(base, headers, batch_id, jobs_path):
             raise BackendError(
                 f"the Hub kept this queued for {int(QUEUE_WAIT_CEILING_S)}s with no machine free; "
                 "it was withdrawn from the queue before anything ran",
@@ -1498,13 +1554,7 @@ def _generate_image_or_voice(request: BackendRequest) -> BackendResult:
                 # is therefore False, so the worker may safely try the next
                 # location that offers the same model instead of calling the job
                 # failed (or, worse, holding it as an unknown outcome).
-                raise BackendError(
-                    _refusal_sentence(code, response),
-                    code="LOCATION_NOT_READY",
-                    status=response.status_code,
-                    retryable=True,
-                    upstream_accepted=False,
-                )
+                raise _refusal_error(code, response)
             raise BackendError(
                 f"hub submit HTTP {response.status_code}: {response.text[:200]}",
                 code="PROVIDER_FAILED",
@@ -1532,6 +1582,7 @@ def _generate_image_or_voice(request: BackendRequest) -> BackendResult:
             deadline_seconds=lane_deadline_seconds(request),
             progress=progress,
             on_wait=request.on_wait,
+            stranded=_stranded(request),
         )
         return _collect_batch(client, base, headers, request, batch_id, outcome, progress)
 
@@ -1700,13 +1751,7 @@ def _generate_transcription(request: BackendRequest) -> BackendResult:
         if response.status_code >= 400:
             code = _hub_refusal_code(response)
             if _is_location_refusal(code, response):
-                raise BackendError(
-                    _refusal_sentence(code, response),
-                    code="LOCATION_NOT_READY",
-                    status=response.status_code,
-                    retryable=True,
-                    upstream_accepted=False,
-                )
+                raise _refusal_error(code, response)
             raise BackendError(
                 f"hub transcription HTTP {response.status_code}: {response.text[:200]}",
                 code="PROVIDER_FAILED",
@@ -1734,6 +1779,7 @@ def _generate_transcription(request: BackendRequest) -> BackendResult:
             deadline_seconds=lane_deadline_seconds(request),
             progress=progress,
             on_wait=request.on_wait,
+            stranded=_stranded(request),
         )
         return _collect_transcription(client, base, headers, request, batch_id, outcome, progress)
 
@@ -1908,13 +1954,7 @@ def _generate_chat(request: BackendRequest) -> BackendResult:
     if response.status_code >= 400:
         code = _hub_refusal_code(response)
         if code in _LOCATION_REFUSAL_CODES:
-            raise BackendError(
-                _refusal_sentence(code, response),
-                code="LOCATION_NOT_READY",
-                status=response.status_code,
-                retryable=True,
-                upstream_accepted=False,
-            )
+            raise _refusal_error(code, response)
         raise BackendError(
             # A 422 here is the Hub's own validation — a prompt past the model's
             # stated context, or a non-boolean `thinking` — and its sentence names
@@ -2001,7 +2041,7 @@ class StudioHubBackend:
                     client, base, headers, batch_id, request.upstream_item_index,
                     jobs_path=jobs_path, deadline_seconds=lane_deadline_seconds(request),
                     progress=progress, on_wait=request.on_wait,
-                    dispatched_at=request.dispatch_started_at,
+                    dispatched_at=request.dispatch_started_at, stranded=_stranded(request),
                 )
             except BackendError as exc:
                 if exc.status != 404:

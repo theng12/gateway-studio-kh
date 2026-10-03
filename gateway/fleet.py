@@ -3544,6 +3544,39 @@ def _takes_customer_jobs(row: dict) -> bool:
     return row.get("drained") is not True
 
 
+def no_free_mac(row: dict, model_id: str) -> bool:
+    """True when a location names the Macs that can run `model_id` and **every one is paused**.
+
+    Measured 2026-10-04: group 1500 had all five Macs paused one by one at its controller, yet it
+    stayed a candidate (its location was not paused), took 21 free TTS jobs and queued them for
+    ~7,000 s while 8 GB Macs elsewhere idled. A Mac's pause reaches the fleet read twice: the node's
+    `paused` (joined Macs) and `drained` on each of its workers (the controller's own Mac too, which
+    has no node row). The Macs that could run the model are the workers that list it, less those the
+    Hub says cannot fit it (`memory_eligible: False`). No such worker at all is "unknown" (an older
+    Hub), never "all paused", so it changes nothing.
+    """
+    paused = {str(n.get("id")) for n in row.get("nodes") or []
+              if isinstance(n, dict) and n.get("paused") is True}
+    unfit = {str(m.get("machine")) for m in row.get("local_models") or []
+             if isinstance(m, dict) and model_id in (m.get("model_id"), m.get("model"))
+             and m.get("memory_eligible") is False}
+    able = [w for w in row.get("workers") or []
+            if isinstance(w, dict) and model_id in (w.get("models") or [])
+            and str(w.get("machine")) not in unfit]
+    return bool(able) and all(w.get("drained") is True or str(w.get("machine")) in paused
+                              for w in able)
+
+
+def location_has_no_free_mac(provider_id: str, model_id: str) -> bool:
+    """`no_free_mac` for a provider id, from the warm snapshot. Unknown (no row, no read) is False."""
+    location_id = controller_id_from(provider_id)
+    try:
+        rows = snapshot(allow_stale=True).get("locations") or []
+    except Exception:  # noqa: BLE001 - a routing hint must never break a job
+        return False
+    return any(str(row.get("id")) == location_id and no_free_mac(row, model_id) for row in rows)
+
+
 def usable_location_ids() -> set[str]:
     """Locations that can actually take work right now, by id.
 
@@ -3762,6 +3795,9 @@ def routing_candidates(
         # A site that cannot accept customer work is not a candidate: an agent-mode
         # Hub answers 409 to the submit, and a drained one has been told to stop.
         if not _takes_customer_jobs(row):
+            continue
+        # Every Mac here that could run this model is paused: as good as unreachable for it.
+        if no_free_mac(row, model_id):
             continue
 
         capacity = row.get("capacity") or {}
