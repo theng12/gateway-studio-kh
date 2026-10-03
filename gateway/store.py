@@ -224,6 +224,9 @@ class JobStore:
         self._lock = threading.Lock()
         self._conn = sqlite3.connect(self.path, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
+        #: Jobs found `running` with an upstream id when this store opened: still running upstream,
+        #: so the worker resumes polling them (or holds them) on start. See `_recover_interrupted`.
+        self.interrupted: list[str] = []
         self._conn.executescript(_SCHEMA)
         self._ensure_columns()
         self._recover_interrupted()
@@ -377,43 +380,55 @@ class JobStore:
                 )
                 requeued += 1
                 continue
-            upstream = str(row["upstream_job_id"] or "")
-            suffix = f" Upstream job id: {upstream}." if upstream else ""
-            detail = (
-                "The gateway restarted while this job was in flight, so its upstream "
-                "outcome is unknown. Reconcile the upstream request before retrying; "
-                "the gateway will not dispatch it again automatically."
-                + suffix
-            )
-            context = (
-                json.dumps({
-                    "upstream_job_id": upstream,
-                    "upstream_item_index": 0,
-                    "recorded_by": "gateway_restart",
-                })
-                if upstream
-                else None
-            )
-            self._conn.execute(
-                """
-                UPDATE jobs
-                   SET state = 'failed', error_code = ?, error_detail = ?,
-                       retryable = 0, recovery_state = ?, recovery_detail = ?,
-                       recovery_context = ?,
-                       next_action_at = NULL, updated_at = ?
-                 WHERE id = ? AND state = 'running'
-                """,
-                (
-                    UNKNOWN_OUTCOME_CODE,
-                    detail,
-                    RECOVERY_UNKNOWN,
-                    detail,
-                    context,
-                    now,
-                    row["id"],
-                ),
-            )
-        return len(rows) - requeued
+            # **A job the upstream gave an id is still running there, so it stays `running`** and
+            # the worker resumes polling that id on start (`Worker._resume_interrupted`). Failing
+            # it here threw away narrations 30 minutes into rendering on every Gateway install,
+            # while the Hub kept the batch and its result. Only the worker knows whether the lane
+            # can be polled by id; one that cannot gets the hold below via `hold_interrupted`.
+            if row["upstream_job_id"]:
+                self.interrupted.append(row["id"])
+                continue
+            self._write_restart_hold(row["id"], "", now)
+        return len(rows) - requeued - len(self.interrupted)
+
+    def _write_restart_hold(self, job_id: str, upstream: str, now: float) -> None:
+        suffix = f" Upstream job id: {upstream}." if upstream else ""
+        detail = (
+            "The gateway restarted while this job was in flight, so its upstream "
+            "outcome is unknown. Reconcile the upstream request before retrying; "
+            "the gateway will not dispatch it again automatically."
+            + suffix
+        )
+        context = (
+            json.dumps({
+                "upstream_job_id": upstream,
+                "upstream_item_index": 0,
+                "recorded_by": "gateway_restart",
+            })
+            if upstream
+            else None
+        )
+        self._conn.execute(
+            """
+            UPDATE jobs
+               SET state = 'failed', error_code = ?, error_detail = ?,
+                   retryable = 0, recovery_state = ?, recovery_detail = ?,
+                   recovery_context = ?,
+                   next_action_at = NULL, updated_at = ?
+             WHERE id = ? AND state = 'running'
+            """,
+            (UNKNOWN_OUTCOME_CODE, detail, RECOVERY_UNKNOWN, detail, context, now, job_id),
+        )
+
+    def hold_interrupted(self, job_id: str) -> None:
+        """The restart hold, for an interrupted job whose lane cannot be polled by its id."""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT upstream_job_id FROM jobs WHERE id = ?", (job_id,)
+            ).fetchone()
+            if row is not None:
+                self._write_restart_hold(job_id, str(row["upstream_job_id"] or ""), time.time())
+                self._conn.commit()
 
     def close(self) -> None:
         self._conn.close()
@@ -711,11 +726,13 @@ class JobStore:
                     """
                     UPDATE jobs
                        SET state = 'failed', recovery_state = NULL, recovery_detail = NULL,
-                           error_code = COALESCE(error_code, 'PROVIDER_FAILED'),
+                           -- settled now, so no longer "unknown": the Hub's own record decided it
+                       error_code = CASE WHEN COALESCE(error_code, ?) = ? THEN 'PROVIDER_FAILED'
+                                         ELSE error_code END,
                            error_detail = ?, retryable = 0, next_action_at = NULL, updated_at = ?
                      WHERE id = ? AND recovery_state IS NOT NULL
                     """,
-                    (detail[:500], now, job_id),
+                    (UNKNOWN_OUTCOME_CODE, UNKNOWN_OUTCOME_CODE, detail[:500], now, job_id),
                 )
             self._conn.commit()
             return result.rowcount == 1

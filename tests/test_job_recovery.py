@@ -181,6 +181,11 @@ class JobRecoveryTests(unittest.TestCase):
 
         reopened = JobStore(store.path)
         try:
+            # An upstream id means the work is still running there: the store leaves it `running`
+            # for the worker to resume, and only a lane that cannot be polled is held.
+            self.assertEqual(reopened.get(row["id"])["state"], "running")
+            self.assertEqual(reopened.interrupted, [row["id"]])
+            reopened.hold_interrupted(row["id"])
             recovered = reopened.get(row["id"])
             self.assertTrue(recovered["recovery_required"])
             self.assertEqual(
@@ -262,6 +267,8 @@ class JobRecoveryTests(unittest.TestCase):
 
         reopened = JobStore(store.path)
         try:
+            self.assertEqual(reopened.get(row["id"])["state"], "running", "resumed, not failed")
+            reopened.hold_interrupted(row["id"])
             recovered = reopened.get(row["id"])
             self.assertEqual(recovered["state"], "failed")
             self.assertEqual(recovered["upstream_job_id"], "hub-batch-7")
