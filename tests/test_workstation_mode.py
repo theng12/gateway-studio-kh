@@ -5,7 +5,7 @@ The Hub reports each Mac's `workstation` block on its machine/node rows and take
 its controller. When such a Mac stops a job (macOS critical memory pressure for 20 s, rare - the only thing
 that interrupts a job there) and its controller has no other free Mac, the item comes back `WORKSTATION_YIELDED`: nothing ran to
 completion, nothing is pending, and re-running is free. So the Gateway moves the job at once to the next
-location offering the model, without spending the job's retry ceiling; a pinned voice fails with a plain
+location offering the model, without spending the job's retry ceiling; a pinned voice fails at once with a plain
 sentence; paid lanes are untouched. A Mac standing by, stepped aside or in quiet hours is not offline, not
 "needs attention" and not a Telegram alarm.
 
@@ -145,15 +145,16 @@ class RerouteTests(_Case):
         self.assertEqual((job["state"], job["error_code"]), ("failed", "WORKSTATION_YIELDED"))
         self.assertIn("Nothing was charged", job["error_detail"])
 
-    def test_a_pinned_voice_waits_for_its_own_mac(self) -> None:
+    def test_a_pinned_voice_fails_at_once_when_its_mac_steps_aside(self) -> None:
         self.modality = "tts"
         row = self.job("yield-pinned", {"text": "x", "voice_id": "studio-hub-a::clone"})
         with patch.object(worker_module.fleet, "pinned_location", lambda _p: A):
             job = self.run_job(_YieldingFleet(), row)
-        self.assertEqual(job["state"], "accepted")
+        self.assertEqual((job["state"], job["error_code"]), ("failed", "WORKSTATION_YIELDED"))
+        self.assertIn("Nothing was charged; run it again", job["error_detail"])
         self.assertFalse(job["recovery_required"])
         self.assertEqual(self.routed, [], "a pinned voice has nowhere else to go")
-        self.assertIn("waiting for a free Mac", job["defer_reason"])
+        self.assertIsNone(job["defer_reason"])
 
     def test_a_paid_lane_is_never_offered_a_reroute(self) -> None:
         calls: list[str] = []

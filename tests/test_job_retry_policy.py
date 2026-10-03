@@ -390,14 +390,12 @@ class EndToEndThroughThreeSitesTest(unittest.TestCase):
         self.assertEqual(store.deferred, [])
         self.assertEqual([f["code"] for f in store.failed], ["INSUFFICIENT_MEMORY"])
 
-    def test_a_pinned_job_is_not_re_routed_and_waits_for_its_own_mac(self) -> None:
+    def test_a_pinned_job_is_not_re_routed_and_fails_at_once(self) -> None:
         store, dispatch = self._run_single_site(
             "memory", params={"voice_id": "studio-hub-a::raw-voice"}, extra_sites=True)
         self.assertEqual(dispatch, ["studio-hub-a"], "a pinned job never moves")
-        self.assertEqual(store.failed, [])
-        self.assertEqual(len(store.deferred), 1)
-        self.assertIn("INSUFFICIENT_MEMORY", store.deferred[0]["reason"])
-        self.assertEqual([e["code"] for e in store.log], ["INSUFFICIENT_MEMORY"])
+        self.assertEqual(store.deferred, [])
+        self.assertEqual([f["code"] for f in store.failed], ["INSUFFICIENT_MEMORY"])
 
     def test_three_failures_produce_one_proper_failure_naming_all_three(self) -> None:
         store, dispatch = self._run(["busy", "engine", "engine"])

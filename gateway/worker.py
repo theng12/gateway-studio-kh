@@ -880,14 +880,11 @@ def _dispatch(job: dict[str, Any], store: JobStore, provider_id: str, model_id: 
             # A workstation yield or a low-memory hand-back is a fact about *now*, so the job is queued
             # in a plain "waiting for a free Mac" state on the queue-wait ladder (the same budget and
             # backoff a busy fleet gets), not failed with "run it again". A late rebind sends it to any
-            # location with room; the Mac that handed it back is eligible again once it has a slot. A
-            # voice pinned to this Mac waits for it too. Paid lanes never come through here.
-            if (kind_is_hub and not unknown and exc.code in _HANDBACK_CODES
+            # location with room; the Mac that handed it back is eligible again once it has a slot. A job
+            # pinned to this Mac (owner, 2026-10-04) does not wait: it fails at once with the plain
+            # "Nothing was charged" sentence below. Paid lanes never come through here.
+            if (kind_is_hub and pinned is None and not unknown and exc.code in _HANDBACK_CODES
                     and current.get("cancel_requested_at") is None):
-                if pinned is not None:  # `_next_machine` did not run, so note the hand-back itself
-                    record = getattr(store, "record_attempt", None)
-                    if record is not None:
-                        record(job_id, location_id=provider_id, code=exc.code, detail=detail)
                 if _defer_if_transient(store, job_id, exc, current, unknown=False, handback=True):
                     log.warning("job %s: %s handed it back (%s) and no other location is free; waiting "
                                 "for a free Mac, attempt %s of %s", job_id, provider_id, exc.code,

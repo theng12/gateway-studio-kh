@@ -14,6 +14,10 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.115 — 2026-10-04
+
+A job meant for one particular shop Mac now stops straight away with "nothing was charged" when someone starts using that Mac, instead of waiting.
+
 ## 0.2.114 — 2026-10-03
 
 Shop Macs can help the fleet without getting in the way.
