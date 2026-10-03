@@ -14,6 +14,15 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.110 — 2026-10-03
+
+Time limits count a job's real running time.
+
+### No fresh clock after a restart
+A job the gateway picked back up after a restart used to start its time limit from zero again, so a stuck job could
+run far past its limit if the gateway restarted a few times. It now counts the time the Mac has really spent on it.
+Long narration is split into pieces sized for the slowest Mac (Studio Hub 0.6.137), so legitimate work fits.
+
 ## 0.2.109 — 2026-10-03
 
 Faster writing through pools, and long narration split the way each Mac can handle.
