@@ -14,6 +14,16 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.104 — 2026-10-03
+
+A paid model in a pool is a last resort.
+
+### Free first, paid only when the free ones are out for the day
+A pool can end with a paid model as a safety net. The free models are always tried first; if they are only on a
+short per-minute limit the job waits a moment for them instead of paying. The paid model is used only when every free
+model is out for the day (or switched off), and the gateway log says so when it happens. The Pools tab marks such a
+model "Paid · last resort".
+
 ## 0.2.103 — 2026-10-03
 
 Restarting the gateway no longer throws away work in progress.
