@@ -928,6 +928,14 @@ def _tts_characters(
     which is the whole of Shape 3.
     """
     raw = model.get("raw") or {}
+    # **The Hub's own recommended request size beats every default and every curated figure**
+    # (it is per model, sized so one request finishes inside the Hub's deadline on the slowest Mac
+    # allowed to run it — Breeze about 5,000). Read from the catalogue row or its lane contract.
+    contract = raw.get("lane_contract")
+    for value in (raw.get("maximum_input_characters"),
+                  contract.get("maximum_input_characters") if isinstance(contract, dict) else None):
+        if isinstance(value, (int, float)) and not isinstance(value, bool) and value > 0:
+            return int(value), "provider"
     for key in ("maximum_text_length_per_request", "max_characters_request_subscribed_user"):
         value = raw.get(key)
         if isinstance(value, (int, float)) and value > 0:

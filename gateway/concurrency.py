@@ -522,6 +522,35 @@ def cloud_budget(provider_id: str) -> Budget:
     )
 
 
+def pool_budget(member_ids: list[str]) -> Budget:
+    """A model pool's concurrency: **the sum of what its members' providers allow**.
+
+    A pool is not a provider with a rate limit of its own; it is a walk over other providers'
+    models, and it was bounded as if it were one (`cloud_budget("pool")` → 1), so three
+    Dreamlands script expansions on `pool::gemini-free-all` ran strictly one after another
+    (~20 min instead of ~7) while the members' providers allowed 5 and 10. The owner's explicit
+    `pool` entry in the settings file still wins. Each member provider's own limit is enforced
+    again where the call is made (`adapters/pool.py`), so admitting up to the sum cannot push
+    any one provider past its number.
+    """
+    entry = _settings_providers().get("pool")
+    if entry is not None:
+        return cloud_budget("pool")
+    providers = list(dict.fromkeys(
+        str(m).partition("::")[0] for m in member_ids if str(m).partition("::")[0] not in ("", "pool")
+    ))
+    if not providers:
+        return cloud_budget("pool")
+    budgets = {p: cloud_budget(p) for p in providers}
+    stated = all(b.source == SOURCE_CURATED for b in budgets.values())
+    return Budget(
+        limit=sum(b.limit for b in budgets.values()),
+        source=SOURCE_CURATED if stated else SOURCE_GATEWAY,
+        detail="the pool's members' providers: "
+               + ", ".join(f"{p} {b.limit}" for p, b in budgets.items()),
+    )
+
+
 def hub_budget(slots: Any, *, operation: str = "", stated: Any = None,
                ceiling: Any = None, reachable: bool = True) -> Budget:
     """A Studio Hub location's concurrency, from the site's own total and your cap.

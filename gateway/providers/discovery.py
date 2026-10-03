@@ -809,6 +809,10 @@ def _studio_hub(definition: ProviderDefinition, values: dict[str, str]) -> Disco
             if "quantization" in facts:
                 raw["quantization"] = facts.get("quantization")
                 raw["quantization_source"] = facts.get("quantization_source")
+        # The Hub's recommended request size for this model (TTS): the catalogue row states it,
+        # a package row may too. Carried unread; `catalog._tts_characters` decides what it means.
+        raw["maximum_input_characters"] = (facts or {}).get("maximum_input_characters") \
+            or package.get("maximum_input_characters")
         if facts:
             raw["capabilities"] = facts.get("capabilities") or []
             raw["reference_audio"] = facts.get("reference_audio") or {}

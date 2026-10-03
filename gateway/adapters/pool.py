@@ -44,10 +44,11 @@ refused on its own: a toggle has to still be a toggle when the job runs.
 from __future__ import annotations
 
 import logging
+import threading
 import time
 from typing import Any
 
-from ..providers.definitions import KIND_POOL
+from ..providers.definitions import KIND_POOL, KIND_STUDIO_HUB
 from .base import Backend, BackendError, BackendRequest, BackendResult, requests_started
 
 log = logging.getLogger(__name__)
@@ -62,6 +63,35 @@ WAIT_STEP_S = 1.0
 
 #: Replaced in tests.
 _sleep = time.sleep
+
+
+#: How many pool calls are in flight at each member provider, so concurrent pool jobs respect
+#: that provider's own limit (`concurrency.cloud_budget`) even though admission lets a pool run
+#: as many jobs as its members' providers allow in total.
+#: ponytail: counts pool calls only, not the same provider's direct jobs. Ceiling — a provider
+#: busy with direct jobs can briefly see up to twice its limit. Upgrade path — share the
+#: worker's per-provider book.
+_member_calls: dict[str, int] = {}
+_member_cond = threading.Condition()
+
+
+def _acquire_member(provider_id: str, request: BackendRequest) -> None:
+    from .. import concurrency
+
+    with _member_cond:
+        while _member_calls.get(provider_id, 0) >= concurrency.cloud_budget(provider_id).limit:
+            if _cancel_requested(request):
+                raise BackendError(
+                    f"Pool '{request.model_id}': cancelled while waiting for {provider_id}.",
+                    code="POOL_WAIT_CANCELLED", upstream_accepted=False, upstream_settled=True)
+            _member_cond.wait(WAIT_STEP_S)  # re-read the limit: the owner may raise it live
+        _member_calls[provider_id] = _member_calls.get(provider_id, 0) + 1
+
+
+def _release_member(provider_id: str) -> None:
+    with _member_cond:
+        _member_calls[provider_id] = max(0, _member_calls.get(provider_id, 0) - 1)
+        _member_cond.notify_all()
 
 
 def _cancel_requested(request: BackendRequest) -> bool:
@@ -161,6 +191,9 @@ class PoolBackend(Backend):
                 display_name=definition.display_name,
                 checkpoint=request.checkpoint,
             )
+            gated = definition.kind != KIND_STUDIO_HUB  # a Hub has its own queue
+            if gated:
+                _acquire_member(definition.id, request)
             sends_before = requests_started()
             try:
                 result = self._adapter_for(definition).generate(member_request)
@@ -192,6 +225,9 @@ class PoolBackend(Backend):
                 )
                 walk["last"] = BackendError(str(exc), code="BACKEND_ERROR", status=502)
                 return None
+            finally:
+                if gated:
+                    _release_member(definition.id)
 
             pool_cooldowns.clear(member)
             payload = dict(result.payload or {})

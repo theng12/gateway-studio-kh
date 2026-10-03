@@ -32,7 +32,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from . import concurrency
+from . import concurrency, pools
 from .adapters import BackendError, BackendRequest, adapter_for
 from .adapters import studio_hub
 from .adapters.base import requests_started
@@ -1022,7 +1022,7 @@ class Worker:
         with self._budget_lock:
             return self._per_lane.get((provider_id, modality), 0)
 
-    def _provider_budget(self, provider_id: str, modality: str) -> concurrency.Budget:
+    def _provider_budget(self, provider_id: str, modality: str, model_id: str = "") -> concurrency.Budget:
         """What bounds one provider, from the best source that has an answer.
 
         A Studio Hub location is bounded by **its own published eligible total** for this
@@ -1034,6 +1034,8 @@ class Worker:
         the service count here is how a one-Mac site was told it had two transcription
         slots and then answered `MACHINE_BUSY`.
         """
+        if provider_id == pools.POOL_PROVIDER_ID:
+            return concurrency.pool_budget(pools.members(model_id))
         operation = _HUB_OPERATION_BY_MODALITY.get(modality, "")
         try:
             from . import fleet
@@ -1110,7 +1112,7 @@ class Worker:
         modality = str(job.get("modality") or "")
         if fleet.is_paused_provider(provider_id):
             return False  # the owner paused this location: no new work; `_rebind` moves the job on
-        provider_budget = self._provider_budget(provider_id, modality)
+        provider_budget = self._provider_budget(provider_id, modality, str(job.get("model_id") or ""))
         lane_budget = concurrency.lane_budget(modality)
         with self._budget_lock:
             if sum(self._in_flight.values()) >= self._global_limit():
