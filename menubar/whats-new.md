@@ -14,6 +14,16 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.103 — 2026-10-03
+
+Restarting the gateway no longer throws away work in progress.
+
+### A restart picks running jobs back up
+A job a Studio Hub Mac was working on when the gateway restarted (an update, a quit) used to be marked "outcome
+unknown" and had to be redone, even though the Mac finished it. The gateway now reconnects to it by its job number
+and collects the result as if nothing happened. Jobs left "unknown" by earlier restarts are settled from the Mac's
+own record when it finishes.
+
 ## 0.2.102 — 2026-10-03
 
 Pause any group or Mac yourself.
