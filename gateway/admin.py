@@ -42,7 +42,7 @@ from . import price_evidence
 from . import pricing
 from .pricing import row_price
 from . import qualification
-from . import release_publisher
+from . import release_publisher, release_rollout
 from . import startup_control
 from .config import is_loopback, request_is_loopback
 from .hub import hub_status
@@ -2513,6 +2513,8 @@ def fleet_snapshot(force: bool = False) -> dict[str, Any]:
         out["release"] = {"identity": release_publisher.identity(), "last_push": push}
     except release_publisher.ReleaseError as exc:
         out["release"] = {"identity": None, "last_push": push, "error": exc.message}
+    # The paced rollout, live: which controller is updating, and each group's Macs on the new version.
+    out["release"]["rollout"] = release_rollout.status(data)
     return out
 
 
@@ -2996,12 +2998,28 @@ def release_publish(payload: dict[str, Any]) -> Any:
     A controller that already holds a **newer** version is refused
     (`RELEASE_DOWNGRADE`) unless `allow_downgrade` is true: the Hub's updater has
     no ordering, so only this side can stop a rollback.
+
+    **Paced by default** (`release_rollout`): this Mac's Hub, then one controller at a
+    time, each waited for until it reports the new version. The answer is the rollout
+    (`{"rollout": …}`) and the pushes run in the background. `"mode": "all_at_once"`
+    is the emergency path: every controller now, in parallel, answered when done (it
+    stops a running rollout first). Naming `controller_ids` pushes to exactly those, now.
     """
     artifact = str(payload.get("artifact_path") or "").strip()
     if not artifact:
         return _error(422, "expected {'artifact_path', 'version', 'build'}")
     filename = payload.get("filename")
+    mode = str(payload.get("mode") or "paced")
+    if mode not in ("paced", "all_at_once"):
+        return _error(422, "mode is 'paced' (the default) or 'all_at_once'")
     try:
+        if mode == "paced" and not isinstance(payload.get("controller_ids"), list):
+            return {"rollout": release_rollout.start(
+                artifact_path=artifact, version=str(payload.get("version") or ""),
+                build=str(payload.get("build") or ""), filename=str(filename) if filename else None,
+                allow_downgrade=bool(payload.get("allow_downgrade")))}
+        if mode == "all_at_once":
+            release_rollout.stop("replaced by an all-at-once publish")
         return release_publisher.publish(
             artifact_path=artifact,
             version=str(payload.get("version") or ""),
@@ -3013,3 +3031,21 @@ def release_publish(payload: dict[str, Any]) -> Any:
         )
     except release_publisher.ReleaseError as exc:
         return _error(exc.status, exc.message, exc.code)
+
+
+@router.get("/api/release/rollout", dependencies=[Depends(require_admin)])
+def release_rollout_status() -> Any:
+    return {"rollout": release_rollout.status(fleet.snapshot())}
+
+
+@router.post("/api/release/rollout/stop", dependencies=[Depends(require_admin)])
+def release_rollout_stop() -> Any:
+    """Stop after the push in flight (if any); nothing is undone, and Resume carries on."""
+    release_rollout.stop()
+    return {"rollout": release_rollout.status(fleet.snapshot())}
+
+
+@router.post("/api/release/rollout/resume", dependencies=[Depends(require_admin)])
+def release_rollout_resume() -> Any:
+    release_rollout.resume()
+    return {"rollout": release_rollout.status(fleet.snapshot())}

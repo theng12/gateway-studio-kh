@@ -123,6 +123,10 @@ async def lifespan(_: FastAPI):
     worker.start()
     # Keeps the fleet snapshot warm so no request waits on an unreachable site.
     fleet.start_refresher()
+    # A Studio Hub rollout the last run was in the middle of carries on (`release_rollout`).
+    from . import release_rollout
+
+    release_rollout.resume_on_startup()
     # The gateway only *receives* artifacts; Story Studio keeps the copy that
     # matters. Without this the directory grew without bound.
     retention.start_pruner()

@@ -288,11 +288,44 @@ def health(flavour: str) -> tuple[list, dict]:
                 site("c1400", "terranash-1400", 8, offline={"terranash-1401-m2-8-256", "terranash-1402-m2-8-256"})]
         rows[1]["running_jobs"] = [batch("b-9001", "voice", QWEN, "Chapter 4 narration", total=12, done=5, running=1,
                                          queued=6, started=50 * MIN, stalled=True)]
+    elif flavour.startswith("health-rollout"):
+        # A paced rollout of LATEST (feat/paced-rollout): this Mac and 1100 are done (two 1100 Macs still
+        # updating themselves), 1200 is installing, the rest wait. `-failed`: 1200 never came back.
+        old = "0.6.131"
+        rows = [local,
+                site("c1100", "terranash-1100", 10, versions={"terranash-1103-m2-8-256": old,
+                                                          "terranash-1107-m2-8-256": old}),
+                site("c1200", "terranash-1200", 8, held=old,
+                     versions={"local": old, **{f"terranash-12{i:02d}-m2-8-256": old for i in range(1, 9)}})]
+        for lid, label, n in (("c1300", "terranash-1300", 9), ("c1400", "terranash-1400", 8),
+                              ("c1500", "terranash-1500", 3), ("c1600", "terranash-1600", 4)):
+            rows.append(site(lid, label, n, held=old, versions={"local": old, **{
+                f"terranash-{label[-4:-2]}{i:02d}-m2-8-256": old for i in range(1, n + 1)}}))
+        rows[2]["reachable"] = flavour.endswith("failed")
     else:
         rows = [local, site("c1100", "terranash-1100", 10), site("c1200", "terranash-1200", 8),
                 site("c1300", "terranash-1300", 9), site("c1400", "terranash-1400", 8),
                 site("c1500", "terranash-1500", 3)]
     return rows, push
+
+
+def rollout(snapshot: dict, flavour: str) -> dict | None:
+    """The rollout block `admin.fleet` adds, from the real `release_rollout.status` over a written state."""
+    from gateway import release_rollout
+
+    failed = flavour.endswith("failed")
+    order = ["local", "c1100", "c1200", "c1300", "c1400", "c1500", "c1600"]
+    labels = {"local": "This Mac", **{cid: f"terranash-{cid[1:]}" for cid in order[1:]}}
+    states = {"local": "updated", "c1100": "updated", "c1200": "failed" if failed else "installing"}
+    release_rollout._write({
+        "mode": "paced", "state": "failed" if failed else "running", "version": LATEST, "build": "e6a8b80",
+        "order": order, "started_at": NOW - 40 * MIN, "finished_at": NOW if failed else None,
+        "reason": "terranash-1200 did not come back on 0.6.132 within 30 min, so the rollout stopped there"
+                  if failed else None,
+        "steps": {cid: {"label": labels[cid], "state": states.get(cid, "waiting"),
+                        **({"detail": "did not come back on 0.6.132 within 30 min"} if states.get(cid) == "failed"
+                           else {})} for cid in order}})
+    return release_rollout.status(snapshot)
 
 
 def assemble(rows: list, push: dict) -> dict:
@@ -313,7 +346,10 @@ def assemble(rows: list, push: dict) -> dict:
 def build() -> dict:
     flavour = os.environ.get("GATEWAY_RENDER_FIXTURE", "")
     if flavour.startswith("health"):
-        return assemble(*health(flavour))
+        snapshot = assemble(*health(flavour))
+        if flavour.startswith("health-rollout"):
+            snapshot["release"]["rollout"] = rollout(snapshot, flavour)
+        return snapshot
     local = location(
         "local", "This Mac", "http://127.0.0.1:47873", local=True, role="controller",
         machines=[machine("local", "This Mac", "Apple M2 Max", 32.0, 18.4, 61.0, disk_total=460.0,

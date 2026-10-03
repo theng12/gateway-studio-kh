@@ -240,6 +240,8 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
             self?.addLocation(label: label, url: url, token: token)
         }
         locationsTab.onPublishRelease = { [weak self] in self?.beginPublishRelease() }
+        locationsTab.onStopRollout = { [weak self] in self?.rolloutAction("stop") }
+        locationsTab.onResumeRollout = { [weak self] in self?.rolloutAction("resume") }
         locationsTab.onTest = { [weak self] location in self?.testController(location) }
         locationsTab.onRename = { [weak self] location in self?.renameController(location) }
         locationsTab.onCredentials = { [weak self] location in self?.editCredentials(location) }
@@ -447,6 +449,7 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
         groupsTab.update(snapshot: snapshot)
         locationsTab.update(locations: snapshot.locations)
         locationsTab.updateRelease(locations: snapshot.locations, state: snapshot.release)
+        if !publishing { locationsTab.setRolloutRunning(snapshot.release?.rollout?.isRunning == true) }
         rebuildLocationPopup()
         applyFilter()
     }
@@ -686,21 +689,26 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
         // `PageKit.help` wraps at the page's 620pt; this card is deliberately small.
         hint.preferredMaxLayoutWidth = 320
         hint.widthAnchor.constraint(equalToConstant: 320).isActive = true
+        // The emergency path: every controller at once instead of one at a time.
+        let allAtOnce = NSButton(checkboxWithTitle: "All at once (emergency): every controller now",
+                                 target: nil, action: nil)
         let form = NSStackView(views: [
             PageKit.formRow("Version", versionField),
             PageKit.formRow("Build", buildField),
             hint,
+            allAtOnce,
         ])
         form.orientation = .vertical
         form.alignment = .leading
         form.spacing = DS.Space.m
-        form.frame = NSRect(x: 0, y: 0, width: 340, height: 150)
+        form.frame = NSRect(x: 0, y: 0, width: 340, height: 180)
 
         let alert = NSAlert()
         alert.messageText = "Publish \(url.lastPathComponent)?"
         alert.informativeText =
-            "This gateway signs the DMG and offers it to every configured controller. "
-            + "A controller that refuses is reported in its own words."
+            "This gateway signs the DMG and rolls it out one location at a time: this Mac's Studio Hub, "
+            + "then each controller in turn, waiting for each to come back on the new version. Each "
+            + "group's Macs then update themselves one by one, after finishing their current work."
         alert.accessoryView = form
         alert.addButton(withTitle: "Publish")
         alert.addButton(withTitle: "Cancel")
@@ -737,13 +745,14 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
             guard confirm.runModal() == .alertFirstButtonReturn else { return }
             publishRelease(
                 path: url.path, version: version, build: build,
-                filename: url.lastPathComponent, allowDowngrade: true
+                filename: url.lastPathComponent, allowDowngrade: true, allAtOnce: allAtOnce.state == .on
             )
             return
         }
 
         publishRelease(
-            path: url.path, version: version, build: build, filename: url.lastPathComponent
+            path: url.path, version: version, build: build, filename: url.lastPathComponent,
+            allAtOnce: allAtOnce.state == .on
         )
     }
 
@@ -810,13 +819,15 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
 
     private func publishRelease(
         path: String, version: String, build: String, filename: String,
-        allowDowngrade: Bool = false
+        allowDowngrade: Bool = false, allAtOnce: Bool = false
     ) {
         publishing = true
         locationsTab.setPublishing(
             true,
-            message: "Signing \(filename) and pushing it to \(controllerCountDescription()). "
-                + "A 1.1 GB artifact is base64 in one body, so this can take a while."
+            message: allAtOnce
+                ? "Signing \(filename) and pushing it to \(controllerCountDescription()) at once. "
+                    + "This can take a while."
+                : "Starting the rollout of \(filename)…"
         )
         setStatus("Signing and pushing \(filename)…")
         var body: [String: Any] = [
@@ -827,6 +838,7 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
         ]
         // Only sent when the owner chose to override the newer-version guard.
         if allowDowngrade { body["allow_downgrade"] = true }
+        if allAtOnce { body["mode"] = "all_at_once" }
         GatewayAPI.post(
             "/admin/api/release/publish",
             body: body,
@@ -844,10 +856,35 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
                 )
                 self.setStatus("The release could not be published.", colour: Health.bad.text)
             case .success(let payload):
-                self.reportPublish(payload, version: version, build: build)
+                if let rollout = (payload["rollout"] as? [String: Any]).flatMap(FleetRollout.from) {
+                    self.report(
+                        .success,
+                        title: "Rolling out \(version) (\(build))",
+                        detail: rollout.summary ?? "One location at a time; the progress is shown below."
+                    )
+                    self.setStatus("Rolling out \(version) (\(build)), one location at a time.")
+                } else {
+                    self.reportPublish(payload, version: version, build: build)
+                }
             }
             // The held-release column is what a controller reports now, so it is
             // re-read after the push rather than filled from the push's own answer.
+            self.reload()
+        }
+    }
+
+    /// Stop or resume the paced rollout. Stopping lets a push in flight finish; nothing is undone.
+    private func rolloutAction(_ action: String) {
+        GatewayAPI.post("/admin/api/release/rollout/\(action)", body: [:]) { [weak self] result in
+            guard let self else { return }
+            switch result {
+            case .failure(let error):
+                self.report(.error, title: "Could not \(action) the rollout", detail: error.localizedDescription)
+            case .success(let payload):
+                let rollout = (payload["rollout"] as? [String: Any]).flatMap(FleetRollout.from)
+                self.report(.success, title: action == "stop" ? "Rollout stopped" : "Rollout resumed",
+                            detail: rollout?.summary ?? "")
+            }
             self.reload()
         }
     }

@@ -490,8 +490,10 @@ struct FleetReleaseState: Decodable {
     var identity: FleetReleaseIdentity?
     var lastPush: FleetPushReport?
     var error: String?
+    /// The paced rollout (`gateway/release_rollout.py`), `nil` when none was started here.
+    var rollout: FleetRollout?
 
-    private enum CodingKeys: String, CodingKey { case identity, lastPush, error }
+    private enum CodingKeys: String, CodingKey { case identity, lastPush, error, rollout }
 
     /// Each part decodes on its own: a malformed last push must not blank the
     /// fingerprint the owner still has to read off the Settings page, and a
@@ -501,11 +503,48 @@ struct FleetReleaseState: Decodable {
         identity = try? c.decode(FleetReleaseIdentity.self, forKey: .identity)
         lastPush = try? c.decode(FleetPushReport.self, forKey: .lastPush)
         error = try? c.decode(String.self, forKey: .error)
+        rollout = try? c.decode(FleetRollout.self, forKey: .rollout)
     }
 
     static func from(_ payload: [String: Any]) -> FleetReleaseState? {
         fleetDecode(payload)
     }
+}
+
+/// A paced Studio Hub rollout: this Mac's Hub, then one controller at a time, each waited for until it
+/// reports the new version. `summary` is the gateway's own line ("Updating 1200 (3 of 6) · 1100 done ·
+/// 1300–1600 waiting"); the page draws it as given rather than recomputing it.
+struct FleetRollout: Decodable {
+    /// `running`, `finished`, `stopped` (by the owner) or `failed` (a controller did not come back).
+    var state: String?
+    var version: String?
+    var build: String?
+    var reason: String?
+    var summary: String?
+    var order: [String]?
+    var steps: [String: Lenient<FleetRolloutStep>]?
+
+    var isRunning: Bool { state == "running" }
+    var canResume: Bool { state == "stopped" || state == "failed" }
+
+    /// The steps in rollout order.
+    var orderedSteps: [(id: String, step: FleetRolloutStep)] {
+        (order ?? []).compactMap { id in steps?[id]?.value.map { (id: id, step: $0) } }
+    }
+
+    static func from(_ payload: [String: Any]) -> FleetRollout? {
+        fleetDecode(payload)
+    }
+}
+
+/// One location in a rollout: `waiting`, `sending`, `sent`, `installing`, `updated`, `failed` or `skipped`.
+struct FleetRolloutStep: Decodable {
+    var label: String?
+    var state: String?
+    var detail: String?
+    /// The group's Macs on the new version, from the fleet read (`nil` when it has none to count).
+    var nodesUpdated: Int?
+    var nodesTotal: Int?
 }
 
 /// Re-serialise an admin payload and decode it with the gateway's snake_case

@@ -20,7 +20,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "tests"))
 
-from gateway import fleet, notifier, release_publisher as rp  # noqa: E402
+from gateway import fleet, notifier, release_publisher as rp, release_rollout  # noqa: E402
 from test_release_delta import FILES, Controller, build_app  # noqa: E402
 
 FP = "ab" * 32
@@ -129,6 +129,7 @@ class Decisions(Base):
         self.dmg = self.root / "hub.dmg"
         self.dmg.write_bytes(b"x" * 4096)
         self.write_state()
+        release_rollout.record_all_at_once("0.6.132", "e6a8b80")  # the release finished its rollout
         self.pushes: list[dict] = []
         self.result = {"ok": True, "status": 200, "code": None, "detail": None,
                        "release": {"version": "0.6.132"}}
@@ -193,9 +194,9 @@ class Decisions(Base):
         self.assertEqual(self.pushes, [])
 
     def test_a_pilot_release_is_not_spread(self) -> None:
+        # Pushed by hand to a pilot controller: no rollout finished this release, so nothing is spread.
+        (self.root / "release-rollout.json").unlink()
         rows = self.stamp([row("a", "0.6.132"), row("b", "0.6.131"), row("n", None)])
-        self.assertIsNone(rp.catch_up(rows, wait=True))
-        rows = self.stamp([row("a", "0.6.132"), row("b", "0.6.131")])  # one of two is not "most"
         self.assertIsNone(rp.catch_up(rows, wait=True))
         self.assertEqual(self.pushes, [])
 
@@ -221,6 +222,8 @@ class Decisions(Base):
 
     def test_a_newest_release_this_gateway_holds_no_file_for(self) -> None:
         rows = self.stamp([row("a", "0.6.133"), row("b", "0.6.133"), row("n", "0.6.131")])
+        self.assertIsNone(rp.catch_up(rows, wait=True), "0.6.133 did not finish a rollout from here")
+        release_rollout.record_all_at_once("0.6.133", "f00")
         self.assertIsNone(rp.catch_up(rows, wait=True))
         self.assertIn("not the one this Gateway last published (0.6.132)", self.outcome()["detail"])
         self.assertEqual(self.pushes, [])
