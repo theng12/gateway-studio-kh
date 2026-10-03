@@ -201,7 +201,10 @@ def health(flavour: str) -> tuple[list, dict]:
             row["last_seen_at"] = None
         return row
 
-    def site(lid, label, n, *, versions=None, offline=(), crashed=(), held=LATEST, startup_off=(), red=()):
+    def site(lid, label, n, *, versions=None, offline=(), crashed=(), held=LATEST, startup_off=(), red=(),
+             no_hub=(), stops=None):
+        """`no_hub`: offline Macs that answer but run no Studio Hub. `stops`: mid -> the `last_stop` its Mac recorded."""
+        stops = stops or {}
         versions = versions or {}
         mids = [f"terranash-{label[-4:-2]}{i:02d}-m2-8-256" for i in range(1, n + 1)]
         ctl = f"terranash-{label[-4:]}-m4-16-256"
@@ -214,15 +217,20 @@ def health(flavour: str) -> tuple[list, dict]:
             version = versions.get(mid, LATEST)
             row = machine(mid, mid, "Apple M2" if i % 2 else "Apple M1", 8.0 if i % 3 else 16.0, 3.9 + i % 3,
                           9.0 if mid in red else 150.0 + 7 * i, disk_total=245.0, reachable=not off,
-                          health="unreachable" if off else "up", start=start(version, services=mid not in startup_off))
+                          health=("no_hub" if mid in no_hub else "unreachable") if off else "up",
+                          start=start(version, services=mid not in startup_off))
+            if mid in stops:
+                row["last_stop"] = stops[mid]
             machines.append(row)
             activities.append(idle(mid, (16 + i) * HOUR, error=i in (1, 2)) if not off else
                               {**idle(mid, 30 * HOUR, state="offline"), "limitation_code": "waiting_for_worker",
                                "limitation": "Activity evidence pending"})
             nodes.append({**node(mid, "unreachable" if off else "reachable", address=f"http://100.64.{lid[-1]}.{i}:47873",
                                  version=version, seen=6 * HOUR if off else 4,
-                                 detail="could not reach the node (unreachable)" if off else None,
-                                 studios=(*FIVE, "video")), "role": "agent"})
+                                 detail=(f"could not reach the node ({'no_hub' if mid in no_hub else 'unreachable'})"
+                                         if off else None),
+                                 studios=(*FIVE, "video")), "role": "agent",
+                          **({"reason": "no_hub" if mid in no_hub else "unreachable"} if off else {})})
             workers += [wk(mid, s, online=not off and (mid, s) not in crashed) for s in FIVE]
             workers.append(wk(mid, "video", online=False))
         release = {"version": held, "published_at": NOW - (300 if flavour == "health-mixed" else 6 * HOUR),
@@ -244,7 +252,22 @@ def health(flavour: str) -> tuple[list, dict]:
             "release": {"version": LATEST, "build": "e6a8b80", "filename": f"StudioHub-{LATEST}-e6a8b80.dmg",
                         "bytes": 1_372_776_123, "sha256": "ef" * 32, "signature": "sig"},
             "locations": {}}
-    if flavour == "health-mixed":
+    # 1401 never answers (its old stop belongs to an earlier outage); 1402 answers with no Hub, and its Mac
+    # recorded a force-quit after the controller last saw it; 1403 has no Hub and an older crash; 1404 is up.
+    why_offline = dict(
+        offline={"terranash-1401-m2-8-256", "terranash-1402-m2-8-256", "terranash-1403-m2-8-256"},
+        no_hub={"terranash-1402-m2-8-256", "terranash-1403-m2-8-256"},
+        stops={"terranash-1401-m2-8-256": {"reason": "quit", "at": NOW - 3 * DAY, "label": "Quit", "relaunched": True},
+               "terranash-1402-m2-8-256": {"reason": "force_quit", "at": NOW - 5 * HOUR + 60, "label": "Force-quit",
+                                           "relaunched": False},
+               "terranash-1403-m2-8-256": {"reason": "crashed", "at": NOW - 40 * HOUR, "label": "Crashed (restarted)",
+                                           "relaunched": True},
+               "terranash-1404-m2-8-256": {"reason": "updated", "at": NOW - 2 * HOUR, "label": "Restarted for an update",
+                                           "relaunched": True}})
+    if flavour == "health-offline":
+        # GATEWAY_RENDER_FIXTURE=health-offline: why a Mac is offline (`last_stop`), a short page that fits one screen.
+        rows = [local, site("c1400", "terranash-1400", 5, **why_offline)]
+    elif flavour == "health-mixed":
         # Published five minutes ago to 1100 and 1200 (their Macs are still installing it); 1300 was not
         # in that publish, so it and its Macs are behind and the line says to publish to that group.
         rows = [local,
@@ -285,7 +308,7 @@ def health(flavour: str) -> tuple[list, dict]:
                      startup_off={"terranash-1109-m2-8-256"}),
                 site("c1200", "terranash-1200", 8, versions={"terranash-1205-m2-8-256": "0.6.126"},
                      red={"terranash-1203-m2-8-256"}),
-                site("c1400", "terranash-1400", 8, offline={"terranash-1401-m2-8-256", "terranash-1402-m2-8-256"})]
+                site("c1400", "terranash-1400", 8, **why_offline)]
         rows[1]["running_jobs"] = [batch("b-9001", "voice", QWEN, "Chapter 4 narration", total=12, done=5, running=1,
                                          queued=6, started=50 * MIN, stalled=True)]
     elif flavour.startswith("health-rollout"):

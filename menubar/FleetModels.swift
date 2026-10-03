@@ -706,6 +706,10 @@ struct FleetMachine: Decodable {
     var nodeLastSeenAt: FleetScalar?
     /// What this Mac says it starts when it starts (see `FleetStartup.swift`). `nil` is unknown.
     var startup: FleetStartupFact?
+    /// Why this Mac's Studio Hub last stopped, as the Mac recorded it (see `FleetLastStop.swift`); `nil` is unknown.
+    var lastStop: FleetLastStop?
+    /// Why the controller could not reach it - `no_hub` (the Mac answers, nothing listens) or `unreachable` - or `nil`.
+    var reachReason: String?
     /// What this node is running now, when its Hub says so (Fleet Groups "Doing now"); `nil` is unknown.
     var current: FleetCurrentJob?
     /// **Job counts per modality**, not a list of models the machine offers. The

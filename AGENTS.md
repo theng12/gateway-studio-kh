@@ -7,7 +7,10 @@ the historical open-issue ledger is a baseline, not current runtime status.
 Global Ponytail/Graphify and conditional Impeccable/Superpowers instructions
 apply here and to delegated workers.
 
-- Unknown upstream outcomes are durable recovery holds, never automatic retries.
+- Unknown upstream outcomes are durable recovery holds, never automatic retries - **for paid providers.**
+  A free Studio Hub location that goes silent (`recovery.lost_contact`) has its job moved to another
+  location and the old attempt cancelled best effort; a submit that timed out is replayed at the same
+  location first (the Hub dedupes on the job id). First result wins (`worker._dispatch`).
   Async adapters checkpoint safe upstream IDs before polling; never store a
   credential-bearing polling URL as an identity. Cancellation after dispatch
   is a request, not proof the provider stopped. Keep late outputs inspectable.

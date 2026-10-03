@@ -235,9 +235,35 @@ def _hub_refusal_reason(response: httpx.Response) -> str:
     return " ".join(str(detail).split())[:240] if isinstance(detail, str) else ""
 
 
+def _submit_unconfirmed(base: str, exc: Exception) -> dict[str, Any]:
+    """The marker for a submit whose answer never came: the Hub may or may not have accepted it.
+
+    `replayable`: the Hub answers a repeated submit with the batch it already made (the image, voice
+    and music routes by `clientRequestId` - the job id - and the transcription route by its active
+    duplicate), so asking the **same** location again cannot start a second run. The worker does that
+    for a free Studio Hub job before it gives up on the location (`lost_contact`).
+    """
+    return {"location": base, "reason": str(exc).strip() or type(exc).__name__,
+            "lost_contact": True, "replayable": True}
+
+
+def _is_location_refusal(code: str | None, response: httpx.Response) -> bool:
+    """A refusal that is a fact about this location *now*, not about the job.
+
+    A named refusal (`_LOCATION_REFUSAL_CODES`), or an unnamed **503** from the Hub's submit door: the
+    Hub raises it before it accepts anything (readiness could not be verified, no machine fit), so
+    nothing was accepted and the job may wait or go elsewhere. It used to fall through as an
+    ambiguous 5xx and file a recovery hold for work that never started. A *named* refusal outside the
+    set (`MODEL_PAUSED`) stays terminal, and chat keeps its own stricter rule: it is synchronous, so a
+    bare 503 there may have run.
+    """
+    return code in _LOCATION_REFUSAL_CODES or (code is None and response.status_code == 503)
+
+
 def _refusal_sentence(code: str | None, response: httpx.Response) -> str:
     reason = _hub_refusal_reason(response)
-    return f"the location cannot serve this model right now ({code})" + (f": {reason}" if reason else "")
+    what = f"cannot serve this model right now ({code})" if code else "has no capacity for this right now (HTTP 503)"
+    return f"the location {what}" + (f": {reason}" if reason else "")
 
 
 def _uncertain_result(batch_id: str, item_index: int, item: dict[str, Any]) -> tuple[str, dict[str, Any]]:
@@ -619,6 +645,9 @@ def _poll_batch(
                     "item_index": item_index,
                     "jobs_path": jobs_path,
                     "reason": reason,
+                    # The location itself went silent (not a Hub-reported outcome): the worker
+                    # moves a free Studio Hub job to another location on this, see `_dispatch`.
+                    "lost_contact": True,
                 },
             )
         # The Hub answered, so whatever happened before is over.
@@ -1406,12 +1435,13 @@ def _generate_image_or_voice(request: BackendRequest) -> BackendResult:
             ) from exc
         except httpx.HTTPError as exc:
             raise BackendError(
-                f"hub submit failed: {exc}", code="SITE_CAPACITY_UNAVAILABLE", retryable=True
+                f"hub submit failed: {exc}", code="SITE_CAPACITY_UNAVAILABLE", retryable=True,
+                recovery=_submit_unconfirmed(base, exc),
             ) from exc
 
         if response.status_code >= 400:
             code = _hub_refusal_code(response)
-            if code in _LOCATION_REFUSAL_CODES:
+            if _is_location_refusal(code, response):
                 # A site property, not a job failure: the controller cannot serve
                 # this model right now, and it accepted nothing. `upstream_accepted`
                 # is therefore False, so the worker may safely try the next
@@ -1610,11 +1640,12 @@ def _generate_transcription(request: BackendRequest) -> BackendResult:
                 f"hub transcription submit failed: {exc}",
                 code="SITE_CAPACITY_UNAVAILABLE",
                 retryable=True,
+                recovery=_submit_unconfirmed(base, exc),
             ) from exc
 
         if response.status_code >= 400:
             code = _hub_refusal_code(response)
-            if code in _LOCATION_REFUSAL_CODES:
+            if _is_location_refusal(code, response):
                 raise BackendError(
                     _refusal_sentence(code, response),
                     code="LOCATION_NOT_READY",
@@ -1813,7 +1844,11 @@ def _generate_chat(request: BackendRequest) -> BackendResult:
         # A read timeout *after* the request left is ambiguous: the model may have
         # run and been recorded as a job on that node with nobody to collect it.
         raise BackendError(
-            f"hub chat failed: {exc}", code="SITE_CAPACITY_UNAVAILABLE", retryable=True
+            f"hub chat failed: {exc}", code="SITE_CAPACITY_UNAVAILABLE", retryable=True,
+            # A dropped connection mid-chat is the location going silent, and a chat re-run is
+            # free. A read timeout is not: the model may just be slow, and the hold stays.
+            recovery=None if isinstance(exc, httpx.TimeoutException)
+            else {"location": base, "reason": str(exc), "lost_contact": True},
         ) from exc
 
     if response.status_code >= 400:

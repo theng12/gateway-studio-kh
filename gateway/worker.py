@@ -55,10 +55,11 @@ _HUB_OPERATION_BY_MODALITY = fleet.HUB_OPERATION_BY_MODALITY
 #: "Not now" rather than "not ever" — the site could not take this job *this time*.
 #: **Exactly the set the worker already re-routes on**, which is the point: if a
 #: condition is worth trying another location for, it is worth waiting for this one.
-#: Both prove the upstream accepted nothing, which is what makes a retry safe;
-#: `SITE_CAPACITY_UNAVAILABLE` is deliberately absent because a submit that may have
-#: left the building is an unknown outcome, and those get a recovery hold instead.
-_TRANSIENT_SITE_CODES = {"LOCATION_NOT_READY", "LOCATION_UNREACHABLE"}
+#: All prove the upstream accepted nothing, which is what makes a retry safe;
+#: `_defer_if_transient` still requires `upstream_accepted is False`, so a
+#: `SITE_CAPACITY_UNAVAILABLE` that may have left the building (a submit that timed out) is
+#: an unknown outcome and gets a recovery hold - or, for a free Studio Hub job, a replay.
+_TRANSIENT_SITE_CODES = {"LOCATION_NOT_READY", "LOCATION_UNREACHABLE", "SITE_CAPACITY_UNAVAILABLE"}
 
 #: How long a job will wait for a busy fleet before it is reported as failed.
 #: ponytail: a flat eight deferrals with a backoff capped at a minute — about four
@@ -303,7 +304,7 @@ def _tried_everything_detail(attempts: list[dict[str, Any]], *, limit: int) -> s
 
 def _defer_if_transient(
     store: JobStore, job_id: str, exc: BackendError, current: dict[str, Any], *,
-    unknown: bool,
+    unknown: bool, replay: bool = False,
 ) -> bool:
     """Put the job back in our own queue when the fleet is merely busy.
 
@@ -328,9 +329,13 @@ def _defer_if_transient(
         never reported is worse than one reported honestly.
     """
     defer = getattr(store, "defer", None)
-    if defer is None or exc.code not in _TRANSIENT_SITE_CODES:
+    if defer is None:
         return False
-    if exc.upstream_accepted is not False or unknown:
+    # `replay`: a free Studio Hub submit that timed out. It may have been accepted, but the Hub
+    # answers the same client request id with the batch it already made, so the retry at this same
+    # location cannot run twice - which is the whole reason the two conditions below exist.
+    if not replay and (exc.code not in _TRANSIENT_SITE_CODES
+                       or exc.upstream_accepted is not False or unknown):
         return False
     wait = concurrency.queue_wait_budget()
     attempts = int(current.get("attempt_count") or 0)
@@ -418,7 +423,7 @@ def _fail(
         store.fail(job_id, code=code, detail=detail)
 
 
-def cancel_upstream(job: dict[str, Any], store: JobStore) -> dict[str, Any] | None:
+def cancel_upstream(job: dict[str, Any], store: JobStore, *, record: bool = True) -> dict[str, Any] | None:
     """Ask whoever owns dispatched work to stop it, and record the answer.
 
     A cancellation after dispatch is a *request*: a worker that has accepted the
@@ -430,6 +435,9 @@ def cancel_upstream(job: dict[str, Any], store: JobStore) -> dict[str, Any] | No
 
     A job with no upstream id never left the gateway; `store.cancel` already
     settled that case locally, and there is nothing to ask.
+
+    `record=False` asks without writing the answer onto the job: the abandoned attempt of a job
+    that was moved to another location is not the job's own cancel.
     """
     batch_id = str(job.get("upstream_job_id") or "").strip()
     if not batch_id:
@@ -467,7 +475,8 @@ def cancel_upstream(job: dict[str, Any], store: JobStore) -> dict[str, Any] | No
                 "status": None,
                 "error": f"unreadable cancel answer: {answer!r}",
             }
-    store.record_cancel_remote(job["id"], answer)
+    if record:
+        store.record_cancel_remote(job["id"], answer)
     return answer
 
 
@@ -489,6 +498,12 @@ def settle_result(job_id: str, result: Any, store: JobStore) -> None:
     # holds the output while the job is failed retryable.
     from . import diskguard
 
+    # **First result wins.** A job moved off a silent location can hear from the abandoned attempt
+    # later; once one result has settled the job, a second never rewrites its files or its row.
+    row = store.get(job_id) if hasattr(store, "get") else None
+    if row and row.get("state") == "succeeded":
+        log.warning("job %s: ignoring a late result, the job already succeeded", job_id)
+        return
     try:
         diskguard.require_room(sum(len(a.content or b"") for a in result.artifacts))
     except diskguard.DiskLow as low:
@@ -740,6 +755,52 @@ def _dispatch(job: dict[str, Any], store: JobStore, provider_id: str, model_id: 
                     and store.settle_cancelled(job_id)):
                 return
             detail = _unknown_detail(str(exc)) if unknown else str(exc)[:500]
+            # ── A free Studio Hub submit that timed out is replayed, not failed ─────────────────
+            #
+            # *"hub submit failed: timed out"* ended Dreamlands narration chapters `failed /
+            # SITE_CAPACITY_UNAVAILABLE`: the answer never came, so the outcome was unknown and the
+            # job was held. For the owner's own Mac that is the wrong trade: the Hub answers a
+            # repeated submit carrying the same client request id (the job id) with the batch it
+            # already made, so the job goes back in the queue - Story Studio reads it as waiting -
+            # and is sent again to **the same location**, finding its accepted batch rather than
+            # starting a second one. Not to another location: that one has no way to know. Once the
+            # queue-wait budget is spent the location counts as silent (below).
+            kind_is_hub = getattr(definition, "kind", "") == "studio_hub"
+            if (kind_is_hub and not resume_id and (exc.recovery or {}).get("replayable")
+                    and current.get("cancel_requested_at") is None
+                    and _defer_if_transient(store, job_id, exc, current, unknown=False, replay=True)):
+                log.warning("job %s: %s did not answer its submit (%s); replaying it, attempt %s of %s",
+                            job_id, provider_id, exc, current.get("attempt_count"), _MAX_DEFERRALS)
+                return
+            # ── A free location that went silent mid-job is moved, not held ─────────────────────
+            #
+            # Owner decision 2026-10-03. The unknown-outcome hold exists so a *paid* provider is
+            # never billed twice. A Studio Hub location is the owner's own Mac: re-running costs
+            # nothing, while holding a render for a Mac that has died strands it for good. So when
+            # a Studio Hub location stayed silent past the adapter's grace (`lost_contact`), the
+            # job goes to the next location offering the model (`_next_machine`: owner pauses,
+            # tried locations and the retry ceiling all apply) and the abandoned attempt is
+            # cancelled best effort. Where that cannot happen - a pinned voice, no other location,
+            # attempts used up, or an owner cancel in flight - it stays the hold it always was.
+            # A resumed job whose Hub answers never gets here; a `resume` 404 and a Hub-reported
+            # `uncertain` item carry no `lost_contact`, so they stay holds too.
+            if (unknown and pinned is None and kind_is_hub
+                    and (exc.recovery or {}).get("lost_contact")
+                    and current.get("cancel_requested_at") is None):
+                abandoned = dict(current, provider_id=provider_id)
+                moved = _next_machine(
+                    store, job_id, model_id, modality, provider_id,
+                    code=exc.code, detail=str(exc)[:500],
+                )
+                if moved is not None:
+                    log.warning("job %s: %s went silent mid-job; moving it to %s and cancelling "
+                                "the abandoned attempt", job_id, provider_id, moved)
+                    threading.Thread(target=cancel_upstream, args=(abandoned, store),
+                                     kwargs={"record": False}, daemon=True,
+                                     name=f"gateway-cancel-{job_id[:8]}").start()
+                    provider_id = moved
+                    resume_id = ""
+                    continue
             # ── A7: a **known** failure is retried on a different machine ──────────
             #
             # The owner's decision E, and the whole point of it: *"i want a 'job' that's failed
