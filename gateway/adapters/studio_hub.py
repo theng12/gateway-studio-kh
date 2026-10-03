@@ -752,18 +752,25 @@ def _poll_batch(
                     upstream_accepted=False,
                     upstream_settled=True,
                 )
-            if hub_code == "INSUFFICIENT_MEMORY":
-                # The Mac refused this job for memory three times and the Hub handed it back
-                # (Hub 0.6.127+; owner decision 2026-10-01). Nothing ran, so it is a *known*
-                # failure of that Mac: the worker re-routes it to another location, excluding this
-                # one (`worker._next_machine`, up to the retry policy's attempts), and a job that
-                # is pinned - a voice's owning Hub - fails with this same sentence instead. Its
-                # own code, so the attempt log and the terminal reason say what happened; it is
-                # deliberately not a LOCATION_* code, which would make the worker wait on the
-                # same Mac rather than move or fail.
+            if hub_code in ("INSUFFICIENT_MEMORY", "WORKSTATION_YIELDED"):
+                # INSUFFICIENT_MEMORY: the Mac refused this job for memory three times and the Hub
+                # handed it back (Hub 0.6.127+; owner decision 2026-10-01). WORKSTATION_YIELDED: a
+                # shop's workstation Mac stopped it because the shop's own apps needed the memory it
+                # keeps free (the memory floor - the only thing that interrupts a job there; someone
+                # using the Mac lets the job finish) and its controller had no other free Mac (owner
+                # request 2026-10-03). Nothing ran to completion and nothing is pending, so either is a
+                # *known* failure of that Mac: the worker re-routes it to another location, excluding
+                # this one (`worker._next_machine`; a yield does not count against the retry
+                # ceiling), and a job that is pinned - a voice's owning Hub - fails with this same
+                # sentence instead. Its own code, so the attempt log and the terminal reason say what
+                # happened; deliberately not a LOCATION_* code, which would make the worker wait on
+                # the same Mac rather than move or fail.
+                said = (message or "").removeprefix(f"{hub_code}: ") or (
+                    "the Mac does not have enough free memory" if hub_code == "INSUFFICIENT_MEMORY"
+                    else "the Mac needed its memory back for its own apps; nothing was kept")
                 raise BackendError(
-                    f"INSUFFICIENT_MEMORY: {message or 'the Mac does not have enough free memory'}",
-                    code="INSUFFICIENT_MEMORY",
+                    f"{hub_code}: {said}",
+                    code=hub_code,
                     retryable=True,
                     upstream_accepted=False,
                     upstream_settled=True,

@@ -79,6 +79,12 @@ _DEFER_CAP_S = concurrency.DEFAULT_DEFER_CAP_S
 #: the Hub and reported.
 _NO_REROUTE_CODES = {"DEADLINE_EXCEEDED"}
 
+#: A shop's workstation Mac stopped the job because its own apps needed the memory it keeps free, and its
+#: controller had nowhere else for it (Hub workstation mode, owner request 2026-10-03). Free work that never finished: it moves at once to the next location,
+#: and **does not count against the retry ceiling** - the Mac was taken back by its owner, the job did
+#: not fail. The exclusion list still grows with every yield, so it cannot bounce for ever.
+WORKSTATION_YIELDED = "WORKSTATION_YIELDED"
+
 
 def _defer_delay(attempts: int, cap_s: float | None = None) -> float:
     """2s, 4s, 8s … capped. Long enough not to hammer a busy machine."""
@@ -272,7 +278,7 @@ def _next_machine(store: JobStore, job_id: str, model_id: str, modality: str,
     tried = {_location(entry.get("location")) for entry in attempts}
     tried.add(_location(provider_id))
     tried.discard("")
-    if len(attempts) >= int(policy["max_attempts"]):
+    if sum(entry.get("code") != WORKSTATION_YIELDED for entry in attempts) >= int(policy["max_attempts"]):
         # The ceiling the owner named. The failure path builds the sentence from this log.
         return None
     chosen, _note = fleet.route(model_id, modality, exclude_locations=tried)
@@ -816,7 +822,9 @@ def _dispatch(job: dict[str, Any], store: JobStore, provider_id: str, model_id: 
             #
             # A pinned voice is excluded: its reference clip lives on one controller, so there is
             # no other machine that could serve it and a "retry" would only be a slower failure.
-            if not unknown and pinned is None and exc.code not in _NO_REROUTE_CODES:
+            # A workstation yield is free Studio Hub work only: no paid lane is ever moved on it.
+            if (not unknown and pinned is None and exc.code not in _NO_REROUTE_CODES
+                    and (exc.code != WORKSTATION_YIELDED or kind_is_hub)):
                 moved = _next_machine(
                     store, job_id, model_id, modality, provider_id,
                     code=exc.code, detail=detail,
@@ -858,6 +866,11 @@ def _dispatch(job: dict[str, Any], store: JobStore, provider_id: str, model_id: 
                 limit = int(concurrency.retry_policy()["max_attempts"])
                 if logged and len(logged) >= limit:
                     terminal_detail = _tried_everything_detail(logged, limit=limit)
+                elif exc.code == WORKSTATION_YIELDED:
+                    terminal_detail = detail.rstrip(". ") + ". " + (
+                        "This voice exists only on that location, so it was not moved to another Mac."
+                        if pinned is not None else "No other location offering this model could take it."
+                    ) + " Nothing was charged; run it again."
             _fail(
                 store,
                 job_id,

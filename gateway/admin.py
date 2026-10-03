@@ -2942,6 +2942,23 @@ def fleet_machine_pause(controller_id: str, machine_id: str, payload: dict[str, 
         return JSONResponse(status_code=error.status, content=error.body)
 
 
+@router.post(
+    "/api/fleet/controllers/{controller_id}/machines/{machine_id}/workstation",
+    dependencies=[Depends(require_admin)],
+)
+def fleet_machine_workstation(controller_id: str, machine_id: str, payload: dict[str, Any]) -> Any:
+    """Change one Mac's workstation mode. Body: any subset of `startup_control.WORKSTATION_SETTINGS`.
+
+    Relayed through the Mac's controller (`startup_control.set_node_workstation`); `machine_id` may be
+    `local` or the controller's own Mac. Answers the controller's `{"ok": true, "node", "workstation"}`, or
+    its refusal (`BAD_SETTING`, `NODE_UNKNOWN`, `NODE_UNREACHABLE`, `NODE_REFUSED`), or `HUB_TOO_OLD`.
+    """
+    try:
+        return startup_control.set_node_workstation(controller_id, machine_id, payload)
+    except startup_control.StartupError as error:
+        return JSONResponse(status_code=error.status, content=error.body)
+
+
 @router.post("/api/fleet/startup/enable-autostart", dependencies=[Depends(require_admin)])
 def fleet_enable_autostart(payload: dict[str, Any]) -> Any:
     """Turn "Start services on startup" on for every Mac that reported it off.
