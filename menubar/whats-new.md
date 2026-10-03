@@ -14,6 +14,19 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.105 — 2026-10-03
+
+Studio Hub updates go out one group at a time.
+
+### Paced rollout
+"Publish a Studio Hub Release…" now updates This Mac first, then each group's main Mac one after another, waiting
+for each to come back on the new version before the next. Inside each group the Macs update one at a time, each
+finishing its current job first, so no work is cut off. Fleet → Locations shows "Updating 1200 (3 of 6) · 1100 done ·
+1300–1600 waiting" and how many Macs in each group are on the new version, with Stop and Resume. If a group's main Mac
+doesn't come back within 30 minutes the rollout stops and tells you; a group that's offline is skipped and gets the
+update automatically when it's back. It carries on by itself after a gateway restart. "All at once" is still there for
+emergencies.
+
 ## 0.2.104 — 2026-10-03
 
 A paid model in a pool is a last resort.
