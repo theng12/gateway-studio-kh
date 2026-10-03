@@ -108,5 +108,46 @@ class ThePublishedNumberIsTheFleetsTest(unittest.TestCase):
         self.assertEqual(published["paid_concurrency_limit"], 6)
 
 
+class BurstCeilingTest(unittest.TestCase):
+    """Story sizes its image fan-out from `burst_concurrency_ceiling`; unpublished it is serial."""
+
+    def setUp(self) -> None:
+        concurrency.reset_for_tests()
+        self.addCleanup(concurrency.reset_for_tests)
+
+    def _admission(self, rows: list[dict], pool: int = 100) -> dict:
+        budget = concurrency.Budget(limit=pool, source=concurrency.SOURCE_CURATED, detail="test")
+        with patch("gateway.fleet.snapshot", lambda **_: {"locations": rows}), \
+                patch.object(concurrency, "global_budget", lambda: budget):
+            return constants.admission()
+
+    def test_it_is_the_widest_live_lane_not_the_sum_of_lanes(self) -> None:
+        published = self._admission([_site("a", machines=3), _site("b", machines=2)])
+        self.assertEqual(published["concurrency_by_modality"]["image"], 5)
+        self.assertEqual(published["burst_concurrency_ceiling"], 5)
+        self.assertLess(published["burst_concurrency_ceiling"], published["paid_concurrency_limit"])
+
+    def test_it_follows_the_fleet_with_no_settings_edit(self) -> None:
+        up = self._admission([_site("a", machines=4)])["burst_concurrency_ceiling"]
+        down = self._admission([_site("a", machines=1)])["burst_concurrency_ceiling"]
+        self.assertEqual((up, down), (4, 1))
+
+    def test_it_never_exceeds_the_gateways_own_pool_or_queue(self) -> None:
+        self.assertEqual(self._admission([_site("a", machines=30)], pool=8)["burst_concurrency_ceiling"], 8)
+        wide = self._admission([_site(str(i), machines=40) for i in range(10)], pool=1000)
+        self.assertEqual(wide["burst_concurrency_ceiling"], constants.ADMISSION["max_queued_jobs"])
+
+    def test_no_reachable_capacity_publishes_no_ceiling(self) -> None:
+        # Unknown is omitted (Story stays serial), never a limit of 0.
+        published = self._admission([_site("a", machines=3, reachable=False)])
+        self.assertNotIn("burst_concurrency_ceiling", published)
+        self.assertNotIn("burst_concurrency_ceiling", self._admission([]))
+
+    def test_the_account_overview_carries_it(self) -> None:
+        import inspect
+        from gateway import api
+        self.assertIn("**admission()", inspect.getsource(api.account_overview))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -113,10 +113,24 @@ class OneNarrationMayUseEveryMacOfferingTheModelTest(unittest.TestCase):
             {"provider_id": "studio-hub-b", "reachable": False, "by_modality": {"tts": 0}},
         ]}
         with patch.object(concurrency, "live_capacity", return_value=live):
-            self.assertEqual(catalog._tts_slots_by_location(),
+            self.assertEqual(catalog._slots_by_location("tts"),
                              {"studio-hub-a": 7, "studio-hub-b": 0})
         with patch.object(concurrency, "live_capacity", side_effect=RuntimeError("fleet down")):
-            self.assertEqual(catalog._tts_slots_by_location(), {})
+            self.assertEqual(catalog._slots_by_location("tts"), {})
+
+    def test_image_rows_state_their_slots_the_same_way(self) -> None:
+        from unittest.mock import patch
+        from gateway import concurrency
+        live = {"locations": [
+            {"provider_id": "studio-hub-a", "by_modality": {"tts": 7, "image": 12}},
+            {"provider_id": "studio-hub-b", "by_modality": {"tts": 1, "image": 0}},
+        ]}
+        with patch.object(concurrency, "live_capacity", return_value=live):
+            self.assertEqual(catalog._slots_by_location("image"),
+                             {"studio-hub-a": 12, "studio-hub-b": 0})
+        row = {"provider_submit_concurrency": 12}
+        catalog._merge_capabilities(row, {"provider_submit_concurrency": 5}, "image")
+        self.assertEqual(row["provider_submit_concurrency"], 17)
 
 
 class NoInventedWorkerCountIsPublishedTest(unittest.TestCase):

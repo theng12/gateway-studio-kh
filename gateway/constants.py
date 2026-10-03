@@ -198,10 +198,26 @@ def admission() -> dict[str, Any]:
     except Exception:  # noqa: BLE001 - a figure is not worth failing a response over
         worker = None
     capacity = concurrency.live_capacity(worker=worker)
-    return {
+    by_modality = dict(capacity["by_modality"])
+    published: dict[str, Any] = {
         **ADMISSION,
         "paid_concurrency_limit": capacity["total"],
         "concurrency_source": capacity["source"],
-        "concurrency_by_modality": dict(capacity["by_modality"]),
+        "concurrency_by_modality": by_modality,
         "concurrency_pool": capacity["pool"]["limit"],
     }
+    # **`burst_concurrency_ceiling`: how many requests Story may stage at once.** Story reads this
+    # one integer on `/v1/account/overview` to size its image fan-out (and caps TTS fan-out with
+    # it); unpublished, it sends scene images one at a time -- ~9 h an episode on a fleet that
+    # could take dozens. It is the fleet's own live capacity, never an invented wide wave: the
+    # widest single lane (Story fans out one modality at a time), held under what this gateway
+    # will itself run at once (the pool) and queue (`max_queued_jobs`). Zero means unknown, and
+    # unknown is *omitted* -- Story then stays serial, which is the safe direction.
+    ceiling = min(
+        max((int(v) for v in by_modality.values() if isinstance(v, int)), default=0),
+        int(capacity["pool"]["limit"]),
+        int(ADMISSION["max_queued_jobs"]),
+    )
+    if ceiling > 0:
+        published["burst_concurrency_ceiling"] = ceiling
+    return published
