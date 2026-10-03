@@ -224,7 +224,7 @@ def set_node_pause(controller_id: str, machine_id: str, paused: object, *,
 
 #: What a workstation-mode change may carry; the Hub checks each value's range (`BAD_SETTING`).
 WORKSTATION_SETTINGS = ("enabled", "idle_only", "idle_minutes", "step_aside", "resume_after_minutes",
-                        "memory_floor_gb", "quiet_hours", "hide_menu_bar_icon")
+                        "start_free_gb", "quiet_hours", "hide_menu_bar_icon")
 
 
 def set_node_workstation(controller_id: str, machine_id: str, settings: object, *,
@@ -232,8 +232,8 @@ def set_node_workstation(controller_id: str, machine_id: str, settings: object, 
     """Change one Mac's workstation mode (owner request 2026-10-03), through its controller.
 
     Workstation mode lets a shop's own Mac take fleet work only when nobody is using it, take no new work
-    while someone does (its current job finishes), keep a memory floor for the shop's apps and rest in
-    quiet hours. The body is any subset
+    while someone does (its current job finishes), start a job only with enough free memory (`start_free_gb`,
+    `null` = each model's own floor) and rest in quiet hours. The body is any subset
     of `WORKSTATION_SETTINGS`; the Hub validates the values and answers `BAD_SETTING` with a sentence,
     which reaches the caller unchanged, as do `NODE_UNKNOWN` and `NODE_UNREACHABLE` / `NODE_REFUSED` (that
     Mac's own Hub is too old). A controller without the route answers `HUB_TOO_OLD`.

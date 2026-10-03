@@ -79,10 +79,10 @@ _DEFER_CAP_S = concurrency.DEFAULT_DEFER_CAP_S
 #: the Hub and reported.
 _NO_REROUTE_CODES = {"DEADLINE_EXCEEDED"}
 
-#: A shop's workstation Mac stopped the job because its own apps needed the memory it keeps free, and its
-#: controller had nowhere else for it (Hub workstation mode, owner request 2026-10-03). Free work that never finished: it moves at once to the next location,
-#: and **does not count against the retry ceiling** - the Mac was taken back by its owner, the job did
-#: not fail. The exclusion list still grows with every yield, so it cannot bounce for ever.
+#: A shop's workstation Mac stopped the job (macOS critical memory pressure for 20 s, rare) and its
+#: controller had nowhere else for it (Hub workstation mode, owner request 2026-10-03). Free work that
+#: never finished: it moves at once to the next location, and **does not count against the retry
+#: ceiling** - the Mac was taken back by its owner's apps, the job did not fail. The exclusion list still grows with every yield, so it cannot bounce for ever.
 WORKSTATION_YIELDED = "WORKSTATION_YIELDED"
 
 

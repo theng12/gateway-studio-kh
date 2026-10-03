@@ -2284,7 +2284,7 @@ def _workstation_fact(machine: dict, node: dict) -> dict | None:
     return {
         "enabled": flag("enabled"), "idle_only": flag("idle_only"), "idle_minutes": count("idle_minutes"),
         "step_aside": flag("step_aside"), "resume_after_minutes": count("resume_after_minutes"),
-        "memory_floor_gb": number("memory_floor_gb"),
+        "start_free_gb": number("start_free_gb"),
         "quiet_hours": [h.strip()[:16] for h in hours if isinstance(h, str)][:6] if isinstance(hours, list) else None,
         "hide_menu_bar_icon": flag("hide_menu_bar_icon"),
         "state": raw.get("state") if raw.get("state") in _WORKSTATION_STATES else None,

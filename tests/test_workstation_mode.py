@@ -2,8 +2,8 @@
 """Workstation mode: a shop's own Mac lends its idle time to the fleet (owner request 2026-10-03).
 
 The Hub reports each Mac's `workstation` block on its machine/node rows and takes setting changes through
-its controller. When such a Mac stops a job (its apps needed the memory it keeps free - the only thing that
-interrupts a job there) and its controller has no other free Mac, the item comes back `WORKSTATION_YIELDED`: nothing ran to
+its controller. When such a Mac stops a job (macOS critical memory pressure for 20 s, rare - the only thing
+that interrupts a job there) and its controller has no other free Mac, the item comes back `WORKSTATION_YIELDED`: nothing ran to
 completion, nothing is pending, and re-running is free. So the Gateway moves the job at once to the next
 location offering the model, without spending the job's retry ceiling; a pinned voice fails with a plain
 sentence; paid lanes are untouched. A Mac standing by, stepped aside or in quiet hours is not offline, not
@@ -29,10 +29,10 @@ from gateway.adapters import BackendError  # noqa: E402
 from gateway.adapters import studio_hub as hub_module  # noqa: E402
 from gateway.adapters.base import BackendRequest  # noqa: E402
 
-YIELDED = "WORKSTATION_YIELDED: Shop 2 stepped aside (its apps needed the memory); nothing was kept"
+YIELDED = "WORKSTATION_YIELDED: Shop 2 stepped aside (memory pressure); nothing was kept"
 WORKSTATION = {
     "enabled": True, "idle_only": False, "idle_minutes": 3, "step_aside": True, "resume_after_minutes": 2,
-    "memory_floor_gb": 2.5, "quiet_hours": ["22:00-07:00"], "hide_menu_bar_icon": False,
+    "start_free_gb": None, "quiet_hours": ["22:00-07:00"], "hide_menu_bar_icon": False,
     "state": "standing_by", "reason": "someone is using this Mac", "yields_today": 1, "jobs_today": 3,
 }
 
@@ -151,6 +151,8 @@ class RelayTests(unittest.TestCase):
         self.assertEqual(seen[0].headers["x-hub-token"], "fleet-token")
         self.assertEqual(json.loads(seen[0].content),
                          {"enabled": True, "idle_minutes": 3, "quiet_hours": ["22:00-07:00"]})
+        _, seen = self.send(httpx.Response(200, json={"ok": True}), {"start_free_gb": None})
+        self.assertEqual(json.loads(seen[0].content), {"start_free_gb": None}, "null = each model's own floor")
 
     def test_an_older_controller_is_hub_too_old(self) -> None:
         for status in (404, 405):
@@ -166,7 +168,7 @@ class RelayTests(unittest.TestCase):
             self.assertEqual((error.status, error.body["code"], error.body["detail"]), (status, code, "said the Hub"))
 
     def test_junk_never_reaches_the_wire(self) -> None:
-        for junk in ("on", {}, {"colour": "red"}):
+        for junk in ("on", {}, {"colour": "red"}, {"memory_floor_gb": 2.5}):
             error, seen = self.send(httpx.Response(200, json={}), junk)
             self.assertEqual((error.status, error.body["code"], seen), (400, "BAD_SETTING", []))
 
@@ -197,6 +199,8 @@ class FleetRowTests(unittest.TestCase):
         published = _flat({"machine": "m1", "reachable": True}, node)["workstation"]
         self.assertEqual((published["state"], published["jobs_today"], published["quiet_hours"]),
                          ("working", 3, ["22:00-07:00"]))
+        custom = _flat({"machine": "m1", "reachable": True, "workstation": dict(WORKSTATION, start_free_gb=4.5)})
+        self.assertEqual(custom["workstation"]["start_free_gb"], 4.5)
         self.assertIsNone(_flat({"machine": "m1", "reachable": True})["workstation"], "absent: Hub too old")
 
     def test_only_known_keys_of_the_right_type_pass(self) -> None:
