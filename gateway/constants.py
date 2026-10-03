@@ -14,7 +14,7 @@ gets an empty picker, and the following features stop working outright:
   * TTS narration      (row dropped without credits_per_1000_characters)
   * video generation   (variant dropped without credits_per_video/price_version)
   * music generation   (row dropped without credits_per_request)
-  * image-to-image     (chargeable must be published truthy)
+  * image-to-image     (chargeable must be published; catalog rows overwrite it truthfully)
   * durable LLM lineup (fallback advances only on a proven zero settlement)
   * paid-replacement   (needs finite credits + non-empty price_version)
 
@@ -47,8 +47,10 @@ LLM_COST_TIER = "economy"
 
 # `chargeable` is read asymmetrically by Story Studio. Most parsers compare
 # explicitly, but the image parser keeps it absent (undefined) while the
-# reference-image provider requires it truthy -- which turns into a hard throw
-# on the img2img path. Publish it explicitly, everywhere.
+# reference-image provider required it truthy -- which turned into a hard throw
+# on the img2img path. Publish it explicitly, everywhere. This is only the shape:
+# catalogue rows, voice rows and the TTS quote replace it with `pricing.chargeable`
+# (false for a model on the owner's Macs), which Story reads as price, not capability.
 CHARGEABLE = True
 
 

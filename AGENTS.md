@@ -52,8 +52,9 @@ rediscover.
 - **Publish the shape of a priced catalogue with every amount at zero.** Do not
   omit price fields: Story Studio's parsers build explicit object literals and
   **drop any row whose price fields are absent**, which empties the picker. `credits_per_*: 0`, `minimum_credits: 0`, `price_version: "flat"`,
-  `chargeable: true`, and a balanced `0/0/0` settlement triple are
-  load-bearing.
+  an explicit `chargeable`, and a balanced `0/0/0` settlement triple are
+  load-bearing. `chargeable` itself is **truthful** (`pricing.chargeable`): `false` for a
+  model on the owner's Macs (`price_source: local`) or a free lane, on every modality.
 - **`freshness` is a hard gate Story Studio reads — and the one we publish cannot
   trip.** `stale: true` disables every model on their side, and the field is
   computed from the last catalogue *rebuild*, which `freshness()` performs before

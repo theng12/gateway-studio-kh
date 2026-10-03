@@ -1969,13 +1969,12 @@ class Catalog:
             None if is_location else registry.models.cached(definition.id).get("fetched_at"),
             definition.id, model["model_id"],
         ))
-        if modality == "chat":
-            # **Free or paid, truthfully, for chat** — the Models page's Free/Paid as a bool.
-            # `zero_pricing` publishes `chargeable: true` on every row as a shape; on image rows
-            # Story still reads that flag as "this product accepts reference images / can be the
-            # original of a paid replacement", so only chat (where nothing gates on it) carries
-            # the truth here. A pool's answer is its members', set once the chat rows exist.
-            row["chargeable"] = chargeable(getattr(definition, "free_tier", False), model["model_id"], row)
+        # **Free or paid, truthfully, on every row** — the Models page's Free/Paid as a bool, so a
+        # model on the owner's Macs (`price_source: local`) says `false`. `zero_pricing` above only
+        # publishes the shape. Story decides reference images and paid replacement by capability
+        # (since its fix/media-truth), not by this flag; an older Story read `false` on an image row
+        # as "no references". A pool's answer is its members', set once the chat rows exist.
+        row["chargeable"] = chargeable(getattr(definition, "free_tier", False), model["model_id"], row)
         return row
 
     # -- reads ------------------------------------------------------------

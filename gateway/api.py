@@ -47,7 +47,7 @@ from .adapters.studio_hub import SUPPORTED_STUDIO_HUB_VERSION
 from .catalog import MODALITIES, catalog, encode_model_id
 from .config import ARTIFACT_DIR, gateway_api_key, is_loopback, request_is_loopback
 from .constants import CREDIT_BALANCE, ZERO_SETTLEMENT, admission
-from .pricing import job_cost
+from .pricing import definition_chargeable, job_cost
 from .providers import registry
 from . import fleet
 from . import retention
@@ -1913,8 +1913,10 @@ def tts_quote(payload: dict[str, Any]) -> dict[str, Any]:
         # `mp3_44100_128`. `None` where the kind has no TTS lane.
         "output_format": tts_output_container(definition.id),
         # Published EXPLICITLY: the parser does `payload?.chargeable === true`,
-        # so an absent field renders a claim the gateway never made.
-        "chargeable": True,
+        # so an absent field renders a claim the gateway never made. Truthful, by the
+        # catalogue row's own rule: `false` on the owner's Macs or a free lane.
+        "chargeable": definition_chargeable(
+            definition, "tts", str(model.get("model_id") or ""), model.get("raw")),
         "generation_enabled": True,
         "notice": None,
     }

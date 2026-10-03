@@ -270,6 +270,32 @@ class ChargeableTest(unittest.TestCase):
         self.assertTrue(rows["pool::mixed"]["chargeable"], "one paid member makes a pool chargeable")
         self.assertFalse(rows["pool::all-free"]["chargeable"])
 
+    def test_media_rows_voices_and_the_tts_quote_are_truthful_too(self) -> None:
+        """A model on the owner's Macs is free on every modality, not only chat (was `true` on media)."""
+        from gateway import catalog as catalog_module
+        from gateway.pricing import definition_chargeable
+        from gateway.providers.definitions import KIND_FAL, KIND_STUDIO_HUB, ProviderDefinition
+
+        def provider(pid: str, kind: str, modality: str) -> ProviderDefinition:
+            return ProviderDefinition(id=pid, display_name=pid, category="multi", kind=kind,
+                                      base_url="http://x", modalities=(modality,), discovery="static")
+
+        for modality in ("image", "tts", "music"):
+            hub, cloud = provider("hub-site", KIND_STUDIO_HUB, modality), provider("cloud", KIND_FAL, modality)
+            model = lambda mid: {"model_id": mid, "modality": modality, "display_name": mid, "raw": {}}  # noqa: E731
+            enabled = [(hub, model("local-model")), (cloud, model("cloud-model"))]
+            built = catalog_module.Catalog()
+            with patch.object(catalog_module.registry.models, "enabled_models",
+                              side_effect=lambda m, enabled=enabled, modality=modality:
+                              enabled if m == modality else []):
+                built.rebuild(force=True)
+                rows = {row["id"].split("::")[-1]: row for row in built._rows[modality]}
+            with self.subTest(modality=modality):
+                self.assertIs(rows["local-model"]["chargeable"], False, "your Macs are free")
+                self.assertIs(rows["cloud-model"]["chargeable"], True, "an unpublished price is never free")
+                self.assertIs(definition_chargeable(hub, modality, "local-model"), False)
+                self.assertIs(definition_chargeable(cloud, modality, "cloud-model"), True)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=1)

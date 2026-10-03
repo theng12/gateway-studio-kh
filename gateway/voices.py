@@ -38,6 +38,7 @@ from .config import (
     write_secret,
 )
 from .constants import zero_pricing
+from .pricing import definition_chargeable
 from .providers import registry
 from .providers.definitions import (
     KIND_ELEVENLABS,
@@ -936,6 +937,8 @@ def story_row(voice: Voice) -> dict[str, Any]:
         # exists to stop, and a drift that is invisible because an absent price
         # field makes Story Studio's parser drop the row.
         **zero_pricing("tts"),
+        # The shape above says `true`; a voice on the owner's Macs costs nothing, so say so.
+        "chargeable": definition is None or definition_chargeable(definition, "tts"),
         # **The adapter's real container, never a guess from the provider id.**
         # This said `"mp3" if provider_id.startswith("elevenlabs") else "wav"`, so
         # a fal ElevenLabs voice published `wav` while `adapters/fal.py` downloaded

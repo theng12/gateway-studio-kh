@@ -151,8 +151,14 @@ def chargeable(free_tier: bool, model_id: str, price: dict[str, Any]) -> bool:
 def model_chargeable(definition: Any, model: dict[str, Any], modality: str = "chat") -> bool:
     """`chargeable` for one resolved (definition, model) pair, judged exactly as the catalogue row
     is (`catalog._story_row`), so a pool's free/paid split can never disagree with the Models page."""
-    model_id = str(model.get("model_id") or "")
-    price = row_price(definition.kind, modality, model.get("raw"), None, definition.id, model_id)
+    return definition_chargeable(definition, modality, str(model.get("model_id") or ""), model.get("raw"))
+
+
+def definition_chargeable(definition: Any, modality: str, model_id: str = "",
+                          raw: dict[str, Any] | None = None) -> bool:
+    """`chargeable` for a row that is not built by the catalogue (a voice, a TTS quote), by the
+    catalogue's own rule, so the three cannot describe the same model differently."""
+    price = row_price(definition.kind, modality, raw, None, definition.id, model_id)
     return chargeable(getattr(definition, "free_tier", False), model_id, price)
 
 
