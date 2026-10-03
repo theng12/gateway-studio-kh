@@ -533,6 +533,9 @@ final class FleetLocationsTab: FleetTabView {
     /// alert and the network all belong there, not in a tab that a layout test
     /// builds without a gateway.
     var onPublishRelease: (() -> Void)?
+    /// Stop or resume the paced rollout (`/admin/api/release/rollout/stop|resume`).
+    var onStopRollout: (() -> Void)?
+    var onResumeRollout: (() -> Void)?
 
     private lazy var controller = FleetTableController(columns: columns(), rowHeight: 44)
     private let statusLabel = PageKit.label("", .secondary, colour: .secondaryLabelColor, wrapping: true)
@@ -913,6 +916,9 @@ final class FleetLocationsTab: FleetTabView {
         if let error = state?.error, !error.isEmpty {
             addReleaseLine(error, colour: Health.warn.text)
         }
+        if let rollout = state?.rollout {
+            addRollout(rollout)
+        }
         if let report, let updated = report.updatedAt {
             addReleaseLine(
                 "Last push from this gateway: \(report.release?.versionBuild ?? "—"), "
@@ -953,10 +959,63 @@ final class FleetLocationsTab: FleetTabView {
 
     /// Disable the publish button while a push is in flight and say what it is
     /// doing, because a 1.1 GB artifact in one base64 body is a long wait.
+    /// One rollout at a time: the gateway refuses a second, so the button says so before it is pressed.
+    func setRolloutRunning(_ running: Bool) {
+        publishButton.isEnabled = !running
+        publishButton.toolTip = running ? "A rollout is running. Stop it first, or wait for it to finish." : nil
+    }
+
     func setPublishing(_ publishing: Bool, message: String) {
         publishButton.isEnabled = !publishing
         releaseStatus.isHidden = !publishing
         releaseStatus.stringValue = publishing ? message : ""
+    }
+
+    /// The paced rollout: its one line with Stop or Resume beside it, why it stopped, then each location
+    /// in order — its state and, once the release reached it, how many of its Macs run the new version
+    /// (they update themselves, one at a time).
+    private func addRollout(_ rollout: FleetRollout) {
+        let version = rollout.version ?? "the release"
+        let headline = PageKit.label(
+            "Rollout of \(version): \(rollout.summary ?? rollout.state ?? "")", .rowTitle, wrapping: true
+        )
+        headline.preferredMaxLayoutWidth = 520
+        var views: [NSView] = [headline, NSView()]
+        if rollout.isRunning {
+            views.append(FleetClosureButton(title: "Stop Rollout") { [weak self] in self?.onStopRollout?() })
+        } else if rollout.canResume {
+            views.append(FleetClosureButton(title: "Resume Rollout") { [weak self] in self?.onResumeRollout?() })
+        }
+        let head = PageKit.row(views)
+        releaseStack.addArrangedSubview(head)
+        head.widthAnchor.constraint(equalTo: releaseStack.widthAnchor).isActive = true
+        if let reason = rollout.reason, !reason.isEmpty, !rollout.isRunning {
+            addReleaseLine("Stopped: \(reason).", colour: Health.warn.text)
+        }
+        for (_, step) in rollout.orderedSteps {
+            let (text, health) = rolloutStepText(step, version: version)
+            addReleaseLine("\(step.label ?? "—") — \(text)", colour: health.map(\.text) ?? .secondaryLabelColor)
+        }
+    }
+
+    private func rolloutStepText(_ step: FleetRolloutStep, version: String) -> (String, Health?) {
+        let detail = (step.detail ?? "").trimmingCharacters(in: .whitespaces)
+        var text: String
+        var health: Health?
+        switch step.state {
+        case "sending": text = "sending the release…"; health = .info
+        case "sent": text = "sent; finishing its current work, then installing"; health = .info
+        case "installing": text = "installing and restarting"; health = .info
+        case "updated": text = "updated"; health = .ok
+        case "failed": text = detail.isEmpty ? "did not come back on \(version)" : detail; health = .bad
+        case "skipped": text = "skipped" + (detail.isEmpty ? "" : ": \(detail)"); health = .warn
+        default: text = detail.isEmpty ? "waiting" : "waiting: \(detail)"
+        }
+        if let total = step.nodesTotal, total > 0, let on = step.nodesUpdated,
+           ["sent", "installing", "updated"].contains(step.state ?? "") {
+            text += " · \(on) of \(total) Mac\(total == 1 ? "" : "s") on \(version)"
+        }
+        return (text, health)
     }
 
     private func addReleaseLine(_ text: String, colour: NSColor) {

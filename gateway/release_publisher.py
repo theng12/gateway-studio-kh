@@ -731,8 +731,13 @@ def _publish(
     allow_downgrade: bool = False,
     controller_ids: list[str] | None = None,
     auto: bool = False,
+    rollout: bool = False,
 ) -> dict[str, Any]:
     """Sign one artifact and offer it to every configured controller (or only `controller_ids`).
+
+    `controller_ids` may name `fleet.LOCAL_ID`: this Mac's own Hub, with its own token. A `rollout`
+    push (`release_rollout`, one location at a time) joins the report of the same release instead of
+    replacing it and sends no Telegram message of its own; the rollout reports when it ends.
 
     Returns the descriptor, its fingerprint, and a per-controller outcome in which
     `release` is what the controller **read back** after storing it.
@@ -772,6 +777,9 @@ def _publish(
         (str(row.get("id") or ""), row.get("label"), str(row.get("url") or ""))
         for row in fleet._read()  # noqa: SLF001 - the roster, and only controllers take a release
     ]
+    if controller_ids is not None and fleet.LOCAL_ID in controller_ids:
+        # This Mac's Hub goes first in a rollout. Only ever named, never part of "every controller".
+        rows.insert(0, (fleet.LOCAL_ID, fleet.local_label(), fleet.hub_base_url() or ""))
     if controller_ids is not None:
         # A staged rollout (a pilot controller first): only the named controllers are offered it.
         unknown = sorted(set(controller_ids) - {cid for cid, _, _ in rows})
@@ -779,7 +787,8 @@ def _publish(
             raise ReleaseError(f"Unknown controller id(s): {', '.join(unknown) or '(none given)'}.",
                                400, "RELEASE_UNKNOWN_CONTROLLER")
         rows = [row for row in rows if row[0] in set(controller_ids)]
-    tokens = {cid: fleet._token_for(cid) for cid, _, _ in rows}  # noqa: SLF001
+    tokens = {cid: (fleet.hub_token() or "") if cid == fleet.LOCAL_ID else fleet._token_for(cid)  # noqa: SLF001
+              for cid, _, _ in rows}
     results: dict[str, Any] = {}
     with ExitStack() as stack:
         pool = stack.enter_context(ThreadPoolExecutor(max_workers=max(1, len(rows))))
@@ -846,6 +855,25 @@ def _publish(
         lap("push")
 
     shown = delta_descriptor or descriptor
+    released = {
+        key: shown[key]
+        for key in ("version", "build", "filename", "bytes", "sha256", "signature",
+                    "files_sha256", "files_count", "files_bytes")
+        if key in shown
+    }
+    if rollout:
+        # One location of a paced rollout: its outcome joins the report of this release (a different
+        # release starts a new report), and the record of the file stays for the catch-up.
+        state = _read_state()
+        held = state.get("release") if isinstance(state.get("release"), dict) else {}
+        if (held.get("version"), held.get("build"), held.get("sha256")) != (
+                released.get("version"), released.get("build"), released.get("sha256")):
+            state = {"locations": {}}
+        state.update(updated_at=int(time.time()), fingerprint=fingerprint,
+                     artifact_path=str(path.resolve()), release=released, timings=timings)
+        state.setdefault("locations", {}).update(results)
+        _write_state(state)
+        return state
     if auto:
         # A catch-up completes the owner's last publish: its outcome joins that report, and the
         # release, its time and the other controllers' outcomes stay as they were.
@@ -861,16 +889,16 @@ def _publish(
         # The file itself, so a controller that missed this publish can be sent it later
         # (`catch_up`); `release.sha256`/`bytes` say whether it is still the same file.
         "artifact_path": str(path.resolve()),
-        "release": {
-            key: shown[key]
-            for key in ("version", "build", "filename", "bytes", "sha256", "signature",
-                        "files_sha256", "files_count", "files_bytes")
-            if key in shown
-        },
+        "release": released,
         "locations": results,
         "timings": timings,
     }
     _write_state(state)
+    if controller_ids is None:
+        # Every controller at once (the emergency path): the rollout is over the moment it was sent.
+        from . import release_rollout
+
+        release_rollout.record_all_at_once(target, descriptor["build"])
     try:
         from . import notifier
 
@@ -948,9 +976,10 @@ def catch_up(rows: list[dict[str, Any]], *, wait: bool = False) -> str | None:
     with the manual publish), a growing per-controller back-off after a failure, and the outcome goes
     into the last publish's report (`auto`, `at`) so the Fleet page shows it beside the others.
 
-    **Only once the release is out**: more than half of the configured controllers must already hold
-    it. A release pushed to one pilot controller is a pilot (the owner's rule: this Mac, then one
-    controller, then the rest), and catch-up must not finish a rollout he chose to stop.
+    **Only once the release is out**: no rollout may be running (it sends the release itself, one
+    controller at a time, and a catch-up push would jump its queue), and the newest release must have
+    finished its rollout — paced, or all at once (`release_rollout.finished`). A release pushed by hand
+    to a pilot controller, or a rollout that stopped, is not spread by catch-up.
 
     Returns the id of the controller a push was started for. `wait` runs it here (tests).
     """
@@ -960,10 +989,9 @@ def catch_up(rows: list[dict[str, Any]], *, wait: bool = False) -> str | None:
         return None
     version = str(latest["version"]).strip()  # type: ignore[index]
     controllers = [row for row in rows if not row.get("local") and row.get("id")]
-    on_latest = sum(1 for row in controllers if (_held_key(row) or ()) >= target)
-    # ponytail: "more than half" stands for "the rollout is finished"; an explicit "rolled out"
-    # flag on the publish is the upgrade if a half-done rollout should ever catch up by itself.
-    if on_latest * 2 <= len(controllers):
+    from . import release_rollout
+
+    if release_rollout.active() or not release_rollout.finished(version):
         return None
     behind = [
         row for row in controllers
