@@ -14,6 +14,21 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.102 — 2026-10-03
+
+Pause any group or Mac yourself.
+
+### Pause and Resume
+Fleet → a group's "…" → **Pause Group** (This Mac included), or a Mac's "…" → **Pause This Mac**. A paused group or
+Mac gets no new work; anything already running there finishes, and the pause survives restarts. It shows as a grey
+"Paused by you", never as a problem, and only you can lift it — the automatic pause after an outage never resumes
+something you paused. **Resume** brings it straight back. Pausing a single Mac inside a group needs Studio Hub 0.6.135
+on that group.
+
+### Voices on a paused Mac
+A voice whose sample this gateway keeps still goes to the fleet. A voice that exists only on a Mac you paused stops
+with a plain message instead of quietly running there.
+
 ## 0.2.101 — 2026-10-03
 
 Narration with your own cloned voices uses the whole fleet.
