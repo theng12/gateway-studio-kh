@@ -14,6 +14,16 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.107 — 2026-10-03
+
+One colour rule for every state.
+
+### Running is amber, failed is red, done is green
+Jobs, the Overview, Fleet ("Doing now", running jobs, rollout steps) and the web console all use the same colours:
+anything in progress or waiting is amber, anything that failed or needs recovery is red, anything finished is green,
+and cancelled or paused is grey. A failed job that is held for checking now says "Needs recovery" in red instead of
+an amber "failed".
+
 ## 0.2.106 — 2026-10-03
 
 Free work keeps going when a Mac goes quiet, and the Fleet page says why a Mac is offline.
