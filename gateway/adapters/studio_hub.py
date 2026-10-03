@@ -1038,14 +1038,15 @@ def _retry_item(
 
 # Voice placement, keyed by **(voice, controller)**.
 #:
-#: The value is `(kind, id, at)`: either the controller's own library voice or an
-#: asset staged for one attempt. Keyed by voice alone — which it was — a reference
-#: staged on one location was handed to the next location that asked for the same
+#: The value is `("asset", asset_id, staged_at)`. Keyed by voice alone — which it was — a
+#: reference staged on one location was handed to the next location that asked for the same
 #: voice, and that location had never seen the asset. Invisible with a single
 #: location, which is why it survived; with several it fails the moment a second
 #: controller reuses a cached voice.
 _REFERENCE_CACHE: dict[tuple[str, str, str], tuple[str, str, float]] = {}
 _REFERENCE_TTL_S = 6 * 3600.0
+#: How long the Hub keeps a staged clip: the reuse window plus room for a queued job.
+_STAGED_TTL_S = _REFERENCE_TTL_S + 6 * 3600.0
 
 
 def _remember_reference(key: tuple[str, str, str], kind: str, value: str) -> None:
@@ -1092,57 +1093,27 @@ def _clip_digest(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def _library_voice_for(
-    client: httpx.Client, base: str, headers: dict[str, str], digest: str
-) -> str:
-    """The controller's own voice id for a clip it already holds, or "".
-
-    The library carries `audio_sha256`, which the Studio Hub session verified is
-    the sha256 of the stored reference file byte-for-byte. Matching on it is exact,
-    and it is also the only safe match: the gateway names this recording
-    `voice-0616aec33b41` where the controller names it `0616aec33b41`, so matching
-    on ids would be a translation this side would have to guess. The hash is a
-    fact.
-
-    Never raises. A controller that does not serve this route, or whose credential
-    may not read it, falls back to staging the clip — which is what happened
-    before this existed, so the failure mode is exactly the old behaviour.
-    """
-    try:
-        response = client.get(f"{base}/studio/voice/api/voices", headers=headers)
-    except httpx.HTTPError:
-        return ""
-    if response.status_code >= 400:
-        return ""
-    try:
-        voices = (response.json() or {}).get("voices") or []
-    except ValueError:
-        return ""
-    for voice in voices:
-        if str(voice.get("audio_sha256") or "") == digest:
-            return str(voice.get("id") or "")
-    return ""
-
-
 def _voice_placement(
     client: httpx.Client,
     base: str,
     headers: dict[str, str],
     voice_id: str,
     reference: dict[str, Any],
-) -> tuple[str, str]:
-    """Where the controller should take this voice from: `("library"|"asset", id)`.
+) -> str:
+    """The `voice_reference_asset_id` this location should clone from: the clip, staged there.
 
-    A library voice is one the controller already holds; an asset is a clip staged
-    for this one attempt. They are **mutually exclusive** in the Hub's job payload
-    — its broker refuses both with "Use either voice_library_id or
-    voice_reference_asset_id, not both" — so exactly one is returned.
+    **The clip travels with the job; a library id does not.** This used to send the
+    controller's own `voice_library_id` whenever that controller's Voice Studio held a clip
+    with the same sha256. A library id names an entry on *one* Voice Studio, and the Hub's
+    broker sends an id it does not manage as a shared voice to any of its workers
+    (`broker._shared_voice_allows_studio` returns "allowed" for an unknown id), including
+    a node that has never heard of it. A staged reference is carried by the broker to
+    whichever Mac runs the job (`/api/generate/txt2speech/reference`), checked against the
+    same sha256 at every hop, so one placement serves every Mac of the location.
 
-    The library wins whenever the controller already has the recording. Skipping
-    the upload there is not only a saving: the controller's own entry is the
-    durable form of the voice, while a staged asset is a copy made to serve one
-    job. On this Mac all ten reference clips already match, so every one of those
-    uploads was avoidable.
+    `ponytail:` one upload of the clip per (voice, location, recording) per
+    `_REFERENCE_TTL_S`; a voice library big enough for that to matter would want the Hub
+    to sync gateway voices instead.
     """
     path = Path(str(reference.get("path") or ""))
     if not path.exists():
@@ -1152,24 +1123,14 @@ def _voice_placement(
             upstream_accepted=False,
         )
     # Read before the cache, not after it: which recording this is *is* part of the
-    # question the cache answers. Hashing a reference clip per job is a few
-    # hundred kilobytes of I/O, and the alternative is answering about the wrong
-    # audio for six hours.
-    digest = _clip_digest(path)
-
-    key = _reference_cache_key(voice_id, base, digest)
+    # question the cache answers.
+    key = _reference_cache_key(voice_id, base, _clip_digest(path))
     cached = _REFERENCE_CACHE.get(key)
     if cached and (time.time() - cached[2]) < _REFERENCE_TTL_S:
-        return cached[0], cached[1]
-
-    node_voice_id = _library_voice_for(client, base, headers, digest)
-    if node_voice_id:
-        _remember_reference(key, "library", node_voice_id)
-        return "library", node_voice_id
-
+        return cached[1]
     asset_id = _stage_voice_reference(client, base, headers, voice_id, path, reference)
     _remember_reference(key, "asset", asset_id)
-    return "asset", asset_id
+    return asset_id
 
 
 def _reference_for(request: BackendRequest) -> dict[str, Any] | None:
@@ -1270,9 +1231,6 @@ def _stage_voice_reference(
     "Voice cloning needs a reference voice or private reference upload". So the
     clip is staged first and passed as `voice_reference_asset_id`.
 
-    This is the **fallback** now: `_voice_placement` reaches it only when the
-    controller does not already hold the recording.
-
     Everything the route accepts is sent, and the answer is checked. The clip's
     language, its declared checksum and the durable source it came from are all
     part of what the Hub stores and fingerprints: sending only the audio left the
@@ -1298,9 +1256,10 @@ def _stage_voice_reference(
         # the reference a voice is cloned from.
         "sha256": digest,
         "source_asset_id": str(reference.get("source_id") or voice_id)[:500],
-        # At least as long as this gateway will reuse the placement, so an asset
-        # cannot expire while the cache still believes it is staged.
-        "ttl_seconds": str(int(_REFERENCE_TTL_S)),
+        # Outlives the placement cache by a queue's worth: an asset reused just before
+        # the cache lets go still has to be readable when a busy Hub finally dispatches
+        # the job (the adapter's queue ceiling is 3 h).
+        "ttl_seconds": str(int(_STAGED_TTL_S)),
     }
     try:
         response = client.post(
@@ -1346,8 +1305,7 @@ def _stage_voice_reference(
         transcript=bool(transcript.strip() or segments),
     )
 
-    # Caching happens in `_voice_placement`, which is the only caller: it caches
-    # the *placement* (library or asset), not the asset id alone.
+    # Caching happens in `_voice_placement`, which is the only caller.
     return asset_id
 
 
@@ -1427,11 +1385,9 @@ def _generate_image_or_voice(request: BackendRequest) -> BackendResult:
             voice_id = str(request.params.get("voice_id") or "")
             reference = _reference_for(request)
             if reference is not None:
-                kind, value = _voice_placement(client, base, headers, voice_id, reference)
-                # Exactly one of these, never both: the Hub's broker refuses the
-                # pair with "Use either voice_library_id or
-                # voice_reference_asset_id, not both."
-                body["voice_library_id" if kind == "library" else "voice_reference_asset_id"] = value
+                body["voice_reference_asset_id"] = _voice_placement(
+                    client, base, headers, voice_id, reference
+                )
         try:
             response = client.post(f"{base}/api/hub/jobs", headers=headers, json=body)
         except (httpx.ConnectError, httpx.ConnectTimeout) as exc:

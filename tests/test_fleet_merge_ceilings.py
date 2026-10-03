@@ -88,6 +88,37 @@ class AMergedRowTakesTheSmallestCeilingTest(unittest.TestCase):
         self.assertEqual(merged["maximum_input_characters"], 15000)
 
 
+class OneNarrationMayUseEveryMacOfferingTheModelTest(unittest.TestCase):
+    """Story fans out one narration's sections up to `provider_submit_concurrency`; absent, it
+    narrates one section at a time (measured 2026-10-03: every chapter waited for the last)."""
+
+    def test_sites_add_their_tts_slots(self) -> None:
+        row = {"provider_submit_concurrency": 4}
+        catalog._merge_capabilities(row, {"provider_submit_concurrency": 9}, "tts")
+        self.assertEqual(row["provider_submit_concurrency"], 13)
+
+    def test_a_site_with_none_neither_adds_nor_erases(self) -> None:
+        row = {"provider_submit_concurrency": 4}
+        catalog._merge_capabilities(row, {"provider_submit_concurrency": None}, "tts")
+        self.assertEqual(row["provider_submit_concurrency"], 4)
+        row = {"provider_submit_concurrency": None}
+        catalog._merge_capabilities(row, {"provider_submit_concurrency": None}, "tts")
+        self.assertIsNone(row["provider_submit_concurrency"], "zero is unknown, never a limit of 0")
+
+    def test_the_figure_is_the_live_capacity_admission_enforces(self) -> None:
+        from unittest.mock import patch
+        from gateway import concurrency
+        live = {"locations": [
+            {"provider_id": "studio-hub-a", "by_modality": {"tts": 7}},
+            {"provider_id": "studio-hub-b", "reachable": False, "by_modality": {"tts": 0}},
+        ]}
+        with patch.object(concurrency, "live_capacity", return_value=live):
+            self.assertEqual(catalog._tts_slots_by_location(),
+                             {"studio-hub-a": 7, "studio-hub-b": 0})
+        with patch.object(concurrency, "live_capacity", side_effect=RuntimeError("fleet down")):
+            self.assertEqual(catalog._tts_slots_by_location(), {})
+
+
 class NoInventedWorkerCountIsPublishedTest(unittest.TestCase):
     def test_a_transcription_row_does_not_claim_a_worker_count(self) -> None:
         # Built through the real row builder, against a stub definition, so the assertion is

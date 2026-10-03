@@ -877,7 +877,7 @@ class VoiceReferenceMetadataTests(_HubCase):
             ("language", b"en"),
             ("sha256", digest.encode()),
             ("source_asset_id", b"voice-abc123"),
-            ("ttl_seconds", str(int(hub_module._REFERENCE_TTL_S)).encode()),
+            ("ttl_seconds", str(int(hub_module._STAGED_TTL_S)).encode()),
             ("transcript_segments", b"hello there"),
         ):
             self.assertIn(f'name="{field}"'.encode(), body, f"{field} was not sent")
@@ -940,6 +940,28 @@ class VoiceReferenceMetadataTests(_HubCase):
         self.assertEqual(submitted["voice_reference_asset_id"], "staged-asset-1")
         self.assertNotIn("voice_library_id", submitted)
         self.assertIsNotNone(result.content)
+        # The clip travels with the job: the controller's own library is never asked, because a
+        # library id names an entry on one Mac and the broker may run the job on another.
+        self.assertNotIn(("GET", "/studio/voice/api/voices"), hub.calls)
+
+    def test_the_clip_is_staged_once_per_location_and_reused(self) -> None:
+        clip = self._clip()
+        hub = _Hub(reference=self._staged_payload(clip))
+        reference = self._reference(clip)
+        hub_module._REFERENCE_CACHE.clear()
+        client = httpx.Client(transport=httpx.MockTransport(hub.handler))
+        try:
+            with self.hub_client(hub):
+                for _ in range(3):
+                    asset = hub_module._voice_placement(
+                        client, HUB, {"X-Hub-Token": "t"}, "voice-abc123", reference)
+                    self.assertEqual(asset, "staged-asset-1")
+        finally:
+            client.close()
+            hub_module._REFERENCE_CACHE.clear()
+        self.assertEqual(hub.calls.count(("POST", "/api/hub/voice-references")), 1)
+        # A reused asset must outlive the reuse window, or a queued job finds it expired.
+        self.assertGreater(hub_module._STAGED_TTL_S, hub_module._REFERENCE_TTL_S)
 
 
 class UncertainIsARecoveryHoldTests(_HubCase):

@@ -633,8 +633,8 @@ def execute_job(job: dict[str, Any], store: JobStore) -> None:
         row = store.get(job_id) or {}
         if row.get("cancel_requested_at") is not None:
             cancel_upstream(row, store)
-    # A voice is pinned to the controller that holds its reference clip, so a
-    # refusal there is final. Any other job may be tried at the next location that
+    # A voice whose clip only one Hub holds is pinned there, so a refusal there is
+    # final (a clone the gateway holds is staged wherever the job runs and pins nothing). Any other job may be tried at the next location that
     # offers the same model: `LOCATION_NOT_READY` is a property of the site, not of
     # the job, and the adapter proved the Hub accepted nothing before it refused.
     pinned = fleet.pinned_location(params)

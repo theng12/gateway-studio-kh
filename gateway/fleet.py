@@ -152,14 +152,42 @@ def pinned_location(params: dict) -> str | None:
     same cross-location path a voice owned elsewhere already uses. An owner the
     snapshot cannot classify keeps the pin, because misrouting a voice whose clip
     lives on one Hub is worse than a refusal that names the reason.
+
+    **A clone whose clip this gateway holds pins nothing** (`_clip_travels_with_job`).
     """
     if not isinstance(params, dict):
         return None
     for key in _VOICE_PIN_KEYS:
-        location_id = location_for_voice(str(params.get(key) or ""))
+        value = str(params.get(key) or "")
+        location_id = location_for_voice(value)
         if location_id:
+            if key == "voice_id" and _clip_travels_with_job(value):
+                continue
             return location_id if _location_takes_customer_jobs(location_id) else None
     return None
+
+
+def _clip_travels_with_job(voice_id: str) -> bool:
+    """Whether this gateway holds the voice's reference clip, so the clip can go with the job.
+
+    The gateway's own voices are published as `studio-hub-local::voice-…`, and the pin read that
+    namespace as "the clip lives on this Mac's Hub". It does not: it lives in the gateway's voice
+    library, and the adapter stages it at whichever location runs the job
+    (`studio_hub._stage_voice_reference`, `POST /api/hub/voice-references` — "a clone reference
+    travels with the job that uses it"). The Hub refuses bytes that do not match the declared
+    sha256, the adapter checks the digest the Hub kept, and the worker checks it again, so the
+    voice is the same recording everywhere. The pin protected none of that and held every chapter
+    of a narration on one Mac while the fleet sat idle (measured 2026-10-03: 36 of 37 TTS jobs on
+    `studio-hub-local`, ~14 min each, one at a time).
+
+    A voice whose clip lives only on a Hub (a controller's shared voice) is not in this library and
+    keeps its pin, as does a library entry whose file is missing (the adapter would refuse it).
+    """
+    from .voices import resolve  # lazy: `voices` imports this module
+
+    voice = resolve(voice_id)
+    path = str(((voice.raw or {}) if voice is not None else {}).get("reference_path") or "")
+    return bool(path) and Path(path).is_file()
 
 
 def _location_takes_customer_jobs(location_id: str) -> bool:
