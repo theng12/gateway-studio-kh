@@ -55,6 +55,25 @@ class HubStatedTtsLimitTests(unittest.TestCase):
         self.assertEqual((row["maximum_input_characters"], row["maximum_input_characters_source"]),
                          (5000, "provider"))
 
+    def test_the_uniform_hub_request_size_passes_through_for_every_voice_model(self) -> None:
+        # Owner 2026-10-03: Studio Hub publishes 1,500 for every voice model (Breeze's measured
+        # slowest-Mac size), not only for Breeze; the gateway's 15,000 is only for a Hub that
+        # publishes nothing (an older build).
+        for family in ("breeze-tts", "voxcpm-mlx", "fish-audio-mlx", "omnivoice", "qwen3-tts",
+                       "chatterbox-mlx", "pocket-tts"):
+            raw = {"family": family, "lane_contract": {
+                "maximum_input_characters": 1500,
+                "maximum_input_characters_source": {"evidence": "owner_uniform"}}}
+            self.assertEqual(self._limit(raw), (1500, "provider"), family)
+            row = catalog._tts_row("m", _definition("studio-hub-local", KIND_STUDIO_HUB), {"raw": raw})
+            self.assertEqual(row["maximum_input_characters"], 1500, family)
+        merged = {"maximum_input_characters": catalog._TTS_CHARACTERS_LOCAL,
+                  "maximum_input_characters_source": "gateway"}
+        catalog._merge_capabilities(
+            merged, {"maximum_input_characters": 1500, "maximum_input_characters_source": "provider"},
+            "tts")
+        self.assertEqual(merged["maximum_input_characters"], 1500)
+
     def test_the_published_tts_row_carries_it(self) -> None:
         row = catalog._tts_row(
             "m", _definition("studio-hub-local", KIND_STUDIO_HUB), {"raw": {"maximum_input_characters": 5000}})

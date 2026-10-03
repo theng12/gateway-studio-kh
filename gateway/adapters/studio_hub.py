@@ -1429,7 +1429,9 @@ def _generate_image_or_voice(request: BackendRequest) -> BackendResult:
                 item["params"]["reference_images"] = reference
     else:
         item["text"] = str(request.params.get("text") or "")
-        for key in ("speed", "voice_id", "language", "temperature", "seed", "output_format"):
+        for key in ("speed", "voice_id", "language", "temperature", "seed", "output_format",
+                    # Join pauses (Hub-validated, 0-3 s); a node that predates them drops them.
+                    "paragraph_pause_sec", "sentence_pause_sec"):
             if request.params.get(key) is not None:
                 item["params"][key] = request.params[key]
         # **A control is a parameter, not a nested object.** Story sends the controls the catalogue
