@@ -122,7 +122,10 @@ class RerouteTests(_Case):
         self.assertEqual((job["state"], job["provider_id"]), ("succeeded", A), job.get("error_detail"))
         self.assertEqual(fleet.created["a"], 2, "the Hub keeps a request id for good: a repeat would replay the dead batch")
         self.assertEqual(sorted(k.split(":", 1)[1] for k in fleet.batches if k.startswith("a:")),
-                         [job["id"], job["id"] + "~1"])
+                         [job["id"], job["id"] + ".1"])
+        # The Hub refuses anything outside its pattern (broker.py _CLIENT_REQUEST_ID_PATTERN) with a 400.
+        for key in fleet.batches:
+            self.assertRegex(key.split(":", 1)[1], r"\A[A-Za-z0-9._:-]{8,160}\Z")
         self.assertIsNone(job["defer_reason"])
 
     def test_a_job_that_waited_is_not_bound_by_the_locations_it_tried_before(self) -> None:

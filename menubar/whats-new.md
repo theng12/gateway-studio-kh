@@ -14,6 +14,10 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.116 — 2026-10-04
+
+When a Mac turns a job down because it is short of memory, the job now really moves on to another Mac. Since 0.2.114 the re-sent job carried a name the Mac refuses, so it failed and had to be retried by hand.
+
 ## 0.2.115 — 2026-10-04
 
 A job meant for one particular shop Mac now stops straight away with "nothing was charged" when someone starts using that Mac, instead of waiting.

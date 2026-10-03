@@ -109,7 +109,7 @@ def _client_request_id(store: Any, job_id: str, provider_id: str) -> str:
         if entry.get("code") in _HANDBACK_CODES
         and (fleet.controller_id_from(str(entry.get("location") or "")) or entry.get("location")) == here
     )
-    return f"{job_id}~{handed_back}" if handed_back else job_id
+    return f"{job_id}.{handed_back}" if handed_back else job_id
 
 
 def _defer_delay(attempts: int, cap_s: float | None = None) -> float:
