@@ -1785,14 +1785,15 @@ class _Clock:
 class QueueWaitTests(_HubCase):
     """Queue wait does not consume the lane budget (owner decision, 2026-09-30)."""
 
-    def _poll(self, hub: _Hub, *, deadline: float, waits: list | None = None) -> dict[str, Any]:
+    def _poll(self, hub: _Hub, *, deadline: float, waits: list | None = None,
+              **kwargs: Any) -> dict[str, Any]:
         clock = _Clock()
         fake = SimpleNamespace(monotonic=clock.monotonic, sleep=clock.sleep, time=clock.time)
         with patch.object(hub_module, "time", fake), self.hub_client(hub), \
                 httpx.Client() as client:
             return hub_module._poll_batch(
                 client, HUB, {}, BATCH, 0, deadline_seconds=deadline,
-                on_wait=(waits.append if waits is not None else None),
+                on_wait=(waits.append if waits is not None else None), **kwargs,
             )
 
     def test_time_spent_queued_does_not_count_against_the_lane_deadline(self) -> None:
@@ -1817,6 +1818,57 @@ class QueueWaitTests(_HubCase):
                 self._poll(hub, deadline=10)
         self.assertEqual(caught.exception.code, "PROVIDER_SUBMISSION_UNCERTAIN")
         self.assertEqual(hub.deletes, [f"/api/hub/jobs/{BATCH}"])
+
+    # A poll that starts mid-render (a Gateway restart resuming the batch) keeps the job's clock.
+    def test_a_resumed_job_near_its_deadline_times_out_on_the_hubs_elapsed_not_from_zero(self) -> None:
+        hub = _Hub(states=["running"], item={"elapsed_s": 890.0})  # 10 s left of 900
+        with patch.object(hub_module, "CANCEL_SETTLE_S", 0.0):
+            clock = _Clock()
+            with self.assertRaises(BackendError) as caught:
+                self._poll_with(clock, hub, deadline=900)
+        self.assertEqual(caught.exception.code, "PROVIDER_SUBMISSION_UNCERTAIN")
+        self.assertEqual(hub.deletes, [f"/api/hub/jobs/{BATCH}"])
+        self.assertLess(clock.now, 30, "counted from the Hub's 890 s, not from a fresh 900 s")
+
+    def test_a_resumed_job_already_past_its_deadline_is_stopped_at_the_first_answer(self) -> None:
+        hub = _Hub(states=["running"], item={"elapsed_s": 1500.0})
+        with patch.object(hub_module, "CANCEL_SETTLE_S", 0.0):
+            clock = _Clock()
+            with self.assertRaises(BackendError):
+                self._poll_with(clock, hub, deadline=900)
+        self.assertLess(clock.now, 5)
+
+    def test_a_fresh_job_is_unaffected_by_the_catch_up(self) -> None:
+        hub = _Hub(states=["running"] * 20 + ["done"], item={"elapsed_s": 3.0})
+        outcome = self._poll(hub, deadline=100)  # 20 s of running, well inside 100 s
+        self.assertEqual(outcome["item"]["state"], "done")
+        self.assertEqual(hub.deletes, [])
+
+    def test_a_hub_that_reports_no_elapsed_falls_back_to_the_recorded_dispatch_time(self) -> None:
+        hub = _Hub(states=["running"])
+        clock = _Clock()
+        with patch.object(hub_module, "CANCEL_SETTLE_S", 0.0):
+            with self.assertRaises(BackendError):
+                # dispatched 890 s before this poll began, no `elapsed_s` anywhere
+                self._poll_with(clock, hub, deadline=900, dispatched_at=clock.time() - 890.0)
+        self.assertLess(clock.now, 30)
+        self.assertEqual(hub.deletes, [f"/api/hub/jobs/{BATCH}"])
+
+    def test_the_dispatch_time_fallback_counts_once_and_not_for_a_fresh_job(self) -> None:
+        hub = _Hub(states=["running"] * 5 + ["done"])
+        outcome = self._poll(hub, deadline=900, dispatched_at=_Clock().time() - 100.0)
+        self.assertEqual(outcome["item"]["state"], "done")  # 100 + 5, not 100 per poll
+        fresh = _Hub(states=["running"] * 5 + ["done"])
+        self.assertEqual(self._poll(fresh, deadline=900)["item"]["state"], "done")
+
+    def _poll_with(self, clock: _Clock, hub: _Hub, **kwargs: Any) -> dict[str, Any]:
+        fake = SimpleNamespace(monotonic=clock.monotonic, sleep=clock.sleep, time=clock.time)
+        deadline = kwargs.pop("deadline")
+        with patch.object(hub_module, "time", fake), self.hub_client(hub), \
+                httpx.Client() as client:
+            return hub_module._poll_batch(client, HUB, {}, BATCH, 0,
+                                          deadline_seconds=deadline, **kwargs)
+
 
     def test_a_batch_queued_past_the_ceiling_is_withdrawn_and_may_be_rerouted(self) -> None:
         hub = _Hub(states=["queued"])
@@ -1927,6 +1979,23 @@ class RestartResumesInFlightTests(_HubCase):
         self.assertEqual(Path(job["asset_path"]).read_bytes(), b"artifact-bytes")
         self.assertNotIn(("POST", "/api/hub/jobs"), hub.calls, "resumed, never resubmitted")
         self.assertEqual(hub.acks, [f"/api/hub/jobs/{BATCH}/items/0/ack"])
+
+    def test_a_resumed_job_that_already_ran_past_its_limit_is_stopped_not_given_a_fresh_budget(self) -> None:
+        store, job_id = self._interrupted("resume-late")
+        hub = _Hub(states=["running"], item={"elapsed_s": 5000.0})  # far past the 900 s fallback
+        seen: list[Any] = []
+        real = hub_module.StudioHubBackend.resume
+
+        def spy(backend: Any, request: BackendRequest) -> Any:
+            seen.append(request.dispatch_started_at)
+            return real(backend, request)
+
+        with patch.object(hub_module, "CANCEL_SETTLE_S", 0.0), \
+                patch.object(hub_module.StudioHubBackend, "resume", spy):
+            self._resume(hub, store)
+        self.assertEqual(hub.deletes, [f"/api/hub/jobs/{BATCH}"], "the Hub is told to stop it")
+        self.assertEqual(seen, [store.get(job_id)["dispatch_started_at"]])
+        self.assertIsNotNone(seen[0])
 
     def test_a_batch_the_hub_does_not_know_is_an_unknown_outcome(self) -> None:
         store, job_id = self._interrupted("resume-404")

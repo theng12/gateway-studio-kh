@@ -577,6 +577,7 @@ def _poll_batch(
     deadline_seconds: float | None = None,
     progress: HubProgress | None = None,
     on_wait: Callable[[dict[str, Any] | None], None] | None = None,
+    dispatched_at: float | None = None,
 ) -> dict[str, Any]:
     """Poll a Hub batch to a terminal state.
 
@@ -594,6 +595,14 @@ def _poll_batch(
     it will try again), so the job can say "waiting for a Mac" instead of looking merely slow.
     `QUEUE_WAIT_CEILING_S` is the only bound on that wait, and it cancels rather than guesses.
 
+    **The run clock is the job's, not this call's.** A poll that begins mid-render -- a Gateway
+    restart resuming a batch -- must not start the budget from zero, or the limit would apply per
+    Gateway process and a job resumed several times would run far past it. So while the item is
+    `running` the clock is taken from the Hub's own `elapsed_s` (computed from its `run_started`,
+    so no clock skew between machines). A Hub that does not report it falls back to
+    `dispatched_at`, the epoch time this Gateway recorded when it dispatched the job (counted
+    once, from the first running answer); `None` for a fresh job, which has nothing to catch up on.
+
     `progress` is filled in as we go and read by the caller afterwards. It is passed
     in rather than returned because the interesting case is the one that **raises**:
     a job that times out after being stalled for most of its window is exactly what
@@ -607,6 +616,7 @@ def _poll_batch(
     running = False
     waiting_key: tuple[Any, ...] | None = None
     waiting_since = 0.0
+    caught_up = False  # `ran` has been seeded from the job's own start (`dispatched_at` fallback)
     last: dict[str, Any] = {}
     #: When the current run of consecutive poll failures began, or `None` while the
     #: Hub is answering. Reset by any successful poll, so a Hub that drops one
@@ -691,6 +701,14 @@ def _poll_batch(
         item = items[item_index] if item_index < len(items) else None
         state = str((item or {}).get("state") or summary.get("state") or "").lower()
         running = state != "queued"
+        if state == "running":
+            reported = (item or {}).get("elapsed_s")
+            if isinstance(reported, (int, float)) and not isinstance(reported, bool) and reported >= 0:
+                ran = max(ran, float(reported))
+                caught_up = True
+            elif not caught_up and dispatched_at:
+                ran = max(ran, time.time() - float(dispatched_at))
+                caught_up = True
         if on_wait is not None:
             if state == "queued":
                 reason = str((item or {}).get("error") or summary.get("governor_note") or
@@ -1971,6 +1989,7 @@ class StudioHubBackend:
                     client, base, headers, batch_id, request.upstream_item_index,
                     jobs_path=jobs_path, deadline_seconds=lane_deadline_seconds(request),
                     progress=progress, on_wait=request.on_wait,
+                    dispatched_at=request.dispatch_started_at,
                 )
             except BackendError as exc:
                 if exc.status != 404:

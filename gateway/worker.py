@@ -694,6 +694,7 @@ def _dispatch(job: dict[str, Any], store: JobStore, provider_id: str, model_id: 
             checkpoint=on_accepted if record_acceptance is not None else None,
             on_wait=on_wait,
             upstream_job_id=resume_id,
+            dispatch_started_at=(current.get("dispatch_started_at") if resume_id else None),
         )
         adapter = adapter_for(definition)
         if job.get("waiting_json") or current.get("waiting_json"):
