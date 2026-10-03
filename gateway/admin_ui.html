@@ -583,7 +583,7 @@
       walks the list until one answers, so a spent free lane or a retired model costs a retry
       instead of the job. A member that runs out of quota is remembered and skipped until its
       limit resets; if every member is out, the one that comes back soonest is tried. In a pool
-      with free and paid members, paid ones are used only when the free ones are out for the day;
+      with free and paid members, paid ones are used only when the free ones are out for the day or busy for 15 minutes;
       a free member that is only on a per-minute limit is waited for instead. Edits take effect at once.
     </p>
     <div id="pool-editor"></div>
@@ -2417,7 +2417,7 @@ function renderPoolList() {
             ${pool.resolvable_count} of ${pool.members.length} members can answer${cooling ? `, ${cooling} out of quota` : ''}
             ${pool.description ? ` · ${esc(pool.description)}` : ''}
           </div>
-          ${pool.paid_last_resort ? '<div class="hint" style="margin-top:4px">Paid members are used only when the free ones are out for the day.</div>' : ''}
+          ${pool.paid_last_resort ? '<div class="hint" style="margin-top:4px">Paid members are used only when the free ones are out for the day, or busy for 15 minutes.</div>' : ''}
         </div>
         <div class="card-actions">
           <button onclick="editPool('${esc(pool.name)}')">Edit Pool</button>
@@ -2427,7 +2427,7 @@ function renderPoolList() {
       <ol class="pool-members">
         ${pool.members_detail.map(m => {
           const i = poolMemberInfo(m.id, m, null);
-          const chip = pool.paid_last_resort && m.paid ? '<span class="badge" title="Used only when every free member is out for the day.">Paid · last resort</span> ' : '';
+          const chip = pool.paid_last_resort && m.paid ? '<span class="badge" title="Used only when every free member is out for the day or busy for 15 minutes.">Paid · last resort</span> ' : '';
           return `<li><span class="pm-main"><b>${esc(i.name)}</b>
             <span class="muted">${esc(i.provider)}</span></span>${chip}${i.badge}</li>`;
         }).join('')}

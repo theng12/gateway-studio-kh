@@ -783,16 +783,38 @@ class PoolPaidLastResortTests(_TempEnv):
         self.assertLess(self.slept, 10, "the wait notices the cancel within a step or two")
         self.assertEqual([], adapters["f1::x"].calls + adapters["paid::x"].calls)
 
-    def test_free_members_that_keep_hitting_the_minute_limit_fail_rather_than_pay(self):
-        from gateway.adapters.base import BackendError
-
+    def test_free_members_on_the_minute_limit_for_the_whole_ceiling_fall_back_to_paid(self):
         self.pools.create("mix", ["f1::x", "paid::x"])
         backend, adapters = self._backend({"f1::x": self._quota(), "paid::x": self._ok("paid")})
+        with self.assertLogs("gateway.adapters.pool", "WARNING") as logs:
+            result = backend.generate(self._request())
+        self.assertEqual("paid", result.text)
+        self.assertEqual(1, len(adapters["paid::x"].calls))
+        self.assertGreater(self.slept, 0, "it waited for the free member first")
+        self.assertLessEqual(self.slept, self.adapter_module.FREE_WAIT_CEILING_S)
+        pool = result.payload["pool"]
+        self.assertTrue(pool["paid"])
+        outcomes = [a["outcome"] for a in pool["attempts"]]
+        self.assertEqual(["wait-ceiling", "answered"], outcomes[-2:])
+        self.assertEqual({"member": "paid::x", "outcome": "answered", "paid": True}, pool["attempts"][-1])
+        self.assertIn("free members rate-limited for 15 min → used paid member paid::x", logs.output[0])
+
+    def test_the_ceiling_fallback_goes_through_the_paid_members_in_order(self):
+        from gateway.adapters.base import BackendError
+
+        self.pools.create("mix", ["f1::x", "p1::x", "p2::x"])
+        backend, adapters = self._backend({
+            "f1::x": self._quota(),
+            "p1::x": BackendError("boom", code="PROVIDER_FAILED", status=503),
+            "p2::x": self._ok("p2")})
+        self.assertEqual("p2", backend.generate(self._request()).text)
+        self.assertEqual(1, len(adapters["p1::x"].calls))
+
+        backend, adapters = self._backend({"f1::x": self._quota(), "p1::x": self._quota(),
+                                           "p2::x": BackendError("boom", code="PROVIDER_FAILED", status=503)})
         with self.assertRaises(BackendError) as caught:
             backend.generate(self._request())
-        self.assertEqual(429, caught.exception.status)
-        self.assertEqual([], adapters["paid::x"].calls)
-        self.assertLessEqual(self.slept, self.adapter_module.FREE_WAIT_CEILING_S)
+        self.assertEqual(503, caught.exception.status, "the last real failure, once paid ones fail too")
 
     def test_a_pool_of_only_paid_members_walks_as_before(self):
         self.pools.create("mix", ["p1::x", "p2::x"])
