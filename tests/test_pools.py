@@ -639,6 +639,192 @@ class PoolAdminTests(_TempEnv):
         self.assertIn("namespaced", str(caught.exception))
 
 
+class PoolPaidLastResortTests(_TempEnv):
+    """Owner decision 2026-10-03: a paid member is used only when every free member is out for
+    the DAY (or unavailable); a free member on a per-minute limit is waited for instead.
+
+    Members whose provider id starts with `f` are free (`free_tier`); the rest are paid by the
+    catalogue's own rule (no price stated is never read as free).
+    """
+
+    NOW = 1_800_000_000.0
+
+    def setUp(self):
+        super().setUp()
+        from gateway.adapters import pool as pool_adapter
+
+        self.adapter_module = pool_adapter
+        self.now = self.NOW
+        self.slept = 0.0
+        self.on_sleep = None
+        for patcher in (
+            patch.object(self.cooldowns, "_clock", lambda: self.now),
+            patch.object(pool_adapter, "_sleep", self._sleep),
+        ):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def _sleep(self, seconds):
+        self.now += seconds
+        self.slept += seconds
+        if self.on_sleep:
+            self.on_sleep()
+
+    def _backend(self, outcomes):
+        from gateway.adapters.pool import PoolBackend
+        from gateway.providers.definitions import ProviderDefinition
+
+        adapters = {m: _FakeAdapter(o) for m, o in outcomes.items()}
+
+        def resolve(_modality, member):
+            if member not in adapters:
+                return None, None
+            provider = member.split("::")[0]
+            return ProviderDefinition(
+                id=provider, display_name=provider, category="language", kind="openai_compatible",
+                base_url="http://example.test", modalities=("chat",), discovery="static",
+                free_tier=provider.startswith("f"),
+            ), {"model_id": "x"}
+
+        backend = PoolBackend()
+        backend.attach(resolve, lambda definition: adapters[f"{definition.id}::x"])
+        return backend, adapters
+
+    def _request(self, **params):
+        from gateway.adapters.base import BackendRequest
+
+        return BackendRequest(provider_id="pool", model_id="mix", modality="chat",
+                              params={"messages": [], **params}, values={}, base_url="")
+
+    _quota = PoolQuotaMemoryTests._quota
+    _ok = PoolQuotaMemoryTests._ok
+
+    def _daily(self, member):
+        self.cooldowns.mark(member, self.NOW + 10 * 3600, kind="daily", reason="PerDay")
+
+    def test_the_split_is_the_catalogues_free_paid_rule(self):
+        from gateway import pricing
+        from gateway.providers.definitions import ProviderDefinition
+
+        def definition(pid, free=False):
+            return ProviderDefinition(id=pid, display_name=pid, category="language",
+                                      kind="openai_compatible", base_url="", modalities=("chat",),
+                                      discovery="static", free_tier=free)
+
+        self.assertFalse(pricing.model_chargeable(definition("google-ai-free", True),
+                                                  {"model_id": "gemini-3.8-flash"}))
+        luna = {"model_id": "openai/gpt-6-luna",
+                "raw": {"pricing": {"prompt": "0.0000001", "completion": "0.0000005"}}}
+        self.assertTrue(pricing.model_chargeable(definition("openrouter-main"), luna))
+
+    def test_a_free_member_on_a_minute_limit_is_waited_for_and_paid_is_never_called(self):
+        self.pools.create("mix", ["f1::x", "f2::x", "paid::x"])
+        backend, adapters = self._backend(
+            {"f1::x": self._quota(retry_after=40), "f2::x": self._ok("f2"), "paid::x": self._ok("paid")})
+        self._daily("f2::x")
+
+        def back():
+            adapters["f1::x"].outcome = self._ok("f1 after the wait")
+        self.on_sleep = back
+        waits = []
+        request = self._request()
+        request.on_wait = waits.append
+
+        result = backend.generate(request)
+        self.assertEqual("f1 after the wait", result.text)
+        self.assertEqual([], adapters["paid::x"].calls, "a per-minute limit never costs money")
+        self.assertGreaterEqual(self.slept, 40)
+        self.assertFalse(result.payload["pool"]["paid"])
+        self.assertIn("waited", [a["outcome"] for a in result.payload["pool"]["attempts"]])
+        self.assertIn("per-minute", waits[0]["reason"])
+        self.assertIsNone(waits[-1], "the job is told the wait is over")
+
+    def test_when_every_free_member_is_out_for_the_day_the_paid_one_answers(self):
+        self.pools.create("mix", ["f1::x", "f2::x", "paid::x"])
+        backend, adapters = self._backend(
+            {"f1::x": self._ok("f1"), "f2::x": self._quota(quota_scope="day"), "paid::x": self._ok("paid")})
+        self._daily("f1::x")
+        with self.assertLogs("gateway.adapters.pool", "WARNING") as logs:
+            result = backend.generate(self._request())
+        self.assertEqual("paid", result.text)
+        self.assertEqual([], adapters["f1::x"].calls, "a member out for the day costs no round-trip")
+        self.assertEqual(1, len(adapters["f2::x"].calls))
+        self.assertEqual(0, self.slept, "nothing worth waiting for")
+        pool = result.payload["pool"]
+        self.assertTrue(pool["paid"])
+        self.assertEqual({"member": "paid::x", "outcome": "answered", "paid": True}, pool["attempts"][-1])
+        self.assertIn("free members out for the day → used paid member paid::x", logs.output[0])
+
+    def test_unavailable_or_broken_free_members_fall_through_to_paid(self):
+        from gateway.adapters.base import BackendError
+
+        self.pools.create("mix", ["gone::x", "f1::x", "paid::x"])  # `gone` does not resolve
+        backend, adapters = self._backend(
+            {"f1::x": BackendError("boom", code="PROVIDER_FAILED", status=503), "paid::x": self._ok("paid")})
+        result = backend.generate(self._request())
+        self.assertEqual("paid", result.text)
+        self.assertEqual(1, len(adapters["f1::x"].calls))
+        self.assertEqual(0, self.slept)
+
+        self.pools.create("mix", ["gone::x", "paid::x"])  # every free member switched off
+        self.assertEqual("paid", backend.generate(self._request()).text)
+
+    def test_a_cancellation_during_the_wait_ends_the_job_without_paying(self):
+        from gateway.adapters.base import BackendError
+
+        self.pools.create("mix", ["f1::x", "paid::x"])
+        backend, adapters = self._backend({"f1::x": self._ok("f1"), "paid::x": self._ok("paid")})
+        self.cooldowns.mark("f1::x", self.NOW + 120, kind="minute", reason="")
+        with patch.object(self.adapter_module, "_cancel_requested", lambda _r: self.slept >= 5):
+            with self.assertRaises(BackendError) as caught:
+                backend.generate(self._request(_job_id="job-1"))
+        self.assertEqual("POOL_WAIT_CANCELLED", caught.exception.code)
+        self.assertIs(False, caught.exception.upstream_accepted)
+        self.assertLess(self.slept, 10, "the wait notices the cancel within a step or two")
+        self.assertEqual([], adapters["f1::x"].calls + adapters["paid::x"].calls)
+
+    def test_free_members_that_keep_hitting_the_minute_limit_fail_rather_than_pay(self):
+        from gateway.adapters.base import BackendError
+
+        self.pools.create("mix", ["f1::x", "paid::x"])
+        backend, adapters = self._backend({"f1::x": self._quota(), "paid::x": self._ok("paid")})
+        with self.assertRaises(BackendError) as caught:
+            backend.generate(self._request())
+        self.assertEqual(429, caught.exception.status)
+        self.assertEqual([], adapters["paid::x"].calls)
+        self.assertLessEqual(self.slept, self.adapter_module.FREE_WAIT_CEILING_S)
+
+    def test_a_pool_of_only_paid_members_walks_as_before(self):
+        self.pools.create("mix", ["p1::x", "p2::x"])
+        backend, adapters = self._backend({"p1::x": self._ok("p1"), "p2::x": self._ok("p2")})
+        self.cooldowns.mark("p1::x", self.NOW + 300, kind="hint", reason="")
+        self.cooldowns.mark("p2::x", self.NOW + 60, kind="minute", reason="")
+        result = backend.generate(self._request())
+        self.assertEqual("p2", result.text, "the soonest-recovering one, at once")
+        self.assertEqual(0, self.slept)
+        self.assertTrue(result.payload["pool"]["paid"])
+
+    def test_a_pool_of_only_free_members_walks_as_before(self):
+        self.pools.create("mix", ["f1::x", "f2::x"])
+        backend, adapters = self._backend({"f1::x": self._ok("f1"), "f2::x": self._ok("f2")})
+        self.cooldowns.mark("f1::x", self.NOW + 60, kind="minute", reason="")
+        self.cooldowns.mark("f2::x", self.NOW + 30, kind="minute", reason="")
+        result = backend.generate(self._request())
+        self.assertEqual("f2", result.text, "the soonest-recovering one, without waiting")
+        self.assertEqual(0, self.slept)
+        self.assertFalse(result.payload["pool"]["paid"])
+
+    def test_the_description_marks_paid_members_and_the_rule(self):
+        from gateway.catalog import catalog
+
+        self.pools.create("mix", ["f1::x", "paid::x"])
+        backend, _ = self._backend({"f1::x": self._ok("f1"), "paid::x": self._ok("paid")})
+        with patch.object(catalog, "resolve", backend._resolve):
+            described = self.pools.describe("mix")
+        self.assertEqual([False, True], [r["paid"] for r in described["members_detail"]])
+        self.assertTrue(described["paid_last_resort"])
+
+
 class PoolResolverWiringTests(unittest.TestCase):
     """The resolver the live pool backend is attached to must be the catalogue's own.
 

@@ -148,6 +148,14 @@ def chargeable(free_tier: bool, model_id: str, price: dict[str, Any]) -> bool:
     return not (stated and all(float(v) == 0 for v in stated))
 
 
+def model_chargeable(definition: Any, model: dict[str, Any], modality: str = "chat") -> bool:
+    """`chargeable` for one resolved (definition, model) pair, judged exactly as the catalogue row
+    is (`catalog._story_row`), so a pool's free/paid split can never disagree with the Models page."""
+    model_id = str(model.get("model_id") or "")
+    price = row_price(definition.kind, modality, model.get("raw"), None, definition.id, model_id)
+    return chargeable(getattr(definition, "free_tier", False), model_id, price)
+
+
 def job_cost(payload: dict[str, Any] | None) -> dict[str, Any]:
     """`{cost_usd, cost_source}` when the provider's response states what it charged, else `{}`.
 

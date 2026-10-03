@@ -101,8 +101,9 @@ def seed(support: Path, upstream_port: int) -> dict:
         "id": pid, "display_name": label, "kind": "openai_compatible", "category": "language" if mods == ["chat"] else "multi",
         "base_url": f"http://127.0.0.1:{upstream_port}/{pid}/v1", "modalities": mods,
     } for pid, (label, mods, _) in PROVIDERS.items()]))
-    # The pool the owner has live: 10 members, two of them out of quota (a daily and a per-minute limit).
-    members = [f"google-free-lane::{m}" for m in GEMINI_FREE[:10]]
+    # The pool the owner has live: 10 free members, two of them out of quota (a daily and a per-minute limit).
+    # Plus a paid model at the end, used only when every free one is out for the day.
+    members = [f"google-free-lane::{m}" for m in GEMINI_FREE[:10]] + ["atlas::atlas-chat-large"]
     (data / "pools.json").write_text(json.dumps({"version": 1, "pools": [{
         "name": "gemini-free-all", "display_name": "Gemini, every free model",
         "description": "Free lanes first, whichever still has quota", "members": members,

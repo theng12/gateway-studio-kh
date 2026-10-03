@@ -198,7 +198,7 @@ def _with_health(pool: dict[str, Any]) -> dict[str, Any]:
     disabled" is knowable here and is the failure that otherwise shows up as a
     pool that mysteriously works less well than its list suggests.
     """
-    from . import pool_cooldowns
+    from . import pool_cooldowns, pricing
     from .catalog import catalog
 
     out = dict(pool)
@@ -221,9 +221,14 @@ def _with_health(pool: dict[str, Any]) -> dict[str, Any]:
                 "cooldown_reason": cooling[member]["reason"] if member in cooling else "",
                 "state": "ok" if (definition is not None and model is not None) else _why_unresolved(member),
                 "model_name": (model.get("display_name") or model["model_id"]) if model else "",
+                # Can cost money, by the catalogue's own rule (None when it does not resolve).
+                "paid": pricing.model_chargeable(definition, model) if definition and model else None,
             }
         )
     out["members_detail"] = rows
+    # The pool's rule (adapters/pool.py): paid members wait until every free one is out for the day.
+    out["paid_last_resort"] = (any(r["paid"] for r in rows)
+                               and any(r["paid"] is False for r in rows))
     out["cooling_count"] = sum(1 for r in rows if r["cooldown_until"])
     out["resolvable_count"] = sum(1 for r in rows if r["resolves"])
     return out
