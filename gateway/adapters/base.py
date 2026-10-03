@@ -252,6 +252,9 @@ class BackendRequest:
     #: Told when a dispatched job is waiting for the upstream to start it (`{"reason", "next_try_at",
     #: "since"}`) and again with `None` when it stops. Absent means nobody is listening.
     on_wait: Callable[[dict[str, Any] | None], None] | None = None
+    #: Epoch time the gateway dispatched this job, set only on a resume after a restart: the
+    #: fallback for how long it has already run when the upstream does not say.
+    dispatch_started_at: float | None = None
 
 
 @runtime_checkable
