@@ -14,6 +14,20 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.101 — 2026-10-03
+
+Narration with your own cloned voices uses the whole fleet.
+
+### Cloned voices are no longer stuck on this Mac
+A voice whose sample this gateway keeps (like "Chris") used to be tied to this Mac, so every chapter of every
+episode was narrated here, one after another. The sample now travels with each job to any Mac that can run the
+voice model, checked byte for byte on arrival, so chapters are narrated on many Macs at once. A voice that lives
+only on one Studio Hub still stays there.
+
+### Story Studio narrates several chapters at once
+Each voice model now says how many requests the fleet can take at once, so Story Studio sends that many chapters
+together instead of one at a time.
+
 ## 0.2.100 — 2026-10-03
 
 Failed jobs tell the truth, so Story Studio can redo them.
