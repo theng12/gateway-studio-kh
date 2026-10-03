@@ -1607,6 +1607,9 @@ def _collect_batch(
         # reported no progress figure, which is a different answer from "it never
         # stalled". See `HubProgress`.
         "hub_progress": progress.as_payload(),
+        # The Hub's per-section TTS quality check (0.6.137+), kept on the batch item itself rather
+        # than in `terminal_result`. `None` when the Hub stated none (older Hubs, other lanes).
+        "section_quality": (outcome.get("item") or {}).get("section_quality"),
         # **What the caller asked for and what the Hub delivered**, so a Jobs view can tell a node that
         # honoured `output_format` from one that predates it and returned the native file. Never a
         # failure either way: the artifact is stored and served as the Hub described it.

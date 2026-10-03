@@ -14,6 +14,15 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.111 — 2026-10-03
+
+Story Studio can see the narration quality check.
+
+### Per-section checks reach Story Studio
+Studio Hub 0.6.137 checks every narration section and re-makes the ones that come out wrong. The gateway now passes
+that record on, so Story Studio's Audio page can say "all 9 sections came out right the first time" or which section
+had to be re-made.
+
 ## 0.2.110 — 2026-10-03
 
 Time limits count a job's real running time.

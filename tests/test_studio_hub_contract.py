@@ -309,6 +309,17 @@ class GenerationTimingTests(_HubCase):
             result = self.generate_then_deliver(hub, self.request(modality="tts", params={"text": "hello"}))
             self.assertEqual(result.payload["audio_duration_s"], expected)
 
+    def test_the_hubs_section_quality_check_reaches_the_payload(self) -> None:
+        # Studio Hub 0.6.137 keeps its per-section TTS check on the batch item (not in
+        # `terminal_result`); Story shows it per chapter, so it must survive collection.
+        quality = {"sections": 9, "remade": [{"section": 4, "attempts": 2, "code": "TTS_SECTION_SILENT"}]}
+        hub = _Hub(item={"terminal_result": {"machine_id": "node-b"}, "section_quality": quality})
+        result = self.generate_then_deliver(hub, self.request(modality="tts", params={"text": "hello"}))
+        self.assertEqual(result.payload["section_quality"], quality)
+        hub = _Hub(item={"terminal_result": {"machine_id": "node-b"}})
+        result = self.generate_then_deliver(hub, self.request(modality="tts", params={"text": "hello"}))
+        self.assertIsNone(result.payload["section_quality"])
+
 
 class DeliveryReceiptTests(_HubCase):
     """Item 1 — a verified delivery is acknowledged, on the modality's own route."""

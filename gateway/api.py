@@ -782,6 +782,9 @@ def _job_envelope(job: dict[str, Any], *, native: bool = False) -> dict[str, Any
             body["variations_failed"] = payload["variations_failed"]
         if payload.get("usage"):
             body["usage"] = payload["usage"]
+        # How many voice sections the Mac re-made after its quality check, per section.
+        if payload.get("section_quality"):
+            body["section_quality"] = payload["section_quality"]
         # What the provider says it *charged* for this job — stated, never computed from tokens.
         body.update(job_cost(payload))
 
