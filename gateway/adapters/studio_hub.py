@@ -417,6 +417,30 @@ def _headers(request: BackendRequest) -> dict[str, str]:
     )
 
 
+#: What one Hub-recommended request (`maximum_input_characters`) is allowed to take: the Hub sizes
+#: that chunk so a request finishes in about this long on the slowest Mac allowed to run the model.
+TTS_CHUNK_BUDGET_S = 900.0
+
+
+def _tts_length_deadline(request: BackendRequest, raw: dict[str, Any], contract: Any) -> float:
+    """A long narration's own time allowance: one chunk budget per Hub-recommended chunk of text.
+
+    The Hub sections a long script and its deadline grows with the input, so this gateway's poll
+    must not stop at the lane's flat number while the Hub is still inside its own. `0` (no
+    opinion) unless the model states a chunk size and the job carries text.
+    ponytail: floor only -- the Hub's stated `deadline_seconds` still wins when it is larger.
+    """
+    if request.modality != "tts":
+        return 0.0
+    chunk = raw.get("maximum_input_characters")
+    if not isinstance(chunk, (int, float)) and isinstance(contract, dict):
+        chunk = contract.get("maximum_input_characters")
+    if isinstance(chunk, bool) or not isinstance(chunk, (int, float)) or chunk <= 0:
+        return 0.0
+    text = request.params.get("text") if isinstance(request.params, dict) else None
+    return -(-len(str(text or "")) // int(chunk)) * TTS_CHUNK_BUDGET_S
+
+
 def lane_deadline_seconds(request: BackendRequest | None) -> float:
     """How long to poll this job, as the **lane that enforces it** states it.
 
@@ -454,14 +478,14 @@ def lane_deadline_seconds(request: BackendRequest | None) -> float:
                 continue
             raw = model.get("raw") or {}
             contract = raw.get("lane_contract")
-            if not isinstance(contract, dict):
-                return JOB_DEADLINE_S
-            stated = contract.get("deadline_seconds")
-            if isinstance(stated, bool) or not isinstance(stated, (int, float)):
-                return JOB_DEADLINE_S
-            # A stated deadline of zero or less is not a deadline; keep ours rather
-            # than failing every poll instantly on a nonsensical number.
-            return float(stated) if float(stated) > 0 else JOB_DEADLINE_S
+            base = JOB_DEADLINE_S
+            if isinstance(contract, dict):
+                stated = contract.get("deadline_seconds")
+                # A stated deadline of zero or less is not a deadline; keep ours rather
+                # than failing every poll instantly on a nonsensical number.
+                if isinstance(stated, (int, float)) and not isinstance(stated, bool) and stated > 0:
+                    base = float(stated)
+            return max(base, _tts_length_deadline(request, raw, contract))
     except Exception:  # noqa: BLE001 - an unreadable contract is "unstated"
         return JOB_DEADLINE_S
     return JOB_DEADLINE_S

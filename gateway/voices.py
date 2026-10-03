@@ -108,6 +108,9 @@ SOURCE_LIBRARY = "library"    # the provider's public library, not yet owned
 #: call succeeded. See `ownership` in `story_row`.
 SOURCE_EXAMPLE = "example"
 
+#: What Story's picker is told a gateway-held (`SOURCE_LOCAL`) voice comes from.
+GATEWAY_VOICE_LIBRARY = "Gateway voice library"
+
 
 def make_id(provider_id: str, provider_voice_id: str) -> str:
     return f"{provider_id}{ID_SEPARATOR}{provider_voice_id}"
@@ -901,8 +904,15 @@ def story_row(voice: Voice) -> dict[str, Any]:
     gateway never made.
     """
     definition = registry.definition(voice.provider_id)
-    engine = str((voice.raw or {}).get("engine_name") or "")
-    if not engine:
+    # **A gateway-held voice is the Gateway's, not a Studio Hub's and not one family's.** Since
+    # 0.2.101 its reference clip travels with the job to any Mac and works with every
+    # cloning-capable model, so "Studio Hub (this Mac)" / "Qwen3 TTS" (the model it was minted
+    # against, kept in `raw` as a stamp) described a tie that no longer exists. Story's picker
+    # shows `provider · engine_name`: the source is honest, the family is empty (no single tie;
+    # the models it works with are the ones whose rows say they clone), `id` is unchanged.
+    held = voice.source == SOURCE_LOCAL
+    engine = "" if held else str((voice.raw or {}).get("engine_name") or "")
+    if not engine and not held:
         engine = definition.display_name if definition else voice.provider_id
 
     return {
@@ -916,10 +926,11 @@ def story_row(voice: Voice) -> dict[str, Any]:
         # and a regression against the known-good contract.
         "language": voice.language or "multilingual",
         "description": voice.description or "",
-        "provider": definition.display_name if definition else voice.provider_id,
+        "provider": GATEWAY_VOICE_LIBRARY if held else (
+            definition.display_name if definition else voice.provider_id),
         "engine_name": engine,
         "engine_id": voice.provider_id,
-        "model_family": voice.source,
+        "model_family": None if held else voice.source,
         "model_revision_id": None,
         # **Ownership decides the tier, in one place.** This was
         # `"custom" if source != SOURCE_LIBRARY else "library"`, which made any
