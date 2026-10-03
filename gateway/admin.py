@@ -2608,6 +2608,17 @@ def fleet_resume(controller_id: str) -> Any:
     return {"controller": row, "controllers": fleet.controllers()}
 
 
+@router.post("/api/fleet/controllers/{controller_id}/pause", dependencies=[Depends(require_admin)])
+def fleet_pause(controller_id: str) -> Any:
+    """**Pause a location by hand** (`local` is this Mac). It gets no new work: routing, late binding and
+    retry-elsewhere skip it, while jobs already running there finish. Kept across restarts; the automatic
+    outage resume never lifts it — only `/resume` does. Nothing is removed, so it comes back as it was."""
+    row = fleet.set_owner_pause(controller_id, True)
+    if row is None:
+        return _error(404, "No such controller.")
+    return {"controller": row, "controllers": fleet.controllers()}
+
+
 @router.put("/api/fleet/controllers/{controller_id}/address", dependencies=[Depends(require_admin)])
 def fleet_replace_address(controller_id: str, payload: dict[str, Any]) -> Any:
     """**Re-point a location at a new address, keeping its identity and its decisions.**
@@ -2907,6 +2918,24 @@ def fleet_machine_rename(controller_id: str, machine_id: str, payload: dict[str,
     """
     try:
         return startup_control.rename(controller_id, machine_id, payload.get("name"))
+    except startup_control.StartupError as error:
+        return JSONResponse(status_code=error.status, content=error.body)
+
+
+@router.post(
+    "/api/fleet/controllers/{controller_id}/machines/{machine_id}/pause",
+    dependencies=[Depends(require_admin)],
+)
+def fleet_machine_pause(controller_id: str, machine_id: str, payload: dict[str, Any]) -> Any:
+    """Pause or resume one Mac by hand. Body `{"paused": true|false}`.
+
+    Relayed through the Mac's controller, which keeps the flag in its roster and sends that Mac no new
+    work (`startup_control.set_node_pause`); jobs already running there finish. Answers the controller's
+    `{"ok": true, "node", "paused"}`, or its refusal: `HUB_TOO_OLD` (needs Studio Hub 0.6.135),
+    `NODE_UNKNOWN`, `CONTROLLER_REFUSED`.
+    """
+    try:
+        return startup_control.set_node_pause(controller_id, machine_id, payload.get("paused"))
     except startup_control.StartupError as error:
         return JSONResponse(status_code=error.status, content=error.body)
 

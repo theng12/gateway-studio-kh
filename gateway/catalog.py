@@ -2059,6 +2059,10 @@ class Catalog:
         from . import fleet
 
         provider_id, model_id = decode_model_id(compound)
+        if fleet.is_paused_provider(provider_id):
+            # A legacy `studio-hub-<site>::…` id names one location; while the owner has it paused
+            # it routes like the fleet id instead of running there.
+            provider_id = fleet.FLEET_PROVIDER_ID
         if provider_id == fleet.FLEET_PROVIDER_ID:
             chosen, _note = fleet.route(
                 model_id, modality, routing_key=job_key or compound, only_location=only_location
@@ -2092,6 +2096,8 @@ class Catalog:
         from . import fleet
 
         provider_id, model_id = decode_model_id(compound)
+        if fleet.is_paused_provider(provider_id):
+            provider_id = fleet.FLEET_PROVIDER_ID
         if provider_id != fleet.FLEET_PROVIDER_ID:
             return None
         offered: list[str] = []
@@ -2110,22 +2116,26 @@ class Catalog:
             str(row.get("id")): row
             for row in (fleet.snapshot(allow_stale=True).get("locations") or [])
         }
-        offline = cannot = full = 0
+        offline = cannot = full = paused = 0
         for location_id in offered:
             row = rows.get(location_id) or {}
             if not row.get("reachable"):
                 offline += 1
             elif fleet._location_disk_stopped(row):  # noqa: SLF001
                 full += 1
+            elif fleet.owner_paused_at(location_id):
+                paused += 1
             elif not fleet._takes_customer_jobs(row):  # noqa: SLF001 - one rule, one place
                 cannot += 1
-        if not offline and not cannot and not full:
+        if not (offline or cannot or full or paused):
             return "No location offering this model has a free slot right now."
         reasons: list[str] = []
         if offline:
             reasons.append(f"{offline} location{'' if offline == 1 else 's'} offline")
         if cannot:
             reasons.append(f"{cannot} that cannot take customer work")
+        if paused:
+            reasons.append(f"{paused} you paused")
         if full:
             reasons.append(f"{full} whose Mac{'' if full == 1 else 's'} ran out of disk space")
         return (

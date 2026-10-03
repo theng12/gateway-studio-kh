@@ -480,12 +480,15 @@ def _read() -> list[dict]:
 _ROSTER_LOCK = threading.RLock()
 
 
-def _write(rows: list[dict], *, local_name: str | None = None) -> None:
+_KEEP = object()
+
+
+def _write(rows: list[dict], *, local_name: str | None = None, local_paused_at: object = _KEEP) -> None:
     with _ROSTER_LOCK:
-        _write_locked(rows, local_name=local_name)
+        _write_locked(rows, local_name=local_name, local_paused_at=local_paused_at)
 
 
-def _write_locked(rows: list[dict], *, local_name: str | None = None) -> None:
+def _write_locked(rows: list[dict], *, local_name: str | None = None, local_paused_at: object = _KEEP) -> None:
     global _revision
     _revision += 1
     FLEET_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -500,6 +503,10 @@ def _write_locked(rows: list[dict], *, local_name: str | None = None) -> None:
     name = (local_name if local_name is not None else local_label()).strip()
     if name and name != LOCAL_LABEL_DEFAULT:
         payload["local_label"] = name
+    # The owner's hand-pause of this Mac rides along the same way: kept unless a caller states it.
+    held = _read_payload().get("local_paused_at") if local_paused_at is _KEEP else local_paused_at
+    if held:
+        payload["local_paused_at"] = held
     # The roster carries no secrets, but it is written 0600 anyway: which sites
     # this gateway talks to is nobody else's business on a shared Mac.
     # Written beside the roster and renamed over it, so a reader on another thread sees the old file
@@ -1615,6 +1622,7 @@ def locations() -> list[dict]:
             # identity.
             "provider_id": provider_id_for(LOCAL_ID),
         })
+        _stamp_pause(local, LOCAL_ID)
     else:
         local = {
             "id": LOCAL_ID, "label": local_label(), "url": "", "local": True,
@@ -1635,6 +1643,7 @@ def locations() -> list[dict]:
             "release": None,
             "probe_machines_hidden": 0,
         }
+        _stamp_pause(local, LOCAL_ID)
     rows.append(local)
 
     configured = _read()
@@ -1690,6 +1699,7 @@ def locations() -> list[dict]:
             # from — not from the label, which the owner may rename at any time.
             "provider_id": provider_id_for(str(row.get("id") or "")),
         })
+        _stamp_pause(result, controller_id)
         rows.append(result)
     _attach_admission(rows)
     return rows
@@ -2489,6 +2499,9 @@ def machines_flat(rows: list[dict]) -> list[dict]:
                 "node_role": node.get("role"),
                 "node_last_seen_at": node.get("last_seen_at"),
                 "node_address": node.get("address"),
+                # The owner paused this Mac by hand on its controller (Hub 0.6.135); `None` when the
+                # Hub does not say, never read as "not paused".
+                "node_paused": node.get("paused"),
             }
 
         workers_by_machine: dict[str, list[dict]] = {}
@@ -3299,8 +3312,93 @@ def note_reachability(row: dict, reachable: bool) -> None:
         )
 
 
+#: What the Fleet page says of a location the owner paused by hand (`paused_by: "owner"`).
+OWNER_PAUSE_REASON = (
+    "Paused by you. It gets no new work; jobs already running there finish. Resume it when you want it back."
+)
+
+
+def owner_paused_at(controller_id: str) -> float | None:
+    """When the owner paused this location by hand, or `None`.
+
+    Read from `fleet.json` on every call, never from the cached snapshot: a pause has to bite on the
+    very next routing decision. It is its own field, apart from the automatic outage pause
+    (`paused_at`), which `note_reachability` clears the moment a Mac answers -- an owner's pause must
+    never be undone by a Mac coming back.
+    """
+    if controller_id == LOCAL_ID:
+        value = _read_payload().get("local_paused_at")
+    else:
+        value = next((r.get("owner_paused_at") for r in _read() if str(r.get("id")) == controller_id), None)
+    return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) and value else None
+
+
+def set_owner_pause(controller_id: str, paused: bool) -> dict | None:
+    """Pause or resume a location by hand (`local` is this Mac); `None` when there is no such location.
+
+    Persisted in the roster, so it survives a restart. Jobs already dispatched there are not touched.
+    """
+    stamp = time.time() if paused else None
+    with _ROSTER_LOCK:
+        if controller_id == LOCAL_ID:
+            _write(_read(), local_paused_at=stamp)
+            row: dict = {"id": LOCAL_ID, "label": local_label(), "local": True}
+        else:
+            rows = _read()
+            found = next((r for r in rows if str(r.get("id")) == controller_id), None)
+            if found is None:
+                return None
+            if paused:
+                found["owner_paused_at"] = stamp
+            else:
+                found.pop("owner_paused_at", None)
+            _write(rows)
+            row = _masked(found)
+    invalidate()
+    row.update(paused_at=stamp, paused_by="owner" if paused else None)
+    return row
+
+
+def _stamp_pause(result: dict, controller_id: str) -> None:
+    """Say on a published location row who paused it: `owner` (by hand) or `outage` (automatic)."""
+    at = owner_paused_at(controller_id)
+    if at:
+        result.update(paused_at=at, paused_by="owner", pause_reason=OWNER_PAUSE_REASON)
+    elif result.get("paused_at"):
+        result["paused_by"] = "outage"
+
+
+def pause_message_for_voice(params: dict) -> str | None:
+    """A plain sentence when a voice this job needs exists only on a Mac the owner paused, else `None`.
+
+    A clone the gateway holds travels with the job (`_clip_travels_with_job`) and never lands here. A
+    voice whose clip lives only on one Hub cannot run anywhere else, so work for it fails with the
+    reason instead of silently going somewhere that lacks the voice.
+    """
+    if not isinstance(params, dict):
+        return None
+    for key in _VOICE_PIN_KEYS:
+        value = str(params.get(key) or "")
+        location_id = location_for_voice(value)
+        if not location_id or (key == "voice_id" and _clip_travels_with_job(value)):
+            continue
+        if owner_paused_at(location_id):
+            name = label_for_provider(provider_id_for(location_id)) or location_id
+            return (f"This voice only exists on {name}, which you paused. "
+                    f"Share it to the fleet or resume {name}.")
+    return None
+
+
+def is_paused_provider(provider_id: str) -> bool:
+    """True for a location provider the owner paused by hand."""
+    location_id = controller_id_from(provider_id)
+    return location_id is not None and owner_paused_at(location_id) is not None
+
+
 def resume_location(controller_id: str) -> dict | None:
-    """Clear a pause and restart the clock, deliberately, without touching anything else."""
+    """Clear a pause (the owner's and the outage one) and restart the clock, without touching anything else."""
+    if controller_id == LOCAL_ID:
+        return set_owner_pause(LOCAL_ID, False)
     with _ROSTER_LOCK:
         rows = _read()
         row = next((r for r in rows if str(r.get("id")) == str(controller_id)), None)
@@ -3309,6 +3407,7 @@ def resume_location(controller_id: str) -> dict | None:
         row.pop("paused_at", None)
         row.pop("pause_reason", None)
         row.pop("unreachable_since", None)
+        row.pop("owner_paused_at", None)
         _write(rows)
     invalidate()
     return _masked(row)
@@ -3345,7 +3444,7 @@ def _takes_customer_jobs(row: dict) -> bool:
         return False
     # **A paused location is skipped by routing** (Q7). The row is still there, its models are
     # still published, and every per-model decision survives — it simply stops being offered.
-    if row.get("paused_at"):
+    if row.get("paused_at") or owner_paused_at(str(row.get("id") or "")):
         return False
     # **A location whose every Mac is out of disk (`stop`) is unavailable** -- it would only
     # answer 507 -- so routing re-routes to another location, as it does for a drained one.

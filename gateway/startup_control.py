@@ -191,13 +191,48 @@ def rename(controller_id: str, machine_id: str, name: object, *,
                                  "detail": "A name is 1 to 120 characters, with no line breaks."})
     if not _MACHINE_ID.fullmatch(machine_id or ""):
         raise StartupError(400, {"ok": False, "code": "BAD_MACHINE", "detail": "machine id is not valid"})
+    return _node_post(
+        controller_id, machine_id, "name", {"name": clean}, event="rename",
+        too_old="This controller's Studio Hub cannot rename its Macs yet. Update it first "
+                "(Fleet > Release), or rename the Mac on the Mac itself (Connections).",
+        refused="The controller refused this gateway's credential for renaming.",
+        audit_fields={"name": clean}, client=client,
+    )
+
+
+def set_node_pause(controller_id: str, machine_id: str, paused: object, *,
+                   client: httpx.Client | None = None) -> dict[str, Any]:
+    """Pause or resume one Mac by hand (owner request 2026-10-03), through its controller.
+
+    The controller marks the Mac paused in its roster (kept across restarts) and its broker sends it
+    no new work; jobs already running there finish, and the Mac rejoins when resumed. Only the
+    controller's own Hub can do this: the gateway never routes to a single node. A controller on a
+    Hub without the route answers `HUB_TOO_OLD`.
+    """
+    if not isinstance(paused, bool):
+        raise StartupError(400, {"ok": False, "code": "VALUE_REQUIRED", "detail": "paused must be true or false"})
+    if not _MACHINE_ID.fullmatch(machine_id or ""):
+        raise StartupError(400, {"ok": False, "code": "BAD_MACHINE", "detail": "machine id is not valid"})
+    return _node_post(
+        controller_id, machine_id, "pause", {"paused": paused}, event="pause",
+        too_old="This controller's Studio Hub cannot pause its Macs yet. It needs Studio Hub 0.6.135: "
+                "update it first (Fleet > Release).",
+        refused="The controller refused this gateway's credential for pausing a Mac.",
+        audit_fields={"paused": paused}, client=client,
+    )
+
+
+def _node_post(controller_id: str, machine_id: str, route: str, body: dict[str, Any], *, event: str,
+               too_old: str, refused: str, audit_fields: dict[str, Any],
+               client: httpx.Client | None) -> dict[str, Any]:
+    """POST one node action to the controller that owns the Mac, with the credential every fleet call uses."""
     base, token = _target(controller_id)
-    audit("rename_requested", controller=controller_id, machine=machine_id, name=clean)
+    audit(f"{event}_requested", controller=controller_id, machine=machine_id, **audit_fields)
     owned = client is None
     client = client or httpx.Client(timeout=_TIMEOUT)
     try:
-        response = client.post(f"{base}/api/hub/fleet/nodes/{machine_id}/name",
-                               headers={"X-Hub-Token": token} if token else {}, json={"name": clean})
+        response = client.post(f"{base}/api/hub/fleet/nodes/{machine_id}/{route}",
+                               headers={"X-Hub-Token": token} if token else {}, json=body)
     except httpx.HTTPError as exc:
         raise StartupError(502, {"ok": False, "code": "CONTROLLER_UNREACHABLE",
                                  "detail": "The controller did not answer: "
@@ -212,15 +247,12 @@ def rename(controller_id: str, machine_id: str, name: object, *,
     if not isinstance(answered, dict):
         answered = {}
     if response.status_code in (404, 405) and "code" not in answered:
-        answered = {"ok": False, "code": "HUB_TOO_OLD",
-                    "detail": "This controller's Studio Hub cannot rename its Macs yet. Update it first "
-                              "(Fleet > Release), or rename the Mac on the Mac itself (Connections)."}
+        answered = {"ok": False, "code": "HUB_TOO_OLD", "detail": too_old}
     elif response.status_code in (401, 403) and "code" not in answered:
-        answered = {"ok": False, "code": "CONTROLLER_REFUSED",
-                    "detail": "The controller refused this gateway's credential for renaming."}
+        answered = {"ok": False, "code": "CONTROLLER_REFUSED", "detail": refused}
     answered.setdefault("ok", response.is_success)
     answered["machine"] = machine_id
-    audit("rename_result", controller=controller_id, machine=machine_id, status=response.status_code,
+    audit(f"{event}_result", controller=controller_id, machine=machine_id, status=response.status_code,
           code=answered.get("code"), ok=answered.get("ok"))
     if not response.is_success:
         raise StartupError(response.status_code if response.status_code < 500 else 502, answered)

@@ -991,6 +991,8 @@ class Worker:
         """
         provider_id = str(job.get("provider_id") or "")
         modality = str(job.get("modality") or "")
+        if fleet.is_paused_provider(provider_id):
+            return False  # the owner paused this location: no new work; `_rebind` moves the job on
         provider_budget = self._provider_budget(provider_id, modality)
         lane_budget = concurrency.lane_budget(modality)
         with self._budget_lock:
@@ -1033,7 +1035,8 @@ class Worker:
         if shape in self._nowhere:
             return False
         try:
-            if self._room(provider_id, modality) > 0:
+            # A site with room keeps its job, unless the owner paused it.
+            if self._room(provider_id, modality) > 0 and not fleet.is_paused_provider(provider_id):
                 return False
             if fleet.pinned_location(json.loads(job.get("params") or "{}")):
                 return False
@@ -1118,7 +1121,7 @@ class Worker:
                 for job in due:
                     if self._stop.is_set():
                         return
-                    if self._expired_in_queue(job):
+                    if self._expired_in_queue(job) or self._stranded_on_paused(job):
                         continue
                     # Reserve first, then claim: a claim that fails must not leave the
                     # budget holding a slot nobody will ever release.
@@ -1158,6 +1161,18 @@ class Worker:
             self.last_pass_at = time.time()
 
             self._stop.wait(self.interval_s)
+
+    def _stranded_on_paused(self, job: dict[str, Any]) -> bool:
+        """End a queued job whose voice exists only on a location the owner has since paused."""
+        if not fleet.is_paused_provider(str(job.get("provider_id") or "")):
+            return False
+        try:
+            why = fleet.pause_message_for_voice(json.loads(job.get("params") or "{}"))
+        except ValueError:
+            return False
+        if why:
+            _fail(self.store, job["id"], code="VOICE_ON_PAUSED_LOCATION", detail=why)
+        return bool(why)
 
     def _expired_in_queue(self, job: dict[str, Any]) -> bool:
         """End a job that has waited out the queue ceiling, with a typed failure -- no orphans.

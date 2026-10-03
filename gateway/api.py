@@ -925,6 +925,9 @@ def _pinned_location(params: dict[str, Any]) -> str | None:
     """
     from . import fleet
 
+    paused = fleet.pause_message_for_voice(params)
+    if paused:
+        raise GatewayError(409, paused, "VOICE_ON_PAUSED_LOCATION")
     return fleet.pinned_location(params)
 
 
