@@ -170,7 +170,7 @@ class OfflineWhySwiftTests(unittest.TestCase):
             data.write_text(json.dumps(rows))
             built = subprocess.run(
                 ["swiftc", "-swift-version", "5", "-framework", "AppKit", "menubar/PageKit.swift",
-                 "menubar/FleetModels.swift", "menubar/FleetStartupModel.swift", "menubar/FleetLastStop.swift",
+                 "menubar/FleetModels.swift", "menubar/FleetStartupModel.swift", "menubar/FleetLastStop.swift", "menubar/FleetWorkstation.swift",
                  str(source), "-o", str(binary)], cwd=ROOT, capture_output=True, text=True)
             self.assertEqual(built.returncode, 0, built.stderr)
             checked = subprocess.run([str(binary), str(data)], capture_output=True, text=True, timeout=30)

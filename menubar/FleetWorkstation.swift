@@ -1,0 +1,225 @@
+// Workstation mode: a shop's own Mac lends the fleet its idle time (owner request 2026-10-03).
+//
+// Studio Hub reports each Mac's settings and state as `workstation` on its machine row (the Gateway republishes
+// a checked copy); `nil` means that Mac's Hub is too old for it. A Mac the shop is using, one that just stepped
+// aside, or one in its quiet hours is busy *for now*: grey like a paused Mac, never offline, never "needs
+// attention". The settings sheet below is built here (AppKit only, no networking) so the render harness can draw
+// it; `FleetStartup.editWorkstation` runs it and sends the change through the Mac's controller.
+
+import AppKit
+
+struct FleetWorkstation: Decodable {
+    var enabled: Bool?
+    var idleOnly: Bool?
+    var idleMinutes: Int?
+    var stepAside: Bool?
+    var resumeAfterMinutes: Int?
+    /// Free memory needed to start a job on this Mac; `nil` is each model's own floor.
+    var startFreeGb: Double?
+    var quietHours: [String]?
+    var hideMenuBarIcon: Bool?
+    /// off, working, standing_by, yielded, quiet_hours - or nil when the Hub said something else.
+    var state: String?
+    /// The Hub's few words for why ("someone is using this Mac").
+    var reason: String?
+    var yieldsToday: Int?
+    var jobsToday: Int?
+    /// True when the controller is repeating what an unreachable Mac last said.
+    var stale: Bool?
+
+    /// The shop has this Mac for now. A stale report says nothing about now.
+    var isResting: Bool { stale != true && ["standing_by", "yielded", "quiet_hours"].contains(state ?? "") }
+
+    /// The state chip; nil when the mode is off or the state is unknown.
+    var chip: String? {
+        switch state {
+        case "working": return "Working"
+        case "standing_by": return "In use — standing by"
+        case "yielded": return "Stepped aside"
+        case "quiet_hours": return "Quiet hours"
+        default: return nil
+        }
+    }
+
+    /// Grey for the shop's time (as a paused Mac is), green while it takes work.
+    var chipHealth: Health { isResting ? .off : .ok }
+
+    /// "Today: 3 jobs · 1 step-aside", once the mode is on.
+    var today: String? {
+        guard enabled == true else { return nil }
+        let jobs = jobsToday ?? 0, yields = yieldsToday ?? 0
+        return "Today: \(jobs) job\(jobs == 1 ? "" : "s") · \(yields) step-aside\(yields == 1 ? "" : "s")"
+    }
+}
+
+/// The Workstation Mode sheet's controls, filled from what the Mac reported, and the change they describe.
+final class FleetWorkstationForm: NSObject {
+    static let idleHint = "Takes work only after this many minutes with no keyboard or mouse use, or while the screen is locked."
+    static let stepAsideHint = "When someone uses the keyboard or mouse, this Mac finishes its current job, then takes no "
+        + "new work until it has had this many minutes without input."
+    static let startFreeHint = "A job starts only when this much memory is free. A running job always finishes; it is "
+        + "stopped only if macOS reports critical memory pressure for 20 seconds (very rare), and then moves to another Mac."
+    static let quietHint = "No work during these hours. Separate several with commas, like 22:00-07:00, 12:00-13:00."
+
+    let enabled = NSButton(checkboxWithTitle: "Workstation mode", target: nil, action: nil)
+    let idleOnly = NSButton(checkboxWithTitle: "Only when idle", target: nil, action: nil)
+    let idleMinutes = NSTextField(string: "")
+    let stepAside = NSButton(checkboxWithTitle: "Step aside when someone uses it", target: nil, action: nil)
+    let resumeMinutes = NSTextField(string: "")
+    let startFree = NSPopUpButton(frame: .zero, pullsDown: false)
+    let startFreeGb = NSTextField(string: "")
+    let quietHours = NSTextField(string: "")
+    let hideIcon = NSButton(checkboxWithTitle: "Hide the Studio Hub menu-bar icon", target: nil, action: nil)
+    let view: NSView
+
+    private static let width: CGFloat = 460
+
+    init(_ current: FleetWorkstation) {
+        enabled.state = current.enabled == true ? .on : .off
+        idleOnly.state = current.idleOnly == true ? .on : .off
+        idleMinutes.stringValue = String(current.idleMinutes ?? 3)
+        stepAside.state = current.stepAside == true ? .on : .off
+        resumeMinutes.stringValue = String(current.resumeAfterMinutes ?? 2)
+        startFree.addItems(withTitles: ["Each model's own (about 2.8 GB)", "Custom"])
+        startFree.selectItem(at: current.startFreeGb == nil ? 0 : 1)
+        startFreeGb.stringValue = current.startFreeGb.map { String(format: "%g", $0) } ?? ""
+        startFreeGb.placeholderString = "2.8"
+        quietHours.stringValue = (current.quietHours ?? []).joined(separator: ", ")
+        quietHours.placeholderString = "22:00-07:00"
+        hideIcon.state = current.hideMenuBarIcon == true ? .on : .off
+        enabled.font = TextRole.rowTitle.font
+
+        func field(_ field: NSTextField, _ width: CGFloat, numeric: Bool = true) -> NSTextField {
+            field.widthAnchor.constraint(equalToConstant: width).isActive = true
+            if numeric { field.alignment = .right }
+            return field
+        }
+        func text(_ text: String) -> NSTextField {
+            let label = PageKit.label(text, .body)
+            label.setContentCompressionResistancePriority(.required, for: .horizontal)
+            return label
+        }
+        /// A control line under its heading, indented to the checkbox's text.
+        func indented(_ views: [NSView]) -> NSView {
+            let row = NSStackView(views: views)
+            row.spacing = DS.Space.s
+            row.alignment = .firstBaseline
+            row.edgeInsets = NSEdgeInsets(top: 0, left: 20, bottom: 0, right: 0)
+            return row
+        }
+        func hint(_ text: String) -> NSView {
+            let label = PageKit.label(text, .caption, colour: .secondaryLabelColor, wrapping: true)
+            label.preferredMaxLayoutWidth = Self.width - 20
+            return indented([label])
+        }
+        /// One setting: its heading, its control line, its hint, kept together.
+        func group(_ views: [NSView]) -> NSView {
+            let stack = NSStackView(views: views)
+            stack.orientation = .vertical
+            stack.alignment = .leading
+            stack.spacing = DS.Space.xs
+            return stack
+        }
+
+        let stack = NSStackView(views: [
+            enabled,
+            group([idleOnly, indented([text("Idle for"), field(idleMinutes, 44), text("minutes")]), hint(Self.idleHint)]),
+            group([stepAside, indented([text("Resume after"), field(resumeMinutes, 44), text("minutes without input")]),
+                   hint(Self.stepAsideHint)]),
+            group([text("Free memory needed to start a job"),
+                   indented([startFree, field(startFreeGb, 52), text("GB")]), hint(Self.startFreeHint)]),
+            group([text("Quiet hours"), indented([field(quietHours, 240, numeric: false)]), hint(Self.quietHint)]),
+            hideIcon,
+        ])
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = DS.Space.m
+        stack.widthAnchor.constraint(equalToConstant: Self.width).isActive = true
+        view = stack
+        super.init()
+        startFree.target = self
+        startFree.action = #selector(startFreeChanged)
+        startFreeChanged()
+        stack.layoutSubtreeIfNeeded()
+        stack.frame = NSRect(origin: .zero, size: stack.fittingSize)
+    }
+
+    /// The custom figure only means something when "Custom" is chosen.
+    @objc private func startFreeChanged() {
+        startFreeGb.isEnabled = startFree.indexOfSelectedItem == 1
+    }
+
+    /// A value that does not parse, in a sentence to show.
+    struct Invalid: Error { let sentence: String }
+
+    /// The change to send: every setting, checked here so a typo never travels.
+    func body() throws -> [String: Any] {
+        func minutes(_ field: NSTextField, _ name: String) throws -> Int {
+            guard let value = Int(field.stringValue.trimmingCharacters(in: .whitespaces)), (1...60).contains(value) else {
+                throw Invalid(sentence: "\(name) must be a whole number of minutes from 1 to 60.")
+            }
+            return value
+        }
+        let idle = try minutes(idleMinutes, "Idle time"), resume = try minutes(resumeMinutes, "Resume time")
+        var start: Any = NSNull()
+        if startFree.indexOfSelectedItem == 1 {
+            let text = startFreeGb.stringValue.trimmingCharacters(in: .whitespaces).replacingOccurrences(of: ",", with: ".")
+            guard let gb = Double(text), gb >= 0.5, gb <= 8 else {
+                throw Invalid(sentence: "Free memory needed to start a job must be from 0.5 to 8 GB.")
+            }
+            start = gb
+        }
+        let hours = quietHours.stringValue.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+        let shape = #"^([01]\d|2[0-3]):[0-5]\d-([01]\d|2[0-3]):[0-5]\d$"#
+        if let bad = hours.first(where: { $0.range(of: shape, options: .regularExpression) == nil }) {
+            throw Invalid(sentence: "“\(bad)” is not a time range. Write quiet hours like 22:00-07:00.")
+        }
+        guard hours.count <= 6 else { throw Invalid(sentence: "Quiet hours can have at most 6 ranges.") }
+        return ["enabled": enabled.state == .on, "idle_only": idleOnly.state == .on, "idle_minutes": idle,
+                "step_aside": stepAside.state == .on, "resume_after_minutes": resume, "start_free_gb": start,
+                "quiet_hours": hours, "hide_menu_bar_icon": hideIcon.state == .on]
+    }
+
+    /// The sheet: what the Mac is doing now, then its settings. Save is the blue default button.
+    static func alert(for machine: FleetMachine, _ current: FleetWorkstation) -> (NSAlert, FleetWorkstationForm) {
+        let form = FleetWorkstationForm(current)
+        let alert = NSAlert()
+        alert.messageText = "Workstation Mode — \(machine.label ?? machine.machine ?? "this Mac")"
+        var now = current.enabled == true ? (current.chip ?? "On") : "Off"
+        if let reason = current.reason, current.enabled == true { now += " (\(reason))" }
+        if current.stale == true { now += ", as last reported by the Mac" }
+        alert.informativeText = "This Mac takes fleet work only when the shop is not using it. Now: \(now)."
+            + (current.today.map { " \($0)." } ?? "")
+        alert.accessoryView = form.view
+        alert.addButton(withTitle: "Save")
+        alert.addButton(withTitle: "Cancel")
+        return (alert, form)
+    }
+}
+
+extension FleetMachine {
+    /// The State column's word when the shop has this Mac for now; nil otherwise.
+    var workstationRestingLabel: String? { workstation?.isResting == true ? workstation?.chip : nil }
+
+    /// The whole story in one sentence, for a tooltip: "Workstation mode: In use — standing by (someone is using
+    /// this Mac). Today: 2 jobs · 0 step-asides."
+    var workstationLine: String? {
+        guard let workstation, workstation.enabled == true || workstation.isResting else { return nil }
+        var text = "Workstation mode: " + (workstation.chip ?? "on")
+        if let reason = workstation.reason, workstation.isResting { text += " (\(reason))" }
+        if let today = workstation.today { text += ". \(today)" }
+        return text + (workstation.stale == true ? " (as last reported by the Mac)." : ".")
+    }
+
+    /// Why the shop has this Mac now, for the "Doing now" column: the Hub's words, sentence-cased unless the first
+    /// word carries its own capitals ("macOS ...").
+    var workstationReasonText: String? {
+        guard workstation?.isResting == true, let reason = workstation?.reason, let first = reason.first else { return nil }
+        let word = reason.prefix { $0 != " " }
+        return word.dropFirst().contains(where: \.isUppercase) ? reason : first.uppercased() + reason.dropFirst()
+    }
+
+    /// Memory as a fault for a group to count: the shop's own use of a Mac it is using is not one.
+    var faultMemoryHealth: Health { workstation?.isResting == true ? .off : memoryHealth }
+}

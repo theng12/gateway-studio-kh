@@ -1285,7 +1285,8 @@ final class FleetMachinesTab: NSView {
                     guard let row = machine(any) else { return NSView() }
                     // **The reason, not just the verdict**, and "is it switched off, or gone?": the Hub's own
                     // sentence for why it cannot reach the node, and when the controller last heard from it.
-                    var tips = [FleetOffline.why(row), row.attention, row.stateReason, row.limitation].compactMap { $0 }
+                    var tips = [row.workstationLine, FleetOffline.why(row), row.attention, row.stateReason, row.limitation]
+                        .compactMap { $0 }
                     if let stop = FleetOffline.lastStopLine(row) { tips.append(stop) }
                     if row.isNode { tips.append("The controller last heard from this Mac \(row.nodeLastSeenText).") }
                     return fleetBadgeCell(row.stateLabel, row.badgeHealth,
