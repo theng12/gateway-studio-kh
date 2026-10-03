@@ -14,6 +14,27 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.114 — 2026-10-03
+
+Shop Macs can help the fleet without getting in the way.
+
+### Workstation mode for shop Macs
+A Mac the shop uses every day can now take fleet work in the background. On the Fleet page, choose **…** on that
+Mac's row, then **Workstation Mode…**, and turn it on. Fleet jobs then run at background priority, so the person at
+the Mac keeps a responsive computer. Two optional switches go further: **Only when idle** takes work only after the
+Mac has had no keyboard or mouse use for a while (3 minutes unless you change it), and **Step aside when someone uses
+it** lets the Mac finish the job it is on, then take no new work until it is free again. You can also set quiet
+hours and hide the Studio Hub icon from the Mac's menu bar, so the app stays out of sight.
+
+### Clear states on the Fleet page
+Each shop Mac shows what it is doing: Working, Standing by (someone is using it), Stepped aside or Quiet hours —
+in grey, like a paused Mac, never as a problem. Its row also counts today's jobs and step-asides. The sentence in the
+sheet always describes exactly what your chosen switches will do.
+
+### Handed-back jobs wait for another Mac
+When a shop Mac steps aside before it starts a job, the job moves at once to another free Mac. If none is free, it
+waits in line for one instead of failing, and it keeps its own job number the whole time.
+
 ## 0.2.113 — 2026-10-03
 
 Every voice in your library can be previewed.

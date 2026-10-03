@@ -63,6 +63,21 @@ func write(_ window: NSWindow, web: WKWebView?, to path: String) {
     window.effectiveAppearance.performAsCurrentDrawingAppearance {
         view.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
     }
+    // A selected sidebar row's highlight is an NSVisualEffectView (`.selection`) the window server composites;
+    // `cacheDisplay` draws it as a black slab over the row's label. Paint the inactive-window grey in its place.
+    func flattenSelection(_ v: NSView) {
+        if let effect = v as? NSVisualEffectView, effect.material == .selection, !effect.isHidden, let row = effect.superview {
+            effect.isHidden = true
+            let box = NSBox(frame: effect.frame)
+            box.boxType = .custom
+            box.borderWidth = 0
+            box.cornerRadius = 5
+            window.effectiveAppearance.performAsCurrentDrawingAppearance { box.fillColor = .unemphasizedSelectedContentBackgroundColor }
+            row.addSubview(box, positioned: .below, relativeTo: nil)
+        }
+        v.subviews.forEach(flattenSelection)
+    }
+    flattenSelection(view)
     view.cacheDisplay(in: view.bounds, to: rep)
     let shot = web.flatMap { snapshot($0) }
     let target = web.map { view.convert($0.bounds, from: $0) } ?? .zero
@@ -152,7 +167,7 @@ for page in pageNames where !["fleet-rename", "fleet-workstation"].contains(page
             }
             window.setContentSize(NSSize(width: size.0, height: size.1))
             window.setFrameOrigin(NSPoint(x: -20000, y: -20000))
-            window.makeKeyAndOrderFront(nil)  // a non-key window draws the selected sidebar row as a black slab
+            window.makeKeyAndOrderFront(nil)
             let isConsole = ["models", "providers", "content packs"].contains(name)
             spin(isConsole ? 6.0 : 1.8)
             window.contentView?.layoutSubtreeIfNeeded()
