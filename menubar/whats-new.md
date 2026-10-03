@@ -14,6 +14,15 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.112 — 2026-10-03
+
+Scene images go out across the whole fleet at once.
+
+### Story Studio learns how much the fleet can take
+The gateway now tells Story Studio how many jobs the fleet can run at the same time (about 55 today), so scene images
+are sent to many Macs at once instead of one after another — an episode's images in well under an hour instead of
+about nine. Image models also say how many requests their Macs can take.
+
 ## 0.2.111 — 2026-10-03
 
 Story Studio can see the narration quality check.
