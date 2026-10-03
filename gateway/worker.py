@@ -536,8 +536,13 @@ def settle_result(job_id: str, result: Any, store: JobStore) -> None:
     )
 
 
-def execute_job(job: dict[str, Any], store: JobStore) -> None:
-    """Run one job to a terminal state. Never raises."""
+def execute_job(job: dict[str, Any], store: JobStore, *, resume: bool = False) -> None:
+    """Run one job to a terminal state. Never raises.
+
+    `resume` follows a job the upstream already accepted before a gateway restart: the adapter's
+    `resume` polls its `upstream_job_id` instead of submitting it again, and everything after the
+    adapter call (holds, re-routes, the done path) is the same as for a live job.
+    """
     job_id = job["id"]
     modality = job["modality"]
     provider_id = job.get("provider_id") or ""
@@ -564,6 +569,18 @@ def execute_job(job: dict[str, Any], store: JobStore) -> None:
         )
         return
 
+    try:
+        params = json.loads(job.get("params") or "{}")
+    except json.JSONDecodeError:
+        _fail(store, job_id, code="PROVIDER_FAILED", detail="unreadable job params")
+        return
+    if resume:
+        # Already dispatched: the enablement gates and the dispatch window below are for work not
+        # yet sent. What was sent is followed to its end whatever was toggled since.
+        _dispatch(job, store, provider_id, model_id, modality, params,
+                  str(current.get("upstream_job_id") or ""))
+        return
+
     # Re-check enablement at execution time. A provider can be switched off
     # between submit and run, and the catalogue and the generation path must
     # never disagree about what is available.
@@ -574,12 +591,6 @@ def execute_job(job: dict[str, Any], store: JobStore) -> None:
             code="PROVIDER_DISABLED",
             detail=f"provider '{provider_id}' is disabled",
         )
-        return
-
-    try:
-        params = json.loads(job.get("params") or "{}")
-    except json.JSONDecodeError:
-        _fail(store, job_id, code="PROVIDER_FAILED", detail="unreadable job params")
         return
 
     # **The whole rule, not just the provider.** Provider enablement was re-checked
@@ -616,7 +627,14 @@ def execute_job(job: dict[str, Any], store: JobStore) -> None:
         if confirm_cancel is not None:
             confirm_cancel(job_id)
         return
+    _dispatch(job, store, provider_id, model_id, modality, params, "")
 
+
+def _dispatch(job: dict[str, Any], store: JobStore, provider_id: str, model_id: str,
+              modality: str, params: dict[str, Any], resume_id: str) -> None:
+    """Call the adapter and settle what it answers. `resume_id` polls that upstream id first."""
+    job_id = job["id"]
+    current = (store.get(job_id) if hasattr(store, "get") else job) or job
     params["_job_id"] = job_id
     record_acceptance = getattr(store, "record_upstream_acceptance", None)
 
@@ -660,13 +678,14 @@ def execute_job(job: dict[str, Any], store: JobStore) -> None:
             display_name=definition.display_name,
             checkpoint=on_accepted if record_acceptance is not None else None,
             on_wait=on_wait,
+            upstream_job_id=resume_id,
         )
         adapter = adapter_for(definition)
         if job.get("waiting_json") or current.get("waiting_json"):
             on_wait(None)  # a fresh attempt is not waiting for anything yet
         sends_before = requests_started()
         try:
-            result = adapter.generate(request)
+            result = adapter.resume(request) if resume_id else adapter.generate(request)
             break
         except BackendError as exc:
             log.warning("job %s failed via %s: %s", job_id, provider_id, exc)
@@ -675,7 +694,8 @@ def execute_job(job: dict[str, Any], store: JobStore) -> None:
             # **Nothing was sent, so nothing can be outstanding.** `dispatch_started_at` is stamped
             # before the adapter runs, so on its own it cannot tell "refused before any request"
             # (a validation error, a pool with nothing to try) from "sent and went silent".
-            never_sent = requests_started() == sends_before
+            # (A resumed job was sent before the restart, whatever this call managed to send.)
+            never_sent = requests_started() == sends_before and not resume_id
             # **A definite 4xx is the provider's own refusal — it accepted
             # nothing.** That is a settled failure, never a recovery hold, no
             # matter which adapter raised it. Without this a `400` such as
@@ -745,6 +765,7 @@ def execute_job(job: dict[str, Any], store: JobStore) -> None:
                         job_id, provider_id, exc.code, moved,
                     )
                     provider_id = moved
+                    resume_id = ""  # a fresh submission at the next location
                     continue
             # **A busy fleet is not a broken job** — see `_defer_if_transient` for
             # the whole rule and why each of its conditions is load-bearing. With the re-route
@@ -788,7 +809,7 @@ def execute_job(job: dict[str, Any], store: JobStore) -> None:
             return
         except Exception as exc:  # noqa: BLE001 - a backend bug must not kill the worker
             log.exception("job %s raised unexpectedly", job_id)
-            if requests_started() == sends_before:
+            if requests_started() == sends_before and not resume_id:
                 # **A gateway bug before any request is a plain failure, not an unknown outcome.**
                 # Nothing reached a provider, so there is nothing to reconcile and a retry cannot
                 # duplicate work (the 0.2.97 pool `AttributeError` is the case that taught this).
@@ -854,7 +875,7 @@ class Worker:
         self.pool_size = pool_size
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
-        self._budget_lock = threading.Lock()
+        self._budget_lock = threading.RLock()  # re-entered by `_book` from `_admit`
         self._in_flight: dict[str, int] = {}
         self._lane_in_flight: dict[str, int] = {}
         #: `(provider_id, modality) -> running count`. The provider book above is per
@@ -886,6 +907,41 @@ class Worker:
             return
         self._thread = threading.Thread(target=self._loop, name="gateway-worker", daemon=True)
         self._thread.start()
+        self._resume_interrupted()
+
+    def _resume_interrupted(self) -> None:
+        """Follow every job a restart interrupted to its end, by the upstream id it was given.
+
+        The store left them `running` (`JobStore.interrupted`). A lane whose adapter can poll by
+        id (`resume`) is polled on its own thread exactly as before the restart, counted against
+        the budgets like any running job but never refused by them — the work is already running
+        upstream. Any other lane gets the restart hold, as every lane used to.
+        """
+        ids = list(getattr(self.store, "interrupted", None) or [])
+        if ids:
+            self.store.interrupted = []
+        for job_id in ids:
+            try:
+                job = self.store.get(job_id)
+                if not job or job.get("state") != "running":
+                    continue
+                definition = registry.definition(str(job.get("provider_id") or ""))
+                if definition is None or getattr(adapter_for(definition), "resume", None) is None:
+                    self.store.hold_interrupted(job_id)
+                    continue
+                self._book(job)
+                log.warning("job %s: resuming upstream %s on %s after a restart",
+                            job_id, job.get("upstream_job_id"), job.get("provider_id"))
+                threading.Thread(
+                    target=self._run, args=(job,), kwargs={"resume": True},
+                    name=f"gateway-job-{job_id[:8]}", daemon=True,
+                ).start()
+            except Exception:  # noqa: BLE001 - one unreadable row must not strand the others
+                log.exception("could not resume %s; holding it", job_id)
+                try:
+                    self.store.hold_interrupted(job_id)
+                except Exception:  # noqa: BLE001
+                    log.exception("could not hold %s either", job_id)
 
     def stop(self) -> None:
         self._stop.set()
@@ -1002,12 +1058,19 @@ class Worker:
                 return False
             if self._per_lane.get((provider_id, modality), 0) >= provider_budget.limit:
                 return False
+            self._book(job)
+            self.budgets[provider_id] = provider_budget.as_dict()
+        return True
+
+    def _book(self, job: dict[str, Any]) -> None:
+        """Count one running job in all three books (`_release` is the inverse)."""
+        provider_id = str(job.get("provider_id") or "")
+        modality = str(job.get("modality") or "")
+        with self._budget_lock:
             self._in_flight[provider_id] = self._in_flight.get(provider_id, 0) + 1
             self._lane_in_flight[modality] = self._lane_in_flight.get(modality, 0) + 1
             key = (provider_id, modality)
             self._per_lane[key] = self._per_lane.get(key, 0) + 1
-            self.budgets[provider_id] = provider_budget.as_dict()
-        return True
 
     def _room(self, provider_id: str, modality: str) -> int:
         """How many more jobs this site would take now: its budget less our own there."""
@@ -1073,10 +1136,13 @@ class Worker:
                     book.pop(key, None)
 
     # -- running -----------------------------------------------------------
-    def _run(self, job: dict[str, Any]) -> None:
+    def _run(self, job: dict[str, Any], resume: bool = False) -> None:
         """One job on its own thread. Never raises."""
         try:
-            execute_job(job, self.store)
+            if resume:
+                execute_job(job, self.store, resume=True)
+            else:
+                execute_job(job, self.store)
             self.processed += 1
         except Exception:  # noqa: BLE001
             log.exception("worker failed to execute %s", job.get("id"))

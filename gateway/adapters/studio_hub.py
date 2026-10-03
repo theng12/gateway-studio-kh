@@ -1888,6 +1888,44 @@ class StudioHubBackend:
             upstream_accepted=False,
         )
 
+    def resume(self, request: BackendRequest) -> BackendResult:
+        """Pick up a batch this gateway submitted before it restarted: the same poll and collect.
+
+        The Hub keeps the batch and its result across a Gateway restart, so a job it is still
+        rendering is followed to the end exactly as `generate` would have, by `upstream_job_id`.
+        A Hub that answers 404 has no record of the batch: that stays an unknown outcome (the hold
+        sweep settles it from there), never a guess either way.
+        """
+        batch_id = str(request.upstream_job_id or "").strip()
+        if request.modality not in {"image", "tts", "music", "video", "transcription"} or not batch_id:
+            raise BackendError(
+                f"a Studio Hub {request.modality} job cannot be resumed by id",
+                code="UNKNOWN_OUTCOME", upstream_accepted=True,
+            )
+        base = _resolve_base(request)
+        headers = _headers(request)
+        jobs_path = _jobs_path(request.modality)
+        with httpx.Client(timeout=httpx.Timeout(120.0, connect=10.0)) as client:
+            progress = HubProgress()
+            try:
+                outcome = _poll_batch(
+                    client, base, headers, batch_id, request.upstream_item_index,
+                    jobs_path=jobs_path, deadline_seconds=lane_deadline_seconds(request),
+                    progress=progress, on_wait=request.on_wait,
+                )
+            except BackendError as exc:
+                if exc.status != 404:
+                    raise
+                raise BackendError(
+                    f"after a gateway restart the Hub at {base} has no record of batch {batch_id}",
+                    code="UNKNOWN_OUTCOME", upstream_accepted=True,
+                    recovery={"batch_id": batch_id, "item_index": request.upstream_item_index,
+                              "location": base, "jobs_path": jobs_path,
+                              "recorded_by": "gateway_restart"},
+                ) from exc
+            collect = _collect_transcription if request.modality == "transcription" else _collect_batch
+            return collect(client, base, headers, request, batch_id, outcome, progress)
+
     def discard(self, request: BackendRequest) -> dict[str, Any]:
         """Abandon an uncertain Hub attempt, releasing the machine it reserved.
 

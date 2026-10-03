@@ -114,6 +114,10 @@ def upload_limit_bytes(model_id: str | None) -> int:
     return _MAX_UPLOAD_BYTES
 
 
+#: How long a TERM waits for in-flight jobs to settle before the process exits.
+_SHUTDOWN_DRAIN_S = 4.0
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     worker.start()
@@ -141,9 +145,14 @@ async def lifespan(_: FastAPI):
     try:
         yield
     finally:
+        # **A short drain, never a long one.** Stop admitting work first, then give jobs that are
+        # finishing (saving an artifact, sending its receipt) a few seconds to record it. A job
+        # still rendering is not waited for: its upstream id is already stored, and the next start
+        # resumes polling it (`Worker._resume_interrupted`).
+        worker.stop()
+        worker.wait_idle(timeout=_SHUTDOWN_DRAIN_S)
         fleet.stop_refresher()
         notifier.stop()
-        worker.stop()
 
 
 app = FastAPI(title="gateway-kh", version=__version__, lifespan=lifespan)

@@ -1889,6 +1889,119 @@ class AdoptedHoldTests(_HubCase):
         self.assertEqual(hub.acks, [], "an artifact that failed its check is never acknowledged")
 
 
+class RestartResumesInFlightTests(_HubCase):
+    """A Gateway restart reconnects to Hub work in flight instead of giving it up.
+
+    Measured 2026-10-03: two Breeze narrations 8 and 30 minutes into rendering ended
+    `failed / UNKNOWN_OUTCOME` on a Gateway install, while the Hub kept the batch and its result.
+    """
+
+    def _interrupted(self, name: str, *, upstream: str = BATCH, modality: str = "tts") -> tuple[JobStore, str]:
+        store = JobStore(_TEMP_ROOT / f"{name}.sqlite3")
+        row, _ = store.submit(modality=modality, model_id="model/test", params={"text": "x"},
+                              idempotency_key=name, provider_id="studio-hub-test")
+        self.assertTrue(store.mark_running(row["id"]))
+        self.assertTrue(store.begin_dispatch(row["id"]))
+        if upstream:
+            store.record_upstream_acceptance(row["id"], upstream)
+        store.close()
+        reopened = JobStore(store.path)  # the restart
+        self.addCleanup(reopened.close)
+        return reopened, row["id"]
+
+    def _resume(self, hub: _Hub, store: JobStore, registry: Any = None) -> None:
+        worker = worker_module.Worker(store)
+        with patch.object(worker_module, "registry", registry or _HoldRegistry()), \
+                patch.object(hub_module, "POLL_INTERVAL_S", 0), self.hub_client(hub):
+            worker._resume_interrupted()
+            self.assertTrue(worker.wait_idle(timeout=10))
+
+    def test_an_in_flight_hub_job_is_resumed_and_succeeds(self) -> None:
+        store, job_id = self._interrupted("resume-ok")
+        self.assertEqual(store.get(job_id)["state"], "running", "a restart must not fail it")
+        hub = _Hub(states=["running", "running", "done"])
+        self._resume(hub, store)
+        job = store.get(job_id)
+        self.assertEqual(job["state"], "succeeded")
+        self.assertIsNone(job["error_code"])
+        self.assertEqual(Path(job["asset_path"]).read_bytes(), b"artifact-bytes")
+        self.assertNotIn(("POST", "/api/hub/jobs"), hub.calls, "resumed, never resubmitted")
+        self.assertEqual(hub.acks, [f"/api/hub/jobs/{BATCH}/items/0/ack"])
+
+    def test_a_batch_the_hub_does_not_know_is_an_unknown_outcome(self) -> None:
+        store, job_id = self._interrupted("resume-404")
+        hub = _Hub(poll_faults=[404])
+        self._resume(hub, store)
+        job = store.get(job_id)
+        self.assertEqual((job["state"], job["error_code"]), ("failed", "UNKNOWN_OUTCOME"))
+        self.assertTrue(job["recovery_required"])
+        self.assertIn("no record of batch", job["error_detail"])
+        self.assertEqual(job["recovery_context"]["batch_id"], BATCH, "the hold sweep can ask again")
+        self.assertNotIn(("POST", "/api/hub/jobs"), hub.calls)
+
+    def test_no_upstream_id_is_an_unknown_outcome(self) -> None:
+        store, job_id = self._interrupted("resume-no-id", upstream="")
+        self.assertEqual(store.interrupted, [])
+        job = store.get(job_id)
+        self.assertEqual((job["state"], job["error_code"]), ("failed", "UNKNOWN_OUTCOME"))
+        self.assertTrue(job["recovery_required"])
+
+    def test_a_lane_that_cannot_poll_by_id_keeps_the_restart_hold(self) -> None:
+        class _Cloud(_HoldRegistry):
+            @staticmethod
+            def definition(_provider_id: str) -> Any:
+                return SimpleNamespace(id="studio-hub-test", kind="openai_compat", base_url=HUB,
+                                       display_name="Cloud")
+
+        store, job_id = self._interrupted("resume-cloud", upstream="task-9")
+        hub = _Hub()
+        self._resume(hub, store, _Cloud())
+        job = store.get(job_id)
+        self.assertEqual((job["state"], job["error_code"]), ("failed", "UNKNOWN_OUTCOME"))
+        self.assertEqual(job["recovery_context"]["recorded_by"], "gateway_restart")
+        self.assertEqual(hub.calls, [])
+
+    def _past_restart_hold(self, name: str) -> tuple[JobStore, str]:
+        """The exact row gateway <= 0.2.102 left behind: `failed / UNKNOWN_OUTCOME`, restart context."""
+        store, job_id = self._interrupted(name, modality="tts")
+        store.hold_interrupted(job_id)
+        held = store.get(job_id)
+        self.assertEqual(held["recovery_context"]["recorded_by"], "gateway_restart")
+        self.assertIn(f"Upstream job id: {BATCH}", held["error_detail"])
+        return store, job_id
+
+    def test_reconcile_adopts_a_past_restart_hold_the_hub_finished(self) -> None:
+        store, job_id = self._past_restart_hold("past-restart-done")
+        hub = _Hub(states=["done"])
+        with patch.object(worker_module, "registry", _HoldRegistry()), self.hub_client(hub):
+            out = worker_module.reconcile_holds(store)
+        job = store.get(job_id)
+        self.assertEqual(out["adopted"], 1)
+        self.assertEqual((job["state"], job["error_code"]), ("succeeded", None))
+        self.assertFalse(job["recovery_required"])
+        self.assertIn(("GET", f"/api/hub/jobs/{BATCH}"), hub.calls, "asked by the upstream id")
+
+    def test_reconcile_settles_a_past_restart_hold_the_hub_failed_truthfully(self) -> None:
+        store, job_id = self._past_restart_hold("past-restart-error")
+        hub = _Hub(states=["error"], item={"error": "engine out of memory"})
+        with patch.object(worker_module, "registry", _HoldRegistry()), self.hub_client(hub):
+            out = worker_module.reconcile_holds(store)
+        job = store.get(job_id)
+        self.assertEqual(out["closed_finished"], 1)
+        self.assertEqual(job["state"], "failed")
+        self.assertFalse(job["recovery_required"])
+        self.assertEqual(job["error_code"], "PROVIDER_FAILED", "settled, so no longer 'unknown'")
+        self.assertIn("engine out of memory", job["error_detail"])
+
+    def test_reconcile_leaves_a_past_restart_hold_the_hub_is_still_running(self) -> None:
+        store, job_id = self._past_restart_hold("past-restart-running")
+        hub = _Hub(states=["running"])
+        with patch.object(worker_module, "registry", _HoldRegistry()), self.hub_client(hub):
+            out = worker_module.reconcile_holds(store)
+        self.assertEqual(out["still_open"], 1)
+        self.assertTrue(store.get(job_id)["recovery_required"])
+
+
 class OutputFormatTests(_HubCase):
     """`output_format`: the optional request to compress at the Hub (AAC / JPEG).
 
