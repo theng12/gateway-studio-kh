@@ -14,6 +14,19 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.106 — 2026-10-03
+
+Free work keeps going when a Mac goes quiet, and the Fleet page says why a Mac is offline.
+
+### Work moves on instead of getting stuck
+If a group stops answering while it's making something on your own Macs, the job moves to the next group that has the
+model (never to one you paused); the first result to arrive is kept and the other is cancelled. A busy Mac or a
+hand-off that times out now means "waiting", not "failed". Paid cloud work keeps the careful rule.
+
+### Why a Mac is offline
+Offline Macs show the reason when it's known: "Force-quit at 09:36", "Crashed (restarted) at …", "Stopped by macOS for
+low memory", "Mac restarted, asleep or lost network". Needs Studio Hub 0.6.136 on that Mac.
+
 ## 0.2.105 — 2026-10-03
 
 Studio Hub updates go out one group at a time.
