@@ -141,6 +141,14 @@ async def lifespan(_: FastAPI):
     # with no controllers configured, one carrying a switched-on model. Inert,
     # but a stale enable/disable decision must never be inherited by a location
     # that did not make it.
+    # A reference clip that is a QuickTime container named `.mp3` cannot be previewed by the
+    # app; this gives it a proper WAV once (idempotent, logged), keeping the original beside it.
+    try:
+        from . import voice_import
+
+        voice_import.migrate_references()
+    except Exception:  # noqa: BLE001 - a repair must never stop the gateway from starting
+        pass
     try:
         fleet.reconcile_cached_locations()
     except Exception:  # noqa: BLE001
