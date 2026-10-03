@@ -2225,6 +2225,33 @@ def _startup_fact(machine: dict, node: dict) -> dict | None:
     return out
 
 
+#: Why a Mac's Studio Hub last stopped, as the Mac itself recorded it (`last_stop` on a machine or node row).
+_LAST_STOP_REASONS = frozenset({"quit", "crashed", "updated", "force_quit", "low_memory", "mac_restarted"})
+
+
+def _last_stop_fact(machine: dict, node: dict) -> dict | None:
+    """The last time this Mac's Studio Hub stopped and why, as that Mac reported it - or `None`.
+
+    It is another machine's word, so only the known keys pass and each is checked: `at` must be a
+    real epoch number (otherwise nothing is published), `reason` one of the words the Hub defines
+    (an unfamiliar one becomes `None`, never a guess), `label` a short single line, the booleans real
+    booleans. A fact with neither a known reason nor a label says nothing and is dropped.
+    """
+    raw = machine.get("last_stop") if isinstance(machine.get("last_stop"), dict) else node.get("last_stop")
+    if not isinstance(raw, dict):
+        return None
+    at = raw.get("at")
+    if isinstance(at, bool) or not isinstance(at, (int, float)) or at != at or abs(at) == float("inf"):
+        return None
+    reason = raw.get("reason") if raw.get("reason") in _LAST_STOP_REASONS else None
+    label = " ".join(str(raw["label"]).split())[:80] if isinstance(raw.get("label"), str) else ""
+    if reason is None and not label:
+        return None
+    return {"reason": reason, "at": float(at), "label": label or None,
+            "relaunched": raw["relaunched"] if isinstance(raw.get("relaunched"), bool) else None,
+            "stale": raw["stale"] if isinstance(raw.get("stale"), bool) else None}
+
+
 def _current_job(machine: dict, entry: dict) -> dict | None:
     """The job a node is running right now, **when the Hub says so** (Fleet Groups "Doing now").
 
@@ -2579,6 +2606,7 @@ def machines_flat(rows: list[dict]) -> list[dict]:
                 "modalities": machine.get("modalities") or {},
                 **node_fields(mid),
                 "startup": startup,
+                "last_stop": _last_stop_fact(machine, nodes.get(mid) or {}),
                 "current": _current_job(machine, entry),
                 **health_fields(mid, machine, entry, startup),
             })
@@ -2604,9 +2632,13 @@ def machines_flat(rows: list[dict]) -> list[dict]:
                 "modalities": {},
                 **node_fields(mid),
                 "startup": _startup_fact({}, nodes.get(mid) or {}),
+                "last_stop": _last_stop_fact({}, nodes.get(mid) or {}),
                 "current": _current_job({}, entry),
                 **health_fields(mid, {}, entry, _startup_fact({}, nodes.get(mid) or {})),
             })
+    for machine_row in out:
+        # `no_hub` / `unreachable` / `None`: the one reading of why the controller could not reach it.
+        machine_row["reach_reason"] = _node_reach_reason(machine_row) or None
     return out
 
 

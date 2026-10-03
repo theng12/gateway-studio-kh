@@ -498,6 +498,8 @@ class JobStore:
             if row is None:
                 return
             existing = dict(row)
+            if existing["state"] == "succeeded":
+                return  # first result wins: a late one never rewrites a settled job
             fields: dict[str, Any] = {}
             merged = self._merged_artifacts(existing, artifacts)
             if artifacts is not None:
@@ -1007,7 +1009,9 @@ class JobStore:
         every site to the maker), so nothing the caller sees changes — only the row
         that records which site actually took the work.
         """
-        self._update(job_id, provider_id=provider_id)
+        # The old attempt's batch id goes with it: it names work at the *previous* location, and left
+        # in place it would be resumed, cancelled or reconciled against this one.
+        self._update(job_id, provider_id=provider_id, upstream_job_id=None)
         return True
 
     def rebind_unsent(self, job_id: str, *, from_provider: str, to_provider: str) -> bool:

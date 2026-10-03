@@ -997,13 +997,16 @@ final class FleetGroupsTab: NSView, NSSearchFieldDelegate {
         let name = stack([PageKit.label(machine.label ?? machine.machine ?? "node", .rowTitle),
                           PageKit.label(facts, .caption, colour: factsColour)])
         name.toolTip = machine.stateReason ?? machine.limitation
+        // Why it is offline, in plain English; the controller's raw sentence still shows for any other fault.
+        let offlineWhy = FleetOffline.why(machine)
 
         // The state badge, and under it when the controller last heard from this Mac (a node only).
         let stateBadge = Badge(group.stateWord(machine), health)
         var stateViews: [NSView] = [stateBadge]
         if machine.isNode { stateViews.append(PageKit.label("seen \(machine.nodeLastSeenText)", .caption, colour: .secondaryLabelColor)) }
         let state = stack(stateViews)
-        state.toolTip = machine.stateReason
+        let stateTip = [machine.stateReason, FleetOffline.tooltip(machine)].compactMap { $0 }.joined(separator: "\n\n")
+        state.toolTip = stateTip.isEmpty ? nil : stateTip
 
         let (headline, detail) = group.doing(machine)
         var doingViews = [PageKit.label(headline, .secondary,
@@ -1026,7 +1029,7 @@ final class FleetGroupsTab: NSView, NSSearchFieldDelegate {
         let row = rowStack(["Node": name, "State": state, "Version": version, "Doing now": doing, "Disk": diskCell,
                             "Memory": memoryCell, "Startup": startup],
                           trailing: startupMenu?(machine))
-        let sentence = [node?.detail ?? machine.nodeDetail].compactMap { $0 }.first(where: { !$0.isEmpty && health == .bad })
+        let sentence = ([offlineWhy] + [node?.detail ?? machine.nodeDetail]).compactMap { $0 }.first(where: { !$0.isEmpty && health == .bad })
         guard let sentence else { return row }
         let wrapper = stack([row, noteRow(.bad, sentence, caption: true)])
         wrapper.spacing = 0
