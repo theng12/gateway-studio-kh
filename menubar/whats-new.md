@@ -14,6 +14,23 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.109 — 2026-10-03
+
+Faster writing through pools, and long narration split the way each Mac can handle.
+
+### A pool writes several things at once
+A pool such as "Gemini Free — all" used to answer one request at a time, so three scripts were written one after
+another. It now runs as many at once as its free providers allow (about 5 for Google's free tier), and still only
+touches its paid member as a last resort.
+
+### Narration chunk size from the Macs
+When a Studio Hub says how much text a voice model should get per request, Story Studio is told that number and
+splits long chapters to match, and the gateway waits long enough for each piece.
+
+### Your voice library, labelled honestly
+Voices kept by this gateway (like "Chris") are shown as "Gateway voice library" instead of "Studio Hub (this Mac) ·
+Qwen3 TTS" — they work on any Mac and any voice-cloning model.
+
 ## 0.2.108 — 2026-10-03
 
 Honest prices for local models, and the paid safety net kicks in after a long wait.
