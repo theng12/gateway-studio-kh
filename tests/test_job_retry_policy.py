@@ -78,8 +78,8 @@ class _Store:
     def hold(self, job_id: str, **kwargs: Any) -> None:
         self.holds.append(kwargs)
 
-    def defer(self, job_id: str, *, delay_s: float, reason: str) -> bool:
-        self.deferred.append({"delay_s": delay_s, "reason": reason})
+    def defer(self, job_id: str, *, delay_s: float, reason: str, new_round: bool = False) -> bool:
+        self.deferred.append({"delay_s": delay_s, "reason": reason, "new_round": new_round})
         return True
 
 
@@ -324,7 +324,7 @@ class EndToEndThroughThreeSitesTest(unittest.TestCase):
                                  lambda location_id: True), \
                     patch.object(worker_module.registry, "definition",
                                  lambda provider_id: type("D", (), {
-                                     "id": provider_id, "base_url": "",
+                                     "id": provider_id, "base_url": "", "kind": "studio_hub",
                                      "display_name": provider_id})()), \
                     patch.object(worker_module.registry.credentials, "is_enabled",
                                  lambda provider_id: True), \
@@ -355,20 +355,49 @@ class EndToEndThroughThreeSitesTest(unittest.TestCase):
         self.assertEqual(store.log[0]["code"], "INSUFFICIENT_MEMORY")
         self.assertEqual(store.deferred, [], "and it does not wait on the Mac that refused it")
 
-    def test_a_memory_handback_with_nowhere_else_fails_clearly_instead_of_waiting(self) -> None:
+    def test_a_memory_handback_with_nowhere_else_waits_for_a_free_mac_instead_of_failing(self) -> None:
         store, dispatch = self._run_single_site("memory")
         self.assertEqual(dispatch, ["studio-hub-a"])
-        self.assertEqual(len(store.failed), 1)
-        self.assertEqual(store.failed[0]["code"], "INSUFFICIENT_MEMORY")
-        self.assertIn("needs about 3.2 GB free", store.failed[0]["detail"])
-        self.assertEqual(store.deferred, [])
+        self.assertEqual(store.failed, [], "a hand-back is not 'run it again'")
+        self.assertEqual(len(store.deferred), 1)
+        self.assertTrue(store.deferred[0]["new_round"])
+        self.assertIn("waiting for a free Mac", store.deferred[0]["reason"])
+        self.assertIn("needs about 3.2 GB free", store.deferred[0]["reason"])
+        self.assertEqual(store.log[0]["code"], "INSUFFICIENT_MEMORY", "still on the attempt record")
 
-    def test_a_pinned_job_is_not_re_routed_and_fails_with_the_memory_sentence(self) -> None:
+    def test_a_memory_handback_wait_ends_with_the_ordinary_failure_once_the_queue_budget_is_spent(self) -> None:
+        store = _Store({"id": "job-e2e", "modality": "image", "model_id": "m", "provider_id": "studio-hub-a",
+                        "params": "{}", "state": "running", "attempt_count": 10_000})
+        error = BackendError("INSUFFICIENT_MEMORY: no room", code="INSUFFICIENT_MEMORY", retryable=True,
+                             upstream_accepted=False, upstream_settled=True)
+
+        class _Memory:
+            def generate(self, request):
+                raise error
+
+        definition = lambda pid: type("D", (), {"id": pid, "base_url": "", "kind": "studio_hub",
+                                                "display_name": pid})()
+        with patch.object(worker_module, "adapter_for", lambda _d: _Memory()), \
+                patch.object(worker_module.fleet, "route", lambda *a, **k: (None, "")), \
+                patch.object(worker_module.fleet, "_location_takes_customer_jobs", lambda _l: True), \
+                patch.object(worker_module.registry, "definition", definition), \
+                patch.object(worker_module.registry.credentials, "is_enabled", lambda _p: True), \
+                patch.object(worker_module.registry.models, "enabled_models",
+                             lambda _m: [(type("D", (), {"id": "studio-hub-a"})(),
+                                          {"model_id": "m", "provider_id": "studio-hub-a"})]), \
+                patch.object(worker_module.registry.credentials, "resolved", lambda _p: {}):
+            worker_module.execute_job(dict(store.job), store)
+        self.assertEqual(store.deferred, [])
+        self.assertEqual([f["code"] for f in store.failed], ["INSUFFICIENT_MEMORY"])
+
+    def test_a_pinned_job_is_not_re_routed_and_waits_for_its_own_mac(self) -> None:
         store, dispatch = self._run_single_site(
             "memory", params={"voice_id": "studio-hub-a::raw-voice"}, extra_sites=True)
         self.assertEqual(dispatch, ["studio-hub-a"], "a pinned job never moves")
-        self.assertEqual(len(store.failed), 1)
-        self.assertIn("INSUFFICIENT_MEMORY", store.failed[0]["detail"])
+        self.assertEqual(store.failed, [])
+        self.assertEqual(len(store.deferred), 1)
+        self.assertIn("INSUFFICIENT_MEMORY", store.deferred[0]["reason"])
+        self.assertEqual([e["code"] for e in store.log], ["INSUFFICIENT_MEMORY"])
 
     def test_three_failures_produce_one_proper_failure_naming_all_three(self) -> None:
         store, dispatch = self._run(["busy", "engine", "engine"])

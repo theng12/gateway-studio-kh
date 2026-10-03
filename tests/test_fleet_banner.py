@@ -271,7 +271,7 @@ class BannerSwiftTests(unittest.TestCase):
             data.write_text(json.dumps(fixture))
             compiled = subprocess.run(
                 ["swiftc", "-swift-version", "5", "-framework", "AppKit",
-                 "menubar/PageKit.swift", "menubar/FleetModels.swift", "menubar/FleetStartupModel.swift", "menubar/FleetLastStop.swift",
+                 "menubar/PageKit.swift", "menubar/FleetModels.swift", "menubar/FleetStartupModel.swift", "menubar/FleetLastStop.swift", "menubar/FleetWorkstation.swift",
                  "menubar/FleetTabs.swift", "menubar/FleetGroups.swift", "menubar/SecretField.swift",
                  "menubar/FleetBanner.swift",
                  str(source), "-o", str(binary)],

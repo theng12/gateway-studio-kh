@@ -610,6 +610,8 @@ class Notifier:
         return diskguard.status()
 
     def offline_conditions(self, snap: dict) -> list[Condition]:
+        from .fleet import workstation_resting
+
         out: list[Condition] = []
         down_locations: set[str] = set()
         for row in snap.get("locations") or []:
@@ -634,6 +636,8 @@ class Notifier:
                 continue
             if machine.get("reachable") is not False and state not in ("unreachable", "error"):
                 continue
+            if workstation_resting(machine):
+                continue  # a shop's workstation Mac the shop is using: busy for now, not offline
             name = str(machine.get("label") or machine.get("machine") or "a Mac")
             group = str(machine.get("location") or "")
             reason = {"no_hub": "Studio Hub is not running on it",
@@ -720,7 +724,8 @@ class Notifier:
         cfg_events = self.settings()["events"]
         if cfg_events["jobs_trouble"]:
             rows = store.settled_between(now - FAILURE_WINDOW_S, now + 1)
-            failed = [r for r in rows if r["state"] == "failed"]
+            # A workstation yield that found nowhere else to go is the shop taking its Mac back, not a failure.
+            failed = [r for r in rows if r["state"] == "failed" and r.get("error_code") != "WORKSTATION_YIELDED"]
             if len(failed) >= FAILURE_BURST and len(failed) * 2 >= len(rows):
                 reasons = _top_reasons(failed, 2)
                 out.append(Condition(

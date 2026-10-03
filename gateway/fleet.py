@@ -2252,6 +2252,58 @@ def _last_stop_fact(machine: dict, node: dict) -> dict | None:
             "stale": raw["stale"] if isinstance(raw.get("stale"), bool) else None}
 
 
+#: Workstation mode (Hub, owner request 2026-10-03): a shop's own Mac lends the fleet its idle time.
+_WORKSTATION_STATES = frozenset({"off", "working", "standing_by", "yielded", "quiet_hours"})
+#: The states in which the Mac is the shop's for now: grey and temporary, never offline, attention or an alarm.
+WORKSTATION_RESTING = frozenset({"standing_by", "yielded", "quiet_hours"})
+
+
+def _workstation_fact(machine: dict, node: dict) -> dict | None:
+    """This Mac's workstation-mode settings and state, as its Hub reported them - or `None` (Hub too old).
+
+    Another machine's word, like `last_stop`: only the known keys pass, each checked for its type (a wrong
+    one becomes `None`), and an unfamiliar state is unknown, never a guess.
+    """
+    raw = machine.get("workstation") if isinstance(machine.get("workstation"), dict) else node.get("workstation")
+    if not isinstance(raw, dict):
+        return None
+
+    def flag(key: str) -> bool | None:
+        return raw[key] if isinstance(raw.get(key), bool) else None
+
+    def number(key: str) -> float | None:
+        value = raw.get(key)
+        ok = isinstance(value, (int, float)) and not isinstance(value, bool) and value == value and abs(value) != float("inf")
+        return value if ok else None
+
+    def count(key: str) -> int | None:
+        value = number(key)
+        return None if value is None else int(value)
+
+    hours, reason = raw.get("quiet_hours"), raw.get("reason")
+    return {
+        "enabled": flag("enabled"), "idle_only": flag("idle_only"), "idle_minutes": count("idle_minutes"),
+        "step_aside": flag("step_aside"), "resume_after_minutes": count("resume_after_minutes"),
+        "start_free_gb": number("start_free_gb"),
+        "quiet_hours": [h.strip()[:16] for h in hours if isinstance(h, str)][:6] if isinstance(hours, list) else None,
+        "hide_menu_bar_icon": flag("hide_menu_bar_icon"),
+        "state": raw.get("state") if raw.get("state") in _WORKSTATION_STATES else None,
+        "reason": " ".join(reason.split())[:120] or None if isinstance(reason, str) else None,
+        "yields_today": count("yields_today"), "jobs_today": count("jobs_today"),
+        "stale": flag("stale"),
+    }
+
+
+def workstation_resting(row: dict) -> bool:
+    """A workstation Mac that is the shop's for now (standing by, stepped aside, quiet hours), freshly reported.
+
+    Such a Mac is temporarily busy, not offline, not "needs attention" and not a Telegram alarm. A block the
+    controller repeats for a Mac it can no longer reach (`stale`) says nothing about now.
+    """
+    block = row.get("workstation")
+    return isinstance(block, dict) and block.get("state") in WORKSTATION_RESTING and block.get("stale") is not True
+
+
 def _current_job(machine: dict, entry: dict) -> dict | None:
     """The job a node is running right now, **when the Hub says so** (Fleet Groups "Doing now").
 
@@ -2541,7 +2593,8 @@ def machines_flat(rows: list[dict]) -> list[dict]:
             and _version_key(held.get("version")) >= _version_key(latest.get("version"))  # type: ignore[operator]
         now = time.time()
 
-        def health_fields(mid: str, machine: dict, entry: dict, startup: dict | None) -> dict:
+        def health_fields(mid: str, machine: dict, entry: dict, startup: dict | None,
+                          workstation: dict | None) -> dict:
             """State (re-read where the Hub's verdict has no visible cause), version and its badge."""
             node = nodes.get(mid) or {}
             workers = workers_by_machine.get(mid, [])
@@ -2549,6 +2602,10 @@ def machines_flat(rows: list[dict]) -> list[dict]:
             state, why = entry.get("state"), None
             if str(state or "").lower() == "needs_attention":
                 state, why = _attention(entry, workers, phantom, machine.get("health"), now)
+            # A workstation Mac the shop is using (or in its quiet hours) is busy for now, not offline and not
+            # needing attention: its state is the workstation's word. A job still finishing there stays `working`.
+            if workstation_resting({"workstation": workstation}) and str(state or "").lower() != "working":
+                state, why = workstation["state"], None
             # A node's own Hub version, as its controller last read it; the controller's own Mac is
             # the controller's version.
             version = node.get("version") or (startup or {}).get("app_version") \
@@ -2607,8 +2664,9 @@ def machines_flat(rows: list[dict]) -> list[dict]:
                 **node_fields(mid),
                 "startup": startup,
                 "last_stop": _last_stop_fact(machine, nodes.get(mid) or {}),
+                "workstation": (workstation := _workstation_fact(machine, nodes.get(mid) or {})),
                 "current": _current_job(machine, entry),
-                **health_fields(mid, machine, entry, startup),
+                **health_fields(mid, machine, entry, startup, workstation),
             })
         # A machine the activity report knows about but the overview omitted is
         # still a machine.
@@ -2633,8 +2691,9 @@ def machines_flat(rows: list[dict]) -> list[dict]:
                 **node_fields(mid),
                 "startup": _startup_fact({}, nodes.get(mid) or {}),
                 "last_stop": _last_stop_fact({}, nodes.get(mid) or {}),
+                "workstation": (workstation := _workstation_fact({}, nodes.get(mid) or {})),
                 "current": _current_job({}, entry),
-                **health_fields(mid, {}, entry, _startup_fact({}, nodes.get(mid) or {})),
+                **health_fields(mid, {}, entry, _startup_fact({}, nodes.get(mid) or {}), workstation),
             })
     for machine_row in out:
         # `no_hub` / `unreachable` / `None`: the one reading of why the controller could not reach it.

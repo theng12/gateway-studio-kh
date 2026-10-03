@@ -93,7 +93,7 @@ struct GroupSummary {
         if isPausedByOwner { return .off }   // paused by you: quiet grey, never "needs attention"
         var worst = Health.ok
         for machine in machines where machine.reachable != false || machine.isNode {
-            for state in [nodeHealth(machine), machine.diskHealth, machine.memoryHealth] where state == .warn || state == .bad {
+            for state in [nodeHealth(machine), machine.diskHealth, machine.faultMemoryHealth] where state == .warn || state == .bad {
                 worst = max(worst, .warn)
             }
         }
@@ -142,7 +142,7 @@ struct GroupSummary {
         let refused = machines.filter { $0.nodeStateIsUnauthorized }.count
         let offline = machines.filter { isOffline($0) && !$0.nodeStateIsUnauthorized }.count
         let disks = live.filter { $0.diskHealth == .warn || $0.diskHealth == .bad }.count
-        let memory = live.filter { $0.memoryHealth == .warn || $0.memoryHealth == .bad }.count
+        let memory = live.filter { $0.faultMemoryHealth == .warn || $0.faultMemoryHealth == .bad }.count
         let stalled = batches.filter { $0.stalled == true }.count
         if refused > 0 { out.append(plural(refused, "credential refused", "credentials refused")) }
         if offline > 0 { out.append(plural(offline, "node offline", "nodes offline")) }
@@ -173,6 +173,8 @@ struct GroupSummary {
         let state = (machine.state ?? "").lowercased()
         // The State badge already says ready, idle, offline or refused; this column is only for work.
         if machine.nodeStateIsUnauthorized { return ("—", nil) }
+        // A workstation the shop has for now: why, in the Hub's words ("Someone is using this Mac").
+        if machine.workstation?.isResting == true { return (machine.workstationReasonText ?? "—", nil) }
         switch state {
         case "working":
             let busy = location.workers.filter { $0.machine == machine.machine && $0.busy == true }
@@ -207,7 +209,7 @@ struct GroupSummary {
     /// Machines worst first, the controller's own Mac before them: what a person scans for.
     var rankedMachines: [FleetMachine] {
         func rank(_ machine: FleetMachine) -> Int {
-            let states = [nodeHealth(machine), machine.diskHealth, machine.memoryHealth].filter { $0 == .warn || $0 == .bad }
+            let states = [nodeHealth(machine), machine.diskHealth, machine.faultMemoryHealth].filter { $0 == .warn || $0 == .bad }
             return nodeHealth(machine) == .bad ? 3 : (states.isEmpty ? 0 : 1)
         }
         return machines.sorted {
@@ -994,8 +996,20 @@ final class FleetGroupsTab: NSView, NSSearchFieldDelegate {
             if let badge = versionBadge, badge.health == .warn || badge.health == .info { factsColour = badge.health.text }
         }
         if !machine.isNode { facts += (facts.isEmpty ? "" : " · ") + "controller" }
-        let name = stack([PageKit.label(machine.label ?? machine.machine ?? "node", .rowTitle),
-                          PageKit.label(facts, .caption, colour: factsColour)])
+        var nameViews: [NSView] = [PageKit.label(machine.label ?? machine.machine ?? "node", .rowTitle),
+                                   PageKit.label(facts, .caption, colour: factsColour)]
+        // Workstation mode: "[Working] Today: 3 jobs · 1 step-aside" (a resting Mac's chip is its State badge).
+        if let workstation = machine.workstation, let today = workstation.today {
+            var parts: [NSView] = []
+            if !workstation.isResting, let chip = workstation.chip { parts.append(Badge(chip, workstation.chipHealth)) }
+            parts.append(PageKit.label(today, .caption, colour: .secondaryLabelColor))
+            let line = NSStackView(views: parts)
+            line.spacing = DS.Space.xs
+            line.alignment = .centerY
+            line.toolTip = machine.workstationLine
+            nameViews.append(line)
+        }
+        let name = stack(nameViews)
         name.toolTip = machine.stateReason ?? machine.limitation
         // Why it is offline, in plain English; the controller's raw sentence still shows for any other fault.
         let offlineWhy = FleetOffline.why(machine)
@@ -1005,7 +1019,8 @@ final class FleetGroupsTab: NSView, NSSearchFieldDelegate {
         var stateViews: [NSView] = [stateBadge]
         if machine.isNode { stateViews.append(PageKit.label("seen \(machine.nodeLastSeenText)", .caption, colour: .secondaryLabelColor)) }
         let state = stack(stateViews)
-        let stateTip = [machine.stateReason, FleetOffline.tooltip(machine)].compactMap { $0 }.joined(separator: "\n\n")
+        let stateTip = [machine.workstationLine, machine.stateReason, FleetOffline.tooltip(machine)].compactMap { $0 }
+            .joined(separator: "\n\n")
         state.toolTip = stateTip.isEmpty ? nil : stateTip
 
         let (headline, detail) = group.doing(machine)

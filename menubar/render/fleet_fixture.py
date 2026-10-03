@@ -168,6 +168,38 @@ def many(rows: list) -> list:
     return [rows[0], rows[1], rows[2], big, rows[3]]
 
 
+def shops() -> dict:
+    """GATEWAY_RENDER_FIXTURE=workstation: the "Shops" location, each Mac in one workstation-mode state.
+
+    Shop 1 takes work, Shop 2 is in use (standing by), Shop 3 just stepped aside, Shop 4 is in its quiet hours,
+    Shop 5 has the mode off, and Shop 6 runs a Hub too old to report it (no `workstation` block).
+    """
+    def ws(state, *, enabled=True, reason=None, jobs=0, yields=0):
+        return {"enabled": enabled, "idle_only": True, "idle_minutes": 3, "step_aside": True, "resume_after_minutes": 2,
+                "start_free_gb": None, "quiet_hours": ["22:00-07:00"], "hide_menu_bar_icon": False, "state": state,
+                "reason": reason, "yields_today": yields, "jobs_today": jobs}
+    blocks = {"shop-ctl": ws("working", jobs=5), "shop-1": ws("working", jobs=3, yields=1),
+              "shop-2": ws("standing_by", reason="someone is using this Mac", jobs=2),
+              "shop-3": ws("yielded", reason="macOS reported critical memory pressure", jobs=4, yields=1),
+              "shop-4": ws("quiet_hours", reason="quiet hours until 07:00", jobs=7),
+              "shop-5": ws("off", enabled=False), "shop-6": None}
+    names = {"shop-ctl": "Shops front desk", **{f"shop-{i}": f"Shop {i}" for i in range(1, 7)}}
+    machines, activities, nodes = [], [], []
+    for i, (mid, block) in enumerate(blocks.items()):
+        row = machine(mid, names[mid], "Apple M4", 16.0, 2.1 if mid == "shop-2" else 6.5 + i, 120.0 + 9 * i,
+                      disk_total=256.0, modalities={"voice": 10 + i})
+        if block is not None:
+            row["workstation"] = block
+        machines.append(row)
+        activities.append(activity(mid, "working" if mid == "shop-1" else "ready", 20 + i, 0, 45.0))
+        if mid != "shop-ctl":
+            nodes.append({**node(mid, "reachable", address=f"http://100.64.7.{i}:47873", seen=4,
+                                 version="0.6.120" if mid == "shop-6" else "0.6.126"), "name": names[mid]})
+    return location("ctrl-shops", "Shops", "http://100.64.7.1:47873", machines=machines, activities=activities,
+                    nodes=nodes, workers=[worker(mid, "voice", busy=mid == "shop-1", models=[KOKORO]) for mid in blocks],
+                    models=[model(KOKORO, "Kokoro 82M", "voice", mid, need=3.0, size=0.4) for mid in blocks])
+
+
 LATEST = "0.6.132"
 FIVE = ("voice", "transcription", "chat", "music", "image")
 
@@ -456,6 +488,8 @@ def build() -> dict:
                                    "was removed. Bring the Mac back, or resume it from the Fleet page.")
         next(n for n in studio2["nodes"] if n["id"] == "s2-1")["paused"] = True
         rows = [local, garage] if flavour == "paused" else [studio2]
+    if flavour == "workstation":
+        rows = [shops()]
     if flavour.startswith("many"):
         rows = many(rows)
     fleet.stamp_latest(rows, {"fingerprint": "cd" * 32, "updated_at": NOW - 3 * HOUR,

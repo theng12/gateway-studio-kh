@@ -97,8 +97,39 @@ func renderRenameSheet() {
     alert.window.orderOut(nil)
 }
 
+/// `fleet-workstation`: the Workstation Mode sheet for a Mac the shop is using, in the owner's defaults (works
+/// through use, `fleet-workstation.png`) and with Only-when-idle and Step-aside on (`fleet-workstation-idle.png`);
+/// and the "…" menu titles for that Mac and for one whose Studio Hub is too old to report the mode.
+func renderWorkstationSheet() {
+    let decoder = JSONDecoder()
+    decoder.keyDecodingStrategy = .convertFromSnakeCase
+    func sample(idleOnly: Bool, stepAside: Bool) -> String {
+        #"{"location_id":"ctrl-shops","machine":"shop-2","label":"Shop 2","reachable":true,"node_role":"agent","workstation":{"enabled":true,"idle_only":\#(idleOnly),"idle_minutes":3,"step_aside":\#(stepAside),"resume_after_minutes":2,"start_free_gb":null,"quiet_hours":["22:00-07:00"],"hide_menu_bar_icon":false,"state":"standing_by","reason":"someone is using this Mac","yields_today":0,"jobs_today":2}}"#
+    }
+    let old = #"{"location_id":"ctrl-shops","machine":"shop-6","label":"Shop 6","reachable":true,"node_role":"agent"}"#
+    guard let machine = try? decoder.decode(FleetMachine.self, from: Data(sample(idleOnly: false, stepAside: false).utf8)),
+          let tooOld = try? decoder.decode(FleetMachine.self, from: Data(old.utf8)) else { print("no sample machine"); return }
+    for sample in [machine, tooOld] {
+        if let button = FleetStartup.menuButton(for: sample, window: { nil }, done: {}) as? FleetMenuButton {
+            print("menu \(sample.label ?? ""): \(button.itemTitles)")
+        }
+    }
+    for (suffix, idleOnly, stepAside) in [("", false, false), ("-idle", true, true)] {
+        guard let shown = try? decoder.decode(FleetMachine.self, from: Data(sample(idleOnly: idleOnly, stepAside: stepAside).utf8)),
+              let current = shown.workstation else { continue }
+        let (alert, _) = FleetWorkstationForm.alert(for: shown, current)
+        alert.layout()
+        alert.window.setFrameOrigin(NSPoint(x: -20000, y: -20000))
+        alert.window.orderFront(nil)
+        spin(0.8)
+        write(alert.window, web: nil, to: "\(output)/fleet-workstation\(suffix)\(suffixForAppearance).png")
+        alert.window.orderOut(nil)
+    }
+}
+
 for page in pageNames where page == "fleet-rename" { renderRenameSheet() }
-for page in pageNames where page != "fleet-rename" {
+for page in pageNames where page == "fleet-workstation" { renderWorkstationSheet() }
+for page in pageNames where !["fleet-rename", "fleet-workstation"].contains(page) {
     // `fleet:locations` is the Fleet page on one of its inner tabs.
     let parts = page.split(separator: ":").map(String.init)
     let name = parts[0].replacingOccurrences(of: "-", with: " ")

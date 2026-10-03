@@ -710,6 +710,8 @@ struct FleetMachine: Decodable {
     var lastStop: FleetLastStop?
     /// Why the controller could not reach it - `no_hub` (the Mac answers, nothing listens) or `unreachable` - or `nil`.
     var reachReason: String?
+    /// Workstation mode on this Mac (see `FleetWorkstation.swift`); `nil` when its Hub is too old for it.
+    var workstation: FleetWorkstation?
     /// What this node is running now, when its Hub says so (Fleet Groups "Doing now"); `nil` is unknown.
     var current: FleetCurrentJob?
     /// **Job counts per modality**, not a list of models the machine offers. The
@@ -853,6 +855,7 @@ extension FleetMachine {
     var activityHealth: Health {
         let word = (state ?? "").lowercased()
         if nodePaused == true { return .off }   // paused by you: quiet grey, not a fault
+        if workstation?.isResting == true { return .off }   // the shop is using it, or quiet hours: busy for now
         if nodeStateIsUnauthorized || word == "offline" || reachable == false { return .bad }
         if word == "needs_attention" { return .warn }
         if word == "long_idle" || word.isEmpty { return .off }
@@ -885,6 +888,7 @@ extension FleetMachine {
     /// different fix).
     var stateLabel: String {
         if nodePaused == true { return "Paused" }
+        if let resting = workstationRestingLabel { return resting }
         if nodeStateIsUnauthorized { return "Credential refused" }
         if reachable == false { return "Offline" }
         switch (state ?? "").lowercased() {
