@@ -543,12 +543,7 @@ final class OverviewSection: NSObject, AppSection {
             case "running", "starting", "accepted": symbol = "•"
             default: symbol = "–"
             }
-            let colour: NSColor
-            switch state {
-            case "succeeded": colour = Health.ok.text
-            case "failed": colour = Health.bad.text
-            default: colour = .secondaryLabelColor
-            }
+            let colour = Health(state: state).text
 
             let line = NSMutableAttributedString()
             line.append(NSAttributedString(string: "\(symbol) ", attributes: [
