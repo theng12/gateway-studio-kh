@@ -14,6 +14,18 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.108 — 2026-10-03
+
+Honest prices for local models, and the paid safety net kicks in after a long wait.
+
+### Your own Macs' models say they're free
+Image, voice and music models running on your Studio Hub Macs now say they cost nothing, like their writing models
+already did. (Story Studio 1.4.249 or newer is needed — older Story Studio read this as "no reference images".)
+
+### Paid pool member after 15 minutes of rate limits
+If the free models in a pool stay rate-limited for 15 minutes in a row, the pool now uses its paid member instead of
+failing, and the log says so. Briefly limited free models still mean a short wait, never a charge.
+
 ## 0.2.107 — 2026-10-03
 
 One colour rule for every state.
