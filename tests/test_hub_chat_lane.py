@@ -182,6 +182,19 @@ class ChatLaneTests(unittest.TestCase):
         self.assertIs(caught.exception.upstream_accepted, False,
                       "a refusal accepted nothing, so another location may be tried")
 
+    def test_a_paused_controller_or_no_free_mac_is_a_free_hand_back(self) -> None:
+        # A paused controller's peer chat route answers 409 MACHINE_DISABLED; a Hub 0.6.141+ group
+        # with every able Mac paused answers NO_AVAILABLE_MACHINE. Both move the free job on.
+        for hub_code in ("MACHINE_DISABLED", "NO_AVAILABLE_MACHINE"):
+            with self.subTest(hub_code), patch.object(mock_upstream, "CHAT_STATUS", 409), \
+                    patch.object(mock_upstream, "CHAT_REFUSAL_CODE", hub_code):
+                with self.assertRaises(BackendError) as caught:
+                    StudioHubBackend().generate(_request())
+            self.assertEqual(caught.exception.code, "NO_AVAILABLE_MACHINE")
+            self.assertTrue(caught.exception.retryable)
+            self.assertIs(caught.exception.upstream_accepted, False)
+            self.assertIn(hub_code, str(caught.exception))
+
     def test_the_answer_is_passed_through_as_the_worker_stated_it(self) -> None:
         result = StudioHubBackend().generate(_request())
         # `finish_reason` travels: rewriting `length` into a clean stop would hide

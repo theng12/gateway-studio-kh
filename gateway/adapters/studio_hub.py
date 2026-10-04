@@ -191,7 +191,8 @@ _TERMINAL_UNCERTAIN = {"uncertain"}
 #: The pre-acceptance site properties `_submission_readiness` / `_peer_admission_refusal` also
 #: emit (`STUDIO_NOT_RUNNING`, `OUTPUT_STORAGE_BLOCKED`, `MODEL_CATALOG_UNAVAILABLE`) are the same
 #: kind of thing — true here now, maybe not on another Mac — so they re-route too. The
-#: operator-decision codes (`MODEL_PAUSED`, `MACHINE_DISABLED`, `STUDIO_DISABLED`) stay terminal.
+#: operator-decision codes (`MODEL_PAUSED`, `MACHINE_DISABLED`, `STUDIO_DISABLED`) stay terminal
+#: (except `MACHINE_DISABLED` on the chat route: a free hand-back, see `_generate_chat`).
 _LOCATION_REFUSAL_CODES = {
     "MODEL_NOT_READY", "MODEL_NOT_PACKAGED", "MACHINE_BUSY",
     "STUDIO_NOT_RUNNING", "OUTPUT_STORAGE_BLOCKED", "MODEL_CATALOG_UNAVAILABLE",
@@ -1955,6 +1956,13 @@ def _generate_chat(request: BackendRequest) -> BackendResult:
         code = _hub_refusal_code(response)
         if code in _LOCATION_REFUSAL_CODES:
             raise _refusal_error(code, response)
+        if code == "MACHINE_DISABLED":
+            # The peer chat route runs on the controller's own Mac, so a paused controller answers
+            # 409 MACHINE_DISABLED even when its group has other Macs. For this free job that is a
+            # hand-back, not an operator verdict on the job: moved to another group, nothing
+            # charged, not counted against the retry ceiling (owner rule 2026-10-04).
+            raise BackendError(_refusal_sentence(code, response), code=NO_AVAILABLE_MACHINE,
+                               status=response.status_code, retryable=True, upstream_accepted=False)
         raise BackendError(
             # A 422 here is the Hub's own validation — a prompt past the model's
             # stated context, or a non-boolean `thinking` — and its sentence names
