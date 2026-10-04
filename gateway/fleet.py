@@ -2685,6 +2685,11 @@ def machines_flat(rows: list[dict]) -> list[dict]:
                 "node_paused": node.get("paused"),
             }
 
+        # Each Mac's model readiness, from the Hub's own `model-health` rows (absent on an older Hub).
+        model_states: dict[str, list[str]] = {}
+        for health in row.get("model_health") or []:
+            if isinstance(health, dict) and health.get("machine"):
+                model_states.setdefault(str(health["machine"]), []).append(str(health.get("state") or ""))
         workers_by_machine: dict[str, list[dict]] = {}
         for worker in row.get("workers") or []:
             if isinstance(worker, dict):
@@ -2705,6 +2710,17 @@ def machines_flat(rows: list[dict]) -> list[dict]:
             state, why = entry.get("state"), None
             if str(state or "").lower() == "needs_attention":
                 state, why = _attention(entry, workers, phantom, machine.get("health"), now)
+            # **A Mac with no model it can run is not "Ready".** Its studios are up, so the Hub calls
+            # it ready, but routing never picks it: 1108 sat "Ready · 0 done · 0 failed" for days with
+            # no model files at all (every model `download_required`) while its siblings worked.
+            states = model_states.get(mid)
+            if states and "ready" not in states and str(state or "").lower() in {
+                    "ready", "long_idle", "just_finished"}:
+                missing = states.count("download_required")
+                state, why = "needs_attention", (
+                    f"No model is ready on this Mac ({missing} of {len(states)} need downloading), "
+                    "so it is never given a job" if missing
+                    else "No model is ready on this Mac, so it is never given a job")
             # A workstation Mac the shop is using (or in its quiet hours) is busy for now, not offline and not
             # needing attention: its state is the workstation's word. A job still finishing there stays `working`.
             if workstation_resting({"workstation": workstation}) and str(state or "").lower() != "working":
