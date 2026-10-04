@@ -209,6 +209,7 @@ def mix_states(env: dict) -> None:
 class Overlay(BaseHTTPRequestHandler):
     gateway_port = 0
     fleet_body = b"{}"
+    add_answer: dict | None = None  # GATEWAY_RENDER_FIXTURE=add-location: what Add Location answers
 
     def log_message(self, *args):
         pass
@@ -246,7 +247,40 @@ class Overlay(BaseHTTPRequestHandler):
             return
         self._proxy()
 
-    do_POST = do_PUT = do_PATCH = do_DELETE = _proxy
+    def do_POST(self):
+        if self.path == "/admin/api/fleet/controllers" and self.add_answer:
+            self.rfile.read(int(self.headers.get("Content-Length") or 0))
+            # Long enough for the harness to draw the in-flight state, as a slow controller would be.
+            time.sleep(float(os.environ.get("GATEWAY_RENDER_ADD_DELAY", "4")))
+            snapshot = json.loads(Overlay.fleet_body)
+            if self.add_answer["location"]["id"] not in {row.get("id") for row in snapshot["locations"]}:
+                snapshot["locations"].append(self.add_answer["location"])
+            Overlay.fleet_body = json.dumps(snapshot).encode()
+            body = json.dumps(self.add_answer).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        self._proxy()
+
+    def do_DELETE(self):
+        # Removing the location the render added puts the fleet back as it was, for the next appearance's run.
+        if self.add_answer and self.path == f"/admin/api/fleet/controllers/{self.add_answer['location']['id']}":
+            snapshot = json.loads(Overlay.fleet_body)
+            snapshot["locations"] = [r for r in snapshot["locations"] if r.get("id") != self.add_answer["location"]["id"]]
+            Overlay.fleet_body = json.dumps(snapshot).encode()
+            body = b'{"controllers": []}'
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        self._proxy()
+
+    do_PUT = do_PATCH = _proxy
 
 
 def main() -> None:
@@ -305,7 +339,9 @@ def main() -> None:
 
     fleet_json = subprocess.run([sys.executable, str(HERE / "fleet_fixture.py")], cwd=ROOT, capture_output=True,
                                 check=True).stdout
-    Overlay.gateway_port, Overlay.fleet_body = gateway_port, fleet_json
+    fleet_doc = json.loads(fleet_json)
+    Overlay.add_answer = fleet_doc.pop("render_add", None)
+    Overlay.gateway_port, Overlay.fleet_body = gateway_port, json.dumps(fleet_doc).encode()
     server = ThreadingHTTPServer(("127.0.0.1", args.port), Overlay)
     print(f"READY {args.support}", flush=True)
     server.serve_forever()

@@ -2587,6 +2587,10 @@ def fleet_add_controller(payload: dict[str, Any]) -> Any:
     # still in the person's hand.
     return {
         "controller": row,
+        # **The row the page inserts at once**, in the shape a fleet read carries, marked pending: the
+        # first fan-out that includes it takes as long as the slowest controller, and until then the
+        # page must show the location it was just told exists ("Just added — reading its Macs…").
+        "location": fleet.pending_location(row),
         "credential": fleet.credential_scope_for(str(row.get("id") or "")),
         "discovered": discovered,
         "discovery_error": discovery_error,

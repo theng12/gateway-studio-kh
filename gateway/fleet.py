@@ -1205,6 +1205,8 @@ def _probe(base: str, token: str, *, timeout: float = _TIMEOUT) -> dict:
             f"No answer within {int(_TIMEOUT)}s. The address is reachable but nothing replied — "
             "check the machine is awake and that Tailscale is up at both ends."
         )
+        # Slow, not gone: `_refresh` keeps what it last reported instead of blanking the row.
+        location["slow"] = True
         return location
     except httpx.HTTPError as exc:
         location["error"] = f"{type(exc).__name__}: {exc}" or "No response from the controller."
@@ -1598,6 +1600,64 @@ def _worker_roster(capabilities: object, nodes: object) -> list[dict]:
     return _workers_from_nodes(nodes)
 
 
+def _unread_location(location_id: str, label: str, url: str, *, local: bool = False) -> dict:
+    """A location row with nothing read from it yet: every field present, every value empty."""
+    return {
+        "id": location_id, "label": label, "url": url, "local": local,
+        "provider_id": provider_id_for(location_id),
+        "reachable": None, "error": None,
+        "role": None, "version": None, "hub_version_relation": None,
+        "machines": [], "machine_summary": None,
+        "nodes": [], "node_summary": None, "running_jobs": [],
+        "activity": {"pulse": {}, "machines": [], "observed_at": None},
+        "by_machine": {}, "matrix": [], "jobs_total": None, "latency_ms": None,
+        "site_id": None, "controller_id": None, "ready": None,
+        "capacity": {}, "local_models": [], "workers": [], "hub_workers": [],
+        "model_health": [],
+        "release": None,
+        "probe_machines_hidden": 0,
+    }
+
+
+def pending_location(row: dict) -> dict:
+    """A configured location the fleet has not read yet — "Just added — reading its Macs…".
+
+    The add answers with this, and a read served before the next fan-out carries it, so a location
+    that exists in the roster is never absent from the page while its first read is in flight.
+    """
+    out = _unread_location(str(row.get("id") or ""), str(row.get("label") or row.get("url") or ""),
+                           str(row.get("url") or ""))
+    out["pending"] = True
+    return out
+
+
+def with_roster(value: dict) -> dict:
+    """A snapshot made to agree with the roster on disk now: who is in it, and what each is called.
+
+    Served while the snapshot is older than the last roster change (`invalidate`), so the page shows a
+    just-added location (pending), drops a removed one and shows a rename — without waiting for a
+    fan-out that takes as long as the slowest controller. Never mutates the cached dict.
+    """
+    roster = {str(row.get("id") or ""): row for row in _read()}
+    rows: list[dict] = []
+    seen: set[str] = set()
+    for row in value.get("locations") or []:
+        rid = str(row.get("id") or "")
+        if row.get("local"):
+            rows.append(row)
+            continue
+        if rid not in roster:
+            continue
+        seen.add(rid)
+        configured = roster[rid]
+        label = configured.get("label") or configured.get("url")
+        if row.get("label") != label or row.get("url") != configured.get("url"):
+            row = {**row, "label": label, "url": configured.get("url")}
+        rows.append(row)
+    rows += [pending_location(row) for rid, row in roster.items() if rid not in seen]
+    return {**value, "locations": rows}
+
+
 def locations() -> list[dict]:
     """The local Mac first, then every configured controller."""
     rows: list[dict] = []
@@ -1624,25 +1684,11 @@ def locations() -> list[dict]:
         })
         _stamp_pause(local, LOCAL_ID)
     else:
-        local = {
-            "id": LOCAL_ID, "label": local_label(), "url": "", "local": True,
-            # Published here too, and deliberately: the provider identity does not
-            # depend on the Hub answering. A page that can only name the provider of
-            # a location that is up cannot offer to refresh the one that is down.
-            "provider_id": provider_id_for(LOCAL_ID),
-            "reachable": False,
-            "error": local_error or "Studio Hub is not running on this Mac.",
-            "role": None, "version": None, "hub_version_relation": None,
-            "machines": [], "machine_summary": None,
-            "nodes": [], "node_summary": None, "running_jobs": [],
-            "activity": {"pulse": {}, "machines": [], "observed_at": None},
-            "by_machine": {}, "matrix": [], "jobs_total": None, "latency_ms": None,
-            "site_id": None, "controller_id": None, "ready": None,
-            "capacity": {}, "local_models": [], "workers": [], "hub_workers": [],
-            "model_health": [],
-            "release": None,
-            "probe_machines_hidden": 0,
-        }
+        # Published here too, and deliberately: the provider identity does not
+        # depend on the Hub answering. A page that can only name the provider of
+        # a location that is up cannot offer to refresh the one that is down.
+        local = _unread_location(LOCAL_ID, local_label(), "", local=True)
+        local.update(reachable=False, error=local_error or "Studio Hub is not running on this Mac.")
         _stamp_pause(local, LOCAL_ID)
     rows.append(local)
 
@@ -1801,7 +1847,10 @@ _MAX_PROBES = 24
 #: window, the console, a test) read the same data; re-probing every controller
 #: on each read would multiply the load on every site by the number of readers.
 _CACHE_TTL = 5.0
-_cache: dict = {"at": 0.0, "value": None}
+#: `gen` counts roster changes (`invalidate`): a fan-out that read the roster before the latest change
+#: must not cache its answer. `last` is the value `invalidate` dropped, served (made to agree with the
+#: roster, `with_roster`) to a plain read until the next fan-out lands, so that read never waits.
+_cache: dict = {"at": 0.0, "value": None, "gen": 0, "last": None}
 _cache_lock = threading.Lock()
 
 #: **One fan-out at a time, process-wide.** A stampede of readers arriving on a
@@ -1835,8 +1884,10 @@ def invalidate() -> None:
     possible moment to be stale.
     """
     with _cache_lock:
+        _cache["last"] = _cache["value"] or _cache["last"]
         _cache["at"] = 0.0
         _cache["value"] = None
+        _cache["gen"] += 1
 
 
 def _summarise(rows: list[dict]) -> dict:
@@ -3256,11 +3307,20 @@ def snapshot(force: bool = False, *, allow_stale: bool = False) -> dict:
     with _cache_lock:
         cached = _cache["value"]
         age = now - _cache["at"]
+        last = _cache["last"]
     if not force and cached is not None:
         if allow_stale or age < _CACHE_TTL:
             return cached
         _revalidate_in_background()
         return cached
+    # **Just after a roster change, a plain read still does not wait.** `invalidate` dropped the
+    # cache, and a cold read here used to wait for a whole fan-out -- as long as the slowest
+    # controller, ~19 s on the owner's fleet against the app's 15 s timeout -- so the page that
+    # had just added a location timed out and showed nothing. It gets the previous snapshot made
+    # to agree with the roster (the new location pending) while the fan-out runs behind it.
+    if not force and not allow_stale and last is not None:
+        _revalidate_in_background()
+        return with_roster(last)
 
     # `force`, or nothing cached yet. **Serialised, and deduplicated even for
     # `force`**: `at > now` means a refresh finished *after this caller asked*,
@@ -3279,7 +3339,11 @@ def snapshot(force: bool = False, *, allow_stale: bool = False) -> dict:
 
 def _refresh() -> dict:
     """One fan-out over every location, cached on the way out."""
+    with _cache_lock:
+        gen = _cache["gen"]
+        previous = _cache["value"] or _cache["last"]
     rows = locations()
+    _keep_last_known(rows, previous)
     # The newest release this Gateway published rides on every row, so each Mac can be rated
     # against it (`machines_flat` → `version_status`).
     stamp_latest(rows)
@@ -3294,9 +3358,48 @@ def _refresh() -> dict:
         "generated_at": time.time(),
     }
     with _cache_lock:
-        _cache["at"] = time.time()
-        _cache["value"] = value
+        # **Only if the roster has not changed since this fan-out read it.** The poller's sweep takes
+        # as long as the slowest controller; one that started before an add finished after it and
+        # cached the old roster as fresh, so the page read without the new location -- "it takes a
+        # while for it to show" -- until the next sweep. Its answer still goes to its own caller.
+        if _cache["gen"] == gen:
+            _cache["at"] = time.time()
+            _cache["value"] = value
+            _cache["last"] = None
     return value
+
+
+#: What a slow location keeps from its last answer: who it is and what it runs, never its live state.
+_LAST_KNOWN_KEYS = ("role", "version", "hub_version_relation", "release", "site_id", "controller_id")
+
+
+def _keep_last_known(rows: list[dict], previous: dict | None) -> None:
+    """A location that was too slow to answer keeps what it last reported, with a note saying so.
+
+    A timeout is not an absence: blanking the row's role and version made a busy controller read as
+    an empty one. Live state (reachable, machines, jobs) is not carried — those must be measured.
+    """
+    now = time.time()
+    before = {str(row.get("id")): row for row in (previous or {}).get("locations") or []}
+    for row in rows:
+        if row.get("reachable"):
+            row["answered_at"] = now
+            continue
+        old = before.get(str(row.get("id")))
+        if not old:
+            continue
+        if old.get("answered_at"):
+            row["answered_at"] = old["answered_at"]
+        if not row.get("slow"):
+            continue
+        for key in _LAST_KNOWN_KEYS:
+            if row.get(key) is None and old.get(key) is not None:
+                row[key] = old[key]
+        if row.get("answered_at"):
+            row["error"] = (
+                f"Slow to answer: didn't answer within {int(_TIMEOUT)} s — "
+                f"last report {time.strftime('%H:%M', time.localtime(row['answered_at']))}."
+            )
 
 
 def _revalidate_in_background() -> None:

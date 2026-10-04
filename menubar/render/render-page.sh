@@ -34,7 +34,9 @@ mkdir -p "$SUPPORT"
 printf '{"gatewayDir":"%s","port":%s,"autoStartGateway":false,"hasLaunchedBefore":true,"keepGatewayRunning":false}' \
   "$ROOT" "$PORT" > "$SUPPORT/menubar.json"
 
-(cd "$ROOT" && "$PY" menubar/render/fixture_server.py --port "$PORT" --support "$SUPPORT") > "$WORK/server.log" 2>&1 &
+# `exec`, so $! is the fixture server itself: without it $! was the subshell, the trap's kill stopped only that,
+# and the server and its gateway were orphaned on every run (54 found on 2026-10-04).
+(cd "$ROOT" && exec "$PY" menubar/render/fixture_server.py --port "$PORT" --support "$SUPPORT") > "$WORK/server.log" 2>&1 &
 SERVER_PID=$!
 for _ in $(seq 1 150); do grep -q '^READY' "$WORK/server.log" 2>/dev/null && break; sleep 0.2; done
 grep -q '^READY' "$WORK/server.log" || { cat "$WORK/server.log" >&2; exit 1; }

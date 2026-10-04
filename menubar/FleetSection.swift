@@ -45,6 +45,13 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
     private var filter = FleetFilter()
     private var failedRefreshProviderIDs: [String] = []
     private var adding = false
+    /// A Refresh is running: reads that land meanwhile must not replace its "Refreshing…" line.
+    private var refreshing = false
+    /// The location the last add created, kept on the page until a fleet read carries it, so no
+    /// read that raced the add can make it vanish again.
+    private var justAdded: FleetLocation?
+    /// Reads left while a just-added location is still pending (one every 3 s).
+    private var pendingReadsLeft = 0
     /// A publish is in flight. The button is disabled until the gateway answers,
     /// because the body carries the whole artifact and the gateway then pushes it
     /// to every controller.
@@ -272,6 +279,11 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
         filterRowHolder.isHidden = ![.machines, .models, .jobs].contains(tab)
     }
 
+    /// Locations tab: add a location through the form (used by the render harness).
+    func renderAdd(label: String, url: String, token: String) {
+        locationsTab.pressAdd(label: label, url: url, token: token)
+    }
+
     /// Groups tab: show only the groups that need attention (used by the render harness).
     func showProblemsOnly(_ value: Bool) {
         groupsTab.setProblemsOnly(value)
@@ -319,7 +331,7 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
             guard let self else { return }
             switch result {
             case .failure(let error):
-                self.render(error: "Could not read the fleet — \(error.localizedDescription)")
+                self.render(error: "Could not read the fleet — \(Self.sentence(error, within: force ? 45 : 15)).")
             case .success(let payload):
                 self.render(payload)
             }
@@ -343,6 +355,7 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
         let providerIDs = providerIDs.filter { !$0.isEmpty }
         guard !providerIDs.isEmpty else { return }
         locationsTab.setRetryFailedVisible(false)
+        refreshing = true
         setStatus("Refreshing \(providerIDs.count) location\(providerIDs.count == 1 ? "" : "s")…")
         banner.show(.idle, title: "", detail: "")
         banner.clear()
@@ -359,18 +372,25 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
         for providerID in providerIDs {
             let encoded = providerID.addingPercentEncoding(
                 withAllowedCharacters: .alphanumerics) ?? providerID
-            GatewayAPI.post("/admin/api/providers/\(encoded)/refresh") { [weak self] result in
+            // Each location on its own clock: a controller that takes 20 s to list its models
+            // (measured on the Terranash Macs) is slow, not failed, and the others' counts show as
+            // soon as each lands rather than after the slowest one.
+            GatewayAPI.post("/admin/api/providers/\(encoded)/refresh", timeout: Self.refreshTimeout) { [weak self] result in
                 guard let self else { return }
                 switch result {
                 case .failure(let error):
-                    failures.append((providerID, error.localizedDescription))
+                    failures.append((providerID, Self.sentence(error, within: Self.refreshTimeout)))
                 case .success(let payload):
                     if let error = payload["error"] as? String, !error.isEmpty {
                         failures.append((providerID, error))
                     }
                 }
                 finished += 1
-                guard finished == providerIDs.count else { return }
+                guard finished == providerIDs.count else {
+                    self.reload()
+                    return
+                }
+                self.refreshing = false
                 // Forced: the owner pressed Refresh, so the page must show what
                 // the fleet says *now*, not the cached snapshot the poller last
                 // wrote. This is the one read that waits for a fan-out.
@@ -425,18 +445,29 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
     }
 
     private func render(_ payload: [String: Any]) {
-        guard let snapshot = FleetSnapshot.from(payload) else {
+        guard var snapshot = FleetSnapshot.from(payload) else {
             // A 200 with a shape this build cannot read: say so rather than drawing
             // an empty fleet, because "the answer is nothing" and "I could not read
             // the answer" must not look the same.
             render(error: "The gateway's fleet answer could not be read.")
             return
         }
+        if let added = justAdded {
+            if snapshot.locations.contains(where: { $0.id == added.id }) {
+                justAdded = nil
+            } else {
+                snapshot.locations.append(added)
+            }
+        }
+        show(snapshot)
+    }
+
+    private func show(_ snapshot: FleetSnapshot) {
         self.snapshot = snapshot
         self.locations = snapshot.locations
         // A successful read replaces whatever the status line said before (an old
         // error, "Loading…", "Refreshed N locations.") with how fresh the picture is.
-        if !adding && !publishing {
+        if !adding && !publishing && !refreshing {
             setStatus(snapshot.generatedAt.map { "As of \(GatewayAPI.clock($0))" } ?? "")
         }
 
@@ -455,6 +486,15 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
     }
 
     private func render(error: String) {
+        // **A failed read never hides the locations the page already shows.** The plain read
+        // timing out (a fan-out as slow as the slowest controller) used to clear every table, so a
+        // location just added — and every other one — vanished until a later read. The last read
+        // stays, and the status line says it is the last read.
+        if let snapshot, !snapshot.locations.isEmpty {
+            let when = snapshot.generatedAt.map { " from \(GatewayAPI.clock($0))" } ?? ""
+            setStatus("\(error) Showing the last read\(when).", colour: Health.warn.text)
+            return
+        }
         let empty = FleetSnapshot()
         snapshot = nil
         locations = []
@@ -967,24 +1007,32 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
             return
         }
         adding = true
-        setStatus("Adding \(label.isEmpty ? url : label)…")
+        let host = URL(string: url)?.host ?? url
+        banner.clear()
+        locationsTab.setAdding(true, message: "Connecting to \(host)…")
+        setStatus("Adding \(label.isEmpty ? url : label) — connecting to \(host)…")
+        // The add probes the controller, reads its models and checks the token, each against a
+        // controller that may take 20 s to answer; 15 s reported a failure for an add that worked.
         GatewayAPI.post("/admin/api/fleet/controllers", body: [
             "label": label,
             "url": url,
             "token": token,
-        ]) { [weak self] result in
+        ], timeout: Self.addTimeout) { [weak self] result in
             guard let self else { return }
             self.adding = false
+            self.locationsTab.setAdding(false, message: "")
             switch result {
             case .failure(let error):
+                // The gateway's (or the controller's) own sentence, verbatim.
                 self.report(
                     .error,
                     title: "Could not add the location",
-                    detail: error.localizedDescription
+                    detail: Self.sentence(error, within: Self.addTimeout)
                 )
             case .success(let payload):
                 let name = label.isEmpty ? url : label
                 self.locationsTab.clearAddForm()
+                self.insertJustAdded(payload["location"] as? [String: Any])
                 self.describeCredential(
                     payload["credential"] as? [String: Any],
                     verb: "Added \(name)",
@@ -992,9 +1040,44 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
                     discoveryError: payload["discovery_error"] as? String,
                     enableSeed: payload["enable_seed"] as? [String: Any]
                 )
-                self.reload()
+                self.pendingReadsLeft = 20
+                self.reload { [weak self] in self?.followPending() }
             }
         }
+    }
+
+    /// The row the add answered with, on the page at once: "Just added — reading its Macs…".
+    private func insertJustAdded(_ row: [String: Any]?) {
+        guard let row, let added = FleetSnapshot.from(["locations": [row]])?.locations.first else { return }
+        justAdded = added
+        var shown = snapshot ?? FleetSnapshot()
+        if !shown.locations.contains(where: { $0.id == added.id }) {
+            shown.locations.append(added)
+            show(shown)
+        }
+    }
+
+    /// Re-read (a cache read: cheap) every 3 s while a location is still pending, so its Macs and
+    /// models fill in by themselves once the gateway's first fan-out that includes it lands.
+    private func followPending() {
+        guard pendingReadsLeft > 0, locations.contains(where: { $0.pending == true }) else {
+            pendingReadsLeft = 0
+            return
+        }
+        pendingReadsLeft -= 1
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
+            self?.reload { [weak self] in self?.followPending() }
+        }
+    }
+
+    private static let addTimeout: TimeInterval = 90
+    private static let refreshTimeout: TimeInterval = 60
+
+    /// An error as a plain sentence: a timeout says how long it waited, anything else is the
+    /// gateway's (or the controller's) own sentence.
+    static func sentence(_ error: Error, within seconds: TimeInterval) -> String {
+        if (error as? URLError)?.code == .timedOut { return "didn't answer within \(Int(seconds)) s" }
+        return error.localizedDescription
     }
 
     /// Render the gateway's read on a pasted credential, and what adding found.

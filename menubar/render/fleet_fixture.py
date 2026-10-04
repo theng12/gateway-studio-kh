@@ -492,12 +492,24 @@ def build() -> dict:
         rows = [shops()]
     if flavour.startswith("many"):
         rows = many(rows)
+    render_add = None
+    if flavour == "add-location":
+        # GATEWAY_RENDER_FIXTURE=add-location: Studio 2 too slow to answer this time, keeping what it last
+        # reported; the overlay answers the Add with the row the gateway's own `pending_location` builds.
+        studio2.update(reachable=False, slow=True, role="controller", version="0.6.124", answered_at=NOW - 4 * MIN,
+                       error="Slow to answer: didn't answer within 6 s — last report "
+                             + time.strftime("%H:%M", time.localtime(NOW - 4 * MIN)) + ".")
+        shops_row = {"id": "4bb919aee2e4", "label": "Shops", "url": "http://100.120.246.9:47873"}
+        render_add = {"controller": shops_row, "location": fleet.pending_location(shops_row),
+                      "credential": {"scope": "fleet", "detail": "This is the Fleet token — the right one."},
+                      "discovered": 7, "discovery_error": None, "enable_seed": None}
     fleet.stamp_latest(rows, {"fingerprint": "cd" * 32, "updated_at": NOW - 3 * HOUR,
                               "release": {"version": "0.6.126"}})
     machines = fleet.machines_flat(rows)
     fleet.stamp_controller_versions(rows, machines)
     return {
         **({"fleet_warnings": {"hidden": ["macos_updates"], "hideable": []}} if flavour == "many-hidden" else {}),
+        **({"render_add": render_add} if render_add else {}),
         "locations": rows,
         "machines": machines,
         "running": fleet.running_flat(rows),
