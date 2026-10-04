@@ -1695,9 +1695,10 @@ function renderConcurrency(data) {
              value="${pool.stated == null ? '' : esc(pool.stated)}"
              placeholder="${esc(pool.limit)}">
       <div class="hint" style="margin-top:6px">${esc(pool.detail || '')}</div>
+      ${pool.fleet_share_detail ? `<div class="hint" style="margin-top:4px">${esc(pool.fleet_share_detail)}</div>` : ''}
     </div>
     <h3 style="margin:16px 0 6px">Lanes</h3>
-    <p class="hint" style="margin:0 0 8px">How much of the pool one kind of work may hold. A blank box means no cap: that lane may use the whole pool.</p>
+    <p class="hint" style="margin:0 0 8px">How much of the pool one kind of work may hold. A blank box means no cap: a fleet lane (tts, image, music, transcription) then follows the fleet automatically, and any other lane may use the whole pool. A number is a ceiling.</p>
     <table class="grid">
       <thead><tr><th>Lane</th><th>Limit</th><th>In force</th><th>Where it came from</th></tr></thead>
       <tbody>${laneRows || '<tr><td colspan="4" class="muted">No lanes.</td></tr>'}</tbody>
@@ -1833,6 +1834,7 @@ function renderQueue(data) {
   if (summary) {
     summary.textContent = `${jobs.length} waiting · ${pool.in_flight ?? 0} running · `
       + `pool ${pool.limit ?? '—'} (${pool.source || 'unknown'})`
+      + (pool.fleet_share ? ' + fleet lanes automatic' : '')
       + (data.truncated ? ' · listing truncated' : '');
   }
   const jobRows = jobs.map(job => {

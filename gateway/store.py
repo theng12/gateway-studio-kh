@@ -21,6 +21,7 @@ from __future__ import annotations
 import json
 import logging
 import sqlite3
+import statistics
 import threading
 import time
 import uuid
@@ -129,6 +130,10 @@ _ADDED_COLUMNS: tuple[tuple[str, str], ...] = (
     # asks at 2am when a batch failed. Absent means the caller said nothing, and
     # that stays distinguishable from a caller that named itself.
     ("caller", "TEXT"),
+    # Which project run this job belongs to (`<project-slug>/<episode-id | project>`, D6), so the
+    # dispatcher can give projects turns. Advisory: never sent to a Hub, never part of idempotency;
+    # absent means the job is its own group, which is the order every job had before.
+    ("job_group", "TEXT"),
     # While a running job's Hub item is still queued: `{"reason", "next_try_at", "since"}` as JSON.
     # Published as `waiting` on the job envelope; null as soon as a Mac starts rendering.
     ("waiting_json", "TEXT"),
@@ -443,6 +448,7 @@ class JobStore:
         idempotency_key: str | None,
         provider_id: str | None = None,
         caller: str | None = None,
+        job_group: str | None = None,
     ) -> tuple[dict[str, Any], bool]:
         """Create a job, or return the existing one for a repeated key.
 
@@ -463,8 +469,9 @@ class JobStore:
             self._conn.execute(
                 """
                 INSERT INTO jobs (id, idempotency_key, modality, model_id, provider_id,
-                                  state, params, created_at, updated_at, next_action_at, caller)
-                VALUES (?, ?, ?, ?, ?, 'accepted', ?, ?, ?, ?, ?)
+                                  state, params, created_at, updated_at, next_action_at, caller,
+                                  job_group)
+                VALUES (?, ?, ?, ?, ?, 'accepted', ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     job_id,
@@ -477,6 +484,7 @@ class JobStore:
                     now,
                     now + 0.8,
                     (caller or "").strip()[:200] or None,
+                    job_group or None,
                 ),
             )
             self._conn.commit()
@@ -1255,7 +1263,8 @@ class JobStore:
         ).fetchall()
         return [dict(row) for row in rows]
 
-    def generation_analytics(self, *, limit: int = 20000) -> dict[str, Any]:
+    def generation_analytics(self, *, limit: int = 20000,
+                             mac_class: Any = None) -> dict[str, Any]:
         """What this gateway has generated, grouped three ways, from the job record.
 
         **One pass over scalars, never over prose.** `result_json` carries the whole
@@ -1281,12 +1290,17 @@ class JobStore:
 
         Settled jobs only. A queued or running job has no duration yet, and counting one
         would drag every average toward zero.
+
+        **`by_model_class` (D8): measured speed per model × Mac class**, when the caller passes
+        `mac_class(provider_id, machine) -> "M4 · 16 GB"` (the job record stores the machine, not
+        its chip). For ETAs and capacity planning only — routing does not read speed. Voice rows
+        also carry `rtf_median`: generation seconds per second of audio, from `audio_duration_s`.
         """
         # `job_summaries` holds the jobs `archive_old` removed, so dropping a 90-day-old job
         # from the table does not change the totals this page shows.
         rows = self._conn.execute(
             """
-            SELECT modality, model_id, provider_id, machine, state, seconds, bytes FROM (
+            SELECT modality, model_id, provider_id, machine, state, seconds, bytes, audio_s FROM (
                 SELECT created_at,
                        modality,
                        model_id,
@@ -1304,11 +1318,17 @@ class JobStore:
                              AND json_type(result_json, '$.payload.bytes')
                                  IN ('integer', 'real')
                             THEN json_extract(result_json, '$.payload.bytes') END
-                           AS bytes
+                           AS bytes,
+                       CASE WHEN json_valid(result_json)
+                             AND json_type(result_json, '$.payload.audio_duration_s')
+                                 IN ('integer', 'real')
+                            THEN json_extract(result_json, '$.payload.audio_duration_s') END
+                           AS audio_s
                   FROM jobs
                  WHERE state IN ('succeeded', 'failed', 'cancelled')
                 UNION ALL
-                SELECT created_at, modality, model_id, provider_id, machine, state, seconds, bytes
+                SELECT created_at, modality, model_id, provider_id, machine, state, seconds, bytes,
+                       NULL
                   FROM job_summaries
             )
              ORDER BY created_at DESC
@@ -1327,6 +1347,7 @@ class JobStore:
                 "bytes": 0,
                 "bytes_jobs": 0,
                 "_seconds": [],
+                "_rtf": [],
             }
 
         buckets: dict[str, dict[str, Any]] = {}
@@ -1337,6 +1358,10 @@ class JobStore:
                 f"{r['machine'] or 'unstated'} @ {r['provider_id'] or 'unknown'}"
             ),
         }
+        if mac_class is not None:
+            dimensions["by_model_class"] = lambda r: (
+                f"{r['model_id'] or 'unknown'} @ {mac_class(r['provider_id'], r['machine'])}"
+            )
         for name, keyer in dimensions.items():
             buckets[name] = {}
         totals = group("all")
@@ -1354,6 +1379,9 @@ class JobStore:
                     bucket["bytes_jobs"] += 1
                 if isinstance(seconds, (int, float)) and not isinstance(seconds, bool):
                     bucket["_seconds"].append(float(seconds))
+                    audio = row["audio_s"]
+                    if isinstance(audio, (int, float)) and audio > 0 and state == "succeeded":
+                        bucket["_rtf"].append(float(seconds) / float(audio))
             totals["jobs"] += 1
             totals[state] = totals.get(state, 0) + 1
             if isinstance(size, (int, float)) and not isinstance(size, bool):
@@ -1363,6 +1391,8 @@ class JobStore:
                 totals["_seconds"].append(float(seconds))
 
         def finish(bucket: dict[str, Any]) -> dict[str, Any]:
+            rtf = bucket.pop("_rtf")
+            bucket["rtf_median"] = round(statistics.median(rtf), 2) if rtf else None
             values = sorted(bucket.pop("_seconds"))
             if values:
                 middle = len(values) // 2
@@ -1394,6 +1424,7 @@ class JobStore:
             "by_modality": ranked("by_modality"),
             "by_model": ranked("by_model"),
             "by_machine": ranked("by_machine"),
+            **({"by_model_class": ranked("by_model_class")} if mac_class is not None else {}),
             "sampled": len(rows),
         }
 

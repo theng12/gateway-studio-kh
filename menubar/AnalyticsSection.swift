@@ -47,13 +47,14 @@ final class AnalyticsSection: NSObject, AppSection {
     /// One table at a time, under the summary tiles. The tab is remembered (here and across launches),
     /// so a refresh, or coming back to the page, never drops the owner back to the first table.
     private enum Tab: Int, CaseIterable {
-        case type, model, machine
+        case type, model, machine, speed
 
         var title: String {
             switch self {
             case .type: return "By Type"
             case .model: return "By Model"
             case .machine: return "By Machine"
+            case .speed: return "By Model × Mac"
             }
         }
     }
@@ -77,7 +78,7 @@ final class AnalyticsSection: NSObject, AppSection {
 
         let heading = PageKit.heading(
             "Analytics",
-            "What this gateway has generated — by type, by model, and by the machine that ran it.",
+            "What this gateway has generated — by type, by model, by the machine that ran it, and how fast each model runs on each kind of Mac.",
             actions: [PageKit.button("Refresh", target: self, action: #selector(refreshPressed))]
         )
         PageKit.addFull(heading, to: page)
@@ -208,6 +209,16 @@ final class AnalyticsSection: NSObject, AppSection {
                     return "\(parts[0]) @ \(name)"
                 }
             ),
+            // Measured speed per model on each kind of Mac ("<model> @ M4 · 16 GB"): for ETAs and
+            // planning, never routing. Voice rows add RTF (generation seconds per audio second).
+            .speed: table(
+                firstHeader: "Model · Mac",
+                rows: rows(from: payload["by_model_class"]) { key in
+                    let parts = key.components(separatedBy: " @ ")
+                    guard parts.count == 2 else { return key }
+                    return "\(self.modelNames[parts[0]] ?? parts[0]) · \(parts[1])"
+                }
+            ),
         ]
 
         tabControl = NSSegmentedControl(
@@ -295,7 +306,8 @@ final class AnalyticsSection: NSObject, AppSection {
     private func rows(from any: Any?, label: (String) -> String) -> [(cells: [String], id: String)] {
         (any as? [[String: Any]] ?? []).map { row in
             let id = (row["key"] as? String) ?? "unknown"
-            let first = (row["label"] as? String) ?? label(id)
+            let rtf = (row["rtf_median"] as? NSNumber).map { String(format: " · RTF %.2f", $0.doubleValue) } ?? ""
+            let first = ((row["label"] as? String) ?? label(id)) + rtf
             let jobs = AnalyticsSection.count(row["jobs"])
             let ok = AnalyticsSection.count(row["succeeded"])
             let failed = AnalyticsSection.count(row["failed"])

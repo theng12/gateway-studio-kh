@@ -75,6 +75,24 @@ LEGACY_PATH = Path(__file__).resolve().parent.parent / "data" / "provider-concur
 SOURCE_HUB = "hub"
 SOURCE_CURATED = "curated"
 SOURCE_GATEWAY = "gateway"
+#: An automatic fleet lane: the number is the live fleet's own capacity (D3).
+SOURCE_FLEET = "fleet"
+
+#: The lanes the Studio Hub fleet serves, and the Hub operation each is published under.
+#: **Their caps follow the fleet by default** (owner, 2026-10-04: *"the fleet will grow — 70,
+#: 100, 200, 1000 Macs"*): a fixed 50 was set when the fleet had ~50 Macs and was binding at 56.
+#: A number the owner types is an optional ceiling; with none, the lane is what the reachable,
+#: unpaused groups publish, re-read every pass, and each group's per-model room is the real bound.
+FLEET_LANES: dict[str, str] = {
+    "tts": "voice.tts",
+    "image": "image.text_to_image",
+    "music": "music.generation",
+    "transcription": "audio.transcription",
+}
+#: The per-lane cap the live settings file carried for every fleet lane before automatic lanes.
+#: It meant "about the fleet's size" when it was typed, so it is read as "not set" (automatic).
+#: ponytail: an owner who wants exactly 50 types 49 or 51; add an explicit flag if that matters.
+LEGACY_FLEET_LANE_CAP = 50
 
 #: The pool's size when nothing says otherwise. Four because it is what Story Studio
 #: had already been told (`paid_concurrency_limit: 4`) while the gateway ran one job
@@ -270,9 +288,33 @@ def _settings_lanes() -> dict[str, int]:
     limits: dict[str, int] = {}
     for name, value in raw.items():
         limit = _positive_int(value)
-        if limit is not None:
-            limits[str(name).strip().lower()] = limit
+        name = str(name).strip().lower()
+        if limit is not None and not (name in FLEET_LANES and limit == LEGACY_FLEET_LANE_CAP):
+            limits[name] = limit
     return limits
+
+
+def fleet_capacity(modality: str) -> int:
+    """The live fleet's capacity for one fleet lane: the Macs every reachable, unpaused group
+    publishes as eligible for its operation, summed from the snapshot routing reads.
+
+    The same per-group reading admission compares each group's in-flight count with
+    (`hub_slot_reading`), so the lane total and the groups' budgets can never disagree.
+    """
+    operation = FLEET_LANES.get(str(modality or "").strip().lower())
+    if not operation:
+        return 0
+    try:
+        from . import fleet
+
+        total = 0
+        for row in fleet.snapshot(allow_stale=True).get("locations") or []:
+            if row.get("reachable") is not True or fleet.is_paused_provider(str(row.get("provider_id") or "")):
+                continue
+            total += max(0, hub_slot_reading(row, operation).get("ceiling") or 0)
+        return total
+    except Exception:  # noqa: BLE001 - an unreadable fleet states no capacity
+        return 0
 
 
 def _settings_providers() -> dict[str, dict[str, Any]]:
@@ -319,6 +361,18 @@ def global_budget() -> Budget:
                       detail=f"GATEWAY_JOB_CONCURRENCY is set to {env}")
     return Budget(limit=DEFAULT_GLOBAL, source=SOURCE_GATEWAY,
                   detail=f"nothing set it, so {DEFAULT_GLOBAL}; edit it on Providers")
+
+
+def fleet_share() -> dict[str, Any]:
+    """The pool's fleet share, stated beside `global`: the fleet lanes' own capacity, not a number.
+
+    `global` bounds cloud and other work; fleet-lane work at a location is bounded per group
+    and model and so grows with the fleet. Published so a page can say both.
+    """
+    macs = {name: fleet_capacity(name) for name in FLEET_LANES}
+    return {"fleet_share": macs, "fleet_share_detail": (
+        "Fleet lanes are not counted against this number: they follow the fleet automatically ("
+        + ", ".join(f"{name} {n}" for name, n in macs.items()) + " Macs now).")}
 
 
 def global_limit() -> int:
@@ -501,6 +555,10 @@ def lane_budget(modality: str) -> Budget:
     if env is not None:
         return Budget(limit=env, source=SOURCE_CURATED,
                       detail=f"GATEWAY_LANE_CONCURRENCY caps {name} at {env}")
+    if name in FLEET_LANES:
+        macs = fleet_capacity(name)
+        return Budget(limit=macs, source=SOURCE_FLEET,
+                      detail=f"Automatic — follows the fleet (now {macs} Mac{'' if macs == 1 else 's'})")
     return Budget(limit=global_limit(), source=SOURCE_GATEWAY,
                   detail="no lane cap set, so this lane may use the whole pool")
 
@@ -797,7 +855,8 @@ def settings_view(provider_ids: list[str] | None = None,
     return {
         "path": str(SETTINGS_PATH),
         "global": {**global_budget().as_dict(),
-                   "stated": _positive_int(_read_file().get("global"))},
+                   "stated": _positive_int(_read_file().get("global")),
+                   **fleet_share()},
         "lanes": {
             **lane_budget("").as_dict(),
             "values": _settings_lanes(),
@@ -805,6 +864,7 @@ def settings_view(provider_ids: list[str] | None = None,
                 "lane": name,
                 **lane_budget(name).as_dict(),
                 "stated": _settings_lanes().get(name),
+                "automatic": lane_budget(name).source == SOURCE_FLEET,
             } for name in names],
         },
         "providers": providers,

@@ -1079,7 +1079,14 @@ def _submit(
     side — so the queue was unbounded in the one process that owns it (audit M8). One guard here,
     on the single path every generation route funnels through, rather than a check per route that
     the next route would forget.
+
+    **`job_group` is taken out of the params here (D6)**, so no adapter ever forwards it to a Hub;
+    it is stored on the job for the dispatcher's fair turns and shown on the Jobs page. A value
+    that is not a short id (`[A-Za-z0-9._:/-]`, at most 120) is ignored — it is advisory, and a
+    tag is never a reason to refuse work.
     """
+    job_group = params.pop("job_group", None) if isinstance(params, dict) else None
+    job_group = job_group if isinstance(job_group, str) and _JOB_GROUP.fullmatch(job_group) else None
     # **A replay is not a new submission, so it is answered before anything can refuse it.** A
     # caller whose 202 was lost re-POSTs the same key; the job already exists, and a full queue,
     # a model that went offline since, or an unresolvable id must not turn "here is the job you
@@ -1141,7 +1148,12 @@ def _submit(
         params=params,
         idempotency_key=idempotency_key,
         caller=caller,
+        job_group=job_group,
     )
+
+
+#: A job group as Story sends it: `<project-slug>/<episode-id | project>` (INTERFACES-0144, D6).
+_JOB_GROUP = re.compile(r"[A-Za-z0-9._:/-]{1,120}")
 
 
 # ---------------------------------------------------------------------------
@@ -1507,6 +1519,7 @@ def chat_completions(payload: dict[str, Any]) -> dict[str, Any]:
     generation, which is exactly why the durable route is the default -- but it
     is implemented so switching transports does not dead-end.
     """
+    payload.pop("job_group", None)  # no job here to order, and a group is never forwarded upstream
     model_id = str(payload.get("model") or payload.get("model_id") or "")
     definition, model = catalog.resolve("chat", model_id)
     if definition is None or model is None:
@@ -2219,12 +2232,13 @@ async def confirm_transcription(
     # Read the requested identity before reattaching: replay must not make an
     # explicit model change look accepted. Omitted model still reattaches after
     # expiry/restart using only its durable idempotency key.
-    if model is None and request.headers.get("content-type", "").startswith("application/json"):
+    body = None
+    if request.headers.get("content-type", "").startswith("application/json"):
         try:
             body = await request.json()
         except Exception:  # noqa: BLE001 - unreadable JSON supplies no override
             body = None
-        if isinstance(body, dict) and body.get("model"):
+        if model is None and isinstance(body, dict) and body.get("model"):
             model = str(body["model"])
     existing = store.find_by_idempotency_key(key)
     if existing is not None:
@@ -2284,6 +2298,8 @@ async def confirm_transcription(
         "_upload_type": content_type,
         **(rest[0] if rest else {}),
     }
+    if isinstance(body, dict) and body.get("job_group"):
+        payload["job_group"] = body["job_group"]  # the confirm creates the job, so the group rides here
     job, created = _submit("transcription", model_id, payload, key, caller=caller)
     if created:
         response.status_code = 202

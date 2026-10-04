@@ -41,7 +41,6 @@ from urllib.parse import urlsplit
 
 import httpx
 
-from . import config
 from .config import DATA_DIR
 from .hub import hub_base_url, hub_token
 
@@ -3552,9 +3551,9 @@ def _revalidate_in_background() -> None:
 #
 # Choosing the *site* still has to respect the model: the Hub's `model_supply`
 # says how many machines at each controller can actually run **it** (memory floor
-# and all), so the weight is per model rather than per site. Setting
-# `GATEWAY_PREFER_FASTEST_SITE=1` trades that capacity share for latency and ranks
-# the fastest site first.
+# and all), so the weight is per model rather than per site. Speed is not a routing
+# input: measured per model × Mac class (Analytics), speed-aware site choice gained
+# nothing in simulation (−1%…+8%), so measured speed feeds ETAs and planning only.
 
 
 def _as_int(value: object) -> int:
@@ -3924,34 +3923,6 @@ def _model_supply_index(
     return index
 
 
-#: Apple chip generation out of the marketing brand string ("Apple M4 Pro").
-_CHIP_GENERATION = re.compile(r"\bM([1-9])\b")
-
-
-def _site_speed_score(machines: object) -> float:
-    """The fastest Mac at a site, by the Hub's own chip+RAM proxy.
-
-    Mirrors Studio Hub's `_studio_speed_score` (`generation * 100 + memory_gb`),
-    which is itself a proxy for image throughput because nothing in the fleet
-    measures seconds-per-image. Used only behind `GATEWAY_PREFER_FASTEST_SITE`;
-    it ranks, it never admits or excludes.
-    """
-    best = 0.0
-    if not isinstance(machines, list):
-        return best
-    for machine in machines:
-        if not isinstance(machine, dict):
-            continue
-        match = _CHIP_GENERATION.search(str(machine.get("chip") or "").upper())
-        generation = int(match.group(1)) if match else 0
-        try:
-            memory_gb = max(0.0, float(machine.get("memory_gb") or 0.0))
-        except (TypeError, ValueError):
-            memory_gb = 0.0
-        best = max(best, generation * 100 + memory_gb)
-    return best
-
-
 def _weighted_tiebreak(routing_key: str, location_id: str, compatible_slots: int) -> float:
     """A weighted lottery draw: lower wins, and a bigger site wins more often.
 
@@ -4062,7 +4033,6 @@ def routing_candidates(
             # them distinct lets a reader tell them apart.
             "available": available,
             "queue": max(queue, 0),
-            "speed": _site_speed_score(row.get("machines")),
         })
     return candidates
 
@@ -4078,13 +4048,6 @@ def rank_candidate(candidate: dict, routing_key: str) -> tuple:
     pressure = candidate["queue"] / candidate["slots"]
     free = -(candidate["available"] or 0)
     lottery = _weighted_tiebreak(routing_key, candidate["location_id"], candidate["slots"])
-    if _truthy(config.get("GATEWAY_PREFER_FASTEST_SITE")) and (candidate["available"] or 0) > 0:
-        # `GATEWAY_PREFER_FASTEST_SITE=1` is a **nudge, not a takeover**: it
-        # only breaks a tie between sites whose numbers already match and that
-        # each have a fitting Mac free. Fleet utilisation by capacity stays the
-        # rule, so work a smaller Mac can do is not pulled onto a big one -- the
-        # controller's own scheduler still reserves large Macs for heavy jobs.
-        return (pressure, free, -candidate["speed"], lottery, candidate["location_id"])
     return (pressure, free, lottery, candidate["location_id"])
 
 

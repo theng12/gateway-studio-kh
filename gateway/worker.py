@@ -238,17 +238,26 @@ _TERMINAL_UPSTREAM_STATES = frozenset(
     {"failed", "error", "cancelled", "canceled", "refused", "expired"}
 )
 
-def scarcest_first(jobs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def scarcest_first(jobs: list[dict[str, Any]],
+                   group_in_flight: dict[str, int] | None = None) -> list[dict[str, Any]]:
     """`store.due()` re-ordered so the model with the fewest machines goes first.
 
     Key: the model's fleet-wide pool (`fleet.pool_size`: eligible slots summed over every
-    reachable location, from one snapshot), then arrival order. A pass hands out slots in
-    this order, so work only a few Macs can run is not queued behind work any Mac can.
-    `sorted` is stable and `due()` is already oldest-first, so ties stay FIFO. Cloud jobs
-    take no Mac and sort first; a model nothing can run right now sorts last. One
-    `pool_size` per distinct model per pass.
+    reachable location, from one snapshot), then the job's **turn** within its group, then
+    arrival order. A pass hands out slots in this order, so work only a few Macs can run is
+    not queued behind work any Mac can. `sorted` is stable and `due()` is already
+    oldest-first, so ties stay FIFO. Cloud jobs take no Mac and sort first; a model nothing
+    can run right now sorts last. One `pool_size` per distinct model per pass.
+
+    **Turns (D6).** Inside one scarcity class, a job's turn is how many jobs of its
+    `job_group` are already running (`group_in_flight`) plus its place among that group's
+    waiting jobs. So a 20-image redo submitted behind a 500-image wave interleaves with it
+    instead of waiting for all 500 (sim: done after 152 s, not 903 s). A job with no group is
+    its own group — turn 1 — so a queue with no groups is ordered exactly as before.
     """
     pools: dict[tuple[str, str], float] = {}
+    group_in_flight = group_in_flight or {}
+    turns: dict[tuple[float, str], int] = {}
 
     def pool(job: dict[str, Any]) -> float:
         if not str(job.get("provider_id") or "").startswith(fleet.PROVIDER_PREFIX):
@@ -258,8 +267,18 @@ def scarcest_first(jobs: list[dict[str, Any]]) -> list[dict[str, Any]]:
             pools[key] = fleet.pool_size(*key) or float("inf")
         return pools[key]
 
+    def turn(job: dict[str, Any]) -> tuple[float, int]:
+        group = job.get("job_group")
+        if not group:
+            return pool(job), 1
+        key = (pool(job), str(group))
+        turns[key] = turns.get(key, group_in_flight.get(str(group), 0)) + 1
+        return pool(job), turns[key]
+
     try:
-        return sorted(jobs, key=pool)
+        # In arrival order, so a group's turns are numbered oldest first; the index keeps ties FIFO.
+        ranked = sorted((turn(job), index) for index, job in enumerate(jobs))
+        return [jobs[index] for _, index in ranked]
     except Exception:  # noqa: BLE001 - ordering is a preference; never the reason nothing runs
         log.exception("could not order due jobs by scarcity")
         return jobs
@@ -1016,6 +1035,11 @@ class Worker:
         #: free-slot count is published in and therefore the only one that can be
         #: compared with it.
         self._per_lane: dict[tuple[str, str], int] = {}
+        #: `(provider_id, modality, model_id) -> running count`: what `_room` needs to know
+        #: whether the Macs that fit *this* model are already spoken for (D1, fit-aware).
+        self._per_model: dict[tuple[str, str, str], int] = {}
+        #: `job_group -> running count`, the fair-turns key `scarcest_first` orders by (D6).
+        self._per_group: dict[str, int] = {}
         #: The last budget resolved per provider, so the console can say what is
         #: bounding a lane and where the number came from rather than leaving a
         #: reader to guess why their fleet is idle.
@@ -1184,14 +1208,23 @@ class Worker:
         modality = str(job.get("modality") or "")
         if fleet.is_paused_provider(provider_id):
             return False  # the owner paused this location: no new work; `_rebind` moves the job on
-        provider_budget = self._provider_budget(provider_id, modality, str(job.get("model_id") or ""))
+        model_id = str(job.get("model_id") or "")
+        provider_budget = self._provider_budget(provider_id, modality, model_id)
+        supply = self._model_supply(provider_id)
         lane_budget = concurrency.lane_budget(modality)
+        fleet_job = provider_id.startswith(fleet.PROVIDER_PREFIX) and modality in concurrency.FLEET_LANES
         with self._budget_lock:
-            if sum(self._in_flight.values()) >= self._global_limit():
+            # **A fleet job's share of the pool is the fleet itself (D3).** The owner's `global`
+            # bounds everything else; fleet work is bounded per group and model by `_room`, which
+            # adds up to the fleet's own published capacity however many Macs join.
+            if not fleet_job and self._not_fleet_in_flight() >= self._global_limit():
                 return False
-            if self._lane_in_flight.get(modality, 0) >= lane_budget.limit:
+            # An automatic lane is the sum of the groups' own totals, so `_room` already holds it;
+            # only an owner's number is a second, separate ceiling.
+            if lane_budget.source != concurrency.SOURCE_FLEET \
+                    and self._lane_in_flight.get(modality, 0) >= lane_budget.limit:
                 return False
-            if self._per_lane.get((provider_id, modality), 0) >= provider_budget.limit:
+            if self._room(provider_id, modality, model_id, provider_budget, supply) <= 0:
                 return False
             self._book(job)
             self.budgets[provider_id] = provider_budget.as_dict()
@@ -1206,11 +1239,59 @@ class Worker:
             self._lane_in_flight[modality] = self._lane_in_flight.get(modality, 0) + 1
             key = (provider_id, modality)
             self._per_lane[key] = self._per_lane.get(key, 0) + 1
+            model = (provider_id, modality, str(job.get("model_id") or ""))
+            self._per_model[model] = self._per_model.get(model, 0) + 1
+            if job.get("job_group"):
+                self._per_group[job["job_group"]] = self._per_group.get(job["job_group"], 0) + 1
 
-    def _room(self, provider_id: str, modality: str) -> int:
-        """How many more jobs this site would take now: its budget less our own there."""
-        return (self._provider_budget(provider_id, modality).limit
-                - self._site_lane_in_flight(provider_id, modality))
+    def _not_fleet_in_flight(self) -> int:
+        """Running jobs the owner's `global` bounds: everything but fleet-lane work at a location."""
+        fleet_jobs = sum(n for (provider_id, modality), n in self._per_lane.items()
+                         if provider_id.startswith(fleet.PROVIDER_PREFIX)
+                         and modality in concurrency.FLEET_LANES)
+        return sum(self._in_flight.values()) - fleet_jobs
+
+    @staticmethod
+    def _model_supply(provider_id: str) -> dict[str, int]:
+        """`model -> eligible Macs` at one location, from the Hub's `model_supply` in the snapshot."""
+        if not provider_id.startswith(fleet.PROVIDER_PREFIX):
+            return {}
+        try:
+            for row in fleet.snapshot(allow_stale=True).get("locations") or []:
+                if str(row.get("provider_id") or "") == provider_id:
+                    return {str(model): int(entry.get("eligible") or 0)
+                            for model, entry in (row.get("model_supply") or {}).items()
+                            if isinstance(entry, dict)}
+        except Exception:  # noqa: BLE001 - no supply reading falls back to the operation total
+            pass
+        return {}
+
+    def _room(self, provider_id: str, modality: str, model_id: str = "",
+              budget: concurrency.Budget | None = None, supply: dict[str, int] | None = None) -> int:
+        """How many more jobs of this model this site would take now.
+
+        The site's operation budget less our own jobs there — and, **fit-aware (D1)**, no more
+        than the Macs that can run *this* model less our jobs there whose model fits no more
+        Macs than this one does. Nested RAM tiers make that exact: a heavy job only a 16 GB Mac
+        can run holds one of those Macs, and every lighter model can run on it too, so it counts
+        against them; a light job does not count against the heavy one, because the heavy one
+        cannot use the Mac it waits for. So heavy jobs stop filling a group's whole voice budget
+        while its 8 GB Macs idle (sim: two Macs, two VoxCPM2 + one Qwen 0.6B — the Qwen job ran
+        after the heavy ones; now beside them). A model the Hub publishes no supply for is
+        bounded by the operation total alone, as before (`routing_candidates` falls back the same way).
+        """
+        if budget is None:
+            budget = self._provider_budget(provider_id, modality, model_id)
+        if supply is None:
+            supply = self._model_supply(provider_id)
+        with self._budget_lock:
+            room = budget.limit - self._per_lane.get((provider_id, modality), 0)
+            slots = supply.get(model_id, 0)
+            if slots > 0:
+                held = sum(n for (p, lane, model), n in self._per_model.items()
+                           if p == provider_id and lane == modality and 0 < supply.get(model, 0) <= slots)
+                room = min(room, slots - held)
+        return room
 
     def _rebind(self, job: dict[str, Any]) -> bool:
         """Late bind: move a job that was never sent off a full site onto one with room.
@@ -1234,7 +1315,8 @@ class Worker:
             return False
         try:
             # A site with room keeps its job, unless the owner paused it.
-            if self._room(provider_id, modality) > 0 and not fleet.is_paused_provider(provider_id):
+            model_id = str(job.get("model_id") or "")
+            if self._room(provider_id, modality, model_id) > 0 and not fleet.is_paused_provider(provider_id):
                 return False
             if fleet.pinned_location(json.loads(job.get("params") or "{}")):
                 return False
@@ -1244,7 +1326,7 @@ class Worker:
             candidates = [
                 c for c in fleet.routing_candidates(
                     str(job.get("model_id") or ""), modality, exclude_locations=tried)
-                if self._room(c["provider_id"], modality) > 0
+                if self._room(c["provider_id"], modality, model_id) > 0
             ]
             if not candidates:
                 self._nowhere.add(shape)
@@ -1264,7 +1346,9 @@ class Worker:
         with self._budget_lock:
             for book, key in ((self._in_flight, provider_id),
                               (self._lane_in_flight, modality),
-                              (self._per_lane, (provider_id, modality))):
+                              (self._per_lane, (provider_id, modality)),
+                              (self._per_model, (provider_id, modality, str(job.get("model_id") or ""))),
+                              (self._per_group, job.get("job_group"))):
                 if book.get(key):
                     book[key] -= 1
                 if book.get(key, 0) <= 0:
@@ -1313,7 +1397,9 @@ class Worker:
             # failures is published, so an operator can tell "idle" from "wedged".
             self._nowhere.clear()
             try:
-                due = scarcest_first(self.store.due())
+                with self._budget_lock:
+                    groups = dict(self._per_group)
+                due = scarcest_first(self.store.due(), groups)
             except Exception:  # noqa: BLE001
                 log.exception("worker could not read due jobs")
                 due = []

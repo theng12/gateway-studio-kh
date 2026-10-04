@@ -445,10 +445,12 @@ class LaneBudgetsTest(unittest.TestCase):
             self.assertEqual(h.tracker.peak, cap, "the lane ran at its cap: not over it, not under")
 
     def test_a_lane_with_no_cap_may_use_the_whole_pool(self) -> None:
+        # A non-fleet lane. A fleet lane with no cap follows the fleet instead (D3,
+        # tests/test_fit_aware_scheduling.py).
         self._settings({})
         with patch.dict(os.environ, {}, clear=False):
             os.environ.pop("GATEWAY_LANE_CONCURRENCY", None)
-            budget = concurrency.lane_budget("image")
+            budget = concurrency.lane_budget("chat")
         self.assertEqual(budget.limit, concurrency.global_limit())
         self.assertEqual(budget.source, "gateway")
 

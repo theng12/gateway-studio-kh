@@ -425,10 +425,15 @@ global_job_claiming: false}`:
   falls back to the site-wide total only for a Hub that publishes neither. A site
   with ten 8 GB image Macs and one 24 GB Mac must not out-weigh a site with two
   24 GB Macs for a 24 GB model. `available` (ready with a free slot) breaks a
-  pressure tie, and `GATEWAY_PREFER_FASTEST_SITE=1` is a **nudge, not a
-  takeover**: it only breaks a tie between controllers whose numbers already match
-  and that both have a fitting Mac free. Utilisation by capacity stays the rule,
-  so work a smaller Mac can do is never pulled onto a big one.
+  pressure tie. Speed is **not** a routing input (the chip proxy and
+  `GATEWAY_PREFER_FASTEST_SITE` were removed in 0.2.121: no gain in simulation);
+  measured speed per model × Mac class is on Analytics, for ETAs and planning.
+- **Admission is fit-aware (D1).** A group takes a job only while
+  `min(operation room, slots(model) − our jobs there whose model fits no more Macs)`
+  is above zero (`Worker._room`), so heavy jobs no longer fill a group's whole voice
+  budget while its 8 GB Macs idle. Fleet lanes (tts/image/music/transcription) are
+  automatic — they follow the fleet's published capacity — unless the owner types a
+  ceiling, and fleet-lane work is not counted against `global` (D3).
 
 - **A controller that cannot serve a model is a site property, not a job
   failure.** `can_publish` withholds a model whose `dispatch_state` is present and

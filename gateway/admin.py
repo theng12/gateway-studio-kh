@@ -2033,8 +2033,38 @@ def generation_analytics(
     as `LIMIT ?`, and an unbounded `int` here is both an `OverflowError` waiting to be a
     500 and a way to ask for every job ever recorded. The grouping needs individual
     durations rather than a SQL summary, so the bound is real work, not a formality.
+
+    `by_model_class` (D8) is the same record grouped by model × Mac class, the class read from
+    the fleet snapshot's machine rows (chip + memory class). Machines no longer in the fleet
+    read as "unknown Mac". For ETAs and planning; routing does not read it.
     """
-    return store.generation_analytics(limit=limit)
+    classes: dict[tuple[str, str], str] = {}
+    try:
+        for row in fleet.snapshot(allow_stale=True).get("locations") or []:
+            for machine in row.get("machines") or []:
+                classes[(str(row.get("provider_id") or ""), str(machine.get("machine") or ""))] = \
+                    mac_class(machine.get("chip"), machine.get("memory_gb"))
+    except Exception:  # noqa: BLE001 - no fleet read leaves every class unknown, not the page empty
+        pass
+    return store.generation_analytics(
+        limit=limit,
+        mac_class=lambda provider_id, machine: classes.get((str(provider_id or ""), str(machine or "")), "unknown Mac"),
+    )
+
+
+#: Unified-memory sizes Apple ships; a Mac reports its total in GB or GiB (16 GiB = 17.18 GB).
+_MEMORY_CLASSES = (8, 16, 18, 24, 32, 36, 48, 64, 96, 128, 192, 256, 512)
+
+
+def mac_class(chip: Any, memory_gb: Any) -> str:
+    """"M4 · 16 GB": the chip family without "Apple", and the shipped memory size."""
+    family = str(chip or "").replace("Apple", "").strip() or "unknown chip"
+    try:
+        gb = float(memory_gb)
+    except (TypeError, ValueError):
+        return f"{family} · ? GB"
+    size = max((c for c in _MEMORY_CLASSES if c <= gb + 0.5), default=round(gb))
+    return f"{family} · {size} GB"
 
 
 @router.get("/api/jobs", dependencies=[Depends(require_admin)])
@@ -2094,6 +2124,7 @@ def list_jobs(
                 # reads did not, which is the same defect as a control wired to
                 # nothing. `None` means the request said nothing about itself.
                 "caller": job.get("caller"),
+                "job_group": job.get("job_group"),
                 # Why a job is queued rather than running. `accepted` alone cannot
                 # tell "not dispatched yet" from "the fleet was busy and we are
                 # waiting", and only one of those is worth the owner's attention.
@@ -2211,6 +2242,7 @@ def queue_view(limit: int = Query(200, ge=1, le=1000)) -> dict[str, Any]:
             "model_id": model_id,
             "model_name": labels.get((provider_id, model_id), model_id),
             "caller": job.get("caller"),
+            "job_group": job.get("job_group"),
             "created_at": created,
             "age_seconds": round(now - created, 1) if isinstance(created, (int, float)) else None,
             "queue_position": rank.get("position"),
@@ -2329,6 +2361,7 @@ def queue_view(limit: int = Query(200, ge=1, le=1000)) -> dict[str, Any]:
         "sites": sites,
         "pool": {
             **concurrency.global_budget().as_dict(),
+            **concurrency.fleet_share(),
             "in_flight": int(worker.active()),
         },
         # The raw books the worker keeps, published so the view can say what is

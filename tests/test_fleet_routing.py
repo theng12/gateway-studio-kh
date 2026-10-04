@@ -4,8 +4,9 @@
 The router used to weight a controller by **every** machine at the site, so a
 controller with ten 8 GB image Macs and one 24 GB Mac out-weighed a controller
 with two 24 GB Macs for a model only the big ones can run. These checks pin the
-per-model weight the Hub's `model_supply` now feeds, its fallbacks for an older
-Hub, and the `GATEWAY_PREFER_FASTEST_SITE` toggle.
+per-model weight the Hub's `model_supply` now feeds and its fallbacks for an older
+Hub. (The `GATEWAY_PREFER_FASTEST_SITE` chip proxy was removed in 0.2.121: speed routing
+gained nothing in simulation, so measured speed is for ETAs only — see Analytics.)
 """
 
 from __future__ import annotations
@@ -137,7 +138,7 @@ class PerModelWeightTests(unittest.TestCase):
         slots = {c["location_id"]: c["slots"] for c in _route_with([a, b])}
         self.assertEqual(slots, {"a": 3, "b": 5})
 
-    def test_available_and_speed_are_read_from_the_hub(self) -> None:
+    def test_available_is_read_from_the_hub_and_speed_is_not_a_routing_input(self) -> None:
         a = _location(
             "a",
             model_supply={MODEL: {"eligible": 2, "available": 1}},
@@ -145,7 +146,8 @@ class PerModelWeightTests(unittest.TestCase):
         )
         candidate, = _route_with([a])
         self.assertEqual(candidate["available"], 1)
-        self.assertEqual(candidate["speed"], 424.0)  # 4 * 100 + 24
+        self.assertNotIn("speed", candidate)
+        self.assertFalse(hasattr(fleet, "_site_speed_score"))
 
     def test_missing_supply_is_not_zero(self) -> None:
         # A Hub that says nothing about free capacity must not read as "none free".
@@ -165,37 +167,6 @@ class RankTests(unittest.TestCase):
                              lambda modality: [(_definition("a"), _model_row()), (_definition("b"), _model_row())]):
             chosen, note = fleet.route(MODEL, MODALITY)
         self.assertEqual(chosen.id, f"{fleet.PROVIDER_PREFIX}b", note)
-
-    def test_prefer_fastest_site_ranks_the_faster_controller_first(self) -> None:
-        # Equal pressure and equal capacity; only the chip differs (the Hub's proxy).
-        a = _location(
-            "a",
-            model_supply={MODEL: {"eligible": 2, "available": 2}},
-            machines=[{"chip": "Apple M2", "memory_gb": 8.0}],
-        )
-        b = _location(
-            "b",
-            model_supply={MODEL: {"eligible": 2, "available": 2}},
-            machines=[{"chip": "Apple M4 Pro", "memory_gb": 16.0}],
-        )
-        with patch.dict(os.environ, {"GATEWAY_PREFER_FASTEST_SITE": "1"}), \
-                patch.object(fleet, "snapshot", lambda allow_stale=False: {"locations": [a, b]}), \
-                patch.object(registry.models, "enabled_models",
-                             lambda modality: [(_definition("a"), _model_row()), (_definition("b"), _model_row())]):
-            chosen, note = fleet.route(MODEL, MODALITY)
-        self.assertEqual(chosen.id, f"{fleet.PROVIDER_PREFIX}b", note)
-
-    def test_speed_score_mirrors_the_hub_proxy(self) -> None:
-        self.assertEqual(fleet._site_speed_score([{"chip": "Apple M2", "memory_gb": 8.0}]), 208.0)
-        self.assertEqual(
-            fleet._site_speed_score(
-                [{"chip": "Apple M2", "memory_gb": 8.0}, {"chip": "Apple M4 Pro", "memory_gb": 24.0}]
-            ),
-            424.0,
-        )
-        self.assertEqual(fleet._site_speed_score([]), 0.0)
-        self.assertEqual(fleet._site_speed_score(None), 0.0)
-
 
 # --------------------------------------------------------------------------
 # The Fleet page's additive tabs: per-location models and workers, the issues

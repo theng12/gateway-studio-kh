@@ -524,6 +524,10 @@ final class JobsSection: NSObject, AppSection, NSTableViewDataSource, NSTableVie
         if let caller = string(job["caller"]), !caller.isEmpty {
             detailStack.addArrangedSubview(PageKit.help("Requested by \(caller)"))
         }
+        // The project run this job takes turns with (`<project>/<episode>`); omitted when none was sent.
+        if let group = string(job["job_group"]), !group.isEmpty {
+            detailStack.addArrangedSubview(PageKit.help("Group \(group)"))
+        }
 
         // **Waiting, not failed.** A job the fleet could not take yet goes back in
         // our own queue rather than being reported as broken, and saying so is the
