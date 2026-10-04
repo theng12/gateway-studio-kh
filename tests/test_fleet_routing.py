@@ -322,6 +322,24 @@ class FleetTabTests(unittest.TestCase):
         # believed rather than overridden by this table.
         self.assertEqual(fleet._studio_modality("image", "stated"), "stated")
 
+    def test_the_overview_is_read_beside_the_other_reads_not_before_them(self) -> None:
+        # The overview used to be a serial round trip in front of the nine others. It now
+        # answers only once another read has started, which a serial probe never reaches.
+        real_fetch = fleet._fetch
+        others_started = threading.Event()
+
+        def fetch(client, base, token, path):
+            if path == "/api/hub/fleet/overview":
+                if not others_started.wait(timeout=5):
+                    raise AssertionError("the overview was read before any other route")
+            else:
+                others_started.set()
+            return real_fetch(client, base, token, path)
+
+        with patch.object(fleet, "_fetch", fetch):
+            location = fleet._probe(self.base, "mock-token")
+        self.assertTrue(location["reachable"], location["error"])
+
     def test_workers_fall_back_to_nodes_when_capabilities_has_none(self) -> None:
         real_fetch = fleet._fetch
 

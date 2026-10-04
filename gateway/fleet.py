@@ -1130,16 +1130,19 @@ def _probe(base: str, token: str, *, timeout: float = _TIMEOUT) -> dict:
         "hub_workers": [],
     }
     try:
-        with httpx.Client(timeout=timeout) as client:
+        # Exits in reverse: the pool drains before the client it shares closes.
+        with httpx.Client(timeout=timeout) as client, ThreadPoolExecutor(max_workers=1) as pool:
+            # **The nine enrichment reads, all at once -- and beside the overview,
+            # not after it.** Nothing below needs anything else below, so fetching
+            # them in sequence -- which is what this did -- made each pay the full
+            # per-request timeout one after the other. On a Hub that is up but busy
+            # rendering, that is ~22 s for one snapshot against the app's 15 s
+            # timeout, so the Fleet page loaded only when the fleet was idle. The
+            # overview, too, was a serial round trip in front of the nine (up to 2 s
+            # measured on a loaded controller over Tailscale).
+            pending = pool.submit(_fetch_optional, client, base, token)
             overview = _fetch(client, base, token, "/api/hub/fleet/overview")
-
-            # **The nine enrichment reads, all at once.** Nothing below needs
-            # anything else below, so fetching them in sequence -- which is what
-            # this did -- made each pay the full per-request timeout one after the
-            # other. On a Hub that is up but busy rendering, that is ~22 s for one
-            # snapshot against the app's 15 s timeout, so the Fleet page loaded
-            # only when the fleet was idle.
-            optional = _fetch_optional(client, base, token)
+            optional = pending.result()
             nodes = optional["/api/hub/fleet/nodes"]
             jobs = optional["/api/hub/jobs"]
             capabilities = optional["/api/hub/capabilities"]
