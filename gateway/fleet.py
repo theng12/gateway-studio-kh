@@ -2813,8 +2813,19 @@ _REACH_ERRORS = frozenset({"worker_unreachable", "ConnectError", "ConnectTimeout
                            "RemoteProtocolError"})
 
 
+#: ...and the same faults as the Hub actually stores them: `str(exc)`, httpx's or the OS's message,
+#: not the class name (live 2026-10-03: seven "All connection attempts failed" rows on 1200's offline node).
+_REACH_PHRASES = ("all connection attempts failed", "connection refused", "connection reset",
+                  "no route to host", "host is down", "network is unreachable", "timed out",
+                  "server disconnected", "nodename nor servname")
+
+
 def _is_reach_error(text: object) -> bool:
-    return str(text or "").strip().removeprefix("httpx.") in _REACH_ERRORS
+    text = str(text or "").strip()
+    if text.removeprefix("httpx.") in _REACH_ERRORS:
+        return True
+    lowered = text.lower()
+    return any(phrase in lowered for phrase in _REACH_PHRASES)
 
 
 def _issue(

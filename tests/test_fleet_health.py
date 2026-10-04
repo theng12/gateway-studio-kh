@@ -181,7 +181,12 @@ class RealProblemsStillShowByName(unittest.TestCase):
             if w["machine"] == "node-2":
                 w["online"] = False
         row["local_models"] = [{"model": "whisper", "machine": "node-2", "catalog_error": "ConnectTimeout"},
-                               {"model": "qwen", "machine": "node-2", "catalog_error": "worker_unreachable"}]
+                               {"model": "qwen", "machine": "node-2", "catalog_error": "worker_unreachable"},
+                               # httpx's message, not its class name (live 1200, 2026-10-03).
+                               {"model": "moonshine", "machine": "node-2",
+                                "catalog_error": "All connection attempts failed"},
+                               {"model": "parakeet", "machine": "node-2",
+                                "catalog_error": "[Errno 61] Connection refused"}]
         flat, issues, summary = read(row)
         self.assertEqual(loud(issues), ["machine_offline"], issues)
         self.assertEqual(flat["node-2"]["version_status"], "unknown")
