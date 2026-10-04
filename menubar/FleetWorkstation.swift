@@ -239,14 +239,14 @@ final class FleetWorkstationForm: NSObject {
         let form = FleetWorkstationForm(current.overlaid(by: pending?.settings))
         let alert = NSAlert()
         alert.messageText = "Lite Mode — \(machine.label ?? machine.machine ?? "this Mac")"
-        var now = current.enabled == true ? (current.chipLong ?? "On") : "Off"
-        if let reason = current.reason, current.enabled == true { now += " (\(reason))" }
-        if current.stale == true { now += ", as last reported by the Mac" }
+        let offline = machine.liteModeOffline
+        var now = offline ? "Offline" : current.enabled == true ? (current.chipLong ?? "On") : "Off"
+        if let reason = current.reason, current.enabled == true, !offline { now += " (\(reason))" }
         alert.informativeText = (pending.map { "\($0.line). The settings below are saved and will be applied when "
             + "this Mac comes back.\n\n" } ?? "")
             + (machine.workstation == nil
                ? "This Mac is offline and has not reported its Lite Mode. A change is saved and applied when it comes back."
-               : "\(current.policySentence) Now: \(now)." + (current.today.map { " \($0)." } ?? ""))
+               : "\(current.policySentence) Now: \(now)." + (offline ? "" : current.today.map { " \($0)." } ?? ""))
         alert.accessoryView = form.view
         alert.addButton(withTitle: "Save")
         alert.addButton(withTitle: "Cancel")
@@ -262,14 +262,22 @@ extension FleetMachine {
                         ? FleetWorkstation() : nil)
     }
 
+    /// Offline now: unreachable, or its controller only repeating what the Mac last said. Its last Lite Mode state
+    /// ("Stepped aside") says nothing about now, so the page says "Offline" instead.
+    var liteModeOffline: Bool { reachable == false || (state ?? "").lowercased() == "offline" || workstation?.stale == true }
+
+    /// The shop has this Mac for now. Never an offline Mac.
+    var liteModeResting: Bool { !liteModeOffline && workstation?.isResting == true }
+
     /// The State column's word when the shop has this Mac for now; nil otherwise.
-    var workstationRestingLabel: String? { workstation?.isResting == true ? workstation?.chip : nil }
+    var workstationRestingLabel: String? { liteModeResting ? workstation?.chip : nil }
 
     /// The whole story in one sentence, for a tooltip: "Lite Mode: In use — standing by (someone is using
     /// this Mac). Today: 2 jobs · 0 step-asides."
     var workstationLine: String? {
         let waiting = liteModePending.map { "Lite Mode change: \($0.line)." }
         guard let workstation, workstation.enabled == true || workstation.isResting else { return waiting }
+        if liteModeOffline { return "Lite Mode: Offline." + (waiting.map { "\n\($0)" } ?? "") }
         var text = "Lite Mode: " + (workstation.chipLong ?? "on")
         if let reason = workstation.reason, workstation.isResting { text += " (\(reason))" }
         if let today = workstation.today { text += ". \(today)" }
@@ -280,11 +288,11 @@ extension FleetMachine {
     /// Why the shop has this Mac now, for the "Doing now" column: the Hub's words, sentence-cased unless the first
     /// word carries its own capitals ("macOS ...").
     var workstationReasonText: String? {
-        guard workstation?.isResting == true, let reason = workstation?.reason, let first = reason.first else { return nil }
+        guard liteModeResting, let reason = workstation?.reason, let first = reason.first else { return nil }
         let word = reason.prefix { $0 != " " }
         return word.dropFirst().contains(where: \.isUppercase) ? reason : first.uppercased() + reason.dropFirst()
     }
 
     /// Memory as a fault for a group to count: the shop's own use of a Mac it is using is not one.
-    var faultMemoryHealth: Health { workstation?.isResting == true ? .off : memoryHealth }
+    var faultMemoryHealth: Health { liteModeResting ? .off : memoryHealth }
 }

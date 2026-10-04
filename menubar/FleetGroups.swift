@@ -174,7 +174,7 @@ struct GroupSummary {
         // The State badge already says ready, idle, offline or refused; this column is only for work.
         if machine.nodeStateIsUnauthorized { return ("—", nil) }
         // A workstation the shop has for now: why, in the Hub's words ("Someone is using this Mac").
-        if machine.workstation?.isResting == true { return (machine.workstationReasonText ?? "—", nil) }
+        if machine.liteModeResting { return (machine.workstationReasonText ?? "—", nil) }
         switch state {
         case "working":
             let busy = location.workers.filter { $0.machine == machine.machine && $0.busy == true }
@@ -1001,8 +1001,13 @@ final class FleetGroupsTab: NSView, NSSearchFieldDelegate {
         // Workstation mode: "[Working] Today: 3 jobs · 1 step-aside" (a resting Mac's chip is its State badge).
         if let workstation = machine.workstation, let today = workstation.today {
             var parts: [NSView] = []
-            if !workstation.isResting, let chip = workstation.chip { parts.append(Badge(chip, workstation.chipHealth)) }
-            parts.append(PageKit.label(today, .caption, colour: .secondaryLabelColor))
+            // Offline: its last Lite Mode state is not now (the waiting change, if any, is the note row below).
+            if machine.liteModeOffline {
+                parts.append(Badge("Offline", .off))
+            } else {
+                if !workstation.isResting, let chip = workstation.chip { parts.append(Badge(chip, workstation.chipHealth)) }
+                parts.append(PageKit.label(today, .caption, colour: .secondaryLabelColor))
+            }
             let line = NSStackView(views: parts)
             line.spacing = DS.Space.xs
             line.alignment = .centerY

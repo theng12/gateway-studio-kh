@@ -8,6 +8,7 @@ the fleet refresher sends it once the Mac answers again. Mocked Hub transport an
 from __future__ import annotations
 
 import json
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -159,6 +160,63 @@ class ApplyTests(_Case):
         self.assertEqual(startup_control.stamp_lite_mode_pending([row]), [])
         self.assertEqual(row["lite_mode_pending"]["settings"], {"enabled": True})
         self.assertEqual(row["lite_mode_pending"]["offline_since"], 1000.0)
+
+
+SWIFT = r"""
+import AppKit
+
+enum GatewayAPI {
+    static func relativeTime(_ epoch: Double?) -> String { epoch == nil ? "—" : "just now" }
+}
+
+@main struct OfflineChipCheck {
+    static func main() {
+        let data = try! Data(contentsOf: URL(fileURLWithPath: CommandLine.arguments[1]))
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        let rows = try! decoder.decode([String: FleetMachine].self, from: data)
+        func expect(_ actual: String?, _ wanted: String?, _ what: String) {
+            if actual != wanted { print("FAIL \(what): got \(actual ?? "nil"), wanted \(wanted ?? "nil")"); exit(1) }
+        }
+        for id in ["stale", "unreachable"] {
+            let row = rows[id]!
+            expect(row.stateLabel, "Offline", "\(id): the State word")
+            expect(row.liteModeOffline ? "offline" : "online", "offline", "\(id): offline")
+            expect(row.liteModeResting ? "resting" : nil, nil, "\(id): never resting")
+        }
+        expect(rows["stale"]!.workstationLine, "Lite Mode: Offline.", "no stale chip in the tooltip")
+        expect(rows["unreachable"]!.workstationLine, "Lite Mode: Offline.\nLite Mode change: Waiting to apply.",
+               "offline plus the waiting change")
+        expect(rows["here"]!.stateLabel, "Stepped aside", "a reachable Mac still shows its chip")
+        print("PASS: offline Lite Mode")
+    }
+}
+"""
+
+
+class OfflineChipNative(unittest.TestCase):
+    """An offline Mac whose controller repeats its last report reads "Offline", never its stale Lite Mode chip."""
+
+    def test_an_offline_mac_reads_offline_not_its_last_chip(self) -> None:
+        ws = {"enabled": True, "state": "yielded", "reason": "someone is using this Mac", "jobs_today": 4}
+        rows = {"stale": {"machine": "a", "reachable": False, "state": "offline", "workstation": {**ws, "stale": True}},
+                "unreachable": {"machine": "b", "reachable": False, "workstation": ws,
+                                "lite_mode_pending": {"settings": {"enabled": False}}},
+                "here": {"machine": "c", "reachable": True, "state": "ready", "workstation": ws}}
+        root = Path(__file__).resolve().parent.parent
+        with tempfile.TemporaryDirectory(prefix="gateway-lite-offline-") as directory:
+            source, binary, data = (Path(directory) / name for name in ("check.swift", "check", "rows.json"))
+            source.write_text(SWIFT)
+            data.write_text(json.dumps(rows))
+            built = subprocess.run(
+                ["swiftc", "-swift-version", "5", "-framework", "AppKit", "menubar/PageKit.swift",
+                 "menubar/FleetModels.swift", "menubar/FleetStartupModel.swift", "menubar/FleetLastStop.swift",
+                 "menubar/FleetWorkstation.swift", str(source), "-o", str(binary)],
+                cwd=root, capture_output=True, text=True)
+            self.assertEqual(built.returncode, 0, built.stderr)
+            checked = subprocess.run([str(binary), str(data)], capture_output=True, text=True, timeout=30)
+            self.assertEqual(checked.returncode, 0, checked.stdout + checked.stderr)
+            self.assertIn("PASS:", checked.stdout)
 
 
 if __name__ == "__main__":

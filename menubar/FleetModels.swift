@@ -863,7 +863,7 @@ extension FleetMachine {
     var activityHealth: Health {
         let word = (state ?? "").lowercased()
         if nodePaused == true { return .off }   // paused by you: quiet grey, not a fault
-        if workstation?.isResting == true { return .off }   // the shop is using it, or quiet hours: busy for now
+        if liteModeResting { return .off }   // the shop is using it, or quiet hours: busy for now
         if nodeStateIsUnauthorized || word == "offline" || reachable == false { return .bad }
         if word == "needs_attention" { return .warn }
         if word == "long_idle" || word.isEmpty { return .off }
