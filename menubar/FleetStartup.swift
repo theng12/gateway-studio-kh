@@ -151,6 +151,7 @@ extension FleetStartup {
                     menu.addItem(why)
                 }
             }
+            FleetModelInstall.menuItems(for: machine, done: done).forEach(menu.addItem)
             if !actions.isEmpty {
                 if renamable || pausable || configurable { menu.addItem(.separator()) }
                 let heading = NSMenuItem(title: FleetStartup.badge(machine.startup), action: nil, keyEquivalent: "")
@@ -372,9 +373,14 @@ final class FleetStartupCell: NSView {
         toolTip = badge.toolTip
         var views: [NSView] = [badge]
         if let more = FleetStartup.menuButton(for: machine, window: window, done: done) { views.append(more) }
-        let row = NSStackView(views: views)
-        row.spacing = DS.Space.xs
-        row.alignment = .centerY
+        let line = NSStackView(views: views)
+        line.spacing = DS.Space.xs
+        line.alignment = .centerY
+        // Under the badge, the column's full width: "Downloading … — 42%", then the result (FleetModelInstall.swift).
+        let row = NSStackView(views: [line, FleetModelInstallLabel(machine: machine)])
+        row.orientation = .vertical
+        row.alignment = .leading
+        row.spacing = 1
         row.translatesAutoresizingMaskIntoConstraints = false
         addSubview(row)
         NSLayoutConstraint.activate([

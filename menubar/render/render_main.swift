@@ -186,10 +186,48 @@ func renderAddLocation() {
     spin(1.0)
 }
 
+/// `fleet-install`: the "Install a model…" picker for a 16 GB node (`fleet-install.png`) and its "…" menu titles,
+/// plus the same menu for an 8 GB node and an older gateway; then rows mid-download and finished, so
+/// `fleet:machines` rendered in the same run shows them on the Machines tab.
+func renderInstallSheet() {
+    let decoder = JSONDecoder()
+    decoder.keyDecodingStrategy = .convertFromSnakeCase
+    let fish = #"{"package_id":"fish-audio-s2-pro-4bit","model":"majentik/fishaudio-s2-pro-MLX-4bit","label":"Fish S2 Pro 4-bit","size_gb":3.5}"#
+    let qwen = #"{"package_id":"qwen3-tts-12hz-0.6b-base-4bit","model":"mlx-community/Qwen3-TTS-12Hz-0.6B-Base-4bit","label":"Qwen3 TTS 0.6B","size_gb":3.4}"#
+    let samples = [
+        #"{"location_id":"ctrl-blue","machine":"blue-1","label":"Blue Room 1","reachable":true,"node_role":"agent","installable_models":[\#(fish),\#(qwen)]}"#,
+        #"{"location_id":"ctrl-blue","machine":"blue-2","label":"Blue Room 2","reachable":true,"node_role":"agent","installable_models":[]}"#,
+        #"{"location_id":"ctrl-blue","machine":"blue-9","label":"Older gateway","reachable":true,"node_role":"agent"}"#,
+    ].compactMap { try? decoder.decode(FleetMachine.self, from: Data($0.utf8)) }
+    for sample in samples {
+        if let button = FleetStartup.menuButton(for: sample, window: { nil }, done: {}) as? FleetMenuButton {
+            print("menu \(sample.label ?? ""): \(button.itemTitles)")
+        }
+    }
+    guard let first = samples.first else { print("no sample machine"); return }
+    let (alert, _) = FleetModelInstall.pickerAlert(for: first, first.installableModels ?? [])
+    alert.layout()
+    alert.window.setFrameOrigin(NSPoint(x: -20000, y: -20000))
+    alert.window.orderFront(nil)
+    spin(0.8)
+    write(alert.window, web: nil, to: "\(output)/fleet-install\(suffixForAppearance).png")
+    alert.window.orderOut(nil)
+    for (machine, run) in [("blue-1", #"{"state":"running","total_bytes":3500000000,"bytes_done":1470000000}"#),
+                           ("blue-ctl", #"{"state":"done"}"#),
+                           ("ctrl-studio2/s2-1", #"{"state":"error","error_tail":"download failed: HTTP 503"}"#)] {
+        let run = (try? JSONSerialization.jsonObject(with: Data(run.utf8))) as? [String: Any] ?? [:]
+        let name = machine == "blue-ctl" ? "Qwen3 TTS 0.6B" : "Fish S2 Pro 4-bit"
+        let (text, health, _) = FleetModelInstall.sentence(name, run)
+        FleetModelInstall.status[machine.contains("/") ? machine : "ctrl-blue/\(machine)"] = (text, health)
+        print("row \(machine): \(text)")
+    }
+}
+
+for page in pageNames where page == "fleet-install" { renderInstallSheet() }
 for page in pageNames where page == "fleet-rename" { renderRenameSheet() }
 for page in pageNames where page == "fleet-workstation" { renderWorkstationSheet() }
 for page in pageNames where page == "fleet-add" { renderAddLocation() }
-for page in pageNames where !["fleet-rename", "fleet-workstation", "fleet-add"].contains(page) {
+for page in pageNames where !["fleet-rename", "fleet-workstation", "fleet-add", "fleet-install"].contains(page) {
     // `fleet:locations` is the Fleet page on one of its inner tabs.
     let parts = page.split(separator: ":").map(String.init)
     let name = parts[0].replacingOccurrences(of: "-", with: " ")

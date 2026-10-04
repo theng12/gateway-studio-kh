@@ -210,6 +210,8 @@ LOCAL_MODEL_KEYS = {
     "memory_eligible", "runtime_ready", "available", "loaded", "fit",
     "cache_state", "catalog_error", "catalog_stale", "active_download",
     "gated", "dispatch_state",
+    # What the Hub installs the model by (Fleet → Machines → … → Install a model…, 2026-10-04).
+    "package_id",
 }
 
 

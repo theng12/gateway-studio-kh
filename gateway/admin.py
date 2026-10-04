@@ -2974,6 +2974,35 @@ def fleet_machine_workstation(controller_id: str, machine_id: str, payload: dict
         return JSONResponse(status_code=error.status, content=error.body)
 
 
+@router.post(
+    "/api/fleet/controllers/{controller_id}/machines/{machine_id}/model-packages/{package_id}/download",
+    dependencies=[Depends(require_admin)],
+)
+def fleet_machine_install_model(controller_id: str, machine_id: str, package_id: str) -> Any:
+    """Install a model on one Mac (owner decision 2026-10-04). Relayed through the Mac's controller.
+
+    Answers `{"ok": true, "node", "run": {"id", "state", "total_bytes", ...}}`, or the Mac's refusal in its
+    own words (unknown package, shelved, not enough disk, not enough memory), `NODE_UNREACHABLE`,
+    `NODE_REFUSED` (that Mac's Hub is too old) or `HUB_TOO_OLD` (the controller needs Studio Hub 0.6.143).
+    """
+    try:
+        return startup_control.install_model(controller_id, machine_id, package_id)
+    except startup_control.StartupError as error:
+        return JSONResponse(status_code=error.status, content=error.body)
+
+
+@router.get(
+    "/api/fleet/controllers/{controller_id}/machines/{machine_id}/model-downloads/{run_id}",
+    dependencies=[Depends(require_admin)],
+)
+def fleet_machine_model_download(controller_id: str, machine_id: str, run_id: str) -> Any:
+    """How a model install started above is going: `run.state`, `run.bytes_done` / `run.total_bytes`."""
+    try:
+        return startup_control.model_install_status(controller_id, machine_id, run_id)
+    except startup_control.StartupError as error:
+        return JSONResponse(status_code=error.status, content=error.body)
+
+
 @router.post("/api/fleet/startup/enable-autostart", dependencies=[Depends(require_admin)])
 def fleet_enable_autostart(payload: dict[str, Any]) -> Any:
     """Turn "Start services on startup" on for every Mac that reported it off.
