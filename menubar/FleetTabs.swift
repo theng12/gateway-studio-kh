@@ -289,7 +289,11 @@ final class FleetTableController: NSObject, NSTableViewDataSource, NSTableViewDe
         guard let column = columns.first(where: { $0.id == tableColumn.identifier.rawValue }) else {
             return nil
         }
-        if let cell = column.cell { return cell(item) }
+        if let cell = column.cell {
+            let view = cell(item)
+            if view.toolTip == nil, let tooltip = column.tooltip?(item), !tooltip.isEmpty { view.toolTip = tooltip }
+            return view
+        }
 
         let cell = NSTableCellView()
         let label = NSTextField(labelWithString: column.text(item))
@@ -561,6 +565,15 @@ final class FleetLocationsTab: FleetTabView {
     private let urlField = NSTextField(string: "")
     private let tokenField = SecretField(placeholder: "the controller's Fleet token", width: 260)
     private let addStatus = PageKit.label("", .secondary, colour: .secondaryLabelColor, wrapping: true)
+    private var addButton: PrimaryButton!
+    private var tableHeight: NSLayoutConstraint!
+    private let addSpinner: NSProgressIndicator = {
+        let spinner = NSProgressIndicator()
+        spinner.style = .spinning
+        spinner.controlSize = .small
+        spinner.isDisplayedWhenStopped = false
+        return spinner
+    }()
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -574,7 +587,8 @@ final class FleetLocationsTab: FleetTabView {
         fullWidth(header)
 
         controller.emptyText = "No locations have been read yet."
-        controller.container.heightAnchor.constraint(equalToConstant: 240).isActive = true
+        tableHeight = controller.container.heightAnchor.constraint(equalToConstant: 240)
+        tableHeight.isActive = true
         page.addArrangedSubview(controller.container)
         fullWidth(controller.container)
 
@@ -652,7 +666,7 @@ final class FleetLocationsTab: FleetTabView {
         labelField.widthAnchor.constraint(equalToConstant: 220).isActive = true
         urlField.placeholderString = "http://10.0.0.5:47873"
         urlField.widthAnchor.constraint(equalToConstant: 260).isActive = true
-        let addButton = PrimaryButton(title: "Add Location", regular: true) { [weak self] in
+        addButton = PrimaryButton(title: "Add Location", regular: true) { [weak self] in
             guard let self else { return }
             self.onAddLocation?(
                 self.labelField.stringValue.trimmingCharacters(in: .whitespaces),
@@ -670,7 +684,7 @@ final class FleetLocationsTab: FleetTabView {
                     "The token this gateway needs to send work to that Mac and collect the results."
                 )]
             ),
-            PageKit.row([addButton, addStatus]),
+            PageKit.row([addButton, addSpinner, addStatus]),
         ])
         form.orientation = .vertical
         form.alignment = .leading
@@ -710,7 +724,10 @@ final class FleetLocationsTab: FleetTabView {
                     let count = row.machineSummary?.total ?? row.machines.count
                     let machines = row.reachable == true ? "\(count) machine\(count == 1 ? "" : "s")" : nil
                     let role = row.role.map { FleetFormat.words($0) }
-                    return fleetTwoLineCell(row.label ?? "—", [role, machines].compactMap { $0 }.joined(separator: " · "))
+                    let caption = row.pending == true ? "Just added"
+                        : row.slow == true ? "Slow to answer"
+                        : [role, machines].compactMap { $0 }.joined(separator: " · ")
+                    return fleetTwoLineCell(row.label ?? "—", caption)
                 }
             ),
             FleetColumn(
@@ -809,14 +826,18 @@ final class FleetLocationsTab: FleetTabView {
                         return address.isEmpty ? reason : "\(address)\n\(reason)"
                     }
                     if row.reachable == true { return address }
+                    if row.pending == true { return "\(address)\n\(Self.pendingNote)" }
                     // **The address is what you need most when it is not answering**, so it never replaces
                     // the reason: "Nothing is listening on that address" must say which address.
                     let reason = row.error ?? "Not reachable"
                     return address.isEmpty ? reason : "\(address)\n\(reason)"
                 },
                 colour: { row in
-                    location(row)?.reachable == true ? .secondaryLabelColor : Health.warn.text
+                    location(row)?.reachable == true || location(row)?.pending == true
+                        ? .secondaryLabelColor : Health.warn.text
                 },
+                // The whole sentence, for a cell that wraps it at three lines.
+                tooltip: { row in location(row)?.error },
                 cell: { any in
                     guard let row = location(any) else { return NSView() }
                     let text: String
@@ -826,6 +847,8 @@ final class FleetLocationsTab: FleetTabView {
                         text = address.isEmpty ? reason : "\(address)\n\(reason)"
                     } else if row.reachable == true {
                         text = address
+                    } else if row.pending == true {
+                        return fleetWrappingCell("\(address)\n\(Self.pendingNote)", colour: .secondaryLabelColor, lines: 3)
                     } else {
                         let reason = row.error ?? "Not reachable"
                         text = address.isEmpty ? reason : "\(address)\n\(reason)"
@@ -843,6 +866,9 @@ final class FleetLocationsTab: FleetTabView {
             ),
         ]
     }
+
+    /// A just-added location, before the gateway's first read of it lands.
+    static let pendingNote = "Just added — reading its Macs…"
 
     /// "Test" and, for a paused controller, "Resume" are buttons; Rename, Credentials, Change Address and
     /// Remove are in the "…" menu beside them. This Mac gets Rename only: it has no address to test and
@@ -889,6 +915,9 @@ final class FleetLocationsTab: FleetTabView {
 
     func update(locations: [FleetLocation]) {
         controller.setRows(locations)
+        // **Every location in view, up to twelve.** A fixed 240 pt showed five rows, so with the owner's
+        // eight the location just added — appended last — was below the fold and read as missing.
+        tableHeight.constant = 40 + 44 * CGFloat(min(max(locations.count, 4), 12))
     }
 
     /// The Release section: what each configured controller holds now, and what
@@ -1169,6 +1198,24 @@ final class FleetLocationsTab: FleetTabView {
     func setAddStatus(_ text: String, colour: NSColor = .secondaryLabelColor) {
         addStatus.stringValue = text
         addStatus.textColor = colour
+    }
+
+    /// While an add is in flight: the button says so and cannot be pressed again, the fields are
+    /// locked, and the spinner turns beside "Connecting to 100.120.246.9…".
+    func setAdding(_ adding: Bool, message: String) {
+        addButton.isEnabled = !adding
+        addButton.title = adding ? "Adding…" : "Add Location"
+        for field in [labelField, urlField, tokenField.secureField, tokenField.plainField] { field.isEnabled = !adding }
+        if adding { addSpinner.startAnimation(nil) } else { addSpinner.stopAnimation(nil) }
+        if adding { setAddStatus(message) }
+    }
+
+    /// Render harness: fill the form and press Add Location, as the owner would.
+    func pressAdd(label: String, url: String, token: String) {
+        labelField.stringValue = label
+        urlField.stringValue = url
+        tokenField.stringValue = token
+        addButton.performClick(nil)
     }
 
     func clearAddForm() {

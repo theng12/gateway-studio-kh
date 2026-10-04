@@ -167,9 +167,13 @@ struct FleetLocation: Decodable {
     /// Set when the roster shown is the one remembered from before the group went quiet, and for how long.
     var membersFrom: String?
     var membersStaleSeconds: Double?
+    /// In the roster, not read yet: just added, its first read still in flight.
+    var pending: Bool?
+    /// Did not answer in time; `error` says so and what it last reported is kept.
+    var slow: Bool?
 
     private enum CodingKeys: String, CodingKey {
-        case drained, membersFrom, membersStaleSeconds
+        case drained, membersFrom, membersStaleSeconds, pending, slow
         case id, label, url, local, reachable, error, role, version, hubVersionRelation, versionStatus
         case providerId, latencyMs
         case machines, workers, localModels, modelHealth, machineSummary, runningJobs
@@ -206,6 +210,8 @@ struct FleetLocation: Decodable {
         drained = try? c.decode(Bool.self, forKey: .drained)
         membersFrom = try? c.decode(String.self, forKey: .membersFrom)
         membersStaleSeconds = try? c.decode(Double.self, forKey: .membersStaleSeconds)
+        pending = try? c.decode(Bool.self, forKey: .pending)
+        slow = try? c.decode(Bool.self, forKey: .slow)
         if let count = try? c.decode(Int.self, forKey: .runningJobs) {
             runningJobs = count
         } else if let rows = try? c.decode([Lenient<FleetJob>].self, forKey: .runningJobs) {

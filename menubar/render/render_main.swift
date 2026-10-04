@@ -157,9 +157,39 @@ func renderWorkstationSheet() {
     }
 }
 
+/// `fleet-add` (with GATEWAY_RENDER_FIXTURE=add-location): Fleet → Locations as the owner adds a controller —
+/// a slow location keeping what it last reported (`fleet-add-slow`), the add in flight (`fleet-add-adding`) and
+/// the new row on the page before its first read lands (`fleet-add-just-added`). Drawn tall, so the Add form and
+/// the table are in one image.
+func renderAddLocation() {
+    let (width, height) = sizes.first ?? (1100, 1500)
+    _ = MainWindow.shared.show(section: "fleet")
+    guard let window = MainWindow.shared.window else { print("no window for fleet-add"); return }
+    FleetSection.shared.select(.locations)
+    window.styleMask = [.borderless, .resizable]
+    window.setContentSize(NSSize(width: width, height: height))
+    window.setFrameOrigin(NSPoint(x: -20000, y: -20000))
+    window.makeKeyAndOrderFront(nil)
+    func shot(_ name: String) {
+        window.contentView?.layoutSubtreeIfNeeded()
+        window.displayIfNeeded()
+        write(window, web: nil, to: "\(output)/fleet-add-\(name)\(suffixForAppearance).png")
+    }
+    spin(2.0)
+    shot("slow")
+    FleetSection.shared.renderAdd(label: "Shops", url: "http://100.120.246.9:47873", token: "fixture-fleet-token")
+    spin(1.0)
+    shot("adding")
+    spin(5.5)
+    shot("just-added")
+    GatewayAPI.delete("/admin/api/fleet/controllers/4bb919aee2e4")  // the fixture forgets it for the next run
+    spin(1.0)
+}
+
 for page in pageNames where page == "fleet-rename" { renderRenameSheet() }
 for page in pageNames where page == "fleet-workstation" { renderWorkstationSheet() }
-for page in pageNames where !["fleet-rename", "fleet-workstation"].contains(page) {
+for page in pageNames where page == "fleet-add" { renderAddLocation() }
+for page in pageNames where !["fleet-rename", "fleet-workstation", "fleet-add"].contains(page) {
     // `fleet:locations` is the Fleet page on one of its inner tabs.
     let parts = page.split(separator: ":").map(String.init)
     let name = parts[0].replacingOccurrences(of: "-", with: " ")
