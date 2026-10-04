@@ -14,6 +14,18 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.120 — 2026-10-04
+
+**Fleet loads faster.** The Gateway now reads each group's details all at the same time instead of one after another, so the Fleet page answers sooner when a group is busy.
+
+**A group gets work when any of its Macs can run the model.** Before, a group could be skipped because its controller's own Mac lacked a model that another Mac in the group had ready. The Gateway also re-reads a group's models by itself when it starts and whenever that group's Macs change what they have, so you no longer need to refresh it by hand.
+
+**Reset Job Counters…** on Fleet → Machines starts every Mac's done and failed counts from zero, and each count says "since …" so you know from when it is counting.
+
+**A Mac with no model ready now says so.** Instead of showing "Ready", it shows "No model is ready on this Mac" as something that needs attention, because it will never be given a job until a model is downloaded.
+
+**Install a model on any Mac from Fleet → Machines.** Open a Mac's menu and choose "Install a model…" to see the models that Mac has the memory for and start the download. This needs Studio Hub 0.6.143 on that group.
+
 ## 0.2.119 — 2026-10-04
 
 The heavier voice models (VoxCPM2, Breeze, Qwen3 TTS 1.7B) are now sent to every group that has a 16 GB Mac able to run them. Before, a group was judged by whichever of its Macs happened to be listed last — so 1100, 1300 and 1400 were skipped whenever that Mac was an 8 GB one, and work queued at 1500 and 1600 while their 16 GB Macs sat idle.
