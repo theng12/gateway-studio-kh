@@ -14,6 +14,18 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.118 — 2026-10-04
+
+**Workstation mode is now called Lite Mode** everywhere you see it: the Fleet row menu, the settings sheet and its messages.
+
+**A Lite Mode change for an offline Mac is kept and applied when the Mac is back.** You can change Lite Mode on a Mac that is switched off or out of reach; the Gateway saves the change and sends it as soon as the Mac answers again. Until then the Mac's row says "Lite Mode: Waiting to apply" and since when it has been offline. An offline Mac now shows "Offline" instead of the last Lite Mode state it reported.
+
+**Adding a location on Fleet → Locations shows what is happening.** The button says "Adding…" while it connects, the new location appears in the list straight away ("Just added — reading its Macs…") and fills in by itself, and the list is tall enough to show it. A location that is slow to answer keeps its last details with "Slow to answer" instead of disappearing, and Refresh counts each location as it answers.
+
+**A free chat job now moves to another group when a controller's own Mac is paused**, instead of failing. Nothing is charged and it does not use up a retry; if no other group can take it, it waits for a free Mac like other free work.
+
+**Clearer messages when a Mac cannot be reached.** Connection problems on an offline Mac are said in one plain sentence instead of a list of technical errors.
+
 ## 0.2.117 — 2026-10-04
 
 Work no longer waits at a group whose Macs are all paused; it goes to a group that can run it. If a job does end up queued there anyway, it is moved to another group within about ten minutes, with nothing charged. A job that can only run on a paused Mac stops straight away with "nothing was charged; run it again".
