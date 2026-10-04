@@ -14,6 +14,14 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.121 — 2026-10-04
+
+Smarter spreading of work across the fleet:
+- A group only takes as many jobs of a model as it has Macs that can run that model, so heavy voice jobs no longer block a group's small Macs — light work starts on them right away.
+- The fleet's limits for voice, image, music and transcription now follow the fleet automatically ("Automatic — follows the fleet"): add Macs and the limits grow by themselves. A number you set in Settings still works as a ceiling.
+- Projects take turns: a small redo or a second project no longer waits behind a big batch of the same kind (needs Story Studio 1.4.252).
+- Analytics shows real speed per model and Mac type (and real-time factor for voices). The old chip-based speed guess is removed.
+
 ## 0.2.120 — 2026-10-04
 
 **Fleet loads faster.** The Gateway now reads each group's details all at the same time instead of one after another, so the Fleet page answers sooner when a group is busy.
