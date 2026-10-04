@@ -137,6 +137,10 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
         let reloadAfterStartup: () -> Void = { [weak self] in self?.reload(force: true) }
         startupBar.onChange = reloadAfterStartup
         machinesTab.startupAccessory.addArrangedSubview(startupBar)
+        let resetCounters = NSButton(title: "Reset Job Counters…", target: self, action: #selector(resetCounters))
+        resetCounters.controlSize = .small
+        resetCounters.toolTip = "Count every Mac's done and failed jobs from now on. Nothing is deleted."
+        machinesTab.startupAccessory.addArrangedSubview(resetCounters)
         machinesTab.warningList.onHide = { [weak self] kind in
             guard let self else { return }
             self.setHiddenWarningKinds(Set(self.machinesTab.hiddenWarningKinds).union([kind]))
@@ -910,6 +914,30 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
             // The held-release column is what a controller reports now, so it is
             // re-read after the push rather than filled from the push's own answer.
             self.reload()
+        }
+    }
+
+    /// The Machines tab's "Reset Job Counters…": every Mac counts done/failed from now on. A baseline the
+    /// Gateway keeps and every Hub counts from; no Hub's job history is touched.
+    @objc private func resetCounters() {
+        let sure = NSAlert()
+        sure.messageText = "Reset the job counters on every Mac?"
+        sure.informativeText = "The Machines tab will count done and failed jobs from now on. "
+            + "Nothing is deleted: every Hub keeps its full job history. "
+            + "A Mac on an older Studio Hub keeps counting everything until it updates, and says so."
+        sure.addButton(withTitle: "Reset Counters")
+        sure.addButton(withTitle: "Cancel")
+        guard sure.runModal() == .alertFirstButtonReturn else { return }
+        GatewayAPI.post("/admin/api/fleet/counters/reset", body: [:]) { [weak self] result in
+            guard let self else { return }
+            switch result {
+            case .failure(let error):
+                self.report(.error, title: "Could not reset the counters", detail: error.localizedDescription)
+            case .success(let payload):
+                let since = (payload["counters_since"] as? Double).map(FleetFormat.stamp) ?? "now"
+                self.report(.success, title: "Counters reset", detail: "Jobs are counted since \(since).")
+                self.reload(force: true)
+            }
         }
     }
 

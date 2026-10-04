@@ -80,6 +80,8 @@ struct FleetSummary: Decodable {
     var machinesUnknown: Int?
     var jobsCompleted: Int?
     var jobsFailed: Int?
+    /// The owner's "Reset counters" baseline (epoch seconds); nil when never reset.
+    var countersSince: Double?
     var runningJobs: Int?
     var probeMachinesHidden: Int?
     var localModelsTotal: Int?
@@ -683,6 +685,9 @@ struct FleetMachine: Decodable {
     var reachable: Bool?
     var completed: Int?
     var failed: Int?
+    /// From when `completed`/`failed` count: the reset baseline when this Mac's Hub honoured it, nil when
+    /// it counts its whole history (no reset, or a Hub too old for one).
+    var countedSince: Double?
     var averageSeconds: Double?
     var medianRuntimeS: Double?
     var chip: String?
@@ -1389,6 +1394,13 @@ enum FleetFormat {
         if value < 60 { return String(format: "%.1f s", value) }
         let minutes = Int(value) / 60
         return "\(minutes)m \(Int(value) % 60)s"
+    }
+
+    /// "4 Oct 18:40": when the job counters were reset.
+    static func stamp(_ epoch: Double) -> String {
+        let format = DateFormatter()
+        format.dateFormat = "d MMM HH:mm"
+        return format.string(from: Date(timeIntervalSince1970: epoch))
     }
 
     static func relative(_ epoch: Double?) -> String {
