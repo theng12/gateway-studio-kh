@@ -73,8 +73,9 @@ def worker(mid, studio, *, online=True, busy=False, ready=True, slots=1, models=
             "last_seen_at": NOW - 4, "models": list(models), "supported_operations": []}
 
 
-def model(repo, label, studio, mid, *, available=True, cache="cached", fit="fits", need=6.0, size=3.4):
-    return {"model": repo, "model_id": repo, "label": label, "family": label.split()[0], "studio": studio,
+def model(repo, label, studio, mid, *, available=True, cache="cached", fit="fits", need=6.0, size=3.4, package=None):
+    return {"model": repo, "model_id": repo, "package_id": package or repo.split("/")[-1].lower(),
+            "label": label, "family": label.split()[0], "studio": studio,
             "modality": {"subtitle": "transcription"}.get(studio, studio), "machine": mid, "kind": "mlx",
             "size_gb": size, "min_unified_memory_gb": need, "required_free_memory_gb": need,
             "memory_eligible": fit != "too_big", "runtime_ready": cache == "cached", "available": available,
@@ -128,6 +129,7 @@ QWEN = "mlx-community/Qwen3-TTS-12Hz-0.6B-Base-4bit"
 FLUX = "black-forest-labs/FLUX.2-klein-4B"
 WHISPER = "mlx-community/whisper-large-v3-turbo"
 STABLE = "stabilityai/stable-audio-3-optimized"
+FISH = "majentik/fishaudio-s2-pro-MLX-4bit"
 
 
 UPDATES = ("macOS is set to download updates automatically (8-15 GB each). Turn it off in System Settings > "
@@ -444,7 +446,12 @@ def build() -> dict:
                 model(KOKORO, "Kokoro 82M", "voice", "blue-1", need=3.0, size=0.4),
                 model(QWEN, "Qwen3 TTS 0.6B", "voice", "blue-1"),
                 model(QWEN, "Qwen3 TTS 0.6B", "voice", "blue-2", fit="tight", available=False),
-                model(FLUX, "FLUX.2 Klein 4B", "image", "blue-1", need=10.0, size=8.0)],
+                model(FLUX, "FLUX.2 Klein 4B", "image", "blue-1", need=10.0, size=8.0),
+                # "Install a model…": Fish fits the 16 GB Macs and is on none of them; the 8 GB Mac is never offered it.
+                *[model(FISH, "Fish S2 Pro 4-bit", "voice", mid, cache="absent", available=False, need=16.0, size=3.5,
+                        package="fish-audio-s2-pro-4bit", fit="fits" if mid != "blue-2" else "too_big")
+                  for mid in ("blue-ctl", "blue-1", "blue-2")],
+                model(QWEN, "Qwen3 TTS 0.6B", "voice", "blue-ctl", cache="absent", available=False)],
         running=[batch("b-7355", "voice", QWEN, "Podcast ep 31", total=9, done=3, running=1, queued=5, started=9 * MIN),
                  batch("b-7350", "voice", KOKORO, "Ad reads", total=40, done=22, running=2, queued=16,
                        started=41 * MIN, stalled=True, note="waiting on a free slot")],

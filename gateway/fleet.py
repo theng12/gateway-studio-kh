@@ -1244,7 +1244,7 @@ def _probe(base: str, token: str, *, timeout: float = _TIMEOUT) -> dict:
         })
 
     dispatch = _dispatch_index(packages_payload)
-    local_models = _local_models(models_payload, dispatch)
+    local_models = _local_models(models_payload, dispatch, _package_ids(packages_payload))
 
     location.update({
         "reachable": True,
@@ -1374,7 +1374,32 @@ def _dispatch_index(payload: object) -> dict[str, object]:
     return index
 
 
-def _local_models(payload: object, dispatch: dict[str, object]) -> list[dict]:
+def _package_ids(payload: object) -> dict[str, str]:
+    """Model id -> the package id its Hub installs it by (`/api/hub/model-packages`, models only).
+
+    A Studio's model row names its package only when the files came from the package library, so a
+    model that is not on a Mac yet - the one an install is for - has none; the catalog always does.
+    """
+    rows = (payload.get("models") or payload.get("packages") or []) if isinstance(payload, dict) else []
+    return {str(row["model_id"]): str(row["package_id"]) for row in rows if isinstance(row, dict)
+            and row.get("model_id") and row.get("package_id") and row.get("type", "model") == "model"}
+
+
+def installable_models(location: dict, machine: str) -> list[dict]:
+    """What "Install a model…" offers for one Mac (owner decision 2026-10-04): the models its own catalog
+    says it has the memory for (`memory_eligible`), that are not on it and not downloading, by package id."""
+    found: dict[str, dict] = {}
+    for row in location.get("local_models") or []:
+        if (row.get("machine") == machine and row.get("memory_eligible") is True and row.get("package_id")
+                and row.get("cache_state") != "cached" and not row.get("active_download")):
+            found.setdefault(row["package_id"], {"package_id": row["package_id"], "model": row.get("model"),
+                                                 "label": row.get("label") or row.get("model"),
+                                                 "size_gb": row.get("size_gb")})
+    return sorted(found.values(), key=lambda item: str(item["label"]).lower())
+
+
+def _local_models(payload: object, dispatch: dict[str, object],
+                  packages: dict[str, str] | None = None) -> list[dict]:
     """One trimmed row per (model, machine) the controller publishes.
 
     A controller answers `/api/hub/models` with **one row per machine per model**
@@ -1390,7 +1415,8 @@ def _local_models(payload: object, dispatch: dict[str, object]) -> list[dict]:
         if not isinstance(row, dict):
             continue
         cache = row.get("cache") if isinstance(row.get("cache"), dict) else {}
-        package_id = str(cache.get("package_id") or row.get("package_id") or "").strip()
+        package_id = str(cache.get("package_id") or row.get("package_id")
+                         or (packages or {}).get(str(row.get("model_id") or row.get("repo") or "")) or "").strip()
         fit = row.get("fit")
         out.append({
             "model": row.get("repo"),
@@ -1419,6 +1445,8 @@ def _local_models(payload: object, dispatch: dict[str, object]) -> list[dict]:
             "active_download": bool(row.get("active_download")),
             "gated": row.get("gated"),
             "dispatch_state": dispatch.get(package_id) if package_id else None,
+            # What the Hub installs this model by (Fleet → Machines → … → Install a model…).
+            "package_id": package_id or None,
         })
     return out
 
@@ -2717,6 +2745,7 @@ def machines_flat(rows: list[dict]) -> list[dict]:
                 "last_stop": _last_stop_fact(machine, nodes.get(mid) or {}),
                 "workstation": (workstation := _workstation_fact(machine, nodes.get(mid) or {})),
                 "current": _current_job(machine, entry),
+                "installable_models": installable_models(row, mid),
                 **health_fields(mid, machine, entry, startup, workstation),
             })
         # A machine the activity report knows about but the overview omitted is

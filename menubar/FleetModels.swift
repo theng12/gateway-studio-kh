@@ -662,6 +662,20 @@ struct FleetDisk: Decodable {
     }
 }
 
+/// One model a Mac can be asked to install (`machines[].installable_models[]`).
+struct FleetInstallableModel: Decodable {
+    var packageId: String?
+    var model: String?
+    var label: String?
+    var sizeGb: Double?
+
+    var title: String {
+        let name = label ?? model ?? packageId ?? "?"
+        guard let size = sizeGb, size > 0 else { return name }
+        return "\(name) — \(String(format: size < 10 ? "%.1f" : "%.0f", size)) GB"
+    }
+}
+
 /// The job a node is running right now, **when the Hub states it** (Gateway `machines_flat` republishes
 /// `current` and nothing else). Every field is optional: absent means unknown, never idle.
 struct FleetCurrentJob: Decodable {
@@ -722,6 +736,8 @@ struct FleetMachine: Decodable {
     var liteModePending: FleetLiteModePending?
     /// What this node is running now, when its Hub says so (Fleet Groups "Doing now"); `nil` is unknown.
     var current: FleetCurrentJob?
+    /// The models "Install a model…" offers this Mac (see `FleetModelInstall.swift`); `nil` from an older gateway.
+    var installableModels: [FleetInstallableModel]?
     /// **Job counts per modality**, not a list of models the machine offers. The
     /// table labels the column "Work done by kind" so the two are never confused.
     var modalities: [String: Int]?

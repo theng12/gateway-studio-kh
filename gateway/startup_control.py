@@ -389,17 +389,22 @@ def stamp_lite_mode_pending(machines: list[dict[str, Any]]) -> list[dict[str, An
     return issues
 
 
-def _node_post(controller_id: str, machine_id: str, route: str, body: dict[str, Any], *, event: str,
+def _node_post(controller_id: str, machine_id: str, route: str, body: dict[str, Any] | None, *, event: str,
                too_old: str, refused: str, audit_fields: dict[str, Any],
-               client: httpx.Client | None) -> dict[str, Any]:
-    """POST one node action to the controller that owns the Mac, with the credential every fleet call uses."""
+               client: httpx.Client | None, method: str = "POST") -> dict[str, Any]:
+    """POST one node action to the controller that owns the Mac, with the credential every fleet call uses.
+
+    ``method="GET"`` is a status read through the same path: not audited, and the Fleet is not re-read.
+    """
     base, token = _target(controller_id)
-    audit(f"{event}_requested", controller=controller_id, machine=machine_id, **audit_fields)
+    action = method != "GET"
+    if action:
+        audit(f"{event}_requested", controller=controller_id, machine=machine_id, **audit_fields)
     owned = client is None
     client = client or httpx.Client(timeout=_TIMEOUT)
     try:
-        response = client.post(f"{base}/api/hub/fleet/nodes/{machine_id}/{route}",
-                               headers={"X-Hub-Token": token} if token else {}, json=body)
+        response = client.request(method, f"{base}/api/hub/fleet/nodes/{machine_id}/{route}",
+                                  headers={"X-Hub-Token": token} if token else {}, json=body)
     except httpx.HTTPError as exc:
         raise StartupError(502, {"ok": False, "code": "CONTROLLER_UNREACHABLE",
                                  "detail": "The controller did not answer: "
@@ -413,18 +418,60 @@ def _node_post(controller_id: str, machine_id: str, route: str, body: dict[str, 
         answered = {}
     if not isinstance(answered, dict):
         answered = {}
-    if response.status_code in (404, 405) and "code" not in answered:
+    # A Hub whose Fleet allowlist does not name the route refuses it before routing (403, "the fleet
+    # credential may send work ..."): the token was accepted, the Hub is simply older than the route.
+    older = (response.status_code == 403
+             and "the fleet credential may send work" in str(answered.get("detail") or ""))
+    if (response.status_code in (404, 405) or older) and "code" not in answered:
         answered = {"ok": False, "code": "HUB_TOO_OLD", "detail": too_old}
     elif response.status_code in (401, 403) and "code" not in answered:
         answered = {"ok": False, "code": "CONTROLLER_REFUSED", "detail": refused}
     answered.setdefault("ok", response.is_success)
     answered["machine"] = machine_id
-    audit(f"{event}_result", controller=controller_id, machine=machine_id, status=response.status_code,
-          code=answered.get("code"), ok=answered.get("ok"))
+    if action:
+        audit(f"{event}_result", controller=controller_id, machine=machine_id, status=response.status_code,
+              code=answered.get("code"), ok=answered.get("ok"))
     if not response.is_success:
         raise StartupError(response.status_code if response.status_code < 500 else 502, answered)
-    fleet.invalidate()   # the next Fleet read shows the new name, not a cached old one
+    if action:
+        fleet.invalidate()   # the next Fleet read shows the new name, not a cached old one
     return answered
+
+
+MODEL_INSTALL_TOO_OLD = ("This controller's Studio Hub cannot install models from the Gateway yet. It needs "
+                         "Studio Hub 0.6.143: update it first (Fleet > Release).")
+
+
+def install_model(controller_id: str, machine_id: str, package_id: str, *,
+                  client: httpx.Client | None = None) -> dict[str, Any]:
+    """Start a model download on one Mac (owner decision 2026-10-04), through its controller.
+
+    The Mac's Hub refuses an unknown package, a shelved model, a full disk and a model it has too
+    little memory to run, each in its own sentence, which is passed through. Answers
+    `{"ok": true, "node", "run": {"id", "state", "total_bytes", ...}}`; follow it with
+    `model_install_status`.
+    """
+    if not _MACHINE_ID.fullmatch(machine_id or "") or not _MACHINE_ID.fullmatch(package_id or ""):
+        raise StartupError(400, {"ok": False, "code": "BAD_MACHINE", "detail": "machine or model id is not valid"})
+    return _node_post(
+        controller_id, machine_id, f"model-packages/{package_id}/download", {}, event="model_install",
+        too_old=MODEL_INSTALL_TOO_OLD,
+        refused="The controller refused this gateway's credential for installing models.",
+        audit_fields={"package": package_id}, client=client,
+    )
+
+
+def model_install_status(controller_id: str, machine_id: str, run_id: str, *,
+                         client: httpx.Client | None = None) -> dict[str, Any]:
+    """How a download started by `install_model` is going: `{"ok", "node", "run": {"state", "bytes_done", ...}}`."""
+    if not _MACHINE_ID.fullmatch(machine_id or "") or not _MACHINE_ID.fullmatch(run_id or ""):
+        raise StartupError(400, {"ok": False, "code": "BAD_MACHINE", "detail": "machine or download id is not valid"})
+    return _node_post(
+        controller_id, machine_id, f"model-downloads/{run_id}", None, event="model_install",
+        too_old=MODEL_INSTALL_TOO_OLD,
+        refused="The controller refused this gateway's credential for installing models.",
+        audit_fields={}, client=client, method="GET",
+    )
 
 
 def enable_autostart_where_off(*, dry_run: bool = False,
