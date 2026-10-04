@@ -229,9 +229,9 @@ WORKSTATION_SETTINGS = ("enabled", "idle_only", "idle_minutes", "step_aside", "r
 
 def set_node_workstation(controller_id: str, machine_id: str, settings: object, *,
                          client: httpx.Client | None = None) -> dict[str, Any]:
-    """Change one Mac's workstation mode (owner request 2026-10-03), through its controller.
+    """Change one Mac's Lite Mode (internally "workstation"; owner request 2026-10-03), through its controller.
 
-    Workstation mode lets a shop's own Mac take fleet work only when nobody is using it, take no new work
+    Lite Mode lets a shop's own Mac take fleet work only when nobody is using it, take no new work
     while someone does (its current job finishes), start a job only with enough free memory (`start_free_gb`,
     `null` = each model's own floor) and rest in quiet hours. The body is any subset
     of `WORKSTATION_SETTINGS`; the Hub validates the values and answers `BAD_SETTING` with a sentence,
@@ -240,18 +240,18 @@ def set_node_workstation(controller_id: str, machine_id: str, settings: object, 
     """
     if not isinstance(settings, dict) or not settings:
         raise StartupError(400, {"ok": False, "code": "BAD_SETTING",
-                                 "detail": "Send at least one workstation setting to change."})
+                                 "detail": "Send at least one Lite Mode setting to change."})
     unknown = sorted(set(settings) - set(WORKSTATION_SETTINGS))
     if unknown:
         raise StartupError(400, {"ok": False, "code": "BAD_SETTING",
-                                 "detail": f"Not a workstation setting: {', '.join(map(str, unknown))}."})
+                                 "detail": f"Not a Lite Mode setting: {', '.join(map(str, unknown))}."})
     if not _MACHINE_ID.fullmatch(machine_id or ""):
         raise StartupError(400, {"ok": False, "code": "BAD_MACHINE", "detail": "machine id is not valid"})
     return _node_post(
         controller_id, machine_id, "workstation", dict(settings), event="workstation",
-        too_old="This controller's Studio Hub has no workstation mode yet. It needs a newer Studio Hub: "
+        too_old="This controller's Studio Hub has no Lite Mode yet. It needs a newer Studio Hub: "
                 "update it first (Fleet > Release).",
-        refused="The controller refused this gateway's credential for changing workstation mode.",
+        refused="The controller refused this gateway's credential for changing Lite Mode.",
         audit_fields={"settings": dict(settings)}, client=client,
     )
 

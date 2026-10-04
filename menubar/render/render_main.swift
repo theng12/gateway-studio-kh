@@ -112,7 +112,7 @@ func renderRenameSheet() {
     alert.window.orderOut(nil)
 }
 
-/// `fleet-workstation`: the Workstation Mode sheet for a Mac the shop is using, in the owner's defaults (works
+/// `fleet-workstation`: the Lite Mode sheet for a Mac the shop is using, in the owner's defaults (works
 /// through use, `fleet-workstation.png`) and with Only-when-idle and Step-aside on (`fleet-workstation-idle.png`);
 /// and the "…" menu titles for that Mac and for one whose Studio Hub is too old to report the mode.
 func renderWorkstationSheet() {

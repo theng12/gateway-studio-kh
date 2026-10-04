@@ -2947,7 +2947,7 @@ def fleet_machine_pause(controller_id: str, machine_id: str, payload: dict[str, 
     dependencies=[Depends(require_admin)],
 )
 def fleet_machine_workstation(controller_id: str, machine_id: str, payload: dict[str, Any]) -> Any:
-    """Change one Mac's workstation mode. Body: any subset of `startup_control.WORKSTATION_SETTINGS`.
+    """Change one Mac's Lite Mode (internally "workstation"). Body: any subset of `startup_control.WORKSTATION_SETTINGS`.
 
     Relayed through the Mac's controller (`startup_control.set_node_workstation`); `machine_id` may be
     `local` or the controller's own Mac. Answers the controller's `{"ok": true, "node", "workstation"}`, or

@@ -125,7 +125,7 @@ extension FleetStartup {
         let actions = FleetStartup.actions(for: machine)
         let renamable = canRename(machine)
         let pausable = machine.isNode && machine.locationId != nil && machine.machine != nil
-        let configurable = machine.locationId != nil && machine.machine != nil   // workstation mode, any Mac
+        let configurable = machine.locationId != nil && machine.machine != nil   // Lite Mode, any Mac
         guard !actions.isEmpty || renamable || pausable || configurable else { return nil }
         let button = FleetMenuButton {
             let menu = NSMenu()
@@ -140,10 +140,10 @@ extension FleetStartup {
             }
             if configurable {
                 if machine.workstation != nil {
-                    menu.addItem(ClosureMenuItem("Workstation Mode…") { FleetStartup.editWorkstation(machine, done: done) })
+                    menu.addItem(ClosureMenuItem("Lite Mode…") { FleetStartup.editWorkstation(machine, done: done) })
                 } else {
                     // Its Hub reports no workstation block: shown, greyed, with the reason on the next line.
-                    let item = NSMenuItem(title: "Workstation Mode…", action: nil, keyEquivalent: "")
+                    let item = NSMenuItem(title: "Lite Mode…", action: nil, keyEquivalent: "")
                     item.toolTip = FleetStartup.workstationTooOld
                     menu.addItem(item)
                     let why = NSMenuItem(title: FleetStartup.workstationTooOld, action: nil, keyEquivalent: "")
@@ -236,11 +236,11 @@ extension FleetStartup {
         }
     }
 
-    // MARK: Workstation mode
+    // MARK: Lite Mode
 
     static let workstationTooOld = "Needs a newer Studio Hub on this Mac"
 
-    /// The Workstation Mode sheet for one Mac, then the change through its controller. A value that does not
+    /// The Lite Mode sheet for one Mac, then the change through its controller. A value that does not
     /// parse is said in a sentence and the sheet opens again with what was typed.
     static func editWorkstation(_ machine: FleetMachine, done: @escaping () -> Void) {
         guard let current = machine.workstation, let location = machine.locationId, let id = machine.machine,
@@ -254,14 +254,14 @@ extension FleetStartup {
                                 body: body, timeout: 30) { result in
                     DispatchQueue.main.async {
                         if case .failure(let error) = result {
-                            show("Could not change workstation mode on \(machine.label ?? id)", error.localizedDescription)
+                            show("Could not change Lite Mode on \(machine.label ?? id)", error.localizedDescription)
                         }
                         done()
                     }
                 }
                 return
             } catch let invalid as FleetWorkstationForm.Invalid {
-                show("Workstation mode was not changed", invalid.sentence)
+                show("Lite Mode was not changed", invalid.sentence)
             } catch {
                 return
             }
