@@ -1418,13 +1418,17 @@ final class FleetMachinesTab: NSView {
                     return "\(row.completed ?? 0) done, \(row.failed ?? 0) failed"
                 },
                 sortValue: { .number(Double(machine($0)?.completed ?? 0)) },
-                cell: { any in
+                cell: { [weak self] any in
                     guard let row = machine(any) else { return NSView() }
                     if row.completed == nil && row.failed == nil { return fleetTwoLineCell("—", nil) }
                     var median: String?
                     if let value = row.medianRuntimeS { median = FleetFormat.seconds(value) + " median" }
                     else if let value = row.averageSeconds { median = FleetFormat.seconds(value) + " average" }
-                    return fleetTwoLineCell("\(row.completed ?? 0) done · \(row.failed ?? 0) failed", median)
+                    // Since the owner's "Reset counters", or the Hub's whole history when it could not honour one.
+                    let since = row.countedSince.map { "since " + FleetFormat.stamp($0) }
+                        ?? (self?.summary?.countersSince != nil ? "all history (older Hub)" : nil)
+                    return fleetTwoLineCell("\(row.completed ?? 0) done · \(row.failed ?? 0) failed",
+                                            [median, since].compactMap { $0 }.joined(separator: " · "))
                 }
             ),
         ]

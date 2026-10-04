@@ -2518,6 +2518,17 @@ def fleet_snapshot(force: bool = False) -> dict[str, Any]:
     return out
 
 
+@router.post("/api/fleet/counters/reset", dependencies=[Depends(require_admin)])
+def reset_fleet_counters() -> dict[str, Any]:
+    """Every Mac's done/failed/median count from now on (Fleet -> Machines, "Reset counters").
+
+    A baseline, not a deletion: each Hub keeps its whole job history and is asked to count from
+    this moment (`activity_since`). A Hub too old to honour it keeps counting everything, and the
+    page says so per Mac instead of showing a reset that did not happen.
+    """
+    return {"counters_since": fleet.reset_counters()}
+
+
 @router.get("/api/fleet/disk", dependencies=[Depends(require_admin)])
 def fleet_disk() -> dict[str, Any]:
     """Every Mac's disk, least free space first, plus this gateway Mac's own.

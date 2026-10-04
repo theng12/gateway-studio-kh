@@ -238,9 +238,13 @@ def _fetch_optional(client: "httpx.Client", base: str, token: str) -> dict:
     when nobody is looking at it.
     """
     out: dict = {}
+    # The owner's "Reset counters" baseline rides on the stats read; a Hub that predates the parameter
+    # ignores it and says so through `fleet_activity.window.since_s` (see `counted_since`).
+    since = counters_since()
+    query = {"/api/hub/stats": f"?activity_since={since}"} if since else {}
     with ThreadPoolExecutor(max_workers=len(_OPTIONAL_PROBES)) as pool:
         pending = {
-            pool.submit(_fetch, client, base, token, path): (path, empty)
+            pool.submit(_fetch, client, base, token, path + query.get(path, "")): (path, empty)
             for path, empty in _OPTIONAL_PROBES
         }
         # `.result()` in submission order collects rather than serialises: every
@@ -1282,6 +1286,9 @@ def _probe(base: str, token: str, *, timeout: float = _TIMEOUT) -> dict:
             "pulse": activity.get("pulse") or {},
             "machines": real_activity,
             "observed_at": activity.get("observed_at"),
+            # From when this Hub counted done/failed (`{since_s, now}`); how the page tells a
+            # reset Hub from one too old to honour the baseline.
+            "window": activity.get("window"),
         },
         "by_machine": stats.get("by_machine") or {},
         "matrix": stats.get("matrix") or [],
@@ -2016,6 +2023,8 @@ def _summarise(rows: list[dict]) -> dict:
         "hub_unknown": statuses.count("unknown"),
         "jobs_completed": completed,
         "jobs_failed": failed,
+        # The owner's "Reset counters" baseline (epoch seconds), `None` when never reset.
+        "counters_since": counters_since(),
         "running_jobs": sum(len(row["running_jobs"]) for row in rows),
         # The Fleet page's Models/Machines tabs.
         "local_models_total": local_models_total,
@@ -2143,6 +2152,40 @@ def set_hidden_warning_kinds(kinds: object) -> list[str]:
         os.replace(scratch, FLEET_WARNINGS_PATH)
         _warnings_cache["stamp"] = None
     return hidden
+
+
+# The Machines tab's "Reset counters": a baseline, never a deletion. Every Hub keeps its whole job
+# history; this only says from when its done/failed/median are counted (`/api/hub/stats?activity_since`).
+FLEET_COUNTERS_PATH = Path(str(DATA_DIR)) / "fleet_counters.json"
+
+
+def counters_since() -> float | None:
+    """The baseline the owner set with "Reset counters", in epoch seconds; `None` when never reset."""
+    try:
+        value = json.loads(FLEET_COUNTERS_PATH.read_text(encoding="utf-8")).get("since")
+    except (OSError, ValueError, AttributeError):
+        return None
+    return float(value) if isinstance(value, (int, float)) and value > 0 else None
+
+
+def reset_counters(now: float | None = None) -> float:
+    """Count every Mac's jobs from now on. Returns the new baseline; the next read fetches afresh."""
+    since = round(float(time.time() if now is None else now), 3)
+    FLEET_COUNTERS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    scratch = FLEET_COUNTERS_PATH.with_name(FLEET_COUNTERS_PATH.name + ".tmp")
+    scratch.write_text(json.dumps({"since": since}), encoding="utf-8")
+    os.replace(scratch, FLEET_COUNTERS_PATH)
+    invalidate()
+    return since
+
+
+def counted_since(row: dict, baseline: float | None) -> float | None:
+    """The baseline, when this location's Hub honoured it; `None` when it counts its whole history
+    (no reset, or a Hub older than `activity_since`), so the page never claims a reset that did not happen."""
+    window = ((row.get("activity") or {}).get("window") or {}).get("since_s")
+    if baseline is None or not isinstance(window, (int, float)):
+        return None
+    return baseline if window >= baseline - 1 else None
 
 
 def warnings_setting() -> dict:
@@ -2616,6 +2659,7 @@ def machines_flat(rows: list[dict]) -> list[dict]:
     the machine's own facts.
     """
     out: list[dict] = []
+    baseline = counters_since()
     for row in rows:
         activity = {entry.get("machine"): entry
                     for entry in row["activity"]["machines"] if entry.get("machine")}
@@ -2646,6 +2690,7 @@ def machines_flat(rows: list[dict]) -> list[dict]:
             if isinstance(worker, dict):
                 workers_by_machine.setdefault(str(worker.get("machine") or ""), []).append(worker)
         latest = row.get("hub_latest") if isinstance(row.get("hub_latest"), dict) else None
+        counted = counted_since(row, baseline)
         held = row.get("release") if isinstance(row.get("release"), dict) else {}
         controller_holds_latest = bool(latest) and _version_key(held.get("version")) is not None \
             and _version_key(held.get("version")) >= _version_key(latest.get("version"))  # type: ignore[operator]
@@ -2705,6 +2750,7 @@ def machines_flat(rows: list[dict]) -> list[dict]:
                 "reachable": machine.get("reachable"),
                 "completed": entry.get("completed"),
                 "failed": entry.get("failed"),
+                "counted_since": counted,
                 "average_seconds": machine.get("average_seconds"),
                 "median_runtime_s": entry.get("median_runtime_s"),
                 "chip": machine.get("chip"),
@@ -2741,6 +2787,7 @@ def machines_flat(rows: list[dict]) -> list[dict]:
                 "reachable": None,
                 "completed": entry.get("completed"),
                 "failed": entry.get("failed"),
+                "counted_since": counted,
                 "average_seconds": None,
                 "median_runtime_s": entry.get("median_runtime_s"),
                 "chip": None, "memory_gb": None, "available_gb": None,
