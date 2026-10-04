@@ -598,14 +598,37 @@ def _hub_catalog(base: str, token: str, *, local: bool = False) -> dict[str, dic
     # 8 GB node at the end of 1100/1300/1400 withheld VoxCPM2, Breeze and Qwen3 1.7B from those
     # locations although their 16/24 GB Macs run them, so 86 TTS jobs queued on 1500/1600 while
     # those sites sat idle (measured 2026-10-04). A row from a Mac that fits is the site's answer.
+    # The same holds for files and readiness: a site serves a model when **any** of its Macs has it
+    # installed, ready and fitting, so that Mac's row is the one kept (see `mac_ready`).
     indexed: dict[str, dict[str, Any]] = {}
     for row in rows:
         if not isinstance(row, dict):
             continue
         key = str(row.get("repo") or row.get("model_id") or "").strip()
-        if key and (indexed.get(key) or {}).get("memory_eligible") is not True:
+        if key and (key not in indexed or _site_rank(row) > _site_rank(indexed[key])):
             indexed[key] = row
     return indexed
+
+
+def mac_ready(row: dict[str, Any]) -> bool:
+    """One Mac's catalogue row says that Mac can run the model: installed, runtime ready, fits.
+
+    Only an explicit `False` disqualifies `memory_eligible`/`runtime_ready`/`available`, as on the
+    Hub's own `_model_capability`; `None` is "not reported", never "cannot".
+    """
+    return (
+        row.get("hub_cached") is True
+        and row.get("memory_eligible") is not False
+        and row.get("runtime_ready") is not False
+        and row.get("available") is not False
+    )
+
+
+def _site_rank(row: dict[str, Any]) -> int:
+    """Which Mac's row speaks for the site: one that can run it, then one that fits, then unknown."""
+    if mac_ready(row):
+        return 3
+    return {True: 2, None: 1}.get(row.get("memory_eligible"), 0)
 
 
 def _package_stated_modality(package: dict[str, Any]) -> str | None:
@@ -860,6 +883,13 @@ def _studio_hub(definition: ProviderDefinition, values: dict[str, str]) -> Disco
             # when the same model is offered by several sites.
             raw["min_unified_memory_gb"] = facts.get("min_unified_memory_gb")
             raw["memory_eligible"] = facts.get("memory_eligible")
+            # **Whether any Mac at this site can run it**, from the Hub's per-Mac rows. The
+            # package row above is the controller's own disk only, so a model a joined node has
+            # installed read `not_installed` for the whole group (1500 and Fish S2 Pro on 1504,
+            # 2026-10-04). `None` when the catalogue states no install fact (an older Hub).
+            raw["ready_on_a_mac"] = (
+                mac_ready(facts) if isinstance(facts.get("hub_cached"), bool) else None
+            )
             # Whether a video clip carries its own audio track: the worker measured it, and a
             # definite `true` is the one thing that lets a caller know the finished episode will
             # discard it. Tri-state, like every other unstated fact — absent stays None.

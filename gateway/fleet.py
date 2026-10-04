@@ -1418,7 +1418,11 @@ def _local_models(payload: object, dispatch: dict[str, object]) -> list[dict]:
             "catalog_stale": row.get("hub_catalog_stale"),
             "active_download": bool(row.get("active_download")),
             "gated": row.get("gated"),
-            "dispatch_state": dispatch.get(package_id) if package_id else None,
+            # The package list is the controller's own disk, so its verdict is the controller's
+            # Mac's (`local`) only: stamped on a joined node's row it called a model that node has
+            # installed "ineligible" whenever the controller lacked it, and the reverse.
+            "dispatch_state": (dispatch.get(package_id)
+                               if package_id and row.get("hub_machine") in (None, "local") else None),
         })
     return out
 
@@ -3812,10 +3816,14 @@ def _model_supply_index(
             model_id = str(row.get("internal_model_id") or "").strip()
             if not model_id:
                 continue
-            index[model_id] = {
-                "eligible": _as_int(row.get("eligible_physical_slots_total")),
-                "available": _as_int(row.get("available_physical_slots")),
-            }
+            # **Summed, not last-wins.** The Hub groups supply by (model, operation, runtime
+            # revision, contract hash), so Macs on different revisions of one model are separate
+            # rows; keeping the last let one subset of a site's Macs speak for all of them.
+            # ponytail: a Mac in two rows of one model would count twice; union the rows'
+            # `machines` if that ever shows up.
+            entry = index.setdefault(model_id, {"eligible": 0, "available": 0})
+            entry["eligible"] += _as_int(row.get("eligible_physical_slots_total"))
+            entry["available"] += _as_int(row.get("available_physical_slots"))
     if not index and fallback:
         index = dict(fallback)
     return index
@@ -4046,6 +4054,27 @@ def hub_version_for(provider_id: str) -> str:
     return ""
 
 
+#: provider id -> the model report (`_model_report`) its last successful discovery saw. In memory
+#: on purpose: empty when the gateway starts, so every location is re-discovered once per start --
+#: after an upgrade the cached rows were built by the previous build's discovery code. Measured
+#: 2026-10-04: 0.2.119's site-memory fix stayed invisible at 1100/1300/1400 for 10+ minutes after
+#: install, until each location was refreshed by hand.
+_model_reports: dict[str, str] = {}
+
+#: The per-Mac facts discovery's verdicts are built from (installed, fits, runtime, available, the
+#: controller's package state). Not `loaded`/`fit`/`active_download`, which change by the minute.
+_REPORT_KEYS = ("model", "machine", "cache_state", "memory_eligible", "runtime_ready", "available",
+                "dispatch_state")
+
+
+def _model_report(row: dict) -> str:
+    """A location's per-Mac model facts as one comparable string, from the fleet read."""
+    return json.dumps(sorted(
+        [str(m.get(key)) for key in _REPORT_KEYS]
+        for m in row.get("local_models") or [] if isinstance(m, dict)
+    ))
+
+
 def refresh_models_when_hub_changes(rows: list[dict]) -> dict[str, str]:
     """Re-discover a location's models when the Hub behind it changes build.
 
@@ -4081,15 +4110,20 @@ def refresh_models_when_hub_changes(rows: list[dict]) -> dict[str, str]:
         # trigger.
         if not provider_id or not version:
             continue
+        # Also when what the Macs report changed (a model installed on a node, a Mac joined or
+        # left, a memory verdict flipped) and once per gateway start: none of those changes the
+        # Hub's version, and the catalogue's per-site verdicts are built from exactly them.
+        report = _model_report(row)
         try:
             recorded = str(registry.models.cached(provider_id).get("hub_version") or "").strip()
-            if recorded == version:
+            if recorded == version and _model_reports.get(provider_id) == report:
                 continue
             result = registry.refresh(provider_id, hub_version=version)
         except Exception:  # noqa: BLE001 - one bad location is not a failed pass
             continue
         if result.error is None:
             refreshed[provider_id] = version
+            _model_reports[provider_id] = report
     return refreshed
 
 

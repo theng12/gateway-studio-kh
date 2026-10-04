@@ -279,13 +279,14 @@ class FleetTabTests(unittest.TestCase):
         self.assertFalse(vision_b["available"])
         self.assertEqual(vision_a["fit"]["state"], "fits")
         self.assertIsNone(vision_b["fit"])
-        # `dispatch_state` is joined from `/api/hub/model-packages` by the
-        # `package_id` the row's cache names; a row with no package is `None`,
-        # not a guess.
-        self.assertEqual(vision_a["dispatch_state"], "eligible")
-        self.assertEqual(vision_b["dispatch_state"], "eligible")
+        # `dispatch_state` comes from `/api/hub/model-packages`, which is the controller's own
+        # disk, so it is joined only onto the controller's Mac (`local`); these are joined
+        # nodes and carry `None` rather than the controller's verdict
+        # (`test_site_memory_verdict.FleetSiteVerdictTests` covers the join itself).
+        self.assertIsNone(vision_a["dispatch_state"])
+        self.assertIsNone(vision_b["dispatch_state"])
         voice_one = by_machine[("mock-hub/voice-one", "mac-a")]
-        self.assertEqual(voice_one["dispatch_state"], "ineligible")
+        self.assertIsNone(voice_one["dispatch_state"])
         self.assertEqual(voice_one["catalog_error"], "catalogue read failed")
         voice_two = by_machine[("mock-hub/voice-two", "mac-a")]
         self.assertIsNone(voice_two["dispatch_state"])
