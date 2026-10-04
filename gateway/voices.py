@@ -1046,7 +1046,8 @@ def _model_record(provider_id: str, model_id: str) -> dict[str, Any] | None:
     # record that describes it should be one of those.
     for model in found:
         raw = model.get("raw") or {}
-        if raw.get("catalogued") is False or raw.get("memory_eligible") is False:
+        if (raw.get("catalogued") is False or raw.get("memory_eligible") is False
+                or raw.get("ready_on_a_mac") is False):
             continue
         return model
     # Every copy is withheld. Returning one is still better than `None`: `None`

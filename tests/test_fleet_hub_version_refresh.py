@@ -45,8 +45,11 @@ class _Inventory:
 class _Harness:
     """Run the detector against a fake cache and a recording refresh."""
 
-    def __init__(self, rows, *, cached=None, error=None, raises=()) -> None:
+    def __init__(self, rows, *, cached=None, error=None, raises=(), seen=None) -> None:
         self.rows = rows
+        #: The in-process model reports; `seen` marks locations already discovered since start.
+        self.reports = {r["provider_id"]: fleet._model_report(r) for r in rows
+                        if r.get("provider_id") in (seen or ())}
         self.inventory = _Inventory(cached)
         self.calls: list[tuple[str, str | None]] = []
         self._error = error
@@ -60,7 +63,8 @@ class _Harness:
 
     def run(self) -> dict[str, str]:
         with patch.object(registry, "models", self.inventory), \
-                patch.object(registry, "refresh", self._refresh):
+                patch.object(registry, "refresh", self._refresh), \
+                patch.object(fleet, "_model_reports", self.reports):
             return fleet.refresh_models_when_hub_changes(self.rows)
 
 
@@ -78,6 +82,7 @@ class RefreshOnChangeTests(unittest.TestCase):
         h = _Harness(
             [{"provider_id": "studio-hub-a", "version": "0.6.64"}],
             cached={"studio-hub-a": {"hub_version": "0.6.64"}},
+            seen={"studio-hub-a"},
         )
         self.assertEqual(h.run(), {})
         self.assertEqual(h.calls, [])
@@ -132,9 +137,32 @@ class RefreshOnChangeTests(unittest.TestCase):
                 "studio-hub-a": {"hub_version": "0.6.64"},
                 "studio-hub-b": {"hub_version": "0.6.63"},
             },
+            seen={"studio-hub-a", "studio-hub-b"},
         )
         self.assertEqual(h.run(), {})
         self.assertEqual(h.calls, [])
+
+    def test_every_location_is_rediscovered_once_after_the_gateway_starts(self) -> None:
+        # Same Hub build as recorded, but this process has not discovered it: the cached rows were
+        # built by whatever discovery code ran before (0.2.119's verdict stayed invisible).
+        row = {"provider_id": "studio-hub-a", "version": "0.6.64"}
+        h = _Harness([row], cached={"studio-hub-a": {"hub_version": "0.6.64"}})
+        self.assertEqual(h.run(), {"studio-hub-a": "0.6.64"})
+        self.assertEqual(h.run(), {})
+        self.assertEqual(h.calls, [("studio-hub-a", "0.6.64")])
+
+    def test_a_change_in_what_the_macs_report_is_rediscovered(self) -> None:
+        # A model installed on a joined node changes no Hub version.
+        mac = {"model": "fish", "machine": "1504", "cache_state": "absent", "available": False}
+        row = {"provider_id": "studio-hub-a", "version": "0.6.64", "local_models": [dict(mac)]}
+        h = _Harness([row], cached={"studio-hub-a": {"hub_version": "0.6.64"}},
+                     seen={"studio-hub-a"})
+        self.assertEqual(h.run(), {})
+        row["local_models"] = [{**mac, "cache_state": "cached", "available": True}]
+        self.assertEqual(h.run(), {"studio-hub-a": "0.6.64"})
+        # A minute-by-minute field is not a change.
+        row["local_models"][0]["loaded"] = True
+        self.assertEqual(h.run(), {})
 
 
 class TheCacheRecordsWhichBuildItDescribesTests(unittest.TestCase):

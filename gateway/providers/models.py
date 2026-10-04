@@ -368,6 +368,13 @@ class ModelInventory:
                 "the Hub does not catalogue this as a model — it is a companion its "
                 "models load, such as a codec or a tokenizer"
             )
+        # The Hub's per-Mac rows decide when they state it: the package row below is only the
+        # controller's own disk, so a model a joined node runs must not be withheld for it.
+        ready_on_a_mac = raw.get("ready_on_a_mac")
+        if ready_on_a_mac is True:
+            return None
+        if ready_on_a_mac is False:
+            return "no Mac at this location has it installed, ready and with enough memory"
         if raw.get("memory_eligible") is False:
             return "this Mac does not have the memory the Hub says this model needs"
         dispatch_state = raw.get("dispatch_state")
