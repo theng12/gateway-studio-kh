@@ -14,6 +14,10 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.119 — 2026-10-04
+
+The heavier voice models (VoxCPM2, Breeze, Qwen3 TTS 1.7B) are now sent to every group that has a 16 GB Mac able to run them. Before, a group was judged by whichever of its Macs happened to be listed last — so 1100, 1300 and 1400 were skipped whenever that Mac was an 8 GB one, and work queued at 1500 and 1600 while their 16 GB Macs sat idle.
+
 ## 0.2.118 — 2026-10-04
 
 **Workstation mode is now called Lite Mode** everywhere you see it: the Fleet row menu, the settings sheet and its messages.
