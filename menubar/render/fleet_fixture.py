@@ -169,7 +169,7 @@ def many(rows: list) -> list:
 
 
 def shops() -> dict:
-    """GATEWAY_RENDER_FIXTURE=workstation: the "Shops" location, each Mac in one workstation-mode state.
+    """GATEWAY_RENDER_FIXTURE=workstation: the "Shops" location, each Mac in one Lite Mode state.
 
     Shop 1 takes work, Shop 2 is in use (standing by), Shop 3 just stepped aside, Shop 4 is in its quiet hours,
     Shop 5 has the mode off, and Shop 6 runs a Hub too old to report it (no `workstation` block).

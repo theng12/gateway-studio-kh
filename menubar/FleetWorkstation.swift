@@ -1,4 +1,4 @@
-// Workstation mode: a shop's own Mac lends the fleet its idle time (owner request 2026-10-03).
+// Lite Mode (internally "workstation"): a shop's own Mac lends the fleet its idle time (owner request 2026-10-03).
 //
 // Studio Hub reports each Mac's settings and state as `workstation` on its machine row (the Gateway republishes
 // a checked copy); `nil` means that Mac's Hub is too old for it. A Mac the shop is using, one that just stepped
@@ -48,7 +48,7 @@ struct FleetWorkstation: Decodable {
     /// What this Mac does with the shop's own use, said from its settings - so the sheet never claims "only when the
     /// shop is not using it" for a Mac set to work through it.
     var policySentence: String {
-        guard enabled == true else { return "Workstation mode is off, so this Mac takes fleet work whenever it is free." }
+        guard enabled == true else { return "Lite Mode is off, so this Mac takes fleet work whenever it is free." }
         let minutes = idleMinutes ?? 3
         let unit = minutes == 1 ? "minute" : "minutes"
         switch (idleOnly == true, stepAside == true) {
@@ -76,7 +76,7 @@ struct FleetWorkstation: Decodable {
     }
 }
 
-/// The Workstation Mode sheet's controls, filled from what the Mac reported, and the change they describe.
+/// The Lite Mode sheet's controls, filled from what the Mac reported, and the change they describe.
 final class FleetWorkstationForm: NSObject {
     static let idleHint = "Takes work only after this many minutes with no keyboard or mouse use, or while the screen is locked."
     static let stepAsideHint = "When someone uses the keyboard or mouse, this Mac finishes its current job, then takes no "
@@ -85,7 +85,7 @@ final class FleetWorkstationForm: NSObject {
         + "stopped only if macOS reports critical memory pressure for 20 seconds (very rare), and then moves to another Mac."
     static let quietHint = "No work during these hours. Separate several with commas, like 22:00-07:00, 12:00-13:00."
 
-    let enabled = NSButton(checkboxWithTitle: "Workstation mode", target: nil, action: nil)
+    let enabled = NSButton(checkboxWithTitle: "Lite Mode", target: nil, action: nil)
     let idleOnly = NSButton(checkboxWithTitle: "Only when idle", target: nil, action: nil)
     let idleMinutes = NSTextField(string: "")
     let stepAside = NSButton(checkboxWithTitle: "Step aside when someone uses it", target: nil, action: nil)
@@ -209,7 +209,7 @@ final class FleetWorkstationForm: NSObject {
     static func alert(for machine: FleetMachine, _ current: FleetWorkstation) -> (NSAlert, FleetWorkstationForm) {
         let form = FleetWorkstationForm(current)
         let alert = NSAlert()
-        alert.messageText = "Workstation Mode — \(machine.label ?? machine.machine ?? "this Mac")"
+        alert.messageText = "Lite Mode — \(machine.label ?? machine.machine ?? "this Mac")"
         var now = current.enabled == true ? (current.chipLong ?? "On") : "Off"
         if let reason = current.reason, current.enabled == true { now += " (\(reason))" }
         if current.stale == true { now += ", as last reported by the Mac" }
@@ -226,11 +226,11 @@ extension FleetMachine {
     /// The State column's word when the shop has this Mac for now; nil otherwise.
     var workstationRestingLabel: String? { workstation?.isResting == true ? workstation?.chip : nil }
 
-    /// The whole story in one sentence, for a tooltip: "Workstation mode: In use — standing by (someone is using
+    /// The whole story in one sentence, for a tooltip: "Lite Mode: In use — standing by (someone is using
     /// this Mac). Today: 2 jobs · 0 step-asides."
     var workstationLine: String? {
         guard let workstation, workstation.enabled == true || workstation.isResting else { return nil }
-        var text = "Workstation mode: " + (workstation.chipLong ?? "on")
+        var text = "Lite Mode: " + (workstation.chipLong ?? "on")
         if let reason = workstation.reason, workstation.isResting { text += " (\(reason))" }
         if let today = workstation.today { text += ". \(today)" }
         return text + (workstation.stale == true ? " (as last reported by the Mac)." : ".")

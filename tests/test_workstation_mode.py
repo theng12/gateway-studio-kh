@@ -221,6 +221,21 @@ class RelayTests(unittest.TestCase):
             error, seen = self.send(httpx.Response(200, json={}), junk)
             self.assertEqual((error.status, error.body["code"], seen), (400, "BAD_SETTING", []))
 
+    def test_the_owner_reads_lite_mode_never_workstation(self) -> None:
+        """Owner decision 2026-10-04: "Lite Mode" is the name; `workstation` stays an internal key/path/code."""
+        for junk in ({}, {"colour": "red"}):
+            error, _ = self.send(httpx.Response(200, json={}), junk)
+            self.assertIn("Lite Mode", error.body["detail"])
+            self.assertNotIn("orkstation", error.body["detail"])
+        error, _ = self.send(httpx.Response(404, json={}), {"enabled": True})
+        self.assertIn("Lite Mode", error.body["detail"])
+        root = Path(__file__).resolve().parent.parent / "menubar"
+        for name in ("FleetStartup.swift", "FleetWorkstation.swift"):
+            shown = [line for line in (root / name).read_text().splitlines()
+                     if '"' in line and not line.lstrip().startswith("//") and "orkstation" in line.split("//")[0]
+                     and any("orkstation" in lit for lit in line.split('"')[1::2] if " " in lit)]
+            self.assertEqual(shown, [], f"{name}: owner-visible text must say Lite Mode")
+
     def test_the_admin_route_answers_the_refusal_with_its_status(self) -> None:
         refusal = startup_control.StartupError(404, {"ok": False, "code": "HUB_TOO_OLD", "detail": "x"})
         with patch.object(startup_control, "set_node_workstation", side_effect=refusal):
