@@ -712,6 +712,8 @@ struct FleetMachine: Decodable {
     var reachReason: String?
     /// Workstation mode on this Mac (see `FleetWorkstation.swift`); `nil` when its Hub is too old for it.
     var workstation: FleetWorkstation?
+    /// A Lite Mode change the Gateway keeps for this Mac while it is offline, sent when it is back; `nil` when none.
+    var liteModePending: FleetLiteModePending?
     /// What this node is running now, when its Hub says so (Fleet Groups "Doing now"); `nil` is unknown.
     var current: FleetCurrentJob?
     /// **Job counts per modality**, not a list of models the machine offers. The

@@ -1045,8 +1045,11 @@ final class FleetGroupsTab: NSView, NSSearchFieldDelegate {
                             "Memory": memoryCell, "Startup": startup],
                           trailing: startupMenu?(machine))
         let sentence = ([offlineWhy] + [node?.detail ?? machine.nodeDetail]).compactMap { $0 }.first(where: { !$0.isEmpty && health == .bad })
-        guard let sentence else { return row }
-        let wrapper = stack([row, noteRow(.bad, sentence, caption: true)])
+        // A Lite Mode change saved while this Mac was offline: "Lite Mode: Waiting to apply (offline since 13:52)".
+        let notes = [sentence.map { noteRow(.bad, $0, caption: true) },
+                     machine.liteModePending.map { noteRow(.warn, "Lite Mode: \($0.line)", caption: true) }].compactMap { $0 }
+        guard !notes.isEmpty else { return row }
+        let wrapper = stack([row] + notes)
         wrapper.spacing = 0
         row.widthAnchor.constraint(equalTo: wrapper.widthAnchor).isActive = true
         return wrapper

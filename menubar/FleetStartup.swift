@@ -139,7 +139,7 @@ extension FleetStartup {
                 })
             }
             if configurable {
-                if machine.workstation != nil {
+                if machine.liteModeSheetStart != nil {
                     menu.addItem(ClosureMenuItem("Lite Mode…") { FleetStartup.editWorkstation(machine, done: done) })
                 } else {
                     // Its Hub reports no workstation block: shown, greyed, with the reason on the next line.
@@ -243,7 +243,7 @@ extension FleetStartup {
     /// The Lite Mode sheet for one Mac, then the change through its controller. A value that does not
     /// parse is said in a sentence and the sheet opens again with what was typed.
     static func editWorkstation(_ machine: FleetMachine, done: @escaping () -> Void) {
-        guard let current = machine.workstation, let location = machine.locationId, let id = machine.machine,
+        guard let current = machine.liteModeSheetStart, let location = machine.locationId, let id = machine.machine,
               let place = location.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed),
               let node = id.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) else { return }
         let (alert, form) = FleetWorkstationForm.alert(for: machine, current)
@@ -255,6 +255,9 @@ extension FleetStartup {
                     DispatchQueue.main.async {
                         if case .failure(let error) = result {
                             show("Could not change Lite Mode on \(machine.label ?? id)", error.localizedDescription)
+                        } else if case .success(let answer) = result, answer["pending"] as? Bool == true {
+                            show("Lite Mode saved for \(machine.label ?? id)", answer["detail"] as? String
+                                 ?? "This Mac is offline. The change is saved and will be applied when it comes back.")
                         }
                         done()
                     }

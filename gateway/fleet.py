@@ -3226,13 +3226,13 @@ def _issues(rows: list[dict]) -> list[dict]:
         if key not in seen:
             seen.add(key)
             out.append(issue)
-    out.sort(key=lambda issue: (
-        _ISSUE_SEVERITY.get(issue["severity"], 3),
-        str(issue.get("location") or ""),
-        str(issue.get("subject") or ""),
-        str(issue.get("code") or ""),
-    ))
+    out.sort(key=_issue_order)
     return out
+
+
+def _issue_order(issue: dict) -> tuple:
+    return (_ISSUE_SEVERITY.get(issue["severity"], 3), str(issue.get("location") or ""),
+            str(issue.get("subject") or ""), str(issue.get("code") or ""))
 
 
 def snapshot(force: bool = False, *, allow_stale: bool = False) -> dict:
@@ -3296,12 +3296,17 @@ def _refresh() -> dict:
     stamp_latest(rows)
     machines = machines_flat(rows)
     stamp_controller_versions(rows, machines)
+    from . import startup_control  # late: it imports this module
+
+    lite_issues = startup_control.stamp_lite_mode_pending(machines)
+    summary = _summarise(rows)
+    summary["issues"] += len(lite_issues)
     value = {
         "locations": rows,
         "machines": machines,
         "running": running_flat(rows),
-        "summary": _summarise(rows),
-        "issues": _issues(rows),
+        "summary": summary,
+        "issues": sorted(_issues(rows) + lite_issues, key=_issue_order),
         "generated_at": time.time(),
     }
     with _cache_lock:
@@ -4042,6 +4047,13 @@ def start_refresher(interval: float = 15.0) -> None:
 
                     release_publisher.catch_up(value.get("locations") or [])
                 except Exception:  # noqa: BLE001 - catch-up must not kill the poller
+                    pass
+                # A Lite Mode change saved while its Mac was offline is sent once the Mac is back.
+                try:
+                    from . import startup_control
+
+                    startup_control.apply_pending_lite_mode(value.get("machines") or [])
+                except Exception:  # noqa: BLE001 - a waiting change must not kill the poller
                     pass
             _refresher_stop.wait(interval)
 

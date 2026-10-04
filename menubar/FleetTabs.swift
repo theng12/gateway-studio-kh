@@ -1289,8 +1289,10 @@ final class FleetMachinesTab: NSView {
                         .compactMap { $0 }
                     if let stop = FleetOffline.lastStopLine(row) { tips.append(stop) }
                     if row.isNode { tips.append("The controller last heard from this Mac \(row.nodeLastSeenText).") }
+                    // A Lite Mode change waiting for this Mac is said here; the tooltip has since when.
                     return fleetBadgeCell(row.stateLabel, row.badgeHealth,
-                                          caption: row.isNode ? "seen \(row.nodeLastSeenText)" : nil,
+                                          caption: row.liteModePending != nil ? "Lite Mode waiting"
+                                              : row.isNode ? "seen \(row.nodeLastSeenText)" : nil,
                                           tooltip: tips.isEmpty ? nil : tips.joined(separator: "\n\n"))
                 }
             ),

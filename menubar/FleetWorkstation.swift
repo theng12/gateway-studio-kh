@@ -76,6 +76,34 @@ struct FleetWorkstation: Decodable {
     }
 }
 
+/// A Lite Mode change saved on the Gateway while the Mac was offline (owner request 2026-10-04); the Gateway sends
+/// it when the Mac is back. `settings` carries only the keys that were changed.
+struct FleetLiteModePending: Decodable {
+    var settings: FleetWorkstation?
+    var at: Double?
+    var offlineSince: Double?
+
+    /// "Waiting to apply (offline since Oct 2, 09:36)".
+    var line: String { "Waiting to apply" + (offlineSince.map { " (offline since \(FleetOffline.clock($0)))" } ?? "") }
+}
+
+extension FleetWorkstation {
+    /// These settings with a waiting change laid over them, so the sheet opens on what the Mac will get.
+    func overlaid(by pending: FleetWorkstation?) -> FleetWorkstation {
+        guard let pending else { return self }
+        var out = self
+        out.enabled = pending.enabled ?? enabled
+        out.idleOnly = pending.idleOnly ?? idleOnly
+        out.idleMinutes = pending.idleMinutes ?? idleMinutes
+        out.stepAside = pending.stepAside ?? stepAside
+        out.resumeAfterMinutes = pending.resumeAfterMinutes ?? resumeAfterMinutes
+        out.startFreeGb = pending.startFreeGb   // the sheet sends every key, so nil here is "each model's own"
+        out.quietHours = pending.quietHours ?? quietHours
+        out.hideMenuBarIcon = pending.hideMenuBarIcon ?? hideMenuBarIcon
+        return out
+    }
+}
+
 /// The Lite Mode sheet's controls, filled from what the Mac reported, and the change they describe.
 final class FleetWorkstationForm: NSObject {
     static let idleHint = "Takes work only after this many minutes with no keyboard or mouse use, or while the screen is locked."
@@ -207,14 +235,18 @@ final class FleetWorkstationForm: NSObject {
 
     /// The sheet: what the Mac is doing now, then its settings. Save is the blue default button.
     static func alert(for machine: FleetMachine, _ current: FleetWorkstation) -> (NSAlert, FleetWorkstationForm) {
-        let form = FleetWorkstationForm(current)
+        let pending = machine.liteModePending
+        let form = FleetWorkstationForm(current.overlaid(by: pending?.settings))
         let alert = NSAlert()
         alert.messageText = "Lite Mode — \(machine.label ?? machine.machine ?? "this Mac")"
         var now = current.enabled == true ? (current.chipLong ?? "On") : "Off"
         if let reason = current.reason, current.enabled == true { now += " (\(reason))" }
         if current.stale == true { now += ", as last reported by the Mac" }
-        alert.informativeText = "\(current.policySentence) Now: \(now)."
-            + (current.today.map { " \($0)." } ?? "")
+        alert.informativeText = (pending.map { "\($0.line). The settings below are saved and will be applied when "
+            + "this Mac comes back.\n\n" } ?? "")
+            + (machine.workstation == nil
+               ? "This Mac is offline and has not reported its Lite Mode. A change is saved and applied when it comes back."
+               : "\(current.policySentence) Now: \(now)." + (current.today.map { " \($0)." } ?? ""))
         alert.accessoryView = form.view
         alert.addButton(withTitle: "Save")
         alert.addButton(withTitle: "Cancel")
@@ -223,17 +255,26 @@ final class FleetWorkstationForm: NSObject {
 }
 
 extension FleetMachine {
+    /// What the Lite Mode sheet opens on: the Mac's report, else (an offline Mac whose controller repeats nothing)
+    /// the defaults, so a change can still be saved for it. `nil` only for a reachable Mac whose Hub is too old.
+    var liteModeSheetStart: FleetWorkstation? {
+        workstation ?? (reachable == false || (state ?? "").lowercased() == "offline" || liteModePending != nil
+                        ? FleetWorkstation() : nil)
+    }
+
     /// The State column's word when the shop has this Mac for now; nil otherwise.
     var workstationRestingLabel: String? { workstation?.isResting == true ? workstation?.chip : nil }
 
     /// The whole story in one sentence, for a tooltip: "Lite Mode: In use — standing by (someone is using
     /// this Mac). Today: 2 jobs · 0 step-asides."
     var workstationLine: String? {
-        guard let workstation, workstation.enabled == true || workstation.isResting else { return nil }
+        let waiting = liteModePending.map { "Lite Mode change: \($0.line)." }
+        guard let workstation, workstation.enabled == true || workstation.isResting else { return waiting }
         var text = "Lite Mode: " + (workstation.chipLong ?? "on")
         if let reason = workstation.reason, workstation.isResting { text += " (\(reason))" }
         if let today = workstation.today { text += ". \(today)" }
-        return text + (workstation.stale == true ? " (as last reported by the Mac)." : ".")
+        text += workstation.stale == true ? " (as last reported by the Mac)." : "."
+        return waiting.map { "\(text)\n\($0)" } ?? text
     }
 
     /// Why the shop has this Mac now, for the "Doing now" column: the Hub's words, sentence-cased unless the first
