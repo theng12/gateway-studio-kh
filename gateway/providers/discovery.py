@@ -592,12 +592,18 @@ def _hub_catalog(base: str, token: str, *, local: bool = False) -> dict[str, dic
     if not isinstance(rows, list):
         return {}
 
+    # **One row per worker, not per model.** The Hub's aggregate catalogue passes every studio's
+    # rows through, one per Mac (`hub_machine`), and each states `memory_eligible` for *its own*
+    # Mac. Last-wins let whichever Mac happened to be listed last speak for the whole site: an
+    # 8 GB node at the end of 1100/1300/1400 withheld VoxCPM2, Breeze and Qwen3 1.7B from those
+    # locations although their 16/24 GB Macs run them, so 86 TTS jobs queued on 1500/1600 while
+    # those sites sat idle (measured 2026-10-04). A row from a Mac that fits is the site's answer.
     indexed: dict[str, dict[str, Any]] = {}
     for row in rows:
         if not isinstance(row, dict):
             continue
         key = str(row.get("repo") or row.get("model_id") or "").strip()
-        if key:
+        if key and (indexed.get(key) or {}).get("memory_eligible") is not True:
             indexed[key] = row
     return indexed
 
