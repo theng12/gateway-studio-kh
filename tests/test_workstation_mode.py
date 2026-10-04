@@ -210,8 +210,8 @@ class RelayTests(unittest.TestCase):
             self.assertIn("newer Studio Hub", error.body["detail"])
 
     def test_the_hubs_refusals_pass_through(self) -> None:
-        for status, code in ((400, "BAD_SETTING"), (404, "NODE_UNKNOWN"), (502, "NODE_REFUSED"),
-                             (502, "NODE_UNREACHABLE")):
+        # `NODE_UNREACHABLE` is no longer a refusal: the change waits for the Mac (test_lite_mode_pending.py).
+        for status, code in ((400, "BAD_SETTING"), (404, "NODE_UNKNOWN"), (502, "NODE_REFUSED")):
             error, _ = self.send(httpx.Response(status, json={"ok": False, "code": code, "detail": "said the Hub"}),
                                  {"idle_minutes": 99})
             self.assertEqual((error.status, error.body["code"], error.body["detail"]), (status, code, "said the Hub"))

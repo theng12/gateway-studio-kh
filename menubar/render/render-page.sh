@@ -34,7 +34,7 @@ mkdir -p "$SUPPORT"
 printf '{"gatewayDir":"%s","port":%s,"autoStartGateway":false,"hasLaunchedBefore":true,"keepGatewayRunning":false}' \
   "$ROOT" "$PORT" > "$SUPPORT/menubar.json"
 
-(cd "$ROOT" && "$PY" menubar/render/fixture_server.py --port "$PORT" --support "$SUPPORT") > "$WORK/server.log" 2>&1 &
+(cd "$ROOT" && exec "$PY" menubar/render/fixture_server.py --port "$PORT" --support "$SUPPORT") > "$WORK/server.log" 2>&1 &
 SERVER_PID=$!
 for _ in $(seq 1 150); do grep -q '^READY' "$WORK/server.log" 2>/dev/null && break; sleep 0.2; done
 grep -q '^READY' "$WORK/server.log" || { cat "$WORK/server.log" >&2; exit 1; }

@@ -488,14 +488,31 @@ def build() -> dict:
                                    "was removed. Bring the Mac back, or resume it from the Fleet page.")
         next(n for n in studio2["nodes"] if n["id"] == "s2-1")["paused"] = True
         rows = [local, garage] if flavour == "paused" else [studio2]
-    if flavour == "workstation":
+    if flavour in ("workstation", "lite-pending"):
         rows = [shops()]
+    if flavour == "lite-pending":
+        # GATEWAY_RENDER_FIXTURE=lite-pending: Shop 3 went offline after a Lite Mode change was saved for it.
+        shop = rows[0]
+        shop["machines"] = [dict(m, reachable=False, health="unreachable", workstation=dict(m["workstation"], stale=True))
+                            if m["machine"] == "shop-3" else m
+                            for m in shop["machines"]]
+        shop["activity"]["machines"] = [dict(a, state="offline") if a["machine"] == "shop-3" else a
+                                        for a in shop["activity"]["machines"]]
+        shop["nodes"] = [dict(n, state="unreachable", last_seen_at=NOW - 2 * HOUR) if n["id"] == "shop-3" else n
+                         for n in shop["nodes"]]
     if flavour.startswith("many"):
         rows = many(rows)
     fleet.stamp_latest(rows, {"fingerprint": "cd" * 32, "updated_at": NOW - 3 * HOUR,
                               "release": {"version": "0.6.126"}})
     machines = fleet.machines_flat(rows)
     fleet.stamp_controller_versions(rows, machines)
+    for row in machines:
+        if flavour == "lite-pending" and row["machine"] == "shop-3":
+            row["lite_mode_pending"] = {"settings": {"enabled": True, "idle_only": True, "idle_minutes": 10,
+                                                    "step_aside": True, "resume_after_minutes": 5,
+                                                    "start_free_gb": 3.5, "quiet_hours": ["21:00-08:00"],
+                                                    "hide_menu_bar_icon": True},
+                                        "at": NOW - HOUR, "offline_since": row.get("node_last_seen_at")}
     return {
         **({"fleet_warnings": {"hidden": ["macos_updates"], "hideable": []}} if flavour == "many-hidden" else {}),
         "locations": rows,

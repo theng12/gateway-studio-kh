@@ -235,8 +235,10 @@ def set_node_workstation(controller_id: str, machine_id: str, settings: object, 
     while someone does (its current job finishes), start a job only with enough free memory (`start_free_gb`,
     `null` = each model's own floor) and rest in quiet hours. The body is any subset
     of `WORKSTATION_SETTINGS`; the Hub validates the values and answers `BAD_SETTING` with a sentence,
-    which reaches the caller unchanged, as do `NODE_UNKNOWN` and `NODE_UNREACHABLE` / `NODE_REFUSED` (that
-    Mac's own Hub is too old). A controller without the route answers `HUB_TOO_OLD`.
+    which reaches the caller unchanged, as do `NODE_UNKNOWN` and `NODE_REFUSED` (that Mac's own Hub is too
+    old). A controller without the route answers `HUB_TOO_OLD`. A Mac out of reach (`NODE_UNREACHABLE`, or its
+    controller not answering) keeps the change as pending and the answer is `{"ok": true, "pending": true}`;
+    the fleet refresher sends it when the Mac is back (`apply_pending_lite_mode`).
     """
     if not isinstance(settings, dict) or not settings:
         raise StartupError(400, {"ok": False, "code": "BAD_SETTING",
@@ -247,13 +249,144 @@ def set_node_workstation(controller_id: str, machine_id: str, settings: object, 
                                  "detail": f"Not a Lite Mode setting: {', '.join(map(str, unknown))}."})
     if not _MACHINE_ID.fullmatch(machine_id or ""):
         raise StartupError(400, {"ok": False, "code": "BAD_MACHINE", "detail": "machine id is not valid"})
+    key = f"{controller_id}/{machine_id}"
+    # A change still waiting for this Mac goes with this one (this one's fields win), so the refresher
+    # never sends an older value after a newer one landed.
+    body = {**(pending_lite_mode().get(key, {}).get("settings") or {}), **settings}
+    try:
+        answered = _send_workstation(controller_id, machine_id, body, event="workstation", client=client)
+    except StartupError as error:
+        if error.body.get("code") not in _REACH_CODES:
+            raise
+        # Owner request 2026-10-04: an offline Mac keeps the change and gets it when it is back.
+        with _pending_lock:
+            waiting = pending_lite_mode()
+            old = waiting.get(key) or {}
+            now = round(time.time(), 3)
+            waiting[key] = {"controller": controller_id, "machine": machine_id,
+                            "settings": {**(old.get("settings") or {}), **settings},
+                            "since": old.get("since") or now, "at": now}
+            _write_pending(waiting)
+        audit("workstation_pending_saved", controller=controller_id, machine=machine_id,
+              settings=waiting[key]["settings"], reach=error.body.get("code"))
+        fleet.invalidate()
+        return {"ok": True, "pending": True, "machine": machine_id, "settings": waiting[key]["settings"],
+                "detail": PENDING_SENTENCE}
+    _drop_pending(key)
+    return answered
+
+
+def _send_workstation(controller_id: str, machine_id: str, body: dict[str, Any], *, event: str,
+                      client: httpx.Client | None) -> dict[str, Any]:
     return _node_post(
-        controller_id, machine_id, "workstation", dict(settings), event="workstation",
+        controller_id, machine_id, "workstation", body, event=event,
         too_old="This controller's Studio Hub has no Lite Mode yet. It needs a newer Studio Hub: "
                 "update it first (Fleet > Release).",
         refused="The controller refused this gateway's credential for changing Lite Mode.",
-        audit_fields={"settings": dict(settings)}, client=client,
+        audit_fields={"settings": body}, client=client,
     )
+
+
+# --- Lite Mode changes waiting for an offline Mac (owner request 2026-10-04) ---------------------------
+#
+# One entry per Mac (`controller/machine`) in `lite_mode_pending.json`: `settings` (merged field by field),
+# `since` (first saved) and `at` (last change); or, once its Hub refused the values, `refused` (the Hub's
+# sentence) until the next change for that Mac. Studio Hub publishes no time for a change made on the Mac
+# itself, so a waiting change always applies (the owner's latest Gateway action).
+
+#: The relay could not reach the Mac (its controller did not answer, or the controller could not reach it).
+_REACH_CODES = frozenset({"CONTROLLER_UNREACHABLE", "NODE_UNREACHABLE"})
+PENDING_SENTENCE = "This Mac is offline. The change is saved and will be applied when it comes back."
+_pending_lock = threading.Lock()
+
+
+def pending_path() -> Path:
+    return config.DATA_DIR / "lite_mode_pending.json"
+
+
+def pending_lite_mode() -> dict[str, dict[str, Any]]:
+    try:
+        value = json.loads(pending_path().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return {k: v for k, v in value.items() if isinstance(v, dict)} if isinstance(value, dict) else {}
+
+
+def _write_pending(value: dict[str, dict[str, Any]]) -> None:
+    path = pending_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    scratch = path.with_name(path.name + ".tmp")
+    with os.fdopen(os.open(scratch, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w", encoding="utf-8") as handle:
+        json.dump(value, handle, sort_keys=True)
+    os.replace(scratch, path)
+
+
+def _drop_pending(key: str, *, unless_changed_since: float | None = None) -> None:
+    with _pending_lock:
+        waiting = pending_lite_mode()
+        entry = waiting.get(key)
+        if entry is None or (unless_changed_since is not None and entry.get("at") != unless_changed_since):
+            return
+        del waiting[key]
+        _write_pending(waiting)
+
+
+def apply_pending_lite_mode(machines: list[dict[str, Any]], *, client: httpx.Client | None = None) -> None:
+    """Send each waiting change to its Mac once the Fleet sees it reachable (called by the fleet refresher).
+
+    Sent: cleared and audited. Still out of reach: kept. Refused (`BAD_SETTING`, or any other refusal that
+    a retry would only repeat): cleared, and the Hub's sentence kept as a Fleet issue for that Mac.
+    """
+    waiting = {k: v for k, v in pending_lite_mode().items() if v.get("settings")}
+    if not waiting:
+        return
+    for row in machines:
+        key = f"{row.get('location_id')}/{row.get('machine')}"
+        entry = waiting.get(key)
+        if not entry or not row.get("location_reachable") or row.get("reachable") is not True \
+                or str(row.get("state") or "").lower() == "offline":
+            continue
+        controller, machine = str(row["location_id"]), str(row["machine"])
+        # ponytail: one Mac at a time on the refresher thread; a thread per Mac if many wait at once.
+        try:
+            _send_workstation(controller, machine, entry["settings"], event="workstation_pending", client=client)
+        except StartupError as error:
+            if error.body.get("code") in _REACH_CODES:
+                continue
+            detail = str(error.body.get("detail") or error.body.get("code") or "refused")
+            with _pending_lock:
+                now_waiting = pending_lite_mode()
+                if (now_waiting.get(key) or {}).get("at") == entry.get("at"):
+                    now_waiting[key] = {"controller": controller, "machine": machine, "refused": detail,
+                                        "refused_code": error.body.get("code"), "at": round(time.time(), 3)}
+                    _write_pending(now_waiting)
+            audit("workstation_pending_refused", controller=controller, machine=machine,
+                  settings=entry["settings"], code=error.body.get("code"), detail=detail)
+            fleet.invalidate()
+            continue
+        _drop_pending(key, unless_changed_since=entry.get("at"))
+        audit("workstation_pending_applied", controller=controller, machine=machine, settings=entry["settings"])
+
+
+def stamp_lite_mode_pending(machines: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Put each waiting change on its Mac's row (`lite_mode_pending`) and return the refusals as Fleet issues."""
+    waiting = pending_lite_mode()
+    issues: list[dict[str, Any]] = []
+    for row in machines:
+        entry = waiting.get(f"{row.get('location_id')}/{row.get('machine')}")
+        row["lite_mode_pending"] = None
+        if not entry:
+            continue
+        label = row.get("label") or row.get("machine")
+        if entry.get("settings"):
+            row["lite_mode_pending"] = {"settings": entry["settings"], "at": entry.get("at"),
+                                        "offline_since": row.get("node_last_seen_at") or entry.get("since")}
+        elif entry.get("refused"):
+            issues.append(fleet._issue(
+                "warning", "lite_mode_refused", row.get("location_id"), row.get("location"), str(label),
+                f"{label} came back, but its Studio Hub refused the Lite Mode change that was waiting for it: "
+                f"{entry['refused']}", "Fleet → Machines → … → Lite Mode…"))
+    return issues
 
 
 def _node_post(controller_id: str, machine_id: str, route: str, body: dict[str, Any], *, event: str,

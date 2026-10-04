@@ -140,6 +140,21 @@ func renderWorkstationSheet() {
         write(alert.window, web: nil, to: "\(output)/fleet-workstation\(suffix)\(suffixForAppearance).png")
         alert.window.orderOut(nil)
     }
+    // `fleet-workstation-pending.png`: an offline Mac with a change waiting; the sheet opens on the waiting values.
+    let seen = Date().timeIntervalSince1970 - 7200
+    let pending = #"{"location_id":"ctrl-shops","machine":"shop-3","label":"Shop 3","reachable":false,"state":"offline","node_role":"agent","workstation":{"enabled":true,"idle_only":true,"idle_minutes":3,"step_aside":true,"resume_after_minutes":2,"start_free_gb":null,"quiet_hours":["22:00-07:00"],"hide_menu_bar_icon":false,"state":"working","stale":true},"lite_mode_pending":{"settings":{"enabled":true,"idle_only":true,"idle_minutes":10,"step_aside":true,"resume_after_minutes":5,"start_free_gb":3.5,"quiet_hours":["21:00-08:00"],"hide_menu_bar_icon":true},"at":\#(seen + 3600),"offline_since":\#(seen)}}"#
+    if let shown = try? decoder.decode(FleetMachine.self, from: Data(pending.utf8)), let current = shown.liteModeSheetStart {
+        if let button = FleetStartup.menuButton(for: shown, window: { nil }, done: {}) as? FleetMenuButton {
+            print("menu \(shown.label ?? ""): \(button.itemTitles)")
+        }
+        let (alert, _) = FleetWorkstationForm.alert(for: shown, current)
+        alert.layout()
+        alert.window.setFrameOrigin(NSPoint(x: -20000, y: -20000))
+        alert.window.orderFront(nil)
+        spin(0.8)
+        write(alert.window, web: nil, to: "\(output)/fleet-workstation-pending\(suffixForAppearance).png")
+        alert.window.orderOut(nil)
+    }
 }
 
 for page in pageNames where page == "fleet-rename" { renderRenameSheet() }
