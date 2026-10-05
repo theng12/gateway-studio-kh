@@ -14,6 +14,11 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.126 — 2026-10-05
+
+Installing a model on every Mac:
+- Fleet page stays responsive while a model installs on every Mac; a copy that fell back to the internet now says so right away.
+
 ## 0.2.125 — 2026-10-05
 
 For testing models:

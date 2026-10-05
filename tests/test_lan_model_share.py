@@ -15,6 +15,8 @@ from __future__ import annotations
 import json
 import sys
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -251,6 +253,46 @@ class SpreadTest(Case):
                          [("Network A", 1, 2), ("Network B", 0, 1)])
         self.assertEqual(plan["networks"][0]["macs"][1]["text"], "Copying 0% from 1101 (LAN)")
         self.assertEqual(model_share.stop(plan["id"])["state"], "stopped")
+
+
+    def test_a_copy_that_fell_back_says_so_and_holds_the_internet_slot(self) -> None:
+        macs = [(SHOPS, "1500", True), (SHOPS, "1501", False), (SHOPS, "1502", False), (SHOPS, "1503", False)]
+        model_share.start(FISH, snapshot(*macs))
+        model_share.tick(snapshot(*macs))
+        run = next(r for r in self.hubs.runs.values() if r["target"] == f"{SHOPS}/1501")
+        run.update(source_used="internet", lan_error="URLError: <urlopen error [Errno 61] Connection refused>")
+        macs[0] = (SHOPS, "1500", True, {"reachable": False})       # no LAN source left on network C
+        model_share.tick(snapshot(*macs))
+        entries = self.entries()
+        self.assertEqual(entries[f"{SHOPS}/1501"]["state"], "downloading")
+        self.assertEqual(model_share.text(entries[f"{SHOPS}/1501"]),
+                         "Downloading 0% from the internet (the copy from 1500 (LAN) did not work: "
+                         "URLError: <urlopen error [Errno 61] Connection refused>)")
+        self.assertEqual(entries[f"{SHOPS}/1503"]["detail"], "Waiting for the internet download on network C to finish.")
+        self.assertEqual(len(self.hubs.installs), 2, "the hidden fallback is network C's one internet download")
+
+
+class NetworksLockTest(Case):
+    def test_networks_answers_while_a_pass_is_blocked_on_a_relay(self) -> None:
+        FakeHubs(self)
+        entered, release = threading.Event(), threading.Event()
+        fleet_read = snapshot((A1, "1101", True), (A1, "1102", False))
+        model_share.start(FISH, fleet_read)
+        model_share.tick(fleet_read)
+
+        def stuck(*args):                    # an unreachable controller: the relay waits up to 40 s
+            entered.set()
+            release.wait(10)
+            return {"ok": True, "run": {"state": "running"}}
+        with patch.object(startup_control, "model_install_status", stuck):
+            worker = threading.Thread(target=model_share.tick, args=(fleet_read,))
+            worker.start()
+            self.assertTrue(entered.wait(5))
+            began = time.monotonic()
+            self.assertEqual(model_share.networks()["locations"][A1], "A")
+            self.assertLess(time.monotonic() - began, 1.0, "the Fleet page does not wait behind the pass")
+            release.set()
+            worker.join(5)
 
 
 class RelayTest(unittest.TestCase):

@@ -80,16 +80,18 @@ def networks() -> dict[str, dict[str, str]]:
     """`{"locations": {location id: name}, "machines": {"location/machine": name}}`.
 
     The first read ever writes the owner's networks (a one-time migration); a file that exists is never
-    re-seeded, so a name the owner cleared stays cleared.
+    re-seeded, so a name the owner cleared stays cleared. Read without `_lock` (every write is an atomic
+    `os.replace`): a spread's pass holds that lock through its relay calls, and every Fleet page read lands here.
     """
     path = networks_path()
-    with _lock:
-        if not path.exists():
-            _write_json(path, {"locations": dict(DEFAULT_NETWORKS), "machines": {}})
-        try:
-            value = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            value = {}
+    if not path.exists():
+        with _lock:
+            if not path.exists():
+                _write_json(path, {"locations": dict(DEFAULT_NETWORKS), "machines": {}})
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        value = {}
     value = value if isinstance(value, dict) else {}
     return {kind: {str(k): v for k, v in (value.get(kind) or {}).items() if isinstance(v, str) and v.strip()}
             if isinstance(value.get(kind), dict) else {} for kind in ("locations", "machines")}
@@ -269,6 +271,12 @@ def _follow(entry: dict[str, Any], resting: dict[str, float], now: float) -> Non
             entry[key] = run[key]
     if run.get("source_used") in ("lan", "internet", "mixed"):
         entry["source_used"] = run["source_used"]
+    if run.get("lan_error"):
+        entry["lan_error"] = str(run["lan_error"])[:200]
+    if entry["state"] == "copying" and entry.get("source_used") in ("internet", "mixed"):
+        # The copy fell back to the internet (Hub 0.6.148 says so mid-run): it says so now, and holds its
+        # network's one internet download instead of a source's LAN slot.
+        entry["state"] = "downloading"
     state = run.get("state")
     if state == "done":
         entry.update(state="done", finished_at=round(now, 3), detail=None)
@@ -299,7 +307,7 @@ def _start(entry: dict[str, Any], package_id: str, source: dict[str, Any] | None
     entry.update(state="copying" if source else "downloading", run_id=run["id"], started_at=round(now, 3),
                  bytes_done=run.get("bytes_done") or 0, total_bytes=run.get("total_bytes"), misses=0, detail=None,
                  from_key=(from_entry or {}).get("key"), from_label=(from_entry or {}).get("label"),
-                 source_used=None)
+                 source_used=None, lan_error=None)
     return True
 
 
@@ -416,16 +424,17 @@ def _percent(entry: dict[str, Any]) -> str:
 def text(entry: dict[str, Any]) -> str:
     """The Mac's line in the progress view: "Copying 42% from 1104 (LAN)", "Installed from the internet"."""
     state, lan = entry["state"], f"from {entry.get('from_label')} (LAN)"
+    why = f": {entry['lan_error']}" if entry.get("lan_error") else ""
+    fell_back = f" (the copy {lan} did not work{why})" if entry.get("from_key") else ""
     if state == "have":
         return "Already has it"
     if state == "copying":
         return f"Copying{_percent(entry)} {lan}"
     if state == "downloading":
-        return f"Downloading{_percent(entry)} from the internet"
+        return f"Downloading{_percent(entry)} from the internet{fell_back}"
     if state == "done":
         used = entry.get("source_used") or ("lan" if entry.get("from_key") else "internet")
         if not entry.get("from_key") or used == "internet":
-            fell_back = f" (the copy {lan} did not work)" if entry.get("from_key") else ""
             return f"Installed from the internet{fell_back}"
         return f"Installed {lan}" + (" and the internet" if used == "mixed" else "")
     if state == "failed":
@@ -439,9 +448,10 @@ def view(plan: dict[str, Any]) -> dict[str, Any]:
     """A plan as the page draws it: per network, per Mac, each with its sentence. No share token is ever kept."""
     groups: dict[str, list[dict[str, Any]]] = {}
     for entry in plan.get("macs") or []:
+        copied = entry.get("from_key") and entry.get("state") != "downloading"   # a copy that fell back is internet
         groups.setdefault(entry.get("network") or "", []).append({
             "location_id": entry.get("location_id"), "machine": entry.get("machine"), "label": entry.get("label"),
-            "state": entry.get("state"), "source": "lan" if entry.get("from_key") else (
+            "state": entry.get("state"), "source": "lan" if copied else (
                 "internet" if entry.get("state") in ("downloading", "done") else None),
             "from": entry.get("from_label"), "bytes_done": entry.get("bytes_done"),
             "total_bytes": entry.get("total_bytes"), "text": text(entry), "note": entry.get("note")})
