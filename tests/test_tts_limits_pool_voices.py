@@ -92,14 +92,16 @@ class LongNarrationDeadlineTests(unittest.TestCase):
             return lane_deadline_seconds(request)
 
     def test_it_scales_with_input_length_past_the_lane_deadline(self) -> None:
-        raw = {"maximum_input_characters": 5000, "lane_contract": {"deadline_seconds": 1800}}
-        self.assertEqual(self._deadline(100, raw), 1800)       # short: the Hub's number
-        self.assertEqual(self._deadline(15000, raw), 2700)     # 3 chunks x 15 min
-        self.assertEqual(self._deadline(15000, {**raw, "lane_contract": {"deadline_seconds": 7200}}), 7200)
+        # Per-Mac rule (2026-10-05): ceil(chars / 8.6) x RTF x 3 + 300, RTF 5.22 before the Hub
+        # names the Mac; clamped to [the lane's number, 7,200]. Details: test_breeze_deadline.py.
+        raw = {"maximum_input_characters": 5000, "lane_contract": {"deadline_seconds": 2700}}
+        self.assertEqual(self._deadline(100, raw), 2700)       # short: the Hub's number
+        self.assertEqual(self._deadline(15000, raw), 7200)     # long: the two-hour ceiling
+        self.assertAlmostEqual(self._deadline(2000, raw), 233 * 5.22 * 3 + 300)
 
-    def test_no_stated_chunk_means_no_scaling(self) -> None:
-        self.assertEqual(self._deadline(15000, {"lane_contract": {"deadline_seconds": 1800}}), 1800)
-        self.assertEqual(self._deadline(15000, {}), 900)
+    def test_an_unstated_chunk_still_scales_but_an_unstated_lane_does_not(self) -> None:
+        self.assertEqual(self._deadline(15000, {"lane_contract": {"deadline_seconds": 1800}}), 7200)
+        self.assertEqual(self._deadline(15000, {}), 7200)
 
 
 class PoolConcurrencyTests(unittest.TestCase):

@@ -106,6 +106,7 @@ class GivingUpStopsTheHubTests(_HubCase):
         self.assertEqual(caught.exception.code, "PROVIDER_SUBMISSION_UNCERTAIN")
 
     def test_a_deadline_is_not_retried_on_another_mac(self) -> None:
+        # Except once for free Studio Hub work (2026-10-05): see test_breeze_deadline.py.
         self.assertIn("DEADLINE_EXCEEDED", worker_module._NO_REROUTE_CODES)
 
 

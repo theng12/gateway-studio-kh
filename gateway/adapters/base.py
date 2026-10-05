@@ -171,6 +171,9 @@ class BackendError(Exception):
         # discard it. Carried so a recovery hold is actionable rather than a
         # failure an operator has to guess about.
         self.recovery = recovery
+        # What the lane stated about the failed attempt (a Studio Hub item's machine, batch and
+        # run seconds), kept on the failed job's record. Set by the adapter that knows it.
+        self.evidence: dict[str, Any] | None = None
 
 
 def quota_hints(response: Any) -> dict[str, Any]:

@@ -557,8 +557,14 @@ class JobStore:
         recovery_state: str | None = None,
         recovery_detail: str | None = None,
         recovery_context: dict[str, Any] | None = None,
+        evidence: dict[str, Any] | None = None,
     ) -> None:
-        """Settle once, retaining a late failure without reopening a terminal row."""
+        """Settle once, retaining a late failure without reopening a terminal row.
+
+        `evidence` is what the lane stated about the failed attempt (a Studio Hub item's machine,
+        batch and run seconds), kept as the result payload so the job record and the analytics read
+        it at the same `$.payload.hub_machine` path a success uses.
+        """
         with self._lock:
             row = self._conn.execute(
                 "SELECT state FROM jobs WHERE id = ?", (job_id,)
@@ -591,6 +597,7 @@ class JobStore:
                         json.dumps(recovery_context) if recovery_context else None
                     ),
                     "next_action_at": None,
+                    **({"result_json": json.dumps({"payload": evidence})} if evidence else {}),
                 },
             )
             self._conn.commit()
@@ -1427,6 +1434,34 @@ class JobStore:
             **({"by_model_class": ranked("by_model_class")} if mac_class is not None else {}),
             "sampled": len(rows),
         }
+
+    def tts_speed_samples(self, model_id: str, *, limit: int = 500) -> list[tuple[str, str, float]]:
+        """`(provider_id, hub_machine, rtf)` for this voice model's latest successful jobs.
+
+        RTF is generation seconds per second of audio, the same figure `generation_analytics`
+        publishes as `rtf_median`. Read in SQL, scalars only, newest first.
+        """
+        rows = self._conn.execute(
+            """
+            SELECT provider_id,
+                   json_extract(result_json, '$.payload.hub_machine') AS machine,
+                   json_extract(result_json, '$.payload.generation_seconds') AS seconds,
+                   json_extract(result_json, '$.payload.audio_duration_s') AS audio_s
+              FROM jobs
+             WHERE state = 'succeeded' AND modality = 'tts' AND model_id = ?
+               AND json_valid(result_json)
+             ORDER BY created_at DESC
+             LIMIT ?
+            """,
+            (model_id, limit),
+        ).fetchall()
+        return [
+            (str(row["provider_id"] or ""), str(row["machine"] or ""),
+             float(row["seconds"]) / float(row["audio_s"]))
+            for row in rows
+            if isinstance(row["seconds"], (int, float)) and isinstance(row["audio_s"], (int, float))
+            and row["seconds"] > 0 and row["audio_s"] > 0
+        ]
 
     def archive_old(
         self,

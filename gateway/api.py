@@ -805,6 +805,12 @@ def _job_envelope(job: dict[str, Any], *, native: bool = False) -> dict[str, Any
         body["failure_class"] = "cancelled"
         body["failure_reason"] = "The job was cancelled."
 
+    # **Which Mac ran it, and for how long** - for a failed Studio Hub item too (Breeze night-atlas
+    # 2026-10-05: the failures could only be placed on a Mac from the log). Absent when unstated.
+    for key in ("hub_machine", "hub_batch_id", "run_seconds"):
+        if payload.get(key) is not None:
+            body[key] = payload[key]
+
     _publish_attempt_evidence(body, job)
     _publish_queue_evidence(body, job)
 
