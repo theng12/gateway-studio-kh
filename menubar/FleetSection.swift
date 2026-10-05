@@ -474,6 +474,7 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
     private func show(_ snapshot: FleetSnapshot) {
         self.snapshot = snapshot
         self.locations = snapshot.locations
+        FleetNetwork.names = Set(snapshot.locations.compactMap(\.network) + snapshot.machines.compactMap(\.network)).sorted()
         // A successful read replaces whatever the status line said before (an old
         // error, "Loading…", "Refreshed N locations.") with how fresh the picture is.
         if !adding && !publishing && !refreshing {

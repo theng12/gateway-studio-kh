@@ -93,8 +93,13 @@ def networks() -> dict[str, dict[str, str]]:
     except (OSError, ValueError):
         value = {}
     value = value if isinstance(value, dict) else {}
-    return {kind: {str(k): v for k, v in (value.get(kind) or {}).items() if isinstance(v, str) and v.strip()}
+    return {kind: {str(k): _norm(v) for k, v in (value.get(kind) or {}).items() if isinstance(v, str) and v.strip()}
             if isinstance(value.get(kind), dict) else {} for kind in ("locations", "machines")}
+
+
+def _norm(name: str) -> str:
+    """One spelling per network: "c ", " c" and "C" are the same network C (a typo never splits one)."""
+    return " ".join(name.split()).upper()
 
 
 def clean_name(value: object) -> str:
@@ -102,7 +107,7 @@ def clean_name(value: object) -> str:
         return ""
     if not isinstance(value, str):
         raise ShareError(400, "A network is a short name like A, or empty to clear it.", "BAD_NETWORK")
-    name = " ".join(value.split())
+    name = _norm(value)
     if len(name) > NAME_MAX:
         raise ShareError(400, f"A network name is at most {NAME_MAX} characters.", "BAD_NETWORK")
     return name
@@ -318,6 +323,7 @@ def _advance(plan: dict[str, Any], snapshot: dict[str, Any]) -> None:
     rows = {f"{r.get('location_id')}/{r.get('machine')}": r for r in snapshot.get("machines") or []}
     macs = plan["macs"]
     for entry in macs:
+        entry["network"] = _norm(entry.get("network") or "")   # a plan started before names were normalised
         if entry["state"] in ACTIVE:
             _follow(entry, resting, now)
 

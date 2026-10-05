@@ -9,37 +9,27 @@
 import AppKit
 
 enum FleetNetwork {
-    /// The "Network…" sheet: one short name; empty clears it.
-    static func alert(title: String, info: String, current: String?, placeholder: String) -> (NSAlert, NSTextField) {
-        let field = NSTextField(string: current ?? "")
-        field.frame = NSRect(x: 0, y: 0, width: 220, height: 24)
-        field.placeholderString = placeholder
-        let alert = NSAlert()
-        alert.messageText = title
-        alert.informativeText = info
-        alert.accessoryView = field
-        alert.addButton(withTitle: "Save")
-        alert.addButton(withTitle: "Cancel")
-        alert.window.initialFirstResponder = field
-        return (alert, field)
+    /// Every network name in use (locations and Macs), sorted; `FleetSection` refreshes it on each Fleet read.
+    static var names: [String] = []
+
+    /// The gateway's spelling of a name (`model_share._norm`): trimmed, inner spaces collapsed, upper case.
+    static func normalised(_ value: String) -> String {
+        value.split(whereSeparator: \.isWhitespace).joined(separator: " ").uppercased()
     }
 
-    static func locationAlert(_ location: FleetLocation) -> (NSAlert, NSTextField) {
-        alert(title: "Network for \(location.label ?? "this location")",
-              info: "The network this location's Macs are on, e.g. A. Macs on the same network copy models from "
-                + "each other instead of each downloading them from the internet. A Mac can be given its own "
-                + "network on Fleet → Machines. Leave it empty if you do not know.",
-              current: location.network, placeholder: "e.g. A")
+    static func locationAlert(_ location: FleetLocation) -> FleetNetworkPicker {
+        FleetNetworkPicker(title: "Network for \(location.label ?? "this location")",
+                           info: "Macs on the same network copy models from each other instead of each downloading "
+                            + "them. A Mac can have its own network on Fleet → Machines.",
+                           first: "Not Set", current: location.network)
     }
 
-    static func machineAlert(_ machine: FleetMachine) -> (NSAlert, NSTextField) {
-        let name = machine.label ?? machine.machine ?? "this Mac"
+    static func machineAlert(_ machine: FleetMachine) -> FleetNetworkPicker {
         let inherited = machine.networkOverride == nil ? machine.network : nil
-        return alert(title: "Network for \(name)",
-                     info: "The network this Mac is on, when it is not its group's (a shop iMac can be on any). "
-                        + "Leave it empty to use its group's" + (inherited.map { " (now \($0))." } ?? ".")
-                        + " Macs copy models only from Macs on the same network.",
-                     current: machine.networkOverride, placeholder: inherited.map { "\($0) (its group's)" } ?? "e.g. C")
+        return FleetNetworkPicker(title: "Network for \(machine.label ?? machine.machine ?? "this Mac")",
+                                  info: "Macs copy models only from Macs on the same network. A shop iMac can be on any.",
+                                  first: "Same as Its Group" + (inherited.map { " (\($0))" } ?? ""),
+                                  current: machine.networkOverride)
     }
 
     private static func encoded(_ value: String?) -> String? {
@@ -48,21 +38,20 @@ enum FleetNetwork {
 
     static func editLocation(_ location: FleetLocation, done: @escaping () -> Void) {
         guard let place = encoded(location.id) else { return }
-        let (alert, field) = locationAlert(location)
-        guard alert.runModal() == .alertFirstButtonReturn else { return }
-        save("/admin/api/fleet/controllers/\(place)/network", field.stringValue, what: location.label, done: done)
+        let picker = locationAlert(location)
+        guard picker.alert.runModal() == .alertFirstButtonReturn, let name = picker.value else { return }
+        save("/admin/api/fleet/controllers/\(place)/network", name, what: location.label, done: done)
     }
 
     static func editMachine(_ machine: FleetMachine, done: @escaping () -> Void) {
         guard let place = encoded(machine.locationId), let node = encoded(machine.machine) else { return }
-        let (alert, field) = machineAlert(machine)
-        guard alert.runModal() == .alertFirstButtonReturn else { return }
-        save("/admin/api/fleet/controllers/\(place)/machines/\(node)/network", field.stringValue,
+        let picker = machineAlert(machine)
+        guard picker.alert.runModal() == .alertFirstButtonReturn, let name = picker.value else { return }
+        save("/admin/api/fleet/controllers/\(place)/machines/\(node)/network", name,
              what: machine.label ?? machine.machine, done: done)
     }
 
-    private static func save(_ path: String, _ value: String, what: String?, done: @escaping () -> Void) {
-        let name = value.trimmingCharacters(in: .whitespacesAndNewlines)
+    private static func save(_ path: String, _ name: String, what: String?, done: @escaping () -> Void) {
         GatewayAPI.put(path, body: ["network": name]) { result in
             DispatchQueue.main.async {
                 if case .failure(let error) = result {
@@ -100,5 +89,64 @@ enum FleetNetwork {
         GatewayAPI.post("/admin/api/fleet/model-installs/\(id)/stop", body: [:], timeout: 30) { _ in
             DispatchQueue.main.async { done() }
         }
+    }
+}
+
+/// The "Network…" sheet: a popup of the networks in use (a typo can no longer start a separate network), with
+/// "New Network…" last, which shows a field for a new name. Save stays off while that name is empty.
+final class FleetNetworkPicker: NSObject, NSTextFieldDelegate {
+    let alert = NSAlert()
+    let popup = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 240, height: 26), pullsDown: false)
+    let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 240, height: 24))
+    private let stack = NSStackView()
+    private let newItem = NSMenuItem(title: "New Network…", action: nil, keyEquivalent: "")
+
+    /// `first` saves empty; `current` is the name set now (`nil`: `first`).
+    init(title: String, info: String, first: String, current: String?) {
+        super.init()
+        popup.addItem(withTitle: first)
+        popup.lastItem?.representedObject = ""
+        for name in Set(FleetNetwork.names + [current].compactMap { $0 }).sorted() {
+            popup.addItem(withTitle: "Network \(name)")
+            popup.lastItem?.representedObject = name
+        }
+        popup.menu?.addItem(.separator())
+        popup.menu?.addItem(newItem)
+        popup.selectItem(at: max(0, popup.indexOfItem(withRepresentedObject: current ?? "")))
+        popup.target = self
+        popup.action = #selector(changed)
+        field.placeholderString = "Name, e.g. D"
+        field.delegate = self
+        field.isHidden = true
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 8
+        stack.addArrangedSubview(popup)
+        stack.addArrangedSubview(field)
+        stack.setFrameSize(stack.fittingSize)
+        alert.messageText = title
+        alert.informativeText = info
+        alert.accessoryView = stack
+        alert.addButton(withTitle: "Save")
+        alert.addButton(withTitle: "Cancel")
+    }
+
+    /// The name to save ("" clears it), or `nil` while a new name is still empty.
+    var value: String? {
+        guard popup.selectedItem === newItem else { return popup.selectedItem?.representedObject as? String ?? "" }
+        let name = FleetNetwork.normalised(field.stringValue)
+        return name.isEmpty ? nil : name
+    }
+
+    @objc func changed() {
+        field.isHidden = popup.selectedItem !== newItem
+        stack.setFrameSize(stack.fittingSize)
+        alert.layout()
+        if !field.isHidden { alert.window.makeFirstResponder(field) }
+        controlTextDidChange(Notification(name: NSControl.textDidChangeNotification))
+    }
+
+    func controlTextDidChange(_ notification: Notification) {
+        alert.buttons.first?.isEnabled = value != nil
     }
 }

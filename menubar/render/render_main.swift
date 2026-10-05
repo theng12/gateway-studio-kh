@@ -235,7 +235,17 @@ func renderNetworkSheets() {
     if let button = FleetStartup.menuButton(for: machine, window: { nil }, done: {}) as? FleetMenuButton {
         print("menu \(machine.label ?? ""): \(button.itemTitles)")
     }
-    for (name, alert) in [("location", FleetNetwork.locationAlert(location).0), ("mac", FleetNetwork.machineAlert(machine).0)] {
+    FleetNetwork.names = ["A", "B", "C", "E"]
+    let typing = FleetNetwork.machineAlert(machine)
+    typing.popup.selectItem(at: typing.popup.numberOfItems - 1)
+    typing.changed()
+    typing.field.stringValue = "d "
+    typing.controlTextDidChange(Notification(name: NSControl.textDidChangeNotification))
+    print("new network typed 'd ' saves \(typing.value ?? "nothing")")
+    print("mac items: \(FleetNetwork.machineAlert(machine).popup.itemTitles)")
+    for (name, picker) in [("location", FleetNetwork.locationAlert(location)), ("mac", FleetNetwork.machineAlert(machine)),
+                           ("mac-new", typing)] {
+        let alert = picker.alert
         alert.layout()
         alert.window.setFrameOrigin(NSPoint(x: -20000, y: -20000))
         alert.window.orderFront(nil)

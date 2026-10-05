@@ -14,6 +14,11 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.127 — 2026-10-05
+
+Installing a model on every Mac:
+- Choose a Mac's or group's network from a list (or add a new one) — no more typos creating a separate network.
+
 ## 0.2.126 — 2026-10-05
 
 Installing a model on every Mac:

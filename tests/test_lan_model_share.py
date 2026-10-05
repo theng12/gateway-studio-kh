@@ -167,6 +167,16 @@ class SpreadTest(Case):
         self.assertEqual(lines[f"{B1}/1301"], "Installed from the internet")
         self.assertEqual(model_share.read_plans()[0]["state"], "finished")
 
+    def test_c_space_c_and_space_c_are_one_network_and_pair(self) -> None:
+        model_share._write_json(model_share.networks_path(), {"locations": {A1: "c "}, "machines": {}})  # noqa: SLF001
+        model_share.set_network(A2, "C")
+        model_share.set_network(B1, " c")
+        self.assertEqual(model_share.networks()["locations"], {A1: "C", A2: "C", B1: "C"}, "an old 'c ' reads as C")
+        fleet_read = snapshot((A1, "1101", True), (A2, "1201", False), (B1, "1301", False))
+        model_share.start(FISH, fleet_read)
+        model_share.tick(fleet_read)
+        self.assertEqual(dict(self.hubs.installs), {f"{A2}/1201": "http://1101/share", f"{B1}/1301": "http://1101/share"})
+
     def test_one_internet_download_per_network_then_a_tree_of_at_most_two_per_source(self) -> None:
         targets = [f"11{n:02d}" for n in range(1, 9)]
         fleet_read = snapshot(*[(A1, mid, False) for mid in targets])
