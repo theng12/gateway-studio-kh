@@ -14,6 +14,11 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.125 — 2026-10-05
+
+For testing models:
+- Admin: run a test transcription on one chosen Mac (for model qualification).
+
 ## 0.2.124 — 2026-10-05
 
 Steadier updates:

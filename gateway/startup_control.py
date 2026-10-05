@@ -391,20 +391,23 @@ def stamp_lite_mode_pending(machines: list[dict[str, Any]]) -> list[dict[str, An
 
 def _node_post(controller_id: str, machine_id: str, route: str, body: dict[str, Any] | None, *, event: str,
                too_old: str, refused: str, audit_fields: dict[str, Any],
-               client: httpx.Client | None, method: str = "POST") -> dict[str, Any]:
+               client: httpx.Client | None, method: str = "POST", send: dict[str, Any] | None = None,
+               timeout: httpx.Timeout = _TIMEOUT) -> dict[str, Any]:
     """POST one node action to the controller that owns the Mac, with the credential every fleet call uses.
 
     ``method="GET"`` is a status read through the same path: not audited, and the Fleet is not re-read.
+    ``send`` replaces the JSON ``body`` with other httpx request arguments (a multipart upload).
     """
     base, token = _target(controller_id)
     action = method != "GET"
     if action:
         audit(f"{event}_requested", controller=controller_id, machine=machine_id, **audit_fields)
     owned = client is None
-    client = client or httpx.Client(timeout=_TIMEOUT)
+    client = client or httpx.Client(timeout=timeout)
     try:
         response = client.request(method, f"{base}/api/hub/fleet/nodes/{machine_id}/{route}",
-                                  headers={"X-Hub-Token": token} if token else {}, json=body)
+                                  headers={"X-Hub-Token": token} if token else {},
+                                  **(send if send is not None else {"json": body}))
     except httpx.HTTPError as exc:
         raise StartupError(502, {"ok": False, "code": "CONTROLLER_UNREACHABLE",
                                  "detail": "The controller did not answer: "
@@ -494,6 +497,35 @@ def model_install_status(controller_id: str, machine_id: str, run_id: str, *,
         too_old=MODEL_INSTALL_TOO_OLD,
         refused="The controller refused this gateway's credential for installing models.",
         audit_fields={}, client=client, method="GET",
+    )
+
+
+NODE_TRANSCRIBE_TOO_OLD = ("This controller's Studio Hub cannot run a test transcription on one Mac yet. It needs "
+                           "Studio Hub 0.6.147: update it first (Fleet > Release).")
+
+#: The Hub relay waits 960 s for the Mac's answer (its own 900 s Subtitle deadline plus the hop); this waits a little longer.
+_TRANSCRIBE_TIMEOUT = httpx.Timeout(1000.0, connect=6.0)
+
+
+def transcribe_on_machine(controller_id: str, machine_id: str, audio: bytes, filename: str, *, model: str,
+                          language: str = "", word_timestamps: bool = True,
+                          client: httpx.Client | None = None) -> dict[str, Any]:
+    """Run one test transcription on one chosen Mac, for model qualification (Studio Hub 0.6.147).
+
+    The Mac's Subtitle worker answers synchronously and in full: `{"text", "language", "duration", "model",
+    "segments": [{"start", "end", "text", "words": [{"word", "start", "end"}]}], "srt", "vtt",
+    "elapsed_seconds", "job_id", "package_id", "model_revision", "node", "machine"}` (`words` only with
+    `word_timestamps`). No job record and no catalog change: the model only has to be installed on that Mac.
+    """
+    if not _MACHINE_ID.fullmatch(machine_id or "") or not model or len(model) > 200:
+        raise StartupError(400, {"ok": False, "code": "BAD_MACHINE", "detail": "machine or model id is not valid"})
+    return _node_post(
+        controller_id, machine_id, "transcribe", None, event="node_transcribe", too_old=NODE_TRANSCRIBE_TOO_OLD,
+        refused="The controller refused this gateway's credential for test transcriptions.",
+        audit_fields={"model": model, "language": language or None, "bytes": len(audio)}, client=client,
+        timeout=_TRANSCRIBE_TIMEOUT,
+        send={"files": {"file": (filename, audio)},
+              "data": {"model": model, "language": language, "word_timestamps": str(bool(word_timestamps)).lower()}},
     )
 
 

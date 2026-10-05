@@ -108,6 +108,57 @@ class RelayTest(unittest.TestCase):
         called.assert_called_once_with("ctl1", "n1", "run-1")
 
 
+class TranscribeRelayTest(RelayTest):
+    """A test transcription on one chosen Mac (Studio Hub 0.6.147), for model qualification."""
+
+    WORDS = {"text": "The Dreamlands sleep.", "node": "node-1-hub", "segments": [
+        {"start": 0.08, "end": 0.96, "text": "The Dreamlands sleep.", "words": [{"word": "The", "start": 0.08, "end": 0.24}]}]}
+
+    def transcribe(self, answer, model="phonon-2-mlx"):
+        return self.call(answer, lambda c, m, _unused, client: startup_control.transcribe_on_machine(
+            c, m, b"RIFF-audio", "clip.wav", model=model, language="en", client=client))
+
+    def test_the_upload_goes_to_the_controllers_relay_and_the_words_come_back(self) -> None:
+        answer, seen = self.transcribe(httpx.Response(200, json=self.WORDS))
+        self.assertEqual(answer["segments"][0]["words"], self.WORDS["segments"][0]["words"])
+        self.assertEqual(answer["machine"], "node-1-hub")
+        self.assertEqual((seen[0].method, seen[0].url.path), ("POST", "/api/hub/fleet/nodes/node-1-hub/transcribe"))
+        self.assertEqual(seen[0].headers["x-hub-token"], "fleet-token")
+        self.assertTrue(seen[0].headers["content-type"].startswith("multipart/form-data"))
+        body = seen[0].read()
+        for part in (b"RIFF-audio", b'name="model"', b"phonon-2-mlx", b'name="word_timestamps"', b"true"):
+            self.assertIn(part, body)
+        self.assertIn("node_transcribe_requested", self.events())
+        self.assertIn("node_transcribe_result", self.events())
+
+    def test_an_older_controller_is_named_and_the_workers_refusal_passes_through(self) -> None:
+        error, _ = self.transcribe(httpx.Response(404, json={"detail": "Not Found"}))
+        self.assertEqual(error.body["code"], "HUB_TOO_OLD")
+        self.assertIn("0.6.147", error.body["detail"])
+        error, _ = self.transcribe(httpx.Response(409, json={"detail": "phonon-2-mlx is not ready"}))
+        self.assertEqual((error.status, error.body["detail"]), (409, "phonon-2-mlx is not ready"))
+
+    def test_junk_never_leaves_the_gateway(self) -> None:
+        error, seen = self.transcribe(httpx.Response(200, json={}), model="")
+        self.assertEqual((error.status, seen), (400, []))
+
+    def test_the_admin_route_is_admin_only_and_passes_the_upload_on(self) -> None:
+        from fastapi import UploadFile
+        import io
+        route = next(r for r in admin.router.routes
+                     if getattr(r, "path", "") == "/admin/api/fleet/controllers/{controller_id}/machines/{machine_id}/transcribe")
+        self.assertIn(admin.require_admin, [d.call for d in route.dependant.dependencies])
+        with patch.object(startup_control, "transcribe_on_machine", return_value=self.WORDS) as called:
+            answer = admin.fleet_machine_transcribe("ctl1", "n1", UploadFile(io.BytesIO(b"RIFF"), filename="../x.wav"),
+                                                    model="phonon-2-mlx", language="en", word_timestamps=True)
+        self.assertEqual(answer, self.WORDS)
+        called.assert_called_once_with("ctl1", "n1", b"RIFF", "x.wav", model="phonon-2-mlx", language="en",
+                                       word_timestamps=True)
+        empty = admin.fleet_machine_transcribe("ctl1", "n1", UploadFile(io.BytesIO(b""), filename="a.wav"),
+                                               model="phonon-2-mlx", language="", word_timestamps=True)
+        self.assertEqual(empty.status_code, 422)
+
+
 class OfferTest(unittest.TestCase):
     def test_the_hub_rows_gain_their_package_id_from_the_catalog(self) -> None:
         packages = {"models": [{"package_id": FISH, "model_id": FISH_REPO, "type": "model"},

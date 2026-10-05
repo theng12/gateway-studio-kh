@@ -3039,6 +3039,36 @@ def fleet_machine_model_download(controller_id: str, machine_id: str, run_id: st
         return JSONResponse(status_code=error.status, content=error.body)
 
 
+@router.post(
+    "/api/fleet/controllers/{controller_id}/machines/{machine_id}/transcribe",
+    dependencies=[Depends(require_admin)],
+)
+def fleet_machine_transcribe(
+    controller_id: str,
+    machine_id: str,
+    file: UploadFile = File(...),
+    model: str = Form(...),
+    language: str = Form(default=""),
+    word_timestamps: bool = Form(default=True),
+) -> Any:
+    """Run one test transcription on one chosen Mac and answer its word timings (model qualification).
+
+    Relayed through the Mac's controller (Studio Hub 0.6.147, `startup_control.transcribe_on_machine`);
+    `machine_id` may be `local` or the controller's own Mac. Synchronous (up to ~16 min), no job record,
+    no catalog change. Answers the Mac's full Subtitle payload, or its refusal (`HUB_TOO_OLD`,
+    `NODE_UNKNOWN`/`UNKNOWN_NODE`, `NODE_UNREACHABLE`, `NODE_REFUSED`, the worker's 409/422 sentence).
+    """
+    content = file.file.read()
+    if not content:
+        return _error(422, "the uploaded file is empty")
+    try:
+        return startup_control.transcribe_on_machine(
+            controller_id, machine_id, content, Path(file.filename or "").name or "audio.wav",
+            model=model.strip(), language=language.strip(), word_timestamps=word_timestamps)
+    except startup_control.StartupError as error:
+        return JSONResponse(status_code=error.status, content=error.body)
+
+
 def _share_call(fn) -> Any:
     try:
         return fn()
