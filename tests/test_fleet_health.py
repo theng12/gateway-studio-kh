@@ -170,6 +170,15 @@ class RealProblemsStillShowByName(unittest.TestCase):
         self.assertEqual(flat["node-1"]["state"], "needs_attention")
         self.assertTrue(flat["node-1"]["attention"].startswith("Last job failed"))
 
+    def test_a_quality_rejection_is_not_a_mac_problem_but_other_errors_are(self) -> None:
+        for code, state in (("TTS_SECTION_TOO_LONG", "ready"), ("TTS_SECTION_SILENT", "ready"),
+                            ("DEADLINE_EXCEEDED", "needs_attention")):
+            row = group(1)
+            row["activity"]["machines"][1] = idle_entry("node-1", latest_state="error", ago=120)
+            row["activity"]["machines"][1]["latest"]["error_code"] = code
+            flat, _, _ = read(row)
+            self.assertEqual(flat["node-1"]["state"], state, code)
+
     def test_an_offline_node_is_one_warning_and_its_version_is_unknown(self) -> None:
         row = group(2)
         row["machines"][2] = machine("node-2", reachable=False)

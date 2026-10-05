@@ -14,6 +14,11 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.123 — 2026-10-05
+
+Fewer false alarms:
+- A Mac no longer shows "Needs attention" when the quality check catches one bad narration piece and it's re-made; real failures still show.
+
 ## 0.2.122 — 2026-10-05
 
 Macs on the same network share models:

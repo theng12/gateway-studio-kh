@@ -2670,7 +2670,8 @@ def _attention(entry: dict, workers: list[dict], phantom: list[dict], health: ob
     Mac whose newest job failed, however long ago. Both made a healthy idle fleet read amber: the
     "down" studio was a Video worker that no longer exists, and the failure was last night's. So
     the verdict stands only with a cause someone can act on — a studio that should run and is not,
-    a failure in the last 15 minutes, a stalled job, a health word — and says which. When the only
+    a failure in the last 15 minutes (not a TTS_SECTION_* quality rejection, which the Hub re-makes),
+    a stalled job, a health word — and says which. When the only
     cause is one of those two artefacts, the state is worked out again the way the Hub would.
     """
     latest = entry.get("latest") if isinstance(entry.get("latest"), dict) else {}
@@ -2689,9 +2690,11 @@ def _attention(entry: dict, workers: list[dict], phantom: list[dict], health: ob
         return "needs_attention", f"No progress for {int(stalled // 60)} min"
     if str(health or "up").strip().lower() not in {"up", ""}:
         return "needs_attention", f"Health: {health}"
-    failed_now = latest.get("state") == "error" and age is not None and age < ATTENTION_ERROR_S
+    reason = str(latest.get("error_code") or "").strip()
+    # A quality rejection (TTS_SECTION_*) means the Hub's check caught one bad piece and re-made it.
+    failed_now = (latest.get("state") == "error" and age is not None and age < ATTENTION_ERROR_S
+                  and not reason.startswith("TTS_SECTION_"))
     if failed_now:
-        reason = str(latest.get("error_code") or "").strip()
         return "needs_attention", "Last job failed" + (f": {reason[:80]}" if reason else "")
     old_failure = latest.get("state") == "error"
     if not phantom and not old_failure:
