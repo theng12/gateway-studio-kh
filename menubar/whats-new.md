@@ -14,6 +14,11 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.124 — 2026-10-05
+
+Steadier updates:
+- A paced update no longer stops at a group that is still updating its Macs one by one; it waits while progress is being made.
+
 ## 0.2.123 — 2026-10-05
 
 Fewer false alarms:

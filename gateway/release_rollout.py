@@ -7,8 +7,10 @@ one by one, each draining before it installs), so the Gateway only paces the con
 
 * **Order**: this Mac's Hub first (when it is a location), then the controllers by label.
 * **Wait**: a controller is done when its own row on the fleet read (`version`) says the new version.
-  One that does not get there within `STEP_TIMEOUT` stops the whole rollout (`failed`) — something is
-  wrong with the release or that Mac, and the rest must not follow it.
+  One that does not get there stops the whole rollout (`failed`) — something is wrong with the release
+  or that Mac, and the rest must not follow it. The group updates one Mac at a time (each finishes its
+  narration part first), so every Mac of the group reaching the new version restarts the `STEP_TIMEOUT`
+  clock; `STEP_CEILING` since the push is the backstop.
 * **Skip**: a controller that cannot be reached, or refuses the push, is tried every `RETRY_EVERY`;
   after `SKIP_AFTER` it is skipped and left to the release catch-up once the rollout has finished.
 * **Persisted**: `release-rollout.json` in the data directory, written on every change, so a Gateway
@@ -30,6 +32,9 @@ from . import fleet
 #: From the push to the controller reporting the new version: its drain grace (10 min), its
 #: own running work, the install and the relaunch. The owner's script used the same 30 minutes.
 STEP_TIMEOUT = 30 * 60
+#: ...unless the group keeps making progress (a Mac of it reaching the new version restarts that
+#: clock): then this long since the push, at most.
+STEP_CEILING = 3 * 60 * 60
 #: An unreachable or refusing controller is tried again this often...
 RETRY_EVERY = 5 * 60
 #: ...and skipped (left to the catch-up) after this long.
@@ -145,7 +150,7 @@ def resume() -> dict[str, Any]:
             return state
         for step in state.get("steps", {}).values():
             if step.get("state") not in DONE:
-                for key in ("first_try_at", "retry_at", "sent_at", "detail"):
+                for key in ("first_try_at", "retry_at", "sent_at", "progress_at", "progress_nodes", "detail"):
                     step.pop(key, None)
                 step["state"] = "waiting"
         state.update(state="running", reason=None, finished_at=None)
@@ -174,7 +179,8 @@ def _run() -> None:
     while active():
         _wake.clear()
         try:
-            tick(fleet.snapshot().get("locations") or [])
+            snapshot = fleet.snapshot()
+            tick(snapshot.get("locations") or [], machines=snapshot.get("machines") or [])
         except Exception as exc:  # noqa: BLE001 - one bad pass must not end the rollout
             print(f"[rollout] pass failed: {type(exc).__name__}: {exc}", flush=True)
         _wake.wait(TICK)
@@ -194,10 +200,12 @@ def _push(state: dict[str, Any], cid: str) -> dict[str, Any]:
                 "detail": getattr(exc, "message", None) or f"{type(exc).__name__}: {exc}"}
 
 
-def tick(rows: list[dict[str, Any]], now: float | None = None) -> dict[str, Any]:
+def tick(rows: list[dict[str, Any]], now: float | None = None,
+         machines: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     """One look at the fleet: settle the controller being updated, or send the release to the next.
 
-    At most one push per call. `rows` are the fleet read's location rows (`version`, `reachable`).
+    At most one push per call. `rows` are the fleet read's location rows (`version`, `reachable`);
+    `machines` its Mac rows (`location_id`, `hub_version`), whose progress keeps a step waiting.
     """
     clock = now is None
     now = time.time() if now is None else now
@@ -218,12 +226,19 @@ def tick(rows: list[dict[str, Any]], now: float | None = None) -> dict[str, Any]
             print(f"[rollout] {step['label']} is on {version}", flush=True)
             continue
         if step["state"] in ("sent", "installing"):
-            if now - float(step.get("sent_at", now)) >= STEP_TIMEOUT:
-                step.update(state="failed", detail=f"did not come back on {version} within "
-                                                   f"{STEP_TIMEOUT // 60} min")
+            sent = float(step.get("sent_at", now))
+            updated = sum(1 for m in machines or [] if m.get("location_id") == cid
+                          and str(m.get("hub_version") or "").strip() == version)
+            if updated > step.get("progress_nodes", 0):
+                step.update(progress_nodes=updated, progress_at=now)
+            idle = now - max(sent, float(step.get("progress_at") or 0))
+            if idle >= STEP_TIMEOUT or now - sent >= STEP_CEILING:
+                how = (f"no progress for {STEP_TIMEOUT // 60} min" if idle >= STEP_TIMEOUT
+                       else f"still not there after {STEP_CEILING // 60} min")
+                step.update(state="failed", detail=f"did not come back on {version}: {how}")
                 state.update(state="failed", finished_at=now,
-                             reason=f"{step['label']} did not come back on {version} within "
-                                    f"{STEP_TIMEOUT // 60} min, so the rollout stopped there")
+                             reason=f"{step['label']} did not come back on {version} ({how}), "
+                                    "so the rollout stopped there")
                 break
             # Not answering after the push: it is swapping in the new app and relaunching.
             step["state"] = "sent" if reachable else "installing"

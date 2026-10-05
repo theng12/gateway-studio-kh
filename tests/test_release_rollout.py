@@ -132,6 +132,32 @@ class Paced(Base):
         ro.tick(self.rows(), now=ro.STEP_TIMEOUT + 700)
         self.assertEqual(self.pushes, ["c11", "c11"])
 
+    def test_a_group_still_updating_its_macs_keeps_the_step_waiting(self) -> None:
+        self.start()
+        self.versions["local"] = V
+        mac = {"location_id": "c11", "hub_version": "0.6.135"}
+        ro.tick(self.rows(), now=0, machines=[mac])
+        step = ro.tick(self.rows(), now=ro.STEP_TIMEOUT - 60, machines=[mac])["steps"]["c11"]
+        self.assertEqual(step["state"], "sent")
+        mac["hub_version"] = V  # a Mac of the group got its turn and updated
+        ro.tick(self.rows(), now=ro.STEP_TIMEOUT + 60, machines=[mac])
+        self.assertEqual(ro.read()["state"], "running", "progress restarted the clock")
+        ro.tick(self.rows(), now=2 * ro.STEP_TIMEOUT - 60, machines=[mac])
+        self.assertEqual(ro.read()["state"], "running")
+        state = ro.tick(self.rows(), now=2 * ro.STEP_TIMEOUT + 61, machines=[mac])
+        self.assertEqual(state["state"], "failed", "no further progress for STEP_TIMEOUT")
+        self.assertIn("no progress", state["reason"])
+        # The backstop: steady progress cannot keep a step waiting forever.
+        ro.resume()
+        ro.tick(self.rows(), now=10_000, machines=[])
+        for n in range(1, 9):  # one more Mac updated every 25 min
+            state = ro.tick(self.rows(), now=10_000 + n * 25 * 60,
+                            machines=[{"location_id": "c11", "hub_version": V}] * n)
+            if state["state"] == "failed":
+                break
+        self.assertEqual(state["state"], "failed")
+        self.assertIn(f"after {ro.STEP_CEILING // 60} min", state["reason"])
+
     def test_an_unreachable_controller_is_retried_then_skipped(self) -> None:
         self.start()
         self.versions["local"] = V
