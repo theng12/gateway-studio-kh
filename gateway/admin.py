@@ -43,7 +43,7 @@ from . import pricing
 from .pricing import row_price
 from . import qualification
 from . import release_publisher, release_rollout
-from . import startup_control
+from . import model_share, startup_control
 from .config import is_loopback, request_is_loopback
 from .hub import hub_status
 from .providers import definitions, registry
@@ -2548,6 +2548,9 @@ def fleet_snapshot(force: bool = False) -> dict[str, Any]:
         out["release"] = {"identity": None, "last_push": push, "error": exc.message}
     # The paced rollout, live: which controller is updating, and each group's Macs on the new version.
     out["release"]["rollout"] = release_rollout.status(data)
+    # LAN model sharing (2026-10-05): each row's network, and every "Install on every Mac" in progress, live.
+    model_share.stamp_networks(out)
+    out["model_installs"] = model_share.status()
     return out
 
 
@@ -3034,6 +3037,46 @@ def fleet_machine_model_download(controller_id: str, machine_id: str, run_id: st
         return startup_control.model_install_status(controller_id, machine_id, run_id)
     except startup_control.StartupError as error:
         return JSONResponse(status_code=error.status, content=error.body)
+
+
+def _share_call(fn) -> Any:
+    try:
+        return fn()
+    except model_share.ShareError as error:
+        return JSONResponse(status_code=error.status, content=error.body)
+
+
+@router.put("/api/fleet/controllers/{controller_id}/network", dependencies=[Depends(require_admin)])
+def fleet_location_network(controller_id: str, payload: dict[str, Any]) -> Any:
+    """Name the network a location's Macs are on (`{"network": "A"}`; empty clears it). LAN model sharing pairs
+    only Macs on the same named network."""
+    return _share_call(lambda: {"networks": model_share.set_network(controller_id, payload.get("network"))})
+
+
+@router.put("/api/fleet/controllers/{controller_id}/machines/{machine_id}/network",
+            dependencies=[Depends(require_admin)])
+def fleet_machine_network(controller_id: str, machine_id: str, payload: dict[str, Any]) -> Any:
+    """One Mac's own network, over its location's (`{"network": "C"}`; empty goes back to the location's)."""
+    return _share_call(lambda: {"networks": model_share.set_network(controller_id, payload.get("network"),
+                                                                    machine_id)})
+
+
+@router.post("/api/fleet/model-installs", dependencies=[Depends(require_admin)])
+def fleet_install_everywhere(payload: dict[str, Any]) -> Any:
+    """Install a model on every Mac that can run it (`{"package_id"}`): one internet download per network, then
+    Mac-to-Mac copies on the LAN (`model_share`). Answers `{"plan"}`; progress rides on `GET /api/fleet`."""
+    return _share_call(lambda: {"plan": model_share.start(str(payload.get("package_id") or ""))})
+
+
+@router.get("/api/fleet/model-installs", dependencies=[Depends(require_admin)])
+def fleet_install_everywhere_status() -> dict[str, Any]:
+    return {"plans": model_share.status()}
+
+
+@router.post("/api/fleet/model-installs/{plan_id}/stop", dependencies=[Depends(require_admin)])
+def fleet_install_everywhere_stop(plan_id: str) -> Any:
+    """Start nothing new; copies and downloads already running finish on their Macs."""
+    return _share_call(lambda: {"plan": model_share.stop(plan_id)})
 
 
 @router.post("/api/fleet/startup/enable-autostart", dependencies=[Depends(require_admin)])

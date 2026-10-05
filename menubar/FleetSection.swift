@@ -255,6 +255,11 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
         locationsTab.onResumeRollout = { [weak self] in self?.rolloutAction("resume") }
         locationsTab.onTest = { [weak self] location in self?.testController(location) }
         locationsTab.onRename = { [weak self] location in self?.renameController(location) }
+        locationsTab.onNetwork = { [weak self] location in FleetNetwork.editLocation(location) { self?.reload() } }
+        modelsTab.onInstallEverywhere = { [weak self] package, label in
+            FleetNetwork.installEverywhere(packageId: package, label: label, confirm: true) { self?.reload() }
+        }
+        modelsTab.spreadView.onStop = { [weak self] plan in FleetNetwork.stop(plan) { self?.reload() } }
         locationsTab.onCredentials = { [weak self] location in self?.editCredentials(location) }
         locationsTab.onRemove = { [weak self] location in self?.removeController(location) }
         locationsTab.onChangeAddress = { [weak self] location in self?.changeAddress(location) }
@@ -558,8 +563,22 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
         modelsTab.update(
             models: snapshot.allLocalModels,
             workers: snapshot.locations.flatMap { $0.workers },
-            filter: filter)
+            filter: filter, installs: snapshot.modelInstalls)
+        followSpread(snapshot.modelInstalls)
         jobsTab.update(snapshot: snapshot, filter: filter)
+    }
+
+    /// While an "Install on every Mac" runs, re-read the (cached) fleet every few seconds so its card moves; this
+    /// page otherwise reads only on demand. Stops by itself when nothing runs or the page is closed.
+    private var spreadReadPending = false
+    private func followSpread(_ installs: [FleetModelSpread]) {
+        guard installs.contains(where: \.running), !spreadReadPending else { return }
+        spreadReadPending = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 5) { [weak self] in
+            guard let self else { return }
+            self.spreadReadPending = false
+            if self.modelsTab.window != nil { self.reload() }
+        }
     }
 
     private func setStatus(_ text: String, colour: NSColor = .secondaryLabelColor) {

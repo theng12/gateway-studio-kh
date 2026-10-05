@@ -31,9 +31,11 @@ struct FleetSnapshot: Decodable {
     var release: FleetReleaseState?
     /// The warning kinds the owner hid; `nil` from a gateway that predates the setting.
     var fleetWarnings: FleetWarningSetting?
+    /// Every "Install on every Mac that can run it", newest first (`FleetModelSpread.swift`); `[]` from an older gateway.
+    var modelInstalls: [FleetModelSpread] = []
 
     private enum CodingKeys: String, CodingKey {
-        case generatedAt, summary, locations, machines, running, issues, models, release, fleetWarnings
+        case generatedAt, summary, locations, machines, running, issues, models, release, fleetWarnings, modelInstalls
     }
 
     /// An empty snapshot, for the "could not read the fleet" case: every table is
@@ -68,6 +70,7 @@ struct FleetSnapshot: Decodable {
         models = lenientArray(c, forKey: .models)
         release = try? c.decode(FleetReleaseState.self, forKey: .release)
         fleetWarnings = try? c.decode(FleetWarningSetting.self, forKey: .fleetWarnings)
+        modelInstalls = lenientArray(c, forKey: .modelInstalls)
     }
 }
 
@@ -100,6 +103,41 @@ struct FleetSummary: Decodable {
     /// The Hub's own per-state machine counts. Kept because the pulse line is
     /// read verbatim from the gateway rather than re-derived here.
     var pulse: [String: Int]?
+}
+
+// MARK: - Install on every Mac (LAN model sharing, FleetModelSpread.swift)
+
+/// One Mac's line in a spread (`model_installs[].networks[].macs[]`); `text` is the gateway's sentence.
+struct FleetSpreadMac: Decodable {
+    var locationId: String?
+    var machine: String?
+    var label: String?
+    var state: String?
+    var text: String?
+    var note: String?
+}
+
+struct FleetSpreadNetwork: Decodable {
+    var network: String?
+    var title: String?
+    var done: Int?
+    var total: Int?
+    var macs: [FleetSpreadMac]?
+}
+
+/// One "Install on every Mac that can run it" (`model_installs[]`), newest first.
+struct FleetModelSpread: Decodable {
+    var id: String?
+    var packageId: String?
+    var label: String?
+    var state: String?
+    var done: Int?
+    var total: Int?
+    var networks: [FleetSpreadNetwork]?
+
+    var running: Bool { state == "running" }
+    /// The action's name, on the Install sheet and on Fleet → Models.
+    static let actionTitle = "Install on Every Mac That Can Run It"
 }
 
 // MARK: - Location
@@ -173,9 +211,11 @@ struct FleetLocation: Decodable {
     var pending: Bool?
     /// Did not answer in time; `error` says so and what it last reported is kept.
     var slow: Bool?
+    /// The network its Macs are on unless one says otherwise (LAN model sharing); `nil` is not set.
+    var network: String?
 
     private enum CodingKeys: String, CodingKey {
-        case drained, membersFrom, membersStaleSeconds, pending, slow
+        case drained, membersFrom, membersStaleSeconds, pending, slow, network
         case id, label, url, local, reachable, error, role, version, hubVersionRelation, versionStatus
         case providerId, latencyMs
         case machines, workers, localModels, modelHealth, machineSummary, runningJobs
@@ -214,6 +254,7 @@ struct FleetLocation: Decodable {
         membersStaleSeconds = try? c.decode(Double.self, forKey: .membersStaleSeconds)
         pending = try? c.decode(Bool.self, forKey: .pending)
         slow = try? c.decode(Bool.self, forKey: .slow)
+        network = try? c.decode(String.self, forKey: .network)
         if let count = try? c.decode(Int.self, forKey: .runningJobs) {
             runningJobs = count
         } else if let rows = try? c.decode([Lenient<FleetJob>].self, forKey: .runningJobs) {
@@ -743,6 +784,9 @@ struct FleetMachine: Decodable {
     var current: FleetCurrentJob?
     /// The models "Install a model…" offers this Mac (see `FleetModelInstall.swift`); `nil` from an older gateway.
     var installableModels: [FleetInstallableModel]?
+    /// The network this Mac is on (its own, else its location's); `nil` is not set. `networkOverride` is its own.
+    var network: String?
+    var networkOverride: String?
     /// **Job counts per modality**, not a list of models the machine offers. The
     /// table labels the column "Work done by kind" so the two are never confused.
     var modalities: [String: Int]?
@@ -1001,6 +1045,8 @@ struct FleetLocalModel: Decodable {
     var activeDownload: FleetScalar?
     var gated: Bool?
     var dispatchState: String?
+    /// What the Hub installs this model by ("Install on every Mac that can run it").
+    var packageId: String?
     /// Not in the hub's per-machine row: the location a row belongs to. It is
     /// decoded when the gateway publishes a flat `models` list and injected from
     /// the parent location when the row is nested, so the master table can answer

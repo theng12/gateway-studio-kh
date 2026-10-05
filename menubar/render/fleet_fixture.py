@@ -400,8 +400,68 @@ def assemble(rows: list, push: dict) -> dict:
     }
 
 
+def networks() -> None:
+    """The fixture's networks: Blue Room and This Mac on A, Studio 2 on B, blue-3 moved to C by hand."""
+    from gateway import model_share
+
+    model_share._write_json(model_share.networks_path(), {  # noqa: SLF001
+        "locations": {**model_share.DEFAULT_NETWORKS, "ctrl-blue": "A", "ctrl-studio2": "B", "local": "A"},
+        "machines": {"ctrl-blue/blue-3": "C", "4bb919aee2e4/imac-3": "E"}})
+
+
+def installs() -> list:
+    """"Install on every Mac that can run it", mid-spread on an owner-shaped fleet: the real planner (`model_share`)
+    driven by fake controllers, so every sentence on the progress card is the gateway's own."""
+    from gateway import model_share, startup_control
+
+    package, runs = "fish-audio-s2-pro-4bit", {}
+    groups = {"de7250e146a7": ["1101", "1102", "1103"], "9701220bf30f": ["1201", "1202"],
+              "a311a0a9f4f7": ["1301", "1302"], "eda08bae6325": ["1401"], "b8ccda585b97": ["1501"],
+              "4bb919aee2e4": ["imac-2", "imac-3"]}
+    machines, models = [], []
+    for loc, mids in groups.items():
+        rows = []
+        for mid in mids:
+            has, lite = mid == "1101", mid == "imac-2"
+            machines.append({"location_id": loc, "machine": mid, "label": mid, "reachable": True,
+                             "workstation": {"enabled": True} if lite else None,
+                             "installable_models": [] if has or lite else [{"package_id": package,
+                                                                            "label": "Fish S2 Pro 4-bit"}]})
+            rows.append({"machine": mid, "package_id": package, "label": "Fish S2 Pro 4-bit",
+                         "cache_state": "cached" if has else "absent", "memory_eligible": not lite})
+        models.append({"id": loc, "local_models": rows})
+    fleet_read = {"machines": machines, "locations": models}
+
+    def share(loc, mid, pkg):
+        return {"ok": True, "share": {"url_base": f"http://{mid}/files", "token": "t", "files": []}}
+
+    def install(loc, mid, pkg, *, source=None):
+        runs[mid] = {"id": mid, "state": "running", "total_bytes": 3_500_000_000, "bytes_done": 0,
+                     "source_used": "lan" if source else "internet"}
+        return {"ok": True, "run": dict(runs[mid])}
+
+    def status(loc, mid, run):
+        return {"ok": True, "run": dict(runs[run])}
+
+    def progress(**done) -> None:
+        for mid, fraction in done.items():
+            runs[mid].update(state="done" if fraction >= 1 else "running",
+                             bytes_done=int(3_500_000_000 * min(fraction, 1)))
+        model_share.tick(fleet_read)
+
+    startup_control.share_model, startup_control.install_model = share, install
+    startup_control.model_install_status = status
+    model_share._ensure_thread = lambda: None  # noqa: SLF001 - the fixture drives the passes itself
+    model_share.start(package, fleet_read)
+    model_share.tick(fleet_read)
+    progress(**{"1102": 1, "1103": 0.42, "1301": 1, "1501": 0.37, "imac-3": 1})
+    progress(**{"1201": 0.63, "1202": 0.1, "1302": 0.8, "1401": 0.05})
+    return model_share.status()
+
+
 def build() -> dict:
     flavour = os.environ.get("GATEWAY_RENDER_FIXTURE", "")
+    networks()
     if flavour.startswith("health"):
         snapshot = assemble(*health(flavour))
         if flavour.startswith("health-rollout"):
@@ -531,11 +591,16 @@ def build() -> dict:
                                                     "start_free_gb": 3.5, "quiet_hours": ["21:00-08:00"],
                                                     "hide_menu_bar_icon": True},
                                         "at": NOW - HOUR, "offline_since": row.get("node_last_seen_at")}
+    from gateway import model_share
+
+    stamped = {"locations": rows, "machines": machines}
+    model_share.stamp_networks(stamped)
     return {
         **({"fleet_warnings": {"hidden": ["macos_updates"], "hideable": []}} if flavour == "many-hidden" else {}),
         **({"render_add": render_add} if render_add else {}),
-        "locations": rows,
-        "machines": machines,
+        "model_installs": installs(),
+        "locations": stamped["locations"],
+        "machines": stamped["machines"],
         "running": fleet.running_flat(rows),
         "summary": fleet._summarise(rows),
         "issues": fleet._issues(rows),

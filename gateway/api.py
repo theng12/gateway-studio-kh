@@ -127,6 +127,10 @@ async def lifespan(_: FastAPI):
     from . import release_rollout
 
     release_rollout.resume_on_startup()
+    # An "Install on every Mac" the last run was in the middle of carries on (`model_share`).
+    from . import model_share
+
+    model_share.resume_on_startup()
     # The gateway only *receives* artifacts; Story Studio keeps the copy that
     # matters. Without this the directory grew without bound.
     retention.start_pruner()

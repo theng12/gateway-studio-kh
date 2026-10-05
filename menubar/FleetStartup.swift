@@ -151,6 +151,9 @@ extension FleetStartup {
                     menu.addItem(why)
                 }
             }
+            if configurable {
+                menu.addItem(ClosureMenuItem("Network…") { FleetNetwork.editMachine(machine, done: done) })
+            }
             FleetModelInstall.menuItems(for: machine, done: done).forEach(menu.addItem)
             if !actions.isEmpty {
                 if renamable || pausable || configurable { menu.addItem(.separator()) }

@@ -223,11 +223,34 @@ func renderInstallSheet() {
     }
 }
 
+/// `fleet-network`: the "Network…" sheets (LAN model sharing) for a location (`fleet-network-location.png`) and for a
+/// shop iMac that follows its group's network (`fleet-network-mac.png`), and that Mac's "…" menu titles.
+func renderNetworkSheets() {
+    let decoder = JSONDecoder()
+    decoder.keyDecodingStrategy = .convertFromSnakeCase
+    let mac = #"{"location_id":"4bb919aee2e4","machine":"imac-4","label":"Shop iMac 4","reachable":true,"node_role":"agent","network":"C","network_override":null,"installable_models":[]}"#
+    let place = #"{"id":"de7250e146a7","label":"terranash-1100","network":"A"}"#
+    guard let machine = try? decoder.decode(FleetMachine.self, from: Data(mac.utf8)),
+          let location = try? decoder.decode(FleetLocation.self, from: Data(place.utf8)) else { print("no sample"); return }
+    if let button = FleetStartup.menuButton(for: machine, window: { nil }, done: {}) as? FleetMenuButton {
+        print("menu \(machine.label ?? ""): \(button.itemTitles)")
+    }
+    for (name, alert) in [("location", FleetNetwork.locationAlert(location).0), ("mac", FleetNetwork.machineAlert(machine).0)] {
+        alert.layout()
+        alert.window.setFrameOrigin(NSPoint(x: -20000, y: -20000))
+        alert.window.orderFront(nil)
+        spin(0.8)
+        write(alert.window, web: nil, to: "\(output)/fleet-network-\(name)\(suffixForAppearance).png")
+        alert.window.orderOut(nil)
+    }
+}
+
 for page in pageNames where page == "fleet-install" { renderInstallSheet() }
+for page in pageNames where page == "fleet-network" { renderNetworkSheets() }
 for page in pageNames where page == "fleet-rename" { renderRenameSheet() }
 for page in pageNames where page == "fleet-workstation" { renderWorkstationSheet() }
 for page in pageNames where page == "fleet-add" { renderAddLocation() }
-for page in pageNames where !["fleet-rename", "fleet-workstation", "fleet-add", "fleet-install"].contains(page) {
+for page in pageNames where !["fleet-rename", "fleet-workstation", "fleet-add", "fleet-install", "fleet-network"].contains(page) {
     // `fleet:locations` is the Fleet page on one of its inner tabs.
     let parts = page.split(separator: ":").map(String.init)
     let name = parts[0].replacingOccurrences(of: "-", with: " ")
