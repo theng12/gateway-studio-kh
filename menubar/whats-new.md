@@ -14,6 +14,11 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.128 — 2026-10-05
+
+Fleet:
+- See each Mac's network on its row (Groups and Machines), and on Locations when a Mac differs from its group.
+
 ## 0.2.127 — 2026-10-05
 
 Installing a model on every Mac:

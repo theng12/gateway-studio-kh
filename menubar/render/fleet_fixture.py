@@ -401,12 +401,14 @@ def assemble(rows: list, push: dict) -> dict:
 
 
 def networks() -> None:
-    """The fixture's networks: Blue Room and This Mac on A, Studio 2 on B, blue-3 moved to C by hand."""
+    """The fixture's networks: Blue Room and This Mac on A, Studio 2 on B, blue-3 moved to C by hand; Shops on C
+    with Shop 2 moved to A and Shop 1 set to C by hand (the owner's real Shops group, 2026-10-05)."""
     from gateway import model_share
 
     model_share._write_json(model_share.networks_path(), {  # noqa: SLF001
-        "locations": {**model_share.DEFAULT_NETWORKS, "ctrl-blue": "A", "ctrl-studio2": "B", "local": "A"},
-        "machines": {"ctrl-blue/blue-3": "C", "4bb919aee2e4/imac-3": "E"}})
+        "locations": {**model_share.DEFAULT_NETWORKS, "ctrl-blue": "A", "ctrl-studio2": "B", "local": "A", "ctrl-shops": "C"},
+        "machines": {"ctrl-blue/blue-3": "C", "4bb919aee2e4/imac-3": "E", "ctrl-shops/shop-2": "A",
+                     "ctrl-shops/shop-1": "C"}})
 
 
 def installs() -> list:

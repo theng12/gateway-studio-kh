@@ -85,6 +85,7 @@ FIXTURE = {
         },
         {
             "id": "ctrl-1", "label": "Blue Room", "local": False, "reachable": True,
+            "network": "C",
             "role": "controller", "version": "0.6.47", "provider_id": "studio-hub-ctrl-1",
             "models_discovered": 5, "models_enabled": 0, "models_publishable": 2,
             # The gateway's pause clock (Q7): epoch seconds plus its own sentence.
@@ -145,11 +146,13 @@ FIXTURE = {
         },
     ],
     "machines": [
-        {"location_id": "local", "location": "This Mac", "machine": "local", "label": "This Mac",
+        {"location_id": "local", "location": "This Mac", "machine": "local", "label": "This Mac", "network": "B",
          "state": "long_idle", "completed": 11, "failed": 1, "median_runtime_s": 68.0,
          "chip": "Apple M2 Max", "memory_gb": 32.0, "disk_free_gb": 250.0,
          "modalities": {"image": 3, "voice": 7}},
         {"location_id": "ctrl-1", "location": "Blue Room", "machine": "mac-a", "label": "mac-a",
+         # On network A by hand while its group is on C (`model_share.stamp_networks`); mac-b set C, the same.
+         "network": "A", "network_override": "A",
          "state": "ready", "completed": 4, "failed": 0, "median_runtime_s": 41.0,
          "chip": "Apple M4", "memory_gb": 16.0, "disk_free_gb": 120.0,
          "modalities": {"voice": 4}, "limitation": "Direct activity partially unavailable",
@@ -161,6 +164,7 @@ FIXTURE = {
          "current": {"batch_id": "batch-9", "model": "mock-hub/clone-model", "label": "Chapter 3",
                      "studio": "voice", "started_at": 1790000000}},
         {"location_id": "ctrl-1", "location": "Blue Room", "machine": "mac-b", "label": "mac-b",
+         "network": "C", "network_override": "C",
          "state": "offline", "completed": 0, "failed": 0, "chip": "Apple M4",
          "memory_gb": 16.0, "disk_free_gb": 380.0, "modalities": {},
          # The refused credential: the activity word is still `offline` (nothing can be
@@ -312,7 +316,7 @@ enum GatewayAPI {
                "the roster rows must say they are the last known state: \(groupTexts)")
 
         let locations = FleetLocationsTab(frame: .zero)
-        locations.update(locations: snapshot.locations)
+        locations.update(locations: snapshot.locations, machines: snapshot.machines)
         locations.updateRelease(locations: snapshot.locations, state: snapshot.release)
         _ = layout("Locations", locations, rows: 2)
 
@@ -361,6 +365,9 @@ enum GatewayAPI {
         assert(snapshot.locations.first(where: { $0.id == "local" })?.memberCount == nil,
                "a location that stated no roster must not read as an empty one")
         let locationTexts = descendants(locations).compactMap { ($0 as? NSTextField)?.stringValue }
+        // A Mac on another network than its location's is visible on Locations and on its Groups row.
+        assert(locationTexts.contains("1 Mac on A"), "the Network column must say a Mac differs: \(locationTexts)")
+        assert(groupTexts.contains(where: { $0.contains("Network B") }), "a node row must name its network")
         assert(locationTexts.contains(where: { $0.contains("1 / 2") && $0.contains("1 refused") }),
                "the Members column did not draw the reachable count and the refusal")
         assert((controller?.membersTooltip ?? "").contains("re-join it with the current Fleet Token"),

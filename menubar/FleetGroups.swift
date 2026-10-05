@@ -985,7 +985,11 @@ final class FleetGroupsTab: NSView, NSSearchFieldDelegate {
         let health = group.nodeHealth(machine)
         let offline = machine.reachable == false
 
-        var facts = machine.hardwareText
+        // "Network A · Apple M4 · 16 GB" on a Mac whose network is not its group's (a shop iMac, 2026-10-05):
+        // first, so a narrow Node column still shows it. The group's own network is on Locations.
+        let ownNetwork = machine.network == group.location.network ? nil : machine.network
+        var facts = ([ownNetwork.map { "Network \($0)" }] + [machine.hardwareText])
+            .compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " · ")
         var factsColour = NSColor.secondaryLabelColor
         let latest = snapshot?.summary?.hubLatest
         let versionBadge = machine.versionBadge(latest: latest)

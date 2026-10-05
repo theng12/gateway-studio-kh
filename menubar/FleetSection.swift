@@ -488,7 +488,7 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
             }
         }
         groupsTab.update(snapshot: snapshot)
-        locationsTab.update(locations: snapshot.locations)
+        locationsTab.update(locations: snapshot.locations, machines: snapshot.machines)
         locationsTab.updateRelease(locations: snapshot.locations, state: snapshot.release)
         if !publishing { locationsTab.setRolloutRunning(snapshot.release?.rollout?.isRunning == true) }
         rebuildLocationPopup()

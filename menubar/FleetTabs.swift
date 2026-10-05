@@ -544,6 +544,8 @@ final class FleetLocationsTab: FleetTabView {
     var onResumeRollout: (() -> Void)?
 
     private lazy var controller = FleetTableController(columns: columns(), rowHeight: 44)
+    /// Location id -> "1 Mac on A" under its Network (`update(locations:machines:)`).
+    private var networkNotes: [String: String] = [:]
     private let statusLabel = PageKit.label("", .secondary, colour: .secondaryLabelColor, wrapping: true)
     private lazy var retryButton: FleetClosureButton = {
         let button = FleetClosureButton(title: "Retry Failed") { [weak self] in
@@ -733,12 +735,21 @@ final class FleetLocationsTab: FleetTabView {
                 }
             ),
             // The network its Macs are on (LAN model sharing, 2026-10-05); a Mac can override it on Machines.
+            // A Mac on another network than its location's says so under it: "C" over "1 Mac on A".
             FleetColumn(
-                id: "lnetwork", title: "Network", width: 64, minWidth: 56,
+                id: "lnetwork", title: "Network", width: 84, minWidth: 84, flex: 0,
                 text: { location($0)?.network ?? "—" },
                 sortValue: { .text(location($0)?.network ?? "") },
-                colour: { location($0)?.network == nil ? .secondaryLabelColor : .labelColor },
-                tooltip: { _ in "Macs on the same network copy models from each other. Set it with … → Network…" }
+                tooltip: { _ in "Macs on the same network copy models from each other. Set it with … → Network…" },
+                cell: { [weak self] any in
+                    guard let row = location(any) else { return NSView() }
+                    let note = self?.networkNotes[row.id ?? ""]
+                    return fleetTwoLineCell(row.network ?? "—", note,
+                                            titleColour: row.network == nil ? .secondaryLabelColor : .labelColor,
+                                            tooltip: (note.map { "\($0). " } ?? "")
+                                                + "Macs on the same network copy models from each other. "
+                                                + "Set it with … → Network…")
+                }
             ),
             FleetColumn(
                 id: "lhub", title: "Hub", width: 120, minWidth: 100, sortable: false,
@@ -924,7 +935,19 @@ final class FleetLocationsTab: FleetTabView {
         return cell
     }
 
-    func update(locations: [FleetLocation]) {
+    func update(locations: [FleetLocation], machines: [FleetMachine] = []) {
+        // "1 Mac on A" / "2 Macs on A, 1 on D": the Macs whose own network differs from their location's.
+        var others: [String: [String: Int]] = [:]
+        for mac in machines {
+            guard let id = mac.locationId, let own = mac.networkOverride,
+                  own != locations.first(where: { $0.id == id })?.network else { continue }
+            others[id, default: [:]][own, default: 0] += 1
+        }
+        networkNotes = others.mapValues { counts in
+            counts.sorted { $0.key < $1.key }.enumerated().map { index, entry in
+                index == 0 ? "\(entry.value) Mac\(entry.value == 1 ? "" : "s") on \(entry.key)" : "\(entry.value) on \(entry.key)"
+            }.joined(separator: ", ")
+        }
         controller.setRows(locations)
         // **Every location in view, up to twelve.** A fixed 240 pt showed five rows, so with the owner's
         // eight the location just added — appended last — was below the fold and read as missing.
