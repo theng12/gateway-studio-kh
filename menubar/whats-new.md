@@ -14,6 +14,19 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.122 — 2026-10-05
+
+Macs on the same network share models:
+- Macs on the same network now copy models from each other, so each network downloads a model from the internet only once.
+- "Install on every Mac that can run it" puts a model on every Mac with the memory for it in one go.
+- A new Network column on Fleet → Locations shows which network each group's Macs are on. This needs Studio Hub 0.6.146 on the groups.
+
+Fewer false alarms and fewer failed narrations:
+- A busy Mac with little free memory is no longer shown as a warning — only real trouble that stops a Mac from working is.
+- Long narration pieces on slower Macs now get enough time: the time limit grows with the length of the text and the speed of the Mac.
+- A narration piece that runs out of time is tried once more on another group instead of failing.
+- Failed jobs now show which Mac they ran on.
+
 ## 0.2.121 — 2026-10-04
 
 Smarter spreading of work across the fleet:
