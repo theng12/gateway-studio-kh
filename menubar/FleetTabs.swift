@@ -530,6 +530,8 @@ final class FleetLocationsTab: FleetTabView {
     /// Clear a pause. Only offered while the gateway reports the location paused.
     var onResume: ((FleetLocation) -> Void)?
     var onPause: ((FleetLocation) -> Void)?
+    /// "Network…": name the network this location's Macs are on (LAN model sharing).
+    var onNetwork: ((FleetLocation) -> Void)?
     var onRefresh: (() -> Void)?
     var onRetryFailed: (() -> Void)?
     var onAddLocation: ((String, String, String) -> Void)?
@@ -730,6 +732,14 @@ final class FleetLocationsTab: FleetTabView {
                     return fleetTwoLineCell(row.label ?? "—", caption)
                 }
             ),
+            // The network its Macs are on (LAN model sharing, 2026-10-05); a Mac can override it on Machines.
+            FleetColumn(
+                id: "lnetwork", title: "Network", width: 64, minWidth: 56,
+                text: { location($0)?.network ?? "—" },
+                sortValue: { .text(location($0)?.network ?? "") },
+                colour: { location($0)?.network == nil ? .secondaryLabelColor : .labelColor },
+                tooltip: { _ in "Macs on the same network copy models from each other. Set it with … → Network…" }
+            ),
             FleetColumn(
                 id: "lhub", title: "Hub", width: 120, minWidth: 100, sortable: false,
                 // **The version, against the newest release this Gateway published** — not against the
@@ -884,6 +894,7 @@ final class FleetLocationsTab: FleetTabView {
         let more = FleetMenuButton { [weak self] in
             let menu = NSMenu()
             menu.addItem(ClosureMenuItem("Rename…") { self?.onRename?(row) })
+            menu.addItem(ClosureMenuItem("Network…") { self?.onNetwork?(row) })
             if !row.isPausedByOwner { menu.addItem(ClosureMenuItem("Pause") { self?.onPause?(row) }) }
             if row.local != true {
                 // One credentials action, not two: the overflow of five buttons was once left out of the
@@ -1314,7 +1325,8 @@ final class FleetMachinesTab: NSView {
                 sortValue: { .text(machine($0)?.label ?? machine($0)?.machine ?? "") },
                 cell: { any in
                     guard let row = machine(any) else { return NSView() }
-                    var facts = [row.location == row.label ? nil : row.location, row.hardwareText].compactMap { $0 }.filter { !$0.isEmpty }
+                    var facts = [row.location == row.label ? nil : row.location, row.network.map { "Network \($0)" },
+                                 row.hardwareText].compactMap { $0 }.filter { !$0.isEmpty }
                     if !row.isNode { facts.append("controller") }
                     return fleetTwoLineCell(row.label ?? row.machine ?? "—", facts.joined(separator: " · "),
                                             tooltip: row.stateReason)
@@ -1562,6 +1574,14 @@ final class FleetModelsTab: FleetTabView {
     private let masterTitle = PageKit.sectionTitle("Local models")
     private let detailTitle = PageKit.sectionTitle("Machines serving this model")
     private let statusLabel = PageKit.label("", .secondary, colour: .secondaryLabelColor, wrapping: true)
+    /// Every "Install on every Mac that can run it" in progress, per network (FleetModelSpread.swift).
+    let spreadView = FleetModelSpreadView()
+    /// "Install on every Mac that can run it" for the selected model (package id, name); set by the Fleet page.
+    var onInstallEverywhere: ((String, String) -> Void)?
+    private lazy var everywhereButton = FleetClosureButton(title: FleetModelSpread.actionTitle) { [weak self] in
+        guard let self, let picked = self.selectedPackage() else { return }
+        self.onInstallEverywhere?(picked.0, picked.1)
+    }
 
     private var aggregates: [FleetModelAggregate] = []
     private var selectedModel: String?
@@ -1584,13 +1604,17 @@ final class FleetModelsTab: FleetTabView {
         statusLabel.preferredMaxLayoutWidth = 520
         master.container.heightAnchor.constraint(equalToConstant: 220).isActive = true
         detail.container.heightAnchor.constraint(equalToConstant: 220).isActive = true
+        page.addArrangedSubview(spreadView)
+        fullWidth(spreadView)
         page.addArrangedSubview(masterTitle)
         page.setCustomSpacing(DS.Space.m, after: masterTitle)
         page.addArrangedSubview(statusLabel)
         page.addArrangedSubview(master.container)
-        page.addArrangedSubview(detailTitle)
-        page.setCustomSpacing(DS.Space.m, after: detailTitle)
+        let detailHeader = PageKit.row([detailTitle, NSView(), everywhereButton])
+        page.addArrangedSubview(detailHeader)
+        page.setCustomSpacing(DS.Space.m, after: detailHeader)
         page.addArrangedSubview(detail.container)
+        fullWidth(detailHeader)
         fullWidth(statusLabel)
         fullWidth(master.container)
         fullWidth(detail.container)
@@ -1602,12 +1626,29 @@ final class FleetModelsTab: FleetTabView {
             guard let self else { return }
             self.selectedModel = (any as? FleetModelAggregate)?.model
             self.showDetail(for: any as? FleetModelAggregate)
+            self.everywhereButton.isEnabled = self.selectedPackage() != nil
         }
     }
 
     required init?(coder: NSCoder) { fatalError("not used") }
 
-    func update(models: [FleetLocalModel], workers: [FleetWorker], filter: FleetFilter) {
+    /// The selected model's package and name, when some Mac that reports it does not have it yet.
+    private func selectedPackage() -> (String, String)? {
+        guard let aggregate = aggregates.first(where: { $0.model == selectedModel }),
+              let package = aggregate.rows.compactMap(\.packageId).first,
+              aggregate.rows.contains(where: { !$0.cacheIsCached }) else { return nil }
+        return (package, aggregate.label)
+    }
+
+    func update(models: [FleetLocalModel], workers: [FleetWorker], filter: FleetFilter,
+                installs: [FleetModelSpread] = []) {
+        spreadView.update(installs)
+        defer {
+            everywhereButton.isEnabled = selectedPackage() != nil
+            everywhereButton.toolTip = everywhereButton.isEnabled
+                ? "Each network downloads it once; its Macs copy it from each other."
+                : "Every Mac that reports this model has it already."
+        }
         // Which worker serves which model, straight from the worker's own catalogue
         // (0.6.48). A worker that states no models is simply absent, so the column
         // reads "—" rather than a guess.
@@ -1828,6 +1869,84 @@ final class FleetModelsTab: FleetTabView {
                 }
             ),
         ]
+    }
+}
+
+// MARK: - Install on every Mac
+
+/// Fleet → Models: what each "Install on every Mac" is doing, per network and per Mac (`model_installs`). It shows
+/// every running one and the newest finished one; the Fleet page re-reads every few seconds while one runs.
+final class FleetModelSpreadView: NSStackView {
+    var onStop: ((FleetModelSpread) -> Void)?
+
+    init() {
+        super.init(frame: .zero)
+        orientation = .vertical
+        alignment = .leading
+        spacing = DS.Space.m
+        isHidden = true
+    }
+
+    required init?(coder: NSCoder) { fatalError("not used") }
+
+    func update(_ plans: [FleetModelSpread]) {
+        let shown = plans.filter(\.running) + plans.filter { !$0.running }.prefix(1)
+        for view in arrangedSubviews {
+            removeArrangedSubview(view)
+            view.removeFromSuperview()
+        }
+        for plan in shown {
+            let card = card(for: plan)
+            addArrangedSubview(card)
+            card.widthAnchor.constraint(equalTo: widthAnchor).isActive = true
+        }
+        isHidden = shown.isEmpty
+    }
+    static func health(_ state: String?) -> Health {
+        switch state {
+        case "done", "have": return .ok
+        case "failed": return .bad
+        case "copying", "downloading": return .info
+        default: return .off
+        }
+    }
+
+    private func card(for plan: FleetModelSpread) -> NSView {
+        let name = plan.label ?? plan.packageId ?? "?"
+        let count = "\(plan.done ?? 0) of \(plan.total ?? 0) Macs have it"
+        let title: String
+        switch plan.state {
+        case "running": title = "Installing \(name) on every Mac that can run it — \(count)"
+        case "stopped": title = "Stopped installing \(name) — \(count)"
+        default: title = "Installed \(name) on every Mac that can run it — \(count)"
+        }
+        var header: [NSView] = [PageKit.label(title, .rowTitle), NSView()]
+        if plan.running {
+            header.append(FleetClosureButton(title: "Stop") { [weak self] in self?.onStop?(plan) })
+        }
+        let stack = NSStackView(views: [PageKit.row(header)])
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = DS.Space.xs
+        for network in plan.networks ?? [] {
+            let heading = PageKit.label("\(network.title ?? "Network") · \(network.done ?? 0) of \(network.total ?? 0)",
+                                        .captionStrong, colour: .secondaryLabelColor)
+            stack.addArrangedSubview(heading)
+            stack.setCustomSpacing(DS.Space.xs, after: heading)
+            for mac in network.macs ?? [] {
+                var line = "\(mac.label ?? mac.machine ?? "?") — \(mac.text ?? "")"
+                if let note = mac.note, !note.isEmpty { line += " (\(note))" }
+                let health = Self.health(mac.state)
+                let label = PageKit.label(line, .secondary,
+                                          colour: health == .off ? .secondaryLabelColor : health == .info ? .labelColor : health.text,
+                                          wrapping: true)
+                label.preferredMaxLayoutWidth = 640
+                stack.addArrangedSubview(label)
+            }
+        }
+        let card = CardView()
+        card.hold(stack)
+        return card
     }
 }
 

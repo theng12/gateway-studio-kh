@@ -442,21 +442,44 @@ MODEL_INSTALL_TOO_OLD = ("This controller's Studio Hub cannot install models fro
                          "Studio Hub 0.6.143: update it first (Fleet > Release).")
 
 
-def install_model(controller_id: str, machine_id: str, package_id: str, *,
+MODEL_SHARE_TOO_OLD = ("This controller's Studio Hub cannot share models between Macs yet. It needs Studio Hub "
+                       "0.6.146: until then its Macs download from the internet.")
+
+
+def install_model(controller_id: str, machine_id: str, package_id: str, *, source: dict[str, Any] | None = None,
                   client: httpx.Client | None = None) -> dict[str, Any]:
     """Start a model download on one Mac (owner decision 2026-10-04), through its controller.
 
     The Mac's Hub refuses an unknown package, a shelved model, a full disk and a model it has too
     little memory to run, each in its own sentence, which is passed through. Answers
     `{"ok": true, "node", "run": {"id", "state", "total_bytes", ...}}`; follow it with
-    `model_install_status`.
+    `model_install_status`. `source` is a LAN share from `share_model` (Studio Hub 0.6.146): the Mac copies
+    the files from that Mac and falls back to the internet by itself. The share's token is never audited.
     """
     if not _MACHINE_ID.fullmatch(machine_id or "") or not _MACHINE_ID.fullmatch(package_id or ""):
         raise StartupError(400, {"ok": False, "code": "BAD_MACHINE", "detail": "machine or model id is not valid"})
     return _node_post(
-        controller_id, machine_id, f"model-packages/{package_id}/download", {}, event="model_install",
-        too_old=MODEL_INSTALL_TOO_OLD,
+        controller_id, machine_id, f"model-packages/{package_id}/download", {"source": source} if source else {},
+        event="model_install", too_old=MODEL_INSTALL_TOO_OLD,
         refused="The controller refused this gateway's credential for installing models.",
+        audit_fields={"package": package_id, "source": "lan" if source else "internet"}, client=client,
+    )
+
+
+def share_model(controller_id: str, machine_id: str, package_id: str, *,
+                client: httpx.Client | None = None) -> dict[str, Any]:
+    """Ask a Mac that holds a model to lend it to another Mac on its network (Studio Hub 0.6.146).
+
+    Answers `{"ok": true, "share": {"url_base", "token", "expires_at", "files", "revision"}}`: a read-only,
+    time-limited share of that one package, handed to the target's `install_model(source=...)`. The Mac
+    refuses a package it does not hold verified, and a third transfer (429).
+    """
+    if not _MACHINE_ID.fullmatch(machine_id or "") or not _MACHINE_ID.fullmatch(package_id or ""):
+        raise StartupError(400, {"ok": False, "code": "BAD_MACHINE", "detail": "machine or model id is not valid"})
+    return _node_post(
+        controller_id, machine_id, f"model-packages/{package_id}/share", {}, event="model_share",
+        too_old=MODEL_SHARE_TOO_OLD,
+        refused="The controller refused this gateway's credential for sharing models.",
         audit_fields={"package": package_id}, client=client,
     )
 

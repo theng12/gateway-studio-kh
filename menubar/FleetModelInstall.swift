@@ -43,17 +43,26 @@ enum FleetModelInstall {
         let name = machine.label ?? machine.machine ?? "this Mac"
         alert.messageText = "Install a model on \(name)"
         alert.informativeText = "These are the models \(name) has the memory to run and does not have yet. "
-            + "It downloads the one you choose by itself; its controller checks the disk space first."
+            + "It downloads the one you choose by itself; its controller checks the disk space first. "
+            + "\u{201C}Every Mac\u{201D} puts it on all the Macs that can run it: each network downloads it "
+            + "once, and its Macs copy it from each other."
         alert.accessoryView = picker
         alert.addButton(withTitle: "Install")
+        alert.addButton(withTitle: FleetModelSpread.actionTitle)
         alert.addButton(withTitle: "Cancel")
         return (alert, picker)
     }
 
     static func choose(_ machine: FleetMachine, _ models: [FleetInstallableModel], done: @escaping () -> Void) {
         let (alert, picker) = pickerAlert(for: machine, models)
-        guard alert.runModal() == .alertFirstButtonReturn, models.indices.contains(picker.indexOfSelectedItem) else { return }
-        install(machine, models[picker.indexOfSelectedItem], done: done)
+        let answer = alert.runModal()
+        guard models.indices.contains(picker.indexOfSelectedItem) else { return }
+        let model = models[picker.indexOfSelectedItem]
+        if answer == .alertFirstButtonReturn {
+            install(machine, model, done: done)
+        } else if answer == .alertSecondButtonReturn, let package = model.packageId {
+            FleetNetwork.installEverywhere(packageId: package, label: model.label ?? package, confirm: false, done: done)
+        }
     }
 
     private static func path(_ machine: FleetMachine) -> String? {

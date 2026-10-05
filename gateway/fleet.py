@@ -2463,6 +2463,44 @@ def _current_job(machine: dict, entry: dict) -> dict | None:
 _GENERIC_MACHINE_LABELS = frozenset({"this mac", "this-mac", "this computer", "local", "localhost", "mac"})
 
 
+#: A Mac counts as "low on memory" as a *fault* only when it cannot work (2026-10-05 owner rule: 1.6-1.8 GB free
+#: while generating on an 8 GB Mac is normal, and a warning that is always on is never read).
+MEMORY_IDLE_FAULT_S = 300.0
+MEMORY_SWAP_FAULT_GB = 4.0
+#: (location id, machine) -> when it first read idle-and-low in this unbroken stretch. In memory only: a Gateway
+#: restart restarts the five minutes, which errs towards silence.
+_MEMORY_LOW_SINCE: dict[tuple[str, str], float] = {}
+
+
+def memory_fault(row: dict, now: float) -> str | None:
+    """Why this Mac's memory is a fault, or `None` (the meter may still be amber; that is information).
+
+    A fault is one of: macOS memory pressure critical (when the Hub says so); heavy swapping; or idle
+    (no job, not `working`) with free memory under the start floor for 5 minutes -- it cannot take work.
+    Low free memory while a job runs is never one.
+    """
+    key = (str(row.get("location_id") or ""), str(row.get("machine") or ""))
+    free, total = _num(row.get("available_gb")), _num(row.get("memory_gb"))
+    if row.get("reachable") is False or free is None or not total:
+        _MEMORY_LOW_SINCE.pop(key, None)
+        return None
+    busy = bool(row.get("current")) or str(row.get("state") or "").lower() == "working"
+    floor = _num((row.get("workstation") or {}).get("start_free_gb")) or total * 0.20
+    since = None
+    if busy or free >= floor:
+        _MEMORY_LOW_SINCE.pop(key, None)
+    else:
+        since = _MEMORY_LOW_SINCE.setdefault(key, now)
+    swap = _num((row.get("disk") or {}).get("swap_used_gb"))
+    if str(row.get("memory_pressure") or "").lower() == "critical":
+        return "macOS memory pressure is critical"
+    if swap is not None and swap >= MEMORY_SWAP_FAULT_GB:
+        return f"swapping heavily ({swap:.1f} GB swap in use)"
+    if since is not None and now - since >= MEMORY_IDLE_FAULT_S:
+        return f"idle with only {free:.1f} GB free for {int((now - since) // 60)} min: it cannot take work"
+    return None
+
+
 def _is_generic_label(text: object) -> bool:
     clean = str(text or "").strip().lower()
     return not clean or clean in _GENERIC_MACHINE_LABELS
@@ -2803,6 +2841,7 @@ def machines_flat(rows: list[dict]) -> list[dict]:
                 # total, so "Apple M4 · 17.18 GB" beside "118.11 GB free" read as
                 # though the memory were free too.
                 "available_gb": machine.get("available_gb"),
+                "memory_pressure": machine.get("memory_pressure"),
                 "disk_free_gb": machine.get("disk_free_gb"),
                 "disk_total_gb": machine.get("disk_total_gb"),
                 "disk": machine_disk(machine),
@@ -2844,9 +2883,11 @@ def machines_flat(rows: list[dict]) -> list[dict]:
                 "current": _current_job({}, entry),
                 **health_fields(mid, {}, entry, _startup_fact({}, nodes.get(mid) or {}), workstation),
             })
+    now = time.time()
     for machine_row in out:
         # `no_hub` / `unreachable` / `None`: the one reading of why the controller could not reach it.
         machine_row["reach_reason"] = _node_reach_reason(machine_row) or None
+        machine_row["memory_fault"] = memory_fault(machine_row, now)
     return out
 
 
