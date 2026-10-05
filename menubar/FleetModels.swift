@@ -751,6 +751,8 @@ struct FleetMachine: Decodable {
     /// admission uses this number, and a reader who sees only the total takes it
     /// for free memory — the column says "free" for disk and said nothing here.
     var availableGb: Double?
+    /// The Gateway's sentence when this Mac's memory is a fault (see `faultMemoryHealth`); nil when it is not.
+    var memoryFault: String?
     var diskFreeGb: Double?
     var diskTotalGb: Double?
     /// The Mac's disk state and top consumers (see `FleetDisk`); nil from a gateway that

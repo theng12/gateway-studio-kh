@@ -459,6 +459,28 @@ def installs() -> list:
     return model_share.status()
 
 
+def memory() -> list:
+    """GATEWAY_RENDER_FIXTURE=memory: two 8 GB groups. "Breeze Room" generates on all three Macs at 1.3-1.55 GB
+    free (amber meters, but normal: no Attention). "Stuck Room" has one Mac idle at 1.2 GB free for 10 minutes (cannot take work:
+    Attention), beside a healthy idle one."""
+    def room(lid, label, specs):
+        machines, activities, nodes = [], [], []
+        for i, (mid, avail, busy) in enumerate(specs):
+            job = {"batch_id": f"b-{mid}", "model": QWEN, "label": "Breeze chapter", "studio": "image",
+                   "started_at": NOW - 6 * MIN} if busy else None
+            machines.append(machine(mid, f"{label} {i + 1}", "Apple M1", 8.0, avail, 140.0, disk_total=256.0,
+                                    modalities={"image": 12}, current=job))
+            activities.append(activity(mid, "working" if busy else "ready", 12, 0, 80.0))
+            nodes.append(node(mid, "reachable", address=f"http://100.64.9.{i + 2}:47873", seen=4, studios=("image",)))
+        return location(lid, label, f"http://100.64.9.1:47873", machines=machines, activities=activities, nodes=nodes,
+                        workers=[worker(m["machine"], "image", busy=bool(m.get("current"))) for m in machines])
+    breeze = room("ctrl-breeze", "Breeze Room", [("br-1", 1.3, True), ("br-2", 1.5, True), ("br-3", 1.55, True)])
+    stuck = room("ctrl-stuck", "Stuck Room", [("st-1", 1.2, False), ("st-2", 5.1, False)])
+    # The fixture cannot wait five minutes: st-1 has read idle-and-low for ten already.
+    fleet._MEMORY_LOW_SINCE[("ctrl-stuck", "st-1")] = NOW - 10 * MIN  # noqa: SLF001
+    return [breeze, stuck]
+
+
 def build() -> dict:
     flavour = os.environ.get("GATEWAY_RENDER_FIXTURE", "")
     networks()
@@ -557,6 +579,8 @@ def build() -> dict:
         rows = [local, garage] if flavour == "paused" else [studio2]
     if flavour in ("workstation", "lite-pending"):
         rows = [shops()]
+    if flavour == "memory":
+        rows = memory()
     if flavour == "lite-pending":
         # GATEWAY_RENDER_FIXTURE=lite-pending: Shop 3 went offline after a Lite Mode change was saved for it.
         shop = rows[0]

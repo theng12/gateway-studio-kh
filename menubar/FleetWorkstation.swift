@@ -293,6 +293,9 @@ extension FleetMachine {
         return word.dropFirst().contains(where: \.isUppercase) ? reason : first.uppercased() + reason.dropFirst()
     }
 
-    /// Memory as a fault for a group to count: the shop's own use of a Mac it is using is not one.
-    var faultMemoryHealth: Health { liteModeResting ? .off : memoryHealth }
+    /// Memory as a fault for a group to count. Low free memory is normal while a Mac generates (8 GB Macs sit at
+    /// 1.6-1.8 GB free mid-job), so the meter (`memoryHealth`) stays amber/red as information and only the
+    /// Gateway's `memory_fault` (critical pressure, heavy swap, or idle and too low to take work for 5 minutes)
+    /// is a fault. The shop's own use of a Mac it is using is not one either.
+    var faultMemoryHealth: Health { liteModeResting || memoryFault == nil ? .off : max(memoryHealth, .warn) }
 }
