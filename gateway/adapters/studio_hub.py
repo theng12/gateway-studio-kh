@@ -2173,6 +2173,25 @@ class StudioHubBackend:
         )
         return _recorded_call("POST", f"{_resolve_base(request)}{route}", _headers(request), route)
 
+    def reconcile(self, request: BackendRequest) -> dict[str, Any]:
+        """Ask the Hub to settle an uncertain item from its original worker (2026-10-05).
+
+        The Hub's reconcile route only reads the original job - it never submits another - and
+        adopts a finished one or records the worker's own failure; either way the Mac is released.
+        The controller relays it to the node that ran it, with the fleet credential this gateway
+        already holds. Operator-initiated, like `discard`; the hold sweep (`worker.reconcile_holds`)
+        then settles the job from the Hub's answer. The Hub has no reconcile route for transcription.
+        """
+        batch_id = str(request.upstream_job_id or "").strip()
+        if not batch_id:
+            return {"ok": False, "status": None,
+                    "reason": "nothing was dispatched to the Hub for this job"}
+        if request.modality == "transcription":
+            return {"ok": False, "status": None,
+                    "reason": "the Hub has no reconcile route for transcription batches"}
+        route = f"/api/hub/jobs/{batch_id}/items/{request.upstream_item_index}/reconcile"
+        return _recorded_call("POST", f"{_resolve_base(request)}{route}", _headers(request), route)
+
     def cancel(self, request: BackendRequest) -> dict[str, Any]:
         """Stop a Hub batch this gateway dispatched.
 

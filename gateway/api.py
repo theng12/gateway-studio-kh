@@ -427,7 +427,10 @@ def recovery_action(job: dict[str, Any]) -> str | None:
         # The lane's own statement outranks the adapter's capability: the adapter
         # has a discard call, and this lane's contract says it does not apply.
         return "close_hold"
-    return "discard_upstream" if _named_attempt(job) else None
+    # A Hub hold that names no attempt (a submit that timed out before the Hub answered, from
+    # before such a submit waited in the queue) used to get no action at all, and the hold sweep
+    # cannot reach it either: three such rows sat from 2026-10-03 with no way to clear them.
+    return "discard_upstream" if _named_attempt(job) else "close_hold"
 
 
 def _discard_recovery_hold(job_id: str) -> dict[str, Any]:
@@ -471,12 +474,17 @@ def _discard_recovery_hold(job_id: str) -> dict[str, Any]:
         # queued attempt). Calling anyway would get a refusal and leave the hold,
         # so it takes the same path as a lane with no discard call at all.
         discard = None
+    unnamed = discard is not None and not _named_attempt(job)
+    if unnamed:
+        discard = None
     if discard is None:
         # **Nothing upstream can be told, so the record is closed here and the
         # sentence says so.** The lane either has no discard route, says the one it
         # has does not apply here, or is no longer configured; in every case the
         # gateway would be quoting a discard that never happened if it claimed one.
-        if lane_declined:
+        if unnamed:
+            lane = "This hold does not name the upstream attempt it was waiting on"
+        elif lane_declined:
             lane = "This lane's own contract states it has no discard route"
         elif definition is not None:
             lane = f"The {definition.kind} lane has no discard route"
@@ -494,14 +502,7 @@ def _discard_recovery_hold(job_id: str) -> dict[str, Any]:
             "discard": None,
             "job": _job_envelope(closed or store.get(job_id), native=True),
         }
-    batch, index = _named_attempt(job) or ("", 0)
-    if not batch:
-        raise GatewayError(
-            409,
-            "This hold does not name the upstream attempt it is waiting on — it was recorded "
-            "before the gateway kept that context, so reconcile it at the source instead.",
-            "RECOVERY_CONTEXT_MISSING",
-        )
+    batch, index = _named_attempt(job)
     request = BackendRequest(
         provider_id=provider_id,
         model_id=str(job.get("model_id") or ""),
@@ -542,6 +543,64 @@ def _discard_recovery_hold(job_id: str) -> dict[str, Any]:
         "closed": "upstream",
         "discard": answer,
         "job": _job_envelope(closed or store.get(job_id), native=True),
+    }
+
+
+def _reconcile_recovery_hold(job_id: str) -> dict[str, Any]:
+    """Ask the upstream to settle a hold from its original worker, on the operator's word.
+
+    The alternative to discarding: a node that finished the work while its controller restarted
+    still holds the result, and discarding throws it away (2026-10-05, five Z-Image renders). The
+    Hub reads only the original job, adopts it if it finished or records the worker's own failure,
+    and releases the Mac either way; nothing is resubmitted. The hold stays as it is here - the
+    hold sweep (`worker.reconcile_holds`, each minute) adopts a `done` item or closes a failed one
+    from the Hub's own record - so this route only asks, and reports what the Hub said.
+    """
+    job = store.get(job_id)
+    if job is None:
+        raise GatewayError(404, "No such job.", "JOB_NOT_FOUND")
+    if not job.get("recovery_state"):
+        raise GatewayError(
+            409, "This job is not waiting on a recovery hold, so there is nothing to reconcile.",
+            "NO_RECOVERY_HOLD",
+        )
+    provider_id = str(job.get("provider_id") or "")
+    definition = registry.definition(provider_id)
+    reconcile = getattr(adapter_for(definition), "reconcile", None) if definition else None
+    if reconcile is None:
+        raise GatewayError(409, "This lane has no reconcile route; discard or close the hold instead.",
+                           "NO_RECONCILE_ROUTE")
+    batch, index = _named_attempt(job) or ("", 0)
+    if not batch:
+        raise GatewayError(
+            409, "This hold does not name the upstream attempt it is waiting on.",
+            "RECOVERY_CONTEXT_MISSING",
+        )
+    request = BackendRequest(
+        provider_id=provider_id, model_id=str(job.get("model_id") or ""),
+        modality=str(job.get("modality") or ""), params={},
+        values=registry.credentials.resolved(provider_id), base_url=definition.base_url,
+        display_name=definition.display_name, upstream_job_id=batch, upstream_item_index=index,
+    )
+    try:
+        answer = reconcile(request)
+    except Exception as exc:  # noqa: BLE001 - an action must report, not 500
+        answer = {"ok": False, "status": None, "error": f"{type(exc).__name__}: {exc}"}
+    if not isinstance(answer, dict):
+        answer = {"ok": False, "status": None, "error": f"unreadable reconcile answer: {answer!r}"}
+    hub = answer.get("answer") if isinstance(answer.get("answer"), dict) else {}
+    if not answer.get("ok"):
+        reason = (hub.get("detail") or answer.get("reason") or answer.get("error")
+                  or f"HTTP {answer.get('status')}")
+        raise GatewayError(409, f"The upstream did not reconcile the attempt: {reason}",
+                           "RECONCILE_REFUSED")
+    item = hub.get("item") if isinstance(hub.get("item"), dict) else {}
+    return {
+        "ok": True,
+        "reconciled": bool(hub.get("reconciled")),
+        "item_state": item.get("state"),
+        "reconcile": answer,
+        "job": _job_envelope(store.get(job_id), native=True),
     }
 
 

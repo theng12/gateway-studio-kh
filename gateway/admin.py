@@ -1493,6 +1493,21 @@ def discard_uncertain_job(job_id: str) -> Any:
         return _error(exc.status, exc.detail, exc.code)
 
 
+@router.post("/api/jobs/{job_id}/reconcile-hold", dependencies=[Depends(require_admin)])
+def reconcile_hold_job(job_id: str) -> Any:
+    """Ask the Hub to settle a "Needs recovery" job from its original worker (keeps a finished result).
+
+    Explicit operator action, as `discard-uncertain` is; nothing schedules it. The hold sweep then
+    adopts or closes the job from the Hub's answer within a minute.
+    """
+    from .api import GatewayError, _reconcile_recovery_hold
+
+    try:
+        return _reconcile_recovery_hold(job_id)
+    except GatewayError as exc:
+        return _error(exc.status, exc.detail, exc.code)
+
+
 # ---------------------------------------------------------------------------
 # Voices
 #

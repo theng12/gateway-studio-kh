@@ -14,6 +14,12 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.130 — 2026-10-05
+
+Jobs:
+- A job waiting on "Needs recovery" can now ask its Studio Hub to check the original Mac first: if that Mac finished the work, the result is kept instead of thrown away (`POST /admin/api/jobs/{id}/reconcile-hold`).
+- A "Needs recovery" Studio Hub job that never learned its Hub batch (a submit that timed out) can now be closed from the Jobs window; it used to have no button at all.
+
 ## 0.2.129 — 2026-10-05
 
 Fleet:

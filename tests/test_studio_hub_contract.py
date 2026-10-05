@@ -95,6 +95,7 @@ class _Hub:
         self.acks: list[str] = []
         self.deletes: list[str] = []
         self.discards: list[str] = []
+        self.reconciles: list[str] = []
         self.payloads: list[Any] = []
         self._states = list(states or ["done"])
         self.artifact = artifact
@@ -145,6 +146,12 @@ class _Hub:
                     "running_pending": 0,
                 },
             )
+        if method == "POST" and path.endswith("/reconcile"):
+            self.reconciles.append(path)
+            if self.discard_status >= 400:
+                return httpx.Response(self.discard_status, json={"detail": "Image item is not uncertain"})
+            return httpx.Response(200, json={"batch_id": BATCH, "reconciled": True,
+                                             "item": {"state": "done"}})
         if method == "POST" and path.endswith("/discard"):
             self.discards.append(path)
             if self.discard_status >= 400:
@@ -1263,6 +1270,41 @@ class DiscardActionTests(_HubCase):
         self.assertIsNone(job["recovery_context"])
         self.assertEqual(job["discard_remote"]["status"], 200)
 
+    def _reconcile(self, job_id: str, hub: _Hub) -> Any:
+        definition = SimpleNamespace(
+            id="studio-hub-test", kind="studio_hub", base_url=HUB, display_name="Hub"
+        )
+        with patch.object(
+            self.api.registry, "definition", return_value=definition
+        ), patch.object(
+            self.api.registry.credentials, "resolved", return_value={"hub_token": "t"}
+        ), self.hub_client(hub):
+            return self.client.post(f"/admin/api/jobs/{job_id}/reconcile-hold")
+
+    def test_the_operator_can_ask_the_hub_to_reconcile_a_hold(self) -> None:
+        """2026-10-05: five finished node renders were discarded for want of this from the Gateway."""
+        hub = _Hub()
+        job_id = self._hold()
+        response = self._reconcile(job_id, hub)
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual((response.json()["reconciled"], response.json()["item_state"]), (True, "done"))
+        self.assertEqual(hub.reconciles, [f"/api/hub/jobs/{BATCH}/items/0/reconcile"])
+        self.assertEqual(hub.discards, [])
+        self.assertTrue(self.api.store.get(job_id)["recovery_required"],
+                        "the hold sweep settles it from the Hub's record, not this route")
+
+    def test_a_refused_reconcile_and_a_non_hold_are_reported(self) -> None:
+        job_id = self._hold()
+        response = self._reconcile(job_id, _Hub(discard_status=400))
+        self.assertEqual((response.status_code, response.json()["code"]), (409, "RECONCILE_REFUSED"))
+        self.assertIn("not uncertain", response.json()["detail"])
+        row, _ = self.api.store.submit(modality="music", model_id="model/test", params={"prompt": "x"},
+                                       idempotency_key=f"live-{self.id()}", provider_id="studio-hub-test")
+        hub = _Hub()
+        response = self._reconcile(row["id"], hub)
+        self.assertEqual((response.status_code, response.json()["code"]), (409, "NO_RECOVERY_HOLD"))
+        self.assertEqual(hub.reconciles, [])
+
     def test_a_job_that_is_not_a_hold_is_refused(self) -> None:
         hub = _Hub()
         row, _ = self.api.store.submit(
@@ -1277,13 +1319,18 @@ class DiscardActionTests(_HubCase):
         self.assertEqual(response.json()["code"], "NO_RECOVERY_HOLD")
         self.assertEqual(hub.discards, [], "live work must never be discarded")
 
-    def test_a_hold_recorded_without_context_is_refused_plainly(self) -> None:
+    def test_a_hold_recorded_without_context_is_closed_here_and_says_so(self) -> None:
+        """It used to be refused with RECOVERY_CONTEXT_MISSING and drawn with no button, so nothing
+        could clear it (three 2026-10-03 submit-timeout holds). Nothing is sent upstream."""
         hub = _Hub()
         job_id = self._hold(context=False)
         response = self._discard(job_id, hub)
-        self.assertEqual(response.status_code, 409, response.text)
-        self.assertEqual(response.json()["code"], "RECOVERY_CONTEXT_MISSING")
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["closed"], "local")
         self.assertEqual(hub.discards, [])
+        job = self.api.store.get(job_id)
+        self.assertFalse(job["recovery_required"])
+        self.assertIn("does not name the upstream attempt", job["error_detail"])
 
     def test_a_refused_discard_keeps_the_hold(self) -> None:
         hub = _Hub(discard_status=400)
@@ -1351,11 +1398,10 @@ class DiscardActionTests(_HubCase):
             self.assertEqual(api_module.recovery_action(job), "close_hold")
         with patch.object(self.api.registry, "definition", return_value=hub_definition):
             self.assertEqual(api_module.recovery_action(job), "discard_upstream")
-        # A Hub hold that names no attempt has no honest action, so the window
-        # must draw no button rather than one that fails on press.
+        # A Hub hold that names no attempt can only be closed here (nothing upstream to aim at).
         unnamed = dict(job, recovery_context=None)
         with patch.object(self.api.registry, "definition", return_value=hub_definition):
-            self.assertIsNone(api_module.recovery_action(unnamed))
+            self.assertEqual(api_module.recovery_action(unnamed), "close_hold")
         # And a settled job is not a hold at all.
         self.assertIsNone(api_module.recovery_action(dict(job, recovery_required=False)))
 
