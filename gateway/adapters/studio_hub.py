@@ -458,31 +458,69 @@ def _headers(request: BackendRequest) -> dict[str, str]:
     )
 
 
-#: What one Hub-recommended request (`maximum_input_characters`) is allowed to take: the Hub sizes
-#: that chunk so a request finishes in about this long on the slowest Mac allowed to run the model.
-TTS_CHUNK_BUDGET_S = 900.0
+#: A narration's own run allowance (owner decision 2026-10-05, Breeze night-atlas failures):
+#: `ceil(chars / 8.6) x RTF x 3 + 300` s, clamped to [the lane's stated deadline, 7,200 s]. 8.6 is
+#: Breeze's slowest measured narration rate (characters per audio second); RTF is generation seconds
+#: per audio second for the Mac running it: its own measured median for this model, else its Mac
+#: class's, else 5.22 (the slowest class measured, M1 16 GB). x3 covers section re-renders (measured
+#: up to 3.47 renders per delivered section) and +300 s a cold model and Whisper load.
+TTS_CHARS_PER_AUDIO_S = 8.6
+TTS_FALLBACK_RTF = 5.22
+TTS_DEADLINE_MARGIN = 3.0
+TTS_DEADLINE_OVERHEAD_S = 300.0
+TTS_DEADLINE_CEILING_S = 7200.0
 
 
-def _tts_length_deadline(request: BackendRequest, raw: dict[str, Any], contract: Any) -> float:
-    """A long narration's own time allowance: one chunk budget per Hub-recommended chunk of text.
+def _tts_rtf(provider_id: str, model_id: str, machine: str | None) -> float:
+    """This Mac's measured RTF for this voice model, else its Mac class's, else `TTS_FALLBACK_RTF`.
 
-    The Hub sections a long script and its deadline grows with the input, so this gateway's poll
-    must not stop at the lane's flat number while the Hub is still inside its own. `0` (no
-    opinion) unless the model states a chunk size and the job carries text.
-    ponytail: floor only -- the Hub's stated `deadline_seconds` still wins when it is larger.
+    `machine` is the Hub's own name for the Mac running the item (`local` for the controller), the
+    same value a finished job records as `hub_machine`. `None` (not dispatched yet) is the fallback.
+    """
+    if not machine:
+        return TTS_FALLBACK_RTF
+    try:
+        import statistics
+
+        from .. import fleet
+        from ..admin import mac_class
+        from ..runtime import store
+
+        samples = store.tts_speed_samples(model_id)
+        own = [rtf for p, m, rtf in samples if (p, m) == (provider_id, machine)]
+        if own:
+            return statistics.median(own)
+        classes = {
+            (str(row.get("provider_id") or ""), str(mac.get("machine") or "")):
+                mac_class(mac.get("chip"), mac.get("memory_gb"))
+            for row in fleet.snapshot(allow_stale=True).get("locations") or []
+            for mac in row.get("machines") or []
+        }
+        mine = classes.get((provider_id, machine))
+        same = [rtf for p, m, rtf in samples
+                if mine and "unknown" not in mine and "?" not in mine and classes.get((p, m)) == mine]
+        if same:
+            return statistics.median(same)
+    except Exception:  # noqa: BLE001 - no measurement read is "unmeasured", never a failed job
+        log.debug("could not read measured TTS speed", exc_info=True)
+    return TTS_FALLBACK_RTF
+
+
+def _tts_length_deadline(request: BackendRequest, machine: str | None = None) -> float:
+    """A narration's own run allowance on `machine` (see `TTS_CHARS_PER_AUDIO_S`); `0` for other lanes.
+
+    ponytail: floor only -- the lane's stated `deadline_seconds` still wins when it is larger.
     """
     if request.modality != "tts":
         return 0.0
-    chunk = raw.get("maximum_input_characters")
-    if not isinstance(chunk, (int, float)) and isinstance(contract, dict):
-        chunk = contract.get("maximum_input_characters")
-    if isinstance(chunk, bool) or not isinstance(chunk, (int, float)) or chunk <= 0:
-        return 0.0
     text = request.params.get("text") if isinstance(request.params, dict) else None
-    return -(-len(str(text or "")) // int(chunk)) * TTS_CHUNK_BUDGET_S
+    audio_s = -(-len(str(text or "")) // TTS_CHARS_PER_AUDIO_S)
+    rtf = _tts_rtf(request.provider_id, request.model_id, machine)
+    return min(TTS_DEADLINE_CEILING_S,
+               audio_s * rtf * TTS_DEADLINE_MARGIN + TTS_DEADLINE_OVERHEAD_S)
 
 
-def lane_deadline_seconds(request: BackendRequest | None) -> float:
+def lane_deadline_seconds(request: BackendRequest | None, machine: str | None = None) -> float:
     """How long to poll this job, as the **lane that enforces it** states it.
 
     Hub 0.6.61 puts `deadline_seconds` inside each model's `lane_contract` — its
@@ -490,6 +528,9 @@ def lane_deadline_seconds(request: BackendRequest | None) -> float:
     Reading it is what stops this gateway from cutting a lane short at its own flat
     `JOB_DEADLINE_S` after the Hub has raised its ceiling, which would fail a job
     that was about to succeed.
+
+    A narration's own allowance (`_tts_length_deadline`) on `machine` -- the Mac the Hub says runs
+    it, once it says -- raises a voice job above the lane's number.
 
     Falls back to `JOB_DEADLINE_S` whenever nothing states one: an older Hub, a
     lane with no contract, or a job whose model is not in the cache. The read is
@@ -526,7 +567,7 @@ def lane_deadline_seconds(request: BackendRequest | None) -> float:
                 # than failing every poll instantly on a nonsensical number.
                 if isinstance(stated, (int, float)) and not isinstance(stated, bool) and stated > 0:
                     base = float(stated)
-            return max(base, _tts_length_deadline(request, raw, contract))
+            return max(base, _tts_length_deadline(request, machine))
     except Exception:  # noqa: BLE001 - an unreadable contract is "unstated"
         return JOB_DEADLINE_S
     return JOB_DEADLINE_S
@@ -556,13 +597,16 @@ class HubProgress:
     `fleet_activity`, a surface we do not poll for a job.
     """
 
-    __slots__ = ("stalled", "worst_no_progress_s", "stalled_after_s", "samples")
+    __slots__ = ("stalled", "worst_no_progress_s", "stalled_after_s", "samples", "machine",
+                 "run_s")
 
     def __init__(self) -> None:
         self.stalled = False
         self.worst_no_progress_s: float | None = None
         self.stalled_after_s: int | None = None
         self.samples = 0
+        self.machine: str | None = None  # the Mac the Hub said runs the item
+        self.run_s = 0.0  # seconds the item has run (what the lane budget counts)
 
     def note(self, summary: dict[str, Any]) -> None:
         """Record one poll's figure, if it stated one."""
@@ -598,6 +642,11 @@ class HubProgress:
             "samples": self.samples,
         }
 
+    def evidence(self, batch_id: str) -> dict[str, Any]:
+        """What a failed item leaves on the job record: which Mac, which batch, how long it ran."""
+        return {"hub_batch_id": batch_id, "hub_machine": self.machine,
+                "run_seconds": round(self.run_s, 1), "hub_progress": self.as_payload()}
+
     def why(self) -> str:
         """One clause for an error message, or `""` when it adds nothing."""
         if not self.stalled:
@@ -620,8 +669,12 @@ def _poll_batch(
     on_wait: Callable[[dict[str, Any] | None], None] | None = None,
     dispatched_at: float | None = None,
     stranded: Callable[[], bool] | None = None,
+    deadline_for_machine: Callable[[str], float] | None = None,
 ) -> dict[str, Any]:
     """Poll a Hub batch to a terminal state.
+
+    `deadline_for_machine` re-reads the limit once the Hub names the Mac running the item (a
+    narration's allowance depends on that Mac's measured speed); without it the limit is fixed.
 
     `jobs_path` differs by modality: image and voice share `/api/hub/jobs`,
     while transcription batches live under `/api/hub/transcription/jobs` and
@@ -658,6 +711,7 @@ def _poll_batch(
     running = False
     waiting_key: tuple[Any, ...] | None = None
     waiting_since = 0.0
+    seen_machine = ""  # the Mac the Hub last said runs the item
     caught_up = False  # `ran` has been seeded from the job's own start (`dispatched_at` fallback)
     withdraw_after = 0.0  # queued seconds before the next try at withdrawing a stranded item
     last: dict[str, Any] = {}
@@ -672,6 +726,8 @@ def _poll_batch(
         else:
             queued_for += now - tick
         tick = now
+        if progress is not None:
+            progress.run_s = ran
         # The ceiling is for a batch that is *still queued*: measured from `started` it also
         # withdrew (DELETE) an item that had waited 2 h 50 and then begun rendering, at the
         # three-hour mark of wall time.
@@ -744,6 +800,16 @@ def _poll_batch(
         item = items[item_index] if item_index < len(items) else None
         state = str((item or {}).get("state") or summary.get("state") or "").lower()
         running = state != "queued"
+        # The Mac running it, as the Hub names it ("studio@machine"; a bare studio is the controller).
+        studio = str((item or {}).get("studio") or "")
+        machine = str((item or {}).get("machine") or studio.partition("@")[2]
+                      or ("local" if studio else ""))
+        if running and machine and machine != seen_machine:
+            seen_machine = machine
+            if progress is not None:
+                progress.machine = machine
+            if deadline_for_machine is not None:
+                limit = float(deadline_for_machine(machine) or limit)
         if state == "running":
             reported = (item or {}).get("elapsed_s")
             if isinstance(reported, (int, float)) and not isinstance(reported, bool) and reported >= 0:
@@ -890,7 +956,8 @@ def _poll_batch(
             return settled  # it finished while we were stopping it: the result is real, keep it
         if state in _TERMINAL_BAD:
             raise BackendError(
-                f"the job ran past its {int(limit)}s limit on the Mac and was stopped there{why}",
+                f"the job ran past its {int(limit)}s limit on the Mac"
+                + (f" {seen_machine}" if seen_machine else "") + f" and was stopped there{why}",
                 code="DEADLINE_EXCEEDED",
                 upstream_settled=True,
             )
@@ -1578,13 +1645,18 @@ def _generate_image_or_voice(request: BackendRequest) -> BackendResult:
             request.checkpoint(batch_id)
 
         progress = HubProgress()
-        outcome = _poll_batch(
-            client, base, headers, batch_id, 0,
-            deadline_seconds=lane_deadline_seconds(request),
-            progress=progress,
-            on_wait=request.on_wait,
-            stranded=_stranded(request),
-        )
+        try:
+            outcome = _poll_batch(
+                client, base, headers, batch_id, 0,
+                deadline_seconds=lane_deadline_seconds(request),
+                progress=progress,
+                on_wait=request.on_wait,
+                stranded=_stranded(request),
+                deadline_for_machine=lambda machine: lane_deadline_seconds(request, machine),
+            )
+        except BackendError as exc:
+            exc.evidence = progress.evidence(batch_id)
+            raise
         return _collect_batch(client, base, headers, request, batch_id, outcome, progress)
 
 
@@ -2050,9 +2122,11 @@ class StudioHubBackend:
                     jobs_path=jobs_path, deadline_seconds=lane_deadline_seconds(request),
                     progress=progress, on_wait=request.on_wait,
                     dispatched_at=request.dispatch_started_at, stranded=_stranded(request),
+                    deadline_for_machine=lambda machine: lane_deadline_seconds(request, machine),
                 )
             except BackendError as exc:
                 if exc.status != 404:
+                    exc.evidence = progress.evidence(batch_id)
                     raise
                 raise BackendError(
                     f"after a gateway restart the Hub at {base} has no record of batch {batch_id}",

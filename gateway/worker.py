@@ -76,7 +76,10 @@ _DEFER_CAP_S = concurrency.DEFAULT_DEFER_CAP_S
 
 #: A job that ran past its own time limit is not retried on another Mac: the limit is the lane's
 #: ceiling for this work, so another machine would only spend the same time again. It is stopped on
-#: the Hub and reported.
+#: the Hub and reported. **Except once, for free Studio Hub work** (owner decision 2026-10-05): the
+#: Breeze night-atlas deadline failures were slow Macs (M1 16 GB), not the job, so it moves to
+#: another location one time and that move does not count against the retry ceiling
+#: (`_deadline_reroute_left`). Paid lanes never move on it.
 _NO_REROUTE_CODES = {"DEADLINE_EXCEEDED"}
 
 #: A shop's workstation Mac stopped the job (macOS critical memory pressure for 20 s, rare) and its
@@ -95,6 +98,15 @@ _HANDBACK_CODES = frozenset({WORKSTATION_YIELDED, "INSUFFICIENT_MEMORY", "NO_AVA
 #: workstation yield, and a group whose every Mac able to run the model is paused
 #: (`NO_AVAILABLE_MACHINE`, from the Hub or the Gateway's own stranded-queue check, 2026-10-04).
 _UNCOUNTED_CODES = frozenset({WORKSTATION_YIELDED, "NO_AVAILABLE_MACHINE"})
+#: What the retry ceiling does not count: the hand-backs above, and the one free deadline move.
+_UNCOUNTED_ATTEMPT_CODES = _UNCOUNTED_CODES | _NO_REROUTE_CODES
+
+
+def _deadline_reroute_left(store: Any, job_id: str) -> bool:
+    """True while this job has not yet been moved after a `DEADLINE_EXCEEDED` (one move only)."""
+    attempts_of = getattr(store, "attempts_of", None)
+    attempts = attempts_of(job_id) if attempts_of is not None else []
+    return not any(entry.get("code") in _NO_REROUTE_CODES for entry in attempts or [])
 
 
 def _client_request_id(store: Any, job_id: str, provider_id: str) -> str:
@@ -330,7 +342,7 @@ def _next_machine(store: JobStore, job_id: str, model_id: str, modality: str,
     tried = {_location(entry.get("location")) for entry in attempts}
     tried.add(_location(provider_id))
     tried.discard("")
-    if sum(entry.get("code") not in _UNCOUNTED_CODES for entry in attempts) >= int(policy["max_attempts"]):
+    if sum(entry.get("code") not in _UNCOUNTED_ATTEMPT_CODES for entry in attempts) >= int(policy["max_attempts"]):
         # The ceiling the owner named. The failure path builds the sentence from this log.
         return None
     chosen, _note = fleet.route(model_id, modality, exclude_locations=tried)
@@ -472,6 +484,7 @@ def _fail(
     recovery_state: str | None = None,
     recovery_detail: str | None = None,
     recovery_context: dict[str, Any] | None = None,
+    evidence: dict[str, Any] | None = None,
 ) -> None:
     """Settle a real store, while keeping the small legacy test double usable."""
     try:
@@ -483,6 +496,7 @@ def _fail(
             recovery_state=recovery_state,
             recovery_detail=recovery_detail,
             recovery_context=recovery_context,
+            **({"evidence": evidence} if evidence else {}),
         )
     except TypeError as exc:
         if "unexpected keyword" not in str(exc):
@@ -885,7 +899,9 @@ def _dispatch(job: dict[str, Any], store: JobStore, provider_id: str, model_id: 
             # A pinned voice is excluded: its reference clip lives on one controller, so there is
             # no other machine that could serve it and a "retry" would only be a slower failure.
             # A workstation yield is free Studio Hub work only: no paid lane is ever moved on it.
-            if (not unknown and pinned is None and exc.code not in _NO_REROUTE_CODES
+            if (not unknown and pinned is None
+                    and (exc.code not in _NO_REROUTE_CODES
+                         or (kind_is_hub and _deadline_reroute_left(store, job_id)))
                     and (exc.code != WORKSTATION_YIELDED or kind_is_hub)):
                 moved = _next_machine(
                     store, job_id, model_id, modality, provider_id,
@@ -957,6 +973,7 @@ def _dispatch(job: dict[str, Any], store: JobStore, provider_id: str, model_id: 
                 recovery_state=RECOVERY_UNKNOWN if unknown else None,
                 recovery_detail=recovery_detail if unknown else None,
                 recovery_context=exc.recovery if unknown else None,
+                evidence=getattr(exc, "evidence", None),
             )
             return
         except Exception as exc:  # noqa: BLE001 - a backend bug must not kill the worker
