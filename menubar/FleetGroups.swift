@@ -766,7 +766,9 @@ final class FleetGroupsTab: NSView, NSSearchFieldDelegate {
             line.append(NSAttributedString(string: version.text + " · ",
                                            attributes: [.font: TextRole.secondary.font, .foregroundColor: colour]))
         }
-        let words = problems.isEmpty ? "\(group.nodeCount) node\(group.nodeCount == 1 ? "" : "s") · \(group.lastAnswer)" : problems.joined(separator: " · ")
+        var words = problems.isEmpty ? "\(group.nodeCount) node\(group.nodeCount == 1 ? "" : "s") · \(group.lastAnswer)" : problems.joined(separator: " · ")
+        // The group's own network, last, only when one is set (Macs that differ say so on their rows).
+        if let network = group.location.network, !network.isEmpty { words += " · Network \(network)" }
         line.append(NSAttributedString(string: words, attributes: [.font: TextRole.secondary.font, .foregroundColor: statusColour]))
         sub.attributedStringValue = line
         sub.maximumNumberOfLines = 2

@@ -14,6 +14,11 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.129 — 2026-10-05
+
+Fleet:
+- Each group shows its network in the Groups tab.
+
 ## 0.2.128 — 2026-10-05
 
 Fleet:

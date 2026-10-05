@@ -368,6 +368,7 @@ enum GatewayAPI {
         // A Mac on another network than its location's is visible on Locations and on its Groups row.
         assert(locationTexts.contains("1 Mac on A"), "the Network column must say a Mac differs: \(locationTexts)")
         assert(groupTexts.contains(where: { $0.contains("Network B") }), "a node row must name its network")
+        assert(groupTexts.contains(where: { $0.contains("Hub ") && $0.hasSuffix("Network C") }), "a group header must name its network: \(groupTexts)")
         assert(locationTexts.contains(where: { $0.contains("1 / 2") && $0.contains("1 refused") }),
                "the Members column did not draw the reachable count and the refusal")
         assert((controller?.membersTooltip ?? "").contains("re-join it with the current Fleet Token"),
