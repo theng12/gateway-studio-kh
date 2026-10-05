@@ -310,6 +310,34 @@ struct JobsOutputsCheck {
         assert(buttons(section.view).contains { $0.title.hasPrefix("Discard") },
                "a discardable hold must offer the discard action: \(buttons(section.view).map { $0.title })")
 
+        // Recover Result asks the Hub to reconcile, with no confirmation (it throws nothing away).
+        let reconcilesBefore = GatewayAPI.postPaths.count
+        buttons(section.view).first { $0.title == "Recover Result" }!.performClick(nil)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+        assert(GatewayAPI.postPaths.count == reconcilesBefore + 1
+               && GatewayAPI.postPaths.last == "/admin/api/jobs/job-uncertain/reconcile-hold",
+               "Recover Result must reach reconcile-hold: \(GatewayAPI.postPaths)")
+
+        // Right-click menu: the same actions on a recovery row, nothing on any other row.
+        assert(section.menuItems(forRow: 3).map { $0.title } == ["Recover Result", "Discard Attempt…"],
+               "recovery row menu: \(section.menuItems(forRow: 3).map { $0.title })")
+        assert(section.menuItems(forRow: 5).map { $0.title } == ["Close…"], "close_hold row menu")
+        assert(section.menuItems(forRow: 0).isEmpty && section.menuItems(forRow: 4).isEmpty,
+               "rows that need no recovery, or have no published action, get no menu")
+        let menuPosts = GatewayAPI.postPaths.count
+        let recoverItem = section.menuItems(forRow: 3)[0]
+        recoverItem.target!.perform(recoverItem.action!, with: recoverItem)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+        assert(GatewayAPI.postPaths.count == menuPosts + 1 && table.selectedRow == 3,
+               "the menu acts on its own row: \(GatewayAPI.postPaths)")
+
+        // The "Needs recovery" pill says what to do.
+        func pillTip(row: Int) -> String? {
+            descendants(table.view(atColumn: 4, row: row, makeIfNecessary: true)!).compactMap { $0 as? Badge }.first?.toolTip
+        }
+        assert(pillTip(row: 3) == "Select the job to recover or close it.", "pill tooltip missing")
+        assert(pillTip(row: 0) == nil, "only a Needs recovery pill carries the tooltip")
+
         let postsBefore = GatewayAPI.postPaths.count
         section.confirmDiscard = { false }
         buttons(section.view).first { $0.title.hasPrefix("Discard") }!.performClick(nil)

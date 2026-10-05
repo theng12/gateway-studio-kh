@@ -43,3 +43,7 @@ patch("FleetGroups.swift", "            if expanded.isEmpty, groups.count == 1 {
 # Analytics remembers a tab; the harness picks one without a click.
 patch("AnalyticsSection.swift", "    private func showSelectedTable() {",
       "    func renderSelect(_ index: Int) { selectedTab = Tab(rawValue: index) ?? .type; tabControl.selectedSegment = index; showSelectedTable() }\n\n    private func showSelectedTable() {")
+
+# `jobs:recovery` selects the first Hub hold in the Jobs table, so its detail pane is the page.
+patch("JobsWindow.swift", "    private var table: NSTableView!", "    var table: NSTableView!")
+patch("JobsWindow.swift", "    private var rows: [[String: Any]] = []", "    var rows: [[String: Any]] = []")

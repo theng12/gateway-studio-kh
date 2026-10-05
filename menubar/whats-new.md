@@ -14,6 +14,11 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.131 — 2026-10-05
+
+Jobs:
+- Jobs that need recovery now show Recover Result / Close at the top of the job, and on right-click.
+
 ## 0.2.130 — 2026-10-05
 
 Jobs:

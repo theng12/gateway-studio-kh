@@ -288,6 +288,15 @@ for page in pageNames where !["fleet-rename", "fleet-workstation", "fleet-add", 
             spin(isConsole ? 6.0 : 1.8)
             window.contentView?.layoutSubtreeIfNeeded()
             window.displayIfNeeded()
+            // `jobs:recovery` is Jobs with a Studio Hub hold ("Needs recovery") selected.
+            if name == "jobs", parts.count > 1, parts[1] == "recovery" {
+                JobsSection.shared.activated()
+                spin(1.0)
+                if let row = JobsSection.shared.rows.firstIndex(where: { $0["recovery_action"] as? String == "discard_upstream" }) {
+                    JobsSection.shared.table.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+                    spin(1.0)
+                } else { print("jobs:recovery: no discard_upstream row in the fixture") }
+            }
             // `analytics:model` is Analytics on one tab; `providers:pools` / `providers:pools-edit` the Pools tab, the
             // latter with the editor and picker open on the pool the owner has.
             if name == "analytics", parts.count > 1, let tab = ["type": 0, "model": 1, "machine": 2][parts[1]] {

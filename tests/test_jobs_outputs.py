@@ -62,6 +62,15 @@ class JobsOutputsNative(unittest.TestCase):
         self.assertIn("confirmDiscard", source)
         self.assertIn("confirmDiscardWithAlert", source)
 
+    def test_recovery_actions_are_at_the_top_and_on_right_click(self) -> None:
+        source = (ROOT / "menubar" / "JobsWindow.swift").read_text()
+        detail = source[source.index("private func renderDetail"):]
+        # The buttons are built before the outputs list, not after it.
+        self.assertLess(detail.index("addRecoveryActions(job)"), detail.index('"Outputs"'))
+        self.assertIn('"/admin/api/jobs/\\(escapedJobID(jobID))/reconcile-hold"', source)
+        self.assertIn("table.menu", source)
+        self.assertIn("Select the job to recover or close it.", source)
+
     def test_output_library_uses_authenticated_local_file_flow(self) -> None:
         source = (ROOT / "menubar" / "JobsWindow.swift").read_text()
         self.assertIn("GatewayAPI.download(", source)

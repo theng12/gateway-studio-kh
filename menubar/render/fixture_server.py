@@ -73,6 +73,7 @@ JOBS = [  # (modality, model, provider, state, minutes ago, caller, error)
     ("tts", "voxline-tts-v3", "voxline", "running", 1, "story-studio", None),
     ("image", "prism-flux-pro", "prism", "queued", 2, "story-studio", None),
     ("video", "prism-hailuo-02", "prism", "held", 20, "story-studio", None),
+    ("tts", "voice-clone-qwen3", "studio-hub-local", "held", 6, "story-studio", None),  # a Hub hold: Recover Result
 ]
 MIXED: list = []  # (job id, state) rows `mix_states` flips once the gateway is up
 VOICES = [("Marlowe", "en", "qwen3-tts"), ("Ines", "es", "qwen3-tts"), ("Okafor", "en", "kokoro"),
@@ -204,6 +205,9 @@ def mix_states(env: dict) -> None:
                 conn.execute("UPDATE jobs SET state='failed', error_code='UNKNOWN_OUTCOME', error_detail=?, "
                              "recovery_state='unknown_outcome', recovery_detail=? WHERE id=?",
                              ("The gateway restarted while this job was in flight.",) * 2 + (job_id,))
+                # A Studio Hub hold names its batch, which is what makes it recoverable (`discard_upstream`).
+                conn.execute("UPDATE jobs SET recovery_context=? WHERE id=? AND provider_id LIKE 'studio-hub-%'",
+                             ('{"hub_batch_id": "b-7a31c9", "hub_item_index": 0}', job_id))
 
 
 class Overlay(BaseHTTPRequestHandler):

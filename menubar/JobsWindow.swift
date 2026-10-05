@@ -7,7 +7,7 @@
 
 import Cocoa
 
-final class JobsSection: NSObject, AppSection, NSTableViewDataSource, NSTableViewDelegate {
+final class JobsSection: NSObject, AppSection, NSTableViewDataSource, NSTableViewDelegate, NSMenuDelegate {
     static let shared = JobsSection()
 
     let title = "Jobs"
@@ -71,6 +71,7 @@ final class JobsSection: NSObject, AppSection, NSTableViewDataSource, NSTableVie
     private var detailStatusLabel: NSTextField!
     private var cancelButton: NSButton?
     private var discardButton: NSButton?
+    private var recoverButton: NSButton?
     private var rows: [[String: Any]] = []
     /// The last list read as the gateway sent it, to tell whether a job changed.
     private var listRows: [String: [String: Any]] = [:]
@@ -146,6 +147,10 @@ final class JobsSection: NSObject, AppSection, NSTableViewDataSource, NSTableVie
         table.usesAlternatingRowBackgroundColors = false
         table.backgroundColor = .clear
         table.allowsMultipleSelection = false
+        // Right-click on a "Needs recovery" row offers the same actions as the top of its detail pane.
+        let rowMenu = NSMenu()
+        rowMenu.delegate = self
+        table.menu = rowMenu
         table.style = .fullWidth
         // Share the width between columns: there is no horizontal scroller, so a
         // wider list must truncate its cells rather than push them past a clipped
@@ -402,6 +407,7 @@ final class JobsSection: NSObject, AppSection, NSTableViewDataSource, NSTableVie
             // The state is a badge, like every other status in the app: the word and its colour together.
             let word = job["recovery_required"] as? Bool == true ? "needs recovery" : displayState(job)
             let badge = Badge(word.prefix(1).uppercased() + word.dropFirst(), stateHealth(job))
+            if job["recovery_required"] as? Bool == true { badge.toolTip = "Select the job to recover or close it." }
             let cell = NSTableCellView()
             badge.translatesAutoresizingMaskIntoConstraints = false
             cell.addSubview(badge)
@@ -496,6 +502,7 @@ final class JobsSection: NSObject, AppSection, NSTableViewDataSource, NSTableVie
         detailStack.addArrangedSubview(detailStatusLabel)
         cancelButton = nil
         discardButton = nil
+        recoverButton = nil
     }
 
     private func renderDetail(_ job: [String: Any]) {
@@ -507,6 +514,7 @@ final class JobsSection: NSObject, AppSection, NSTableViewDataSource, NSTableVie
         let provider = string(job["provider_name"]) ?? string(job["provider_id"]) ?? "?"
         detailStack.addArrangedSubview(PageKit.sectionTitle("\(model) · \(provider)"))
         detailStack.addArrangedSubview(PageKit.help("Job \(jobID) · \(displayState(job))"))
+        addRecoveryActions(job)
 
         // Exact times and how long it took: "5m ago" cannot answer "when exactly".
         var times: [String] = []
@@ -612,28 +620,47 @@ final class JobsSection: NSObject, AppSection, NSTableViewDataSource, NSTableVie
             cancelButton = cancel
         }
 
-        // An uncertain attempt on a Hub location pins that node's machine until
-        // it is reconciled or discarded, and an unknown cloud outcome has no
-        // upstream to ask at all. The owner is the only one who can decide that
-        // waiting is over, so the decision is a button — never a timer.
-        discardButton = nil
-        if let action = recoveryAction(job) {
-            let closing = action == "close_hold"
-            let button = PageKit.button(
-                closing ? "Close This Hold…" : "Discard Uncertain Attempt…",
-                target: self,
-                action: #selector(discardSelectedJob)
-            )
-            button.toolTip = closing
-                ? "Close the gateway's own record of this attempt. Nothing is sent upstream — "
-                    + "this lane has no discard route — and whatever the provider may still "
-                    + "produce is not collected."
-                : "Abandon this attempt on the Studio Hub and free the machine it reserved. "
-                    + "Whatever the original worker still produces is ignored."
-            detailStack.addArrangedSubview(button)
-            discardButton = button
+        if recoveryAction(job) == nil {
+            detailStatusLabel = PageKit.help("")
+            detailStack.addArrangedSubview(detailStatusLabel)
         }
+    }
 
+    /// An uncertain attempt on a Hub location pins that node's machine until it is reconciled or
+    /// discarded, and an unknown cloud outcome has no upstream to ask at all. The owner is the only
+    /// one who can decide that waiting is over, so the decision is a button — never a timer — and it
+    /// sits right under the title: it used to follow the outputs list and was easy to miss.
+    private func addRecoveryActions(_ job: [String: Any]) {
+        discardButton = nil
+        recoverButton = nil
+        guard let action = recoveryAction(job) else { return }
+        let closing = action == "close_hold"
+        detailStack.addArrangedSubview(PageKit.help(closing
+            ? "Needs recovery: nothing upstream can be asked. Close records that this attempt is abandoned."
+            : "Needs recovery: Recover Result asks the Hub and keeps a finished result; Discard Attempt gives up on it."))
+        let discard = PageKit.button(
+            closing ? "Close…" : "Discard Attempt…", target: self, action: #selector(discardSelectedJob))
+        discard.toolTip = closing
+            ? "Close the gateway's own record of this attempt. Nothing is sent upstream — "
+                + "this lane has no discard route — and whatever the provider may still "
+                + "produce is not collected."
+            : "Abandon this attempt on the Studio Hub and free the machine it reserved. "
+                + "Whatever the original worker still produces is ignored."
+        discardButton = discard
+        var buttons: [NSView] = [discard]
+        if !closing {
+            let recover = PageKit.primaryButton("Recover Result", target: self, action: #selector(reconcileSelectedJob))
+            recover.toolTip = "Ask the Studio Hub to settle this attempt from the original Mac. "
+                + "A finished result is kept; nothing is thrown away."
+            recoverButton = recover
+            buttons.insert(recover, at: 0)
+        }
+        let row = NSStackView(views: buttons)
+        row.orientation = .horizontal
+        row.alignment = .centerY
+        row.spacing = DS.Space.tight
+        detailStack.addArrangedSubview(row)
+        // The answer to a press shows beside the buttons, not below the outputs list.
         detailStatusLabel = PageKit.help("")
         detailStack.addArrangedSubview(detailStatusLabel)
     }
@@ -857,6 +884,7 @@ final class JobsSection: NSObject, AppSection, NSTableViewDataSource, NSTableVie
         guard confirm() else { return }
         let requestGeneration = selectionGeneration
         discardButton?.isEnabled = false
+        recoverButton?.isEnabled = false
         setStatus(
             closing ? "Closing the hold…" : "Discarding the uncertain attempt…",
             error: false
@@ -877,6 +905,7 @@ final class JobsSection: NSObject, AppSection, NSTableViewDataSource, NSTableVie
                 self.reload()
             case .failure(let error):
                 self.discardButton?.isEnabled = true
+                self.recoverButton?.isEnabled = true
                 self.setStatus(
                     closing
                         ? "Could not close the hold: \(error.localizedDescription)"
@@ -885,6 +914,72 @@ final class JobsSection: NSObject, AppSection, NSTableViewDataSource, NSTableVie
                 )
             }
         }
+    }
+
+    /// Ask the Hub to settle the attempt from its original worker; a finished result is kept. Not
+    /// destructive, so no confirmation. The hold sweep then settles the job from the Hub's answer.
+    @objc private func reconcileSelectedJob() {
+        guard let jobID = selectedJobID,
+              let job = rows.first(where: { string($0["id"]) == jobID }),
+              recoveryAction(job) == "discard_upstream" else { return }
+        let requestGeneration = selectionGeneration
+        discardButton?.isEnabled = false
+        recoverButton?.isEnabled = false
+        setStatus("Asking the Studio Hub to settle the attempt…", error: false)
+        GatewayAPI.post(reconcilePath(jobID)) { [weak self] result in
+            guard let self,
+                  self.isCurrent(jobID: jobID, generation: requestGeneration)
+            else { return }
+            switch result {
+            case .success:
+                // Still pressable: until the sweep settles the job, discarding stays the owner's way out.
+                self.discardButton?.isEnabled = true
+                self.recoverButton?.isEnabled = true
+                self.setStatus(
+                    "Asked the Studio Hub. A finished result is kept; the job updates within a minute.",
+                    error: false
+                )
+                self.reload()
+            case .failure(let error):
+                self.discardButton?.isEnabled = true
+                self.recoverButton?.isEnabled = true
+                self.setStatus("Could not recover the result: \(error.localizedDescription)", error: true)
+            }
+        }
+    }
+
+    // MARK: Row context menu
+
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        menu.removeAllItems()
+        for item in menuItems(forRow: table.clickedRow) { menu.addItem(item) }
+    }
+
+    /// Only a "Needs recovery" row has a menu. Not private: the native test asks for it, because a
+    /// test cannot right-click.
+    func menuItems(forRow row: Int) -> [NSMenuItem] {
+        guard row >= 0, row < rows.count, let action = recoveryAction(rows[row]) else { return [] }
+        let entries: [(String, Selector)] = action == "close_hold"
+            ? [("Close…", #selector(discardFromMenu(_:)))]
+            : [("Recover Result", #selector(reconcileFromMenu(_:))), ("Discard Attempt…", #selector(discardFromMenu(_:)))]
+        return entries.map { title, selector in
+            let item = NSMenuItem(title: title, action: selector, keyEquivalent: "")
+            item.target = self
+            item.tag = row
+            return item
+        }
+    }
+
+    /// The menu acts on the row that was right-clicked, so select it first: the detail pane and the
+    /// action then agree on which job is meant.
+    @objc private func reconcileFromMenu(_ item: NSMenuItem) {
+        table.selectRowIndexes(IndexSet(integer: item.tag), byExtendingSelection: false)
+        reconcileSelectedJob()
+    }
+
+    @objc private func discardFromMenu(_ item: NSMenuItem) {
+        table.selectRowIndexes(IndexSet(integer: item.tag), byExtendingSelection: false)
+        discardSelectedJob()
     }
 
     /// The owner's confirmation for a **local** close, which contacts nobody.
@@ -923,6 +1018,10 @@ final class JobsSection: NSObject, AppSection, NSTableViewDataSource, NSTableVie
 
     private func discardPath(_ jobID: String) -> String {
         "/admin/api/jobs/\(escapedJobID(jobID))/discard-uncertain"
+    }
+
+    private func reconcilePath(_ jobID: String) -> String {
+        "/admin/api/jobs/\(escapedJobID(jobID))/reconcile-hold"
     }
 
     private func statusPath(_ jobID: String) -> String {
