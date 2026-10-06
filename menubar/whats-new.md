@@ -14,6 +14,13 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.133 — 2026-10-07
+
+Fleet:
+- Action notices have balanced padding above and below their text.
+- Success, warning, and error messages wrap to the available width without clipping their last line.
+- Long notice headings truncate instead of forcing the window wider.
+
 ## 0.2.132 — 2026-10-06
 
 Fleet:

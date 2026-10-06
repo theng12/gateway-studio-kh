@@ -1623,6 +1623,7 @@ final class FleetBanner: NSView {
 
         titleLabel.font = TextRole.rowTitle.font
         titleLabel.lineBreakMode = .byTruncatingTail
+        titleLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         detailLabel.font = TextRole.secondary.font
         detailLabel.textColor = .secondaryLabelColor
         // Up to six lines so a publish can name each refusing controller in its
@@ -1630,26 +1631,36 @@ final class FleetBanner: NSView {
         // so a fleet larger than the banner can show is never silently dropped.
         detailLabel.maximumNumberOfLines = 6
         detailLabel.lineBreakMode = .byWordWrapping
-        detailLabel.preferredMaxLayoutWidth = 520
+        detailLabel.preferredMaxLayoutWidth = 0
+        detailLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
         let text = NSStackView(views: [titleLabel, detailLabel])
         text.orientation = .vertical
         text.alignment = .leading
         text.spacing = DS.Space.xs
         text.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        // Wrap at the available width while retaining the existing readable measure.
+        let detailWidth = detailLabel.widthAnchor.constraint(equalTo: text.widthAnchor)
+        detailWidth.priority = .defaultHigh
+        NSLayoutConstraint.activate([
+            detailWidth,
+            detailLabel.widthAnchor.constraint(lessThanOrEqualToConstant: 520),
+            titleLabel.widthAnchor.constraint(lessThanOrEqualTo: text.widthAnchor),
+        ])
 
         let row = NSStackView(views: [icon, text])
         row.orientation = .horizontal
         row.alignment = .top
         row.spacing = DS.Space.s
-        row.edgeInsets = NSEdgeInsets(top: DS.Space.s, left: DS.Space.m, bottom: DS.Space.s, right: DS.Space.m)
         row.translatesAutoresizingMaskIntoConstraints = false
         addSubview(row)
+        // Stack insets do not contribute reliably to this wrapping row's fitting
+        // height. Anchor the padding, as CardView.hold does for other Fleet notices.
         NSLayoutConstraint.activate([
-            row.topAnchor.constraint(equalTo: topAnchor),
-            row.leadingAnchor.constraint(equalTo: leadingAnchor),
-            row.trailingAnchor.constraint(equalTo: trailingAnchor),
-            row.bottomAnchor.constraint(equalTo: bottomAnchor),
+            row.topAnchor.constraint(equalTo: topAnchor, constant: DS.Space.m),
+            row.leadingAnchor.constraint(equalTo: leadingAnchor, constant: DS.Space.l),
+            row.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -DS.Space.l),
+            row.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -DS.Space.m),
             icon.widthAnchor.constraint(equalToConstant: 18),
         ])
         isHidden = true

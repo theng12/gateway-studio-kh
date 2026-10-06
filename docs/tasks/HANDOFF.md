@@ -1,12 +1,17 @@
 # HANDOFF — gateway-kh
 
-**Read this first.** Updated 2026-10-06 for **VERSION `0.2.132`** (the release blocks below are
+**Read this first.** Updated 2026-10-07 for **VERSION `0.2.133`** (the release blocks below are
 newest first; 0.2.76-0.2.79 are recorded in `menubar/whats-new.md` and their commits). The running build
 stamp is on `/health` and in `/Applications/gateway-kh.app/Contents/Resources/gateway/BUILD`.
 If this file disagrees with the code, **the code wins — fix this file in the same change**.
 Every path below is inside the Git checkout `repository/` unless it says otherwise.
 `[MEASURED]` = observed in the session that wrote this; `[reason not recorded]` = the
 project does not say why, and nobody should guess.
+
+> **0.2.133 (2026-10-07) — Fleet action notice spacing.**
+> Offscreen rendering reproduced zero bottom padding with the exact refresh copy, and clipped text at narrow widths. The shared `FleetBanner` now uses balanced 12 pt vertical / 16 pt horizontal insets with width-aware wrapping. Success, warning, and error notices share the fix; long titles truncate without widening the window. Title-only notices, the six-line detail cap, and success dismissal are preserved.
+> Gateway layouts were audited against the current source and existing design scale. Attention cards and warning-list cards already use explicit inset constraints; no unrelated redesign was applied. Validation: 24 focused checks passed, including 36 notice states at 320/640/1643 pt in light/dark appearances, plus neighboring Fleet cards and lifecycle behavior. Full Swift parsing passed; mechanical layout scans returned no findings. Offscreen captures verify geometry; their layer composition is not a live-screen color guarantee. Release evidence is retained in `_orchestra/audit-20261007/gateway-banner-spacing/` outside this checkout. This Mac must remain paused.
+> Deployment must distinguish the installed native app from the backend: the owner has Keep Gateway Running enabled, so a UI-only reopen retains the active backend and jobs.
 
 > **0.2.132 (2026-10-06) — small-site routing and false swap warning.**
 > `fleet.rank_candidate` used absolute free slots before its weighted lottery: a one-slot local site always lost an equal-pressure tie to a larger group with more free slots. Use a positive-availability class, then the existing model-eligible capacity lottery, in submission and late rebinding. Queue pressure remains first; eligibility and memory admission are unchanged.
