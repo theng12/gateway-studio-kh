@@ -68,6 +68,23 @@ function poolsContext(fetchImpl, nodes) {
   return context;
 }
 
+// Keep the page's API wrapper in the path: a raw object passed to fetch becomes
+// "[object Object]", even though a semantic API stub would accept it.
+function wirePoolsContext(fetchImpl, nodes) {
+  const context = poolsContext(() => {}, nodes);
+  context.fetch = fetchImpl;
+  context.adminHeaders = extra => ({ ...extra, Authorization: 'Bearer test-token' });
+  context.showTokenPrompt = () => {};
+  const first = source.indexOf('async function api(path, opts)');
+  const last = source.indexOf('// Contents cannot go through', first);
+  vm.runInContext(source.slice(first, last), context);
+  return context;
+}
+
+function response(body, status = 200) {
+  return { status, ok: status >= 200 && status < 300, text: async () => JSON.stringify(body) };
+}
+
 const SOON = Math.floor(Date.now() / 1000) + 3600;
 
 function pool(overrides = {}) {
@@ -103,7 +120,8 @@ function models() {
 
 function api(calls, { pools = [pool()] } = {}) {
   return async (path_, options) => {
-    calls.push([path_, options && options.method, options && options.body]);
+    const body = options && options.body;
+    calls.push([path_, options && options.method, typeof body === 'string' ? JSON.parse(body) : body]);
     if (path_.startsWith('/models')) return models();
     if (options && options.method) return {};
     return { pools };
@@ -214,6 +232,61 @@ test('creating sends the picked members in order', async () => {
   assert.equal(sent[0], '/pools');
   assert.deepEqual(Array.from(sent[2].members), ['o::claude', 'g::flash']);
   assert.equal(sent[2].name, 'mine');
+});
+
+for (const isNew of [true, false]) {
+  test(`${isNew ? 'creating' : 'editing'} reaches fetch as authenticated JSON with ordered members and spaces`, async () => {
+    const requests = [];
+    const nodes = page();
+    const existing = pool({ name: 'openrouter free' });
+    const ctx = wirePoolsContext(async (url, opts) => {
+      requests.push([url, opts]);
+      if (url.includes('/models?')) return response(models());
+      return response({ pools: [existing] });
+    }, nodes);
+    await ctx.__p.loadPools();
+    if (isNew) ctx.__p.newPool();
+    else ctx.__p.editPool('openrouter free');
+    await new Promise(r => setTimeout(r, 0));
+    nodes.get('pool-name').value = '  openrouter free  ';
+    nodes.get('pool-display').value = '  My free models  ';
+    if (isNew) { ctx.__p.poolAddAt(2); ctx.__p.poolAddAt(0); }
+    else { ctx.__p.poolMove(1, -1); ctx.__p.poolDrop(3); }
+    await ctx.__p.savePool(element());
+    const [url, opts] = requests.find(([, opts]) => opts.method === (isNew ? 'POST' : 'PATCH'));
+    assert.equal(url, isNew ? '/admin/api/pools' : '/admin/api/pools/openrouter%20free');
+    assert.equal(opts.headers['Content-Type'], 'application/json');
+    assert.equal(opts.headers.Authorization, 'Bearer test-token');
+    assert.equal(typeof opts.body, 'string', 'fetch must receive encoded JSON, not a raw object');
+    assert.deepEqual(JSON.parse(opts.body), isNew
+      ? { name: 'openrouter free', display_name: 'My free models', members: ['o::claude', 'g::flash'] }
+      : { display_name: 'My free models', members: ['g::spent', 'g::flash', 'g::off'] });
+    assert.equal(ctx.__p.state(), null, 'successful saving closes the editor');
+  });
+}
+
+test('a validation refusal preserves the pool draft and restores its save button with readable feedback', async () => {
+  const nodes = page();
+  const ctx = wirePoolsContext(async (url, opts) => {
+    if (opts.method === 'POST') return response({ detail: [{
+      loc: ['body', 'name'], msg: 'Pool name is already used', input: 'private-input',
+    }] }, 422);
+    return response(url.includes('/models?') ? models() : { pools: [] });
+  }, nodes);
+  ctx.__p.newPool();
+  await new Promise(r => setTimeout(r, 0));
+  nodes.get('pool-name').value = 'openrouter free';
+  nodes.get('pool-display').value = 'My free models';
+  ctx.__p.poolAddAt(2); ctx.__p.poolAddAt(0);
+  const button = element(); button.textContent = 'Create Pool';
+  await ctx.__p.savePool(button);
+  assert.deepEqual(Array.from(ctx.__p.state().members), ['o::claude', 'g::flash']);
+  assert.equal(nodes.get('pool-name').value, 'openrouter free');
+  assert.equal(nodes.get('pool-display').value, 'My free models');
+  assert.equal(button.disabled, false);
+  assert.equal(button.textContent, 'Create Pool');
+  assert.match(nodes.get('pool-msg').innerHTML, /name.*Pool name is already used/);
+  assert.doesNotMatch(nodes.get('pool-msg').innerHTML, /\[object Object\]|private-input/);
 });
 
 test('a pool with no members, or no name, is refused before the request', async () => {

@@ -69,6 +69,45 @@ function actionContext(fetchImpl) {
   return { context, nodes };
 }
 
+test('API errors show server messages and validation fields without exposing rejected input', async () => {
+  const cases = [
+    [{ detail: 'Pool already exists' }, 400, 'Pool already exists'],
+    [{ detail: [{ loc: ['body', 'members', 0], msg: 'Member does not resolve', input: 'secret-token', ctx: { secret: 'private-context' } },
+      { loc: ['body', 'name'], msg: 'Field required' }] }, 422, 'members.0: Member does not resolve; name: Field required'],
+    [{ detail: { message: 'Provider is unavailable', input: 'secret-token' } }, 503, 'Provider is unavailable'],
+    [{ detail: { msg: 'Please supply the key', input: 'secret-token' } }, 403, 'Please supply the key'],
+    [{ detail: { message: 'Gateway key required' } }, 401, 'Gateway key required'],
+    [{ detail: { unexpected: 'secret-token' } }, 500, 'HTTP 500'],
+    [{ detail: [{ loc: ['body'], input: 'secret-token' }] }, 422, 'HTTP 422'],
+    [null, 502, 'HTTP 502'],
+  ];
+  for (const [body, status, expected] of cases) {
+    const { context } = actionContext(async () => response(body, status));
+    const prompts = [];
+    context.showTokenPrompt = message => prompts.push(message);
+    await assert.rejects(context.api('/pools', { method: 'POST' }), error => {
+      assert.equal(error.message, expected);
+      assert.doesNotMatch(error.message, /secret-token|private-context|\[object Object\]/);
+      assert.equal(error.ambiguous, status >= 500);
+      return true;
+    });
+    assert.deepEqual(prompts, status === 401 || status === 403 ? [expected] : []);
+  }
+});
+
+test('API preserves multipart bodies and leaves their Content-Type boundary to fetch', async () => {
+  const body = new FormData();
+  body.set('prompt', 'Image prompt');
+  let received;
+  const { context } = actionContext(async (_url, opts) => {
+    received = opts;
+    return response({ id: 'multipart-job' });
+  });
+  assert.equal((await context.api('/jobs', { method: 'POST', body })).id, 'multipart-job');
+  assert.equal(received.body, body);
+  assert.equal(received.headers['Content-Type'], undefined);
+});
+
 function providerContext(responses) {
   const providers = element();
   const inputs = [];

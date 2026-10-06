@@ -789,13 +789,35 @@ async function api(path, opts) {
   let body = {}; try { body = text ? JSON.parse(text) : {}; } catch { body = { detail: text }; }
   // A refusal to identify is the one failure worth explaining rather than throwing:
   // "HTTP 401" sends nobody anywhere.
-  if (res.status === 401 || res.status === 403) showTokenPrompt(body.detail || '');
   if (!res.ok) {
-    const error = new Error(body.detail || `HTTP ${res.status}`);
+    const message = apiErrorMessage(body?.detail, res.status);
+    if (res.status === 401 || res.status === 403) showTokenPrompt(message);
+    const error = new Error(message);
     error.ambiguous = String(options.method || 'GET').toUpperCase() !== 'GET' && (res.status >= 500 || res.status === 408);
     throw error;
   }
   return body;
+}
+
+function apiErrorMessage(detail, status) {
+  const messageOf = value => {
+    if (typeof value === 'string') return value.trim();
+    for (const key of ['msg', 'message']) {
+      if (typeof value?.[key] === 'string' && value[key].trim()) return value[key].trim();
+    }
+    return '';
+  };
+  if (!Array.isArray(detail)) return messageOf(detail) || `HTTP ${status}`;
+  // Validation errors can contain rejected credentials in `input` or `ctx`.
+  // Show only the field location and message, never stringify the entire object.
+  const messages = detail.map(item => {
+    const message = messageOf(item);
+    if (!message) return '';
+    const field = Array.isArray(item?.loc)
+      ? item.loc.filter(part => (typeof part === 'string' || typeof part === 'number') && part !== 'body').join('.') : '';
+    return field ? `${field}: ${message}` : message;
+  }).filter(Boolean);
+  return messages.join('; ') || `HTTP ${status}`;
 }
 
 // Contents cannot go through `api()`: an `<img src>` or an `<a href>` sends no
@@ -2608,8 +2630,8 @@ async function savePool(btn) {
   const label = btn.textContent;
   btn.disabled = true; btn.textContent = 'Saving…'; say('');
   try {
-    if (e.isNew) await api('/pools', { method: 'POST', body: { name, members: e.members, display_name: display } });
-    else await api(`/pools/${encodeURIComponent(name)}`, { method: 'PATCH', body: { members: e.members, display_name: display } });
+    if (e.isNew) await api('/pools', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ name, members: e.members, display_name: display }) });
+    else await api(`/pools/${encodeURIComponent(name)}`, { method: 'PATCH', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ members: e.members, display_name: display }) });
     closePoolEditor();
     await loadPools();
   } catch (err) { say(err.message); btn.disabled = false; btn.textContent = label; }

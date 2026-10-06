@@ -14,6 +14,12 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.134 — 2026-10-07
+
+Pools:
+- Creating and editing a pool sends the selected models correctly.
+- Validation errors explain the problem instead of showing `[object Object]`; an unsuccessful save keeps your draft.
+
 ## 0.2.133 — 2026-10-07
 
 Fleet:

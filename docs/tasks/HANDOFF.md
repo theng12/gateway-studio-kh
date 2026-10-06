@@ -1,12 +1,16 @@
 # HANDOFF — gateway-kh
 
-**Read this first.** Updated 2026-10-07 for **VERSION `0.2.133`** (the release blocks below are
+**Read this first.** Updated 2026-10-07 for **VERSION `0.2.134`** (the release blocks below are
 newest first; 0.2.76-0.2.79 are recorded in `menubar/whats-new.md` and their commits). The running build
 stamp is on `/health` and in `/Applications/gateway-kh.app/Contents/Resources/gateway/BUILD`.
 If this file disagrees with the code, **the code wins — fix this file in the same change**.
 Every path below is inside the Git checkout `repository/` unless it says otherwise.
 `[MEASURED]` = observed in the session that wrote this; `[reason not recorded]` = the
 project does not say why, and nobody should guess.
+
+> **0.2.134 (2026-10-07) — pool JSON and readable errors.**
+> `savePool` passed raw object bodies for both POST and PATCH; fetch coerced them into `[object Object]`, yielding FastAPI 422 dictionary validation errors. Both callers now explicitly encode JSON with the JSON content type. The shared console API extracts human messages from string, structured, and validation-array errors without rendering rejected input or context. Authentication, ambiguous request handling, multipart bodies, and failed-save draft retention remain intact.
+> Isolated HTTP reproduction measured malformed body 422 and equivalent proper JSON 200; spaces in a pool name are valid. Root independently ran all offline Node checks: 127 passed, including actual production savePool→api→fetch boundaries and safe error display. No provider generation was submitted. Owner requested creation of `openrouter-free` with the seven models selected in the screenshot, in the same order. Deployment and pool verification are retained in `_orchestra/audit-20261007/gateway-pool-json/` outside this checkout. Keep This Mac paused, and preserve the active backend when reopening the UI.
 
 > **0.2.133 (2026-10-07) — Fleet action notice spacing.**
 > Offscreen rendering reproduced zero bottom padding with the exact refresh copy, and clipped text at narrow widths. The shared `FleetBanner` now uses balanced 12 pt vertical / 16 pt horizontal insets with width-aware wrapping. Success, warning, and error notices share the fix; long titles truncate without widening the window. Title-only notices, the six-line detail cap, and success dismissal are preserved.
