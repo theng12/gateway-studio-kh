@@ -19,18 +19,31 @@ APP="$BUILD/gateway-kh.app"
 INSTALL=1
 [ "${1:-}" = "--no-install" ] && INSTALL=0
 
-echo "==> cleaning"
-# A plain `rm -rf` intermittently fails with "Directory not empty": something
-# outside this script (Spotlight indexing the freshly written bundle, or a
-# Finder window on it) recreates entries inside the tree while it is being
-# removed. That aborted an entire build under `set -e`. Retry, and treat a
-# stubborn leftover as non-fatal because mkdir and the later copy will fill it.
-for _ in 1 2 3 4 5; do
-    rm -rf "$BUILD" 2>/dev/null || true
-    [ -d "$BUILD" ] || break
-    sleep 0.5
-done
-rm -rf "$BUILD" 2>/dev/null || true
+# Preserve replaced build/install files; the owner's archive is never cleaned.
+TRASH_BUILD="$ROOT/_trash/build/$(date -u +%Y%m%d%H%M%S)-$$"
+preserve_path() {
+  [ -e "$1" ] || [ -L "$1" ] || return 0
+  case "$1" in
+    "$ROOT/_trash"|"$ROOT/_trash/"*) echo "ERROR: refusing to move an archive" >&2; exit 1 ;;
+    "$ROOT/"*) RELATIVE="${1#"$ROOT/"}" ;;
+    *) RELATIVE="external/${1#/}" ;;
+  esac
+  mkdir -p "$ROOT/_trash"
+  ARCHIVE_CANONICAL="$(CDPATH= cd -P -- "$ROOT/_trash" && pwd -P)"
+  SOURCE_PARENT="$(CDPATH= cd -P -- "$(dirname "$1")" && pwd -P)"
+  case "$SOURCE_PARENT" in
+    "$ARCHIVE_CANONICAL"|"$ARCHIVE_CANONICAL/"*) echo "ERROR: refusing to move an archive" >&2; exit 1 ;;
+  esac
+  ARCHIVE_ROOT="${2:-$TRASH_BUILD}"
+  mkdir -p "$ARCHIVE_ROOT"
+  ARCHIVE_ITEM="$(mktemp -d "$ARCHIVE_ROOT/item-XXXXXX")"
+  DESTINATION="$ARCHIVE_ITEM/$RELATIVE"
+  mkdir -p "$(dirname "$DESTINATION")"
+  mv "$1" "$DESTINATION"
+}
+
+echo "==> preserving previous build"
+preserve_path "$BUILD"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 
 echo "==> compiling menu bar app (Swift)"
@@ -118,14 +131,14 @@ STAMP="$RUNTIME_CACHE/.runtime-${PY_ASSET}-${PYTHON_ASSET_SHA256}-${PY_ARCH}-${R
 
 if [ ! -x "$RUNTIME_CACHE/python/bin/python3" ] || [ ! -f "$STAMP" ]; then
   echo "==> preparing bundled Python runtime (once per dependency change)"
-  rm -rf "$RUNTIME_CACHE"
+  preserve_path "$RUNTIME_CACHE"
   mkdir -p "$RUNTIME_CACHE"
   tar -xzf "$VENDOR/$PY_ASSET" -C "$RUNTIME_CACHE"
   "$RUNTIME_CACHE/python/bin/python3" -m pip install \
     --quiet --no-warn-script-location --disable-pip-version-check \
     -r "$ROOT/requirements.txt"
   # Drop pip's caches and bytecode; they are not part of the shipped runtime.
-  find "$RUNTIME_CACHE/python" -name "__pycache__" -type d -prune -exec rm -rf {} + 2>/dev/null || true
+  find "$RUNTIME_CACHE/python" -name "__pycache__" -type d -prune -print | while IFS= read -r CACHE; do preserve_path "$CACHE"; done
   touch "$STAMP"
 fi
 
@@ -149,11 +162,11 @@ echo "    archive sha256:$PYTHON_ASSET_SHA256"
 echo "    dependency input sha256:$REQS_HASH (requirements.txt + requirements.lock)"
 
 echo "==> bundling Python runtime"
-rm -rf "$APP/Contents/Resources/python"
+preserve_path "$APP/Contents/Resources/python"
 cp -R "$RUNTIME_CACHE/python" "$APP/Contents/Resources/python"
 
 echo "==> bundling gateway source"
-rm -rf "$APP/Contents/Resources/gateway"
+preserve_path "$APP/Contents/Resources/gateway"
 mkdir -p "$APP/Contents/Resources/gateway/data"
 cp -R "$ROOT/gateway" "$APP/Contents/Resources/gateway/gateway"
 cp "$ROOT/requirements.txt" "$APP/Contents/Resources/gateway/"
@@ -217,7 +230,7 @@ echo "==> generating icon"
 echo "==> ad-hoc signing"
 # Development/import probes may have created bytecode before bundling. These
 # generated files are not shipped; the launcher uses -B to keep the seal intact.
-find "$APP/Contents/Resources" -type d -name "__pycache__" -prune -exec rm -rf {} +
+find "$APP/Contents/Resources" -type d -name "__pycache__" -prune -print | while IFS= read -r CACHE; do preserve_path "$CACHE"; done
 # Unsigned bundles are quarantined by Gatekeeper when copied around. An ad-hoc
 # signature is enough for local use and keeps the LaunchAgent happy.
 codesign --force --deep --sign - "$APP"
@@ -241,16 +254,15 @@ mkdir -p "$DIST"
 # `dist/` accumulating one file per release: it held four (0.2.47 through 0.2.50) before this.
 TRASH_DIST="$ROOT/_trash/dist"
 mkdir -p "$TRASH_DIST"
-DMG_STAMP="$(date -u +%Y%m%d%H%M%S)"
 for OLD_DMG in "$DIST"/gateway-kh-*.dmg; do
   [ -e "$OLD_DMG" ] || continue
-  mv "$OLD_DMG" "$TRASH_DIST/$(basename "${OLD_DMG%.dmg}")-${DMG_STAMP}.dmg"
+  preserve_path "$OLD_DMG" "$TRASH_DIST"
 done
 DMG_STAGE="$(mktemp -d)"
 cp -R "$APP" "$DMG_STAGE/"
 ln -s /Applications "$DMG_STAGE/Applications"
 hdiutil create -volname "gateway-kh" -srcfolder "$DMG_STAGE" -ov -format UDZO "$DMG" >/dev/null
-rm -rf "$DMG_STAGE"
+preserve_path "$DMG_STAGE"
 echo "DMG: $DMG"
 echo "     (the previous DMG(s) moved to _trash/dist/)"
 
@@ -267,16 +279,16 @@ if [ "$INSTALL" = "1" ]; then
   fi
 
   echo "==> installing to $DEST"
-  rm -rf "$DEST"
+  preserve_path "$DEST"
   cp -R "$APP" "$DEST"
   # Drop any quarantine flag so first launch does not warn.
   xattr -dr com.apple.quarantine "$DEST" 2>/dev/null || true
   codesign --verify --deep --strict --verbose=2 "$DEST"
 
-  # If it was previously installed in the other location, remove that copy so
+  # If it was previously installed in the other location, preserve that copy so
   # there is never more than one, and the login item points at the survivor.
   for OTHER in "/Applications/gateway-kh.app" "$HOME/Applications/gateway-kh.app"; do
-    [ "$OTHER" != "$DEST" ] && rm -rf "$OTHER"
+    if [ "$OTHER" != "$DEST" ]; then preserve_path "$OTHER"; fi
   done
 
   echo

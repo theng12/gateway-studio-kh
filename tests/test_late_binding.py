@@ -167,8 +167,8 @@ class LateBindingTest(_Base):
         return snapshot
 
     def test_the_burst_reaches_every_eligible_location_including_local(self) -> None:
-        # The measured failure. `big` has the most free Macs, so every job is bound to it at
-        # submit; only late binding gets work onto the others.
+        # Unequal capacities must use every eligible Mac; admission and late binding
+        # retain that utilization after the submit-time weighted routing lottery.
         locations = [
             _location("big", eligible=6, available=6),
             _location("mid", eligible=3, available=3),

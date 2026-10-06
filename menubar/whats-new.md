@@ -14,6 +14,15 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.132 — 2026-10-06
+
+Fleet:
+- Idle Macs in small groups receive their share of jobs alongside larger groups. Free slot counts no longer exclude a one-Mac group from routing.
+- Existing swap usage alone no longer raises a low-memory warning. Critical memory pressure and persistent idle low-memory warnings remain.
+
+Builds:
+- Replaced apps and generated build files are preserved in the project's trash archive.
+
 ## 0.2.131 — 2026-10-05
 
 Jobs:

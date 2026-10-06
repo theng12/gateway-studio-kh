@@ -2466,7 +2466,6 @@ _GENERIC_MACHINE_LABELS = frozenset({"this mac", "this-mac", "this computer", "l
 #: A Mac counts as "low on memory" as a *fault* only when it cannot work (2026-10-05 owner rule: 1.6-1.8 GB free
 #: while generating on an 8 GB Mac is normal, and a warning that is always on is never read).
 MEMORY_IDLE_FAULT_S = 300.0
-MEMORY_SWAP_FAULT_GB = 4.0
 #: (location id, machine) -> when it first read idle-and-low in this unbroken stretch. In memory only: a Gateway
 #: restart restarts the five minutes, which errs towards silence.
 _MEMORY_LOW_SINCE: dict[tuple[str, str], float] = {}
@@ -2475,9 +2474,10 @@ _MEMORY_LOW_SINCE: dict[tuple[str, str], float] = {}
 def memory_fault(row: dict, now: float) -> str | None:
     """Why this Mac's memory is a fault, or `None` (the meter may still be amber; that is information).
 
-    A fault is one of: macOS memory pressure critical (when the Hub says so); heavy swapping; or idle
-    (no job, not `working`) with free memory under the start floor for 5 minutes -- it cannot take work.
-    Low free memory while a job runs is never one.
+    A fault is one of: macOS memory pressure critical (when the Hub says so), or idle (no job,
+    not `working`) with free memory under the start floor for 5 minutes -- it cannot take work.
+    Low free memory while a job runs is never one. Cumulative swap usage remains disk information;
+    without a rate it does not say that the Mac is under memory pressure now.
     """
     key = (str(row.get("location_id") or ""), str(row.get("machine") or ""))
     free, total = _num(row.get("available_gb")), _num(row.get("memory_gb"))
@@ -2491,11 +2491,8 @@ def memory_fault(row: dict, now: float) -> str | None:
         _MEMORY_LOW_SINCE.pop(key, None)
     else:
         since = _MEMORY_LOW_SINCE.setdefault(key, now)
-    swap = _num((row.get("disk") or {}).get("swap_used_gb"))
     if str(row.get("memory_pressure") or "").lower() == "critical":
         return "macOS memory pressure is critical"
-    if swap is not None and swap >= MEMORY_SWAP_FAULT_GB:
-        return f"swapping heavily ({swap:.1f} GB swap in use)"
     if since is not None and now - since >= MEMORY_IDLE_FAULT_S:
         return f"idle with only {free:.1f} GB free for {int((now - since) // 60)} min: it cannot take work"
     return None
@@ -4084,15 +4081,15 @@ def routing_candidates(
 def rank_candidate(candidate: dict, routing_key: str) -> tuple:
     """The order `route` picks by, lowest first -- and what a late rebind re-ranks with.
 
-    Pressure first -- queue per **fitting** machine -- then free fitting capacity, then the
-    weighted lottery, then the id so the result is deterministic. `slots` is the model's
-    own eligible machine count, so a site's small Macs no longer dilute a heavy model's
-    share. Numbers decide; the controller still picks which machine runs it.
+    Pressure first -- queue per **fitting** machine -- then whether any fitting capacity is
+    free, then the weighted lottery, then the id so the result is deterministic. `slots` is
+    the model's own eligible machine count, so a site's small Macs no longer dilute a heavy
+    model's share. Capacity stays in the lottery weight, where every site keeps a share.
     """
     pressure = candidate["queue"] / candidate["slots"]
-    free = -(candidate["available"] or 0)
+    no_free = (candidate["available"] or 0) <= 0
     lottery = _weighted_tiebreak(routing_key, candidate["location_id"], candidate["slots"])
-    return (pressure, free, lottery, candidate["location_id"])
+    return (pressure, no_free, lottery, candidate["location_id"])
 
 
 def pool_size(model_id: str, modality: str) -> int:

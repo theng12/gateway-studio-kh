@@ -1,12 +1,18 @@
 # HANDOFF — gateway-kh
 
-**Read this first.** Updated 2026-10-02 for **VERSION `0.2.93`** (the release blocks below are
+**Read this first.** Updated 2026-10-06 for **VERSION `0.2.132`** (the release blocks below are
 newest first; 0.2.76-0.2.79 are recorded in `menubar/whats-new.md` and their commits). The running build
 stamp is on `/health` and in `/Applications/gateway-kh.app/Contents/Resources/gateway/BUILD`.
 If this file disagrees with the code, **the code wins — fix this file in the same change**.
 Every path below is inside the Git checkout `repository/` unless it says otherwise.
 `[MEASURED]` = observed in the session that wrote this; `[reason not recorded]` = the
 project does not say why, and nobody should guess.
+
+> **0.2.132 (2026-10-06) — small-site routing and false swap warning.**
+> `fleet.rank_candidate` used absolute free slots before its weighted lottery: a one-slot local site always lost an equal-pressure tie to a larger group with more free slots. Use a positive-availability class, then the existing model-eligible capacity lottery, in submission and late rebinding. Queue pressure remains first; eligibility and memory admission are unchanged.
+> `memory_fault` treated cumulative swap >=4 GB as active heavy swapping, even with 22 GB available and normal kernel pressure. Swap remains published as information; faults require critical pressure or five minutes idle below the start floor.
+> `menubar/build.sh` now moves replaced build/install paths into `_trash/build/<UTC timestamp>-<pid>/`, including DMG staging and bytecode. It refuses archive paths and never cleans the archive.
+> Validation and live deployment evidence are recorded in `_orchestra/HANDOFF-20261006.md` outside this checkout. The Mini's Story update is a separate install: Story Studio 1.4.255 DMG is built; Mini installation is not yet verified.
 
 > **0.2.93 (2026-10-02) - cancelled jobs publish `state: cancelled`; Gemma 3 12B is retired.** `gateway/api.py` now publishes a cancelled job as `cancelled`
 > (it was `failed` + `cancelled: true`; Story still reads the legacy form). `gateway/providers/models.py` `RETIRED_MODEL_IDS` withholds LTX-2.3 **and** both

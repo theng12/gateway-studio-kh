@@ -158,7 +158,7 @@ class PerModelWeightTests(unittest.TestCase):
 
 
 class RankTests(unittest.TestCase):
-    def test_free_capacity_breaks_a_pressure_tie(self) -> None:
+    def test_a_site_with_no_free_capacity_loses_to_one_with_room(self) -> None:
         # Same queue and same fitting count; only one site has a Mac free now.
         a = _location("a", model_supply={MODEL: {"eligible": 2, "available": 0}})
         b = _location("b", model_supply={MODEL: {"eligible": 2, "available": 3}})
@@ -167,6 +167,21 @@ class RankTests(unittest.TestCase):
                              lambda modality: [(_definition("a"), _model_row()), (_definition("b"), _model_row())]):
             chosen, note = fleet.route(MODEL, MODALITY)
         self.assertEqual(chosen.id, f"{fleet.PROVIDER_PREFIX}b", note)
+
+    def test_a_small_site_with_room_keeps_a_proportional_share(self) -> None:
+        small = {"location_id": "local", "queue": 0, "slots": 1, "available": 1}
+        large = {"location_id": "big", "queue": 0, "slots": 10, "available": 6}
+        wins = {"local": 0, "big": 0}
+
+        for number in range(100):
+            chosen = min(
+                (small, large),
+                key=lambda candidate: fleet.rank_candidate(candidate, f"job-{number}"),
+            )
+            wins[chosen["location_id"]] += 1
+
+        self.assertGreater(wins["local"], 0, wins)
+        self.assertGreater(wins["big"], wins["local"], wins)
 
 # --------------------------------------------------------------------------
 # The Fleet page's additive tabs: per-location models and workers, the issues

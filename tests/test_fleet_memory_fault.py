@@ -1,7 +1,7 @@
 """Low free memory is a fault only when the Mac cannot work (owner, 2026-10-05).
 
 8 GB Macs generating Breeze sit at 1.6-1.8 GB free; "2 nodes low on memory" on every busy group was never read.
-A fault is: critical memory pressure, heavy swap, or idle and under the start floor for 5 minutes.
+A fault is: critical memory pressure, or idle and under the start floor for 5 minutes.
 """
 from pathlib import Path
 import sys
@@ -56,12 +56,19 @@ class MemoryFault(unittest.TestCase):
         self.assertIsNotNone(fleet.memory_fault(low, T0 + 301))
         self.assertIsNone(fleet.memory_fault(_mac(available_gb=3.0, location_id="d"), T0 + 301))
 
-    def test_critical_pressure_and_heavy_swap_are_faults_even_while_working(self):
+    def test_critical_pressure_is_a_fault_even_while_working(self):
         busy = {"current": {"batch_id": "b"}}
         self.assertIn("pressure", fleet.memory_fault(_mac(memory_pressure="critical", **busy), T0))
-        self.assertIn("swapping", fleet.memory_fault(_mac(disk={"swap_used_gb": 6.2}, **busy), T0))
-        self.assertIsNone(fleet.memory_fault(_mac(disk={"swap_used_gb": 1.0}, **busy), T0))
         self.assertIsNone(fleet.memory_fault(_mac(memory_pressure="normal", **busy), T0))
+
+    def test_cumulative_swap_is_informational_when_memory_is_healthy(self):
+        mac = _mac(
+            memory_gb=34.36,
+            available_gb=22.0,
+            memory_pressure="normal",
+            disk={"swap_used_gb": 6.0},
+        )
+        self.assertIsNone(fleet.memory_fault(mac, T0))
 
     def test_unknown_or_offline_is_never_a_fault(self):
         self.assertIsNone(fleet.memory_fault(_mac(available_gb=None), T0 + 999))
