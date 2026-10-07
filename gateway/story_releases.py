@@ -12,7 +12,7 @@ publisher key (`release_publisher`); this module reuses that key and that signer
   public key, and the file. Story verifies the signature against the key it pinned, and the
   artifact's sha256 against the signed one, before it stages anything.
 * **Check-in** (`checkin`): each Story Mac reports its version, channels, queue and update phase
-  every couple of minutes. The answer carries the current release and whether the admin pressed
+  every 30 minutes. The answer carries the current release and whether the admin pressed
   "Update now" for that Mac.
 
 Canonical bytes are `release_publisher.canonical_bytes` (sorted keys, no whitespace, UTF-8) and
@@ -23,11 +23,13 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import plistlib
 import re
 import shutil
 import threading
 import time
+import uuid
 import zipfile
 from pathlib import Path
 from typing import Any
@@ -36,12 +38,13 @@ from . import config, release_publisher
 
 SCHEMA = "storystudio.app-release.v1"
 APP_ID = "story"
-#: A Mac that has not checked in for this long is shown as offline (it checks in every 2 min).
-OFFLINE_AFTER_S = 15 * 60
+#: A Story Mac checks in every 30 minutes; it is shown as offline after missing two and a half.
+CHECKIN_EVERY_S = 30 * 60
+OFFLINE_AFTER_S = 75 * 60
 _INSTANCE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._ '()-]{0,99}$")
 _PHASES = {"idle", "downloading", "ready", "draining", "installing", "installed",
            "rolled_back", "failed"}
-_lock = threading.Lock()
+_lock = threading.Lock()  # one publish / check-in writer at a time; readers need no lock
 
 
 class StoryReleaseError(ValueError):
@@ -117,18 +120,37 @@ def read_versions(artifact: Path) -> tuple[str, str]:
 # Publish and serve
 # ---------------------------------------------------------------------------
 
+def _artifact(descriptor: dict[str, Any]) -> Path:
+    """Where a descriptor's file lives: `<sha256>/<filename>`, so a descriptor and its bytes cannot
+    drift apart. A re-publish writes a new path; it never overwrites the file a descriptor offers."""
+    return release_dir() / str(descriptor.get("sha256") or "") / str(descriptor.get("filename") or "")
+
+
 def current() -> dict[str, Any] | None:
-    """The signed descriptor being offered, or None."""
+    """The signed descriptor being offered, or None. Never a descriptor whose file is missing or
+    the wrong size, so no Mac is offered a release it cannot finish downloading."""
     descriptor = _read_json(_release_file()).get("descriptor")
-    return descriptor if isinstance(descriptor, dict) else None
-
-
-def artifact_path() -> Path | None:
-    descriptor = current()
-    if not descriptor:
+    if not isinstance(descriptor, dict):
         return None
-    path = release_dir() / str(descriptor.get("filename") or "")
-    return path if path.is_file() else None
+    try:
+        return descriptor if _artifact(descriptor).stat().st_size == descriptor.get("bytes") else None
+    except OSError:
+        return None
+
+
+def open_artifact() -> tuple[Any, dict[str, Any]] | None:
+    """The offered artifact, already open, with its descriptor. Opened here (not by path later) so a
+    re-publish that moves the old file to the Trash cannot pull it out from under a download that has
+    started: an open file survives the rename."""
+    for _ in range(3):  # a publish can swap the release between reading the descriptor and opening
+        descriptor = current()
+        if not descriptor:
+            return None
+        try:
+            return open(_artifact(descriptor), "rb"), descriptor
+        except OSError:
+            continue
+    return None
 
 
 def offer() -> dict[str, Any]:
@@ -150,34 +172,50 @@ def publish(artifact: str | Path) -> dict[str, Any]:
     filename = re.sub(r"[^A-Za-z0-9._ -]+", "-", source.name)
     target_dir = release_dir()
     target_dir.mkdir(parents=True, exist_ok=True)
-    staged = target_dir / f".{filename}.incoming"
-    shutil.copyfile(source, staged)
-    sha256, size = release_publisher._hash_file(staged)  # noqa: SLF001 - streamed hash
-    descriptor: dict[str, Any] = {
-        "schema": SCHEMA,
-        "schema_version": 1,
-        "app": APP_ID,
-        "version": version,
-        "build": build,
-        "filename": filename,
-        "bytes": size,
-        "sha256": sha256,
-        "published_at": int(time.time()),
-        "publisher_id": release_publisher.PUBLISHER_ID,
-        "publisher_key_id": release_publisher.identity()["fingerprint"],
-    }
-    descriptor["signature"] = release_publisher.sign_descriptor(descriptor)
-    with _lock:
-        previous = current()
-        old = target_dir / str(previous.get("filename") or "") if previous else None
-        final = target_dir / filename
-        if old and old.is_file() and old != final:
-            _to_trash(old)
-        elif final.exists():
-            _to_trash(final)
-        staged.replace(final)
-        _write_json(_release_file(), {"descriptor": descriptor, "source": str(source)})
+    staged = target_dir / f".incoming-{uuid.uuid4().hex}"  # dot-name: never served, never a release path
+    try:
+        shutil.copyfile(source, staged)
+        _fsync(staged)
+        sha256, size = release_publisher._hash_file(staged)  # noqa: SLF001 - streamed hash
+        descriptor: dict[str, Any] = {
+            "schema": SCHEMA,
+            "schema_version": 1,
+            "app": APP_ID,
+            "version": version,
+            "build": build,
+            "filename": filename,
+            "bytes": size,
+            "sha256": sha256,
+            "published_at": int(time.time()),
+            "publisher_id": release_publisher.PUBLISHER_ID,
+            "publisher_key_id": release_publisher.identity()["fingerprint"],
+        }
+        descriptor["signature"] = release_publisher.sign_descriptor(descriptor)
+        final = _artifact(descriptor)
+        with _lock:
+            old = _artifact(prev) if (prev := _read_json(_release_file()).get("descriptor")) else None
+            final.parent.mkdir(parents=True, exist_ok=True)
+            os.replace(staged, final)  # complete and durable under its final name first...
+            _fsync(final.parent)
+            _write_json(_release_file(), {"descriptor": descriptor, "source": str(source)})  # ...then offered
+            if old and old != final and old.is_file():
+                _to_trash(old)
+                try:
+                    old.parent.rmdir()  # its now-empty <sha256> folder
+                except OSError:
+                    pass
+    finally:
+        if staged.exists():  # a failed publish leaves nothing half-written lying around
+            _to_trash(staged)
     return {"descriptor": descriptor}
+
+
+def _fsync(path: Path) -> None:
+    fd = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
 
 
 def _to_trash(path: Path) -> None:
@@ -268,7 +306,8 @@ def status_row(row: dict[str, Any], release: dict[str, Any] | None, now: float) 
         status = "update_available"
     else:
         status = "up_to_date"
-    return {**row, "status": status, "age_seconds": round(now - last_seen, 1) if last_seen else None}
+    return {**row, "status": status, "age_seconds": round(now - last_seen, 1) if last_seen else None,
+            "next_check_by": last_seen + CHECKIN_EVERY_S if last_seen else None}
 
 
 def instances() -> dict[str, Any]:

@@ -14,6 +14,7 @@ import plistlib
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 import zipfile
@@ -166,9 +167,118 @@ class StoryReleaseTests(unittest.TestCase):
         self.assertGreaterEqual(view["by_caller"]["story-studio@Mac-mini"]["waiting"], 1)
         self.assertGreaterEqual(view["by_group"]["ch/ep9"]["waiting"], 1)
 
-    def test_offline_after_quiet(self) -> None:
-        row = story_releases.status_row({"instance_id": "m", "last_seen": time.time() - 3600}, None, time.time())
-        self.assertEqual(row["status"], "offline")
+    def test_offline_after_missing_two_30_minute_checks(self) -> None:
+        now = time.time()
+        for minutes, status in ((74, "up_to_date"), (76, "offline")):
+            row = story_releases.status_row({"instance_id": "m", "last_seen": now - minutes * 60}, None, now)
+            self.assertEqual(row["status"], status, minutes)
+        self.assertEqual(row["next_check_by"], now - 76 * 60 + 30 * 60)
+
+    def test_a_descriptor_whose_file_is_missing_or_the_wrong_size_is_not_offered(self) -> None:
+        descriptor = self.publish("1.4.258")
+        path = story_releases._artifact(descriptor)
+        original = path.read_bytes()
+        path.write_bytes(original[:-1])  # cut short
+        self.assertIsNone(self.client.get("/v1/apps/story/release", headers=AUTH).json()["release"])
+        self.assertEqual(self.client.get("/v1/apps/story/release/file", headers=AUTH).status_code, 404)
+        path.write_bytes(original)
+        self.assertEqual(self.client.get("/v1/apps/story/release", headers=AUTH).json()["release"], descriptor)
+        path.rename(path.with_name("moved"))  # gone
+        self.assertIsNone(self.client.get("/v1/apps/story/release", headers=AUTH).json()["release"])
+
+    def _poll(self, seen: list, client: TestClient, known: set) -> None:
+        """One poll as a Story Mac does it: whatever file is served must be a whole published artifact
+        (its sha256 is one we published), and when it is the one just offered, it matches the signed size."""
+        offer = client.get("/v1/apps/story/release", headers=AUTH).json()["release"]
+        if offer is None:
+            seen.append(None)
+            return
+        body = client.get("/v1/apps/story/release/file", headers=AUTH)
+        if body.status_code == 404:
+            return  # replaced between the two calls: Story just asks again
+        digest = hashlib.sha256(body.content).hexdigest()
+        self.assertIn(digest, known)
+        if digest == offer["sha256"]:
+            self.assertEqual(len(body.content), offer["bytes"])
+            seen.append(offer["version"])
+
+    def test_nothing_is_offered_while_a_publish_is_still_copying(self) -> None:
+        known = {story_releases.current()["sha256"] for _ in [self.publish("1.4.258")]}
+        big = story_zip(self.root / "Story Studio KH 1.4.259.zip", "1.4.259")
+        started, proceed = threading.Event(), threading.Event()
+        real = story_releases.shutil.copyfile
+
+        def slow_copy(src, dst, **kw):  # half the bytes, then hold the publish open
+            data = Path(src).read_bytes()
+            with open(dst, "wb") as out:
+                out.write(data[: len(data) // 2])
+                out.flush()
+                started.set()
+                proceed.wait(10)
+                out.write(data[len(data) // 2:])
+            return dst
+
+        errors: list = []
+
+        def run() -> None:
+            try:
+                with patch.object(story_releases.shutil, "copyfile", slow_copy):
+                    story_releases.publish(big)
+            except Exception as exc:  # surfaced below
+                errors.append(exc)
+
+        thread = threading.Thread(target=run)
+        thread.start()
+        self.assertTrue(started.wait(10))
+        seen: list = []
+        for _ in range(5):  # mid-copy: still the old, complete release, byte for byte
+            self._poll(seen, self.client, known)
+        self.assertEqual(set(seen), {"1.4.258"})
+        self.assertTrue(list(story_releases.release_dir().glob(".incoming-*")))  # the copy is under a hidden name
+        proceed.set()
+        thread.join(15)
+        self.assertEqual(errors, [])
+        self.assertEqual(self.client.get("/v1/apps/story/release", headers=AUTH).json()["release"]["version"], "1.4.259")
+        self.assertEqual(list(story_releases.release_dir().glob(".incoming-*")), [])
+
+    def test_requests_during_a_republish_never_see_a_half_published_release(self) -> None:
+        known = {story_releases.current()["sha256"] for _ in [self.publish("1.4.258")]}
+        stop, seen, errors = threading.Event(), [], []
+
+        def poll() -> None:
+            client = TestClient(api.app, headers=AUTH)
+            try:
+                while not stop.is_set():
+                    self._poll(seen, client, known)
+            except Exception as exc:
+                errors.append(exc)
+
+        pollers = [threading.Thread(target=poll) for _ in range(3)]
+        for t in pollers:
+            t.start()
+        try:
+            for n in range(259, 265):  # the same file name every time: replaced in place by name
+                zipped = story_zip(self.root / "Story Studio KH.zip", f"1.4.{n}")
+                known.add(hashlib.sha256(zipped.read_bytes()).hexdigest())
+                story_releases.publish(zipped)
+        finally:
+            stop.set()
+            for t in pollers:
+                t.join(15)
+        self.assertEqual(errors, [])
+        self.assertTrue(seen)
+        self.assertEqual(self.client.get("/v1/apps/story/release", headers=AUTH).json()["release"]["version"], "1.4.264")
+        folders = [p for p in story_releases.release_dir().iterdir() if p.is_dir()]
+        self.assertEqual(len(folders), 1)  # every replaced artifact went to the Trash Folder
+        self.assertGreaterEqual(len(list((self.root / "data" / "trash").rglob("Story Studio KH.zip"))), 1)
+
+    def test_a_failed_publish_leaves_the_offer_alone(self) -> None:
+        self.publish("1.4.258")
+        with patch.object(release_publisher, "sign_descriptor", side_effect=release_publisher.ReleaseError("no key", 503, "X")):
+            with self.assertRaises(release_publisher.ReleaseError):
+                story_releases.publish(story_zip(self.root / "next.zip", "1.4.259"))
+        self.assertEqual(story_releases.current()["version"], "1.4.258")
+        self.assertEqual(list(story_releases.release_dir().glob(".incoming-*")), [])
 
 
 class CallerCountTests(unittest.TestCase):

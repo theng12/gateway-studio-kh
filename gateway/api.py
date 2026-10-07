@@ -1356,12 +1356,21 @@ def story_release() -> Any:
 
 @app.get("/v1/apps/story/release/file", dependencies=[Depends(require_auth)])
 def story_release_file() -> Any:
-    from fastapi.responses import FileResponse
+    from fastapi.responses import StreamingResponse
     from . import story_releases
-    path = story_releases.artifact_path()
-    if path is None:
+    opened = story_releases.open_artifact()
+    if opened is None:
         raise GatewayError(404, "No Story Studio release is published.", "STORY_RELEASE_NONE")
-    return FileResponse(path, media_type="application/octet-stream", filename=path.name)
+    handle, descriptor = opened
+
+    def chunks() -> Any:
+        with handle:
+            while block := handle.read(1 << 20):
+                yield block
+
+    return StreamingResponse(chunks(), media_type="application/octet-stream", headers={
+        "Content-Length": str(descriptor["bytes"]),
+        "Content-Disposition": f'attachment; filename="{descriptor["filename"]}"'})
 
 
 @app.post("/v1/apps/story/checkin", dependencies=[Depends(require_auth)])

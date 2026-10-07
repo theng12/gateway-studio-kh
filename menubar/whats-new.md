@@ -14,6 +14,12 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.137 — 2026-10-07
+
+Story Studio:
+- Story Macs now check in every 30 minutes. A Mac shows as Offline only after 75 minutes of silence, and Update Now says it applies at the Mac's next check (30 minutes at most), with "Next check by ~HH:MM" once the Mac has checked in.
+- A Story release can no longer be offered half-published. The file is copied under a hidden name, flushed to disk and moved into place first; the signed release is written only after that, and a release whose file is missing or the wrong size is not offered at all. Publishing a newer one swaps both together and sends the old file to the Trash Folder.
+
 ## 0.2.136 — 2026-10-07
 
 Story Studio:

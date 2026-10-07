@@ -13,6 +13,8 @@ struct StoryInstance {
     let phase: String?
     let error: String?
     let ageSeconds: Double?
+    let nextCheckBy: Double?
+    let updateRequested: Bool
     let gatewayWaiting: Int
     let gatewayRunning: Int
 
@@ -26,8 +28,22 @@ struct StoryInstance {
             status: row["status"] as? String ?? "", channels: row["channels"] as? Int,
             running: queue["running"] as? Int, queued: queue["queued"] as? Int, held: queue["held"] as? Bool ?? false,
             phase: update["phase"] as? String, error: update["error"] as? String,
-            ageSeconds: row["age_seconds"] as? Double,
+            ageSeconds: row["age_seconds"] as? Double, nextCheckBy: row["next_check_by"] as? Double,
+            updateRequested: (row["update_requested_at"] as? Double) != nil,
             gatewayWaiting: jobs["waiting"] as? Int ?? 0, gatewayRunning: jobs["running"] as? Int ?? 0)
+    }
+
+    /// "Next check by ~HH:MM" while an Update Now is waiting for the Mac's next 30-minute check-in.
+    var nextCheckText: String? {
+        guard updateRequested, phase == nil || phase == "idle", let by = nextCheckBy,
+              by > Date().timeIntervalSince1970 else { return nil }
+        return StoryInstance.nextCheckText(by)
+    }
+
+    static func nextCheckText(_ epoch: Double) -> String {
+        let clock = DateFormatter()
+        clock.dateFormat = "HH:mm"
+        return "Next check by ~" + clock.string(from: Date(timeIntervalSince1970: epoch))
     }
 
     var statusText: (String, Health) {
@@ -44,7 +60,7 @@ struct StoryInstance {
 
 /// Fleet → Story Studio: every Story Mac on this Gateway, its version against the published Story
 /// release, its queue and its jobs here, with "Update Now" per Mac and "Publish a Story Studio
-/// Release…". Publishing never pushes: each Mac fetches on its next check-in (about two minutes),
+/// Release…". Publishing never pushes: each Mac fetches on its next check-in (every 30 minutes),
 /// verifies the signature, and installs once its queue has drained.
 final class FleetStoryTab: FleetTabView {
     /// The shell's banner, so this tab reports the way the other tabs do.
@@ -58,7 +74,7 @@ final class FleetStoryTab: FleetTabView {
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
         table = FleetTableController(columns: columns(), rowHeight: 44)
-        table.emptyText = "No Story Studio Mac has checked in yet. A Story Mac on a build with remote updates checks in every two minutes."
+        table.emptyText = "No Story Studio Mac has checked in yet. A Story Mac on a build with remote updates checks in every 30 minutes."
         table.container.heightAnchor.constraint(equalToConstant: 320).isActive = true
 
         let publish = PageKit.primaryButton("Publish a Story Studio Release…", target: self, action: #selector(beginPublish))
@@ -70,7 +86,9 @@ final class FleetStoryTab: FleetTabView {
         page.addArrangedSubview(table.container)
         fullWidth(table.container)
         page.addArrangedSubview(PageKit.label(
-            "Signed with the same publisher key as Studio Hub releases. A Mac pauses its queue, lets running "
+            "Signed with the same publisher key as Studio Hub releases. A Story Mac checks in every 30 minutes, so "
+            + "Update Now applies at that Mac's next check (30 minutes at most); a Mac that has been silent for over "
+            + "75 minutes shows as Offline. At its check a Mac pauses its queue, lets running "
             + "jobs finish (up to 30 minutes), installs, restarts and resumes. Jobs the owner paused stay paused, "
             + "and a version that fails to start is put back automatically.",
             .body, colour: .secondaryLabelColor, wrapping: true))
@@ -91,7 +109,7 @@ final class FleetStoryTab: FleetTabView {
                         cell: { any in
                             guard let r = row(any) else { return NSView() }
                             let (text, health) = r.statusText
-                            return fleetBadgeCell(text, health, caption: r.error, tooltip: r.error)
+                            return fleetBadgeCell(text, health, caption: r.error ?? r.nextCheckText, tooltip: r.error ?? r.nextCheckText)
                         }),
             FleetColumn(id: "channels", title: "Channels", width: 70, hideBelow: 760, alignment: .right,
                         text: { count(row($0)?.channels) }, sortValue: { .number(Double(row($0)?.channels ?? -1)) }),
@@ -134,9 +152,13 @@ final class FleetStoryTab: FleetTabView {
             switch result {
             case .failure(let error):
                 self?.report?(.error, "Could not ask \(row.machine) to update", error.localizedDescription)
-            case .success:
-                self?.report?(.success, "\(row.machine) updates on its next check-in",
-                              "Within about two minutes it pauses its queue, waits for running jobs, installs and restarts.")
+            case .success(let payload):
+                var when = "At its next check (within 30 minutes)"
+                if let by = (payload["instance"] as? [String: Any])?["next_check_by"] as? Double, by > Date().timeIntervalSince1970 {
+                    when += ", " + StoryInstance.nextCheckText(by).lowercased()
+                }
+                self?.report?(.success, "\(row.machine) updates at its next check-in",
+                              when + ", it pauses its queue, waits for running jobs, installs and restarts.")
             }
             self?.reload()
         }
@@ -171,7 +193,7 @@ final class FleetStoryTab: FleetTabView {
             case .success(let payload):
                 let version = (payload["descriptor"] as? [String: Any])?["version"] as? String ?? "?"
                 self.report?(.success, "Published Story Studio \(version)",
-                             "Each Story Mac picks it up on its next check-in, about two minutes.")
+                             "Each Story Mac picks it up at its next check-in, within 30 minutes.")
             }
             self.reload()
         }

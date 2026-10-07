@@ -142,10 +142,11 @@ def seed(support: Path, upstream_port: int) -> dict:
         "quiet_hours": {"enabled": True, "start": "22:00", "end": "07:00"}, "summary_time": "08:00"}))
     (data / "telegram_state.json").write_text(json.dumps({"last_sent_at": time.time() - 3 * 3600}))
     # Fleet -> Story Studio: a published Story release and five Story Macs in every state the tab draws.
-    (data / "story-release").mkdir(exist_ok=True)
+    (data / "story-release" / ("0" * 64)).mkdir(parents=True, exist_ok=True)  # <sha256>/<filename>; offered only if the file is there
+    (data / "story-release" / ("0" * 64) / "Story-Studio-1.4.259.dmg").write_bytes(b"\0" * 1000)
     (data / "story-release/release.json").write_text(json.dumps({"descriptor": {
         "schema": "storystudio.app-release.v1", "app": "story", "version": "1.4.259", "build": "1042",
-        "filename": "Story-Studio-1.4.259.dmg", "bytes": 412000000, "sha256": "0" * 64,
+        "filename": "Story-Studio-1.4.259.dmg", "bytes": 1000, "sha256": "0" * 64,
         "published_at": int(time.time()) - 2 * 3600}}))
     seen = time.time()
     def story(name, version, minutes, running, queued, phase=None, error=None, held=False, requested=False):

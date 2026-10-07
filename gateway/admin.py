@@ -3307,6 +3307,6 @@ def story_instances() -> Any:
 
 @router.post("/api/story/instances/{instance}/update", dependencies=[Depends(require_admin)])
 def story_instance_update(instance: str) -> Any:
-    """"Update now": the Mac installs on its next check-in (about two minutes), after draining."""
+    """"Update now": the Mac installs on its next check-in (at most 30 minutes away), after draining."""
     from . import story_releases
     return _story_call(lambda: {"instance": story_releases.request_update(instance)})

@@ -1,6 +1,6 @@
 # HANDOFF — gateway-kh
 
-**Read this first.** Updated 2026-10-07 for **VERSION `0.2.136`** (the release blocks below are
+**Read this first.** Updated 2026-10-07 for **VERSION `0.2.137`** (the release blocks below are
 newest first; 0.2.76-0.2.79 are recorded in `menubar/whats-new.md` and their commits). The running build
 stamp is on `/health` and in `/Applications/gateway-kh.app/Contents/Resources/gateway/BUILD`.
 If this file disagrees with the code, **the code wins — fix this file in the same change**.
@@ -8,6 +8,9 @@ Every path below is inside the Git checkout `repository/` unless it says otherwi
 `[MEASURED]` = observed in the session that wrote this; `[reason not recorded]` = the
 project does not say why, and nobody should guess.
 
+> **0.2.137 (2026-10-07) — Story releases: 30-minute check, no half-published window.**
+> Story Macs check in every **30 min** (`story_releases.CHECKIN_EVERY_S`); `OFFLINE_AFTER_S` is **75 min**; each instance row carries `next_check_by` (last_seen + 30 min) and the Fleet tab shows "Next check by ~HH:MM" on a pending Update Now. Publish: the artifact is copied to `.incoming-<uuid>`, fsynced, renamed to `<DATA_DIR>/story-release/<sha256>/<filename>` (content-addressed, so a re-publish never overwrites the file a descriptor offers), and only then is `release.json` written (atomic, `config.write_secret`); the old artifact goes to Trash after that. `current()` returns None unless the descriptor's file exists with the signed size, so `/v1/apps/story/release` never offers a missing/short file. `/release/file` opens the file itself (open fd survives the Trash move) and streams it with Content-Length; it has no Range support. 0.2.136 stored files flat in `story-release/` (none had been published); that layout is no longer read.
+>
 > **0.2.136 (2026-10-07) — Story Studio remote releases.**
 > `gateway/story_releases.py` signs a Story DMG/.zip with the Hub release publisher key (`release_publisher`; version and build read from the bundle's Info.plist) and offers it. `POST /admin/api/story/release/publish {artifact_path}` publishes (the descriptor and file live under `<DATA_DIR>/story-release/`, the old file goes to trash); Story calls `GET /v1/apps/story/release`, `/file` and `POST /v1/apps/story/checkin` with its ordinary bearer key. Publishing never pushes: each Story Mac checks in about every 2 min, records itself in `<DATA_DIR>/story-instances.json`, and installs once its queue has drained. `GET /admin/api/story/instances` lists every Mac (status up_to_date / update_available / updating / failed / offline after 15 min silence) with `gateway_jobs` {waiting, running} from `store.active_counts_by_caller()` (caller `story-studio@<Mac>`); `POST /admin/api/story/instances/{instance}/update` ("Update Now") makes the next check-in answer `update_now` until the Mac reaches the release or the update fails there. `/admin/api/queue` also carries `by_caller` / `by_group`. App: Fleet -> Story Studio (`menubar/FleetStoryTab.swift`); render it with `menubar/render/render-page.sh fleet:story` (the fixture seeds a release and five Story Macs). No Story release is published by this version; the owner publishes after Story 1.4.259 is built. Evidence: `_orchestra/audit-20261007/gateway-story-releases/`.
 
