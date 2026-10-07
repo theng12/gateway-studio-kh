@@ -187,6 +187,11 @@ def reconcile_holds(store: JobStore, *, now: float | None = None) -> dict[str, i
             if str(getattr(definition, "kind", "")) != "studio_hub":
                 out["still_open"] += 1
                 continue
+            if job.get("modality") == "chat" or batch_id.startswith("chat:"):
+                # A synchronous request handle is not a durable batch. A 404 on the batch
+                # route proves nothing about it, and repeating a lost completion is unsafe.
+                out["still_open"] += 1
+                continue
             out["checked"] += 1
             values = registry.credentials.resolved(provider_id)
             snapshot = studio_hub.batch_snapshot(
@@ -1131,6 +1136,9 @@ class Worker:
                 job = self.store.get(job_id)
                 if not job or job.get("state") != "running":
                     continue
+                if job.get("modality") == "chat" and str(job.get("upstream_job_id") or "").startswith("chat:"):
+                    self.store.hold_interrupted(job_id)
+                    continue
                 definition = registry.definition(str(job.get("provider_id") or ""))
                 if definition is None or getattr(adapter_for(definition), "resume", None) is None:
                     self.store.hold_interrupted(job_id)
@@ -1340,12 +1348,18 @@ class Worker:
         if supply is None:
             supply = self._model_supply(provider_id)
         with self._budget_lock:
-            room = budget.limit - self._per_lane.get((provider_id, modality), 0)
+            pending = (int(studio_hub.chat_queue_wait_seconds(provider_id, model_id) > 0)
+                       if modality == "chat" and concurrency.stated_provider_limit(provider_id) is None
+                       else 0)
+            # The chat peer route executes on the controller's own Mac: one execution plus
+            # one waiting request, across every model sharing that physical machine.
+            ceiling = min(budget.limit, 1) + pending if pending else budget.limit
+            room = ceiling - self._per_lane.get((provider_id, modality), 0)
             if model_id in supply:
                 slots = supply[model_id]
                 held = sum(n for (p, lane, model), n in self._per_model.items()
                            if p == provider_id and lane == modality and model in supply and supply[model] <= slots)
-                room = min(room, slots - held)
+                room = min(room, slots + pending - held)
         return room
 
     def _rebind(self, job: dict[str, Any]) -> bool:

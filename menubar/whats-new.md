@@ -14,6 +14,14 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.144 — 2026-10-08
+
+### Waiting for local LLM work
+
+- A Studio Hub Mac that prefers LLM jobs can keep an additional eligible Chat request waiting. Current work finishes before queued LLM work starts, and TTS/image work uses idle time when no LLM is waiting. Older Hubs and cloud providers keep their existing limits.
+- Waiting has a time limit. A request cancelled before it starts cannot begin later; cancellation after work starts does not claim the model has stopped.
+- If a Chat completion's outcome is uncertain, Gateway keeps it available for recovery instead of automatically submitting it again.
+
 ## 0.2.143 — 2026-10-07
 
 ### Reliable Gateway shutdown

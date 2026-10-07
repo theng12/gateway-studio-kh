@@ -22,12 +22,13 @@ import hashlib
 import json
 import logging
 import time
+import threading
 from pathlib import Path
 from typing import Any, Callable
 
 import httpx
 
-from .base import BackendError, BackendRequest, BackendResult
+from .base import BackendError, BackendRequest, BackendResult, note_request_started
 
 log = logging.getLogger(__name__)
 
@@ -1974,6 +1975,74 @@ def _chat_body(request: BackendRequest) -> dict[str, Any]:
     return body
 
 
+def chat_queue_wait_seconds(provider_id: str, model_id: str = "") -> float:
+    """A new Hub's bounded *local* queue contract; old/cloud sites get no allowance."""
+    from .. import fleet
+    if not provider_id.startswith(fleet.PROVIDER_PREFIX) or fleet.is_paused_provider(provider_id):
+        return 0.0
+    try:
+        row = next((row for row in fleet.snapshot(allow_stale=True).get("locations") or []
+                    if row.get("provider_id") == provider_id and row.get("reachable") is True), {})
+        queue = ((row.get("capacity") or {}).get("by_operation") or {}).get("chat.completion") or {}
+        slots, wait = queue.get("pending_request_slots"), queue.get("pending_queue_wait_seconds")
+        models = queue.get("pending_request_models")
+        if (isinstance(slots, bool) or slots != 1 or isinstance(wait, bool)
+                or not isinstance(wait, (int, float)) or not 0 < wait <= QUEUE_WAIT_CEILING_S
+                or not isinstance(models, list) or (model_id and model_id not in models)):
+            return 0.0
+        return float(wait)
+    except (TypeError, ValueError, KeyError):
+        return 0.0
+
+
+def _queued_chat_post(request: BackendRequest, base: str, headers: dict, body: dict,
+                      queue_wait: float, timeout: httpx.Timeout) -> httpx.Response:
+    """Keep the completion intact while publishing only the request's queue phase."""
+    request_id = hashlib.sha256(str(request.params.get("_client_request_id")
+                                   or request.params.get("_job_id") or time.time_ns()).encode()).hexdigest()[:32]
+    headers = {**headers, "X-StudioHub-Request-ID": request_id,
+               "X-StudioHub-Queue-Wait-Seconds": str(queue_wait)}
+    def report_wait(value):
+        if request.on_wait:
+            try:
+                request.on_wait(value)
+            except Exception:
+                log.exception("could not publish Chat queue phase")
+    report_wait({"reason": "waiting for a free Mac", "since": time.time(), "next_try_at": None})
+    if request.checkpoint:
+        request.checkpoint(f"chat:{request_id}")
+    done = threading.Event()
+    outcome: list = []
+
+    def post():
+        try:
+            outcome.append(httpx.post(f"{base}/studio/chat/v1/chat/completions",
+                                      headers=headers, json=body, timeout=timeout))
+        except BaseException as exc:
+            outcome.append(exc)
+        finally:
+            done.set()
+
+    # The request counter is thread-local. The job's own thread must record the
+    # handoff so an immediate socket failure never reads as safe to retry.
+    note_request_started()
+    threading.Thread(target=post, name="gateway-chat-request", daemon=True).start()
+    try:
+        while not done.wait(POLL_INTERVAL_S):
+            try:
+                status = httpx.get(f"{base}/studio/chat/requests/{request_id}",
+                                   headers=_headers(request), timeout=httpx.Timeout(2, connect=1))
+                if status.status_code == 200 and status.json().get("state") != "queued" and request.on_wait:
+                    report_wait(None)
+            except (httpx.HTTPError, ValueError, TypeError):
+                pass  # A status read never overrides the completion or causes another POST.
+        if isinstance(outcome[0], BaseException):
+            raise outcome[0]
+        return outcome[0]
+    finally:
+        report_wait(None)
+
+
 def _generate_chat(request: BackendRequest) -> BackendResult:
     """Run one chat completion on a Hub location.
 
@@ -1996,14 +2065,12 @@ def _generate_chat(request: BackendRequest) -> BackendResult:
     headers = {**_headers(request), "Content-Type": "application/json"}
     # The lane's own ceiling applies to the call itself, as it does to a poll: the
     # Hub holds this request open while the model runs.
-    timeout = httpx.Timeout(lane_deadline_seconds(request), connect=10.0)
+    queue_wait = chat_queue_wait_seconds(request.provider_id, request.model_id)
+    timeout = httpx.Timeout(lane_deadline_seconds(request) + queue_wait + (10 if queue_wait else 0), connect=10.0)
     try:
-        response = httpx.post(
-            f"{base}/studio/chat/v1/chat/completions",
-            headers=headers,
-            json=_chat_body(request),
-            timeout=timeout,
-        )
+        response = (_queued_chat_post(request, base, headers, _chat_body(request), queue_wait, timeout)
+                    if queue_wait else httpx.post(f"{base}/studio/chat/v1/chat/completions",
+                                                 headers=headers, json=_chat_body(request), timeout=timeout))
     except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
         # Nothing accepted the connection: an unreachable location, not a job
         # failure, so the worker may try the next site that offers the model.
@@ -2012,6 +2079,7 @@ def _generate_chat(request: BackendRequest) -> BackendResult:
             code="LOCATION_UNREACHABLE",
             retryable=True,
             upstream_accepted=False,
+            upstream_settled=bool(queue_wait),
         ) from exc
     except httpx.HTTPError as exc:
         # A read timeout *after* the request left is ambiguous: the model may have
@@ -2026,15 +2094,23 @@ def _generate_chat(request: BackendRequest) -> BackendResult:
 
     if response.status_code >= 400:
         code = _hub_refusal_code(response)
+        if code in {"CHAT_REQUEST_CANCELLED", "CHAT_QUEUE_EXPIRED", "CHAT_REQUEST_DUPLICATE"}:
+            raise BackendError(_refusal_sentence(code, response), code=code,
+                               status=response.status_code, retryable=False,
+                               upstream_accepted=code == "CHAT_REQUEST_DUPLICATE",
+                               upstream_settled=code != "CHAT_REQUEST_DUPLICATE")
         if code in _LOCATION_REFUSAL_CODES:
-            raise _refusal_error(code, response)
+            error = _refusal_error(code, response)
+            error.upstream_settled = bool(queue_wait)
+            raise error
         if code == "MACHINE_DISABLED":
             # The peer chat route runs on the controller's own Mac, so a paused controller answers
             # 409 MACHINE_DISABLED even when its group has other Macs. For this free job that is a
             # hand-back, not an operator verdict on the job: moved to another group, nothing
             # charged, not counted against the retry ceiling (owner rule 2026-10-04).
             raise BackendError(_refusal_sentence(code, response), code=NO_AVAILABLE_MACHINE,
-                               status=response.status_code, retryable=True, upstream_accepted=False)
+                               status=response.status_code, retryable=True, upstream_accepted=False,
+                               upstream_settled=bool(queue_wait))
         raise BackendError(
             # A 422 here is the Hub's own validation — a prompt past the model's
             # stated context, or a non-boolean `thinking` — and its sentence names
@@ -2046,6 +2122,7 @@ def _generate_chat(request: BackendRequest) -> BackendResult:
             # A refusal *by name* (STUDIO_NOT_RUNNING, OUTPUT_STORAGE_BLOCKED ...) happened at
             # the door, before any work, whatever its status; only a bare 5xx is ambiguous.
             upstream_accepted=None if response.status_code >= 500 and not code else False,
+            upstream_settled=bool(queue_wait) and (response.status_code < 500 or bool(code)),
         )
 
     payload = response.json() or {}
@@ -2210,6 +2287,12 @@ class StudioHubBackend:
                 "status": None,
                 "reason": "nothing was dispatched to the Hub for this job",
             }
+        if request.modality == "chat" and batch_id.startswith("chat:"):
+            request_id = batch_id.removeprefix("chat:")
+            if len(request_id) != 32 or any(c not in "0123456789abcdef" for c in request_id):
+                return {"ok": False, "reason": "invalid Chat request id"}
+            route = f"/studio/chat/requests/{request_id}"
+            return _recorded_call("DELETE", f"{_resolve_base(request)}{route}", _headers(request), route)
         return _cancel_batch(
             _resolve_base(request), _headers(request), batch_id, request.modality
         )

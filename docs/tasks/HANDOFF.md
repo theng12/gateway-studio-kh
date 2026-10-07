@@ -1,12 +1,19 @@
 # HANDOFF — gateway-kh
 
-**Read this first.** Updated 2026-10-07 for **VERSION `0.2.143`** (the release blocks below are
+**Read this first.** Updated 2026-10-08 for **VERSION `0.2.144`** (the release blocks below are
 newest first; 0.2.76-0.2.79 are recorded in `menubar/whats-new.md` and their commits). The running build
 stamp is on `/health` and in `/Applications/gateway-kh.app/Contents/Resources/gateway/BUILD`.
 If this file disagrees with the code, **the code wins — fix this file in the same change**.
 Every path below is inside the Git checkout `repository/` unless it says otherwise.
 `[MEASURED]` = observed in the session that wrote this; `[reason not recorded]` = the
 project does not say why, and nobody should guess.
+
+> **0.2.144 — 2026-10-08; Gateway source verified, delivery identities are receipt-owned.**
+> Source is based on `7efedb6` / 0.2.143. A reachable, unpaused Studio Hub must advertise a valid model-specific pending contract before Gateway adds one waiting Chat allowance alongside execution. Wait time and request count are bounded; old Hubs, cloud providers and explicitly limited providers keep their established ceilings. Hub 0.6.156 supplies optional per-Mac LLM priority: current work finishes, eligible queued LLM work runs first, then other enabled TTS/image work uses idle capacity.
+> Gateway checkpoints the opaque synchronous `chat:` identity before posting, reports the waiting phase and asks the Hub to cancel waiting work when cancellation/disconnect intervenes. Running/unknown cancellation is not proof of stopped work. Uncertain synchronous Chat outcomes stay held and are not replayed automatically, rerouted as free lost-contact work or reconciled through the durable batch 404 rule. Definite pre-execution refusals retain their settled classification.
+> The coordinator's final isolated source gate passed all 115 eligible test files with exit 0, including end-to-end, all nine native/offscreen suites and JavaScript checks. Independent review found no high-impact issue. Installed `tests/test_ui.py` was excluded because this release changes no native UI and AGENTS reserves that owner-screen workflow; real-fleet inference was excluded while manual pauses remain. These exclusions are limits of the gate, not passing live UI or inference claims.
+> **Running identity must be checked against the authoritative delivery receipt:** `/build/Developer/_orchestra/codex-remediation-20261007/WORK-POLICY-DELIVERY.md`. The coordinator writes/updates it with final commits, push, installer hashes and controlled installation evidence. This source record does not establish installed 0.2.144; do not infer live status from VERSION, a source gate or a built bundle. Keep the owner's This Mac fleet pause and Keep Gateway Running preference intact. Gate evidence is retained in that external evidence directory.
+>
 
 > **0.2.143 (2026-10-07) — reliable Gateway shutdown and installed UI verification (release candidate; build and installation pending).**
 > [MEASURED] Backend PID 71449 had lost its listening port but remained alive with the job database open for about seven hours. The coordinator stopped that exact stale process under the owner's interruption authorization. `menubar/main.swift` now retains the PID and start-time identity of a spawned or health-adopted backend. Stop and Restart wait two seconds after TERM, then up to one second after KILL only for that same known process, and refuse a new backend while the old one remains. An unrelated port listener is never killed. Keep Gateway Running remains the owner's setting. The user benefit is that closing the port no longer lets the old backend keep working against the database while a replacement starts.
