@@ -1,12 +1,16 @@
 # HANDOFF — gateway-kh
 
-**Read this first.** Updated 2026-10-07 for **VERSION `0.2.137`** (the release blocks below are
+**Read this first.** Updated 2026-10-07 for **VERSION `0.2.138`** (the release blocks below are
 newest first; 0.2.76-0.2.79 are recorded in `menubar/whats-new.md` and their commits). The running build
 stamp is on `/health` and in `/Applications/gateway-kh.app/Contents/Resources/gateway/BUILD`.
 If this file disagrees with the code, **the code wins — fix this file in the same change**.
 Every path below is inside the Git checkout `repository/` unless it says otherwise.
 `[MEASURED]` = observed in the session that wrote this; `[reason not recorded]` = the
 project does not say why, and nobody should guess.
+
+> **0.2.138 (2026-10-07) — provider-specific HTTP 400 must not defeat pool fallback.**
+> Live `openrouter-free` failures stopped at Ling's generic `PROVIDER_FAILED` HTTP 400 before either GPT-6 Luna fallback was called. The request used `response_format: json_object`; the retained provider message did not state the underlying reason for its refusal. A provider HTTP 400 is not proof of a globally invalid request. The pool now stops only for an explicit Gateway `INVALID_REQUEST`, and continues to other members after settled provider refusals. The request and JSON requirement remain unchanged; quota memory, the 15-minute free wait, paid-last-resort ordering, cancellation and uncertain upstream outcome semantics are preserved.
+> This fix is prepared in an isolated worktree. The running Gateway was `3c985a4-202610070531` and had 58 active jobs when inspected, so no live backend restart was performed. Do not describe this change as live until the backend is restarted and its new build verified. Evidence: `_orchestra/audit-20261007/pool-provider-400/` outside the checkout.
 
 > **0.2.137 (2026-10-07) — Story releases: 30-minute check, no half-published window.**
 > Story Macs check in every **30 min** (`story_releases.CHECKIN_EVERY_S`); `OFFLINE_AFTER_S` is **75 min**; each instance row carries `next_check_by` (last_seen + 30 min) and the Fleet tab shows "Next check by ~HH:MM" on a pending Update Now. Publish: the artifact is copied to `.incoming-<uuid>`, fsynced, renamed to `<DATA_DIR>/story-release/<sha256>/<filename>` (content-addressed, so a re-publish never overwrites the file a descriptor offers), and only then is `release.json` written (atomic, `config.write_secret`); the old artifact goes to Trash after that. `current()` returns None unless the descriptor's file exists with the signed size, so `/v1/apps/story/release` never offers a missing/short file. `/release/file` opens the file itself (open fd survives the Trash move) and streams it with Content-Length; it has no Range support. 0.2.136 stored files flat in `story-release/` (none had been published); that layout is no longer read.

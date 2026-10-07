@@ -14,6 +14,12 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.138 — 2026-10-07
+
+Model pools:
+- A model refusing a request with HTTP 400 no longer prevents the pool from trying its other members, including the paid fallback. Different models accept different parameter formats, so one provider's refusal does not prove that every model will refuse it.
+- Requests the Gateway identifies as invalid still stop. JSON output requirements, the free-model wait, cancellation, and upstream outcome tracking are preserved.
+
 ## 0.2.137 — 2026-10-07
 
 Story Studio:

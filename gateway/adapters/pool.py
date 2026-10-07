@@ -18,10 +18,10 @@ asymmetry is the whole design:
   retired model, a provider refusing one account — none of those are the
   request's fault, and all of them are exactly what a pool exists to walk past.
 
-So the only condition that stops the walk is `status == 400` **and** not
-`retryable`: the upstream saying the body itself is wrong, which the next model
-would reject for the same reason. Everything else — 401, 402, 403, 404, 429,
-5xx, a timeout, a connection error, a retryable 400 — advances.
+So the only condition that stops the walk is the gateway's own
+`INVALID_REQUEST`: local validation has proved the request is wrong before it
+reaches a provider. Everything upstream — including a settled 400, which may be
+specific to one provider or model — advances.
 
 **Quota memory.** A member that fails with a quota or rate-limit signal is remembered
 (`pool_cooldowns.py`) and skipped by later jobs until its reset, so a spent free lane
@@ -108,14 +108,11 @@ def _cancel_requested(request: BackendRequest) -> bool:
 def _is_request_shaped_failure(error: BackendError) -> bool:
     """Whether trying another model is pointless because the request is wrong.
 
-    Deliberately narrow. A 400 that the adapter marked retryable is *not* the
-    request's fault, and a 400 from one vendor about one model is often that
-    model's own parameter surface rather than the caller's mistake — the
-    catalogue publishes per-model ranges precisely because they differ. Only an
-    un-retryable 400 is read as "the body is wrong", and even then the attempts
-    are reported so the answer is actionable rather than bare.
+    Deliberately narrow. Provider 400s cover model-specific restrictions as well
+    as malformed requests, so their status alone cannot speak for every member.
+    `INVALID_REQUEST` is emitted by gateway-side validation and therefore can.
     """
-    return error.status == 400 and not error.retryable
+    return error.code == "INVALID_REQUEST"
 
 
 def _outcome_known(error: BackendError, sent: bool) -> bool:
@@ -212,7 +209,7 @@ class PoolBackend(Backend):
                 )
                 walk["last"] = exc
                 pool_cooldowns.note_failure(member, exc)
-                # The body is wrong. Every remaining member would say so too.
+                # Gateway validation proved the request is wrong for every member.
                 walk["stop"] = _is_request_shaped_failure(exc)
                 return None
             except Exception as exc:  # noqa: BLE001

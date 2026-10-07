@@ -13,10 +13,10 @@ on purpose:
 * advancing when we should have stopped costs a few provider round-trips;
 * stopping when we should have advanced costs the job.
 
-So only an un-retryable `400` — the upstream saying the *body* is wrong, which
-every other member would reject for the same reason — ends the walk. A 401, 402,
-403, 404, 429, 5xx, timeout or retryable 400 all advance, because those are the
-states a pool is built to walk past.
+So only `INVALID_REQUEST` — validation performed by the gateway before an
+upstream call — ends the walk. An upstream 400 is provider/model-specific and
+advances just like 401, 402, 403, 404, 429, 5xx or a timeout, because those are
+the states a pool is built to walk past.
 
 The pool is driven through its adapter directly here rather than over HTTP: the
 rule lives in `PoolBackend.generate`, and a fake member adapter makes each
@@ -30,13 +30,53 @@ pools or providers.
 from __future__ import annotations
 
 import os
+import shutil
 import sys
 import tempfile
 import unittest
+import uuid
 from pathlib import Path
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
+_SUITE_TMP: Path | None = None
+_SUITE_ENV = None
+
+
+def setUpModule():
+    """Keep all synthetic state isolated, then preserve it under `_trash/`."""
+    global _SUITE_TMP, _SUITE_ENV
+    _SUITE_TMP = Path(tempfile.mkdtemp(prefix="gateway-pools-"))
+    _SUITE_ENV = patch.dict(
+        os.environ,
+        {
+            "GATEWAY_DATA": str(_SUITE_TMP / "data"),
+            "GATEWAY_ARTIFACTS": str(_SUITE_TMP / "data" / "artifacts"),
+            "GATEWAY_DB": str(_SUITE_TMP / "data" / "jobs.sqlite3"),
+            "GATEWAY_CREDENTIALS": str(_SUITE_TMP / "data" / "credentials.json"),
+            "GATEWAY_MODEL_CACHE": str(_SUITE_TMP / "data" / "models_cache.json"),
+            "GATEWAY_POOLS": str(_SUITE_TMP / "data" / "pools.json"),
+            "GATEWAY_APP_SUPPORT": str(_SUITE_TMP / "app-support"),
+            "GATEWAY_ENV_FILE": str(_SUITE_TMP / ".env"),
+            "GATEWAY_NO_MIGRATE": "1",
+            "STUDIOHUB_READY_FILE": str(_SUITE_TMP / "hub-ready.json"),
+            "GATEWAY_HOST": "127.0.0.1",
+            "GATEWAY_API_KEY": "",
+        },
+    )
+    _SUITE_ENV.start()
+    sys.path.insert(0, str(ROOT))
+
+
+def tearDownModule():
+    if _SUITE_ENV is not None:
+        _SUITE_ENV.stop()
+    if sys.path and sys.path[0] == str(ROOT):
+        sys.path.pop(0)
+    if _SUITE_TMP is not None and _SUITE_TMP.exists():
+        archive = ROOT / "_trash" / "tests" / f"test-pools-{uuid.uuid4().hex}"
+        archive.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(_SUITE_TMP), archive)
 
 
 class _FakeAdapter:
@@ -45,54 +85,31 @@ class _FakeAdapter:
     def __init__(self, outcome):
         self.outcome = outcome
         self.calls: list[str] = []
+        self.requests = []
 
     def generate(self, request):
         self.calls.append(request.model_id)
+        self.requests.append(request)
         if isinstance(self.outcome, Exception):
             raise self.outcome
         return self.outcome
 
 
 class _TempEnv(unittest.TestCase):
-    @classmethod
-    def setUpClass(cls):
-        cls._tmp = tempfile.TemporaryDirectory()
-        tmp = Path(cls._tmp.name)
-        cls._env = patch.dict(
-            os.environ,
-            {
-                "GATEWAY_DATA": str(tmp / "data"),
-                "GATEWAY_ARTIFACTS": str(tmp / "data" / "artifacts"),
-                "GATEWAY_DB": str(tmp / "data" / "jobs.sqlite3"),
-                "GATEWAY_CREDENTIALS": str(tmp / "data" / "credentials.json"),
-                "GATEWAY_MODEL_CACHE": str(tmp / "data" / "models_cache.json"),
-                "GATEWAY_POOLS": str(tmp / "data" / "pools.json"),
-                "GATEWAY_APP_SUPPORT": str(tmp / "app-support"),
-                "GATEWAY_ENV_FILE": str(tmp / ".env"),
-                "GATEWAY_NO_MIGRATE": "1",
-                "STUDIOHUB_READY_FILE": str(tmp / "hub-ready.json"),
-                "GATEWAY_HOST": "127.0.0.1",
-                "GATEWAY_API_KEY": "",
-            },
-        )
-        cls._env.start()
-        sys.path.insert(0, str(ROOT))
-
-    @classmethod
-    def tearDownClass(cls):
-        cls._env.stop()
-        cls._tmp.cleanup()
-
     def setUp(self):
         from gateway import pools
 
         self.pools = pools
-        self.path = pools.POOLS_PATH
-        self.path.unlink(missing_ok=True)
+        assert _SUITE_TMP is not None
+        case = _SUITE_TMP / "cases" / self.__class__.__name__ / self._testMethodName
+        self.path = case / "pools.json"
+        path_patch = patch.object(pools, "POOLS_PATH", self.path)
+        path_patch.start()
+        self.addCleanup(path_patch.stop)
+        pools._cache["key"] = None
         from gateway import pool_cooldowns
 
         self.cooldowns = pool_cooldowns
-        pool_cooldowns._path().unlink(missing_ok=True)
         pool_cooldowns.reset()
 
 
@@ -321,9 +338,10 @@ class PoolFailoverTests(_TempEnv):
         )
         self.assertEqual("from b", backend.generate(self._request()).text)
 
-    def test_an_unretryable_400_stops_the_walk(self):
-        # The body is wrong. Every remaining member would reject it identically,
-        # so walking on only adds latency to a request that cannot succeed.
+    def test_an_explicit_local_invalid_request_stops_the_walk(self):
+        # The old test treated every settled 400 as proof that the caller's body
+        # was wrong. Providers also use 400 for model-specific refusals, so only
+        # the gateway's own validation code can make that claim across members.
         #
         # `b::x` is a *working* member on purpose: this asserts it was never
         # called, which is the whole claim. A test where the remaining members
@@ -333,16 +351,32 @@ class PoolFailoverTests(_TempEnv):
         self.pools.create("free", ["a::x", "b::x", "c::x"])
         backend, adapters = self._backend(
             {
-                "a::x": BackendError("bad body", code="BAD", status=400, retryable=False),
+                "a::x": BackendError("bad body", code="INVALID_REQUEST", status=422),
                 "b::x": BackendResult(text="from b"),
                 "c::x": BackendResult(text="from c"),
             }
         )
         with self.assertRaises(BackendError) as caught:
             backend.generate(self._request())
-        self.assertEqual("BAD", caught.exception.code)
-        self.assertEqual([], adapters["b::x"].calls, "a request-shaped 400 must not walk on")
+        self.assertEqual("INVALID_REQUEST", caught.exception.code)
+        self.assertEqual([], adapters["b::x"].calls, "gateway validation must not walk on")
         self.assertEqual([], adapters["c::x"].calls)
+
+    def test_provider_400s_exhaust_the_pool_and_preserve_every_attempt(self):
+        from gateway.adapters.base import BackendError
+
+        self.pools.create("free", ["a::x", "b::x", "c::x"])
+        backend, adapters = self._backend({
+            member: BackendError(f"{member} rejected", code="PROVIDER_FAILED", status=400)
+            for member in ("a::x", "b::x", "c::x")
+        })
+        with self.assertRaises(BackendError) as caught:
+            backend.generate(self._request())
+        self.assertEqual("PROVIDER_FAILED", caught.exception.code)
+        self.assertEqual(400, caught.exception.status)
+        self.assertEqual([1, 1, 1], [len(adapters[m].calls) for m in ("a::x", "b::x", "c::x")])
+        for member in ("a::x", "b::x", "c::x"):
+            self.assertIn(member, str(caught.exception))
 
     def test_a_member_that_no_longer_resolves_is_skipped_not_fatal(self):
         from gateway.adapters.base import BackendResult
@@ -768,6 +802,34 @@ class PoolPaidLastResortTests(_TempEnv):
 
         self.pools.create("mix", ["gone::x", "paid::x"])  # every free member switched off
         self.assertEqual("paid", backend.generate(self._request()).text)
+
+    def test_a_generic_provider_400_from_free_falls_through_to_paid_unchanged(self):
+        from gateway.adapters.base import BackendError
+
+        self.pools.create("mix", ["f1::x", "paid::x"])
+        backend, adapters = self._backend({
+            "f1::x": BackendError("model refused it", code="PROVIDER_FAILED", status=400),
+            "paid::x": self._ok("paid"),
+        })
+        request = self._request(response_format={"type": "json_schema", "json_schema": {"strict": True}})
+        result = backend.generate(request)
+        self.assertEqual("paid", result.text)
+        self.assertIs(request.params, adapters["paid::x"].requests[0].params)
+
+    def test_a_generic_provider_400_from_one_paid_member_reaches_luna(self):
+        from gateway.adapters.base import BackendError
+
+        self.pools.create("mix", ["openrouter-paid::x", "gpt6-luna::x"])
+        backend, adapters = self._backend({
+            "openrouter-paid::x": BackendError(
+                "model refused it", code="PROVIDER_FAILED", status=400
+            ),
+            "gpt6-luna::x": self._ok("luna"),
+        })
+        result = backend.generate(self._request())
+        self.assertEqual("luna", result.text)
+        self.assertEqual(1, len(adapters["openrouter-paid::x"].calls))
+        self.assertEqual(1, len(adapters["gpt6-luna::x"].calls))
 
     def test_a_cancellation_during_the_wait_ends_the_job_without_paying(self):
         from gateway.adapters.base import BackendError
