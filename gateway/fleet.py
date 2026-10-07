@@ -1315,7 +1315,7 @@ def _probe(base: str, token: str, *, timeout: float = _TIMEOUT) -> dict:
             if isinstance(release_payload.get("release"), dict)
             else None
         ),
-        # The publisher fingerprint this controller has installed, when its Hub
+        # The App Update Key fingerprint this controller reports, when its Hub
         # reports it (0.6.51+). `reported` is separate from the fingerprint so
         # "it says it trusts nobody" and "it did not tell us" stay distinct.
         "trusted_publisher": _trusted_publisher(release_payload),
@@ -2350,7 +2350,8 @@ def _update_error_fact(raw: object) -> dict | None:
 
     at = raw.get("at")
     at = float(at) if isinstance(at, (int, float)) and not isinstance(at, bool) and abs(at) != float("inf") and at == at else None
-    phase = raw.get("phase") if raw.get("phase") in _UPDATE_ERROR_PHASES else None
+    phase = raw.get("phase")
+    phase = phase if isinstance(phase, str) and phase in _UPDATE_ERROR_PHASES else None
     reason = text("reason", 300)
     if phase is None and reason is None:
         return None
@@ -4015,7 +4016,8 @@ def note_memory_refusal(provider_id: str, model_id: str, detail: str, now: float
         _MEMORY_COOLDOWN.setdefault((location, model_id), {})[match[1]] = (until, float(match[2]))
 
 
-def memory_cooled(location_id: str, model_id: str, machines: object = None, now: float | None = None) -> int:
+def memory_cooled(location_id: str, model_id: str, machines: object = None, now: float | None = None,
+                  *, reachable_only: bool = False) -> int:
     """How many Macs at this location are cooling down for this model.
 
     A Mac leaves early once the fleet read shows it with clearly more free memory than it said it
@@ -4025,13 +4027,18 @@ def memory_cooled(location_id: str, model_id: str, machines: object = None, now:
         return 0
     now = time.time() if now is None else now
     free: dict[str, float] = {}
-    for machine in machines if isinstance(machines, list) else []:
-        gb = _num(machine.get("available_gb")) if isinstance(machine, dict) else None
+    listed = [m for m in machines if isinstance(m, dict)] if isinstance(machines, list) else []
+    for machine in listed:
+        gb = _num(machine.get("available_gb"))
         if gb is not None:
             free.update({str(name): gb for name in (machine.get("label"), machine.get("machine")) if name})
     for name, (until, need) in list(macs.items()):
         if until <= now or free.get(name, -1.0) >= need + MEMORY_CLEAR_MARGIN_GB:
             macs.pop(name, None)
+    if reachable_only and listed:
+        reachable = {str(name) for machine in listed if machine.get("reachable") is not False
+                     for name in (machine.get("label"), machine.get("machine")) if name}
+        return sum(name in reachable for name in macs)
     return len(macs)
 
 
@@ -4050,7 +4057,8 @@ def usable_slots(row: dict, model_id: str, eligible: int) -> int:
     reach = reachable_machines(row)
     if reach is not None:
         eligible = min(eligible, reach)
-    return max(eligible - memory_cooled(str(row.get("id") or ""), model_id, row.get("machines")), 0)
+    return max(eligible - memory_cooled(str(row.get("id") or ""), model_id, row.get("machines"),
+                                       reachable_only=True), 0)
 
 
 def _weighted_tiebreak(routing_key: str, location_id: str, compatible_slots: int) -> float:

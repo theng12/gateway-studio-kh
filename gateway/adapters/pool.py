@@ -8,20 +8,12 @@ identically and neither had to learn about pools. A pool is a provider whose
 
 The rule for advancing
 ----------------------
-**Advance on anything except a request the gateway itself got wrong.** The
-asymmetry is the whole design:
-
-* Advancing when we should have stopped costs a few provider round-trips. The
-  request was never going to work, so the caller still gets the same failure —
-  later, and with the attempts named.
-* Stopping when we should have advanced costs the job. A spent free lane, a
-  retired model, a provider refusing one account — none of those are the
-  request's fault, and all of them are exactly what a pool exists to walk past.
-
-So the only condition that stops the walk is the gateway's own
-`INVALID_REQUEST`: local validation has proved the request is wrong before it
-reaches a provider. Everything upstream — including a settled 400, which may be
-specific to one provider or model — advances.
+**Advance on settled member failures; stop on an uncertain paid send.** A
+provider's settled 400 can be specific to one model, so another member may
+answer. A free member can also advance after going silent. A paid member that
+may have accepted work stops with its responsible attempt preserved: another
+paid send could duplicate a charge. Gateway `INVALID_REQUEST` always stops,
+because local validation proved the request itself is wrong.
 
 **Quota memory.** A member that fails with a quota or rate-limit signal is remembered
 (`pool_cooldowns.py`) and skipped by later jobs until its reset, so a spent free lane
@@ -123,6 +115,10 @@ def _outcome_known(error: BackendError, sent: bool) -> bool:
     """
     if error.code == "PROVIDER_SUBMISSION_UNCERTAIN":
         return False
+    if error.upstream_settled:
+        return True
+    if error.upstream_accepted is True:
+        return False
     return (not sent or error.upstream_accepted is False or error.upstream_settled
             or (isinstance(error.status, int) and 400 <= error.status < 500))
 
@@ -195,8 +191,8 @@ class PoolBackend(Backend):
             try:
                 result = self._adapter_for(definition).generate(member_request)
             except BackendError as exc:
-                walk["ambiguous"] = walk["ambiguous"] or not _outcome_known(
-                    exc, requests_started() != sends_before)
+                ambiguous = not _outcome_known(exc, requests_started() != sends_before)
+                walk["ambiguous"] = walk["ambiguous"] or ambiguous
                 attempts.append(
                     {
                         "member": member,
@@ -209,6 +205,15 @@ class PoolBackend(Backend):
                 )
                 walk["last"] = exc
                 pool_cooldowns.note_failure(member, exc)
+                if paid and ambiguous:
+                    # This paid send may have been accepted. A later member's answer cannot settle it.
+                    uncertain = BackendError(
+                        str(exc), code="PROVIDER_SUBMISSION_UNCERTAIN", status=exc.status,
+                        recovery={**(exc.recovery or {}), "pool_member": member,
+                                  "provider_id": definition.id, "pool_attempts": attempts},
+                    )
+                    uncertain.evidence = getattr(exc, "evidence", None)
+                    raise uncertain from exc
                 # Gateway validation proved the request is wrong for every member.
                 walk["stop"] = _is_request_shaped_failure(exc)
                 return None
@@ -220,6 +225,12 @@ class PoolBackend(Backend):
                 attempts.append(
                     {"member": member, "outcome": "error", "detail": f"{type(exc).__name__}: {exc}"[:400]}
                 )
+                if paid and requests_started() != sends_before:
+                    raise BackendError(
+                        str(exc), code="PROVIDER_SUBMISSION_UNCERTAIN", status=502,
+                        recovery={"pool_member": member, "provider_id": definition.id,
+                                  "pool_attempts": attempts},
+                    ) from exc
                 walk["last"] = BackendError(str(exc), code="BACKEND_ERROR", status=502)
                 return None
             finally:

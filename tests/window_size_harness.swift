@@ -17,6 +17,28 @@ let pages = ["audio", "subtitle", "image", "music", "video", "chat", "overview",
              "models", "providers", "fleet", "settings", "content packs", "what's new", "overview", "audio"]
 var failures: [String] = []
 
+let updateKeyHelp = "Signs Studio Hub and Story Studio updates so each Mac knows an update really came from this Gateway. Safe to share — it is not a password. A Mac shows the first characters of this fingerprint; they should match."
+
+func descendants(_ view: NSView) -> [NSView] {
+    [view] + view.subviews.flatMap(descendants)
+}
+
+func assertCompleteUpdateKeyHelp(_ window: NSWindow, _ appearance: String, _ disclosure: String) {
+    guard let content = window.contentView,
+          let label = descendants(content).compactMap({ $0 as? NSTextField })
+              .first(where: { $0.stringValue == updateKeyHelp }) else {
+        failures.append("\(appearance) \(disclosure): App Update Key help label is missing")
+        return
+    }
+    let required = ceil(label.attributedStringValue.boundingRect(
+        with: NSSize(width: label.bounds.width, height: CGFloat.greatestFiniteMagnitude),
+        options: [.usesLineFragmentOrigin, .usesFontLeading]
+    ).height)
+    if label.bounds.height + 0.5 < required {
+        failures.append("\(appearance) \(disclosure): App Update Key help is \(label.bounds.height)pt high but its complete text requires \(required)pt at \(label.bounds.width)pt wide")
+    }
+}
+
 _ = MainWindow.shared.show(section: "audio")
 guard let window = MainWindow.shared.window else { print("FAIL: no window"); exit(1) }
 window.setFrameOrigin(NSPoint(x: -20000, y: -20000))
@@ -37,6 +59,31 @@ for size in [NSSize(width: 1900, height: 1100), NSSize(width: 1350, height: 800)
             failures.append("\(page): window went \(expected) -> \(window.frame.size) (started at content \(size))")
         }
     }
+}
+
+// The Settings page is first built wide above, then narrowed in the same process.
+// Measure the text's required line-fragment height at its actual narrow width;
+// checking only that the label stays inside the card would miss clipped final lines.
+window.setContentSize(NSSize(width: 860, height: 700))
+for (name, appearance) in [("light", NSAppearance.Name.aqua), ("dark", NSAppearance.Name.darkAqua)] {
+    window.appearance = NSAppearance(named: appearance)
+    _ = MainWindow.shared.show(section: "settings")
+    spin(0.5)
+    window.contentView?.layoutSubtreeIfNeeded()
+    guard let content = window.contentView,
+          let disclosure = descendants(content).compactMap({ $0 as? NSButton }).first(where: {
+              $0.action == NSSelectorFromString("togglePublisherDetails:")
+          }) else {
+        failures.append("\(name): App Update Key disclosure is missing")
+        continue
+    }
+    if disclosure.state == .on { disclosure.performClick(nil) }
+    window.contentView?.layoutSubtreeIfNeeded()
+    assertCompleteUpdateKeyHelp(window, name, "collapsed")
+    disclosure.performClick(nil)
+    window.contentView?.layoutSubtreeIfNeeded()
+    assertCompleteUpdateKeyHelp(window, name, "expanded")
+    disclosure.performClick(nil)
 }
 if failures.isEmpty { print("PASS: switching pages never resized the window") }
 else { failures.forEach { print("FAIL: \($0)") }; exit(1) }

@@ -332,7 +332,7 @@ export async function startController({
     // even when the signature would also fail, because "install my key" is the
     // actionable sentence and "signature invalid" is not.
     if (!trusted.fingerprint) {
-      throw new RequestError(409, "no trusted gateway key is installed on this controller; install the gateway's publisher fingerprint with POST /api/hub/release/trust")
+      throw new RequestError(409, "no App Update Key is installed on this controller; install the Gateway's App Update Key public key with POST /api/hub/release/trust {\"public_key\": \"<64 hex>\"}, then compare fingerprints")
     }
 
     // Step 3 -- key identity. publisher_key_id is the trust anchor, so it is
@@ -348,7 +348,7 @@ export async function startController({
     // cannot verify until the public half is installed.
     const { signature, ...signedPart } = descriptor
     if (!trusted.publicKey) {
-      throw new RequestError(400, `the controller trusts fingerprint ${trusted.fingerprint} but holds no gateway public key, so it cannot verify descriptor.signature; install the gateway's public key with POST /api/hub/release/trust {"public_key": "<64 hex>"}`)
+      throw new RequestError(400, `the controller trusts App Update Key fingerprint ${trusted.fingerprint} but holds no Gateway App Update Key public key, so it cannot verify descriptor.signature; install the public key with POST /api/hub/release/trust {"public_key": "<64 hex>"}`)
     }
     let signatureValid = false
     try {

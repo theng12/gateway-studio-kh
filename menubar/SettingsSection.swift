@@ -37,6 +37,7 @@ final class SettingsSection: NSObject, AppSection {
     private var publisherKeyBase64Label: NSTextField!
     private var publisherKeyHexLabel: NSTextField!
     private var publisherIDLabel: NSTextField!
+    private var publisherTechnicalDetails: NSStackView!
     private var releaseIdentityStatus: NSTextField!
     private let telegram = TelegramSettings()
     private let backups = BackupPanel()
@@ -83,7 +84,7 @@ final class SettingsSection: NSObject, AppSection {
 
         root.addArrangedSubview(PageKit.heading(
             "Settings",
-            "The gateway's port and API key, and whether it starts with this Mac."
+            "The gateway's port and Gateway API Key, and whether it starts with this Mac."
         ))
 
         // ---- gateway
@@ -113,10 +114,9 @@ final class SettingsSection: NSObject, AppSection {
             PageKit.button("Copy", target: self, action: #selector(copyKey)),
             PageKit.button("Regenerate", target: self, action: #selector(regenerateKey)),
         ])
-        section("API key", [
+        section("Gateway API Key", [
             PageKit.help(
-                "Story Studio presents this key. Paste it there once, and it never needs "
-                + "to appear in a terminal."
+                "The password Story Studio uses to reach this Gateway. Keep it private; Regenerate if it leaks, then paste the new one into each Story Mac."
             ),
             PageKit.formRow("Key", [keyField, keyButtons] as [NSView]),
         ], in: root)
@@ -139,21 +139,18 @@ final class SettingsSection: NSObject, AppSection {
         section("Story Studio", [
             PageKit.formRow("Base URL", [storyBaseField, baseButtons] as [NSView]),
             PageKit.help(
-                EnvFile.bindsBeyondLoopback()
-                    ? "Paste this and the key into Story Studio → Settings → This Mac on the other machine."
-                    : "This Mac only. Set GATEWAY_HOST=0.0.0.0 in .env to reach it from another machine."
+                "Paste this address and the Gateway API Key into Story Studio → Settings → This Mac."
             ),
         ], in: root)
 
         // ---- Studio Hub app releases
         //
-        // The one string an owner has to carry to another Mac is the fingerprint:
-        // a controller accepts a release only from a gateway whose publisher key
-        // its owner installed with POST /api/hub/release/trust. Both values are
-        // public; the private half never leaves the gateway, and this page never
-        // asks for it.
+        // The value an owner carries to another Mac is the raw public key. The
+        // controller computes its fingerprint after installation, and the owner
+        // compares that display with this one. Both values are public; the private
+        // half never leaves the gateway, and this page never asks for it.
         publisherFingerprintLabel = PageKit.label(
-            "Reading the publisher identity…", .mono, wrapping: true
+            "Reading the App Update Key identity…", .mono, wrapping: true
         )
         publisherFingerprintLabel.lineBreakMode = .byCharWrapping
         publisherFingerprintLabel.maximumNumberOfLines = 2
@@ -168,17 +165,32 @@ final class SettingsSection: NSObject, AppSection {
             "", .secondary, colour: .secondaryLabelColor, wrapping: true
         )
         releaseIdentityStatus.preferredMaxLayoutWidth = 520
-        section("Studio Hub app releases", [
-            PageKit.help(
-                "This is this gateway's signing identity. Install its fingerprint on a "
-                + "controller so that controller accepts releases pushed from here. The "
-                + "fingerprint and the public key are safe to share; the private key is "
-                + "never shown."
-            ),
-            PageKit.formRow("Fingerprint", publisherFingerprintLabel),
+        publisherTechnicalDetails = NSStackView(views: [
             PageKit.formRow("Public key (base64)", publisherKeyBase64Label),
             PageKit.formRow("Public key (hex)", publisherKeyHexLabel),
             PageKit.formRow("Publisher", publisherIDLabel),
+        ])
+        publisherTechnicalDetails.orientation = .vertical
+        publisherTechnicalDetails.alignment = .leading
+        publisherTechnicalDetails.spacing = DS.Space.l
+        publisherTechnicalDetails.isHidden = true
+        let detailsToggle = NSButton(title: "", target: self,
+                                     action: #selector(togglePublisherDetails))
+        detailsToggle.setButtonType(.onOff)
+        detailsToggle.bezelStyle = .disclosure
+        detailsToggle.setAccessibilityLabel("Technical details")
+        let updateKeyHelp = PageKit.help(
+            "Signs Studio Hub and Story Studio updates so each Mac knows an update really came from this Gateway. Safe to share — it is not a password. A Mac shows the first characters of this fingerprint; they should match."
+        )
+        // This page can be resized after its labels measured at a wider width.
+        // Zero makes AppKit use the width Auto Layout actually gives the label,
+        // so its intrinsic height grows again at the 860 pt window size.
+        updateKeyHelp.preferredMaxLayoutWidth = 0
+        section("App Update Key", [
+            PageKit.formRow("Fingerprint", publisherFingerprintLabel),
+            updateKeyHelp,
+            PageKit.row([detailsToggle, PageKit.label("Technical details", .secondary)]),
+            publisherTechnicalDetails,
             releaseIdentityStatus,
         ], in: root)
 
@@ -363,7 +375,7 @@ final class SettingsSection: NSObject, AppSection {
             publisherIDLabel?.stringValue = "—"
             if let error, !error.isEmpty {
                 releaseIdentityStatus?.stringValue =
-                    "Could not read the publisher identity — \(error)"
+                    "Could not read the App Update Key identity — \(error)"
             } else {
                 releaseIdentityStatus?.stringValue =
                     "The gateway has not published a signing identity yet."
@@ -379,7 +391,7 @@ final class SettingsSection: NSObject, AppSection {
             parts.append("\(algorithm) signing key")
         }
         parts.append(
-            "Install the fingerprint on a controller to trust releases from this gateway."
+            "Compare this App Update Key fingerprint with the first characters shown on each Mac."
         )
         releaseIdentityStatus?.stringValue = parts.joined(separator: " · ")
     }
@@ -508,10 +520,14 @@ final class SettingsSection: NSObject, AppSection {
 
     // MARK: Actions
 
+    @objc private func togglePublisherDetails(_ sender: NSButton) {
+        publisherTechnicalDetails.isHidden = sender.state != .on
+    }
+
     @objc private func copyKey() {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(keyField.stringValue, forType: .string)
-        statusLabel.stringValue = "API key copied to the clipboard."
+        statusLabel.stringValue = "Gateway API Key copied to the clipboard."
     }
 
     @objc private func copyBaseURL() {
@@ -522,7 +538,7 @@ final class SettingsSection: NSObject, AppSection {
 
     @objc private func regenerateKey() {
         guard PageKit.confirm(
-            "Generate a new API key?",
+            "Generate a new Gateway API Key?",
             "Story Studio presents this key. It stops working the moment the new one is written, "
                 + "and the old key cannot be recovered. Paste the new key into Story Studio → Settings afterwards.",
             ok: "Generate"

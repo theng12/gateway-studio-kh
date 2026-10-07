@@ -181,10 +181,14 @@ class Decisions(Base):
             self.assertIsNone(rp.catch_up(self.fleet_rows(row("n", "0.6.131", trusted=trust)), wait=True))
         self.assertEqual(self.pushes, [])
         self.assertTrue(self.outcome()["skipped"])
-        self.assertIn("did not say which publisher key", self.outcome()["detail"])
+        self.assertIn("did not say which App Update Key", self.outcome()["detail"])
         rp.catch_up(self.fleet_rows(row("n", "0.6.131", trusted="cd" * 32)), wait=True)
-        self.assertIn("doesn't trust this gateway's key", self.outcome()["detail"])
-        self.assertIn(FP, self.outcome()["detail"])
+        detail = self.outcome()["detail"]
+        self.assertIn("doesn't trust this Gateway's App Update Key", detail)
+        self.assertIn("App Update Key public key", detail)
+        self.assertIn("Technical details", detail)
+        self.assertIn("then compare fingerprints", detail)
+        self.assertIn(FP, detail)
 
     def test_never_downgrades_or_touches_a_newer_or_unknown_release(self) -> None:
         for held in ("0.6.133", "0.7.0", "nightly"):

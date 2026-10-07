@@ -13,10 +13,10 @@ on purpose:
 * advancing when we should have stopped costs a few provider round-trips;
 * stopping when we should have advanced costs the job.
 
-So only `INVALID_REQUEST` — validation performed by the gateway before an
-upstream call — ends the walk. An upstream 400 is provider/model-specific and
-advances just like 401, 402, 403, 404, 429, 5xx or a timeout, because those are
-the states a pool is built to walk past.
+Gateway `INVALID_REQUEST` stops because local validation proved the request
+wrong. A settled upstream 400 is provider/model-specific and advances, as do
+other definite refusals. A paid marked send with an unknown outcome stops to
+prevent duplicate paid work; free unknown-send fallback remains allowed.
 
 The pool is driven through its adapter directly here rather than over HTTP: the
 rule lives in `PoolBackend.generate`, and a fake member adapter makes each

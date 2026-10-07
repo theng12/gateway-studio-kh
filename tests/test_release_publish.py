@@ -164,15 +164,19 @@ class ReleasePublish(unittest.TestCase):
         self.assertEqual(outcome["status"], 400)
         self.assertIn("length", outcome["detail"].lower())
 
-    def test_an_untrusted_controller_names_the_fingerprint_to_install(self) -> None:
+    def test_an_untrusted_controller_names_the_app_update_key_public_key(self) -> None:
         # The 409 is the one action the owner has to take on that Mac, so the
-        # gateway appends the fingerprint it needs installed.
+        # gateway names the raw public-key path and comparison fingerprint.
         identity = rp.identity()
         outcome = self._publish()["locations"]["ctrl-1"]
         self.assertFalse(outcome["ok"])
         self.assertEqual(outcome["status"], 409)
-        self.assertIn("trusted gateway key", outcome["detail"])
+        self.assertIn("App Update Key is installed", outcome["detail"])
+        self.assertIn("App Update Key public key", outcome["detail"])
+        self.assertIn("Technical details", outcome["detail"])
+        self.assertIn("then compare fingerprints", outcome["detail"])
         self.assertIn(identity["fingerprint"], outcome["detail"])
+        self.assertNotIn("install this gateway's publisher fingerprint", outcome["detail"].lower())
 
     def test_a_connect_timeout_is_an_unreachable_controller(self) -> None:
         # A connection that was never established delivered nothing, so it is a

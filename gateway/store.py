@@ -233,6 +233,7 @@ class JobStore:
         #: Jobs found `running` with an upstream id when this store opened: still running upstream,
         #: so the worker resumes polling them (or holds them) on start. See `_recover_interrupted`.
         self.interrupted: list[str] = []
+        self._hold_sweep_after = ""
         self._conn.executescript(_SCHEMA)
         self._ensure_columns()
         self._recover_interrupted()
@@ -696,11 +697,13 @@ class JobStore:
             self._conn.commit()
             return log
 
-    def holds(self, *, limit: int = 200, sweepable: bool = False) -> list[dict[str, Any]]:
-        """Every job waiting on a reconciliation hold, newest first.
+    def holds(self, *, limit: int = 200, sweepable: bool = False,
+              provider_ids: list[str] | None = None) -> list[dict[str, Any]]:
+        """Recovery holds: newest first for display, fair keyset batches for a sweep.
 
         `sweepable` narrows it to what the Hub can be asked about: unknown outcomes that carry an
-        upstream id. Without it, `retryable` rows and id-less chat holds fill the sweep's window
+        upstream id, optionally restricted to providers that can recover them. Without it,
+        `retryable` rows and id-less chat holds fill the sweep's window
         and starve the real ones.
 
         A hold is a job whose upstream outcome is unknown. They were only ever visible one at a
@@ -709,10 +712,30 @@ class JobStore:
         """
         where = ("recovery_state = 'unknown_outcome' AND COALESCE(upstream_job_id, '') != ''"
                  if sweepable else "recovery_state IS NOT NULL")
-        rows = self._conn.execute(
-            f"SELECT * FROM jobs WHERE {where} ORDER BY updated_at DESC LIMIT ?",
-            (max(1, int(limit)),),
-        ).fetchall()
+        params: list[Any] = []
+        if provider_ids is not None:
+            if not provider_ids:
+                return []
+            where += " AND provider_id IN (" + ",".join("?" for _ in provider_ids) + ")"
+            params.extend(provider_ids)
+        with self._lock:
+            if sweepable:
+                # Stable keyset rotation: unresolved rows cannot keep monopolising the batch.
+                rows = self._conn.execute(
+                    f"SELECT * FROM jobs WHERE {where} AND id > ? ORDER BY id LIMIT ?",
+                    (*params, self._hold_sweep_after, max(1, int(limit))),
+                ).fetchall()
+                if not rows:
+                    rows = self._conn.execute(
+                        f"SELECT * FROM jobs WHERE {where} ORDER BY id LIMIT ?",
+                        (*params, max(1, int(limit))),
+                    ).fetchall()
+                self._hold_sweep_after = str(rows[-1]["id"]) if rows else ""
+            else:
+                rows = self._conn.execute(
+                    f"SELECT * FROM jobs WHERE {where} ORDER BY updated_at DESC LIMIT ?",
+                    (*params, max(1, int(limit))),
+                ).fetchall()
         return [self._row_dict(row) for row in rows]
 
     def close_hold(self, job_id: str, *, resolution: str, detail: str) -> bool:
@@ -1159,11 +1182,16 @@ class JobStore:
         ).fetchall()
         return [self._row_dict(r) for r in rows]
 
-    def recent(self, limit: int = 20) -> list[dict[str, Any]]:
+    def recent(self, limit: int = 20, *, offset: int = 0) -> list[dict[str, Any]]:
+        if offset > 2**63 - 1:  # a validated page can still exceed SQLite's integer range
+            return []
         rows = self._conn.execute(
-            "SELECT * FROM jobs ORDER BY created_at DESC LIMIT ?", (limit,)
+            "SELECT * FROM jobs ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?", (limit, offset)
         ).fetchall()
         return [self._row_dict(r) for r in rows]
+
+    def job_count(self) -> int:
+        return int(self._conn.execute("SELECT COUNT(*) FROM jobs").fetchone()[0])
 
     def list_jobs(
         self,

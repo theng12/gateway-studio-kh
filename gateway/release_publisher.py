@@ -17,8 +17,8 @@ The wire contract is
 * The gateway signs the canonical bytes with the `"signature"` field **removed**,
   as standard base64 (with padding) of the 64 raw Ed25519 bytes.
 * `publisher_key_id` is the lowercase hex sha256 of the raw 32-byte public key —
-  the fingerprint the owner installs on a controller with
-  `POST /api/hub/release/trust`.
+  the App Update Key fingerprint the owner compares after installing the raw
+  public key on a controller with `POST /api/hub/release/trust`.
 
 The key pair lives in the gateway's data directory and is never returned by an
 API. Signing runs in the same Node helper the Content Pack signer uses
@@ -183,7 +183,7 @@ def identity() -> dict[str, Any]:
     fingerprint = str(inspected.get("public_key_fingerprint") or "").lower()
     if len(raw) != 32 or len(fingerprint) != 64:
         raise ReleaseError(
-            "The publisher key is not a usable Ed25519 identity.", 503, "RELEASE_KEY_INVALID"
+            "The App Update Key is not a usable Ed25519 identity.", 503, "RELEASE_KEY_INVALID"
         )
     _identity_cache = {
         "algorithm": "ed25519",
@@ -457,8 +457,8 @@ def _refusal(response: httpx.Response) -> dict[str, Any]:
     """The controller's own refusal sentence, verbatim.
 
     A `409` means no trusted gateway key is installed on that controller yet, which
-    is the one action the owner has to take there — so the fingerprint to install
-    is appended in front of the controller's own sentence.
+    is the one action the owner has to take there. Append the Settings path for the
+    raw public key and the fingerprint the owner compares after installation.
     """
     try:
         payload = response.json()
@@ -469,10 +469,13 @@ def _refusal(response: httpx.Response) -> dict[str, Any]:
     if not isinstance(reason, str) or not reason.strip():
         reason = f"the controller refused the release (HTTP {response.status_code})"
     if response.status_code == 409:
-        # The controller cannot know the fingerprint — it is the gateway's.
+        # The controller cannot know this Gateway's comparison fingerprint.
         try:
             fingerprint = identity()["fingerprint"]
-            reason = f"{reason.strip()} Install this gateway's publisher fingerprint on that Mac: {fingerprint}"
+            reason = (f"{reason.strip()} Copy this Gateway's App Update Key public key from "
+                      "Gateway → Settings → App Update Key → Technical details into Hub → "
+                      "Connections → App updates, then compare fingerprints "
+                      f"(this Gateway: {fingerprint}).")
         except ReleaseError:
             pass
     return {
@@ -961,10 +964,12 @@ def _untrusted(row: dict[str, Any], fingerprint: str) -> str | None:
     if fingerprint and held == fingerprint.lower():
         return None
     if not trust.get("reported"):
-        return "it did not say which publisher key it trusts, so nothing was sent"
-    return ("it doesn't trust this gateway's key"
+        return "it did not say which App Update Key it trusts, so nothing was sent"
+    return ("it doesn't trust this Gateway's App Update Key"
             + (f" (it trusts {held[:12]}…)" if held else " (no key is installed)")
-            + f"; install this gateway's publisher fingerprint on that Mac: {fingerprint}")
+            + "; copy this Gateway's App Update Key public key from Gateway → Settings → "
+              "App Update Key → Technical details into Hub → Connections → App updates, "
+              f"then compare fingerprints (this Gateway: {fingerprint})")
 
 
 def catch_up(rows: list[dict[str, Any]], *, wait: bool = False) -> str | None:

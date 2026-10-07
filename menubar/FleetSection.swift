@@ -1014,7 +1014,7 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
             return
         }
         // Each controller's own sentence, verbatim, one per refusal. A 409 already
-        // carries the fingerprint to install; nothing here rewrites it.
+        // carries the App Update Key public-key path and comparison fingerprint.
         let details = refusals.map { refusal -> String in
             let name = refusal.outcome.label
                 ?? locations.first { $0.id == refusal.id }?.label

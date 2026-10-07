@@ -158,7 +158,7 @@ def reconcile_holds(store: JobStore, *, now: float | None = None) -> dict[str, i
       * **still running, or the Hub did not answer** — left exactly where it is. "I could not ask"
         is not "it is finished", and this function never treats the two the same.
 
-    Runs on the dispatch loop's own thread, on a timer, and never raises: a hold that cannot be
+    Runs on a separate recovery thread, on a timer, and never raises: a hold that cannot be
     reconciled this minute is reconciled the next.
     """
     out = {"checked": 0, "closed_finished": 0, "requeued": 0, "adopted": 0, "still_open": 0}
@@ -167,82 +167,87 @@ def reconcile_holds(store: JobStore, *, now: float | None = None) -> dict[str, i
     if holds_of is None or close is None:
         return out
     try:
-        rows = holds_of(limit=50, sweepable=True)
+        hub_ids = [d.id for d in registry.definitions() if d.kind == "studio_hub"]
+        rows = holds_of(limit=50, sweepable=True, provider_ids=hub_ids)
     except Exception:  # noqa: BLE001 - an unreadable table is not a reason to stop dispatching
         log.exception("could not read recovery holds")
         return out
     for job in rows:
-        provider_id = str(job.get("provider_id") or "")
-        definition = registry.definition(provider_id)
-        context = job.get("recovery_context")
-        context = context if isinstance(context, dict) else {}
-        batch_id = str(context.get("batch_id") or job.get("upstream_job_id") or "")
-        if definition is None or not batch_id:
-            out["still_open"] += 1
-            continue
-        # Only Studio Hub can be asked: it is the lane that keeps a batch record and publishes a
-        # route for it. Every other lane stays on the operator's discard action.
-        if str(getattr(definition, "kind", "")) != "studio_hub":
-            out["still_open"] += 1
-            continue
-        out["checked"] += 1
-        values = registry.credentials.resolved(provider_id)
-        snapshot = studio_hub.batch_snapshot(
-            values, str(values.get("base_url") or definition.base_url or ""), batch_id,
-            kind=str(job.get("modality") or "image"),
-            local=provider_id == fleet.provider_id_for(fleet.LOCAL_ID),
-        )
-        if snapshot is None:
-            out["still_open"] += 1
-            continue
-        if not snapshot.get("known"):
-            limit = int(concurrency.retry_policy()["max_attempts"])
-            attempted = len(store.attempts_of(job["id"])) if hasattr(store, "attempts_of") else 0
-            if attempted < limit:
-                close(job["id"], resolution="requeued",
-                      detail=(f"the Hub has never heard of batch {batch_id} ({provider_id}), so "
-                              f"nothing was ever run for it. Returned to the queue — this is "
-                              f"proof of no work, not a guess."))
-                out["requeued"] += 1
-            else:
-                close(job["id"], resolution="failed",
-                      detail=(f"the Hub has never heard of batch {batch_id} ({provider_id}) and "
-                              f"the job has used all {limit} attempts, so it is failed rather "
-                              f"than queued again."))
-                out["closed_finished"] += 1
-            continue
-        state = str(snapshot.get("state") or "")
-        if state in _DONE_UPSTREAM_STATES:
-            # **The Hub finished it and still holds the artifact: adopt it** (owner decision,
-            # 2026-09-30) -- fetch, verify the sha256, save it and settle the job `succeeded`
-            # through the normal done path. Anything that stops that (the bytes will not verify,
-            # the Hub stops answering) leaves the hold exactly as it was, to be tried next minute.
-            request = BackendRequest(
-                provider_id=provider_id, model_id=str(job.get("model_id") or ""),
-                modality=str(job.get("modality") or "image"), params={}, values=values,
-                base_url=str(values.get("base_url") or definition.base_url or ""),
-                display_name=getattr(definition, "display_name", ""),
-            )
-            try:
-                settle_result(job["id"], studio_hub.adopt_batch(
-                    request, batch_id,
-                    local=provider_id == fleet.provider_id_for(fleet.LOCAL_ID)), store)
-            except Exception as exc:  # noqa: BLE001 - a hold that cannot be adopted stays a hold
-                log.warning("hold %s: could not adopt finished batch %s (%s): %s",
-                            job["id"], batch_id, provider_id, exc)
-            else:
-                out["adopted"] += 1
+        try:
+            provider_id = str(job.get("provider_id") or "")
+            definition = registry.definition(provider_id)
+            context = job.get("recovery_context")
+            context = context if isinstance(context, dict) else {}
+            batch_id = str(context.get("batch_id") or job.get("upstream_job_id") or "")
+            if definition is None or not batch_id:
+                out["still_open"] += 1
                 continue
-        elif state in _TERMINAL_UPSTREAM_STATES:
-            item = snapshot.get("item") or {}
-            detail = (f"the Hub reports batch {batch_id} ({provider_id}) finished with state "
-                      f"'{state}'"
-                      + (f": {item.get('error')}" if item.get("error") else "")
-                      + ". Closed automatically (Q8): the upstream's own record settled it.")
-            close(job["id"], resolution="failed", detail=detail)
-            out["closed_finished"] += 1
-            continue
-        out["still_open"] += 1
+            # Only Studio Hub can be asked: it is the lane that keeps a batch record and publishes a
+            # route for it. Every other lane stays on the operator's discard action.
+            if str(getattr(definition, "kind", "")) != "studio_hub":
+                out["still_open"] += 1
+                continue
+            out["checked"] += 1
+            values = registry.credentials.resolved(provider_id)
+            snapshot = studio_hub.batch_snapshot(
+                values, str(values.get("base_url") or definition.base_url or ""), batch_id,
+                kind=str(job.get("modality") or "image"),
+                local=provider_id == fleet.provider_id_for(fleet.LOCAL_ID),
+            )
+            if snapshot is None:
+                out["still_open"] += 1
+                continue
+            if not snapshot.get("known"):
+                limit = int(concurrency.retry_policy()["max_attempts"])
+                attempted = len(store.attempts_of(job["id"])) if hasattr(store, "attempts_of") else 0
+                if attempted < limit:
+                    close(job["id"], resolution="requeued",
+                          detail=(f"the Hub has never heard of batch {batch_id} ({provider_id}), so "
+                                  f"nothing was ever run for it. Returned to the queue — this is "
+                                  f"proof of no work, not a guess."))
+                    out["requeued"] += 1
+                else:
+                    close(job["id"], resolution="failed",
+                          detail=(f"the Hub has never heard of batch {batch_id} ({provider_id}) and "
+                                  f"the job has used all {limit} attempts, so it is failed rather "
+                                  f"than queued again."))
+                    out["closed_finished"] += 1
+                continue
+            state = str(snapshot.get("state") or "")
+            if state in _DONE_UPSTREAM_STATES:
+                # **The Hub finished it and still holds the artifact: adopt it** (owner decision,
+                # 2026-09-30) -- fetch, verify the sha256, save it and settle the job `succeeded`
+                # through the normal done path. Anything that stops that (the bytes will not verify,
+                # the Hub stops answering) leaves the hold exactly as it was, to be tried next minute.
+                request = BackendRequest(
+                    provider_id=provider_id, model_id=str(job.get("model_id") or ""),
+                    modality=str(job.get("modality") or "image"), params={}, values=values,
+                    base_url=str(values.get("base_url") or definition.base_url or ""),
+                    display_name=getattr(definition, "display_name", ""),
+                )
+                try:
+                    settle_result(job["id"], studio_hub.adopt_batch(
+                        request, batch_id,
+                        local=provider_id == fleet.provider_id_for(fleet.LOCAL_ID)), store)
+                except Exception as exc:  # noqa: BLE001 - a hold that cannot be adopted stays a hold
+                    log.warning("hold %s: could not adopt finished batch %s (%s): %s",
+                                job["id"], batch_id, provider_id, exc)
+                else:
+                    out["adopted"] += 1
+                    continue
+            elif state in _TERMINAL_UPSTREAM_STATES:
+                item = snapshot.get("item") or {}
+                detail = (f"the Hub reports batch {batch_id} ({provider_id}) finished with state "
+                          f"'{state}'"
+                          + (f": {item.get('error')}" if item.get("error") else "")
+                          + ". Closed automatically (Q8): the upstream's own record settled it.")
+                close(job["id"], resolution="failed", detail=detail)
+                out["closed_finished"] += 1
+                continue
+            out["still_open"] += 1
+        except Exception as exc:  # noqa: BLE001 - one unreadable hold must not starve the rest
+            log.warning("hold %s: could not reconcile: %s", job.get("id"), exc)
+            out["still_open"] += 1
     return out
 
 
@@ -852,6 +857,7 @@ def _dispatch(job: dict[str, Any], store: JobStore, provider_id: str, model_id: 
                         and exc.upstream_accepted is None
                     )
             if exc.code == "PROVIDER_SUBMISSION_UNCERTAIN":
+                # Explicit ambiguity outranks even a wrapped 400 from a pool member.
                 unknown = True
             # **The owner cancelled this job, so a failure now is the cancel arriving, not a
             # reason to try another machine.** The Hub answers a cancelled item with an error, the

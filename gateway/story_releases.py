@@ -258,18 +258,35 @@ def checkin(payload: dict[str, Any]) -> dict[str, Any]:
         "server_mode": payload.get("server_mode") is True,
         "last_seen": time.time(),
     }
+    if "request_id" in update:
+        record["update"]["request_id"] = _text(update.get("request_id"), 100) or None
     release = current()
     with _lock:
         rows = _read_json(_instances_file())
         previous = rows.get(instance) if isinstance(rows.get(instance), dict) else {}
         requested = previous.get("update_requested_at")
+        request_id = previous.get("update_request_id")
+        delivered = previous.get("update_request_delivered") is True
+        failed = record["update"]["phase"] in ("rolled_back", "failed")
+        if "request_id" in update:
+            # A stale report or lost response cannot acknowledge a new attempt.
+            failed_attempt = bool(request_id) and record["update"]["request_id"] == request_id
+        else:
+            # Legacy reports cannot name attempts. Preserve the first old failure until delivery;
+            # subsequent failures stop the command. Updated Macs use the exact identity above.
+            old_failure = previous.get("update_request_previous_failure")
+            failed_attempt = delivered or not old_failure or record["update"] != old_failure
         if requested and (not release or not _behind(record["version"], release)
-                          or record["update"]["phase"] in ("rolled_back", "failed")):
-            requested = None  # reached, or this version failed there: never loop on it
+                          or (failed and failed_attempt)):
+            requested = None
         record["update_requested_at"] = requested
+        record["update_request_id"] = request_id if requested else None
+        record["update_request_delivered"] = bool(requested)
+        record["update_request_previous_failure"] = previous.get("update_request_previous_failure") if requested else None
         rows[instance] = record
         _write_json(_instances_file(), rows)
-    return {**offer(), "update_now": bool(requested)}
+    return {**offer(), "update_now": bool(requested),
+            "update_request_id": request_id if requested else None}
 
 
 def _behind(version: str | None, release: dict[str, Any]) -> bool:
@@ -285,6 +302,10 @@ def request_update(instance: str) -> dict[str, Any]:
         if not isinstance(row, dict):
             raise StoryReleaseError("No Story Mac by that name has checked in.", 404, "STORY_UNKNOWN")
         row["update_requested_at"] = time.time()
+        row["update_request_id"] = uuid.uuid4().hex
+        row["update_request_delivered"] = False
+        update = row.get("update") or {}
+        row["update_request_previous_failure"] = update if update.get("phase") in ("failed", "rolled_back") else None
         _write_json(_instances_file(), rows)
     return status_row(row, current(), time.time())
 

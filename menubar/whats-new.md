@@ -14,6 +14,21 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.141 — 2026-10-07
+
+### Safer paid requests and fair recovery
+
+- A paid pool stops when a sent request has an uncertain outcome and keeps the responsible member's evidence for recovery. Free fallback and definite provider refusals still advance.
+- A Mac that is both offline and resting after a memory refusal is counted once. Recovery checks rotate through bounded batches of Hub holds, so older jobs get a turn; cloud holds stay available for operator review.
+- Account job history now returns the requested page and the total number of jobs.
+- A fresh Story Update Now request survives an older failure report. Updated Story Macs acknowledge the particular attempt, so a new failure stops that request without losing a later explicit retry.
+
+### Clearer keys
+
+API key is now called Gateway API Key; the release signing key is now the App Update Key
+
+Settings explains which key is private and which fingerprint can be shared. Public key encodings are available under Technical details.
+
 ## 0.2.140 — 2026-10-07
 
 Received artifacts:
@@ -1334,8 +1349,8 @@ now refused before anything is sent.
 - **The publish panel warns before the push**: if a controller holds a newer version,
   it lists them and asks, with **Publish anyway** for a deliberate rollback. A version
   with no numeric order (a date, a suffix) is never treated as a downgrade.
-- **Fleet → Locations → Release shows each controller's trusted publisher** (Hub
-  0.6.51+): the fingerprint it has installed for app releases. It reads “this gateway”
+- **Fleet → Locations → Release shows each controller's trusted App Update Key** (Hub
+  0.6.51+): the fingerprint it reports for app releases. It reads “this gateway”
   when it matches, and says plainly when none is installed yet — the state that makes a
   push answer 409. “It trusts nobody” and “this Hub did not say” stay separate sentences.
 
@@ -1358,9 +1373,9 @@ offers it to every configured controller, which verifies the signature against t
 key its owner installed there and countersigns. The node then pins the controller's
 countersignature, so trust chains from this gateway to the controller to the node.
 
-- **Settings shows the publisher identity** — the fingerprint you install on a
+- **Settings shows the App Update Key** — the public key you install on a
   controller (with `POST /api/hub/release/trust`) so that controller accepts
-  releases pushed from here, plus the public key. The private key stays in the
+  releases pushed from here, plus the fingerprint to compare. The private key stays in the
   gateway's data directory, is written `0600`, and is never returned by an API.
 - **Publish a release** from Fleet → Locations: choose the `.dmg` exactly as
   built, give the version and build, and the gateway signs a descriptor — sorted
@@ -1370,8 +1385,8 @@ countersignature, so trust chains from this gateway to the controller to the nod
   `GET /api/hub/release`, never "the request was accepted". Each controller shows
   the release it holds, the last push outcome, and the controller's refusal
   reason **verbatim**. A controller that has not had the key installed yet refuses
-  with its own sentence, and the gateway names the fingerprint to install — the one
-  action that Mac needs.
+  with its own sentence, and the Gateway names the App Update Key public-key path
+  and the fingerprint to compare.
 - Nothing is re-signed or rewritten after signing, and the artifact is never
   repackaged.
 

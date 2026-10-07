@@ -1305,7 +1305,7 @@ def account_jobs(
     # raised `OverflowError: Python int too large to convert to SQLite INTEGER`
     # — a 500, from a URL. `page_size=-1` was worse in a quieter way: that is
     # SQLite's "no limit", so a caller could ask for every job ever recorded.
-    rows = store.recent(page_size)
+    rows = store.recent(page_size, offset=(page - 1) * page_size)
     return {
         "items": [
             {
@@ -1319,7 +1319,7 @@ def account_jobs(
         ],
         "page": page,
         "page_size": page_size,
-        "total": len(rows),
+        "total": store.job_count(),
     }
 
 

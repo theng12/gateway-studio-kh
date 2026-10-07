@@ -26,8 +26,8 @@ FIXTURE = {
         "jobs_failed": 1, "running_jobs": 1, "local_models_total": 2,
         "models_available": 3, "workers_total": 4, "workers_ready": 3, "issues": 2,
     },
-    # The publisher identity and the last push. The refusal carries the
-    # fingerprint to install, which the page must quote verbatim.
+    # The App Update Key identity and the last push. The refusal carries the raw
+    # public-key path and comparison fingerprint, which the page quotes verbatim.
     "release": {
         "identity": {
             "algorithm": "ed25519",
@@ -47,8 +47,10 @@ FIXTURE = {
             "locations": {
                 "ctrl-1": {
                     "ok": False, "status": 409, "code": "PUBLISHER_NOT_TRUSTED",
-                    "detail": "no trusted gateway key is installed. Install this gateway's "
-                              "publisher fingerprint on that Mac: " + "cd" * 32,
+                    "detail": "no trusted gateway key is installed. Copy this Gateway's App Update Key "
+                              "public key from Gateway → Settings → App Update Key → Technical details "
+                              "into Hub → Connections → App updates, then compare fingerprints "
+                              "(this Gateway: " + "cd" * 32 + ").",
                     "label": "Blue Room", "release": None,
                 },
             },
@@ -375,8 +377,8 @@ enum GatewayAPI {
                "the Members tooltip did not quote the controller's sentence")
 
         // The publisher identity and the controller-held descriptor decode, and
-        // the refusal is quoted verbatim — fingerprint and all. A page that
-        // paraphrased a 409 would hide the one string the owner has to install.
+        // the refusal is quoted verbatim — raw-public-key path and comparison
+        // fingerprint. A page that paraphrased it could lose the required action.
         assert(snapshot.release?.identity?.fingerprint == String(repeating: "cd", count: 32),
                "the publisher fingerprint did not decode")
         assert(snapshot.release?.identity?.publicKeyHex == String(repeating: "ab", count: 32),
@@ -387,7 +389,7 @@ enum GatewayAPI {
         let outcome = snapshot.release?.lastPush?.outcomes["ctrl-1"]
         assert(outcome?.status == 409, "the push status did not decode")
         assert(outcome?.ok == false, "the push outcome did not decode as a refusal")
-        assert((outcome?.detail ?? "").contains("Install this gateway's publisher fingerprint"),
+        assert((outcome?.detail ?? "").contains("App Update Key public key"),
                "the refusal detail did not decode verbatim")
         let texts = descendants(locations).compactMap { ($0 as? NSTextField)?.stringValue }
         assert(texts.contains(where: { $0.contains("held 0.6.49 (deadbee)") }),
@@ -398,11 +400,12 @@ enum GatewayAPI {
                "the controller's trusted-publisher field did not decode")
         assert(snapshot.locations.first(where: { $0.id == "local" })?.trustedPublisher?.reported == false,
                "the local Hub's missing trusted-publisher field did not decode as unreported")
-        assert(texts.contains(where: { $0.contains("Trusted publisher: none installed yet") }),
+        assert(texts.contains(where: { $0.contains("App Update Key: none installed yet") }),
                "the Release section did not say no trusted publisher is installed")
         assert(texts.contains(where: {
                    $0.contains("Last push refused")
-                       && $0.contains("Install this gateway's publisher fingerprint")
+                       && $0.contains("App Update Key public key")
+                       && $0.contains("then compare fingerprints")
                }),
                "the Release section did not quote the refusal verbatim")
 

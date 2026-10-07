@@ -1,12 +1,18 @@
 # HANDOFF — gateway-kh
 
-**Read this first.** Updated 2026-10-07 for **VERSION `0.2.140`** (the release blocks below are
+**Read this first.** Updated 2026-10-07 for **VERSION `0.2.141`** (the release blocks below are
 newest first; 0.2.76-0.2.79 are recorded in `menubar/whats-new.md` and their commits). The running build
 stamp is on `/health` and in `/Applications/gateway-kh.app/Contents/Resources/gateway/BUILD`.
 If this file disagrees with the code, **the code wins — fix this file in the same change**.
 Every path below is inside the Git checkout `repository/` unless it says otherwise.
 `[MEASURED]` = observed in the session that wrote this; `[reason not recorded]` = the
 project does not say why, and nobody should guess.
+
+> **0.2.141 (2026-10-07) — audit repairs and clearer key names (verification/release integration pending).**
+> Paid pool ambiguity stops fallback with the responsible member's recovery evidence. Reachable Macs and memory cooldowns share the same capacity population. Hub recovery uses bounded keyset rotation and excludes non-Hub holds; account history uses offsets and a matching scalar total. Story Update Now adds an optional request identity acknowledgement while preserving existing fields and legacy behavior. A malformed nested startup update phase now fails closed.
+> Settings uses the owner's exact Gateway API Key and App Update Key copy; the signing fingerprint is first and public base64/hex values start collapsed under Technical details. No credential, environment or existing wire identifiers are renamed. Retention 0.2.140 remains intact. Worker proof and limitations: `_orchestra/codex-remediation-20261007/gateway-implementation.md` outside this worktree; coordinator owns full gates, review, commit/push, DMG and installation.
+> Source verification began at 2026-10-07T11:28Z from retention 0.2.140 base `1e5a0220ca54adac8488cb842aea3d4b1083a977`; 0.2.141 was not installed or running during these checks. The worker's earlier focused run passed 318 tests. The complete isolated source gate covered 112 eligible files: 102 Python and 10 Node, including e2e (579 checks), all nine native/offscreen suites and all Node VM/release-controller suites. Its discovery run recorded 110 pass and two stale exact-copy assertions; those two files were corrected without production changes and fresh isolated reruns passed 13/13 and 14/14. The only exclusions were installed `tests/test_ui.py` and owner-qualified real-inference `tests/test_fleet_standalone.py`. The first actual Settings fixture produced 12 before-proof captures with secrets masked; independent inspection found the App Update Key help's last line clipped at 860×700 after wide-to-narrow resize. A targeted width-aware intrinsic-height fix and required-text-height regression are prepared; the affected native test and 12-image rerender remain pending. Build, DMG, integration, installation and running-build verification follow this source stage. The external `/build/Developer/_orchestra/codex-remediation-20261007/gateway-delivery-receipt.md` is authoritative for subsequent commit, push, DMG, install and running-identity status; do not infer live status from this source handoff.
+> Fleet's empty-trust help tells the owner to copy the raw public key from Gateway → Settings → App Update Key → Technical details into Hub → Connections → App updates, then compare fingerprints. A fingerprint is display evidence, not the value pasted into the Hub.
 
 > **0.2.140 (2026-10-07) — recoverable automatic artifact retention (implementation and offline checks verified).**
 > First-stage artifact retention keeps its 3-day / 8-GiB defaults and saved overrides, pins, one-hour grace period, and active or recovery-held input protection. Retired files go under the application's `DATA_DIR/_trash/`; existing `DATA_DIR/trash/` remains recognized. After seven days, or as needed to keep the combined runtime archive under 20 GiB, the oldest retired entries move to native macOS Trash. A failed transfer keeps the source and reports the failure. No permanent-deletion fallback is permitted, including under low disk space. Moving to macOS Trash does not free disk space until emptied; its 30-day emptying setting is owned by macOS.
@@ -168,7 +174,7 @@ project does not say why, and nobody should guess.
 > parallel `PUT /blob/<sha>` (4 per controller, Content-Length, streamed from the mounted files) -> `GET /need`
 > must be `[]` and the read-back `GET /api/hub/release` must carry this descriptor's signature, else
 > `RELEASE_INCOMPLETE` / `RELEASE_NOT_STORED`. 404/405 on the manifest POST -> full push. Other refusals (400/409)
-> are final and reported verbatim (409 still appends the fingerprint to install).
+> are final and reported verbatim (409 appends the App Update Key public-key path and comparison fingerprint).
 > * **Two descriptors are signed:** the delta one carries `files_sha256/files_count/files_bytes` inside the signed bytes;
 >   the legacy one (no files fields) goes to controllers without the capability, so a 0.6.114 controller sees exactly
 >   what it always saw. `state.release` reports the delta one (with the files fields) when there is one.

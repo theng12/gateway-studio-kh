@@ -26,6 +26,9 @@ sys.path.insert(0, str(ROOT))
 
 import httpx  # noqa: E402
 
+from tests._isolation import sandbox_env
+_SANDBOX = sandbox_env("gateway-hold-reconciliation-")
+
 from gateway import worker as worker_module  # noqa: E402
 from gateway.adapters import studio_hub  # noqa: E402
 from gateway.store import JobStore  # noqa: E402
@@ -37,7 +40,7 @@ class _Store:
         self._attempts = attempts
         self.closed: list[dict[str, Any]] = []
 
-    def holds(self, *, limit: int = 200, sweepable: bool = False):
+    def holds(self, *, limit: int = 200, sweepable: bool = False, provider_ids=None):
         self.sweepable = sweepable
         return list(self._holds)[:limit]
 

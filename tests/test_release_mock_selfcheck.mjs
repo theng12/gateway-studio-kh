@@ -157,11 +157,13 @@ test('a wrong or absent Fleet token on GET /release is 401', async () => {
   assert.equal(missing.status, 401)
 })
 
-test('an untrusted push is 409 and tells the owner how to install a fingerprint', async () => {
+test('an untrusted push is 409 and asks for the App Update Key public key', async () => {
   const response = await push(signed({}), artifact.toString('base64'))
   assert.equal(response.status, 409)
   assert.match(String(response.body.detail), /install/i)
+  assert.match(String(response.body.detail), /App Update Key public key/i)
   assert.match(String(response.body.detail), /fingerprint/i)
+  assert.match(String(response.body.detail), /public_key/i)
   assert.match(String(response.body.detail), /\/api\/hub\/release\/trust/)
 
   // Trust is checked before the signature: a broken signature is still 409 here,

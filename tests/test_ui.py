@@ -1209,7 +1209,7 @@ def main() -> int:
     settings = detail_texts()
     check("Settings shows the runtime", "runtime" in settings.lower(), settings[:160])
     check("Settings shows the data folder", "gateway-kh" in settings)
-    check("Settings states what it is for", "API key" in settings, settings[:200])
+    check("Settings states what it is for", "Gateway API Key" in settings, settings[:200])
     # Artifact retention: the limits are editable here, and the page says where the
     # received copies go so it is clear they are not the ones Story Studio keeps.
     check("Settings offers the artifact retention limits",
@@ -1271,7 +1271,7 @@ def main() -> int:
     field_x = settings_fields("scroll area 2")
     if len(field_x) < 2:
         field_x = settings_fields("it")
-    check("Settings has an API key field", len(field_x) >= 2, f"{len(field_x)} fields")
+    check("Settings has a Gateway API Key field", len(field_x) >= 2, f"{len(field_x)} fields")
     check("no stray window was opened", window_count() == 1, f"{window_count()} windows")
 
     # The form is two columns: every field starts at the same x. It used to stack

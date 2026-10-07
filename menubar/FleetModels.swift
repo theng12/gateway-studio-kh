@@ -472,8 +472,8 @@ struct FleetTrustedPublisher: Decodable {
 /// What one controller answered to a push.
 ///
 /// `detail` is the controller's (or the gateway's) own sentence and is shown
-/// **verbatim**: a 409 already carries the fingerprint to install, so
-/// paraphrasing it would lose the one actionable fact. `release` is what the
+/// **verbatim**: a 409 already carries the App Update Key public-key path and
+/// comparison fingerprint. `release` is what the
 /// controller **read back** after storing — `nil` on any refusal.
 struct FleetPushOutcome: Decodable {
     var ok: Bool?

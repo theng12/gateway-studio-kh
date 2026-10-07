@@ -86,7 +86,7 @@ final class FleetStoryTab: FleetTabView {
         page.addArrangedSubview(table.container)
         fullWidth(table.container)
         page.addArrangedSubview(PageKit.label(
-            "Signed with the same publisher key as Studio Hub releases. A Story Mac checks in every 30 minutes, so "
+            "Signed with the same App Update Key as Studio Hub releases. A Story Mac checks in every 30 minutes, so "
             + "Update Now applies at that Mac's next check (30 minutes at most); a Mac that has been silent for over "
             + "75 minutes shows as Offline. At its check a Mac pauses its queue, lets running "
             + "jobs finish (up to 30 minutes), installs, restarts and resumes. Jobs the owner paused stay paused, "

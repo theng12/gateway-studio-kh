@@ -1946,6 +1946,9 @@ class QueueWaitTests(_HubCase):
 
 
 class _HoldRegistry(_Registry):
+    def definitions(self):
+        return [self.definition("studio-hub-test")]
+
     @staticmethod
     def definition(_provider_id: str) -> Any:
         return SimpleNamespace(id="studio-hub-test", kind="studio_hub", base_url=HUB,

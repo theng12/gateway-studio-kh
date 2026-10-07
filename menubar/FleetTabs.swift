@@ -1115,20 +1115,20 @@ final class FleetLocationsTab: FleetTabView {
     /// What the controller says it trusts. `reported == false` is "this Hub does
     /// not carry the field" (older than 0.6.51), which is **not** the same answer
     /// as an installed `null` — that one means it trusts nobody and a push will
-    /// be refused until the gateway's fingerprint is installed.
+    /// be refused until the gateway's raw public key is installed.
     private func trustedPublisherText(for location: FleetLocation) -> String {
         guard let trust = location.trustedPublisher, trust.reported == true else {
-            return "Trusted publisher: the Hub did not report one."
+            return "App Update Key: the Hub did not report one."
         }
         let fingerprint = (trust.fingerprint ?? "").trimmingCharacters(in: .whitespaces)
         guard !fingerprint.isEmpty else {
-            return "Trusted publisher: none installed yet — a push is refused until you install "
-                + "this gateway's fingerprint there (Settings → Studio Hub app releases)."
+            return "App Update Key: none installed yet — copy the public key from Gateway → Settings → App Update Key → Technical details "
+                + "into Hub → Connections → App updates, then compare fingerprints."
         }
         let who = (trust.publisherId ?? "").trimmingCharacters(in: .whitespaces)
         let short = String(fingerprint.prefix(12))
         let named = fingerprint == identityFingerprint ? "this gateway" : (who.isEmpty ? "unnamed" : who)
-        return "Trusted publisher: \(named) \(short)…"
+        return "App Update Key (fingerprint): \(named) \(short)…"
     }
 
     private func trustedPublisherColour(for location: FleetLocation) -> NSColor {
@@ -1141,8 +1141,8 @@ final class FleetLocationsTab: FleetTabView {
     }
 
     /// The last push's outcome for one controller. A refusal is the gateway's or
-    /// the controller's own sentence, kept exactly — a 409 already names the
-    /// fingerprint to install, and nothing here rewrites it.
+    /// the controller's own sentence, kept exactly — a 409 already names the App
+    /// Update Key public-key path and comparison fingerprint.
     private func releaseOutcomeText(
         _ outcome: FleetPushOutcome?, for location: FleetLocation, reportKnown: Bool
     ) -> String {

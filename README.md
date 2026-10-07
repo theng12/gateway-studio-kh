@@ -220,8 +220,8 @@ non-loopback bind requires a configured key; keep Uvicorn's actual bind aligned 
 Launching with `--background` (which is what the login item does) skips the window and leaves only
 the menu bar icon.
 
-**Settings** is where the gateway's own API key lives, with a **Copy** button — that is the value
-Story Studio needs. Paste it into **Story Studio → Settings → This Mac → GenStudio API key**, and set
+**Settings** is where the **Gateway API Key** lives, with a **Copy** button — that is the value
+Story Studio needs. Paste it into **Story Studio → Settings → This Mac → Gateway API Key**, and set
 **Base URL** to `http://127.0.0.1:8787`. It is the last item in the sidebar, under "Library & app".
 
 **Launch at login** uses a LaunchAgent (`~/Library/LaunchAgents/kh.gateway.menubar.plist`) rather

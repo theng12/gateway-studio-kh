@@ -2589,7 +2589,7 @@ def fleet_snapshot(force: bool = False) -> dict[str, Any]:
     # halves of the report — the version that was signed and the version each
     # controller read back. `identity()` creates the key on first use; a failure is
     # reported rather than hidden, because the page then has to say why there is no
-    # fingerprint to install.
+    # App Update Key public key and comparison fingerprint to show.
     push = release_publisher.last_push()
     try:
         out["release"] = {"identity": release_publisher.identity(), "last_push": push}
@@ -3191,8 +3191,9 @@ def fleet_startup_audit(limit: int = 50) -> dict[str, Any]:
 def release_identity() -> Any:
     """The publisher public key and fingerprint, plus the last push.
 
-    This is the only place the owner can read the fingerprint to install on a
-    controller, and the private half is never part of the answer.
+    This is the only place the owner can read the App Update Key public key to
+    install on a controller and its comparison fingerprint. The private half is
+    never part of the answer.
     """
     try:
         return {

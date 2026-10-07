@@ -331,8 +331,10 @@ def health(flavour: str) -> tuple[list, dict]:
                       "code": "LOCATION_UNREACHABLE",
                       "detail": "could not reach the controller at http://100.64.3.1:47873 (ConnectTimeout)"},
             "c1400": {**auto, "ok": False, "skipped": True, "at": NOW - 2 * MIN, "code": "CATCHUP_SKIPPED",
-                      "detail": "it doesn't trust this gateway's key (it trusts 9f9f9f9f9f9f…); install this "
-                                "gateway's publisher fingerprint on that Mac: " + "cd" * 32},
+                      "detail": "it doesn't trust this Gateway's App Update Key (it trusts 9f9f9f9f9f9f…); copy this Gateway's "
+                                "App Update Key public key from Gateway → Settings → App Update Key → Technical details "
+                                "into Hub → Connections → App updates, then compare fingerprints (this Gateway: "
+                                + "cd" * 32 + ")"},
             "c1500": {**auto, "ok": None, "pending": True, "at": NOW - 30},
             "c1600": {**auto, "ok": True, "status": 200, "at": NOW - 25 * MIN, "release": rows[2]["release"]},
         }
