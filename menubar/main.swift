@@ -398,8 +398,46 @@ final class GatewayController {
     private var stopping = false
     private var restartAttempts = 0
     private var isStarting = false
+    private var lifecycleGeneration = 0
     /// Pid of a gateway this app adopted rather than spawned.
-    private var adoptedPid: pid_t?
+    private var adoptedProcess: BackendIdentity?
+    private var adoptedPid: pid_t? { adoptedProcess?.pid }
+
+    /// Start time distinguishes a stopped backend from an unrelated reused PID.
+    private struct BackendIdentity {
+        let pid: pid_t
+        let startedSeconds: UInt64
+        let startedMicroseconds: UInt64
+
+        init?(_ pid: pid_t) {
+            guard pid > 0, pid != getpid(), let info = Self.info(pid) else { return nil }
+            self.pid = pid
+            startedSeconds = info.pbi_start_tvsec
+            startedMicroseconds = info.pbi_start_tvusec
+        }
+
+        private static func info(_ pid: pid_t) -> proc_bsdinfo? {
+            var info = proc_bsdinfo()
+            let size = MemoryLayout<proc_bsdinfo>.size
+            guard proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &info, Int32(size)) == size else { return nil }
+            return info
+        }
+
+        var isRunning: Bool {
+            guard let info = Self.info(pid) else { return kill(pid, 0) == 0 || errno != ESRCH }
+            return info.pbi_status != SZOMB
+                && info.pbi_start_tvsec == startedSeconds
+                && info.pbi_start_tvusec == startedMicroseconds
+        }
+
+        func signal(_ value: Int32) {
+            // Fail closed if identity cannot be re-read before sending a signal.
+            guard let info = Self.info(pid), info.pbi_status != SZOMB,
+                  info.pbi_start_tvsec == startedSeconds,
+                  info.pbi_start_tvusec == startedMicroseconds else { return }
+            kill(pid, value)
+        }
+    }
     /// Set by the app once the status item exists, so the state file can prove
     /// the UI actually initialised.
     var statusItemReady = false
@@ -526,6 +564,7 @@ final class GatewayController {
 
     func start() {
         guard process == nil, !isStarting else { return }
+        stopping = false
 
         let executable: URL
         let workingDirectory: URL
@@ -546,8 +585,10 @@ final class GatewayController {
         // gateway to outlive the app, and without this
         // check the new app would report a failure it had caused itself.
         isStarting = true
+        let generation = lifecycleGeneration
         probeExisting { [weak self] alive in
-            guard let self else { return }
+            guard let self, self.isStarting, !self.stopping,
+                  self.lifecycleGeneration == generation else { return }
             if alive {
                 self.isStarting = false
                 // Adopting a gateway that is still shutting down used to leave
@@ -560,6 +601,18 @@ final class GatewayController {
                 self.publish(.starting)
                 self.startHealthPolling()
             } else {
+                // A known backend can still hold the database after its listener closes.
+                if self.process != nil || self.adoptedProcess != nil {
+                    let attempts = self.restartAttempts
+                    guard self.stop() else { return }
+                    self.restartAttempts = attempts
+                    self.isStarting = true
+                }
+                guard !self.portIsHeld() else {
+                    self.isStarting = false
+                    self.publish(.failed("Port \(self.port) is in use. Stop its service before starting Gateway."))
+                    return
+                }
                 self.spawn(executable: executable, workingDirectory: workingDirectory)
             }
         }
@@ -570,17 +623,19 @@ final class GatewayController {
     /// `stop()` alone cannot do this from a cold start, because the adopted pid
     /// is only learned by probing.
     func stopAnything(_ completion: @escaping (Bool) -> Void) {
+        let generation = lifecycleGeneration
         probeExisting { [weak self] alive in
-            guard let self, alive else {
+            guard let self, self.lifecycleGeneration == generation else { completion(false); return }
+            guard alive || self.process != nil || self.adoptedProcess != nil else {
                 completion(false)
                 return
             }
-            self.stop()
-            completion(true)
+            completion(self.stop())
         }
     }
 
     func probeExisting(_ completion: @escaping (Bool) -> Void) {
+        let generation = lifecycleGeneration
         guard let url = URL(string: "http://127.0.0.1:\(port)/health") else {
             completion(false)
             return
@@ -592,15 +647,18 @@ final class GatewayController {
             var found: pid_t?
             if code == 200, let data,
                let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-               let raw = json["pid"] as? Int, raw > 0 {
+               let raw = json["pid"] as? Int, raw > 0, raw <= Int(Int32.max) {
                 found = pid_t(raw)
             }
             DispatchQueue.main.async {
+                guard self?.lifecycleGeneration == generation else { completion(false); return }
                 // Remember whose service this is. The app may adopt a gateway
                 // it did not spawn (when Settings leaves it running), and without
                 // the pid "Stop Gateway" could only
                 // pretend to stop it.
-                self?.adoptedPid = code == 200 ? found : nil
+                if let found, let identity = BackendIdentity(found) {
+                    self?.adoptedProcess = identity
+                }
                 completion(code == 200)
             }
         }.resume()
@@ -665,39 +723,41 @@ final class GatewayController {
         }
 
         task.terminationHandler = { [weak self] finished in
-            guard let self else { return }
-            self.process = nil
-            self.logRotationTimer?.invalidate()
-            self.logRotationTimer = nil
-            self.logHandle?.closeFile()
-            self.logHandle = nil
+            DispatchQueue.main.async { [weak self] in
+                guard let self, self.process === finished else { return }
+                self.process = nil
+                self.logRotationTimer?.invalidate()
+                self.logRotationTimer = nil
+                self.logHandle?.closeFile()
+                self.logHandle = nil
 
-            // A stop we asked for is not a failure.
-            if self.stopping { return }
+                // A stop we asked for is not a failure.
+                if self.stopping { return }
 
-            // Unexpected exit. This is a background service: bring it back with
-            // exponential backoff rather than leaving Story Studio with no
-            // endpoint and no explanation.
-            //
-            // Bounded, like the probe path (`restartAttempts < 8`). This path had
-            // no cap at all, so a gateway that could not start — most often
-            // because something else already held the port — was respawned every
-            // 30 seconds forever, writing a failure into the log each time.
-            self.restartAttempts += 1
-            if self.restartAttempts > 8 {
+                // Unexpected exit. This is a background service: bring it back with
+                // exponential backoff rather than leaving Story Studio with no
+                // endpoint and no explanation.
+                //
+                // Bounded, like the probe path (`restartAttempts < 8`). This path had
+                // no cap at all, so a gateway that could not start — most often
+                // because something else already held the port — was respawned every
+                // 30 seconds forever, writing a failure into the log each time.
+                self.restartAttempts += 1
+                if self.restartAttempts > 8 {
+                    self.publish(.failed(
+                        "Gateway exited (code \(finished.terminationStatus)) and has not come back "
+                        + "after \(self.restartAttempts - 1) attempts. Check the log, then Start Gateway."
+                    ))
+                    return
+                }
+                let delay = min(pow(2.0, Double(self.restartAttempts)), 30.0)
                 self.publish(.failed(
-                    "Gateway exited (code \(finished.terminationStatus)) and has not come back "
-                    + "after \(self.restartAttempts - 1) attempts. Check the log, then Start Gateway."
+                    "Gateway exited (code \(finished.terminationStatus)); restarting in \(Int(delay))s"
                 ))
-                return
-            }
-            let delay = min(pow(2.0, Double(self.restartAttempts)), 30.0)
-            self.publish(.failed(
-                "Gateway exited (code \(finished.terminationStatus)); restarting in \(Int(delay))s"
-            ))
-            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
-                guard let self, !self.stopping else { return }
-                self.start()
+                DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+                    guard let self, !self.stopping else { return }
+                    self.start()
+                }
             }
         }
 
@@ -705,7 +765,7 @@ final class GatewayController {
             try task.run()
             process = task
             // We own this one now, so there is nothing adopted to stop.
-            adoptedPid = nil
+            adoptedProcess = nil
             stopping = false
             isStarting = false
             publish(.starting)
@@ -716,37 +776,57 @@ final class GatewayController {
         }
     }
 
-    func stop() {
+    @discardableResult
+    func stop() -> Bool {
         stopping = true
+        lifecycleGeneration += 1
+        isStarting = false
         restartAttempts = 0
         healthTimer?.invalidate()
         healthTimer = nil
         logRotationTimer?.invalidate()
         logRotationTimer = nil
-        publish(.stopped)
 
-        if let task = process {
-            task.terminate()
-            process = nil
-            logHandle?.closeFile()
-            logHandle = nil
-        } else if let adopted = adoptedPid {
-            // Adopted, not spawned. Stopping it is still what was asked for.
-            kill(adopted, SIGTERM)
-            adoptedPid = nil
+        let targets = knownBackends()
+        terminateBackends(targets)
+        guard process?.isRunning != true, !targets.contains(where: { $0.isRunning }) else {
+            publish(.failed("Gateway could not stop. Check its service before starting another backend."))
+            return false
         }
-        // Whatever else is holding the port, even if we never learned its pid —
-        // which is exactly the case that makes a restart silently ineffective.
-        killPortHolders()
+        process = nil
+        adoptedProcess = nil
+        logHandle?.closeFile()
+        logHandle = nil
+        guard !portIsHeld() else {
+            publish(.failed("Port \(port) is in use. Stop its service before starting Gateway."))
+            return false
+        }
+        publish(.stopped)
+        return true
     }
 
-    /// Kill anything listening on our port, by asking the OS who that is.
-    ///
-    /// `stop()` alone could only kill a process it already knew about, so a
-    /// gateway whose `/health` had been unreachable — or one started before this
-    /// app ran — survived a restart and was then adopted. That is the difference
-    /// between "restart" and "restart, probably". `lsof -ti` names the holders
-    /// regardless of how they started.
+    private func knownBackends() -> [BackendIdentity] {
+        var targets: [BackendIdentity] = []
+        if let task = process, task.isRunning,
+           let identity = BackendIdentity(task.processIdentifier) { targets.append(identity) }
+        if let adoptedProcess { targets.append(adoptedProcess) }
+        return targets
+    }
+
+    /// TERM may close the listener while shutdown threads keep the process alive.
+    /// Wait for the exact processes, then escalate; never infer exit from a free port.
+    private func terminateBackends(_ targets: [BackendIdentity]) {
+        for target in targets { target.signal(SIGTERM) }
+        func wait(_ seconds: Double) {
+            let deadline = ProcessInfo.processInfo.systemUptime + seconds
+            while targets.contains(where: { $0.isRunning }),
+                  ProcessInfo.processInfo.systemUptime < deadline { usleep(50_000) }
+        }
+        wait(2.0)
+        for target in targets { target.signal(SIGKILL) }
+        wait(1.0)
+    }
+
     /// Is anything still listening on our port?
     func portIsHeld() -> Bool {
         let task = Process()
@@ -759,8 +839,7 @@ final class GatewayController {
         return task.terminationStatus == 0
     }
 
-    @discardableResult
-    func killPortHolders() -> [pid_t] {
+    private func portHolderPIDs() -> [pid_t] {
         let task = Process()
         task.executableURL = URL(fileURLWithPath: "/usr/sbin/lsof")
         task.arguments = ["-ti", "tcp:\(port)", "-sTCP:LISTEN"]
@@ -778,8 +857,16 @@ final class GatewayController {
             .split(whereSeparator: { $0 == "\n" || $0 == " " })
             .compactMap { pid_t($0.trimmingCharacters(in: .whitespaces)) }
             .filter { $0 > 0 && $0 != getpid() }
-        for pid in pids { kill(pid, SIGTERM) }
         return pids
+    }
+
+    @discardableResult
+    func killPortHolders() -> [pid_t] {
+        // A listener is not proof of ownership: never signal an unrelated service.
+        let pids = Set(portHolderPIDs())
+        let targets = knownBackends().filter { pids.contains($0.pid) }
+        terminateBackends(targets)
+        return targets.map { $0.pid }
     }
 
     // MARK: Build identity
@@ -862,19 +949,11 @@ final class GatewayController {
     }
 
     /// Stop whatever is running and start this build, for the menu and the button.
-    func restartCleanly() {
-        killPortHolders()
-        process = nil
-        adoptedPid = nil
-        stopping = false
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { [weak self] in
-            self?.start()
-        }
-    }
+    func restartCleanly() { restart() }
 
     func restart() {
-        stop()
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { [weak self] in self?.start() }
+        guard stop() else { return }
+        start()
     }
 
     // MARK: Health
@@ -888,41 +967,44 @@ final class GatewayController {
     }
 
     func probe() {
+        let generation = lifecycleGeneration
         guard let url = URL(string: "http://127.0.0.1:\(port)/health") else { return }
         var request = URLRequest(url: url)
         request.timeoutInterval = 2.5
 
         URLSession.shared.dataTask(with: request) { [weak self] data, _, error in
-            guard let self else { return }
-            guard let data, error == nil,
-                  let payload = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-            else {
-                // Only downgrade a running service; never overwrite a failure
-                // message with a vaguer one.
-                if self.process == nil, case .failed = self.state { return }
-                if self.process != nil { self.publish(.starting); return }
+            DispatchQueue.main.async { [weak self] in
+                guard let self, !self.stopping, self.lifecycleGeneration == generation else { return }
+                guard let data, error == nil,
+                      let payload = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+                else {
+                    // Only downgrade a running service; never overwrite a failure
+                    // message with a vaguer one.
+                    if self.process == nil, case .failed = self.state { return }
+                    if self.process != nil { self.publish(.starting); return }
 
-                // We own no process and nothing is answering. That happens when
-                // the app *adopted* an externally-started gateway and that one
-                // later died: there is no child to restart, so sitting idle
-                // leaves the gateway down for good with the menu reporting
-                // "stopped" as if that were normal. Take ownership instead.
-                if ConfigStore.shared.config.autoStartGateway,
-                   !self.stopping,
-                   self.restartAttempts < 8 {
-                    self.restartAttempts += 1
-                    self.publish(.failed("Gateway is not responding — starting it"))
-                    self.start()
-                } else {
-                    self.publish(.stopped)
+                    // We own no process and nothing is answering. That happens when
+                    // the app *adopted* an externally-started gateway and that one
+                    // later died: there is no child to restart, so sitting idle
+                    // leaves the gateway down for good with the menu reporting
+                    // "stopped" as if that were normal. Take ownership instead.
+                    if ConfigStore.shared.config.autoStartGateway,
+                       !self.stopping,
+                       self.restartAttempts < 8 {
+                        self.restartAttempts += 1
+                        self.publish(.failed("Gateway is not responding — starting it"))
+                        self.start()
+                    } else {
+                        self.publish(.stopped)
+                    }
+                    return
                 }
-                return
+                let providers = (payload["providers"] as? [String: Any])?["enabled"] as? Int ?? 0
+                let models = (payload["models"] as? [String: Any])?["publishable_models"] as? Int ?? 0
+                // Healthy again: clear the backoff so a later crash restarts fast.
+                self.restartAttempts = 0
+                self.publish(.running(providers: providers, models: models))
             }
-            let providers = (payload["providers"] as? [String: Any])?["enabled"] as? Int ?? 0
-            let models = (payload["models"] as? [String: Any])?["publishable_models"] as? Int ?? 0
-            // Healthy again: clear the backoff so a later crash restarts fast.
-            self.restartAttempts = 0
-            self.publish(.running(providers: providers, models: models))
         }.resume()
     }
 }
@@ -1187,14 +1269,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         GatewayController.shared.confirmIfBusy("Quit") { ok in
             if ok {
-                GatewayController.shared.stop()
-                // Terminating a process is asynchronous, so give the port a moment to be
-                // released — otherwise the next launch races the old listener and adopts
-                // it, which is the whole problem this is here to fix.
-                GatewayController.shared.killPortHolders()
-                let deadline = Date().addingTimeInterval(2.0)
-                while Date() < deadline, GatewayController.shared.portIsHeld() {
-                    usleep(100_000)
+                guard GatewayController.shared.stop() else {
+                    NSApp.reply(toApplicationShouldTerminate: false)
+                    return
                 }
             }
             NSApp.reply(toApplicationShouldTerminate: ok)

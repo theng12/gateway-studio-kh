@@ -613,8 +613,11 @@ dangerous only when the pattern is your own.
 **Quitting stops the gateway, deliberately, and the app can say which build is
 running.** So:
 
-  * `applicationShouldTerminate` stops the child, runs `killPortHolders()`, and
-    waits (≤2 s) until `portIsHeld()` is false; quit → **port 8787 free**. The
+  * `applicationShouldTerminate` calls `stop()`, which waits for each known
+    backend's PID/start-time identity to exit (TERM for ≤2 s, then KILL for ≤1 s).
+    A closed port alone is not proof of exit. Stop refuses replacement startup
+    if a known backend remains or an unrelated service holds the port; unrelated
+    listeners are never signalled. Quit is refused if Stop fails. The
     opt-out is a Settings checkbox, *"Keep the gateway running after I quit"*
     (`AppConfig.keepGatewayRunning`, default `false`).
   * `menubar/build.sh` writes
@@ -626,8 +629,8 @@ running.** So:
     `GATEWAY_BUILD=fake-old-build-000000000000`: *"The gateway is running build
     fake-old-build-000000000000, but this app is cd866d5-202609191712. It is
     serving older code — restart it."* **Restart Gateway** then killed that pid
-    (2414) and started the app's own (3252, stamp `cd866d5-…`), hence the
-    port-holder kill, not `restart()`.
+    (2414) and started the app's own (3252, stamp `cd866d5-…`). Since 0.2.143,
+    Restart Gateway uses the same identity-checked `stop()` → `start()` path.
 
 **A killed gateway comes back within seconds, so testing adoption takes a quit.**
 **Quit the app first**, start the foreign process, then `open` the app: it adopts

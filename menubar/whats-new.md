@@ -14,6 +14,18 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.143 — 2026-10-07
+
+### Reliable Gateway shutdown
+
+- Stop and Restart wait for the previous Gateway process to exit, so an old backend cannot keep working against the job database after its port closes. A restart refuses to overlap a process that has not stopped.
+- Shutdown checks the known process identity before stopping it. The Keep Gateway Running setting still controls whether quitting the app leaves the Gateway running.
+
+### Stronger interface verification
+
+- The installed-app checks now follow the current sidebar, Fleet tabs and action menus, and Settings layout.
+- Each page is checked independently at a 700 pt window height, so one page cannot affect the result for another. Fleet checks read the actual row menus and discover the Machines table even when warnings are shown.
+
 ## 0.2.142 — 2026-10-07
 
 ### Reliable job records under load

@@ -22,6 +22,7 @@ from __future__ import annotations
 import json
 import os
 import pathlib
+import re
 import subprocess
 import sys
 import time
@@ -31,27 +32,29 @@ APP_PROCESS = "GatewayKH"
 
 #: Sidebar rows in order, with the window title each section should produce.
 #: Studio Hub KH groups its sidebar, and this app was asked to match it, so the
-#: list contains group headers ("CREATE", "LIBRARY & APP") as well as sections.
+#: list contains group headers as well as sections.
 #: Headers are not selectable; they are listed here so the ordering and the
 #: grouping are pinned by a test rather than by whoever last edited the layout.
 SIDEBAR = [
     "Overview",
-    "CREATE",
+    "Create",
     "Audio",
     "Subtitle",
     "Image",
     "Music",
     "Video",
     "Chat",
-    "LIBRARY",
+    "Library",
     "Jobs",
     "Voices",
     "Models",
+    "Analytics",
     "Content Packs",
-    "CONNECTION",
+    "Connection",
     "Providers",
     "Fleet",
-    "APP",
+    "App",
+    "What's New",
     "Settings",
 ]
 
@@ -73,9 +76,11 @@ SECTIONS = [
     (10, "Jobs", "gateway-kh — Jobs"),
     (11, "Voices", "gateway-kh — Voices"),
     (12, "Models", "gateway-kh — Models"),
-    (13, "Content Packs", "gateway-kh — Content Packs"),
-    (15, "Providers", "gateway-kh — Providers"),
-    (16, "Fleet", "gateway-kh — Fleet"),
+    (13, "Analytics", "gateway-kh — Analytics"),
+    (14, "Content Packs", "gateway-kh — Content Packs"),
+    (16, "Providers", "gateway-kh — Providers"),
+    (17, "Fleet", "gateway-kh — Fleet"),
+    (19, "What's New", "gateway-kh — What's New"),
 ]
 
 failures: list[str] = []
@@ -339,7 +344,7 @@ def detail_texts() -> str:
         end tell'''))
 
 
-def table_texts(scroll_area: int, nested: bool = False) -> list[str]:
+def table_texts(scroll_area: int, nested: bool = False, row_names: list[str] | None = None) -> list[str]:
     """Every cell's text in one of a page's tables, row by row.
 
     `nested=True` for a page that scrolls, where the tables sit inside the page's
@@ -351,14 +356,44 @@ def table_texts(scroll_area: int, nested: bool = False) -> list[str]:
     target = (
         f"scroll area {scroll_area} of scroll area 2" if nested else f"scroll area {scroll_area}"
     )
+    names = "{" + ", ".join(json.dumps(name, ensure_ascii=False) for name in (row_names or [])) + "}"
+    row_filter = "" if row_names is None else f'''
+                    set matchesName to false
+                    set machineLabel to value of static text 1 of UI element 1 of row r
+                    repeat with wantedName in {names}
+                        if machineLabel contains (wantedName as text) then set matchesName to true
+                    end repeat
+                    if not matchesName then set rowCells to {{}}'''
     try:
         raw = osa(wrap(f'''
             tell {MAIN_WINDOW} to tell splitter group 1 to tell table 1 of {target}
                 set acc to ""
                 repeat with r from 1 to (count of rows)
-                    repeat with c in (UI elements of row r)
+                    set rowCells to UI elements of row r
+                    {row_filter}
+                    repeat with c in rowCells
                         try
-                            set acc to acc & (value of static text 1 of c) & "\n"
+                            repeat with label in (static texts of c)
+                                set acc to acc & (value of label) & "\n"
+                            end repeat
+                        end try
+                        try
+                            repeat with child in (UI elements of c)
+                                try
+                                    repeat with label in (static texts of child)
+                                        set acc to acc & (value of label) & "\n"
+                                    end repeat
+                                end try
+                                try
+                                    repeat with inner in (UI elements of child)
+                                        try
+                                            repeat with label in (static texts of inner)
+                                                set acc to acc & (value of label) & "\n"
+                                            end repeat
+                                        end try
+                                    end repeat
+                                end try
+                            end repeat
                         end try
                     end repeat
                 end repeat
@@ -419,6 +454,75 @@ def table_button_titles(scroll_area: int, nested: bool = False) -> list[str]:
                 end repeat
                 return acc
             end tell'''))
+    except RuntimeError:
+        return []
+    return [line.strip() for line in raw.splitlines() if line.strip()]
+
+
+def table_action_menu_titles(scroll_area: int, row: int, nested: bool = False) -> list[str]:
+    """Open one Fleet row's Actions menu, read its titles, then dismiss it.
+
+    The menu contains Rename, credentials and removal; none of those actions is
+    selected.  This is the read-only half of verifying that the redesigned row
+    did not make an action unreachable.
+    """
+    target = (
+        f"scroll area {scroll_area} of scroll area 2" if nested else f"scroll area {scroll_area}"
+    )
+    try:
+        raw = osa(wrap(f'''
+            set frontmost to true
+            set sep to (ASCII character 10)
+            set actionButton to missing value
+            tell {MAIN_WINDOW} to tell splitter group 1 to tell table 1 of {target}
+                repeat with c in (UI elements of row {row})
+                    try
+                        repeat with b in (buttons of c)
+                            try
+                                if (description of b as text) is "Actions" then set actionButton to b
+                            end try
+                            try
+                                if (help of b as text) contains "More actions" then set actionButton to b
+                            end try
+                        end repeat
+                    end try
+                    try
+                        repeat with child in (UI elements of c)
+                            try
+                                repeat with b in (buttons of child)
+                                    try
+                                        if (description of b as text) is "Actions" then set actionButton to b
+                                    end try
+                                    try
+                                        if (help of b as text) contains "More actions" then set actionButton to b
+                                    end try
+                                end repeat
+                            end try
+                        end repeat
+                    end try
+                end repeat
+                if actionButton is missing value then return ""
+                click actionButton
+            end tell
+            delay 0.3
+            set acc to ""
+            try
+                repeat with itemRef in (menu items of menu 1 of actionButton)
+                    set itemTitle to name of itemRef
+                    if itemTitle is not missing value then set acc to acc & itemTitle & sep
+                end repeat
+            end try
+            -- Escape did not dismiss these row-owned menus through System Events.
+            -- AXCancel is the menu's advertised dismissal action, never an item.
+            if exists menu 1 of actionButton then
+                perform action "AXCancel" of menu 1 of actionButton
+                repeat 20 times
+                    if (count of menus of actionButton) is 0 then return acc
+                    delay 0.1
+                end repeat
+                return ""
+            end if
+            return acc'''))
     except RuntimeError:
         return []
     return [line.strip() for line in raw.splitlines() if line.strip()]
@@ -592,6 +696,46 @@ def wait_for_table(scroll_area: int = 1, nested: bool = True, timeout: float = 4
             return columns
         time.sleep(0.8)
     return columns
+
+
+
+def wait_for_machines_table(timeout: float = 45.0) -> tuple[int, int]:
+    """Find the direct Machines table without assuming a warning scroller index.
+
+    Its header container exposes the Machine sort button. The optional warnings
+    scroller has no table; both are direct children of the detail split view.
+    """
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            raw = osa(wrap(f'''
+                tell {MAIN_WINDOW} to tell splitter group 1
+                    repeat with areaIndex from 2 to (count of scroll areas)
+                        try
+                            set candidate to table 1 of scroll area areaIndex
+                            set columnCount to count of columns of candidate
+                            if columnCount >= 5 then
+                                repeat with child in (UI elements of candidate)
+                                    try
+                                        repeat with headerButton in (buttons of child)
+                                            if (title of headerButton as text) is "Machine" then
+                                                return (areaIndex as text) & "," & (columnCount as text)
+                                            end if
+                                        end repeat
+                                    end try
+                                end repeat
+                            end if
+                        end try
+                    end repeat
+                    return ""
+                end tell'''))
+            if raw:
+                area, columns = (int(value) for value in raw.split(","))
+                return area, columns
+        except (RuntimeError, ValueError):
+            pass
+        time.sleep(0.8)
+    return -1, -1
 
 
 def detail_count(expr: str) -> int:
@@ -808,15 +952,10 @@ def main() -> int:
           "Running on " in summary and f":{gateway_port()}" in summary
           and "providers" in summary, summary[:160])
 
-    # The notes must be one click from every page, beside the build stamp the owner
-    # reads to answer "what am I running?". Only its presence is asserted here: the
-    # click opens a second window whose AX tree makes the press itself racy, and the
-    # same action is already exercised from the status menu.
-    sidebar_buttons = osa(wrap(
-        f"tell {MAIN_WINDOW} to tell splitter group 1 to return (title of every button)"
-    ))
-    check("the sidebar offers What's New beside the version",
-          "New" in sidebar_buttons, sidebar_buttons[:120])
+    # What's New is a page in the App group, not a second-window button beside the
+    # build stamp. Its exact row is pinned above and the View-menu loop below clicks
+    # it, so both routes must agree on the one native page.
+    check("the sidebar offers What's New as an App page", "What's New" in labels, f"{labels}")
 
     # Force the window small before visiting the pages, as AGENTS.md prescribes:
     # at the restored size a page with a too-tall required height simply fits, so
@@ -835,6 +974,10 @@ def main() -> int:
               baseline_size[1] == 700, f"{baseline_size}")
 
     for row, name, expected in SECTIONS:
+        # Reset before every page. If one page grows the window, it must fail its
+        # own check without making every later page look guilty too.
+        if baseline_size[0] > 0:
+            set_window_size(*baseline_size)
         title = open_section(name, expect=expected)
         check(f"View → {name} selects it", title == expected, title)
         check(f"still exactly one window on “{name}”", window_count() == 1,
@@ -883,7 +1026,7 @@ def main() -> int:
 
     # The row that the owner could not find before it existed. Settings is now the
     # last row, under its own "App" heading.
-    sidebar_select(18)
+    sidebar_select(20)
     time.sleep(2.0)
     check("Settings is reachable by clicking its sidebar row",
           window_title() == "gateway-kh — Settings", window_title())
@@ -912,7 +1055,7 @@ def main() -> int:
           "Offered of " in body and "enabled" in body,
           [line for line in body.splitlines() if "Offered" in line][:2])
     check("shows the modality breakdown", "OFFERED TO STORY STUDIO" in body.upper())
-    check("shows the local runner state", "Studio Hub" in body)
+    check("shows the local runner state", "Local runner" in body)
 
     status = subprocess.run(
         ["curl", "-s", "-m", "10", f"http://127.0.0.1:{gateway_port()}/health"],
@@ -1254,33 +1397,65 @@ def main() -> int:
     # without one it clipped its own bottom rows), which puts its fields one level
     # deeper. Read whichever container holds them, the way `detail_texts` does,
     # rather than assuming the page's depth.
-    def settings_fields(expression: str) -> list[str]:
+    def settings_fields(expression: str) -> list[tuple[int, int, int, int]]:
         raw = osa(wrap(f'''
             tell {MAIN_WINDOW} to tell splitter group 1
                 set acc to ""
                 try
                     repeat with i from 1 to (count of text fields of {expression})
                         set p to position of text field i of {expression}
-                        set acc to acc & ((item 1 of p) as string) & "\\n"
+                        set s to size of text field i of {expression}
+                        set acc to acc & ((item 1 of p) as string) & "," & ((item 2 of p) as string) & "," & ((item 1 of s) as string) & "," & ((item 2 of s) as string) & "\\n"
                     end repeat
                 end try
                 return acc
             end tell'''))
-        return [line for line in raw.splitlines() if line.strip()]
+        frames = []
+        for line in raw.splitlines():
+            try:
+                frames.append(tuple(int(float(value)) for value in line.split(",")))
+            except (TypeError, ValueError):
+                continue
+        return frames
 
-    field_x = settings_fields("scroll area 2")
-    if len(field_x) < 2:
-        field_x = settings_fields("it")
-    check("Settings has a Gateway API Key field", len(field_x) >= 2, f"{len(field_x)} fields")
+    field_frames = settings_fields("scroll area 2")
+    if len(field_frames) < 2:
+        field_frames = settings_fields("it")
+    check("Settings has a Gateway API Key field", len(field_frames) >= 2,
+          f"{len(field_frames)} fields")
     check("no stray window was opened", window_count() == 1, f"{window_count()} windows")
 
-    # The form is two columns: every field starts at the same x. It used to stack
-    # a caption above each control, which left labels and fields at a different x
-    # on every row — the "settings alignment" the owner reported.
-    values = field_x
-    xs = sorted(set(values))
-    check("Settings has fields to align", len(values) >= 2, f"{len(values)} fields")
-    check("every Settings field starts in one column", len(xs) == 1, f"field x values: {xs}")
+    # Settings deliberately has wide secret/text fields, short numeric fields and
+    # two fields in the retention row. The invariant is that those section-specific
+    # controls remain inside the visible page and never overlap, not that unrelated
+    # controls share one x coordinate.
+    pane_frame_raw = osa(wrap(f'''
+        tell {MAIN_WINDOW} to tell splitter group 1
+            set p to position of scroll area 2
+            set s to size of scroll area 2
+            return ((item 1 of p) as string) & "," & ((item 2 of p) as string) & "," & ((item 1 of s) as string) & "," & ((item 2 of s) as string)
+        end tell'''))
+    pane_frame = tuple(int(float(value)) for value in pane_frame_raw.split(","))
+    pane_left, _, pane_width, _ = pane_frame
+    inside = all(
+        width > 0 and height > 0 and x >= pane_left and x + width <= pane_left + pane_width + 1
+        for x, y, width, height in field_frames
+    )
+    same_row_pairs = [
+        (a, b)
+        for index, a in enumerate(field_frames)
+        for b in field_frames[index + 1:]
+        if abs(a[1] - b[1]) <= 2
+    ]
+    non_overlapping = all(
+        left[0] + left[2] <= right[0] or right[0] + right[2] <= left[0]
+        for left, right in same_row_pairs
+    )
+    check("Settings has fields to align", len(field_frames) >= 2, f"{len(field_frames)} fields")
+    check("Settings fields stay inside the visible page", inside,
+          f"pane={pane_frame}, fields={field_frames}")
+    check("Settings fields sharing a row do not overlap", non_overlapping,
+          f"same-row pairs={same_row_pairs}")
 
     # ------------------------------------------------------------------
     print("\n\033[1m7. Fleet reads the real controllers\033[0m")
@@ -1291,6 +1466,8 @@ def main() -> int:
     # selects the tab it is about and waits for that tab's table, because a Fleet
     # read fans out to every controller and is a loading view when first read.
     open_section("Fleet")
+    fleet_api = api_get("/admin/api/fleet")
+    fleet_summary = fleet_api.get("summary") or {}
     # The page's own sentence is page chrome, above the body's scroll view, so
     # `detail_texts` (which reads the body) cannot see it.
     check("names the page and what it is for", "Every group of Macs" in pane_texts(),
@@ -1319,26 +1496,40 @@ def main() -> int:
     # The location name is the owner's to set, so this reads what the gateway
     # currently calls it instead of asserting a literal. Renaming is a feature
     # now, and a test that pins "This Mac" would fail the moment it is used.
-    fleet_locations = api_get("/admin/api/fleet")["locations"]
+    fleet_locations = fleet_api.get("locations") or []
     local_label = next(
         (l.get("label") for l in fleet_locations if l.get("local")), "This Mac"
     )
     check("lists this Mac as the local location", local_label in locations_cells,
           f"looking for {local_label!r} in {locations_cells}")
 
-    # Every location must be renameable, and a real controller must offer the whole
-    # set of row actions — including Remove. This check used to pass while reading
-    # only the first button of each cell, so it reported success against a table
-    # whose actions it could not actually see.
+    # Test is a direct button. Rename, Network, Credentials, Change Address and
+    # Remove live in the adjacent Actions menu. Open each menu only long enough to
+    # read its titles, then dismiss it without selecting anything.
     configured = api_get("/admin/api/fleet/controllers").get("controllers", [])
     action_titles = table_button_titles(1, nested=True)
-    check("the local row offers Rename", "Rename" in action_titles, f"{action_titles}")
+    action_menus = [
+        set(table_action_menu_titles(1, row, nested=True))
+        for row in range(1, len(fleet_locations) + 1)
+    ]
+    local_menus = [
+        menu for menu in action_menus
+        if {"Rename…", "Network…"} <= menu and "Remove…" not in menu
+    ]
+    check("the local row offers Rename and Network", len(local_menus) == 1,
+          f"{action_menus}")
     if configured:
-        check("a controller row offers Test, Rename, Credentials and Remove",
-              {"Test", "Rename", "Credentials…", "Remove"} <= set(action_titles),
-              f"{action_titles} with {len(configured)} configured")
+        controller_menus = [
+            menu for menu in action_menus
+            if {"Rename…", "Network…", "Credentials…", "Change Address…", "Remove…"} <= menu
+        ]
+        check("controller rows offer Test and their complete Actions menu",
+              action_titles.count("Test") == len(configured)
+              and len(controller_menus) == len(configured),
+              f"buttons={action_titles}, menus={action_menus}, configured={len(configured)}")
         check("and this Mac is not offered Remove",
-              action_titles.count("Remove") == len(configured), f"{action_titles}")
+              sum("Remove…" in menu for menu in action_menus) == len(configured),
+              f"{action_menus}")
     else:
         # Saying so, rather than passing quietly: with no controller rows there is
         # nothing here to check, and a vacuous pass is how the actions column went
@@ -1350,7 +1541,7 @@ def main() -> int:
     # Hub running. Standalone or controller both work — that is the point — but
     # "stopped" is an environment state, not a gateway defect. Read once: a Hub
     # that stops mid-suite must not make the two halves of the section disagree.
-    local = next((l for l in api_get("/admin/api/fleet")["locations"] if l.get("local")), {})
+    local = next((l for l in fleet_locations if l.get("local")), {})
     if not local.get("reachable"):
         reason = (local.get("error") or "Studio Hub is not running on this Mac")[:90]
         for label in (
@@ -1365,21 +1556,38 @@ def main() -> int:
         # The role is the Hub's to decide, so this only requires that one is
         # reported from the set the Hub defines. The Hub's vocabulary is
         # standalone | controller | agent — there is no `worker` role.
+        role = str(local.get("role") or "")
         check("reports the location's role",
-              any(r in locations_cells for r in ("standalone", "controller", "agent")),
-              f"{locations_cells}")
+              role in ("standalone", "controller", "agent")
+              and any(role in cell for cell in locations_cells),
+              f"role={role!r}, cells={locations_cells}")
 
     select_fleet_tab(3)  # Machines
-    # The Machines tab is a bare table directly under the pane's scroll view,
-    # unlike Locations and Jobs whose tables are nested one level deeper.
-    machines_columns = wait_for_table(2, nested=False)
+    # Machines has a direct table scroll; an optional warnings scroll shifts its
+    # index. Identify the actual table by its Machine header and column count.
+    machines_area, machines_columns = wait_for_machines_table()
     check("machines are a table", machines_columns >= 5, f"{machines_columns} columns")
-    machines_cells = table_texts(2, nested=False)
+    local_machine_names = [
+        row.get("label") or row.get("machine")
+        for row in (fleet_api.get("machines") or [])
+        if row.get("location_id") == local.get("id")
+        and (row.get("label") or row.get("machine"))
+    ]
+    machines_cells = (
+        table_texts(machines_area, row_names=local_machine_names)
+        if machines_area > 0 and local.get("reachable") else []
+    )
     if local.get("reachable"):
         check("lists the local machine with its work",
-              any(local_label in cell for cell in machines_cells), f"{machines_cells}")
+              bool(local_machine_names)
+              and any(
+                  re.search(rf"(?<!\w){re.escape(name)}(?!\w)", cell)
+                  for name in local_machine_names for cell in machines_cells
+              ),
+              f"looking for {local_machine_names!r} in {machines_cells}")
         check("a machine reports jobs done and failed",
-              any("done" in cell for cell in machines_cells), f"{machines_cells}")
+              any("done" in cell and "failed" in cell for cell in machines_cells),
+              f"{machines_cells}")
 
     select_fleet_tab(5)  # Jobs
     jobs_columns = wait_for_table(1)
@@ -1389,9 +1597,10 @@ def main() -> int:
         check("the API publishes a per-machine job breakdown",
               bool(fleet_summary.get("pulse")) and "jobs_completed" in fleet_summary,
               f"{fleet_summary}")
-        per_machine = fleet_api["locations"][0].get("activity", {}).get("machines", [])
+        per_machine = fleet_api.get("machines") or []
         check("each machine reports what it ran and its state",
-              bool(per_machine) and "state" in per_machine[0] and "completed" in per_machine[0],
+              bool(per_machine)
+              and all("state" in row and "completed" in row for row in per_machine),
               f"{per_machine[:1]}")
     check("machines offline is reported as a number",
           isinstance(fleet_summary.get("machines_offline"), int), f"{fleet_summary}")
