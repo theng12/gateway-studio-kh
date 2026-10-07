@@ -4,7 +4,7 @@
 #   menubar/render/render-page.sh [page[,page...]] [output-dir] [WxH ...]
 #
 # Pages are the sidebar names: overview, audio, subtitle, image, music, video, chat, jobs, analytics, voices,
-# models, providers, fleet, settings, content-packs, whatsnew - `fleet:groups|groups-problems|locations|machines|models|jobs`
+# models, providers, fleet, settings, content-packs, whatsnew - `fleet:groups|groups-problems|locations|machines|models|jobs|story`
 # picks a Fleet tab, and `all` renders every one. Defaults: overview, /tmp/gateway-render, 1100x800 and 1600x1000.
 # GATEWAY_RENDER_APPEARANCE=light|dark|both (default light).
 #
@@ -14,7 +14,7 @@ set -euo pipefail
 HERE=$(cd -- "$(dirname -- "$0")" && pwd)
 ROOT=$(cd -- "$HERE/../.." && pwd)
 PAGE="${1:-overview}"
-[ "$PAGE" = "all" ] && PAGE="overview,audio,subtitle,image,music,video,chat,jobs,analytics,voices,models,providers,fleet:groups,fleet:groups-problems,fleet:locations,fleet:machines,fleet:models,fleet:jobs,settings,content-packs,whatsnew"
+[ "$PAGE" = "all" ] && PAGE="overview,audio,subtitle,image,music,video,chat,jobs,analytics,voices,models,providers,fleet:groups,fleet:groups-problems,fleet:locations,fleet:machines,fleet:models,fleet:jobs,fleet:story,settings,content-packs,whatsnew"
 OUT="${2:-/tmp/gateway-render}"
 shift 2 2>/dev/null || true
 PY="${GATEWAY_RENDER_PYTHON:-}"

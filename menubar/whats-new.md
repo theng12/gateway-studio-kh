@@ -14,6 +14,14 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.136 — 2026-10-07
+
+Story Studio:
+- Publish Story Studio updates from the Gateway; see each Story Mac, its version and its jobs; Update Now per Mac.
+- Fleet has a new Story Studio tab: every Story Mac that has checked in, its version against the published release, its queue, and how many of its jobs are waiting or running on this Gateway.
+- A Story Mac checks in about every two minutes, installs a published update once its running jobs have finished, and goes back to its old version if the new one does not start.
+- The queue view counts waiting and running jobs for each Story Mac and each Story job group.
+
 ## 0.2.135 — 2026-10-07
 
 Fleet:

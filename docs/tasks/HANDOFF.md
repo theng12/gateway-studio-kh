@@ -1,12 +1,15 @@
 # HANDOFF — gateway-kh
 
-**Read this first.** Updated 2026-10-07 for **VERSION `0.2.135`** (the release blocks below are
+**Read this first.** Updated 2026-10-07 for **VERSION `0.2.136`** (the release blocks below are
 newest first; 0.2.76-0.2.79 are recorded in `menubar/whats-new.md` and their commits). The running build
 stamp is on `/health` and in `/Applications/gateway-kh.app/Contents/Resources/gateway/BUILD`.
 If this file disagrees with the code, **the code wins — fix this file in the same change**.
 Every path below is inside the Git checkout `repository/` unless it says otherwise.
 `[MEASURED]` = observed in the session that wrote this; `[reason not recorded]` = the
 project does not say why, and nobody should guess.
+
+> **0.2.136 (2026-10-07) — Story Studio remote releases.**
+> `gateway/story_releases.py` signs a Story DMG/.zip with the Hub release publisher key (`release_publisher`; version and build read from the bundle's Info.plist) and offers it. `POST /admin/api/story/release/publish {artifact_path}` publishes (the descriptor and file live under `<DATA_DIR>/story-release/`, the old file goes to trash); Story calls `GET /v1/apps/story/release`, `/file` and `POST /v1/apps/story/checkin` with its ordinary bearer key. Publishing never pushes: each Story Mac checks in about every 2 min, records itself in `<DATA_DIR>/story-instances.json`, and installs once its queue has drained. `GET /admin/api/story/instances` lists every Mac (status up_to_date / update_available / updating / failed / offline after 15 min silence) with `gateway_jobs` {waiting, running} from `store.active_counts_by_caller()` (caller `story-studio@<Mac>`); `POST /admin/api/story/instances/{instance}/update` ("Update Now") makes the next check-in answer `update_now` until the Mac reaches the release or the update fails there. `/admin/api/queue` also carries `by_caller` / `by_group`. App: Fleet -> Story Studio (`menubar/FleetStoryTab.swift`); render it with `menubar/render/render-page.sh fleet:story` (the fixture seeds a release and five Story Macs). No Story release is published by this version; the owner publishes after Story 1.4.259 is built. Evidence: `_orchestra/audit-20261007/gateway-story-releases/`.
 
 > **0.2.135 (2026-10-07) — fleet scheduling fixes from the 7-day fleet audit (F1-F3).**
 > F1: an `INSUFFICIENT_MEMORY` hand-back starts a 15 min cool-down for the named (location, Mac, model) (`fleet.note_memory_refusal`); `fleet.usable_slots` removes resting Macs from the model's eligible count in `Worker._room` and `routing_candidates`, and the cool-down ends early when the fleet read shows the Mac's `available_gb` at least 1 GB above what it said it needed (idle 8 GB Macs read ~3.2 GB, at the need itself). A site where every fitting Mac is resting is routed to only if no other site offers the model (a submit with no route is refused).

@@ -141,6 +141,23 @@ def seed(support: Path, upstream_port: int) -> dict:
         "events": {"disk_memory": True, "jobs_trouble": True},
         "quiet_hours": {"enabled": True, "start": "22:00", "end": "07:00"}, "summary_time": "08:00"}))
     (data / "telegram_state.json").write_text(json.dumps({"last_sent_at": time.time() - 3 * 3600}))
+    # Fleet -> Story Studio: a published Story release and five Story Macs in every state the tab draws.
+    (data / "story-release").mkdir(exist_ok=True)
+    (data / "story-release/release.json").write_text(json.dumps({"descriptor": {
+        "schema": "storystudio.app-release.v1", "app": "story", "version": "1.4.259", "build": "1042",
+        "filename": "Story-Studio-1.4.259.dmg", "bytes": 412000000, "sha256": "0" * 64,
+        "published_at": int(time.time()) - 2 * 3600}}))
+    seen = time.time()
+    def story(name, version, minutes, running, queued, phase=None, error=None, held=False, requested=False):
+        return name, {"instance_id": name, "machine": name, "version": version, "channels": 6,
+                      "queue": {"running": running, "queued": queued, "paused": 0, "held": held},
+                      "update": {"phase": phase, "version": None, "error": error}, "server_mode": name == "Story Mini",
+                      "last_seen": seen - minutes * 60, "update_requested_at": seen if requested else None}
+    (data / "story-instances.json").write_text(json.dumps(dict([
+        story("Story Mini", "1.4.259", 0.5, 2, 5), story("Studio Mac 2", "1.4.253", 1, 1, 0),
+        story("Studio Mac 3", "1.4.253", 1.5, 3, 12, "draining", requested=True),
+        story("Studio Mac 4", "1.4.245", 2, 0, 0, "rolled_back", "The new version did not start; the old one was put back."),
+        story("Studio Mac 5", "1.4.253", 95, 0, 0, held=True)])))
     (support / ".env").write_text("GATEWAY_API_KEY=render-fixture-key\n")
     (support / ".env").chmod(0o600)
     # Backups go to temp stand-ins for iCloud, ~/Developer/_backups and a KH-STUDIO drive.

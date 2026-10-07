@@ -270,7 +270,7 @@ for page in pageNames where !["fleet-rename", "fleet-workstation", "fleet-add", 
         for size in sizes {
             _ = MainWindow.shared.show(section: name == "whatsnew" ? "what's new" : name)
             guard let window = MainWindow.shared.window else { print("no window for \(page)"); continue }
-            if parts.count > 1, let tab = ["groups": 0, "groups-problems": 0, "locations": 1, "machines": 2, "models": 3, "jobs": 4][parts[1]],
+            if parts.count > 1, let tab = ["groups": 0, "groups-problems": 0, "locations": 1, "machines": 2, "models": 3, "jobs": 4, "story": 5][parts[1]],
                let kind = FleetTab(rawValue: tab) {
                 FleetSection.shared.select(kind)
                 FleetSection.shared.showProblemsOnly(parts[1] == "groups-problems")
