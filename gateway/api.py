@@ -1335,6 +1335,42 @@ def credit_activity(
 
 
 # ---------------------------------------------------------------------------
+# Story Studio releases (`story_releases`): the signed release, its file, and each Story Mac's
+# check-in. Same bearer key as every other call Story makes, so no second credential exists.
+# ---------------------------------------------------------------------------
+def _story_offer(call: Any) -> Any:
+    from . import release_publisher, story_releases
+    try:
+        return call()
+    except story_releases.StoryReleaseError as exc:
+        raise GatewayError(exc.status, exc.message, exc.code) from exc
+    except release_publisher.ReleaseError as exc:
+        raise GatewayError(exc.status, exc.message, exc.code) from exc
+
+
+@app.get("/v1/apps/story/release", dependencies=[Depends(require_auth)])
+def story_release() -> Any:
+    from . import story_releases
+    return _story_offer(story_releases.offer)
+
+
+@app.get("/v1/apps/story/release/file", dependencies=[Depends(require_auth)])
+def story_release_file() -> Any:
+    from fastapi.responses import FileResponse
+    from . import story_releases
+    path = story_releases.artifact_path()
+    if path is None:
+        raise GatewayError(404, "No Story Studio release is published.", "STORY_RELEASE_NONE")
+    return FileResponse(path, media_type="application/octet-stream", filename=path.name)
+
+
+@app.post("/v1/apps/story/checkin", dependencies=[Depends(require_auth)])
+def story_checkin(payload: dict[str, Any]) -> Any:
+    from . import story_releases
+    return _story_offer(lambda: story_releases.checkin(payload))
+
+
+# ---------------------------------------------------------------------------
 # Catalogue
 # ---------------------------------------------------------------------------
 @app.get("/v1/models", dependencies=[Depends(require_auth)])

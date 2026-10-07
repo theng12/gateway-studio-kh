@@ -2400,6 +2400,10 @@ def queue_view(limit: int = Query(200, ge=1, le=1000)) -> dict[str, Any]:
     return {
         "generated_at": now,
         "waiting": len(jobs),
+        # Who is waiting and running, by caller (`story-studio@<Mac>`) and by Story's job group,
+        # counted over the whole table rather than the `limit` rows above.
+        "by_caller": store.active_counts_by_caller(),
+        "by_group": store.active_counts_by_caller("job_group"),
         "truncated": len(jobs) >= limit,
         "jobs": jobs,
         "lanes": lanes,
@@ -3261,3 +3265,48 @@ def release_rollout_stop() -> Any:
 def release_rollout_resume() -> Any:
     release_rollout.resume()
     return {"rollout": release_rollout.status(fleet.snapshot())}
+
+
+# ---------------------------------------------------------------------------
+# Story Studio releases — the same publisher key, offered to Story Macs on their
+# own check-in (`story_releases`). Publishing never pushes: each Story Mac fetches,
+# verifies and installs when its queue is drained.
+# ---------------------------------------------------------------------------
+
+def _story_call(call: Any) -> Any:
+    from . import story_releases
+    try:
+        return call()
+    except story_releases.StoryReleaseError as exc:
+        return _error(exc.status, exc.message, exc.code)
+    except release_publisher.ReleaseError as exc:
+        return _error(exc.status, exc.message, exc.code)
+
+
+@router.post("/api/story/release/publish", dependencies=[Depends(require_admin)])
+def story_release_publish(payload: dict[str, Any]) -> Any:
+    """Sign a Story DMG or .zip (version and build read from the bundle) and offer it."""
+    from . import story_releases
+    artifact = str(payload.get("artifact_path") or "").strip()
+    if not artifact:
+        return _error(422, "expected {'artifact_path'}")
+    return _story_call(lambda: story_releases.publish(artifact))
+
+
+@router.get("/api/story/instances", dependencies=[Depends(require_admin)])
+def story_instances() -> Any:
+    """Every Story Mac, its version against the release, and its jobs on this Gateway."""
+    from . import story_releases
+    counts = store.active_counts_by_caller()
+    out = story_releases.instances()
+    for row in out["instances"]:
+        row["gateway_jobs"] = counts.get(f"story-studio@{row['instance_id']}",
+                                         {"waiting": 0, "running": 0})
+    return out
+
+
+@router.post("/api/story/instances/{instance}/update", dependencies=[Depends(require_admin)])
+def story_instance_update(instance: str) -> Any:
+    """"Update now": the Mac installs on its next check-in (about two minutes), after draining."""
+    from . import story_releases
+    return _story_call(lambda: {"instance": story_releases.request_update(instance)})

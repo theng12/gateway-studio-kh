@@ -1,0 +1,193 @@
+#!/usr/bin/env python3
+"""Story Studio releases: publish (version read from the bundle), serve, check-in, "Update now".
+
+The signature is verified in Node, the language Story verifies it in, over the same canonical
+bytes, so a pass means a Story Mac would accept it — not only that something was signed.
+"""
+from __future__ import annotations
+
+import base64
+import hashlib
+import json
+import os
+import plistlib
+import subprocess
+import sys
+import tempfile
+import time
+import unittest
+import zipfile
+from pathlib import Path
+from unittest.mock import patch
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+
+from tests._isolation import sandbox_env  # noqa: E402
+
+_SANDBOX = sandbox_env("gateway-story-releases-")
+
+from fastapi.testclient import TestClient  # noqa: E402
+
+from gateway import api, config, release_publisher, retention, story_releases  # noqa: E402
+from gateway.store import JobStore  # noqa: E402
+
+KEY = "story-test-key"
+AUTH = {"Authorization": f"Bearer {KEY}"}
+
+_VERIFY = r"""
+const { createPublicKey, verify } = require('node:crypto')
+const { descriptor, key } = JSON.parse(require('node:fs').readFileSync(0, 'utf8'))
+const body = Object.fromEntries(Object.keys(descriptor).filter(k => k !== 'signature').sort().map(k => [k, descriptor[k]]))
+const spki = Buffer.concat([Buffer.from('302a300506032b6570032100', 'hex'), Buffer.from(key, 'base64')])
+const ok = verify(null, Buffer.from(JSON.stringify(body)), createPublicKey({ key: spki, format: 'der', type: 'spki' }), Buffer.from(descriptor.signature, 'base64'))
+process.stdout.write(ok ? 'ok' : 'bad')
+"""
+
+
+def node_verifies(descriptor: dict, key_b64: str) -> bool:
+    out = subprocess.run(["node", "-e", _VERIFY], input=json.dumps({"descriptor": descriptor, "key": key_b64}),
+                         capture_output=True, text=True, timeout=30)
+    return out.stdout == "ok"
+
+
+def story_zip(path: Path, version: str, build: str = "") -> Path:
+    info = plistlib.dumps({"CFBundleShortVersionString": version, "CFBundleVersion": build or version})
+    with zipfile.ZipFile(path, "w") as archive:
+        archive.writestr("Story Studio KH.app/Contents/Info.plist", info)
+        archive.writestr("Story Studio KH.app/Contents/MacOS/Story Studio KH", b"#!/bin/sh\n" + version.encode())
+    return path
+
+
+class StoryReleaseTests(unittest.TestCase):
+    def setUp(self) -> None:
+        tmp = tempfile.TemporaryDirectory(prefix="story-rel-")
+        self.addCleanup(tmp.cleanup)
+        self.root = Path(tmp.name)
+        data = self.root / "data"
+        data.mkdir()
+        for target, name, value in ((config, "DATA_DIR", data), (retention, "TRASH_DIR", data / "trash")):
+            p = patch.object(target, name, value)
+            p.start()
+            self.addCleanup(p.stop)
+        p = patch.dict(os.environ, {"GATEWAY_API_KEY": KEY})
+        p.start()
+        self.addCleanup(p.stop)
+        release_publisher.forget_identity()
+        self.addCleanup(release_publisher.forget_identity)
+        self.client = TestClient(api.app, headers=AUTH)
+
+    def publish(self, version: str, name: str | None = None) -> dict:
+        artifact = story_zip(self.root / (name or f"Story Studio KH {version}.zip"), version, f"b{version}")
+        response = self.client.post("/admin/api/story/release/publish", json={"artifact_path": str(artifact)})
+        self.assertEqual(response.status_code, 200, response.text)
+        return response.json()["descriptor"]
+
+    def test_publish_reads_the_version_from_the_bundle_and_signs_what_story_verifies(self) -> None:
+        descriptor = self.publish("1.4.258")
+        self.assertEqual((descriptor["version"], descriptor["build"], descriptor["app"]), ("1.4.258", "b1.4.258", "story"))
+        offer = self.client.get("/v1/apps/story/release", headers=AUTH).json()
+        key = offer["publisher"]["public_key_base64"]
+        self.assertEqual(descriptor["publisher_key_id"], hashlib.sha256(base64.b64decode(key)).hexdigest())
+        self.assertTrue(node_verifies(offer["release"], key))
+        self.assertFalse(node_verifies({**offer["release"], "version": "9.9.9"}, key))
+        body = self.client.get("/v1/apps/story/release/file", headers=AUTH).content
+        self.assertEqual((hashlib.sha256(body).hexdigest(), len(body)), (descriptor["sha256"], descriptor["bytes"]))
+
+    def test_a_dmg_is_read_through_a_read_only_mount(self) -> None:
+        folder = self.root / "dmg-src"
+        app = folder / "Story Studio KH.app" / "Contents"
+        app.mkdir(parents=True)
+        (app / "Info.plist").write_bytes(plistlib.dumps({"CFBundleShortVersionString": "1.4.260",
+                                                         "CFBundleVersion": "1.4.260"}))
+        dmg = self.root / "Story Studio KH 1.4.260-arm64.dmg"
+        subprocess.run(["hdiutil", "create", "-quiet", "-srcfolder", str(folder), "-format", "UDZO", str(dmg)],
+                       check=True, timeout=120)
+        self.assertEqual(story_releases.read_versions(dmg), ("1.4.260", "1.4.260"))
+
+    def test_the_release_needs_the_gateway_key(self) -> None:
+        self.publish("1.4.258")
+        self.assertEqual(TestClient(api.app).get("/v1/apps/story/release").status_code, 401)
+        self.assertEqual(self.client.get("/v1/apps/story/release/file",
+                                         headers={"Authorization": "Bearer wrong"}).status_code, 403)
+
+    def test_nothing_published_is_an_empty_offer_and_a_404_file(self) -> None:
+        self.assertEqual(self.client.get("/v1/apps/story/release", headers=AUTH).json()["release"], None)
+        self.assertEqual(self.client.get("/v1/apps/story/release/file", headers=AUTH).status_code, 404)
+
+    def test_a_bundle_without_a_version_is_refused(self) -> None:
+        bad = story_zip(self.root / "bad.zip", "not-a-version")
+        response = self.client.post("/admin/api/story/release/publish", json={"artifact_path": str(bad)})
+        self.assertEqual(response.status_code, 400)
+        self.assertIsNone(story_releases.current())
+
+    def test_a_replaced_artifact_goes_to_the_trash_folder(self) -> None:
+        self.publish("1.4.258")
+        self.publish("1.4.259")
+        trashed = list((self.root / "data" / "trash").rglob("Story Studio KH 1.4.258.zip"))
+        self.assertEqual(len(trashed), 1)
+        self.assertEqual(story_releases.current()["version"], "1.4.259")
+
+    def test_checkin_update_now_and_status(self) -> None:
+        self.publish("1.4.258")
+        report = {"instance_id": "Mac-mini", "version": "1.4.257", "channels": 12,
+                  "queue": {"running": 2, "queued": 5, "paused": 0}, "update": {"phase": "idle"}}
+        first = self.client.post("/v1/apps/story/checkin", json=report, headers=AUTH).json()
+        self.assertEqual((first["release"]["version"], first["update_now"]), ("1.4.258", False))
+        rows = self.client.get("/admin/api/story/instances").json()["instances"]
+        self.assertEqual((rows[0]["status"], rows[0]["channels"], rows[0]["queue"]["queued"]),
+                         ("update_available", 12, 5))
+
+        self.assertEqual(self.client.post("/admin/api/story/instances/Mac-mini/update").status_code, 200)
+        self.assertTrue(self.client.post("/v1/apps/story/checkin", json=report, headers=AUTH).json()["update_now"])
+        done = self.client.post("/v1/apps/story/checkin", json={**report, "version": "1.4.258"}, headers=AUTH).json()
+        self.assertFalse(done["update_now"])
+        self.assertEqual(self.client.get("/admin/api/story/instances").json()["instances"][0]["status"], "up_to_date")
+
+    def test_a_failed_install_clears_update_now(self) -> None:
+        self.publish("1.4.258")
+        report = {"instance_id": "Mac-mini", "version": "1.4.257"}
+        self.client.post("/v1/apps/story/checkin", json=report, headers=AUTH)
+        self.client.post("/admin/api/story/instances/Mac-mini/update")
+        failed = {**report, "update": {"phase": "rolled_back", "version": "1.4.258", "error": "health check"}}
+        self.assertFalse(self.client.post("/v1/apps/story/checkin", json=failed, headers=AUTH).json()["update_now"])
+        self.assertEqual(self.client.get("/admin/api/story/instances").json()["instances"][0]["status"], "failed")
+
+    def test_unknown_mac_and_bad_name_are_refused(self) -> None:
+        self.assertEqual(self.client.post("/admin/api/story/instances/nobody/update").status_code, 404)
+        bad = self.client.post("/v1/apps/story/checkin", json={"instance_id": "../x"}, headers=AUTH)
+        self.assertEqual(bad.status_code, 422)
+
+    def test_the_queue_view_counts_by_caller_and_group(self) -> None:
+        from gateway.runtime import store
+        store.submit(modality="image", model_id="m", params={}, idempotency_key=None,
+                              caller="story-studio@Mac-mini", job_group="ch/ep9")
+        view = self.client.get("/admin/api/queue").json()
+        self.assertGreaterEqual(view["by_caller"]["story-studio@Mac-mini"]["waiting"], 1)
+        self.assertGreaterEqual(view["by_group"]["ch/ep9"]["waiting"], 1)
+
+    def test_offline_after_quiet(self) -> None:
+        row = story_releases.status_row({"instance_id": "m", "last_seen": time.time() - 3600}, None, time.time())
+        self.assertEqual(row["status"], "offline")
+
+
+class CallerCountTests(unittest.TestCase):
+    def test_waiting_and_running_by_caller_and_group(self) -> None:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        store = JobStore(Path(tmp.name) / "jobs.sqlite3")
+        self.addCleanup(store.close)
+        for caller, group in (("story-studio@mini", "ch/ep1"), ("story-studio@mini", "ch/ep1"),
+                              ("story-studio@studio", "x/project"), (None, None)):
+            store.submit(modality="image", model_id="m", params={}, idempotency_key=None,
+                         caller=caller, job_group=group)
+        counts = store.active_counts_by_caller()
+        self.assertEqual(counts["story-studio@mini"], {"waiting": 2, "running": 0})
+        self.assertEqual(counts[""], {"waiting": 1, "running": 0})
+        self.assertEqual(store.active_counts_by_caller("job_group")["x/project"]["waiting"], 1)
+        with self.assertRaises(ValueError):
+            store.active_counts_by_caller("state; drop")
+
+
+if __name__ == "__main__":
+    unittest.main()

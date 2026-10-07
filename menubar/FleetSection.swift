@@ -81,6 +81,7 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
     private let startupBar = FleetStartupBar(frame: .zero)
     private lazy var modelsTab = FleetModelsTab(frame: .zero)
     private lazy var jobsTab = FleetJobsTab(frame: .zero)
+    private lazy var storyTab = FleetStoryTab(frame: .zero)
 
     lazy var view: NSView = buildContent()
 
@@ -219,6 +220,7 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
         case .machines: return machinesTab
         case .models: return modelsTab
         case .jobs: return jobsTab
+        case .story: return storyTab
         }
     }
 
@@ -269,6 +271,7 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
         jobsTab.onRefresh = { [weak self] in self?.refreshEverything() }
         jobsTab.onCancel = { [weak self] job in self?.cancelJob(job) }
         jobsTab.onRetry = { [weak self] job, item in self?.retryJobItem(job, item: item) }
+        storyTab.report = { [weak self] kind, title, detail in self?.report(kind, title: title, detail: detail) }
     }
 
     // MARK: Tabs
@@ -286,6 +289,7 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
         // The location and search filter narrows the three tables; Groups and Locations have no use for it
         // (Groups has its own search).
         filterRowHolder.isHidden = ![.machines, .models, .jobs].contains(tab)
+        if tab == .story { storyTab.reload() }
     }
 
     /// Locations tab: add a location through the form (used by the render harness).
@@ -567,6 +571,7 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
             filter: filter, installs: snapshot.modelInstalls)
         followSpread(snapshot.modelInstalls)
         jobsTab.update(snapshot: snapshot, filter: filter)
+        if selectedTab == .story { storyTab.reload() }
     }
 
     /// While an "Install on every Mac" runs, re-read the (cached) fleet every few seconds so its card moves; this

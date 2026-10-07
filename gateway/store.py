@@ -890,6 +890,24 @@ class JobStore:
             ).fetchall()
         return [self._row_dict(row) for row in rows]
 
+    def active_counts_by_caller(self, column: str = "caller") -> dict[str, dict[str, int]]:
+        """`{caller: {"waiting", "running"}}` over every unfinished job (or by `job_group`).
+
+        A job with no caller is counted under `""` so the totals still add up.
+        """
+        if column not in ("caller", "job_group"):
+            raise ValueError(column)
+        with self._lock:
+            rows = self._conn.execute(
+                f"SELECT COALESCE({column}, '') AS key, state, COUNT(*) AS n FROM jobs "
+                " WHERE state IN ('accepted', 'running') GROUP BY key, state"
+            ).fetchall()
+        counts: dict[str, dict[str, int]] = {}
+        for row in rows:
+            entry = counts.setdefault(row["key"], {"waiting": 0, "running": 0})
+            entry["waiting" if row["state"] == "accepted" else "running"] += int(row["n"])
+        return counts
+
     def begin_dispatch(self, job_id: str) -> bool:
         """Open the dispatch window only while a running job has no cancel request."""
         with self._lock:

@@ -15,7 +15,7 @@ import AppKit
 // MARK: - Tabs
 
 enum FleetTab: Int, CaseIterable {
-    case groups, locations, machines, models, jobs
+    case groups, locations, machines, models, jobs, story
 
     var title: String {
         switch self {
@@ -24,6 +24,7 @@ enum FleetTab: Int, CaseIterable {
         case .machines: return "Machines"
         case .models: return "Local Models"
         case .jobs: return "Jobs / Generations"
+        case .story: return "Story Studio"
         }
     }
 
@@ -35,6 +36,7 @@ enum FleetTab: Int, CaseIterable {
         case .machines: return "Machines"
         case .models: return "Models"
         case .jobs: return "Jobs"
+        case .story: return "Story Studio"
         }
     }
 }
