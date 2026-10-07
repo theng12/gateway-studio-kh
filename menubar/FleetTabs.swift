@@ -1058,30 +1058,9 @@ final class FleetLocationsTab: FleetTabView {
             addReleaseLine("Stopped: \(reason).", colour: (rollout.state == "failed" ? Health.bad : Health.warn).text)
         }
         for (_, step) in rollout.orderedSteps {
-            let (text, health) = rolloutStepText(step, version: version)
+            let (text, health) = step.panelText(version: version)
             addReleaseLine("\(step.label ?? "—") — \(text)", colour: health.map(\.text) ?? .secondaryLabelColor)
         }
-    }
-
-    private func rolloutStepText(_ step: FleetRolloutStep, version: String) -> (String, Health?) {
-        let detail = (step.detail ?? "").trimmingCharacters(in: .whitespaces)
-        var text: String
-        var health: Health?
-        switch step.state {
-        case "sending": text = "sending the release…"
-        case "sent": text = "sent; finishing its current work, then installing"
-        case "installing": text = "installing and restarting"
-        case "updated": text = "updated"
-        case "failed": text = detail.isEmpty ? "did not come back on \(version)" : detail
-        case "skipped": text = "skipped" + (detail.isEmpty ? "" : ": \(detail)")
-        default: text = detail.isEmpty ? "waiting" : "waiting: \(detail)"
-        }
-        health = Health(state: step.state ?? "waiting")
-        if let total = step.nodesTotal, total > 0, let on = step.nodesUpdated,
-           ["sent", "installing", "updated"].contains(step.state ?? "") {
-            text += " · \(on) of \(total) Mac\(total == 1 ? "" : "s") on \(version)"
-        }
-        return (text, health)
     }
 
     private func addReleaseLine(_ text: String, colour: NSColor) {

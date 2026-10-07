@@ -14,6 +14,11 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.139 — 2026-10-07
+
+Fleet:
+- The Fleet page shows when a Mac's Studio Hub update failed, and why. A Mac (controller or node) whose update failed in the last 24 hours and that is not yet on the newest release gets an amber line under its row: "Update failed while installing: <reason> · <time>". The group header counts them ("1 Mac's update failed"), and in a paced rollout the step of a controller that reported an error shows it too. Needs Studio Hub 0.6.152 on that Mac; older Hubs say nothing.
+
 ## 0.2.138 — 2026-10-07
 
 Model pools:

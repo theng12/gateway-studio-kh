@@ -594,6 +594,33 @@ struct FleetRolloutStep: Decodable {
     /// The group's Macs on the new version, from the fleet read (`nil` when it has none to count).
     var nodesUpdated: Int?
     var nodesTotal: Int?
+    /// Why this controller's update to the rollout's build failed, from its own Mac's report; `nil` when none.
+    var updateError: FleetUpdateError?
+
+    /// The step's line in the paced-rollout panel, e.g. "waiting · Update failed while downloading: HTTP 404".
+    func panelText(version: String) -> (text: String, health: Health?) {
+        let detail = (self.detail ?? "").trimmingCharacters(in: .whitespaces)
+        var text: String
+        switch state {
+        case "sending": text = "sending the release…"
+        case "sent": text = "sent; finishing its current work, then installing"
+        case "installing": text = "installing and restarting"
+        case "updated": text = "updated"
+        case "failed": text = detail.isEmpty ? "did not come back on \(version)" : detail
+        case "skipped": text = "skipped" + (detail.isEmpty ? "" : ": \(detail)")
+        default: text = detail.isEmpty ? "waiting" : "waiting: \(detail)"
+        }
+        var health: Health? = Health(state: state ?? "waiting")
+        if let total = nodesTotal, total > 0, let on = nodesUpdated,
+           ["sent", "installing", "updated"].contains(state ?? "") {
+            text += " · \(on) of \(total) Mac\(total == 1 ? "" : "s") on \(version)"
+        }
+        if let error = updateError {
+            text += " · " + FleetUpdateFailure.sentence(error)
+            health = max(health ?? .off, .warn)
+        }
+        return (text, health)
+    }
 }
 
 /// Re-serialise an admin payload and decode it with the gateway's snake_case

@@ -351,14 +351,29 @@ def health(flavour: str) -> tuple[list, dict]:
         old = "0.6.131"
         rows = [local,
                 site("c1100", "terranash-1100", 10, versions={"terranash-1103-m2-8-256": old,
-                                                          "terranash-1107-m2-8-256": old}),
+                                                          "terranash-1107-m2-8-256": old,
+                                                          **({"local": old} if flavour == "health-rollout-errors" else {})}),
                 site("c1200", "terranash-1200", 8, held=old,
                      versions={"local": old, **{f"terranash-12{i:02d}-m2-8-256": old for i in range(1, 9)}})]
         for lid, label, n in (("c1300", "terranash-1300", 9), ("c1400", "terranash-1400", 8),
                               ("c1500", "terranash-1500", 3), ("c1600", "terranash-1600", 4)):
             rows.append(site(lid, label, n, held=old, versions={"local": old, **{
                 f"terranash-{label[-4:-2]}{i:02d}-m2-8-256": old for i in range(1, n + 1)}}))
-        rows[2]["reachable"] = flavour.endswith("failed")
+        rows[2]["reachable"] = flavour.endswith(("failed", "errors"))
+        if flavour == "health-rollout-errors":
+            # GATEWAY_RENDER_FIXTURE=health-rollout-errors: Hub 0.6.152 `startup.last_update_error`. The rollout is at 1100,
+            # whose controller (still on the old release) failed downloading 20 min ago - its step shows it - and one of
+            # its nodes failed installing 2 h ago. A node's failure from two days ago and a Mac already on the newest
+            # release (1105) say nothing.
+            def failed(mid: str, **error) -> None:
+                row = next(m for m in rows[1]["machines"] if m["machine"] == mid)
+                row["startup"]["last_update_error"] = {"build": "e6a8b80", **error}
+            failed("local", phase="downloading", at=NOW - 20 * MIN,
+                   reason="Install the update failed. HTTP 404 for the release image (not_ready for 15 min).")
+            failed("terranash-1107-m2-8-256", phase="installing", at=NOW - 2 * HOUR,
+                   reason="The app that landed reports build 91ac2f0, not e6a8b80.")
+            failed("terranash-1103-m2-8-256", phase="verifying", at=NOW - 2 * DAY, reason="The signature did not verify.")
+            failed("terranash-1105-m2-8-256", phase="staging", at=NOW - 3 * HOUR, reason="Not enough disk space to stage it.")
     else:
         rows = [local, site("c1100", "terranash-1100", 10), site("c1200", "terranash-1200", 8),
                 site("c1300", "terranash-1300", 9), site("c1400", "terranash-1400", 8),
@@ -373,7 +388,8 @@ def rollout(snapshot: dict, flavour: str) -> dict | None:
     failed = flavour.endswith("failed")
     order = ["local", "c1100", "c1200", "c1300", "c1400", "c1500", "c1600"]
     labels = {"local": "This Mac", **{cid: f"terranash-{cid[1:]}" for cid in order[1:]}}
-    states = {"local": "updated", "c1100": "updated", "c1200": "failed" if failed else "installing"}
+    states = ({"local": "updated", "c1100": "sent"} if flavour == "health-rollout-errors" else
+              {"local": "updated", "c1100": "updated", "c1200": "failed" if failed else "installing"})
     release_rollout._write({
         "mode": "paced", "state": "failed" if failed else "running", "version": LATEST, "build": "e6a8b80",
         "order": order, "started_at": NOW - 40 * MIN, "finished_at": NOW if failed else None,

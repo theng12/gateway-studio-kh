@@ -81,6 +81,10 @@ struct GroupSummary {
             if updating > 0 { parts.append("\(updating) updating") }
             if behind > 0 { health = max(health, .warn) }
         }
+        if let failed = FleetUpdateFailure.countText(machines) {
+            parts.append(failed)
+            health = max(health, .warn)
+        }
         return (parts.joined(separator: " · "), health)
     }
 
@@ -1058,6 +1062,7 @@ final class FleetGroupsTab: NSView, NSSearchFieldDelegate {
         let sentence = ([offlineWhy] + [node?.detail ?? machine.nodeDetail]).compactMap { $0 }.first(where: { !$0.isEmpty && health == .bad })
         // A Lite Mode change saved while this Mac was offline: "Lite Mode: Waiting to apply (offline since 13:52)".
         let notes = [sentence.map { noteRow(.bad, $0, caption: true) },
+                     FleetUpdateFailure.rowLine(machine).map { noteRow(.warn, $0, caption: true) },
                      machine.liteModePending.map { noteRow(.warn, "Lite Mode: \($0.line)", caption: true) }].compactMap { $0 }
         guard !notes.isEmpty else { return row }
         let wrapper = stack([row] + notes)

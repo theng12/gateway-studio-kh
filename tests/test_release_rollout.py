@@ -232,6 +232,31 @@ class Paced(Base):
         self.assertIsNone(status["steps"]["c12"]["nodes_total"])
         self.assertTrue(status["summary"].startswith("Waiting for This Mac (1 of 4)"))
 
+    def test_status_shows_why_a_controllers_update_to_this_build_failed(self) -> None:
+        self.start()  # build abc1234
+        def own(cid: str, **error) -> dict:
+            return {"location_id": cid, "hub_version": "0.6.130", "node_state": None, "node_role": None,
+                    "startup": {"last_update_error": {"phase": "downloading", "reason": "HTTP 404", "at": 1.0, **error}}}
+        node = {"location_id": "c12", "hub_version": "0.6.130", "node_state": "reachable", "node_role": "agent",
+                "startup": {"last_update_error": {"phase": "installing", "reason": "a node, not the controller",
+                                                  "build": "abc1234", "at": 1.0}}}
+        steps = ro.status({"machines": [own("c11", build="abc1234"), own("c12", build="0000000"), node,
+                                        own("local", build=None)]})["steps"]
+        self.assertEqual(steps["c11"]["update_error"]["reason"], "HTTP 404")
+        self.assertIsNone(steps["c12"]["update_error"], "another build's failure is not this step's, nor a node's")
+        self.assertIsNone(steps["local"]["update_error"], "no build, no claim")
+        self.assertIsNone(steps["c13"]["update_error"])
+
+    def test_an_updated_step_has_nothing_to_explain(self) -> None:
+        self.start()
+        state = ro.read()
+        state["steps"]["c11"]["state"] = "updated"
+        ro._write(state)
+        error = {"phase": "installing", "reason": "old news", "build": "abc1234", "at": 1.0}
+        status = ro.status({"machines": [{"location_id": "c11", "node_state": None, "node_role": None,
+                                          "startup": {"last_update_error": error}}]})
+        self.assertIsNone(status["steps"]["c11"]["update_error"])
+
 
 class CatchUpWaits(Base):
     """The release catch-up never races a rollout, and handles its stragglers once it is over."""

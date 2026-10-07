@@ -18,10 +18,60 @@ struct FleetStartupFact: Decodable {
     /// True when the controller is repeating what the Mac said before it went quiet.
     var stale: Bool?
     var servicesRunning: Running?
+    /// Why this Mac's last Studio Hub update failed (Hub 0.6.152); `nil` when it reported none.
+    var lastUpdateError: FleetUpdateError?
 
     struct Running: Decodable {
         var up: Int?
         var total: Int?
+    }
+}
+
+/// A failed Studio Hub update, as the Mac reported it and the gateway cleaned it. Every field is optional.
+struct FleetUpdateError: Decodable {
+    /// verifying, staging, downloading or installing - or nil when the Mac said something else.
+    var phase: String?
+    /// One line, at most 300 characters.
+    var reason: String?
+    var build: String?
+    /// Unix epoch seconds.
+    var at: Double?
+}
+
+/// How a failed update reads on the Fleet page (pure, so a layout test can share it).
+enum FleetUpdateFailure {
+    /// A failure older than this is history, not news.
+    static let recentFor: TimeInterval = 24 * 3600
+
+    /// "Update failed while installing: <reason>" - plain words, no phase when the Mac did not say one.
+    static func sentence(_ error: FleetUpdateError) -> String {
+        let reason = (error.reason ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let head = error.phase.map { "Update failed while \($0)" } ?? "Update failed"
+        return reason.isEmpty ? head : "\(head): \(reason)"
+    }
+
+    /// The failure to show on this Mac's row: one under 24 hours old whose build is not the one now running.
+    /// The gateway cannot see a Mac's running build, so "now running it" is read from the version status:
+    /// a Mac on the newest published release is past any failed attempt (the Hub also clears it on success).
+    static func shown(_ machine: FleetMachine, now: Date = Date()) -> FleetUpdateError? {
+        guard let error = machine.startup?.lastUpdateError, let at = error.at,
+              now.timeIntervalSince1970 - at < recentFor, machine.versionStatus != "latest" else { return nil }
+        return error
+    }
+
+    /// "Update failed while installing: <reason> · 09:36", or nil when there is nothing to show.
+    static func rowLine(_ machine: FleetMachine, now: Date = Date(), calendar: Calendar = .current) -> String? {
+        guard let error = shown(machine, now: now), let at = error.at else { return nil }
+        var text = sentence(error)
+        while text.hasSuffix(".") { text.removeLast() }   // "...reports build 91ac2f0. · 09:36" reads as a typo
+        return "\(text) · \(FleetOffline.clock(at, now: now, calendar: calendar))"
+    }
+
+    /// The group header's words: "1 Mac's update failed", "2 Macs' updates failed"; nil for none.
+    static func countText(_ machines: [FleetMachine], now: Date = Date()) -> String? {
+        let n = machines.filter { shown($0, now: now) != nil }.count
+        guard n > 0 else { return nil }
+        return n == 1 ? "1 Mac's update failed" : "\(n) Macs' updates failed"
     }
 }
 

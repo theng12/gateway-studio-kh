@@ -2328,7 +2328,33 @@ def disk_summary(machines: list[dict]) -> dict:
 #: The only keys of a Mac's `startup` report this gateway republishes. The Hub is somebody else's
 #: process, so what reaches the console is a fixed shape, never whatever the node chose to send.
 _STARTUP_KEYS = ("open_at_login", "open_at_login_saved", "start_services_on_launch", "app_version",
-                 "last_start_at", "app_reporting", "stale", "observed_at", "reported_at")
+                 "last_start_at", "app_reporting", "stale", "observed_at", "reported_at", "last_update_error")
+
+#: Where a Studio Hub update stopped (Hub 0.6.152 `startup.last_update_error.phase`).
+_UPDATE_ERROR_PHASES = frozenset({"verifying", "staging", "downloading", "installing"})
+
+
+def _update_error_fact(raw: object) -> dict | None:
+    """A Mac's last failed Studio Hub update `{phase, reason, build, at}`, or `None` - another machine's word.
+
+    Only those keys pass: `phase` one of the words the Hub defines (an unfamiliar one is `None`, never
+    guessed), `reason` one line of at most 300 characters, `build` at most 40, `at` a real epoch number.
+    Nothing usable (no reason and no known phase) means no failure is claimed.
+    """
+    if not isinstance(raw, dict):
+        return None
+
+    def text(key: str, limit: int) -> str | None:
+        value = raw.get(key)
+        return (" ".join(value.split())[:limit] or None) if isinstance(value, str) else None
+
+    at = raw.get("at")
+    at = float(at) if isinstance(at, (int, float)) and not isinstance(at, bool) and abs(at) != float("inf") and at == at else None
+    phase = raw.get("phase") if raw.get("phase") in _UPDATE_ERROR_PHASES else None
+    reason = text("reason", 300)
+    if phase is None and reason is None:
+        return None
+    return {"phase": phase, "reason": reason, "build": text("build", 40), "at": at}
 
 
 def _startup_fact(machine: dict, node: dict) -> dict | None:
@@ -2350,6 +2376,7 @@ def _startup_fact(machine: dict, node: dict) -> dict | None:
     out["services_running"] = (
         {"up": running.get("up"), "total": running.get("total"), "studios": running.get("studios") or {}}
         if isinstance(running, dict) else None)
+    out["last_update_error"] = _update_error_fact(raw.get("last_update_error"))
     return out
 
 

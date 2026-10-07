@@ -340,6 +340,12 @@ def status(snapshot: dict[str, Any] | None = None) -> dict[str, Any] | None:
         step["nodes_total"] = len(group) if group else None
         step["nodes_updated"] = (sum(1 for m in group if str(m.get("hub_version") or "").strip() == state["version"])
                                  if group else None)
+        # The controller's own Mac says why its update to *this* build failed (Hub 0.6.152 `last_update_error`);
+        # an error about another build is not this step's, and an updated step has nothing to explain.
+        own = next((m for m in group if m.get("node_state") is None and m.get("node_role") is None), None)
+        error = ((own or {}).get("startup") or {}).get("last_update_error")
+        step["update_error"] = (error if step.get("state") != "updated" and error
+                                and error.get("build") and error.get("build") == state.get("build") else None)
     state["summary"] = summary(state)
     return state
 
