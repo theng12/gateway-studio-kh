@@ -1,12 +1,18 @@
 # HANDOFF — gateway-kh
 
-**Read this first.** Updated 2026-10-07 for **VERSION `0.2.134`** (the release blocks below are
+**Read this first.** Updated 2026-10-07 for **VERSION `0.2.135`** (the release blocks below are
 newest first; 0.2.76-0.2.79 are recorded in `menubar/whats-new.md` and their commits). The running build
 stamp is on `/health` and in `/Applications/gateway-kh.app/Contents/Resources/gateway/BUILD`.
 If this file disagrees with the code, **the code wins — fix this file in the same change**.
 Every path below is inside the Git checkout `repository/` unless it says otherwise.
 `[MEASURED]` = observed in the session that wrote this; `[reason not recorded]` = the
 project does not say why, and nobody should guess.
+
+> **0.2.135 (2026-10-07) — fleet scheduling fixes from the 7-day fleet audit (F1-F3).**
+> F1: an `INSUFFICIENT_MEMORY` hand-back starts a 15 min cool-down for the named (location, Mac, model) (`fleet.note_memory_refusal`); `fleet.usable_slots` removes resting Macs from the model's eligible count in `Worker._room` and `routing_candidates`, and the cool-down ends early when the fleet read shows the Mac's `available_gb` at least 1 GB above what it said it needed (idle 8 GB Macs read ~3.2 GB, at the need itself). A site where every fitting Mac is resting is routed to only if no other site offers the model (a submit with no route is refused).
+> F2: the 10-05 Breeze jobs (attempt_count <= 2) never reached the defer ladder; the verified gap was **booking**: an in-thread re-route (`_next_machine`) left the job booked at the site that refused it for the rest of its run, so that site read fuller and the new site emptier. a re-route now calls the worker's per-job hook (`worker._MOVE_HOOKS`, so `execute_job` keeps its `(job, store)` shape) and `Worker._move` moves the booking. The defer ladder did bite on 10-04 (34 jobs at 256-300 s): fleet-location deferrals are capped at 15 s (`_FLEET_DEFER_CAP_S`); `queue.max_deferrals` still bounds them (240 at 15 s is ~1 h of back-to-back Hub refusals; 10-04's worst was 13). `_defer_delay` clamps its exponent (2.0**10000 overflowed).
+> F3: `fleet.reachable_machines` caps a site's operation ceiling (`Worker._provider_budget`) and per-model supply at Macs not known to be offline.
+> Observability: `/admin/api/jobs?since=&before=` + `next_before`; `/admin/api/analytics/daily?days=` (per day x model: outcomes, failure codes, queue-wait p50/p90); queue rows carry `eligible_macs` ("N Macs eligible").
 
 > **0.2.134 (2026-10-07) — pool JSON and readable errors.**
 > `savePool` passed raw object bodies for both POST and PATCH; fetch coerced them into `[object Object]`, yielding FastAPI 422 dictionary validation errors. Both callers now explicitly encode JSON with the JSON content type. The shared console API extracts human messages from string, structured, and validation-array errors without rendering rejected input or context. Authentication, ambiguous request handling, multipart bodies, and failed-save draft retention remain intact.

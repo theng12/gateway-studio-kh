@@ -221,3 +221,13 @@ test('the queue is a section of the Providers page and is loaded with it', () =>
   assert.doesNotMatch(setView, /scrollIntoView/,
     'the scroll targets an element that is now behind a tab, where it would do nothing');
 });
+
+test('a waiting fleet job says how many Macs could take it, and a cloud job says nothing', () => {
+  const { context, nodes } = queueContext(async () => payload());
+  context.renderQueue(payload({ jobs: [waitingJob({ eligible_macs: 12 })] }));
+  assert.match(nodes.get('queue').innerHTML, /Blue Room · 12 Macs eligible/);
+  context.renderQueue(payload({ jobs: [waitingJob({ eligible_macs: 1 })] }));
+  assert.match(nodes.get('queue').innerHTML, /1 Mac eligible/);
+  context.renderQueue(payload({ jobs: [waitingJob({ eligible_macs: null })] }));
+  assert.doesNotMatch(nodes.get('queue').innerHTML, /eligible/);
+});

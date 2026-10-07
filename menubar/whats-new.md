@@ -14,6 +14,18 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.135 — 2026-10-07
+
+Fleet:
+- A Mac that turns a job down for lack of memory is not offered that model again for 15 minutes, or until it clearly has the memory free. Jobs go to Macs that can run them instead of being turned down over and over.
+- A job moved to another location no longer keeps its first location looking busy, so that location's Mac picks up the next job.
+- A job waiting for a free Mac checks again within 15 seconds instead of up to 5 minutes. How many times it may be turned away before it stops waiting is unchanged.
+- A location's offline Macs are no longer counted as room for work, so jobs are not held for Macs that are off.
+
+Queue and jobs:
+- Each waiting fleet job shows how many Macs could take it.
+- The jobs list can be paged back past 500 jobs, and a new daily report shows each model's jobs, failures and queue wait.
+
 ## 0.2.134 — 2026-10-07
 
 Pools:

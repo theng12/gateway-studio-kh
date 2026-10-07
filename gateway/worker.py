@@ -30,7 +30,7 @@ import logging
 import threading
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from . import concurrency, pools
 from .adapters import BackendError, BackendRequest, adapter_for
@@ -72,6 +72,8 @@ _TRANSIENT_SITE_CODES = {"LOCATION_NOT_READY", "LOCATION_UNREACHABLE", "SITE_CAP
 #: refer to them.
 _MAX_DEFERRALS = concurrency.DEFAULT_MAX_DEFERRALS
 _DEFER_CAP_S = concurrency.DEFAULT_DEFER_CAP_S
+#: The longest a job waiting for a fleet location sleeps between tries (F2, fleet audit 2026-10-07).
+_FLEET_DEFER_CAP_S = 15.0
 
 
 #: A job that ran past its own time limit is not retried on another Mac: the limit is the lane's
@@ -131,7 +133,8 @@ def _client_request_id(store: Any, job_id: str, provider_id: str) -> str:
 
 def _defer_delay(attempts: int, cap_s: float | None = None) -> float:
     """2s, 4s, 8s … capped. Long enough not to hammer a busy machine."""
-    return min(2.0 ** max(int(attempts), 0), _DEFER_CAP_S if cap_s is None else float(cap_s))
+    # The exponent is clamped: 2.0 ** 10_000 raises OverflowError long before any cap applies.
+    return min(2.0 ** min(max(int(attempts), 0), 30), _DEFER_CAP_S if cap_s is None else float(cap_s))
 
 
 #: How often the hold reconciliation asks the Hub about its outstanding holds.
@@ -413,16 +416,23 @@ def _defer_if_transient(
     attempts = int(current.get("attempt_count") or 0)
     if attempts > int(wait["max_deferrals"]):
         return False
+    cap = float(wait["defer_cap_seconds"])
+    # **A fleet job comes back within seconds, not minutes (F2).** A Mac frees every few minutes
+    # somewhere in the fleet, and a job asleep on the 300 s ladder missed it (10-04: 34 jobs reached
+    # 256-300 s waits). The deferral count still bounds it: only a Hub refusal counts (waiting for
+    # room here does not), so 240 at 15 s is an hour of back-to-back refusals (10-04's worst was 13).
+    if fleet.is_location_provider(str(current.get("provider_id") or "")):
+        cap = min(cap, _FLEET_DEFER_CAP_S)
     if handback:
         return bool(defer(
             job_id,
-            delay_s=_defer_delay(attempts, wait["defer_cap_seconds"]),
+            delay_s=_defer_delay(attempts, cap),
             reason=f"waiting for a free Mac - {exc}"[:300],
             new_round=True,
         ))
     return bool(defer(
         job_id,
-        delay_s=_defer_delay(attempts, wait["defer_cap_seconds"]),
+        delay_s=_defer_delay(attempts, cap),
         reason=str(exc)[:300],
     ))
 
@@ -632,6 +642,18 @@ def settle_result(job_id: str, result: Any, store: JobStore) -> None:
     )
 
 
+#: `job id -> callback(provider_id)` for jobs the `Worker` is running: a re-route calls it so the
+#: worker's booking follows the job to its new location (F2). Keyed by id so `execute_job` keeps
+#: the `(job, store)` shape every caller and test uses.
+_MOVE_HOOKS: dict[str, Callable[[str], None]] = {}
+
+
+def _moved(job_id: str, provider_id: str) -> None:
+    hook = _MOVE_HOOKS.get(job_id)
+    if hook is not None:
+        hook(provider_id)
+
+
 def execute_job(job: dict[str, Any], store: JobStore, *, resume: bool = False) -> None:
     """Run one job to a terminal state. Never raises.
 
@@ -787,6 +809,8 @@ def _dispatch(job: dict[str, Any], store: JobStore, provider_id: str, model_id: 
             break
         except BackendError as exc:
             log.warning("job %s failed via %s: %s", job_id, provider_id, exc)
+            if exc.code == "INSUFFICIENT_MEMORY":
+                fleet.note_memory_refusal(provider_id, model_id, str(exc))  # F1: rest that Mac
             current = store.get(job_id) if hasattr(store, "get") else job
             current = current or {}
             # **Nothing was sent, so nothing can be outstanding.** `dispatch_started_at` is stamped
@@ -883,6 +907,7 @@ def _dispatch(job: dict[str, Any], store: JobStore, provider_id: str, model_id: 
                                      name=f"gateway-cancel-{job_id[:8]}").start()
                     provider_id = moved
                     resume_id = ""
+                    _moved(job_id, moved)
                     continue
             # ── A7: a **known** failure is retried on a different machine ──────────
             #
@@ -914,6 +939,7 @@ def _dispatch(job: dict[str, Any], store: JobStore, provider_id: str, model_id: 
                     )
                     provider_id = moved
                     resume_id = ""  # a fresh submission at the next location
+                    _moved(job_id, moved)
                     continue
             # ── A free Mac handed the job back and no other location can take it now: wait ───────
             #
@@ -1157,14 +1183,18 @@ class Worker:
                 if str(row.get("provider_id") or "") != provider_id:
                     continue
                 reading = concurrency.hub_slot_reading(row, operation)
+                ceiling = reading.get("ceiling")
+                reach = fleet.reachable_machines(row)
+                if ceiling is not None and reach is not None:
+                    ceiling = min(ceiling, reach)  # offline Macs are not capacity (F3)
                 free = reading.get("free")
                 if free is None and not reading.get("unstated"):
-                    free = reading.get("ceiling")
+                    free = ceiling
                 return concurrency.hub_budget(
                     free,
                     operation=operation or modality,
                     stated=concurrency.stated_provider_limit(provider_id),
-                    ceiling=reading.get("ceiling"),
+                    ceiling=ceiling,
                     reachable=row.get("reachable") is not False,
                 )
         except Exception:  # noqa: BLE001 - an unreadable fleet is not a reason to stall
@@ -1276,9 +1306,11 @@ class Worker:
         try:
             for row in fleet.snapshot(allow_stale=True).get("locations") or []:
                 if str(row.get("provider_id") or "") == provider_id:
-                    return {str(model): int(entry.get("eligible") or 0)
+                    # Models with no eligible Mac stay out (bounded by the operation total, as
+                    # before); the rest count only reachable Macs not resting after a memory refusal.
+                    return {str(model): fleet.usable_slots(row, str(model), int(entry.get("eligible") or 0))
                             for model, entry in (row.get("model_supply") or {}).items()
-                            if isinstance(entry, dict)}
+                            if isinstance(entry, dict) and int(entry.get("eligible") or 0) > 0}
         except Exception:  # noqa: BLE001 - no supply reading falls back to the operation total
             pass
         return {}
@@ -1303,10 +1335,10 @@ class Worker:
             supply = self._model_supply(provider_id)
         with self._budget_lock:
             room = budget.limit - self._per_lane.get((provider_id, modality), 0)
-            slots = supply.get(model_id, 0)
-            if slots > 0:
+            if model_id in supply:
+                slots = supply[model_id]
                 held = sum(n for (p, lane, model), n in self._per_model.items()
-                           if p == provider_id and lane == modality and 0 < supply.get(model, 0) <= slots)
+                           if p == provider_id and lane == modality and model in supply and supply[model] <= slots)
                 room = min(room, slots - held)
         return room
 
@@ -1371,10 +1403,22 @@ class Worker:
                 if book.get(key, 0) <= 0:
                     book.pop(key, None)
 
+    def _move(self, job: dict[str, Any], provider_id: str) -> None:
+        """A re-route sent this running job to another location: its booking goes with it (F2).
+
+        It stayed on the site that refused the job for the rest of the job's life, so that site read
+        one Mac fuller than it was and the one now running it one emptier (10-05: 102 Breeze re-routes,
+        ~500 s each)."""
+        with self._budget_lock:
+            self._release(job)
+            job["provider_id"] = provider_id
+            self._book(job)
+
     # -- running -----------------------------------------------------------
     def _run(self, job: dict[str, Any], resume: bool = False) -> None:
         """One job on its own thread. Never raises."""
         try:
+            _MOVE_HOOKS[job["id"]] = lambda moved: self._move(job, moved)
             if resume:
                 execute_job(job, self.store, resume=True)
             else:
@@ -1402,6 +1446,7 @@ class Worker:
                 recovery_detail=detail if unknown else None,
             )
         finally:
+            _MOVE_HOOKS.pop(job["id"], None)
             self._release(job)
 
     def _loop(self) -> None:

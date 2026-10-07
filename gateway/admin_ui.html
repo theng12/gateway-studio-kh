@@ -1880,7 +1880,7 @@ function renderQueue(data) {
       <tr>
         <td>${position}</td>
         <td>${esc(job.modality || '—')}</td>
-        <td>${esc(job.model_name || job.model_id || '—')}<div class="hint" style="margin:4px 0 0">${esc(job.provider_name || job.provider_id || '')}</div></td>
+        <td>${esc(job.model_name || job.model_id || '—')}<div class="hint" style="margin:4px 0 0">${esc(job.provider_name || job.provider_id || '')}${job.eligible_macs == null ? '' : ` · ${esc(job.eligible_macs)} Mac${job.eligible_macs === 1 ? '' : 's'} eligible`}</div></td>
         <td>${esc(ago(job.created_at))}<div class="hint" style="margin:4px 0 0">${esc(job.short_id || '')}</div></td>
         <td>${why}</td>
         <td title="${esc(job.attempt_policy || '')}">${queueAttemptText(job)}</td>

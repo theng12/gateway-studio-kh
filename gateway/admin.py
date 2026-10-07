@@ -2082,11 +2082,24 @@ def mac_class(chip: Any, memory_gb: Any) -> str:
     return f"{family} · {size} GB"
 
 
+@router.get("/api/analytics/daily", dependencies=[Depends(require_admin)])
+def daily_analytics(days: int = Query(7, ge=1, le=31)) -> dict[str, Any]:
+    """Per day and model: jobs, failures by code, and queue wait p50/p90 (fleet audit 2026-10-07).
+
+    The 500-row `/api/jobs` window was all a reader had, so a 27,000-job day could not be measured
+    from the Gateway; this answers the scheduling questions directly. Days are this Mac's local days.
+    """
+    since = time.time() - days * 86400.0
+    return {"since": since, "days": days, "rows": store.daily_by_model(since)}
+
+
 @router.get("/api/jobs", dependencies=[Depends(require_admin)])
 def list_jobs(
     limit: int = Query(50, ge=1, le=500),
     state: str | None = None,
     modality: str | None = None,
+    since: float | None = Query(None, ge=0),
+    before: float | None = Query(None, ge=0),
 ) -> dict[str, Any]:
     """Recent jobs, shaped for the app's Jobs window.
 
@@ -2110,7 +2123,7 @@ def list_jobs(
 
     TERMINAL = {"succeeded", "failed", "cancelled"}
     rows: list[dict[str, Any]] = []
-    for job in store.list_jobs(limit=limit, state=state, modality=modality):
+    for job in store.list_jobs(limit=limit, state=state, modality=modality, since=since, before=before):
         provider_id = str(job.get("provider_id") or "")
         model_id = str(job.get("model_id") or "")
         definition = registry.definition(provider_id)
@@ -2183,7 +2196,10 @@ def list_jobs(
             }
         )
 
-    return {"jobs": rows, "stats": store.stats()}
+    # **Paging past 500** (fleet audit): ask again with `before` = this, until it is null.
+    # ponytail: jobs created in the very same microsecond as the page edge could be skipped.
+    next_before = rows[-1]["created_at"] if len(rows) == limit else None
+    return {"jobs": rows, "stats": store.stats(), "next_before": next_before}
 
 
 def _model_labels() -> dict[tuple[str, str], str]:
@@ -2239,6 +2255,19 @@ def queue_view(limit: int = Query(200, ge=1, le=1000)) -> dict[str, Any]:
     now = time.time()
     labels = _model_labels()
     waiting = store.waiting_jobs(limit=limit)
+    eligible: dict[tuple[str, str], int | None] = {}
+
+    def eligible_macs(provider_id: str, model_id: str, modality: str) -> int | None:
+        """Macs in the fleet that could take this job now (reachable, not resting after a memory refusal)."""
+        if not fleet.is_location_provider(provider_id):
+            return None
+        if (model_id, modality) not in eligible:
+            try:
+                eligible[(model_id, modality)] = sum(
+                    0 if c.get("spent") else c["slots"] for c in fleet.routing_candidates(model_id, modality))
+            except Exception:  # noqa: BLE001 - no fleet read is "not stated", not an empty queue view
+                eligible[(model_id, modality)] = None
+        return eligible[(model_id, modality)]
 
     jobs: list[dict[str, Any]] = []
     for job in waiting:
@@ -2277,6 +2306,7 @@ def queue_view(limit: int = Query(200, ge=1, le=1000)) -> dict[str, Any]:
             # `attempts_*`, which count *machines*: a deferral never reached one, so
             # the retry policy does not count it.
             "deferrals": int(job.get("attempt_count") or 0),
+            "eligible_macs": eligible_macs(provider_id, model_id, str(job.get("modality") or "")),
         }
         # The same evidence the job envelope publishes, from the same function, so
         # the console and Story read one policy rather than two spellings of it.

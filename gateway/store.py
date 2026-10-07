@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import sqlite3
 import statistics
 import threading
@@ -1152,10 +1153,19 @@ class JobStore:
         limit: int = 50,
         state: str | None = None,
         modality: str | None = None,
+        since: float | None = None,
+        before: float | None = None,
     ) -> list[dict[str, Any]]:
-        """Recent jobs, newest first, optionally filtered."""
+        """Recent jobs, newest first, optionally filtered; `since`/`before` bound `created_at` so a
+        reader can page past one answer by passing the last row's `created_at` as `before`."""
         clauses: list[str] = []
         params: list[Any] = []
+        if since is not None:
+            clauses.append("created_at >= ?")
+            params.append(since)
+        if before is not None:
+            clauses.append("created_at < ?")
+            params.append(before)
         if state:
             clauses.append("state = ?")
             params.append(state)
@@ -1269,6 +1279,38 @@ class JobStore:
             (limit,),
         ).fetchall()
         return [dict(row) for row in rows]
+
+    def daily_by_model(self, since: float) -> list[dict[str, Any]]:
+        """Per local day and model since `since`: jobs, outcomes, failure codes and queue wait.
+
+        Queue wait is `created_at` to the dispatch that ran last (`dispatch_started_at`), so it holds
+        every deferral and re-route before the work that settled the job. Scalars only, never prose.
+        """
+        rows = self._conn.execute(
+            """SELECT date(created_at, 'unixepoch', 'localtime') AS day, modality, model_id, state,
+                      error_code, dispatch_started_at - created_at AS wait
+               FROM jobs WHERE created_at >= ? ORDER BY day, model_id""",
+            (since,),
+        ).fetchall()
+        groups: dict[tuple[str, str, str], dict[str, Any]] = {}
+        waits: dict[tuple[str, str, str], list[float]] = {}
+        for row in rows:
+            key = (row["day"], row["modality"], row["model_id"])
+            entry = groups.setdefault(key, {"day": key[0], "modality": key[1], "model_id": key[2], "jobs": 0,
+                                            "succeeded": 0, "failed": 0, "cancelled": 0, "failures": {}})
+            entry["jobs"] += 1
+            if row["state"] in entry:
+                entry[row["state"]] += 1
+            if row["state"] == "failed":
+                code = row["error_code"] or "UNKNOWN"
+                entry["failures"][code] = entry["failures"].get(code, 0) + 1
+            if row["wait"] is not None:
+                waits.setdefault(key, []).append(max(float(row["wait"]), 0.0))
+        for key, entry in groups.items():
+            ordered = sorted(waits.get(key, []))
+            for name, share in (("queue_wait_p50_s", 0.5), ("queue_wait_p90_s", 0.9)):
+                entry[name] = round(ordered[max(math.ceil(share * len(ordered)) - 1, 0)], 1) if ordered else None
+        return list(groups.values())
 
     def generation_analytics(self, *, limit: int = 20000,
                              mac_class: Any = None) -> dict[str, Any]:

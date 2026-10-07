@@ -3964,6 +3964,68 @@ def _model_supply_index(
     return index
 
 
+#: **A Mac that just refused a model for memory is not offered it again for a while** (F1, fleet
+#: audit 2026-10-07). On 10-04 the fleet logged 993 `INSUFFICIENT_MEMORY` hand-backs on 110 jobs
+#: (~9 each, ~160 s each); 898 came from 8 GB Macs the Hub's supply still counted as eligible.
+#: `(location id, model id) -> {Mac: (until, GB it said it needs)}`. In memory only: a restart
+#: forgets it, which costs at most one more refusal per Mac.
+MEMORY_COOLDOWN_S = 15 * 60.0
+#: How far above its stated need a Mac's reported free memory must be to end its cool-down early.
+#: ponytail: a flat margin. Idle 8 GB Macs read ~3.2 GB free in the fleet read (live, 2026-10-07)
+#: while their own check refused at 2.4 for a 3.2 GB need, so `free >= need` would end the rest
+#: at once for exactly the Macs it is for; raise it if refusals recur right after a clear.
+MEMORY_CLEAR_MARGIN_GB = 1.0
+_MEMORY_COOLDOWN: dict[tuple[str, str], dict[str, tuple[float, float]]] = {}
+_MEMORY_REFUSAL = re.compile(r"INSUFFICIENT_MEMORY: (.+?) needs about ([\d.]+) GB free")
+
+
+def note_memory_refusal(provider_id: str, model_id: str, detail: str, now: float | None = None) -> None:
+    """Start the cool-down for the Mac a Hub memory hand-back names (Hub 0.6.127+ sentence)."""
+    match = _MEMORY_REFUSAL.search(detail or "")
+    location = controller_id_from(provider_id)
+    if match and location:
+        until = (time.time() if now is None else now) + MEMORY_COOLDOWN_S
+        _MEMORY_COOLDOWN.setdefault((location, model_id), {})[match[1]] = (until, float(match[2]))
+
+
+def memory_cooled(location_id: str, model_id: str, machines: object = None, now: float | None = None) -> int:
+    """How many Macs at this location are cooling down for this model.
+
+    A Mac leaves early once the fleet read shows it with clearly more free memory than it said it
+    needed (`MEMORY_CLEAR_MARGIN_GB`)."""
+    macs = _MEMORY_COOLDOWN.get((location_id, model_id))
+    if not macs:
+        return 0
+    now = time.time() if now is None else now
+    free: dict[str, float] = {}
+    for machine in machines if isinstance(machines, list) else []:
+        gb = _num(machine.get("available_gb")) if isinstance(machine, dict) else None
+        if gb is not None:
+            free.update({str(name): gb for name in (machine.get("label"), machine.get("machine")) if name})
+    for name, (until, need) in list(macs.items()):
+        if until <= now or free.get(name, -1.0) >= need + MEMORY_CLEAR_MARGIN_GB:
+            macs.pop(name, None)
+    return len(macs)
+
+
+def reachable_machines(row: dict) -> int | None:
+    """Macs at a location that are not known to be offline; `None` when the Hub listed none (F3)."""
+    machines = [m for m in row.get("machines") or [] if isinstance(m, dict)]
+    return sum(1 for m in machines if m.get("reachable") is not False) if machines else None
+
+
+def usable_slots(row: dict, model_id: str, eligible: int) -> int:
+    """A model's eligible Macs at one location as a budget may count them (F1 + F3).
+
+    Never more than the Macs that are reachable now (a Shops site counted 3 slots with 2 iMacs
+    offline, and 26 % of its images waited 30 s+), less the Macs cooling down after a memory refusal.
+    """
+    reach = reachable_machines(row)
+    if reach is not None:
+        eligible = min(eligible, reach)
+    return max(eligible - memory_cooled(str(row.get("id") or ""), model_id, row.get("machines")), 0)
+
+
 def _weighted_tiebreak(routing_key: str, location_id: str, compatible_slots: int) -> float:
     """A weighted lottery draw: lower wins, and a bigger site wins more often.
 
@@ -4042,6 +4104,12 @@ def routing_candidates(
         supply = (row.get("model_supply") or {}).get(model_id) or {}
         slots = _as_int(supply.get("eligible"))
         available = _as_optional_int(supply.get("available"))
+        # Every Mac here that fits it is offline or just refused it for memory (F1/F3): offered
+        # only if no other location can take it, never dropped (a submit with no route is refused).
+        usable = usable_slots(row, model_id, slots) if slots > 0 else 0
+        spent = slots > 0 and usable <= 0
+        if slots > 0:
+            slots = max(usable, 1)
         if slots <= 0:
             # The Hub's capacity per operation, for a location that publishes no
             # per-model supply row.
@@ -4059,6 +4127,9 @@ def routing_candidates(
             # A Hub that does not report capacity still reports machines. Fall back
             # to the reachable machine count so a site is never weighted zero.
             slots = _as_int((row.get("machine_summary") or {}).get("reachable"))
+        reach = reachable_machines(row)
+        if reach is not None:
+            slots = min(slots, reach)  # offline Macs are not capacity (F3)
         queue = _as_int(capacity.get("queue_depth"))
         if not capacity:
             queue = len(row.get("running_jobs") or [])
@@ -4074,8 +4145,9 @@ def routing_candidates(
             # them distinct lets a reader tell them apart.
             "available": available,
             "queue": max(queue, 0),
+            "spent": spent,
         })
-    return candidates
+    return [c for c in candidates if not c["spent"]] or candidates
 
 
 def rank_candidate(candidate: dict, routing_key: str) -> tuple:
