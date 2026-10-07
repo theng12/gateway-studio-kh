@@ -5,8 +5,8 @@ burst can write tens of GB a day. Three states by the **volume's free fraction**
 
     green   free >= 12 %
     amber   free <  12 %    shown in the menu bar; nothing is deleted yet
-    red     free <   6 %    the gateway sweeps its own caches: Trash oldest-first, then
-                            artifacts already past their age limit (`retention.reclaim`)
+    red     free <   6 %    the gateway runs its recoverable retention policy
+                            (`retention.reclaim`); macOS Trash remains recoverable
 
 and one absolute floor, **below 5 GB free the gateway refuses new work** with `DISK_LOW`
 and a sentence a person can act on, instead of failing in the middle of a write. The
@@ -99,7 +99,7 @@ def low_sentence(free: int) -> str:
 
 
 def sweep_if_red(*, force: bool = False) -> dict[str, Any] | None:
-    """In red, free what the gateway itself owns. Returns what was reclaimed, else `None`.
+    """In red, run recoverable retention and measure actual volume space, else `None`.
 
     Rate-limited unless `force` (the retention loop is already on a timer).
     """
@@ -119,8 +119,15 @@ def sweep_if_red(*, force: bool = False) -> dict[str, Any] | None:
     # Aim above the refusal floor even on a volume small enough that 8 % is under it.
     target = max(recover_target(total), REFUSE_FREE_BYTES + GB)
     result = retention.reclaim(max(target - free, 0))
+    try:
+        _, free_after = disk_usage()
+    except OSError:
+        free_after = free
+    result["freed_bytes"] = max(free_after - free, 0)
+    result["enough"] = free_after >= target
     result["at"] = now
     result["free_gb_before"] = round(free / GB, 2)
+    result["free_gb_after"] = round(free_after / GB, 2)
     _last_sweep["result"] = result
     return result
 
@@ -128,8 +135,8 @@ def sweep_if_red(*, force: bool = False) -> dict[str, Any] | None:
 def require_room(extra_bytes: int = 0) -> None:
     """Raise `DiskLow` when taking `extra_bytes` more would leave under 5 GB free.
 
-    A red volume is swept once first, so a Mac whose Trash is the problem recovers by
-    itself instead of refusing until the next hourly pass.
+    A low volume runs the allowed retention policy once, then remeasures. Moving
+    runtime files to macOS Trash alone does not make room for a write.
     """
     try:
         _, free = disk_usage()

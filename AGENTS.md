@@ -344,13 +344,20 @@ first. A **pin** (`/admin/api/artifacts/keep`) outranks both:
 freshly-written artifact is about to be fetched and a staged upload is being
 read, so the newest stay safe by construction, not luck.
 
-**Pruning moves, it does not delete.** A pruned file is renamed (same volume) into the
-Trash Folder `DATA_DIR/trash/<UTC date moved>/<path under artifacts/>`; a failed move
-is skipped, never unlinked. Dated folders older than **15 days** are purged
-automatically, the only hard delete (owner decision 2026-09-30). `max_bytes` counts
-the live store only; `usage()` (and Settings > Received artifacts) reports the Trash
-Folder size separately. Settings live in
+**Pruning moves, it does not delete.** A pruned file is moved into
+`DATA_DIR/_trash/`; existing `DATA_DIR/trash/` entries remain recognized. The first
+stage keeps the existing defaults of **3 days / 8 GiB**, plus saved overrides,
+pins, a one-hour grace period, and protection for active and recovery-held inputs.
+The second stage moves entries older than **7 days**, or oldest entries as needed
+to keep both runtime trash folders together under **20 GiB**, to macOS Trash. A
+failed move keeps the source and is reported. Neither ordinary retention nor the
+low-disk guard permanently deletes files. Moving to macOS Trash does not free disk
+space until it is emptied; macOS owns the 30-day emptying setting. `max_bytes`
+counts the live store only; `usage()` (and Settings > Received artifacts) reports
+retired files separately. Settings live in
 `DATA_DIR/retention.json`, not `.env`, which the menu bar app owns and rewrites.
+This runtime policy is the owner's explicit exception to the developer/project
+`_trash/` and agent cleanup rules; those rules remain unchanged.
 ## `.env` is read live, and the key is checked per request
 
 `.env`, the documented no-UI key source, was not read live: `config.get()`

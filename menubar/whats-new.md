@@ -14,6 +14,11 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.140 — 2026-10-07
+
+Received artifacts:
+- Retired artifacts now pass through a recoverable Gateway archive before moving to macOS Trash: the archive keeps them for seven days and moves the oldest out when it exceeds 20 GiB. Existing three-day/eight-GiB retention, saved settings, pins, the one-hour grace period and active-job input protection remain. Failed transfers keep the files and report the problem. macOS Trash does not free disk space until emptied; its 30-day setting belongs to macOS.
+
 ## 0.2.139 — 2026-10-07
 
 Fleet:

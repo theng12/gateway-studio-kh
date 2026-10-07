@@ -67,10 +67,22 @@ class StoryReleaseTests(unittest.TestCase):
         self.root = Path(tmp.name)
         data = self.root / "data"
         data.mkdir()
-        for target, name, value in ((config, "DATA_DIR", data), (retention, "TRASH_DIR", data / "trash")):
+        for target, name, value in ((config, "DATA_DIR", data), (retention, "TRASH_DIR", data / "_trash")):
             p = patch.object(target, name, value)
             p.start()
             self.addCleanup(p.stop)
+        recycled = self.root / "macos-trash"
+        recycled.mkdir()
+        def recycle(path):
+            target = recycled / path.name
+            count = 0
+            while target.exists():
+                count += 1
+                target = recycled / f"{path.name}.{count}"
+            path.rename(target)
+            return True
+        p = patch.object(retention, "_recycle", side_effect=recycle)
+        p.start(); self.addCleanup(p.stop)
         p = patch.dict(os.environ, {"GATEWAY_API_KEY": KEY})
         p.start()
         self.addCleanup(p.stop)
@@ -125,9 +137,21 @@ class StoryReleaseTests(unittest.TestCase):
     def test_a_replaced_artifact_goes_to_the_trash_folder(self) -> None:
         self.publish("1.4.258")
         self.publish("1.4.259")
-        trashed = list((self.root / "data" / "trash").rglob("Story Studio KH 1.4.258.zip"))
+        trashed = list((self.root / "data" / "_trash").rglob("Story Studio KH 1.4.258.zip"))
         self.assertEqual(len(trashed), 1)
         self.assertEqual(story_releases.current()["version"], "1.4.259")
+
+    def test_retention_recycles_superseded_release_but_preserves_the_active_offer(self) -> None:
+        self.publish("1.4.258")
+        active = self.publish("1.4.259")
+        active_path = story_releases._artifact(active)
+        store = JobStore(self.root / "jobs.sqlite3")
+        self.addCleanup(store.close)
+        result = retention.prune(now=time.time() + 8 * 86400, store=store)
+        self.assertEqual(result["recycled_files"], 1)
+        self.assertTrue(active_path.is_file())
+        self.assertEqual(story_releases.current()["version"], "1.4.259")
+        self.assertEqual(len(list((self.root / "macos-trash").iterdir())), 1)
 
     def test_checkin_update_now_and_status(self) -> None:
         self.publish("1.4.258")
@@ -270,7 +294,7 @@ class StoryReleaseTests(unittest.TestCase):
         self.assertEqual(self.client.get("/v1/apps/story/release", headers=AUTH).json()["release"]["version"], "1.4.264")
         folders = [p for p in story_releases.release_dir().iterdir() if p.is_dir()]
         self.assertEqual(len(folders), 1)  # every replaced artifact went to the Trash Folder
-        self.assertGreaterEqual(len(list((self.root / "data" / "trash").rglob("Story Studio KH.zip"))), 1)
+        self.assertGreaterEqual(len(list((self.root / "data" / "_trash").rglob("Story Studio KH.zip"))), 1)
 
     def test_a_failed_publish_leaves_the_offer_alone(self) -> None:
         self.publish("1.4.258")

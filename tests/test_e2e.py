@@ -379,8 +379,27 @@ def main() -> int:
             return 1
 
         processes.append(subprocess.Popen(
-            [PY, "-m", "uvicorn", "gateway.api:app", "--host", "127.0.0.1", "--port", str(GW_PORT),
-             "--log-level", "warning"],
+            [PY, "-c", """
+from pathlib import Path
+from gateway import retention
+import uvicorn
+import sys
+sandbox = Path(sys.argv[1])
+recycled = sandbox / "macos-trash"
+recycled.mkdir(exist_ok=True)
+def recycle(path):
+    if not path.resolve().is_relative_to(sandbox.resolve()):
+        raise RuntimeError("Test recycle path escaped sandbox")
+    target = recycled / path.name
+    count = 0
+    while target.exists():
+        count += 1
+        target = recycled / f"{path.name}.{count}"
+    path.rename(target)
+    return True
+retention._recycle = recycle
+uvicorn.run("gateway.api:app", host="127.0.0.1", port=int(sys.argv[2]), log_level="warning")
+""", str(tmp), str(GW_PORT)],
             cwd=str(ROOT), env=env, stdout=gw_fh, stderr=subprocess.STDOUT,
         ))
         if not wait_for(f"{BASE}/health", timeout=30):
@@ -3679,7 +3698,7 @@ def main() -> int:
             check("pruning removes what is past the age limit",
                   not ancient.exists() and not old.exists(),
                   f"ancient={ancient.exists()} old={old.exists()}")
-            trash = tmp / "trash"
+            trash = tmp / "_trash"
             check("pruned files go to the Trash Folder, not oblivion",
                   sorted(p.name for p in trash.rglob("*.mp4")) == ["ancient.mp4", "old.mp4"]
                   and req(client, "GET", "/admin/api/settings/retention").json()["usage"]["trash_files"] >= 2,
@@ -3688,8 +3707,8 @@ def main() -> int:
             check("a file newer than the protection window is never removed",
                   fresh.exists(), "the newest artifact must survive even an aggressive cap")
             check("it reports what it removed rather than only that it ran",
-                  out["deleted"] == 2 and out["deleted_by_age"] == 2 and out["freed_bytes"] > 0,
-                  f"{ {k: out[k] for k in ('deleted','deleted_by_age','deleted_by_size','freed_bytes')} }")
+                  out["deleted"] == 2 and out["deleted_by_age"] == 2 and out["moved_bytes"] > 0 and out["freed_bytes"] == 0,
+                  f"{ {k: out[k] for k in ('deleted','deleted_by_age','deleted_by_size','moved_bytes','freed_bytes')} }")
 
             # The size limit is the backstop, and it takes the oldest first.
             big = [stage(f"bulk-{i}.bin", age_days=2 - i * 0.5, size=900 * 1024) for i in range(3)]

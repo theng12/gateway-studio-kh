@@ -196,8 +196,9 @@ final class SettingsSection: NSObject, AppSection {
             PageKit.help(
                 "Images, audio and subtitles pass through this Mac on their way to Story Studio, "
                 + "which keeps its own copy. They are moved to the Trash Folder when either limit is "
-                + "reached — whichever comes first, oldest first — and the Trash Folder empties itself "
-                + "after 15 days. A file newer than an hour is never touched, so work in flight is safe."
+                + "reached — whichever comes first, oldest first. After 7 days there, or beyond 20 GB, "
+                + "the oldest files move to macOS Trash for recovery. Gateway never empties macOS Trash. "
+                + "Pinned files, work in flight and files newer than an hour are kept."
             ),
             PageKit.formRow("Keep for", [PageKit.row([
                 retentionDaysField,
@@ -421,11 +422,14 @@ final class SettingsSection: NSObject, AppSection {
         let bytes = (usage["bytes"] as? Double) ?? 0
         let formatted = ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .file)
         let trashBytes = Int64((usage["trash_bytes"] as? Double) ?? 0)
-        let trashDays = usage["trash_days"] as? Int ?? 15
+        let trashDays = usage["trash_days"] as? Int ?? 7
         let trash = ByteCountFormatter.string(fromByteCount: trashBytes, countStyle: .file)
         retentionUsageLabel?.stringValue =
             "\(files) file\(files == 1 ? "" : "s"), \(formatted) — Story Studio keeps its own copy\n"
-            + "Trash Folder: \(trash), emptied automatically after \(trashDays) days"
+            + "Trash Folder: \(trash), moved to macOS Trash after \(trashDays) days or beyond 20 GB"
+        if let warning = usage["warning"] as? String, !warning.isEmpty {
+            retentionUsageLabel?.stringValue += "\n" + warning
+        }
     }
 
     /// The typed limits as a request body, or nil after saying what is wrong. A blank field
@@ -456,7 +460,7 @@ final class SettingsSection: NSObject, AppSection {
     }
 
     /// Save the limits and run the policy, so the effect of a change is visible now
-    /// rather than at the next hourly pass. Deletes files, so it asks first.
+    /// rather than at the next hourly pass. Retires files, so it asks first.
     @objc private func pruneNow() {
         guard let body = retentionBody() else { return }
         guard !body.isEmpty else {
@@ -466,7 +470,8 @@ final class SettingsSection: NSObject, AppSection {
         guard PageKit.confirm(
             "Move old received artifacts to the Trash Folder now?",
             "Files older than \(retentionDaysField.stringValue) days, or beyond \(retentionGBField.stringValue) GB "
-                + "(oldest first), are moved to the Trash Folder and deleted for good after 15 days. Now: \(retentionUsageLabel.stringValue). "
+                + "(oldest first), move to the Trash Folder. After 7 days there, or beyond 20 GB, "
+                + "the oldest files move to macOS Trash. Gateway never empties macOS Trash. Now: \(retentionUsageLabel.stringValue). "
                 + "Pinned files and anything newer than an hour are kept.",
             ok: "Prune"
         ) else { return }
@@ -484,12 +489,16 @@ final class SettingsSection: NSObject, AppSection {
                     self.statusLabel.stringValue = "Could not prune — \(error.localizedDescription)"
                 case .success(let payload):
                     let deleted = payload["deleted"] as? Int ?? 0
-                    let freed = (payload["freed_bytes"] as? Double) ?? 0
-                    self.statusLabel.stringValue = deleted == 0
+                    let moved = (payload["moved_bytes"] as? Double) ?? 0
+                    let recycled = payload["recycled_files"] as? Int ?? 0
+                    self.statusLabel.stringValue = deleted == 0 && recycled == 0
                         ? "Nothing to move — everything is inside the limits."
-                        : "Moved \(deleted) file\(deleted == 1 ? "" : "s") to the Trash Folder, "
-                          + ByteCountFormatter.string(fromByteCount: Int64(freed), countStyle: .file)
-                          + " freed from the store."
+                        : "Moved \(deleted) file\(deleted == 1 ? "" : "s") to the Trash Folder ("
+                          + ByteCountFormatter.string(fromByteCount: Int64(moved), countStyle: .file)
+                          + "), and \(recycled) to macOS Trash."
+                    if let warning = payload["warning"] as? String {
+                        self.statusLabel.stringValue += " " + warning
+                    }
                     self.describeRetention(payload["usage"] as? [String: Any])
                     self.loadedRetention.merge(body) { _, new in new }
                 }

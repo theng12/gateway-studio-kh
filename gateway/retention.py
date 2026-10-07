@@ -1,58 +1,21 @@
-"""How long the gateway keeps what it produced, and how much of it.
+"""Recoverable retention: artifacts -> runtime _trash -> macOS Trash.
 
-The gateway is a **receiver**, not the owner of an artifact. A node renders it, the
-gateway downloads it and serves it to Story Studio, and Story Studio keeps the copy
-that matters in its project. The gateway's copy exists so a download can happen and
-to make a retry possible — it does not need to be permanent, and nothing pruned it
-at all before this, so `data/artifacts/` grew without bound.
-
-Two limits, whichever is reached first, both editable:
-
-    max_age_days  (default 3)
-    max_bytes     (default 8 GB)
-
-The age limit is the normal one — an artifact Story Studio has not fetched in three
-days is not going to be. The size limit is the backstop for a burst: a few long videos
-can exceed eight gigabytes inside a day, and when that happens the oldest go first so
-the newest stay fetchable. `max_bytes` counts the live store only, never the Trash Folder.
-
-**Pruning never hard-deletes.** The store is a cache (Story Studio holds the originals),
-but a pruned file is still moved, not unlinked: a same-volume rename into the Trash
-Folder `DATA_DIR/trash/<UTC date of the move>/<path under artifacts/>`. The dated
-folder is the move-in record (a moved file keeps its old mtime, so the file cannot
-say when it arrived). Folders whose date is more than 15 days old are then purged;
-that purge is the only hard delete in this module (owner-approved, 2026-09-30). A
-move that fails is skipped, never retried as an unlink.
-
-**The Trash Folder has a size cap as well as an age** (owner decision 2026-10-01):
-`min(10 GB, 5 % of the volume)`, measured in *physical* bytes (allocated blocks, not the
-length a file claims), oldest file first. At 15 days x a video burst the age alone let it
-reach hundreds of GB. When the volume itself is in the red (`diskguard`), `reclaim()` also
-frees the Trash and then the artifacts that are already past their age limit, hard-deleting
-them: a same-volume rename into the Trash frees nothing, so a low disk cannot be fixed by
-the normal move.
-
-Settings live in their own file rather than `.env`, which the menu bar app owns
-and rewrites when saving connection settings. Retention settings are read fresh
-at every prune, so an edit takes effect on the next pass. Credential/configuration
-reads are live too; key rotation does not require a service restart.
-
-**A pin outranks both limits.** An asset the owner creates here *directly* has no
-Story Studio project holding the copy that matters, so the gateway's file is the
-only copy there is — and under the ordinary policy it would be deleted after a
-week. `keep()` pins one artifact against both limits until `unkeep()` releases it.
-A pin is answered separately from the age protection, never folded into it: "too
-new to touch" and "the owner told me to keep it" are different questions and a
-single count would let one masquerade as the other.
+First-stage configurable limits default to three days/eight GB, with pins,
+one-hour grace and live/held job inputs protected. Retired files keep their
+source mtime; timestamp buckets record the actual retirement time instead.
+Both current and legacy runtime trash are transferred after seven days or
+oldest first when their combined physical size exceeds twenty GB. Native
+transfer failures preserve the source. Gateway never empties macOS Trash.
 """
 
 from __future__ import annotations
 
 import json
 import os
-import shutil
+import subprocess
 import threading
 import time
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -70,12 +33,14 @@ DEFAULT_MAX_AGE_DAYS = 3.0
 DEFAULT_MAX_BYTES = 8 * 1024**3  # 8 GB
 GB = 1024**3
 
-#: The self-cleaning Trash Folder (a sibling of `artifacts/`, so `_files()` never
-#: counts it against `max_bytes`) and how long a moved-in file stays there.
-TRASH_DIR = Path(str(DATA_DIR)) / "trash"
-TRASH_DAYS = 15
-TRASH_CAP_BYTES = 10 * GB
-TRASH_CAP_PCT = 5.0
+#: Runtime trash is separate from the developer project's owner-managed _trash.
+TRASH_DIR = Path(str(DATA_DIR)) / "_trash"
+LEGACY_TRASH_DIR = Path(str(DATA_DIR)) / "trash"
+TRASH_DAYS = 7
+TRASH_CAP_BYTES = 20 * GB
+_BUCKET_FORMAT = "%Y-%m-%dT%H-%M-%S.%fZ"
+_trash_lock = threading.RLock()
+_last_transfer: dict = {"recycle_failures": 0}
 
 #: Nothing newer than this is ever removed, whatever the limits say. An artifact is
 #: written when a job finishes and Story Studio fetches it seconds later; a staged
@@ -215,14 +180,28 @@ def unkeep(path: str | Path) -> dict:
     return {"path": resolved, "pinned": False, "removed": removed}
 
 
+def _safe_path(path: Path, root: Path) -> bool:
+    """Only lexical descendants with no symlink component or resolved escape."""
+    try:
+        relative = path.relative_to(root)
+        if root.is_symlink() or ".." in relative.parts:
+            return False
+        cursor = root
+        for part in relative.parts:
+            cursor = cursor / part
+            if cursor.is_symlink():
+                return False
+        return path.resolve().is_relative_to(root.resolve())
+    except (OSError, ValueError):
+        return False
+
+
 def _files() -> list[tuple[Path, float, int]]:
-    """Every file we manage: (path, mtime, size). Missing directory is not an error."""
+    """Managed regular files; symlinks and paths escaping the store are excluded."""
     out: list[tuple[Path, float, int]] = []
-    if not ARTIFACT_DIR.exists():
-        return out
     for path in ARTIFACT_DIR.rglob("*"):
         try:
-            if path.is_file():
+            if _safe_path(path, ARTIFACT_DIR) and path.is_file():
                 info = path.stat()
                 out.append((path, info.st_mtime, info.st_size))
         except OSError:
@@ -251,183 +230,166 @@ def _protected_input_paths(store: object | None = None) -> set[Path] | None:
 def _physical(info: os.stat_result) -> int:
     """Bytes a file really occupies (allocated blocks), falling back to its length."""
     blocks = getattr(info, "st_blocks", None)
-    return int(blocks) * 512 if blocks else int(info.st_size)
+    return int(blocks) * 512 if blocks is not None else int(info.st_size)
 
 
 def _trash_stats() -> tuple[int, int]:
-    """(files, bytes) in the Trash Folder."""
     files = size = 0
-    for path in TRASH_DIR.rglob("*"):
+    for _, _, _, path in _trash_files():
         try:
-            if path.is_file():
-                files += 1
-                size += path.stat().st_size
+            size += path.stat().st_size
+            files += 1
         except OSError:
             continue
     return files, size
 
 
 def trash_cap_bytes(total: int | None = None) -> int:
-    """`min(10 GB, 5 % of the volume)`; the cap on the Trash Folder's physical size."""
-    if total is None:
-        from . import diskguard
-
-        try:
-            total = diskguard.disk_usage()[0]
-        except OSError:
-            total = 0
-    if total <= 0:
-        return TRASH_CAP_BYTES
-    return min(TRASH_CAP_BYTES, int(total * TRASH_CAP_PCT / 100.0))
+    """Fixed combined runtime-trash cap; `total` retained for caller compatibility."""
+    return TRASH_CAP_BYTES
 
 
 def _trash_files() -> list[tuple[str, float, int, Path]]:
-    """`(day folder, mtime, physical bytes, path)` for every file under a `YYYY-MM-DD` folder,
-    oldest first. Anything else in the Trash Folder is not ours to count or delete."""
+    """Recognized runtime files, ordered by retirement time, never source mtime.
+
+    Legacy dates conservatively mean the end of that UTC day. Unknown buckets
+    are left alone; there is no inferred retirement time or manual migration.
+    """
     out: list[tuple[str, float, int, Path]] = []
-    if not TRASH_DIR.is_dir():
-        return out
-    for folder in TRASH_DIR.iterdir():
-        try:
-            datetime.strptime(folder.name, "%Y-%m-%d")
-            if not folder.is_dir():
-                continue
-            for f in folder.rglob("*"):
-                if f.is_file():
-                    info = f.stat()
-                    out.append((folder.name, info.st_mtime, _physical(info), f))
-        except (OSError, ValueError):
+    for root in (TRASH_DIR, LEGACY_TRASH_DIR):
+        if not root.is_dir() or root.is_symlink():
             continue
-    out.sort(key=lambda e: (e[0], e[1], str(e[3])))
+        for folder in root.iterdir():
+            try:
+                if not _safe_path(folder, root) or not folder.is_dir():
+                    continue
+                try:
+                    retired = datetime.strptime(folder.name, _BUCKET_FORMAT).replace(tzinfo=timezone.utc).timestamp()
+                except ValueError:
+                    retired = datetime.strptime(folder.name, "%Y-%m-%d").replace(tzinfo=timezone.utc).timestamp() + 86400
+                for path in folder.rglob("*"):
+                    if _safe_path(path, root) and path.is_file():
+                        out.append((folder.name, retired, _physical(path.stat()), path))
+            except (OSError, ValueError):
+                continue
+    out.sort(key=lambda entry: (entry[1], str(entry[3])))
     return out
 
 
 def _drop_empty_dirs(root: Path) -> None:
-    if not root.exists():
-        return
     for child in sorted(root.rglob("*"), reverse=True):
         try:
-            if child.is_dir() and not any(child.iterdir()):
+            if _safe_path(child, root) and child.is_dir() and not any(child.iterdir()):
                 child.rmdir()
         except OSError:
             continue
 
 
-def _trim_trash(*, cap: int | None = None, need: int | None = None) -> tuple[int, int]:
-    """Hard-delete the oldest Trash files. `(files, physical bytes)` removed.
+# Constant JXA source: paths are argv, never shell/source interpolation. Foundation
+# provides per-volume native Trash and collision handling without Finder AppleEvents.
+_RECYCLE_SCRIPT = """ObjC.import('Foundation');
+function run(argv) {
+    var error = Ref();
+    var result = Ref();
+    var url = $.NSURL.fileURLWithPath($(argv[0]));
+    if (!$.NSFileManager.defaultManager.trashItemAtURLResultingItemURLError(url, result, error)) {
+        throw new Error('Native Trash transfer failed');
+    }
+    return 'ok';
+}
+"""
 
-    With `cap`: until what is left fits it. With `need`: until that many bytes are freed
-    (the low-disk sweep). Oldest day first, then oldest file within a day, so a burst that
-    overflows the cap keeps its newest files.
-    """
-    files = freed = 0
-    entries = _trash_files()
-    total = sum(e[2] for e in entries)
-    for _, _, size, path in entries:
-        if cap is not None and total <= cap:
-            break
-        if need is not None and freed >= need:
-            break
-        try:
-            path.unlink()
-        except OSError:
-            continue
-        files += 1
-        freed += size
-        total -= size
-    _drop_empty_dirs(TRASH_DIR)
-    return files, freed
+
+def _recycle(path: Path) -> bool:
+    """Injectable native boundary. Failure leaves the source; no delete fallback."""
+    try:
+        result = subprocess.run(
+            ["/usr/bin/osascript", "-l", "JavaScript", "-e", _RECYCLE_SCRIPT, str(path)],
+            capture_output=True, text=True, timeout=30, check=False,
+        )
+        return result.returncode == 0 and not path.exists()
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+
+
+def _transfer_trash(moment: float, *, cap: int | None = None) -> dict:
+    """Apply age OR combined physical-size cap, oldest retired files first."""
+    global _last_transfer
+    with _trash_lock:
+        entries = _trash_files()
+        total = sum(entry[2] for entry in entries)
+        limit = trash_cap_bytes() if cap is None else cap
+        files = moved = failures = capped = 0
+        for _, retired, size, path in entries:
+            aged = moment - retired > TRASH_DAYS * 86400
+            if not aged and total <= limit:
+                continue
+            root = TRASH_DIR if path.is_relative_to(TRASH_DIR) else LEGACY_TRASH_DIR
+            if not _safe_path(path, root):
+                continue
+            try:
+                recycled = _recycle(path)
+            except Exception:  # noqa: BLE001 - preserve source on native/helper failure
+                recycled = False
+            if not recycled:
+                failures += 1
+                continue
+            files += 1
+            moved += size
+            capped += int(not aged)
+            total -= size
+        _drop_empty_dirs(TRASH_DIR)
+        _drop_empty_dirs(LEGACY_TRASH_DIR)
+        # Legacy purge fields remain as compatibility aliases; no file is purged,
+        # and neither native Trash transfer nor retirement claims freed bytes.
+        result = {"recycled_files": files, "recycled_bytes": moved,
+                  "recycle_failures": failures, "trash_capped_files": capped,
+                  "purged_files": files, "purged_bytes": 0}
+        if failures:
+            result["warning"] = f"Could not move {failures} file(s) to macOS Trash; they remain in runtime trash. Retry Prune Now."
+        _last_transfer = result.copy()
+        return result
 
 
 def _day(moment: float) -> str:
     return datetime.fromtimestamp(moment, timezone.utc).strftime("%Y-%m-%d")
 
 
-def _move_to_trash(path: Path, moment: float) -> bool:
-    """Same-volume rename into `trash/<UTC day>/<relative path>`. False = skipped.
-
-    Never falls back to unlink or copy: a cross-volume or otherwise failed rename
-    leaves the file where it is.
-    """
-    try:
-        target = TRASH_DIR / _day(moment) / path.relative_to(ARTIFACT_DIR)
-        target.parent.mkdir(parents=True, exist_ok=True)
-        n = 0
-        while target.exists():  # same path pruned twice in a day: stamped suffix
-            n += 1
-            target = target.with_name(f"{path.name}.{int(moment)}-{n}")
-        path.rename(target)
-        return True
-    except (OSError, ValueError):
-        return False
-
-
-def _purge_trash(moment: float) -> tuple[int, int]:
-    """Hard-delete dated folders moved in more than TRASH_DAYS ago. (files, bytes).
-
-    The only hard delete here. Only `YYYY-MM-DD` folders are touched; anything
-    else in the Trash Folder is left alone.
-    """
-    files = size = 0
-    if not TRASH_DIR.is_dir():
-        return 0, 0
-    for folder in TRASH_DIR.iterdir():
+def retire(path: Path, *, root: Path, namespace: str = "", now: float | None = None) -> bool:
+    """Shared retirement for artifacts and superseded/failed Story releases."""
+    moment = time.time() if now is None else now
+    with _trash_lock:
         try:
-            born = datetime.strptime(folder.name, "%Y-%m-%d").replace(tzinfo=timezone.utc)
-            if not folder.is_dir() or moment - born.timestamp() <= TRASH_DAYS * 86400.0:
-                continue
-            for f in folder.rglob("*"):
-                if f.is_file():
-                    files += 1
-                    size += f.stat().st_size
-            shutil.rmtree(folder)
+            if not _safe_path(path, root) or not path.is_file():
+                return False
+            bucket = datetime.fromtimestamp(moment, timezone.utc).strftime(_BUCKET_FORMAT)
+            target = TRASH_DIR / bucket / namespace / path.relative_to(root)
+            if not _safe_path(target, TRASH_DIR):
+                return False
+            target.parent.mkdir(parents=True, exist_ok=True)
+            while target.exists():
+                target = target.with_name(f"{path.name}.{uuid.uuid4().hex}")
+            path.rename(target)
+            return True
         except (OSError, ValueError):
-            continue
-    return files, size
+            return False
+
+
+def _move_to_trash(path: Path, moment: float) -> bool:
+    return retire(path, root=ARTIFACT_DIR, now=moment)
 
 
 def reclaim(need_bytes: int, now: float | None = None, store: object | None = None) -> dict:
-    """Free at least `need_bytes` of the gateway's own disk use (the red-volume sweep).
+    """Run ordinary recoverable policy under pressure; renames free no volume bytes.
 
-    Order: the Trash Folder oldest first, then artifacts **already past the age limit**
-    oldest first. Both are hard deletes (a rename into the Trash would free nothing). Never
-    touched: pinned artifacts, files younger than `PROTECTED_AGE_S`, staged inputs of live or
-    held jobs, and artifacts still inside the age limit. If input protection cannot be read
-    only the Trash is swept.
+    `diskguard` measures actual available space after this pass. Pressure never
+    authorizes early Trash transfer or permanent deletion.
     """
-    moment = time.time() if now is None else now
-    trash_files, freed = _trim_trash(need=max(int(need_bytes), 0))
-    artifact_files = artifact_bytes = 0
-    if freed < need_bytes:
-        protected_inputs = _protected_input_paths(store)
-        if protected_inputs is not None:
-            pinned = {p["path"] for p in kept() if p["present"]}
-            cutoff = moment - settings()["max_age_days"] * 86400.0
-            expired = sorted(
-                ((p, m) for p, m, _ in _files()
-                 if m < cutoff and (moment - m) > PROTECTED_AGE_S
-                 and str(p) not in pinned and p.resolve() not in protected_inputs),
-                key=lambda e: e[1],
-            )
-            for path, _ in expired:
-                if freed + artifact_bytes >= need_bytes:
-                    break
-                try:
-                    size = _physical(path.stat())
-                    path.unlink()
-                except OSError:
-                    continue
-                artifact_files += 1
-                artifact_bytes += size
-            _drop_empty_dirs(ARTIFACT_DIR)
-    return {
-        "trash_files": trash_files,
-        "trash_bytes": freed,
-        "artifact_files": artifact_files,
-        "artifact_bytes": artifact_bytes,
-        "freed_bytes": freed + artifact_bytes,
-        "enough": freed + artifact_bytes >= need_bytes,
-    }
+    result = prune(now=now, store=store)
+    return {**result, "trash_files": result["recycled_files"],
+            "trash_bytes": result["recycled_bytes"], "artifact_files": result["deleted"],
+            "artifact_bytes": result["moved_bytes"], "freed_bytes": 0,
+            "enough": int(need_bytes) <= 0}
 
 
 def _disk_status() -> dict:
@@ -454,6 +416,9 @@ def usage() -> dict:
         "trash_cap_bytes": trash_cap_bytes(),
         "disk": _disk_status(),
         "trash_path": str(TRASH_DIR),
+        "legacy_trash_path": str(LEGACY_TRASH_DIR),
+        "recycle_failures": _last_transfer.get("recycle_failures", 0),
+        "warning": _last_transfer.get("warning"),
         # **Two questions, two numbers.** `protected_files` is "too new to touch";
         # `pinned_files` is "the owner asked me to keep this". One count answering
         # both would let a pin look like the hour-long grace window, and would hide
@@ -465,7 +430,7 @@ def usage() -> dict:
 
 
 def prune(now: float | None = None, store: object | None = None) -> dict:
-    """Move to the Trash Folder by age, then by size, oldest first; purge old trash.
+    """Retire by age/size, then transfer runtime trash by its seven-day/20 GB policy.
 
     Returns what happened, so a person can see the policy working rather than
     trusting that it does.
@@ -483,17 +448,12 @@ def prune(now: float | None = None, store: object | None = None) -> dict:
     except Exception:  # noqa: BLE001 - a sweeper must not raise
         pass
     limits = settings()
-    purged_files, purged_bytes = _purge_trash(moment)
-    # The size cap, on what the age purge left. Before the artifact walk so a store whose
-    # input protection is unreadable (the early return below) still keeps its Trash bounded.
-    capped_files, capped_bytes = _trim_trash(cap=trash_cap_bytes())
-    purged_files += capped_files
-    purged_bytes += capped_bytes
     entries = _files()
     pinned = {p["path"] for p in kept() if p["present"]}
     protected_inputs = _protected_input_paths(store)
     if protected_inputs is None:
-        return {"deleted": 0, "freed_bytes": 0, "limits": limits, "purged_files": purged_files,
+        return {"deleted": 0, "moved_files": 0, "moved_bytes": 0, "freed_bytes": 0,
+                "limits": limits, **_transfer_trash(moment),
                 "blocked_reason": "Cannot read job input protection; no artifacts were pruned. Retry after the job database is readable."}
     # A pinned artifact is not a candidate at all, whatever its age or the size
     # pressure. The young-file protection is counted separately from the pins so
@@ -515,7 +475,7 @@ def prune(now: float | None = None, store: object | None = None) -> dict:
             doomed[str(path)] = path
             by_age += 1
 
-    # Size second, and only over what is left: a file already deleted for age must
+    # Size second, and only over what is left: a file already retired for age must
     # not be counted twice against the cap.
     survivors = sorted(
         (e for e in removable if str(e[0]) not in doomed),
@@ -530,31 +490,41 @@ def prune(now: float | None = None, store: object | None = None) -> dict:
         kept_bytes -= size
         by_size += 1
 
-    freed = 0
+    moved_bytes = 0
     deleted = 0
+    move_failures = 0
     for path in doomed.values():
         try:
             size = path.stat().st_size
         except OSError:
             continue
         if _move_to_trash(path, moment):
-            freed += size
+            moved_bytes += size
             deleted += 1
+        else:
+            move_failures += 1
 
     # A staged upload lives in a subdirectory; remove the directories it leaves
     # behind, so the tree does not fill with empty folders.
     _drop_empty_dirs(ARTIFACT_DIR)
 
+    transferred = _transfer_trash(moment)
+    if move_failures:
+        message = f"Could not retire {move_failures} file(s); they remain in the artifact store. Retry Prune Now."
+        transferred["warning"] = " ".join(filter(None, (message, transferred.get("warning"))))
+        _last_transfer["warning"] = transferred["warning"]
+
     return {
         "deleted": deleted,  # moved to the Trash Folder, not unlinked
-        "freed_bytes": freed,
-        "purged_files": purged_files,
-        "purged_bytes": purged_bytes,
-        "trash_capped_files": capped_files,
+        "moved_files": deleted,
+        "moved_bytes": moved_bytes,
+        "move_failures": move_failures,
+        "freed_bytes": 0,
+        **transferred,
         "deleted_by_age": by_age,
         "deleted_by_size": by_size,
         "kept_files": len(entries) - deleted,
-        "kept_bytes": max(kept_bytes, 0),
+        "kept_bytes": sum(size for _, _, size in entries) - moved_bytes,
         "limits": limits,
         "protected_files": len(young),
         "pinned_files": len(pinned),
@@ -571,8 +541,8 @@ def _guard_and_compact() -> None:
         from . import diskguard
 
         swept = diskguard.sweep_if_red(force=True)
-        if swept and swept["freed_bytes"]:
-            print(f"[retention] disk is low: freed {swept['freed_bytes'] // (1024 * 1024)} MiB "
+        if swept and swept["recycled_files"]:
+            print(f"[retention] disk is low: moved {swept['recycled_bytes'] // (1024 * 1024)} MiB to macOS Trash "
                   f"(Trash {swept['trash_files']} file(s), expired artifacts "
                   f"{swept['artifact_files']})", flush=True)
     except Exception:  # noqa: BLE001
@@ -604,17 +574,20 @@ def start_pruner(interval: float = PRUNE_INTERVAL_S) -> None:
 
         def loop() -> None:
             while True:
+                result = {}
                 try:
                     result = prune()
                     if result["deleted"]:
                         print(
                             f"[retention] moved {result['deleted']} file(s) to the Trash Folder, "
-                            f"{result['freed_bytes'] // 1024} KiB "
+                            f"{result['moved_bytes'] // 1024} KiB "
                             f"({result['deleted_by_age']} by age, {result['deleted_by_size']} by size)",
                             flush=True,
                         )
                 except Exception:  # noqa: BLE001 - a sweeper must not kill the gateway
                     pass
+                if result.get("warning"):
+                    print(f"[retention] {result['warning']}", flush=True)
                 _guard_and_compact()
                 time.sleep(interval)
 

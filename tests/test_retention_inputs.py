@@ -14,22 +14,10 @@ from unittest.mock import patch
 from pathlib import Path
 
 
-_TEMP_ROOT = Path(tempfile.mkdtemp(prefix="gateway-retention-inputs-"))
-atexit.register(shutil.rmtree, _TEMP_ROOT, ignore_errors=True)
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-os.environ.update(
-    {
-        "GATEWAY_APP_SUPPORT": str(_TEMP_ROOT),
-        "GATEWAY_DATA": str(_TEMP_ROOT / "data"),
-        "GATEWAY_ARTIFACTS": str(_TEMP_ROOT / "data" / "artifacts"),
-        "GATEWAY_DB": str(_TEMP_ROOT / "data" / "jobs.sqlite3"),
-        "GATEWAY_CREDENTIALS": str(_TEMP_ROOT / "data" / "credentials.json"),
-        "GATEWAY_MODEL_CACHE": str(_TEMP_ROOT / "data" / "models_cache.json"),
-        "GATEWAY_ENV_FILE": str(_TEMP_ROOT / ".env"),
-        "GATEWAY_NO_MIGRATE": "1",
-        "STUDIOHUB_READY_FILE": str(_TEMP_ROOT / "no-hub-ready.json"),
-    }
-)
+from tests._isolation import sandbox_env  # noqa: E402
+_SANDBOX = sandbox_env("gateway-retention-inputs-")
+_TEMP_ROOT = Path(_SANDBOX.name)
 
 from gateway import retention  # noqa: E402
 from gateway.config import ARTIFACT_DIR  # noqa: E402
@@ -121,6 +109,13 @@ class TrashFolderTests(unittest.TestCase):
         shutil.rmtree(retention.TRASH_DIR, ignore_errors=True)
         shutil.rmtree(ARTIFACT_DIR, ignore_errors=True)
         ARTIFACT_DIR.mkdir(parents=True)
+        recycled = _TEMP_ROOT / self._testMethodName / "macos-trash"
+        recycled.mkdir(parents=True, exist_ok=True)
+        def recycle(path):
+            path.rename(recycled / path.name)
+            return True
+        p = patch.object(retention, "_recycle", side_effect=recycle)
+        p.start(); self.addCleanup(p.stop)
         for pin in retention.kept():
             retention.unkeep(pin["path"])
 
@@ -137,7 +132,7 @@ class TrashFolderTests(unittest.TestCase):
         young = RetentionInputTests.write_file("young.bin", age_s=30)
         retention.save(max_age_days=3, max_bytes=8 * 1024**3)
         result = retention.prune(now=now, store=self.store)
-        moved = retention.TRASH_DIR / retention._day(now) / "sub" / "old.bin"
+        moved = next(retention.TRASH_DIR.rglob("old.bin"))
         self.assertFalse(old.exists(), result)
         self.assertTrue(moved.is_file(), "pruned file must be in the Trash Folder, not gone")
         self.assertEqual(moved.stat().st_size, 2_000_000)
@@ -147,7 +142,7 @@ class TrashFolderTests(unittest.TestCase):
         again = RetentionInputTests.write_file("sub/old.bin", age_s=5 * 86400)
         retention.prune(now=now, store=self.store)
         self.assertFalse(again.exists())
-        self.assertEqual(len(list((retention.TRASH_DIR / retention._day(now) / "sub").iterdir())), 2)
+        self.assertEqual(len(list(retention.TRASH_DIR.rglob("old.bin*"))), 2)
 
     def test_failed_move_skips_and_keeps_the_file(self) -> None:
         old = RetentionInputTests.write_file("stuck.bin", age_s=5 * 86400)
@@ -156,10 +151,10 @@ class TrashFolderTests(unittest.TestCase):
         self.assertTrue(old.exists())
         self.assertEqual(result["deleted"], 0)
 
-    def test_purge_only_folders_older_than_fifteen_days(self) -> None:
+    def test_transfer_only_folders_older_than_seven_days(self) -> None:
         now = time.time()
-        stale = retention.TRASH_DIR / retention._day(now - 16 * 86400)
-        fresh = retention.TRASH_DIR / retention._day(now - 10 * 86400)
+        stale = retention.TRASH_DIR / retention._day(now - 8 * 86400)
+        fresh = retention.TRASH_DIR / retention._day(now - 6 * 86400)
         stranger = retention.TRASH_DIR / "not-a-date"
         for folder in (stale, fresh, stranger):
             folder.mkdir(parents=True)
@@ -181,7 +176,7 @@ class TrashFolderTests(unittest.TestCase):
         self.assertTrue(live.exists(), result)
         use = retention.usage()
         self.assertEqual(use["trash_bytes"], 6_000_000)
-        self.assertEqual(use["trash_days"], 15)
+        self.assertEqual(use["trash_days"], 7)
         self.assertEqual(use["bytes"], 2_000_000)
 
 

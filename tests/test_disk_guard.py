@@ -46,14 +46,22 @@ class _Dirs(unittest.TestCase):
         self.addCleanup(self._tmp.cleanup)
         root = Path(self._tmp.name)
         self.artifacts = root / "artifacts"
-        self.trash = root / "trash"
+        self.trash = root / "_trash"
+        self.recycled = root / "macos-trash"
+        self.recycled.mkdir()
         self.artifacts.mkdir()
         for name, value in (("ARTIFACT_DIR", self.artifacts), ("TRASH_DIR", self.trash),
                             ("SETTINGS_PATH", root / "retention.json"),
-                            ("KEPT_PATH", root / "kept.json")):
+                            ("KEPT_PATH", root / "kept.json"), ("LEGACY_TRASH_DIR", root / "trash")):
             patcher = patch.object(retention, name, value)
             patcher.start()
             self.addCleanup(patcher.stop)
+
+        def recycle(path):
+            path.rename(self.recycled / path.name)
+            return True
+        patcher = patch.object(retention, "_recycle", side_effect=recycle)
+        patcher.start(); self.addCleanup(patcher.stop)
 
     def trash_file(self, days_ago: int, name: str, size: int = MB, mtime_offset: float = 0) -> Path:
         day = (datetime.now(timezone.utc) - timedelta(days=days_ago)).strftime("%Y-%m-%d")
@@ -74,28 +82,29 @@ class _Dirs(unittest.TestCase):
 
 
 class TrashCapTests(_Dirs):
-    def test_cap_is_the_smaller_of_10_gb_and_5_percent_of_the_volume(self) -> None:
-        self.assertEqual(retention.trash_cap_bytes(100 * GB), 5 * GB)
-        self.assertEqual(retention.trash_cap_bytes(2000 * GB), 10 * GB)
-        self.assertEqual(retention.trash_cap_bytes(0), 10 * GB)
+    def test_cap_is_twenty_gb_independent_of_volume_size(self) -> None:
+        self.assertEqual(retention.trash_cap_bytes(100 * GB), 20 * GB)
+        self.assertEqual(retention.trash_cap_bytes(2000 * GB), 20 * GB)
+        self.assertEqual(retention.trash_cap_bytes(0), 20 * GB)
 
     def test_over_the_cap_the_oldest_files_go_first(self) -> None:
         old = self.trash_file(5, "old.bin")
         mid = self.trash_file(3, "mid.bin")
         new = self.trash_file(1, "new.bin")
         with patch.object(retention, "trash_cap_bytes", return_value=int(2.5 * MB)):
-            files, freed = retention._trim_trash(cap=retention.trash_cap_bytes())
+            result = retention._transfer_trash(time.time())
+            files, freed = result["recycled_files"], result["recycled_bytes"]
         self.assertEqual(files, 1)
         self.assertGreaterEqual(freed, MB)
         self.assertFalse(old.exists())
         self.assertTrue(mid.exists() and new.exists())
 
-    def test_one_day_that_overflows_alone_keeps_its_newest_file(self) -> None:
+    def test_legacy_same_day_cap_uses_path_order_not_source_mtime(self) -> None:
         a = self.trash_file(1, "a.bin", mtime_offset=-100)
         b = self.trash_file(1, "b.bin", mtime_offset=-50)
         c = self.trash_file(1, "c.bin", mtime_offset=0)
         with patch.object(retention, "trash_cap_bytes", return_value=int(1.5 * MB)):
-            retention._trim_trash(cap=retention.trash_cap_bytes())
+            retention._transfer_trash(time.time())
         self.assertFalse(a.exists() or b.exists())
         self.assertTrue(c.exists())
 
@@ -121,7 +130,7 @@ class TrashCapTests(_Dirs):
         stray.parent.mkdir(parents=True)
         stray.write_bytes(b"x" * MB)
         with patch.object(retention, "trash_cap_bytes", return_value=1):
-            retention._trim_trash(cap=1)
+            retention._transfer_trash(time.time(), cap=1)
         self.assertTrue(stray.exists())
 
     def test_usage_reports_physical_size_and_the_cap(self) -> None:
@@ -133,15 +142,17 @@ class TrashCapTests(_Dirs):
 
 
 class ReclaimTests(_Dirs):
-    def test_trash_goes_before_expired_artifacts_and_stops_when_enough(self) -> None:
+    def test_pressure_preserves_recent_trash_and_retires_expired_artifacts(self) -> None:
         old_trash = self.trash_file(4, "t-old.bin")
         new_trash = self.trash_file(1, "t-new.bin")
         expired = self.artifact("expired.bin", age_s=5 * 86400)
         result = retention.reclaim(int(1.5 * MB), store=_Store())
-        self.assertFalse(old_trash.exists())
-        self.assertFalse(new_trash.exists())  # 2 MB of Trash were needed to cover 1.5 MB
-        self.assertTrue(expired.exists(), "the artifacts are not touched while the Trash is enough")
-        self.assertTrue(result["enough"])
+        self.assertTrue(old_trash.exists() and new_trash.exists())
+        self.assertFalse(expired.exists())
+        self.assertTrue(next(self.trash.rglob("expired.bin")).exists())
+        self.assertFalse(result["enough"])
+        self.assertEqual(result["freed_bytes"], 0)
+        self.assertEqual(list(self.recycled.iterdir()), [])
 
     def test_expired_artifacts_are_next_and_only_the_deletable_ones(self) -> None:
         retention.save(max_age_days=3)

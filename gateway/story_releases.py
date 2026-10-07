@@ -219,14 +219,10 @@ def _fsync(path: Path) -> None:
 
 
 def _to_trash(path: Path) -> None:
-    """The replaced artifact goes to the Gateway's self-cleaning Trash Folder, never deleted here."""
+    """Retire a superseded or failed staged release using the shared runtime policy."""
     from . import retention
-    day = time.strftime("%Y-%m-%d", time.gmtime())
-    dest = Path(retention.TRASH_DIR) / day / "story-release" / path.name
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    if dest.exists():
-        dest = dest.with_name(f"{dest.name}.{int(time.time())}")
-    path.replace(dest)
+    if not retention.retire(path, root=release_dir(), namespace="story-release"):
+        print("[story-release] Could not retire a superseded/staged release; the file remains in the release store.", flush=True)
 
 
 # ---------------------------------------------------------------------------
