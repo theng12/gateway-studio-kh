@@ -227,7 +227,9 @@ def input_paths_of(job: dict[str, Any]) -> set[str]:
 class JobStore:
     def __init__(self, path: str | Path) -> None:
         self.path = str(path)
-        self._lock = threading.Lock()
+        # One connection serves the API, dispatcher and job threads. Every access is serialized;
+        # this is re-entrant because locked writers call read helpers such as `submit() -> get()`.
+        self._lock = threading.RLock()
         self._conn = sqlite3.connect(self.path, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         #: Jobs found `running` with an upstream id when this store opened: still running upstream,
@@ -438,7 +440,8 @@ class JobStore:
                 self._conn.commit()
 
     def close(self) -> None:
-        self._conn.close()
+        with self._lock:
+            self._conn.close()
 
     # -- write ------------------------------------------------------------
     def submit(
@@ -1144,15 +1147,17 @@ class JobStore:
 
     # -- read -------------------------------------------------------------
     def get(self, job_id: str) -> dict[str, Any] | None:
-        row = self._conn.execute(
-            "SELECT * FROM jobs WHERE id = ?", (job_id,)
-        ).fetchone()
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM jobs WHERE id = ?", (job_id,)
+            ).fetchone()
         return self._row_dict(row)
 
     def find_by_idempotency_key(self, key: str) -> dict[str, Any] | None:
-        row = self._conn.execute(
-            "SELECT * FROM jobs WHERE idempotency_key = ?", (key,)
-        ).fetchone()
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM jobs WHERE idempotency_key = ?", (key,)
+            ).fetchone()
         return self._row_dict(row)
 
     def due(self, now: float | None = None) -> list[dict[str, Any]]:
@@ -1170,28 +1175,32 @@ class JobStore:
         job is ready; it no longer decides who goes first.
         """
         now = time.time() if now is None else now
-        rows = self._conn.execute(
-            """
-            SELECT * FROM jobs
-            WHERE state NOT IN ('succeeded', 'failed', 'cancelled')
-              AND next_action_at IS NOT NULL
-              AND next_action_at <= ?
-            ORDER BY created_at, id
-            """,
-            (now,),
-        ).fetchall()
+        with self._lock:
+            rows = self._conn.execute(
+                """
+                SELECT * FROM jobs
+                WHERE state NOT IN ('succeeded', 'failed', 'cancelled')
+                  AND next_action_at IS NOT NULL
+                  AND next_action_at <= ?
+                ORDER BY created_at, id
+                """,
+                (now,),
+            ).fetchall()
         return [self._row_dict(r) for r in rows]
 
     def recent(self, limit: int = 20, *, offset: int = 0) -> list[dict[str, Any]]:
         if offset > 2**63 - 1:  # a validated page can still exceed SQLite's integer range
             return []
-        rows = self._conn.execute(
-            "SELECT * FROM jobs ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?", (limit, offset)
-        ).fetchall()
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT * FROM jobs ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?",
+                (limit, offset),
+            ).fetchall()
         return [self._row_dict(r) for r in rows]
 
     def job_count(self) -> int:
-        return int(self._conn.execute("SELECT COUNT(*) FROM jobs").fetchone()[0])
+        with self._lock:
+            return int(self._conn.execute("SELECT COUNT(*) FROM jobs").fetchone()[0])
 
     def list_jobs(
         self,
@@ -1219,10 +1228,11 @@ class JobStore:
             clauses.append("modality = ?")
             params.append(modality)
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
-        rows = self._conn.execute(
-            f"SELECT * FROM jobs {where} ORDER BY created_at DESC LIMIT ?",  # noqa: S608
-            (*params, limit),
-        ).fetchall()
+        with self._lock:
+            rows = self._conn.execute(
+                f"SELECT * FROM jobs {where} ORDER BY created_at DESC LIMIT ?",  # noqa: S608
+                (*params, limit),
+            ).fetchall()
         return [self._row_dict(r) for r in rows]
 
     def settled_between(self, start: float, end: float) -> list[dict[str, Any]]:
@@ -1231,15 +1241,16 @@ class JobStore:
         Only the scalar columns the notifier needs; `result_json` holds the whole generated text and
         is never read here (bar the audio length of voice/music jobs). The window is on `updated_at`, which is when the job settled.
         """
-        rows = self._conn.execute(
-            "SELECT id, modality, state, error_code, error_detail, asset_path, artifacts_json, updated_at, "
-            # Only the one number out of result_json, never the generated text.
-            "CASE WHEN modality IN ('tts', 'music') AND json_valid(result_json) THEN json_extract(result_json, '$.payload.audio_duration_s') "
-            "END AS audio_duration_s "
-            "FROM jobs WHERE updated_at >= ? AND updated_at < ? "
-            "AND state IN ('succeeded', 'failed', 'cancelled')",
-            (start, end),
-        ).fetchall()
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT id, modality, state, error_code, error_detail, asset_path, artifacts_json, updated_at, "
+                # Only the one number out of result_json, never the generated text.
+                "CASE WHEN modality IN ('tts', 'music') AND json_valid(result_json) THEN json_extract(result_json, '$.payload.audio_duration_s') "
+                "END AS audio_duration_s "
+                "FROM jobs WHERE updated_at >= ? AND updated_at < ? "
+                "AND state IN ('succeeded', 'failed', 'cancelled')",
+                (start, end),
+            ).fetchall()
         return [dict(row) for row in rows]
 
     def attempts_with_code(self, code: str, since: float) -> list[dict[str, Any]]:
@@ -1247,10 +1258,11 @@ class JobStore:
 
         `[{job_id, location, at}]`. Used to notice a Mac handing jobs back for memory repeatedly.
         """
-        rows = self._conn.execute(
-            "SELECT id, attempt_log FROM jobs WHERE updated_at >= ? AND attempt_log LIKE ?",
-            (since, f"%{code}%"),
-        ).fetchall()
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT id, attempt_log FROM jobs WHERE updated_at >= ? AND attempt_log LIKE ?",
+                (since, f"%{code}%"),
+            ).fetchall()
         hits: list[dict[str, Any]] = []
         for row in rows:
             for entry in _loads_list(row["attempt_log"]):
@@ -1285,8 +1297,9 @@ class JobStore:
         Only the fields a job actually states come back; a row with no `usage` returns
         `NULL`s and is dropped by the reader rather than counted as zero.
         """
-        rows = self._conn.execute(
-            """
+        with self._lock:
+            rows = self._conn.execute(
+                """
             SELECT provider_id, model_id, modality, created_at, updated_at,
                    CASE WHEN json_valid(result_json)
                          AND json_type(result_json, '$.payload.usage.prompt_tokens')
@@ -1321,9 +1334,9 @@ class JobStore:
              WHERE result_json IS NOT NULL AND result_json != ''
              ORDER BY created_at DESC
              LIMIT ?
-            """,
-            (limit,),
-        ).fetchall()
+                """,
+                (limit,),
+            ).fetchall()
         return [dict(row) for row in rows]
 
     def daily_by_model(self, since: float) -> list[dict[str, Any]]:
@@ -1332,12 +1345,13 @@ class JobStore:
         Queue wait is `created_at` to the dispatch that ran last (`dispatch_started_at`), so it holds
         every deferral and re-route before the work that settled the job. Scalars only, never prose.
         """
-        rows = self._conn.execute(
-            """SELECT date(created_at, 'unixepoch', 'localtime') AS day, modality, model_id, state,
-                      error_code, dispatch_started_at - created_at AS wait
-               FROM jobs WHERE created_at >= ? ORDER BY day, model_id""",
-            (since,),
-        ).fetchall()
+        with self._lock:
+            rows = self._conn.execute(
+                """SELECT date(created_at, 'unixepoch', 'localtime') AS day, modality, model_id, state,
+                          error_code, dispatch_started_at - created_at AS wait
+                   FROM jobs WHERE created_at >= ? ORDER BY day, model_id""",
+                (since,),
+            ).fetchall()
         groups: dict[tuple[str, str, str], dict[str, Any]] = {}
         waits: dict[tuple[str, str, str], list[float]] = {}
         for row in rows:
@@ -1393,8 +1407,9 @@ class JobStore:
         """
         # `job_summaries` holds the jobs `archive_old` removed, so dropping a 90-day-old job
         # from the table does not change the totals this page shows.
-        rows = self._conn.execute(
-            """
+        with self._lock:
+            rows = self._conn.execute(
+                """
             SELECT modality, model_id, provider_id, machine, state, seconds, bytes, audio_s FROM (
                 SELECT created_at,
                        modality,
@@ -1428,9 +1443,9 @@ class JobStore:
             )
              ORDER BY created_at DESC
              LIMIT ?
-            """,
-            (limit,),
-        ).fetchall()
+                """,
+                (limit,),
+            ).fetchall()
 
         def group(key: Any) -> dict[str, Any]:
             return {
@@ -1529,8 +1544,9 @@ class JobStore:
         RTF is generation seconds per second of audio, the same figure `generation_analytics`
         publishes as `rtf_median`. Read in SQL, scalars only, newest first.
         """
-        rows = self._conn.execute(
-            """
+        with self._lock:
+            rows = self._conn.execute(
+                """
             SELECT provider_id,
                    json_extract(result_json, '$.payload.hub_machine') AS machine,
                    json_extract(result_json, '$.payload.generation_seconds') AS seconds,
@@ -1540,9 +1556,9 @@ class JobStore:
                AND json_valid(result_json)
              ORDER BY created_at DESC
              LIMIT ?
-            """,
-            (model_id, limit),
-        ).fetchall()
+                """,
+                (model_id, limit),
+            ).fetchall()
         return [
             (str(row["provider_id"] or ""), str(row["machine"] or ""),
              float(row["seconds"]) / float(row["audio_s"]))
@@ -1635,13 +1651,14 @@ class JobStore:
 
     def protected_input_paths(self) -> set[str]:
         """Inputs held by queued, running, or explicitly recoverable jobs."""
-        rows = self._conn.execute(
-            """
-            SELECT state, recovery_state, params FROM jobs
-             WHERE state NOT IN ('succeeded', 'failed', 'cancelled')
-                OR recovery_state IS NOT NULL
-            """
-        ).fetchall()
+        with self._lock:
+            rows = self._conn.execute(
+                """
+                SELECT state, recovery_state, params FROM jobs
+                 WHERE state NOT IN ('succeeded', 'failed', 'cancelled')
+                    OR recovery_state IS NOT NULL
+                """
+            ).fetchall()
         protected: set[str] = set()
         for row in rows:
             protected.update(input_paths_of(dict(row)))
@@ -1649,22 +1666,23 @@ class JobStore:
 
     def stats(self) -> dict[str, Any]:
         """Counts for the dashboard: totals by state, plus the newest activity."""
-        by_state = {
-            row["state"]: row["n"]
-            for row in self._conn.execute(
-                "SELECT state, COUNT(*) AS n FROM jobs GROUP BY state"
-            ).fetchall()
-        }
-        by_modality = {
-            row["modality"]: row["n"]
-            for row in self._conn.execute(
-                "SELECT modality, COUNT(*) AS n FROM jobs GROUP BY modality"
-            ).fetchall()
-        }
-        newest = self._conn.execute(
-            "SELECT MAX(created_at) AS t FROM jobs"
-        ).fetchone()
-        archived = self._conn.execute("SELECT COUNT(*) AS n FROM job_summaries").fetchone()["n"]
+        with self._lock:
+            by_state = {
+                row["state"]: row["n"]
+                for row in self._conn.execute(
+                    "SELECT state, COUNT(*) AS n FROM jobs GROUP BY state"
+                ).fetchall()
+            }
+            by_modality = {
+                row["modality"]: row["n"]
+                for row in self._conn.execute(
+                    "SELECT modality, COUNT(*) AS n FROM jobs GROUP BY modality"
+                ).fetchall()
+            }
+            newest = self._conn.execute(
+                "SELECT MAX(created_at) AS t FROM jobs"
+            ).fetchone()
+            archived = self._conn.execute("SELECT COUNT(*) AS n FROM job_summaries").fetchone()["n"]
         return {
             "by_state": by_state,
             "by_modality": by_modality,

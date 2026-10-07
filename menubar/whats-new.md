@@ -14,6 +14,13 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.142 — 2026-10-07
+
+### Reliable job records under load
+
+- API reads, queue dispatch, job completion, analytics and shutdown now take turns on the Gateway's shared job database connection. Concurrent activity can no longer leave a finished worker recorded as running because SQLite was used by two threads at once.
+- Existing idempotency and restart-recovery rules are unchanged; this fix only makes access to the job record take turns.
+
 ## 0.2.141 — 2026-10-07
 
 ### Safer paid requests and fair recovery
