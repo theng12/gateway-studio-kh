@@ -32,7 +32,12 @@ struct GroupSummary {
     var queued: Int { batches.reduce(0) { $0 + ($1.queued ?? 0) } }
     var nodeCount: Int { showsRoster ? location.nodes.count : machines.count }
 
-    private func isOffline(_ machine: FleetMachine) -> Bool { (machine.state ?? "").lowercased() == "offline" }
+    /// Offline as a fault. A switched-off Lite Mode Mac is expected and counted apart (`offLite`).
+    private func isOffline(_ machine: FleetMachine) -> Bool {
+        (machine.state ?? "").lowercased() == "offline" && machine.liteOff != true
+    }
+    /// Shop Macs in Lite Mode that are switched off: "2 off (Lite Mode)", never "offline".
+    var offLite: Int { machines.filter { $0.liteOff == true }.count }
 
     /// The machine with the least disk, ranked by tier first and free space second. Offline nodes report none.
     var worstDisk: FleetMachine? {
@@ -96,7 +101,7 @@ struct GroupSummary {
         if isDown { return .bad }
         if isPausedByOwner { return .off }   // paused by you: quiet grey, never "needs attention"
         var worst = Health.ok
-        for machine in machines where machine.reachable != false || machine.isNode {
+        for machine in machines where (machine.reachable != false || machine.isNode) && machine.liteOff != true {
             for state in [nodeHealth(machine), machine.diskHealth, machine.faultMemoryHealth] where state == .warn || state == .bad {
                 worst = max(worst, .warn)
             }
@@ -794,8 +799,9 @@ final class FleetGroupsTab: NSView, NSSearchFieldDelegate {
             return health == .ok || health == .off ? plain(text) : Badge(text, health)
         }
 
-        let nodesValue = plain(group.isDown ? "\(group.location.nodes.count) known" : "\(group.online) of \(group.machines.count) online",
-                               group.isDown || group.online < group.machines.count ? Health.warn.text : .labelColor)
+        let offLite = group.offLite > 0 ? " · \(group.offLite) off (Lite Mode)" : ""
+        let nodesValue = plain(group.isDown ? "\(group.location.nodes.count) known" : "\(group.online) of \(group.machines.count) online" + offLite,
+                               group.isDown || group.online + group.offLite < group.machines.count ? Health.warn.text : .labelColor)
         let jobsValue = plain(group.isDown ? "—" : "\(group.running) running · \(group.queued) queued")
         let worstDisk = group.worstDisk
         let diskValue = group.isDown ? plain("—", .secondaryLabelColor)
@@ -1061,9 +1067,13 @@ final class FleetGroupsTab: NSView, NSSearchFieldDelegate {
                           trailing: startupMenu?(machine))
         let sentence = ([offlineWhy] + [node?.detail ?? machine.nodeDetail]).compactMap { $0 }.first(where: { !$0.isEmpty && health == .bad })
         // A Lite Mode change saved while this Mac was offline: "Lite Mode: Waiting to apply (offline since 13:52)".
+        // A switched-off Lite Mode Mac: one grey line, plus the Gateway's quiet note once it has been off a long time.
+        let liteOff = machine.liteOff == true
+        let longOff = group.issues.first { $0.code == "lite_mode_long_off" && $0.subject == machine.machine }?.message
         let notes = [sentence.map { noteRow(.bad, $0, caption: true) },
+                     liteOff ? noteRow(.off, longOff ?? FleetOffline.liteOffNote, caption: true) : nil,
                      FleetUpdateFailure.rowLine(machine).map { noteRow(.warn, $0, caption: true) },
-                     machine.liteModePending.map { noteRow(.warn, "Lite Mode: \($0.line)", caption: true) }].compactMap { $0 }
+                     machine.liteModePending.map { noteRow(liteOff ? .off : .warn, "Lite Mode: \($0.line)", caption: true) }].compactMap { $0 }
         guard !notes.isEmpty else { return row }
         let wrapper = stack([row] + notes)
         wrapper.spacing = 0

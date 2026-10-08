@@ -809,6 +809,8 @@ struct FleetMachine: Decodable {
     var workstation: FleetWorkstation?
     /// A Lite Mode change the Gateway keeps for this Mac while it is offline, sent when it is back; `nil` when none.
     var liteModePending: FleetLiteModePending?
+    /// Switched off and in Lite Mode (last report, or a change waiting for it): expected, never a fault or offline.
+    var liteOff: Bool?
     /// Ranked Studio Hub function ids for this Mac. Empty means every enabled function is equal;
     /// nil means this Gateway or Hub predates ranked work policy.
     var priorityOrder: [String]?
@@ -962,7 +964,7 @@ extension FleetMachine {
     var activityHealth: Health {
         let word = (state ?? "").lowercased()
         if nodePaused == true { return .off }   // paused by you: quiet grey, not a fault
-        if liteModeResting { return .off }   // the shop is using it, or quiet hours: busy for now
+        if liteModeResting || liteOff == true { return .off }   // the shop is using it, quiet hours, or switched off
         if nodeStateIsUnauthorized || word == "offline" || reachable == false { return .bad }
         if word == "needs_attention" { return .warn }
         if word == "long_idle" || word.isEmpty { return .off }
@@ -996,6 +998,7 @@ extension FleetMachine {
     var stateLabel: String {
         if nodePaused == true { return "Paused" }
         if let resting = workstationRestingLabel { return resting }
+        if liteOff == true { return "Off" }
         if nodeStateIsUnauthorized { return "Credential refused" }
         if reachable == false { return "Offline" }
         switch (state ?? "").lowercased() {

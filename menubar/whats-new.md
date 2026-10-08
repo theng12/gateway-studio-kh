@@ -14,6 +14,15 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.151 — 2026-10-09
+
+### A shop Mac in Lite Mode that is switched off is no longer a warning
+
+- A Mac in **Lite Mode** that is switched off (a shop Mac at night or on holiday) now shows **Off** in grey, with the line "Switched off — Lite Mode. Expected; it gets no work until it is back." It no longer counts toward "groups need attention" or "nodes offline", no longer turns its group amber, and sends no Telegram offline alert. The group's Nodes line says, for example, "1 of 3 online · 2 off (Lite Mode)".
+- The Gateway remembers each Mac's last Lite Mode setting, so this works while the Mac is off. A Lite Mode change saved for an offline Mac (**Fleet > the Mac's "…" > Lite Mode…**) counts straight away.
+- A Lite Mode Mac that stays off for more than 14 days gets one quiet information line, not a warning.
+- Macs that are not in Lite Mode warn exactly as before when they go offline.
+
 ## 0.2.150 — 2026-10-08
 
 ### A model installed on every Mac is offered on every Mac

@@ -636,8 +636,8 @@ class Notifier:
                 continue
             if machine.get("reachable") is not False and state not in ("unreachable", "error"):
                 continue
-            if workstation_resting(machine):
-                continue  # a shop's workstation Mac the shop is using: busy for now, not offline
+            if workstation_resting(machine) or machine.get("lite_off"):
+                continue  # a shop's Lite Mode Mac in use, or switched off: expected, not an alarm
             name = str(machine.get("label") or machine.get("machine") or "a Mac")
             group = str(machine.get("location") or "")
             reason = {"no_hub": "Studio Hub is not running on it",

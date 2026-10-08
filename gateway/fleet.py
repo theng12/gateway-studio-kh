@@ -1972,6 +1972,7 @@ def _summarise(rows: list[dict]) -> dict:
             hub_pulse[state] = hub_pulse.get(state, 0) + int(count or 0)
     pulse = derived_pulse or hub_pulse
 
+    off_lite = sum(1 for row in flat if row.get("lite_off"))
     if states:
         online = sum(1 for state in states if state not in {"offline", "unknown"})
         offline = sum(1 for state in states if state == "offline")
@@ -2037,7 +2038,9 @@ def _summarise(rows: list[dict]) -> dict:
                                if not fact or fact["start_services_on_launch"] is None),
         "machines": machines_total,
         "machines_online": online,
-        "machines_offline": offline,
+        # A Lite Mode Mac switched off is not "offline" (a fault) but its own, expected count.
+        "machines_offline": offline - off_lite,
+        "machines_off_lite": off_lite,
         # Neither online nor offline: the Hub reported no state for it (or the
         # overview omitted it). Published so the headline can account for every
         # machine in the table instead of quietly leaving a gap.
@@ -2478,6 +2481,49 @@ def workstation_resting(row: dict) -> bool:
     """
     block = row.get("workstation")
     return isinstance(block, dict) and block.get("state") in WORKSTATION_RESTING and block.get("stale") is not True
+
+
+# --- A Lite Mode Mac that is switched off is expected (owner, 2026-10-08) -----------------------------------
+#
+# Shop Macs are on by day, off at night and off for holidays. Off, a Mac reports nothing, so its Lite Mode is
+# what the Gateway last heard (`lite_mode_known.json`, one bool per `controller/machine`) unless a change is
+# waiting for it (`lite_mode_pending.json`), which wins: it is the owner's latest word. Such a Mac reads `lite_off`:
+# no warning, not offline in any count, never a Telegram alarm. It still gets no work (it is not reachable).
+LITE_MODE_KNOWN_PATH = Path(str(DATA_DIR)) / "lite_mode_known.json"
+#: Off longer than this, a Lite Mode Mac gets one quiet info line (never a warning).
+# ponytail: one fixed 14 days (a holiday is 5); a per-Mac number if a shop ever closes for longer.
+LITE_OFF_NOTE_S = 14 * 86400
+
+
+def _lite_mode_known() -> dict[str, bool]:
+    try:
+        value = json.loads(LITE_MODE_KNOWN_PATH.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return {k: v for k, v in value.items() if isinstance(v, bool)} if isinstance(value, dict) else {}
+
+
+def remember_lite_mode(machines: list[dict]) -> None:
+    """Keep each Mac's last reported Lite Mode on/off, so it is still known while the Mac is switched off."""
+    known = _lite_mode_known()
+    seen = {f"{m.get('location_id')}/{m.get('machine')}": m["workstation"]["enabled"] for m in machines
+            if isinstance(m.get("workstation"), dict) and isinstance(m["workstation"].get("enabled"), bool)}
+    if all(known.get(key) is value for key, value in seen.items()):
+        return
+    known.update(seen)
+    LITE_MODE_KNOWN_PATH.parent.mkdir(parents=True, exist_ok=True)
+    scratch = LITE_MODE_KNOWN_PATH.with_name(LITE_MODE_KNOWN_PATH.name + ".tmp")
+    scratch.write_text(json.dumps(known, sort_keys=True), encoding="utf-8")
+    os.replace(scratch, LITE_MODE_KNOWN_PATH)
+
+
+def _lite_mode_on(key: str, workstation: dict | None, pending: dict, known: dict[str, bool]) -> bool:
+    """Lite Mode as best known: a change waiting for this Mac, else its report, else its last report."""
+    waiting = (pending.get(key) or {}).get("settings") or {}
+    for value in (waiting.get("enabled"), (workstation or {}).get("enabled"), known.get(key)):
+        if isinstance(value, bool):
+            return value
+    return False
 
 
 def _current_job(machine: dict, entry: dict) -> dict | None:
@@ -2938,10 +2984,19 @@ def machines_flat(rows: list[dict]) -> list[dict]:
                 **health_fields(mid, {}, entry, _startup_fact({}, nodes.get(mid) or {}), workstation),
             })
     now = time.time()
+    from .startup_control import pending_lite_mode  # late: it imports this module
+
+    pending, known = pending_lite_mode(), _lite_mode_known()
     for machine_row in out:
         # `no_hub` / `unreachable` / `None`: the one reading of why the controller could not reach it.
         machine_row["reach_reason"] = _node_reach_reason(machine_row) or None
         machine_row["memory_fault"] = memory_fault(machine_row, now)
+        # Switched off, and in Lite Mode: expected, not a fault (see `LITE_MODE_KNOWN_PATH`).
+        machine_row["lite_off"] = (
+            str(machine_row.get("state") or "").lower() == "offline"
+            and str(machine_row.get("node_state") or "").lower() != "unauthorized"
+            and _lite_mode_on(f"{machine_row.get('location_id')}/{machine_row.get('machine')}",
+                              machine_row.get("workstation"), pending, known))
     return out
 
 
@@ -3184,6 +3239,7 @@ def _issues_for(row: dict) -> list[dict]:
     limitations: dict[tuple[str, str, str], dict] = {}
     unknown_state = 0
     offline_machines: set[str] = set()
+    lite_off: set[str] = set()
     startup_off: list[str] = []
     disk_low: dict[str, list[str]] = {"stop": [], "red": []}
     for machine in flat:
@@ -3199,7 +3255,21 @@ def _issues_for(row: dict) -> list[dict]:
         state = str(machine.get("state") or "").strip().lower()
         health = str(machine.get("health") or "").strip()
         unhealthy = bool(health) and health.lower() != "up"
-        if state == "offline" and machine_id not in rejected_nodes:
+        if machine.get("lite_off"):
+            # A Lite Mode Mac switched off is expected: no warning. Its studios and models are folded in as for
+            # any offline Mac; only a long absence earns one quiet line.
+            offline_machines.add(machine_id)
+            lite_off.add(machine_id)
+            seen_at = _num(machine.get("node_last_seen_at"))
+            if seen_at is not None and time.time() - seen_at > LITE_OFF_NOTE_S:
+                name = machine.get("label") or machine_id
+                out.append(_issue(
+                    "info", "lite_mode_long_off", machine.get("location_id"), machine.get("location"), machine_id,
+                    f"{name} is in Lite Mode and has been switched off for "
+                    f"{int((time.time() - seen_at) // 86400)} days.",
+                    "Nothing to do while the shop is closed; otherwise check that Mac is switched on",
+                ))
+        elif state == "offline" and machine_id not in rejected_nodes:
             offline_machines.add(machine_id)
             detail = f"Machine {machine_id} is offline."
             if unhealthy:
@@ -3338,8 +3408,9 @@ def _issues_for(row: dict) -> list[dict]:
         seen_workers.add(worker_key)
         worker_id = str(worker.get("id") or worker.get("machine") or "worker")
         machine_id = str(worker.get("machine") or worker_id)
-        # A studio the Mac does not run at all (see `_not_installed`) is not a worker that is down.
-        if _not_installed(worker, running.get(machine_id)):
+        # A studio the Mac does not run at all (see `_not_installed`) is not a worker that is down, and a switched-off
+        # Lite Mode Mac's studios are expected to be down.
+        if _not_installed(worker, running.get(machine_id)) or machine_id in lite_off:
             continue
         if _truthy(worker.get("quarantined")):
             out.append(_issue(
@@ -3556,6 +3627,7 @@ def _refresh() -> dict:
     from . import startup_control  # late: it imports this module
 
     lite_issues = startup_control.stamp_lite_mode_pending(machines)
+    remember_lite_mode(machines)
     summary = _summarise(rows)
     summary["issues"] += len(lite_issues)
     value = {

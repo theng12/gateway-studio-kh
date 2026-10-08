@@ -23,6 +23,9 @@ struct FleetLastStop: Decodable {
 }
 
 enum FleetOffline {
+    /// A Lite Mode Mac that is switched off (a shop Mac at night or on holiday): expected, said plainly.
+    static let liteOffNote = "Switched off — Lite Mode. Expected; it gets no work until it is back."
+
     /// The Hub's phrase when it sent one, else the same words for the reasons it defines, else nil.
     static func phrase(_ stop: FleetLastStop) -> String? {
         if let label = stop.label?.trimmingCharacters(in: .whitespacesAndNewlines), !label.isEmpty { return label }
@@ -70,6 +73,7 @@ enum FleetOffline {
     static func why(_ machine: FleetMachine, now: Date = Date(), calendar: Calendar = .current) -> String? {
         guard !machine.nodeStateIsUnauthorized,
               machine.reachable == false || (machine.state ?? "").lowercased() == "offline" else { return nil }
+        if machine.liteOff == true { return liteOffNote }
         switch machine.reachReason {
         case "no_hub":
             var text = "Studio Hub isn't running on this Mac"
