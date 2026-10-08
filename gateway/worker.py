@@ -265,14 +265,17 @@ _TERMINAL_UPSTREAM_STATES = frozenset(
 
 def scarcest_first(jobs: list[dict[str, Any]],
                    group_in_flight: dict[str, int] | None = None) -> list[dict[str, Any]]:
-    """`store.due()` re-ordered so the model with the fewest machines goes first.
+    """Order due work without bypassing the worker's existing admission authority.
 
-    Key: the model's fleet-wide pool (`fleet.pool_size`: eligible slots summed over every
-    reachable location, from one snapshot), then the job's **turn** within its group, then
-    arrival order. A pass hands out slots in this order, so work only a few Macs can run is
-    not queued behind work any Mac can. `sorted` is stable and `due()` is already
-    oldest-first, so ties stay FIFO. Cloud jobs take no Mac and sort first; a model nothing
-    can run right now sorts last. One `pool_size` per distinct model per pass.
+    A fleet job reads the preference of its already-bound location once per distinct
+    (provider, model, function) in this pass. Eligible jobs sort by that ordinal preference,
+    then by `due()`'s arrival order; a job whose bound location is no longer eligible follows
+    them and can still late-bind in the normal loop. Thus one capable Mac sees its preferred
+    queued function first, while equal and no-preference work stays FIFO. `_admit`, `_room`,
+    the conditional claim and `_rebind` remain the final capacity and no-duplicate checks.
+
+    Cloud jobs keep the prior scarcity/group-turn ordering and stay ahead because they take
+    no Mac. One candidate read per distinct bound local shape per pass.
 
     **Turns (D6).** Inside one scarcity class, a job's turn is how many jobs of its
     `job_group` are already running (`group_in_flight`) plus its place among that group's
@@ -281,6 +284,7 @@ def scarcest_first(jobs: list[dict[str, Any]],
     its own group — turn 1 — so a queue with no groups is ordered exactly as before.
     """
     pools: dict[tuple[str, str], float] = {}
+    local_preferences: dict[tuple[str, str, str], float | None] = {}
     group_in_flight = group_in_flight or {}
     turns: dict[tuple[float, str], int] = {}
 
@@ -300,12 +304,38 @@ def scarcest_first(jobs: list[dict[str, Any]],
         turns[key] = turns.get(key, group_in_flight.get(str(group), 0)) + 1
         return pool(job), turns[key]
 
+    def local_preference(job: dict[str, Any]) -> float | None:
+        provider_id = str(job.get("provider_id") or "")
+        model_id = str(job.get("model_id") or "")
+        modality = str(job.get("modality") or "")
+        key = (provider_id, model_id, modality)
+        if key not in local_preferences:
+            location_id = fleet.controller_id_from(provider_id)
+            choices = (fleet.routing_candidates(model_id, modality, only_location=location_id)
+                       if location_id is not None else [])
+            chosen = next((candidate for candidate in choices
+                           if candidate.get("location_id") == location_id), None)
+            local_preferences[key] = (float(chosen.get("preference"))
+                                      if chosen is not None and chosen.get("preference") is not None
+                                      else None)
+        return local_preferences[key]
+
+    def rank(job: dict[str, Any], index: int) -> tuple[float, float, int, int]:
+        provider_id = str(job.get("provider_id") or "")
+        if not provider_id.startswith(fleet.PROVIDER_PREFIX):
+            scarcity, group_turn = turn(job)
+            return 0.0, scarcity, group_turn, index
+        preference = local_preference(job)
+        if preference is None:
+            return 2.0, 0.0, 0, index
+        return 1.0, preference, 0, index
+
     try:
-        # In arrival order, so a group's turns are numbered oldest first; the index keeps ties FIFO.
-        ranked = sorted((turn(job), index) for index, job in enumerate(jobs))
+        # Read in arrival order so cloud group turns and every equal local rank remain FIFO.
+        ranked = sorted((rank(job, index), index) for index, job in enumerate(jobs))
         return [jobs[index] for _, index in ranked]
     except Exception:  # noqa: BLE001 - ordering is a preference; never the reason nothing runs
-        log.exception("could not order due jobs by scarcity")
+        log.exception("could not order due jobs by scarcity and work preference")
         return jobs
 
 

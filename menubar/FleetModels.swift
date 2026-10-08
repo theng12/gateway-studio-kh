@@ -809,6 +809,11 @@ struct FleetMachine: Decodable {
     var workstation: FleetWorkstation?
     /// A Lite Mode change the Gateway keeps for this Mac while it is offline, sent when it is back; `nil` when none.
     var liteModePending: FleetLiteModePending?
+    /// Ranked Studio Hub function ids for this Mac. Empty means every enabled function is equal;
+    /// nil means this Gateway or Hub predates ranked work policy.
+    var priorityOrder: [String]?
+    /// Hub 0.6.156 compatibility field. New clients read `priorityOrder` exclusively.
+    var chatPriority: Bool?
     /// What this node is running now, when its Hub says so (Fleet Groups "Doing now"); `nil` is unknown.
     var current: FleetCurrentJob?
     /// The models "Install a model…" offers this Mac (see `FleetModelInstall.swift`); `nil` from an older gateway.

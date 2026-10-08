@@ -237,21 +237,26 @@ class LateBindingTest(_Base):
 
 
 class ScarcestFirstTest(unittest.TestCase):
-    def test_fewest_machines_first_then_arrival_order(self) -> None:
-        pools = {"scarce": 1, "common": 8, "nowhere": 0}
+    def test_bound_location_priority_then_arrival_order(self) -> None:
         jobs = [
-            {"id": "c1", "provider_id": _pid("a"), "model_id": "common", "modality": "image"},
-            {"id": "n1", "provider_id": _pid("a"), "model_id": "nowhere", "modality": "image"},
-            {"id": "s1", "provider_id": _pid("a"), "model_id": "scarce", "modality": "image"},
-            {"id": "c2", "provider_id": _pid("a"), "model_id": "common", "modality": "image"},
+            {"id": "c1", "provider_id": _pid("a"), "model_id": "model", "modality": "chat"},
+            {"id": "n1", "provider_id": _pid("a"), "model_id": "missing", "modality": "image"},
+            {"id": "i1", "provider_id": _pid("a"), "model_id": "model", "modality": "image"},
+            {"id": "c2", "provider_id": _pid("a"), "model_id": "model", "modality": "chat"},
             {"id": "x1", "provider_id": "openai-direct", "model_id": "gpt", "modality": "image"},
-            {"id": "s2", "provider_id": _pid("a"), "model_id": "scarce", "modality": "image"},
+            {"id": "i2", "provider_id": _pid("a"), "model_id": "model", "modality": "image"},
         ]
-        with patch.object(fleet, "pool_size", lambda model, modality: pools[model]):
+
+        def choices(model, modality, *, only_location):
+            if model == "missing":
+                return []
+            return [{"location_id": only_location, "preference": 0 if modality == "image" else 1}]
+
+        with patch.object(fleet, "routing_candidates", side_effect=choices):
             ordered = [job["id"] for job in scarcest_first(jobs)]
-        # cloud (takes no Mac) first, then the scarce model FIFO, then the common one FIFO,
-        # and a model nothing can run right now last.
-        self.assertEqual(ordered, ["x1", "s1", "s2", "c1", "c2", "n1"])
+        # Cloud takes no Mac. Local work uses the bound Mac's rank, preserves FIFO within a rank,
+        # and leaves a now-ineligible job for the usual late-binding pass.
+        self.assertEqual(ordered, ["x1", "i1", "i2", "c1", "c2", "n1"])
 
     def test_the_pool_is_the_sum_of_published_eligible_slots(self) -> None:
         with _Fleet([_location("a", eligible=3, available=0), _location("b", eligible=2, available=2),

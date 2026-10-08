@@ -2450,6 +2450,17 @@ def _workstation_fact(machine: dict, node: dict) -> dict | None:
     }
 
 
+def _machine_priority_order(machine: dict, node: dict) -> list[str]:
+    """The ordered function preference this Mac stated, with node and legacy fallbacks."""
+    if "priority_order" in machine:
+        return _priority_order(machine)
+    if "priority_order" in node:
+        return _priority_order(node)
+    if "chat_priority" in machine:
+        return _priority_order(machine)
+    return _priority_order(node)
+
+
 def workstation_resting(row: dict) -> bool:
     """A workstation Mac that is the shop's for now (standing by, stepped aside, quiet hours), freshly reported.
 
@@ -2848,7 +2859,9 @@ def machines_flat(rows: list[dict]) -> list[dict]:
             mid = str(machine.get("machine") or "")
             seen.add(mid)
             entry = activity.get(mid) or {}
+            node = nodes.get(mid) or {}
             startup = _startup_fact(machine, nodes.get(mid) or {})
+            priority_order = _machine_priority_order(machine, node)
             out.append({
                 "location_id": row["id"],
                 "location": row["label"],
@@ -2879,6 +2892,8 @@ def machines_flat(rows: list[dict]) -> list[dict]:
                 "startup": startup,
                 "last_stop": _last_stop_fact(machine, nodes.get(mid) or {}),
                 "workstation": (workstation := _workstation_fact(machine, nodes.get(mid) or {})),
+                "priority_order": priority_order,
+                "chat_priority": bool(priority_order and priority_order[0] == "chat"),
                 "current": _current_job(machine, entry),
                 "installable_models": installable_models(row, mid),
                 **health_fields(mid, machine, entry, startup, workstation),
@@ -2908,6 +2923,8 @@ def machines_flat(rows: list[dict]) -> list[dict]:
                 "startup": _startup_fact({}, nodes.get(mid) or {}),
                 "last_stop": _last_stop_fact({}, nodes.get(mid) or {}),
                 "workstation": (workstation := _workstation_fact({}, nodes.get(mid) or {})),
+                "priority_order": (priority_order := _machine_priority_order({}, nodes.get(mid) or {})),
+                "chat_priority": bool(priority_order and priority_order[0] == "chat"),
                 "current": _current_job({}, entry),
                 **health_fields(mid, {}, entry, _startup_fact({}, nodes.get(mid) or {}), workstation),
             })
@@ -3904,6 +3921,92 @@ HUB_OPERATION_BY_MODALITY = {
 #: The old private name, kept so a reader following a stale note still lands here.
 _HUB_OPERATION_BY_MODALITY = HUB_OPERATION_BY_MODALITY
 
+# Studio Hub names the local Voice function `voice`; the public Gateway lane is `tts`.
+_PRIORITY_FUNCTION_BY_MODALITY = {**{name: name for name in HUB_OPERATION_BY_MODALITY}, "tts": "voice"}
+_PRIORITY_FUNCTIONS = frozenset(_PRIORITY_FUNCTION_BY_MODALITY.values())
+_NEUTRAL_PRIORITY = float(len(_PRIORITY_FUNCTIONS))
+_UNLISTED_PRIORITY = _NEUTRAL_PRIORITY + 1.0
+
+
+def _priority_order(machine: dict) -> list[str]:
+    """One Mac's ordered function preference, with the legacy Chat flag as a read fallback.
+
+    An explicit array is authoritative. A malformed array is no preference rather than a partial
+    guess, and therefore never falls through to the legacy boolean. Missing arrays on Hub 0.6.156
+    retain its `chat_priority` meaning until every Mac has upgraded.
+    """
+    if "priority_order" not in machine:
+        return ["chat"] if machine.get("chat_priority") is True else []
+    value = machine.get("priority_order")
+    if (not isinstance(value, list)
+            or any(not isinstance(item, str) or item not in _PRIORITY_FUNCTIONS for item in value)):
+        return []
+    if len(value) != len(set(value)):
+        return []
+    return list(value)
+
+
+def _routing_preference(row: dict, model_id: str, modality: str, slots: int) -> tuple[float, int]:
+    """Best function rank among this model's eligible Macs, plus how many share it.
+
+    Listed functions sort ahead of a Mac with no preference; an explicitly unlisted function sorts
+    behind it. Ordinal positions use the fixed six-function vocabulary, so second means second in
+    both partial and full lists. This is only a routing tiebreak: queue pressure and a free slot still
+    win first, which is the idle-lending rule.
+    """
+    function = _PRIORITY_FUNCTION_BY_MODALITY.get(modality, modality)
+    machines = {str(machine.get("machine") or ""): machine for machine in row.get("machines") or []
+                if isinstance(machine, dict) and machine.get("machine")}
+    nodes = {str(node.get("id") or ""): node for node in row.get("nodes") or []
+             if isinstance(node, dict) and node.get("id")}
+    paused = {machine for machine, node in nodes.items() if node.get("paused") is True}
+    workers = [worker for worker in row.get("workers") or [] if isinstance(worker, dict)
+               and model_id in (worker.get("models") or [])]
+    working = {str(worker.get("machine") or "") for worker in workers
+               if worker.get("online") is not False and worker.get("drained") is not True
+               and not _truthy(worker.get("maintenance")) and not _truthy(worker.get("quarantined"))}
+    cooled = memory_cooled_machine_ids(row, model_id)
+    eligible: dict[str, dict] = {}
+    for model in row.get("local_models") or []:
+        if not isinstance(model, dict):
+            continue
+        current = str(model.get("model_id") or model.get("model") or "").strip()
+        machine = str(model.get("machine") or "")
+        stated_modality = str(model.get("modality") or modality)
+        stated_function = _PRIORITY_FUNCTION_BY_MODALITY.get(stated_modality, stated_modality)
+        if (current == model_id and machine and model.get("memory_eligible") is True
+                and model.get("runtime_ready") is not False and model.get("gated") is not True
+                and stated_function == function
+                and machine not in paused and machine not in cooled
+                and (not workers or machine in working)):
+            fact = machines.get(machine) or {}
+            node = nodes.get(machine) or {}
+            workstation = _workstation_fact(fact, node)
+            if (fact.get("reachable") is not False and fact.get("enabled") is not False
+                    and not (workstation and workstation_resting({"workstation": workstation}))):
+                eligible[machine] = model
+    if not eligible:
+        return _NEUTRAL_PRIORITY, max(slots, 1)
+
+    # A busy Mac cannot donate its preference to a different idle Mac. When the Hub names at least
+    # one available model-specific slot, score only those Macs; if every fitting Mac is busy, their
+    # ranks still break ties between equally loaded locations without claiming capacity exists.
+    available = {machine: model for machine, model in eligible.items() if model.get("available") is True}
+    if available:
+        eligible = available
+
+    scores: list[float] = []
+    for machine in eligible:
+        order = _machine_priority_order(machines.get(machine) or {}, nodes.get(machine) or {})
+        if not order:
+            scores.append(_NEUTRAL_PRIORITY)
+        elif function in order:
+            scores.append(float(order.index(function)))
+        else:
+            scores.append(_UNLISTED_PRIORITY)
+    best = min(scores)
+    return best, sum(score == best for score in scores)
+
 
 def _as_optional_int(value: object) -> int | None:
     """`None` stays `None`: "the Hub did not say" is not "zero"."""
@@ -4042,6 +4145,21 @@ def memory_cooled(location_id: str, model_id: str, machines: object = None, now:
     return len(macs)
 
 
+def memory_cooled_machine_ids(row: dict, model_id: str) -> set[str]:
+    """Machine ids currently resting after a model-specific memory refusal."""
+    location_id = str(row.get("id") or "")
+    machines = [machine for machine in row.get("machines") or [] if isinstance(machine, dict)]
+    memory_cooled(location_id, model_id, machines)
+    cooled = set((_MEMORY_COOLDOWN.get((location_id, model_id)) or {}).keys())
+    return {
+        str(machine.get("machine"))
+        for machine in machines
+        if machine.get("machine") and cooled.intersection(
+            str(name) for name in (machine.get("machine"), machine.get("label")) if name
+        )
+    }
+
+
 def reachable_machines(row: dict) -> int | None:
     """Macs at a location that are not known to be offline; `None` when the Hub listed none (F3)."""
     machines = [m for m in row.get("machines") or [] if isinstance(m, dict)]
@@ -4168,6 +4286,7 @@ def routing_candidates(
         queue = _as_int(capacity.get("queue_depth"))
         if not capacity:
             queue = len(row.get("running_jobs") or [])
+        preference, preference_slots = _routing_preference(row, model_id, modality, slots)
 
         candidates.append({
             "provider_id": definition.id,
@@ -4181,6 +4300,8 @@ def routing_candidates(
             "available": available,
             "queue": max(queue, 0),
             "spent": spent,
+            "preference": preference,
+            "preference_slots": preference_slots,
         })
     return [c for c in candidates if not c["spent"]] or candidates
 
@@ -4188,15 +4309,21 @@ def routing_candidates(
 def rank_candidate(candidate: dict, routing_key: str) -> tuple:
     """The order `route` picks by, lowest first -- and what a late rebind re-ranks with.
 
-    Pressure first -- queue per **fitting** machine -- then whether any fitting capacity is
-    free, then the weighted lottery, then the id so the result is deterministic. `slots` is
-    the model's own eligible machine count, so a site's small Macs no longer dilute a heavy
-    model's share. Capacity stays in the lottery weight, where every site keeps a share.
+    A free fitting slot first, then queue pressure per **fitting** machine, the best preference
+    among fitting Macs, the weighted lottery, and the id. Thus a large busy site cannot beat a
+    smaller idle site merely because its queue-to-slot ratio is lower: idle capacity is lent before
+    preference is considered. `slots` is the model's own eligible machine count, so a site's small
+    Macs no longer dilute a heavy model's share. The lottery is weighted by the fitting Macs at the
+    site's best rank for this function; old Hubs use every fitting slot and keep today's behavior.
     """
     pressure = candidate["queue"] / candidate["slots"]
     no_free = (candidate["available"] or 0) <= 0
-    lottery = _weighted_tiebreak(routing_key, candidate["location_id"], candidate["slots"])
-    return (pressure, no_free, lottery, candidate["location_id"])
+    preference = float(candidate.get("preference", _NEUTRAL_PRIORITY))
+    lottery = _weighted_tiebreak(
+        routing_key, candidate["location_id"],
+        int(candidate.get("preference_slots") or candidate["slots"]),
+    )
+    return (no_free, pressure, preference, lottery, candidate["location_id"])
 
 
 def pool_size(model_id: str, modality: str) -> int:

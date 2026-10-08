@@ -14,6 +14,15 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.145 — 2026-10-08
+
+### Choose each Mac's work priorities
+
+- In **Fleet > Machines**, open a Mac's action menu and choose **Work Priorities**. Choose no preference or rank its enabled functions. The setting belongs to that Mac and can also be changed locally in Studio Hub.
+- Current work finishes first. Eligible waiting work follows the Mac's ranking, with older work first at the same rank. Other enabled work can use free capacity.
+- Changing priorities keeps manual pauses and enabled functions in place. Older Hubs clearly require an update before these controls can be edited.
+- Updated Hubs can keep a bounded local Chat request waiting regardless of its rank. Existing admission limits and uncertain-completion recovery stay in force.
+
 ## 0.2.144 — 2026-10-08
 
 ### Waiting for local LLM work

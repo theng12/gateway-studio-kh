@@ -226,6 +226,51 @@ def set_node_pause(controller_id: str, machine_id: str, paused: object, *,
 WORKSTATION_SETTINGS = ("enabled", "idle_only", "idle_minutes", "step_aside", "resume_after_minutes",
                         "start_free_gb", "quiet_hours", "hide_menu_bar_icon")
 
+# The wire vocabulary is Studio Hub's registered local function vocabulary. Gateway's public `tts`
+# lane maps to `voice` before placement; the per-Mac policy itself always uses these Hub tokens.
+WORK_PRIORITY_FUNCTIONS = frozenset({"voice", "transcription", "chat", "image", "music", "video"})
+
+
+def get_node_work_policy(controller_id: str, machine_id: str, *,
+                         client: httpx.Client | None = None) -> dict[str, Any]:
+    """Read one Mac's enabled functions and ranked work preference through its controller."""
+    if not _MACHINE_ID.fullmatch(machine_id or ""):
+        raise StartupError(400, {"ok": False, "code": "BAD_MACHINE", "detail": "machine id is not valid"})
+    answered = _node_post(
+        controller_id, machine_id, "work-policy", None, method="GET", event="work_priority",
+        too_old=("This controller's Studio Hub cannot read this Mac's work priorities yet. "
+                 "Update Studio Hub first (Fleet > Release); the saved order is read-only until then."),
+        refused="The controller refused this gateway's credential for reading work priorities.",
+        audit_fields={}, client=client,
+    )
+    policy = answered.get("work_policy")
+    return policy if isinstance(policy, dict) else answered
+
+
+def set_node_work_policy(controller_id: str, machine_id: str, priority_order: object, *,
+                         client: httpx.Client | None = None) -> dict[str, Any]:
+    """Replace one Mac's ranked functions; an empty list makes every enabled function equal."""
+    valid = (isinstance(priority_order, list)
+             and all(isinstance(item, str) and item in WORK_PRIORITY_FUNCTIONS for item in priority_order)
+             and len(priority_order) == len(set(priority_order)))
+    if not valid:
+        raise StartupError(400, {
+            "ok": False, "code": "BAD_PRIORITY_ORDER",
+            "detail": "priority_order must be a list of unique local function ids.",
+        })
+    if not _MACHINE_ID.fullmatch(machine_id or ""):
+        raise StartupError(400, {"ok": False, "code": "BAD_MACHINE", "detail": "machine id is not valid"})
+    answered = _node_post(
+        controller_id, machine_id, "work-policy", {"priority_order": priority_order},
+        event="work_priority",
+        too_old=("This controller's Studio Hub cannot change this Mac's work priorities yet. "
+                 "Update Studio Hub first (Fleet > Release); the saved order was not changed."),
+        refused="The controller refused this gateway's credential for changing work priorities.",
+        audit_fields={"priority_order": priority_order}, client=client,
+    )
+    policy = answered.get("work_policy")
+    return policy if isinstance(policy, dict) else answered
+
 
 def set_node_workstation(controller_id: str, machine_id: str, settings: object, *,
                          client: httpx.Client | None = None) -> dict[str, Any]:

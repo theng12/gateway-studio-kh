@@ -139,6 +139,9 @@ extension FleetStartup {
                 })
             }
             if configurable {
+                menu.addItem(ClosureMenuItem("Work Priorities…") {
+                    FleetWorkPriority.edit(machine, done: done)
+                })
                 if machine.liteModeSheetStart != nil {
                     menu.addItem(ClosureMenuItem("Lite Mode…") { FleetStartup.editWorkstation(machine, done: done) })
                 } else {

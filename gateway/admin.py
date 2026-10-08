@@ -3042,6 +3042,36 @@ def fleet_machine_pause(controller_id: str, machine_id: str, payload: dict[str, 
         return JSONResponse(status_code=error.status, content=error.body)
 
 
+@router.get(
+    "/api/fleet/controllers/{controller_id}/machines/{machine_id}/work-policy",
+    dependencies=[Depends(require_admin)],
+)
+def fleet_machine_work_policy(controller_id: str, machine_id: str) -> Any:
+    """Read one Mac's rankable local functions and saved work order."""
+    try:
+        return startup_control.get_node_work_policy(controller_id, machine_id)
+    except startup_control.StartupError as error:
+        return JSONResponse(status_code=error.status, content=error.body)
+
+
+@router.post(
+    "/api/fleet/controllers/{controller_id}/machines/{machine_id}/work-policy",
+    dependencies=[Depends(require_admin)],
+)
+def fleet_machine_set_work_policy(
+    controller_id: str, machine_id: str, payload: dict[str, Any]
+) -> Any:
+    """Replace one Mac's ranked work order; an empty order means no preference."""
+    if set(payload) != {"priority_order"}:
+        return _error(400, "provide only priority_order", "BAD_PRIORITY_ORDER")
+    try:
+        return startup_control.set_node_work_policy(
+            controller_id, machine_id, payload.get("priority_order")
+        )
+    except startup_control.StartupError as error:
+        return JSONResponse(status_code=error.status, content=error.body)
+
+
 @router.post(
     "/api/fleet/controllers/{controller_id}/machines/{machine_id}/workstation",
     dependencies=[Depends(require_admin)],
