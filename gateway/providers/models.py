@@ -51,6 +51,9 @@ RETIRED_MODEL_IDS: tuple[str, ...] = (
     "mlx-community/gemma-3-12b-it-4bit",
 )
 
+#: This Mac's own Hub (`fleet.provider_id_for(fleet.LOCAL_ID)`; not imported, `fleet` imports this package).
+LOCAL_HUB_PROVIDER_ID = "studio-hub-local"
+
 
 class ModelInventory:
     def __init__(
@@ -186,6 +189,20 @@ class ModelInventory:
             return bool(explicit)
         if source == "user":
             return True
+        # **A location with no decision for a model follows this Mac's Hub** (0.2.150).
+        # `fleet.seed_enabled_from_local` copies the local decisions only when a location
+        # is *added*, so a package installed later by a fleet install plan was discovered
+        # on every controller and served by none: Qwen Low-RAM on 2026-10-08 was
+        # `files_verified` on 18 Macs, enabled on This Mac alone, and its queue saw
+        # `eligible_macs: 1`. A model the local Hub has never listed keeps the remote
+        # default (off), and an explicit decision on the location still wins above.
+        if (definition.kind == KIND_STUDIO_HUB and provider_id != LOCAL_HUB_PROVIDER_ID
+                and source == "discovered"):
+            local = self._definition(LOCAL_HUB_PROVIDER_ID)
+            listed = (self._data["providers"].get(LOCAL_HUB_PROVIDER_ID) or {}).get("models") or []
+            if local is not None and any(
+                    isinstance(m, dict) and m.get("model_id") == model_id for m in listed):
+                return self._is_enabled(LOCAL_HUB_PROVIDER_ID, model_id, local, "discovered")
         return definition.auto_enable_discovered
 
     def models_for(self, provider_id: str, *, include_disabled: bool = True) -> list[dict[str, Any]]:

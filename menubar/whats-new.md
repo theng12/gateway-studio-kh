@@ -14,6 +14,12 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.150 — 2026-10-08
+
+### A model installed on every Mac is offered on every Mac
+
+- A model installed with **Fleet > Models > Install on every Mac** after a Mac was added is now offered on that Mac too, the same way This Mac offers it, unless you switched it off there. Before, only This Mac took those jobs.
+
 ## 0.2.148 — 2026-10-08
 
 ### Installing a model on every Mac skips Macs that are too small

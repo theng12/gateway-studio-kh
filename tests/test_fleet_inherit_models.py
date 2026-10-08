@@ -257,6 +257,24 @@ class TheRuleItself(unittest.TestCase):
             self.assertEqual(report["no_decision"], 1)
             self.assertIn("never seen", report["sentence"])
 
+    def test_a_model_installed_after_the_add_follows_the_local_hub_without_a_seed(self) -> None:
+        """0.2.150: Qwen Low-RAM, installed fleet-wide after every location was added,
+        was enabled here alone, so the queue counted `eligible_macs: 1` for 18 Macs."""
+        with tempfile.TemporaryDirectory() as tmp:
+            inventory = self._inventory(tmp, {
+                LOCAL: ["new-on", "new-off", "kept-off"],
+                "studio-hub-b": ["new-on", "new-off", "kept-off", "remote-only"],
+            })
+            inventory.set_model_enabled(LOCAL, "new-off", False)
+            inventory.set_model_enabled("studio-hub-b", "kept-off", False)  # the location's own decision
+            decisions = {m["model_id"]: m["enabled"]
+                         for m in inventory.models_for("studio-hub-b", include_disabled=True)}
+            self.assertEqual(decisions, {"new-on": True, "new-off": False,
+                                         "kept-off": False, "remote-only": False})
+            # Read-time only: nothing is written for the location.
+            stored = json.loads((Path(tmp) / "models-cache.json").read_text())["enabled"]
+            self.assertEqual(stored["studio-hub-b"], {"kept-off": False})
+
     def test_a_mac_with_no_local_hub_inherits_nothing_and_says_so(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             _inventory, report = self._seed(tmp, {"studio-hub-b": ["a", "b"]})
