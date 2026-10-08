@@ -151,7 +151,7 @@ class TheAddAnswerTest(_Case):
 
         with patch.object(admin.registry, "refresh", return_value=_Found()), \
                 patch.object(fleet, "credential_scope_for", return_value={"scope": "fleet", "detail": ""}), \
-                patch.object(fleet, "seed_enabled_from_local", return_value={"sentence": ""}):
+                patch.object(fleet, "seed_enabled_installed", return_value={"sentence": ""}):
             out = admin.fleet_add_controller({"label": "Shops", "url": "http://100.120.246.9:47873", "token": ""})
         location = out["location"]
         self.assertTrue(location["pending"])

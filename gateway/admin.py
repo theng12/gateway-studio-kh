@@ -2675,20 +2675,15 @@ def fleet_add_controller(payload: dict[str, Any]) -> Any:
         discovered, discovery_error = len(result.models), result.error
     except Exception as exc:  # noqa: BLE001 - the location is added either way
         discovery_error = f"{type(exc).__name__}: {exc}"
-    # **A newly added location inherits this Mac's own decisions.** Its models
-    # arrive disabled, as every remote provider's must — but a location is not a
-    # cloud catalogue, it is the same packages this Hub already runs, so the
-    # owner ticked a model here and the other Macs went on not serving it. A
-    # location that is *new* is seeded from the local Hub's decisions for the
-    # same model ids (`fleet.seed_enabled_from_local`); one that was already on
+    # **A newly added location starts with what it has installed switched on**
+    # (`fleet.seed_enabled_installed`, owner 2026-10-09): nothing is copied from
+    # This Mac, the owner's ruled-out models stay off, and one that was already on
     # the roster keeps whatever the owner decided about it, because re-adding a
     # moved controller or re-pasting its token must not rewrite those choices.
-    # The sentence that travels back is built from the decisions actually
-    # written — see `seed_enabled_from_local`.
     enable_seed: dict[str, Any] | None = None
     if row.get("created") and discovery_error is None:
         try:
-            enable_seed = fleet.seed_enabled_from_local(provider_id)
+            enable_seed = fleet.seed_enabled_installed(provider_id)
         except Exception as exc:  # noqa: BLE001 - and never silence about it
             enable_seed = {
                 "provider_id": provider_id,

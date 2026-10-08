@@ -323,6 +323,29 @@ def _start(entry: dict[str, Any], package_id: str, source: dict[str, Any] | None
     return True
 
 
+def _switch_on(location_id: str, package_id: str, snapshot: dict[str, Any]) -> None:
+    """The owner asked for this install, so he wants it used: switch the package's model on at that location.
+
+    Only where the location has no decision for it yet (an "off" stands), and never a model the owner ruled
+    out (`fleet.NEVER_AUTO_ENABLED`). Idempotent, so every pass may call it for every finished Mac."""
+    from .providers import registry
+
+    model_ids = [str(row.get("model") or row.get("model_id"))
+                 for loc in snapshot.get("locations") or [] if str(loc.get("id")) == str(location_id)
+                 for row in loc.get("local_models") or []
+                 if isinstance(row, dict) and row.get("package_id") == package_id
+                 and (row.get("model") or row.get("model_id"))
+                 and not fleet.ruled_out(row.get("model"), row.get("model_id"), package_id)]
+    if not model_ids:
+        return
+    try:
+        added = registry.models.enable_undecided(fleet.provider_id_for(str(location_id)), model_ids)
+    except KeyError:   # the location left the roster
+        return
+    if added:
+        startup_control.audit("model_spread_enabled", package=package_id, location=location_id, models=added)
+
+
 def _advance(plan: dict[str, Any], snapshot: dict[str, Any]) -> None:
     now = time.time()
     package_id = plan["package_id"]
@@ -333,6 +356,8 @@ def _advance(plan: dict[str, Any], snapshot: dict[str, Any]) -> None:
         entry["network"] = _norm(entry.get("network") or "")   # a plan started before names were normalised
         if entry["state"] in ACTIVE:
             _follow(entry, resting, now)
+        if entry["state"] == "done":
+            _switch_on(entry["location_id"], package_id, snapshot)
 
     # Who could lend it: a Mac in the plan that has it now, or any Mac the Fleet read shows holding it verified.
     known = {e["key"]: e for e in macs}

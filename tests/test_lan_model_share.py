@@ -379,5 +379,49 @@ class RelayTest(unittest.TestCase):
         self.assertEqual(json.loads(seen[0].content), {}, "no source: the internet, exactly as before")
 
 
+class AFinishedInstallIsSwitchedOnTest(Case):
+    """0.2.150: plan 80e0f8dd921a put Qwen Low-RAM on 1100-1500, but those locations had no decision for it,
+    so a remote location's default (off) kept every job on This Mac (`eligible_macs: 1`)."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.hubs = FakeHubs(self)
+        from gateway.providers import models as models_module, registry
+        from gateway.providers.credentials import CredentialStore
+        from gateway.providers.definitions import DISCOVERY_STUDIO_HUB, KIND_STUDIO_HUB, ProviderDefinition
+
+        definitions = {fleet.provider_id_for(loc): ProviderDefinition(
+            id=fleet.provider_id_for(loc), display_name=loc, category="multi", kind=KIND_STUDIO_HUB,
+            base_url="http://x.invalid", modalities=("tts",), discovery=DISCOVERY_STUDIO_HUB)
+            for loc in (A1, A2, B1)}
+        self.inventory = models_module.ModelInventory(
+            CredentialStore(path=self.data / "credentials.json"), path=self.data / "models-cache.json",
+            definition_lookup=definitions.get, definitions_lookup=lambda: list(definitions.values()))
+        patcher = patch.object(registry, "models", self.inventory)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def decisions(self, loc: str) -> dict:
+        return json.loads((self.data / "models-cache.json").read_text())["enabled"].get(fleet.provider_id_for(loc), {})
+
+    def test_on_where_undecided_an_off_stands_and_nothing_else_changes(self) -> None:
+        fleet_read = snapshot((A1, "1101", True), (A2, "1201", False), (B1, "1301", False))
+        for loc in fleet_read["locations"]:
+            for row in loc["local_models"]:
+                row["model"] = "org/fish-4bit"
+            loc["local_models"].append({"machine": "x", "package_id": "pocket-tts-4bit",
+                                        "model": "mlx-community/pocket-tts-4bit"})
+        self.inventory.set_model_enabled(fleet.provider_id_for(B1), "org/fish-4bit", False)   # the owner's off
+        self.inventory.set_model_enabled(fleet.provider_id_for(A2), "org/other", False)
+        model_share.start(FISH, fleet_read)
+        for _ in range(4):
+            model_share.tick(fleet_read)
+            self.hubs.finish_all()
+        self.assertTrue(all(e["state"] in ("done", "have") for e in self.entries().values()))
+        self.assertEqual(self.decisions(A2), {"org/other": False, "org/fish-4bit": True})
+        self.assertEqual(self.decisions(B1), {"org/fish-4bit": False}, "an explicit off is never overridden")
+        self.assertEqual(self.decisions(A1), {}, "a Mac that already had it installed nothing here")
+
+
 if __name__ == "__main__":
     unittest.main()

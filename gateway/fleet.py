@@ -733,93 +733,58 @@ def _add_controller_locked(url: str, label: str, clean_token: str, stable_id: st
     row = _masked(existing)
     # **Whether this location is new**, published on the add result only (the
     # roster list stays shaped as it was). The enable seeding reads it: a fresh
-    # location inherits this gateway's own decisions, but re-adding a location
+    # location switches on the models it has installed (`seed_enabled_installed`), but re-adding a location
     # that already carries the owner's choices — a new address, a re-pasted
     # token — must never overwrite them.
     row["created"] = created
     return row
 
 
-def seed_enabled_from_local(provider_id: str) -> dict:
-    """Seed a new location's enable map from this gateway's own Hub decisions.
+#: Models the owner has ruled out, never switched on by the Gateway on its own (a new location, a finished
+#: install plan); the owner can still tick one by hand. Matched as substrings of the model id and package id.
+#: ponytail: a hand list. The Hub publishes no shelved/parked/disqualified flag on its model rows, so this names
+#: Phonon-2 (parked), Pocket-TTS (disqualified) and the Hub's own `components/shelved_models.py`; read a Hub
+#: flag instead once it publishes one.
+NEVER_AUTO_ENABLED = ("phonon-2", "pocket-tts", "whisper-base", "whisper-small", "voxcpm2-bf16",
+                      "fish-audio-s2-pro-bf16", "chatterbox", "s3tokenizerv2")
 
-    Adding a location left every model it discovered switched off
-    (`auto_enable_discovered=False` in `providers/registry.py`, which is right
-    for a cloud vendor's 300-row catalogue). A **location** is not that: its
-    models are the same packages this Mac's own Hub already runs, so the owner
-    ticked a model once, believed the fleet offered it, and every other Mac went
-    on not serving it — the audit's "each remote controller has 5 of 19
-    enabled".
 
-    So the decision already recorded for a model here is the decision a newly
-    added location inherits, **in both directions**:
+def ruled_out(*names: object) -> bool:
+    """True when any of these names (model id, package id) is a model the Gateway never switches on itself."""
+    return any(token in str(name or "").lower() for name in names for token in NEVER_AUTO_ENABLED)
 
-      * the local Hub has the model **enabled** — enable it for the new one;
-      * the local Hub has it **disabled** — record that decision too, so the two
-        agree rather than one of them silently defaulting;
-      * the local Hub has **never seen it** — nothing is written. An absent
-        decision is not a decision, and the new location keeps its own default,
-        which for every remote provider is off.
 
-    The counts returned are the decisions actually applied, because the add
-    result's sentence is built from them and a sentence that is not computed
-    from what was written is a claim about the fleet nobody measured.
+def seed_enabled_installed(provider_id: str) -> dict:
+    """Switch on, at a newly added location, every model its own Hub reports installed and ready.
+
+    The owner's rule (2026-10-09): *"a new group starts with every model it actually has installed switched
+    on; you switch off what you don't want in the Gateway. Nothing copied from This Mac."* Installed and ready
+    is the Hub's own `files_verified` + `eligible`, a catalogued model (not a dependency) the catalogue could
+    publish (`can_publish`: not retired). `NEVER_AUTO_ENABLED` stays off. A model that already has a decision
+    there keeps it; nothing else is written.
     """
     from .providers import registry
 
-    source_provider_id = provider_id_for(LOCAL_ID)
-    incoming = {
-        str(model.get("model_id") or ""): bool(model.get("enabled"))
-        for model in registry.models.models_for(source_provider_id, include_disabled=True)
-    }
-    inherited_on: list[str] = []
-    inherited_off: list[str] = []
-    unknown: list[str] = []
-    for model in registry.models.models_for(provider_id, include_disabled=True):
-        model_id = str(model.get("model_id") or "")
-        if not model_id:
-            continue
-        if model_id not in incoming:
-            unknown.append(model_id)
-        elif incoming[model_id]:
-            inherited_on.append(model_id)
-        else:
-            inherited_off.append(model_id)
-
-    # One write per direction, so "enabled" and "disabled" are told apart in the
-    # store exactly as they were decided here — not all written as one value and
-    # re-derived later.
-    if inherited_on:
-        registry.models.set_many(provider_id, inherited_on, True)
-    if inherited_off:
-        registry.models.set_many(provider_id, inherited_off, False)
-
-    discovered = len(inherited_on) + len(inherited_off) + len(unknown)
+    definition = registry.definition(provider_id)
+    rows = registry.models.models_for(provider_id, include_disabled=True)
+    ready = [m for m in rows if (m.get("raw") or {}).get("files_state") == "files_verified"
+             and (m.get("raw") or {}).get("dispatch_state") == "eligible"
+             and (m.get("raw") or {}).get("catalogued") is not False
+             and registry.models.can_publish(definition, m)]
+    kept_off = [m["model_id"] for m in ready if ruled_out(m["model_id"], (m.get("raw") or {}).get("package_id"))]
+    enabled = registry.models.enable_undecided(
+        provider_id, [m["model_id"] for m in ready if m["model_id"] not in kept_off])
+    discovered = len({m["model_id"] for m in rows})
     if not discovered:
-        # Discovery succeeded and found nothing. "0 of 0 models enabled" is a
-        # fraction nobody can act on, and it reads as a decision when there was
-        # nothing to decide.
-        sentence = "No models were discovered here, so there was nothing to inherit."
+        sentence = "No models were discovered here, so nothing was switched on."
     else:
-        sentence = (
-            f"{len(inherited_on)} of {discovered} models enabled here, from this Mac's Hub's "
-            f"own decisions; {len(inherited_off)} are off there too"
-        )
-        if unknown:
-            sentence += (
-                f", and {len(unknown)} the local Hub has never seen "
-                f"{'stays' if len(unknown) == 1 else 'stay'} off"
-            )
-        sentence += "."
-    return {
-        "provider_id": provider_id,
-        "source_provider_id": source_provider_id,
-        "models_discovered": discovered,
-        "enabled": len(inherited_on),
-        "disabled": len(inherited_off),
-        "no_decision": len(unknown),
-        "sentence": sentence,
-    }
+        sentence = (f"{len(enabled)} installed {'model' if len(enabled) == 1 else 'models'} switched on here, "
+                    f"of {discovered} discovered")
+        if kept_off:
+            sentence += f"; {len(set(kept_off))} ruled out by the owner left off"
+        sentence += ". Switch off what you don't want under Models."
+    return {"provider_id": provider_id, "models_discovered": discovered, "enabled": len(enabled),
+            "ruled_out": len(set(kept_off)), "sentence": sentence}
 
 
 def reconcile_cached_locations() -> list[str]:

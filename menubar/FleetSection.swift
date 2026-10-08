@@ -1157,18 +1157,16 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
         } else if let discoveryError {
             tail = " Its models could not be read yet — \(discoveryError)"
         }
-        // **What a newly added location inherited, in the gateway's own sentence.**
-        // A new controller's models are seeded from this Mac's own Hub decisions, and
-        // the gateway computes the counts that sentence is built from; this page drew
-        // only the discovered count, so "enabled here was inherited there" — the whole
-        // point of the seeding — was invisible at the moment it happened. `nil` for a
+        // **What a newly added location switched on, in the gateway's own sentence**
+        // (`fleet.seed_enabled_installed`: the models its Hub reports installed, the
+        // owner's ruled-out ones left off, nothing copied from this Mac). `nil` for a
         // re-add (its own decisions are deliberately kept), so it is guarded, and a
-        // failed seed says so rather than reading as "nothing to inherit".
+        // failed seed says so rather than reading as "nothing to switch on".
         if let enableSeed {
             if let sentence = enableSeed["sentence"] as? String, !sentence.isEmpty {
                 tail += " " + sentence
             } else if let error = enableSeed["error"] as? String, !error.isEmpty {
-                tail += " Its models could not inherit this Mac's decisions — \(error)"
+                tail += " Its installed models could not be switched on — \(error)"
             }
         }
 

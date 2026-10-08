@@ -14,6 +14,13 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.152 — 2026-10-09
+
+### Models you install on every Mac get used on every Mac
+
+- When **Fleet > Models > Install on every Mac** finishes on a Mac, that model is switched on for its group, so jobs go there too. If you had switched it off for that group, it stays off.
+- A group you add now starts with every model it has installed switched on. Turn off what you don't want under **Models**. Nothing is copied from This Mac. Phonon-2, Pocket-TTS and shelved models are never switched on for you.
+
 ## 0.2.151 — 2026-10-09
 
 ### A shop Mac in Lite Mode that is switched off is no longer a warning
@@ -25,9 +32,7 @@ every feature title, and they are left as they were written.
 
 ## 0.2.150 — 2026-10-08
 
-### A model installed on every Mac is offered on every Mac
-
-- A model installed with **Fleet > Models > Install on every Mac** after a Mac was added is now offered on that Mac too, the same way This Mac offers it, unless you switched it off there. Before, only This Mac took those jobs.
+- Replaced by 0.2.152 before it was installed.
 
 ## 0.2.148 — 2026-10-08
 
