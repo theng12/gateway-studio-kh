@@ -25,6 +25,7 @@ enum GatewayAPIError: LocalizedError {
 
 enum GatewayAPI {
     static var jobs: [[String: Any]] = []
+    static var bulk: [String: Any] = [:]
     static var getPaths: [String] = []
     static var postPaths: [String] = []
     static var postBodies: [[String: Any]] = []
@@ -57,7 +58,7 @@ enum GatewayAPI {
                 completion(.failure(GatewayAPIError.transport("gateway down")))
                 return
             }
-            completion(.success(["jobs": jobs, "stats": ["total": jobs.count]]))
+            completion(.success(["jobs": jobs, "stats": ["total": jobs.count], "bulk": bulk]))
         }
     }
 
@@ -535,6 +536,45 @@ struct JobsOutputsCheck {
         _ = popup.target?.perform(popup.action, with: popup)
         let asked = GatewayAPI.getPaths.last { $0.hasPrefix("/admin/api/jobs") } ?? ""
         assert(asked.contains("state=running") && asked.contains("limit=500"), "filter did not reach the route: \(asked)")
+
+        // ── bulk actions: only where the filter shows failed jobs, with the gateway's counts ──
+        GatewayAPI.bulk = ["as_of": 123.5, "removable_failed": 470, "needs_recovery": 9]
+        GatewayAPI.jobs = [jobUncertain, jobCloudHold]
+        let bulkSection = JobsSection()
+        _ = bulkSection.view
+        bulkSection.activated()
+        let bulkPopup = descendants(bulkSection.view).compactMap { $0 as? NSPopUpButton }.first!
+        func choose(_ title: String) {
+            bulkPopup.selectItem(withTitle: title)
+            _ = bulkPopup.target?.perform(bulkPopup.action, with: bulkPopup)
+            RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+        }
+        func visible(_ prefix: String) -> NSButton? {
+            buttons(bulkSection.view).first { $0.title.hasPrefix(prefix) && !$0.isHidden }
+        }
+        assert(visible("Remove Failed") == nil && visible("Resolve All") == nil, "bulk buttons on All results")
+        choose("Failed")
+        assert(visible("Remove Failed")?.title == "Remove Failed From List (470)", "clear-failed button: \(buttons(bulkSection.view).map { $0.title })")
+        assert(visible("Resolve All")?.title == "Resolve All Needing Recovery (9)", "resolve-all button")
+        choose("Needs recovery")
+        assert(visible("Remove Failed") == nil && visible("Resolve All") != nil, "Needs recovery shows only Resolve All")
+        choose("Failed")
+        assert(buttons(bulkSection.view).contains { $0.title == "Show removed" }, "Show removed toggle missing")
+
+        let bulkPosts = GatewayAPI.postPaths.count
+        var confirmations: [String] = []
+        bulkSection.confirmBulk = { title, _ in confirmations.append(title); return false }
+        visible("Remove Failed")!.performClick(nil)
+        visible("Resolve All")!.performClick(nil)
+        assert(GatewayAPI.postPaths.count == bulkPosts, "declining must post nothing")
+        assert(confirmations == ["Remove 470 failed jobs from the list?", "Resolve 9 jobs needing recovery?"], "confirmations: \(confirmations)")
+        bulkSection.confirmBulk = { _, _ in true }
+        visible("Remove Failed")!.performClick(nil)
+        visible("Resolve All")!.performClick(nil)
+        assert(Array(GatewayAPI.postPaths.suffix(2)) == [
+            "/admin/api/jobs/clear-failed?before=123.5", "/admin/api/jobs/resolve-recovery?before=123.5",
+        ], "bulk routes: \(GatewayAPI.postPaths.suffix(2))")
+        GatewayAPI.bulk = [:]
 
         print("PASS: Jobs outputs library native fixture")
     }

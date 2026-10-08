@@ -1525,6 +1525,24 @@ def reconcile_hold_job(job_id: str) -> Any:
         return _error(exc.status, exc.detail, exc.code)
 
 
+@router.post("/api/jobs/clear-failed", dependencies=[Depends(require_admin)])
+def clear_failed_jobs(before: float | None = Query(None, ge=0)) -> dict[str, Any]:
+    """"Remove Failed From List": hide settled failed jobs (last changed at or before `before`).
+
+    Non-destructive: only `dismissed_at` is written. Rows, totals, analytics, billing and the
+    audit trail stay; needs-recovery, running and queued jobs are never touched.
+    """
+    return {"ok": True, "removed": store.dismiss_failed(before)}
+
+
+@router.post("/api/jobs/resolve-recovery", dependencies=[Depends(require_admin)])
+def resolve_all_recovery(before: float | None = Query(None, ge=0)) -> dict[str, Any]:
+    """"Resolve All Needing Recovery": Recover Result where the Hub has it, else Discard/Close."""
+    from .api import _resolve_all_recovery_holds
+
+    return _resolve_all_recovery_holds(before)
+
+
 # ---------------------------------------------------------------------------
 # Voices
 #
@@ -2117,6 +2135,7 @@ def list_jobs(
     modality: str | None = None,
     since: float | None = Query(None, ge=0),
     before: float | None = Query(None, ge=0),
+    include_removed: bool = False,
 ) -> dict[str, Any]:
     """Recent jobs, shaped for the app's Jobs window.
 
@@ -2140,7 +2159,9 @@ def list_jobs(
 
     TERMINAL = {"succeeded", "failed", "cancelled"}
     rows: list[dict[str, Any]] = []
-    for job in store.list_jobs(limit=limit, state=state, modality=modality, since=since, before=before):
+    as_of = time.time()
+    for job in store.list_jobs(limit=limit, state=state, modality=modality, since=since, before=before,
+                               hide_dismissed=not include_removed):
         provider_id = str(job.get("provider_id") or "")
         model_id = str(job.get("model_id") or "")
         definition = registry.definition(provider_id)
@@ -2216,7 +2237,18 @@ def list_jobs(
     # **Paging past 500** (fleet audit): ask again with `before` = this, until it is null.
     # ponytail: jobs created in the very same microsecond as the page edge could be skipped.
     next_before = rows[-1]["created_at"] if len(rows) == limit else None
-    return {"jobs": rows, "stats": store.stats(), "next_before": next_before}
+    # The two bulk actions' counts, and the instant they were read: the window passes `as_of` back
+    # as `before`, so a press touches only what the confirmation counted.
+    bulk = {
+        "as_of": as_of,
+        "removable_failed": store.dismissable_failed_count(as_of),
+        "needs_recovery": sum(
+            1 for job in store.holds(limit=1000)
+            if job.get("recovery_required") and job.get("state") == "failed"
+            and float(job.get("updated_at") or 0) <= as_of
+        ),
+    }
+    return {"jobs": rows, "stats": store.stats(), "next_before": next_before, "bulk": bulk}
 
 
 def _model_labels() -> dict[tuple[str, str], str]:

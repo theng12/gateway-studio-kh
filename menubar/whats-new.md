@@ -14,6 +14,14 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.153 — 2026-10-09
+
+### Clear the Jobs list in one go
+
+- **Jobs > Failed** now has **Remove Failed From List (N)**. It hides settled failed jobs from the list after you confirm. Nothing is deleted: files, billing records, totals and analytics stay the same. Jobs that need recovery, are running or are waiting are never touched. Tick **Show removed** to see them again. A removed job that changes later (for example, a late result) comes back by itself.
+- **Jobs > Failed** and **Jobs > Needs recovery** now have **Resolve All Needing Recovery (N)**. After you confirm, it does for every job what the per-job buttons do: it asks the Hub first and keeps a finished result, and otherwise discards or closes the attempt. Story Studio releases those jobs just as it does after the per-job buttons. The summary line says how many were recovered and how many discarded.
+- Both buttons only act on jobs that were already there when you saw the count. Work that fails or goes on hold after that is left for you to see.
+
 ## 0.2.152 — 2026-10-09
 
 ### Models you install on every Mac get used on every Mac

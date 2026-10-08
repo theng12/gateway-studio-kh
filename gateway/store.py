@@ -154,6 +154,17 @@ _ADDED_COLUMNS: tuple[tuple[str, str], ...] = (
     # and that sentence has to be built from a record rather than reconstructed from the
     # last error, which knows only about itself.
     ("attempt_log", "TEXT"),
+    # When the owner removed this failed job from the Jobs list (0.2.153). A view flag only: the
+    # row, its totals, analytics and billing stay. Hidden while `dismissed_at >= updated_at`, so a
+    # job that changes afterwards (a late result, a retry) shows again.
+    ("dismissed_at", "REAL"),
+)
+
+#: Settled failures the owner may remove from the list: never a needs-recovery hold, never one
+#: already removed, never anything that is not `failed`.
+_DISMISSABLE = (
+    "state = 'failed' AND COALESCE(recovery_state, '') != 'unknown_outcome'"
+    " AND (dismissed_at IS NULL OR dismissed_at < updated_at)"
 )
 
 
@@ -1210,11 +1221,14 @@ class JobStore:
         modality: str | None = None,
         since: float | None = None,
         before: float | None = None,
+        hide_dismissed: bool = False,
     ) -> list[dict[str, Any]]:
         """Recent jobs, newest first, optionally filtered; `since`/`before` bound `created_at` so a
         reader can page past one answer by passing the last row's `created_at` as `before`."""
         clauses: list[str] = []
         params: list[Any] = []
+        if hide_dismissed:
+            clauses.append("(dismissed_at IS NULL OR dismissed_at < updated_at)")
         if since is not None:
             clauses.append("created_at >= ?")
             params.append(since)
@@ -1234,6 +1248,28 @@ class JobStore:
                 (*params, limit),
             ).fetchall()
         return [self._row_dict(r) for r in rows]
+
+    def dismissable_failed_count(self, before: float | None = None) -> int:
+        with self._lock:
+            return int(self._conn.execute(
+                f"SELECT COUNT(*) FROM jobs WHERE {_DISMISSABLE} AND updated_at <= ?",  # noqa: S608
+                (time.time() if before is None else before,),
+            ).fetchone()[0])
+
+    def dismiss_failed(self, before: float | None = None) -> int:
+        """Hide settled failures (last changed at or before `before`) from the Jobs list.
+
+        Writes `dismissed_at` only. `updated_at` is deliberately untouched: analytics, durations
+        and retention read it, and a list action must not move them.
+        """
+        now = time.time()
+        with self._lock:
+            result = self._conn.execute(
+                f"UPDATE jobs SET dismissed_at = ? WHERE {_DISMISSABLE} AND updated_at <= ?",  # noqa: S608
+                (now, now if before is None else min(before, now)),
+            )
+            self._conn.commit()
+            return result.rowcount
 
     def settled_between(self, start: float, end: float) -> list[dict[str, Any]]:
         """Jobs that finished (succeeded, failed or cancelled) in `[start, end)`, without their prose.

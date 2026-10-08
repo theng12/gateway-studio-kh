@@ -82,6 +82,17 @@ final class JobsSection: NSObject, AppSection, NSTableViewDataSource, NSTableVie
     /// (abandoning work the Hub may still be running is deliberate), not
     /// decoration around it.
     var confirmDiscard: (() -> Bool)?
+    /// Asked before either bulk action, with its title and message; a property for the native test.
+    var confirmBulk: ((String, String) -> Bool)?
+    private var showRemovedBox: NSButton!
+    private var clearFailedButton: NSButton!
+    private var resolveAllButton: NSButton!
+    /// The instant the counts on the bulk buttons were read; sent back as `before`.
+    private var bulkAsOf: Double?
+    private var removableCount = 0
+    private var holdCount = 0
+    /// The last bulk result, kept in the summary line until the owner refreshes or changes filter.
+    private var bulkNote: String?
     private var selectedJobID: String?
     private var selectionGeneration = 0
     private var reloadGeneration = 0
@@ -137,7 +148,18 @@ final class JobsSection: NSObject, AppSection, NSTableViewDataSource, NSTableVie
         filterPopup.action = #selector(reload)
         filterPopup.controlSize = .small
 
-        PageKit.addFull(PageKit.toolbar([filterPopup, NSView(), summaryLabel]), to: root)
+        showRemovedBox = NSButton(checkboxWithTitle: "Show removed", target: self, action: #selector(reload))
+        showRemovedBox.controlSize = .small
+        clearFailedButton = PageKit.button("Remove Failed From List", target: self, action: #selector(clearFailed))
+        clearFailedButton.toolTip = "Removes settled failed rows from this list. Keeps files and billing records."
+        resolveAllButton = PageKit.button("Resolve All Needing Recovery", target: self, action: #selector(resolveAllRecovery))
+        resolveAllButton.toolTip = "Recover Result where the Hub still has it; otherwise Discard or Close, as the per-job buttons do."
+        clearFailedButton.isHidden = true
+        resolveAllButton.isHidden = true
+
+        PageKit.addFull(PageKit.toolbar([
+            filterPopup, showRemovedBox, NSView(), clearFailedButton, resolveAllButton, summaryLabel,
+        ]), to: root)
 
         table = NSTableView()
         table.dataSource = self
@@ -233,6 +255,7 @@ final class JobsSection: NSObject, AppSection, NSTableViewDataSource, NSTableVie
     // MARK: Data
 
     @objc func reload() {
+        bulkNote = nil
         load(quiet: false)
     }
 
@@ -243,6 +266,7 @@ final class JobsSection: NSObject, AppSection, NSTableViewDataSource, NSTableVie
         let filter = filters[max(filterPopup?.indexOfSelectedItem ?? 0, 0)]
         var path = "/admin/api/jobs?limit=500"
         if let state = filter.state { path += "&state=\(state)" }
+        if showRemovedBox?.state == .on { path += "&include_removed=1" }
 
         // A timer-driven read must not wipe the summary or the detail pane.
         if !quiet || rows.isEmpty { summaryLabel?.stringValue = "Loading…" }
@@ -255,6 +279,8 @@ final class JobsSection: NSObject, AppSection, NSTableViewDataSource, NSTableVie
                 if filter.recoveryOnly { fresh = fresh.filter { $0["recovery_required"] as? Bool == true } }
                 self.adopt(fresh)
                 self.updateSummary(payload: payload)
+                self.updateBulk(payload["bulk"] as? [String: Any] ?? [:], failedFilter: filter.state == "failed",
+                                recoveryOnly: filter.recoveryOnly)
                 self.loadKeptState(requestGeneration: requestGeneration)
             case .failure(let error):
                 // A failed poll keeps the last table and the selection; the summary says so.
@@ -316,6 +342,77 @@ final class JobsSection: NSObject, AppSection, NSTableViewDataSource, NSTableVie
         let last = stats["last_job_at"] as? Double
         summaryLabel.stringValue = "\(rows.count) shown · \(succeeded) succeeded · "
             + "\(failed) failed · \(total) total · last \(GatewayAPI.relativeTime(last))"
+            + (bulkNote.map { " · \($0)" } ?? "")
+    }
+
+    /// Both bulk buttons appear only where the filter shows failed jobs, with the gateway's own counts.
+    private func updateBulk(_ bulk: [String: Any], failedFilter: Bool, recoveryOnly: Bool) {
+        bulkAsOf = bulk["as_of"] as? Double
+        removableCount = integer(bulk["removable_failed"]) ?? 0
+        holdCount = integer(bulk["needs_recovery"]) ?? 0
+        clearFailedButton.title = "Remove Failed From List (\(removableCount))"
+        resolveAllButton.title = "Resolve All Needing Recovery (\(holdCount))"
+        clearFailedButton.isHidden = !(failedFilter && !recoveryOnly && removableCount > 0)
+        resolveAllButton.isHidden = !(failedFilter && holdCount > 0)
+    }
+
+    private func bulkPath(_ route: String) -> String {
+        "/admin/api/jobs/\(route)" + (bulkAsOf.map { "?before=\($0)" } ?? "")
+    }
+
+    private func confirmBulkWithAlert(_ title: String, _ message: String) -> Bool {
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = message
+        alert.addButton(withTitle: "Continue")
+        alert.addButton(withTitle: "Cancel")
+        return alert.runModal() == .alertFirstButtonReturn
+    }
+
+    @objc private func clearFailed() {
+        let count = removableCount
+        let confirm = confirmBulk ?? confirmBulkWithAlert
+        guard confirm("Remove \(count) failed jobs from the list?",
+                      "Only settled failed jobs are hidden. Keeps files and billing records; totals and "
+                      + "analytics are unchanged. Jobs needing recovery, running or queued are not touched. "
+                      + "Show removed brings them back into view.") else { return }
+        clearFailedButton.isEnabled = false
+        GatewayAPI.post(bulkPath("clear-failed")) { [weak self] result in
+            guard let self else { return }
+            self.clearFailedButton.isEnabled = true
+            switch result {
+            case .success(let payload):
+                self.bulkNote = "removed \(self.integer(payload["removed"]) ?? 0) failed from the list"
+            case .failure(let error):
+                self.bulkNote = "could not remove failed jobs: \(error.localizedDescription)"
+            }
+            self.load(quiet: true)
+        }
+    }
+
+    @objc private func resolveAllRecovery() {
+        let count = holdCount
+        let confirm = confirmBulk ?? confirmBulkWithAlert
+        guard confirm("Resolve \(count) jobs needing recovery?",
+                      "Each one first asks the Hub, as Recover Result does, and keeps a finished result. "
+                      + "If there is nothing to recover or no upstream to ask, the attempt is discarded or "
+                      + "closed, as Discard Attempt does: a result it may still produce is not collected.")
+        else { return }
+        resolveAllButton.isEnabled = false
+        GatewayAPI.post(bulkPath("resolve-recovery")) { [weak self] result in
+            guard let self else { return }
+            self.resolveAllButton.isEnabled = true
+            switch result {
+            case .success(let payload):
+                let left = (payload["left"] as? [Any])?.count ?? 0
+                self.bulkNote = "\(self.integer(payload["recovered"]) ?? 0) recovered, "
+                    + "\(self.integer(payload["discarded"]) ?? 0) discarded"
+                    + (left > 0 ? ", \(left) refused and still need recovery" : "")
+            case .failure(let error):
+                self.bulkNote = "could not resolve: \(error.localizedDescription)"
+            }
+            self.load(quiet: true)
+        }
     }
 
     private func loadKeptState(requestGeneration: Int) {

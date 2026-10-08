@@ -604,6 +604,41 @@ def _reconcile_recovery_hold(job_id: str) -> dict[str, Any]:
     }
 
 
+def _resolve_all_recovery_holds(before: float | None = None) -> dict[str, Any]:
+    """"Resolve All Needing Recovery": the per-job buttons, pressed once for every hold.
+
+    For each `failed` job still needing recovery (last changed at or before `before`, so work
+    that went on hold after the owner confirmed is left alone): ask the Hub first, exactly as
+    Recover Result does, and leave a finished result for the hold sweep to collect; otherwise do
+    exactly what Discard Attempt / Close does. A refusal is reported per job and that hold stays.
+    """
+    from .worker import _DONE_UPSTREAM_STATES
+
+    cutoff = time.time() if before is None else before
+    out: dict[str, Any] = {"recovered": 0, "discarded": 0, "left": []}
+    # ponytail: one pass over at most 1,000 holds; press again if there were ever more.
+    for job in store.holds(limit=1000):
+        if not job.get("recovery_required") or job.get("state") != "failed":
+            continue
+        if float(job.get("updated_at") or 0) > cutoff:
+            continue
+        job_id = str(job["id"])
+        try:
+            if recovery_action(job) == "discard_upstream":
+                try:
+                    answer = _reconcile_recovery_hold(job_id)
+                except GatewayError:
+                    answer = {}
+                if answer.get("reconciled") and str(answer.get("item_state") or "") in _DONE_UPSTREAM_STATES:
+                    out["recovered"] += 1
+                    continue
+            _discard_recovery_hold(job_id)
+            out["discarded"] += 1
+        except GatewayError as exc:
+            out["left"].append({"id": job_id, "code": exc.code, "detail": exc.detail})
+    return {"ok": True, **out}
+
+
 def _load_job(job_id: str, modality: str) -> dict[str, Any]:
     job = store.get(job_id)
     if job is None or job["modality"] != modality:

@@ -1218,7 +1218,7 @@ class DiscardActionTests(_HubCase):
             modality="music",
             model_id="model/test",
             params={"prompt": "x"},
-            idempotency_key=f"discard-{self.id()}",
+            idempotency_key=f"discard-{self.id()}-{context}",
             provider_id="studio-hub-test",
         )
         self.assertTrue(created)
@@ -1304,6 +1304,61 @@ class DiscardActionTests(_HubCase):
         response = self._reconcile(row["id"], hub)
         self.assertEqual((response.status_code, response.json()["code"]), (409, "NO_RECOVERY_HOLD"))
         self.assertEqual(hub.reconciles, [])
+
+    def _resolve_all(self, hub: _Hub, query: str = "") -> Any:
+        definition = SimpleNamespace(
+            id="studio-hub-test", kind="studio_hub", base_url=HUB, display_name="Hub"
+        )
+        with patch.object(self.api.registry, "definition", return_value=definition), patch.object(
+            self.api.registry.credentials, "resolved", return_value={"hub_token": "t"}
+        ), self.hub_client(hub):
+            return self.client.post(f"/admin/api/jobs/resolve-recovery{query}")
+
+    def _only_these_holds(self) -> None:
+        for job in self.api.store.holds(limit=1000):  # earlier tests' leftovers share this store
+            self.api.store.close_recovery_hold(job["id"], code="HOLD_CLOSED", detail="test reset")
+
+    def test_resolve_all_recovers_what_the_hub_has_and_discards_the_rest(self) -> None:
+        """0.2.153: the per-job buttons, once for every needs-recovery job, and nothing else."""
+        self._only_these_holds()
+        named, unnamed = self._hold(), self._hold(context=False)
+        row, _ = self.api.store.submit(modality="music", model_id="model/test", params={"prompt": "x"},
+                                       idempotency_key=f"live-{self.id()}", provider_id="studio-hub-test")
+        self.api.store.mark_running(row["id"])
+        running = dict(self.api.store.get(row["id"]))
+        hub = _Hub()
+        response = self._resolve_all(hub)
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual({k: response.json()[k] for k in ("recovered", "discarded", "left")},
+                         {"recovered": 1, "discarded": 1, "left": []})
+        self.assertEqual(hub.reconciles, [f"/api/hub/jobs/{BATCH}/items/0/reconcile"])
+        self.assertEqual(hub.discards, [], "a finished result is kept, never discarded")
+        self.assertTrue(self.api.store.get(named)["recovery_required"], "the hold sweep collects it")
+        closed = self.api.store.get(unnamed)
+        self.assertEqual((closed["recovery_required"], closed["error_code"]), (False, "HOLD_CLOSED"))
+        self.assertEqual(self.api.store.get(row["id"]), running, "running work is never touched")
+
+    def test_resolve_all_discards_when_nothing_can_be_recovered(self) -> None:
+        self._only_these_holds()
+        job_id = self._hold()
+        hub = _Hub()
+        refused = self.api.GatewayError(409, "no", "RECONCILE_REFUSED")
+        with patch.object(self.api, "_reconcile_recovery_hold", side_effect=refused):
+            response = self._resolve_all(hub)
+        self.assertEqual((response.json()["recovered"], response.json()["discarded"]), (0, 1))
+        self.assertEqual(hub.discards, [f"/api/hub/jobs/{BATCH}/items/0/discard"])
+        self.assertEqual(self.api.store.get(job_id)["error_code"], "DISCARDED_UNCERTAIN")
+
+    def test_resolve_all_reports_a_refusal_and_leaves_newer_holds_alone(self) -> None:
+        self._only_these_holds()
+        job_id = self._hold()
+        response = self._resolve_all(_Hub(discard_status=400))
+        self.assertEqual(response.json()["left"][0]["id"], job_id)
+        self.assertTrue(self.api.store.get(job_id)["recovery_required"])
+        hub = _Hub()
+        response = self._resolve_all(hub, f"?before={time.time() - 60}")
+        self.assertEqual((response.json()["recovered"], response.json()["discarded"], hub.reconciles),
+                         (0, 0, []), "a hold newer than the confirmation is not touched")
 
     def test_a_job_that_is_not_a_hold_is_refused(self) -> None:
         hub = _Hub()
