@@ -21,6 +21,7 @@ import base64
 import hashlib
 import json
 import logging
+import math
 import time
 import threading
 from pathlib import Path
@@ -811,6 +812,12 @@ def _poll_batch(
                 progress.machine = machine
             if deadline_for_machine is not None:
                 limit = float(deadline_for_machine(machine) or limit)
+        # Hub 0.6.159+: the Mac running an Image item states that job's own limit (its steps x that
+        # Mac's speed), the number its worker stops at. It only ever raises the lane's number.
+        stated = (item or {}).get("deadline_s")
+        if (running and isinstance(stated, (int, float)) and not isinstance(stated, bool)
+                and math.isfinite(stated) and stated > limit):
+            limit = float(stated)
         if state == "running":
             reported = (item or {}).get("elapsed_s")
             if isinstance(reported, (int, float)) and not isinstance(reported, bool) and reported >= 0:

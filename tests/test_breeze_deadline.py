@@ -132,6 +132,26 @@ class PollRereadsTheLimitTests(unittest.TestCase):
         self.assertEqual(outcome["item"]["state"], "done")
         self.assertEqual(progress.machine, "local")
 
+    # Hub 0.6.159 (owner 2026-10-08): an Image item states its own limit (steps x that Mac's speed).
+    def test_an_items_own_deadline_raises_the_lanes_number(self) -> None:
+        outcome, _ = self.poll([{"state": "running", "machine": "m1-01", "elapsed_s": 100,
+                                 "deadline_s": 3000}, {"state": "done"}], None)
+        self.assertEqual(outcome["item"]["state"], "done", "100 s is past the lane's 60 s, not 3,000")
+
+    def test_an_items_own_deadline_is_enforced(self) -> None:
+        with self.assertRaises(BackendError) as caught:
+            self.poll([{"state": "running", "machine": "m1-01", "elapsed_s": 3001,
+                        "deadline_s": 3000}], None)
+        self.assertEqual(caught.exception.code, "DEADLINE_EXCEEDED")
+        self.assertIn("3000s", str(caught.exception))
+
+    def test_a_smaller_or_unusable_item_deadline_never_lowers_the_lanes_number(self) -> None:
+        for stated in (10, 0, -5, True, "9999", float("inf")):
+            with self.subTest(stated=stated):
+                outcome, _ = self.poll([{"state": "running", "machine": "m1-01", "elapsed_s": 30,
+                                         "deadline_s": stated}, {"state": "done"}], None)
+                self.assertEqual(outcome["item"]["state"], "done")
+
 
 class _DeadlineAt:
     """A Studio Hub adapter whose Macs at `slow` run past the deadline; elsewhere it finishes."""

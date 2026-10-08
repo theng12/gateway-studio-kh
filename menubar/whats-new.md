@@ -14,6 +14,13 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.147 — 2026-10-08
+
+### Image jobs get time for their step count and Mac
+
+- A Studio Hub image job now waits as long as that job needs on the Mac running it: more steps or a slower Mac get more time, up to 2 hours. Studio Hub 0.6.159 works this out for each job, and the Gateway uses the same number.
+- Short jobs keep at least the 30 minutes they had before. With an older Studio Hub nothing changes.
+
 ## 0.2.146 — 2026-10-08
 
 ### Find local models and keep installation reports compact
