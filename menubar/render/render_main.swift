@@ -270,7 +270,7 @@ for page in pageNames where !["fleet-rename", "fleet-workstation", "fleet-add", 
         for size in sizes {
             _ = MainWindow.shared.show(section: name == "whatsnew" ? "what's new" : name)
             guard let window = MainWindow.shared.window else { print("no window for \(page)"); continue }
-            if parts.count > 1, let tab = ["groups": 0, "groups-problems": 0, "locations": 1, "machines": 2, "models": 3, "jobs": 4, "story": 5][parts[1]],
+            if parts.count > 1, let tab = ["groups": 0, "groups-problems": 0, "locations": 1, "machines": 2, "models": 3, "models-open": 3, "jobs": 4, "story": 5][parts[1]],
                let kind = FleetTab(rawValue: tab) {
                 FleetSection.shared.select(kind)
                 FleetSection.shared.showProblemsOnly(parts[1] == "groups-problems")
@@ -282,11 +282,32 @@ for page in pageNames where !["fleet-rename", "fleet-workstation", "fleet-add", 
                 window.setFrame(NSRect(x: -20000, y: -20000, width: size.0, height: size.1), display: true)
             }
             window.setContentSize(NSSize(width: size.0, height: size.1))
+            let requestedWindowSize = window.frame.size
             window.setFrameOrigin(NSPoint(x: -20000, y: -20000))
             window.makeKeyAndOrderFront(nil)
             let isConsole = ["models", "providers", "content packs"].contains(name)
             spin(isConsole ? 6.0 : 1.8)
+            if name == "fleet", parts.count > 1, ["models", "models-open"].contains(parts[1]) {
+                func buttons(_ view: NSView) -> [NSButton] {
+                    (view as? NSButton).map { [$0] } ?? view.subviews.flatMap(buttons)
+                }
+                let reports = window.contentView.map(buttons)?.filter {
+                    $0.accessibilityRole() == .disclosureTriangle
+                        && ($0.title == "Show details" || $0.title == "Hide details")
+                } ?? []
+                if ProcessInfo.processInfo.environment["GATEWAY_RENDER_REPORT"] != nil && reports.isEmpty {
+                    fatalError("the fixture install report was not rendered")
+                }
+                let open = parts[1] == "models-open"
+                for button in reports where button.title == (open ? "Show details" : "Hide details") {
+                    button.performClick(nil)
+                }
+                spin(0.2)
+            }
             window.contentView?.layoutSubtreeIfNeeded()
+            if name == "fleet", parts.count > 1, ["models", "models-open"].contains(parts[1]) {
+                precondition(window.frame.size == requestedWindowSize, "model report changed the requested window size")
+            }
             window.displayIfNeeded()
             // `jobs:recovery` is Jobs with a Studio Hub hold ("Needs recovery") selected.
             if name == "jobs", parts.count > 1, parts[1] == "recovery" {

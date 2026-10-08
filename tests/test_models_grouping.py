@@ -27,11 +27,17 @@ from __future__ import annotations
 
 import sys
 import unittest
+from copy import deepcopy
 from pathlib import Path
 from unittest.mock import patch
 
 _ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(_ROOT))
+sys.path.insert(0, str(_ROOT / "tests"))
+
+from _isolation import sandbox_env  # noqa: E402
+
+_SANDBOX = sandbox_env("gateway-model-search-")
 
 from gateway import admin  # noqa: E402
 from gateway.providers import registry  # noqa: E402
@@ -290,6 +296,80 @@ class GroupingTests(unittest.TestCase):
             {"Studio Hub (this Mac)": True, "Studio One": True, "Studio Two": False},
             "the switched-off Mac is still named, so the switch can be found",
         )
+
+    def test_model_search_treats_common_id_separators_as_spaces(self) -> None:
+        model_id = "mlx-community/gemma-4-26B-A4B-it-qat-4bit"
+        self.inventory.rows[LOCAL].append(_model(model_id, "chat", True))
+
+        for query in (
+            "gemma 4",
+            "GEMMA_4",
+            "gemma-4",
+            "mlx_community/gemma 4-26b-a4b-it-qat-4bit",
+        ):
+            with self.subTest(query=query):
+                self.assertEqual(
+                    [row["model_id"] for row in admin._filter_models(self._rows(), q=query)],
+                    [model_id],
+                )
+        self.assertEqual(admin._filter_models(self._rows(), q="gemini 4"), [])
+
+    def test_search_and_bulk_share_the_exact_safe_match(self) -> None:
+        model_id = "mlx-community/gemma-4-26B-A4B-it-qat-4bit"
+        self.inventory.rows[LOCAL].append(_model(model_id, "chat", False))
+        self.credentials.off = {LOCAL}
+        before_rows = deepcopy(self.inventory.rows)
+        before_off = self.credentials.off.copy()
+
+        page = admin.search_models(q="gemma 4", provider_id=LOCAL, limit=100)
+        self.assertEqual(page["matched"], 1)
+        self.assertEqual(page["facets"]["status"], {"enabled": 0, "disabled": 1})
+        self.assertEqual(page["facets"]["modality"]["chat"], 1)
+        self.assertFalse(page["models"][0]["enabled"])
+        self.assertFalse(page["models"][0]["provider_enabled"])
+        self.assertEqual(self.inventory.rows, before_rows, "search must not change model choices")
+        self.assertEqual(self.credentials.off, before_off, "search must not switch on a provider")
+        self.assertEqual(self.inventory.writes, [])
+
+        result = admin.bulk_models(
+            {"q": "gemma 4", "provider_id": LOCAL, "enabled": True}
+        )
+        self.assertEqual(result["matched"], page["matched"])
+        self.assertEqual(
+            self.inventory.writes,
+            [(LOCAL, [model_id], True)],
+            "the disabled provider's model remains manageable from the matching row",
+        )
+
+    def test_a_separator_only_search_matches_nothing_in_browse_facets_or_bulk(self) -> None:
+        rows = self._rows()
+        self.assertEqual(admin._filter_models(rows, q="   "), rows)
+        page = admin.search_models(q="-", limit=100)
+        self.assertEqual(page["matched"], 0)
+        self.assertEqual(page["facets"]["status"], {"enabled": 0, "disabled": 0})
+        result = admin.bulk_models({"q": "-", "enabled": False})
+        self.assertEqual(result["matched"], 0)
+        self.assertEqual(self.inventory.writes, [])
+
+    def test_meaningful_punctuation_is_preserved_across_browse_facets_and_bulk(self) -> None:
+        target = "vendor/c++-instruct"
+        unrelated = "vendor/c-model"
+        self.inventory.rows[CLOUD] = [
+            _model(target, "chat", True),
+            _model(unrelated, "chat", True),
+        ]
+
+        page = admin.search_models(q="c++", provider_id=CLOUD, limit=100)
+        self.assertEqual([row["model_id"] for row in page["models"]], [target])
+        self.assertEqual(page["matched"], 1)
+        self.assertEqual(page["facets"]["status"], {"enabled": 1, "disabled": 0})
+        self.assertEqual(page["facets"]["modality"]["chat"], 1)
+
+        result = admin.bulk_models(
+            {"q": "c++", "provider_id": CLOUD, "enabled": False}
+        )
+        self.assertEqual(result["matched"], page["matched"])
+        self.assertEqual(self.inventory.writes, [(CLOUD, [target], False)])
 
 
 if __name__ == "__main__":

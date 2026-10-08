@@ -1882,6 +1882,11 @@ final class FleetModelsTab: FleetTabView {
 /// every running one and the newest finished one; the Fleet page re-reads every few seconds while one runs.
 final class FleetModelSpreadView: NSStackView {
     var onStop: ((FleetModelSpread) -> Void)?
+    private var shown: [FleetModelSpread] = []
+    private var expanded = Set<String>()
+    private var runningIDs = Set<String>()
+    private var detailScrolls: [String: NSScrollView] = [:]
+    private var detailOffsets: [String: CGFloat] = [:]
 
     init() {
         super.init(frame: .zero)
@@ -1894,7 +1899,22 @@ final class FleetModelSpreadView: NSStackView {
     required init?(coder: NSCoder) { fatalError("not used") }
 
     func update(_ plans: [FleetModelSpread]) {
-        let shown = plans.filter(\.running) + plans.filter { !$0.running }.prefix(1)
+        shown = plans.filter(\.running) + plans.filter { !$0.running }.prefix(1)
+        let nowRunning = Set(shown.filter(\.running).map(key))
+        expanded.subtract(runningIDs.subtracting(nowRunning))
+        expanded.formIntersection(Set(shown.map(key)))
+        runningIDs = nowRunning
+        rebuild()
+    }
+
+    private func key(_ plan: FleetModelSpread) -> String {
+        plan.id ?? plan.packageId ?? plan.label ?? "install"
+    }
+
+    private func rebuild() {
+        for (id, scroll) in detailScrolls { detailOffsets[id] = scroll.contentView.bounds.origin.y }
+        detailOffsets = detailOffsets.filter { Set(shown.map(key)).contains($0.key) }
+        detailScrolls.removeAll()
         for view in arrangedSubviews {
             removeArrangedSubview(view)
             view.removeFromSuperview()
@@ -1905,6 +1925,12 @@ final class FleetModelSpreadView: NSStackView {
             card.widthAnchor.constraint(equalTo: widthAnchor).isActive = true
         }
         isHidden = shown.isEmpty
+        layoutSubtreeIfNeeded()
+        for (id, scroll) in detailScrolls {
+            guard let offset = detailOffsets[id] else { continue }
+            scroll.contentView.scroll(to: NSPoint(x: 0, y: offset))
+            scroll.reflectScrolledClipView(scroll.contentView)
+        }
     }
     static func health(_ state: String?) -> Health {
         switch state {
@@ -1917,18 +1943,97 @@ final class FleetModelSpreadView: NSStackView {
 
     private func card(for plan: FleetModelSpread) -> NSView {
         let name = plan.label ?? plan.packageId ?? "?"
-        let count = "\(plan.done ?? 0) of \(plan.total ?? 0) Macs have it"
+        let count = plan.done.flatMap { done in plan.total.map { "\(done) of \($0) Macs have it" } }
+            ?? "Progress not reported"
+        let macs = (plan.networks ?? []).flatMap { $0.macs ?? [] }
+        let failed = macs.filter { $0.state == "failed" }
+        let active = macs.filter { ["copying", "downloading", "waiting"].contains($0.state ?? "") }.count
+        let skipped = macs.filter { $0.state == "skipped" }.count
         let title: String
         switch plan.state {
-        case "running": title = "Installing \(name) on every Mac that can run it — \(count)"
-        case "stopped": title = "Stopped installing \(name) — \(count)"
-        default: title = "Installed \(name) on every Mac that can run it — \(count)"
+        case "running": title = "Installing \(name)"
+        case "stopped": title = "Stopped installing \(name)"
+        default: title = "Install finished: \(name)"
         }
-        var header: [NSView] = [PageKit.label(title, .rowTitle), NSView()]
+        let titleLabel = PageKit.label(title, .rowTitle, wrapping: true)
+        titleLabel.maximumNumberOfLines = 2
+        titleLabel.preferredMaxLayoutWidth = 520
+        titleLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        titleLabel.toolTip = title
+        var header: [NSView] = [titleLabel, NSView()]
         if plan.running {
             header.append(FleetClosureButton(title: "Stop") { [weak self] in self?.onStop?(plan) })
         }
-        let stack = NSStackView(views: [PageKit.row(header)])
+        let headerRow = PageKit.row(header)
+        let stack = NSStackView(views: [headerRow])
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = DS.Space.xs
+        headerRow.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+        let reportID = key(plan)
+        let detailsVisible = expanded.contains(reportID)
+        let details = FleetClosureButton(title: detailsVisible ? "Hide details" : "Show details") { [weak self] in
+            guard let self else { return }
+            if self.expanded.contains(reportID) { self.expanded.remove(reportID) }
+            else { self.expanded.insert(reportID) }
+            self.rebuild()
+        }
+        details.setAccessibilityRole(.disclosureTriangle)
+        details.setAccessibilityLabel("Installation details for \(name)")
+        details.setAccessibilityValue(detailsVisible ? 1 : 0)
+        var parts = [count]
+        if active > 0 { parts.append("\(active) active") }
+        if !failed.isEmpty { parts.append("\(failed.count) failed") }
+        if skipped > 0 { parts.append("\(skipped) skipped") }
+        let progress = PageKit.label(parts.joined(separator: " · "), .secondary,
+                                     colour: failed.isEmpty ? .secondaryLabelColor : Health.bad.text,
+                                     wrapping: true)
+        progress.maximumNumberOfLines = 2
+        progress.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        let summary = PageKit.row([progress, NSView(), details])
+        stack.addArrangedSubview(summary)
+        summary.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+        if let first = failed.first {
+            let text = "\(first.label ?? first.machine ?? "Mac") — \(first.text ?? "Installation failed")"
+            let error = PageKit.label(text, .secondary, colour: Health.bad.text, wrapping: true)
+            error.maximumNumberOfLines = 2
+            error.toolTip = text
+            error.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+            stack.addArrangedSubview(error)
+            error.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+        }
+        if detailsVisible {
+            let scroll = NSScrollView()
+            scroll.hasVerticalScroller = true
+            scroll.hasHorizontalScroller = false
+            scroll.drawsBackground = false
+            scroll.translatesAutoresizingMaskIntoConstraints = false
+            // ponytail: every report's details use 220 points; longer reports scroll within it.
+            scroll.heightAnchor.constraint(equalToConstant: 220).isActive = true
+            let document = FlippedView()
+            document.translatesAutoresizingMaskIntoConstraints = false
+            let rows = detailRows(for: plan)
+            rows.translatesAutoresizingMaskIntoConstraints = false
+            document.addSubview(rows)
+            scroll.documentView = document
+            NSLayoutConstraint.activate([
+                document.widthAnchor.constraint(equalTo: scroll.contentView.widthAnchor),
+                rows.topAnchor.constraint(equalTo: document.topAnchor),
+                rows.leadingAnchor.constraint(equalTo: document.leadingAnchor),
+                rows.trailingAnchor.constraint(equalTo: document.trailingAnchor),
+                rows.bottomAnchor.constraint(equalTo: document.bottomAnchor),
+            ])
+            stack.addArrangedSubview(scroll)
+            scroll.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+            detailScrolls[reportID] = scroll
+        }
+        let card = CardView()
+        card.hold(stack)
+        return card
+    }
+
+    private func detailRows(for plan: FleetModelSpread) -> NSStackView {
+        let stack = NSStackView()
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.spacing = DS.Space.xs
@@ -1945,12 +2050,12 @@ final class FleetModelSpreadView: NSStackView {
                                           colour: health == .off ? .secondaryLabelColor : health == .info ? .labelColor : health.text,
                                           wrapping: true)
                 label.preferredMaxLayoutWidth = 640
+                label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
                 stack.addArrangedSubview(label)
+                label.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
             }
         }
-        let card = CardView()
-        card.hold(stack)
-        return card
+        return stack
     }
 }
 

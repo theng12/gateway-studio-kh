@@ -765,6 +765,15 @@ _MODEL_SORTS: dict[str, Any] = {
 }
 
 
+def _model_search_text(value: object) -> str:
+    """Fold case and make common model-id separators read like spaces."""
+    separated = "".join(
+        " " if character in "-_/." else character
+        for character in str(value).casefold()
+    )
+    return " ".join(separated.split())
+
+
 def _filter_models(
     rows: list[dict[str, Any]],
     *,
@@ -816,12 +825,20 @@ def _filter_models(
     elif provider_lane == "off":
         rows = [r for r in rows if not r["provider_enabled"]]
     if q:
-        needle = q.strip().lower()
-        rows = [
-            r
-            for r in rows
-            if needle in r["display_name"].lower() or needle in r["model_id"].lower()
-        ]
+        literal = q.strip().casefold()
+        needle = _model_search_text(literal)
+        if needle:
+            rows = [
+                r
+                for r in rows
+                if needle in _model_search_text(r["display_name"])
+                or needle in _model_search_text(r["model_id"])
+            ]
+        elif literal:
+            # A query made only of model-id separators normalises to empty. An
+            # empty string matches every row, which would turn a bulk `-` search
+            # into "all models", so a nonblank empty key matches nothing.
+            rows = []
     return rows
 
 

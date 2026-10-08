@@ -14,6 +14,14 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.146 — 2026-10-08
+
+### Find local models and keep installation reports compact
+
+- Searching **gemma 4** now finds Studio Hub models whose names use hyphens. Spaces, hyphens, underscores, slashes and dots match consistently in the list, counts and bulk actions.
+- Manage availability in **Models** using the checkbox beside a model. Choose a Studio Hub provider to find its local models; model availability and a Mac's manual pause remain separate controls.
+- **Fleet > Models** keeps installation reports compact, with progress, failures and Stop visible. **Show details** opens a bounded scrolling list of every Mac's result and keeps your place during refreshes.
+
 ## 0.2.145 — 2026-10-08
 
 ### Choose each Mac's work priorities

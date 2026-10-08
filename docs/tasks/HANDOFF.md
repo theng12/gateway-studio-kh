@@ -1,3 +1,9 @@
+> **0.2.146 — 2026-10-08; model management and compact installation reports. Delivery identities are receipt-owned.**
+> The shared model filter folds case and common ID separators (`-`, `_`, `/`, `.` and whitespace), so "gemma 4" finds the local hyphenated Gemma model. Meaningful punctuation is preserved; nonblank separator-only queries match nothing. Browse, facets and bulk selection use the same filter. Identity, discovery, publication, saved model choices and owner pauses are unchanged.
+> Fleet > Models retains all active installation plans and the newest completed report, collapsed by default. Each card exposes progress, active/skipped/failed counts, the first failure and Stop while running. Show details opens all network/Mac results in a 220 pt scroller. Expansion and scroll position survive polling; terminal transitions collapse; vanished-plan UI state is pruned. This changes presentation only, not installation or cancellation APIs.
+> Live diagnosis before this release found the local `mlx-community/gemma-4-26B-A4B-it-qat-4bit` already enabled and publishable; the search spelling hid it. Existing Models row checkboxes are the model controls. This Mac's owner pause is separate and must remain unchanged. No new model qualification or inference was performed for these fixes.
+> Scoped isolated integration: 57 Python tests and 579 end-to-end checks passed; 27 existing model-browser checks passed. Native regression, visual review, commit/push, optimized build, DMG and local running verification are recorded in `/build/Developer/_orchestra/model-management-20261008/DELIVERY.md`; consult that receipt for completion and exact source identities. No Hub/Story release, fleet/SSD rollout or Qwen qualification change belongs to this release.
+
 > **0.2.145 — 2026-10-08; per-Mac function priority, source verified. Delivery identities are receipt-owned.**
 > Fleet's machine menu offers Job priority for updated Hubs: No preference or Custom order using producer-owned function names and accessible move controls. Checked functions rank first; unchecked enabled functions tie below them. Disabled saved ranks stay in place. The authenticated controller/node relay reads and writes exactly one Mac's canonical work policy, preserving pauses and function switches; older Hubs report an update requirement instead of pretending a save succeeded.
 > Gateway orders eligible waiting local work by the available target Mac's function preference, then FIFO at equal rank. Placement selects available eligible capacity before comparing pressure/preference; busy or ineligible preferred Macs cannot donate a rank to another Mac. Canonical Hub Voice `voice` is normalized against Gateway `tts`. Existing memory/qualification/owner-control checks, conditional claims, late rebinding, paid fairness and uncertain accepted-work holds remain authoritative. Running work is never preempted by a rank change.
@@ -6,7 +12,7 @@
 
 # HANDOFF — gateway-kh
 
-**Read this first.** Updated 2026-10-08 for **VERSION `0.2.144`** (the release blocks below are
+**Read this first.** Updated 2026-10-08 for **VERSION `0.2.146`** (the release blocks below are
 newest first; 0.2.76-0.2.79 are recorded in `menubar/whats-new.md` and their commits). The running build
 stamp is on `/health` and in `/Applications/gateway-kh.app/Contents/Resources/gateway/BUILD`.
 If this file disagrees with the code, **the code wins — fix this file in the same change**.

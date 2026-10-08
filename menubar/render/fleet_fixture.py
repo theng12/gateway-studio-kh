@@ -434,6 +434,36 @@ def installs() -> list:
     driven by fake controllers, so every sentence on the progress card is the gateway's own."""
     from gateway import model_share, startup_control
 
+    report = os.environ.get("GATEWAY_RENDER_REPORT")
+    if report:
+        if report not in {"completed", "active", "failure"}:
+            raise ValueError("GATEWAY_RENDER_REPORT must be completed, active, or failure")
+        macs = []
+        for index in range(60):
+            state = "done"
+            if report == "active" and index < 3:
+                state = "copying"
+            elif report == "active" and index < 5:
+                state = "waiting"
+            elif report == "failure" and index < 2:
+                state = "failed"
+            elif report == "completed" and index >= 57:
+                state = "skipped"
+            macs.append({"location_id": "fixture-room", "machine": f"fixture-mac-{index}",
+                         "label": f"Mac {index + 1:02d}", "network": "ABC"[index // 20],
+                         "state": state, "from_key": "fixture-source", "from_label": "Network source Mac",
+                         "total_bytes": 3_500_000_000, "bytes_done": 1_470_000_000,
+                         "detail": "The model copy could not be verified. Retry from the network source."
+                                   if state == "failed" else "Offline — not installed." if state == "skipped" else None,
+                         "note": "The final machine's retained installation note." if index == 59 else None})
+        label = "Fish Audio S2 Pro 5B MLX 4-bit"
+        if report == "active":
+            label += " — extended publisher label for minimum-width installation-report proof"
+        return [model_share.view({"id": "fixture-report", "package_id": "fish-audio-s2-pro-4bit",
+                                  "label": label, "state": "running" if report == "active" else "finished",
+                                  "created_at": NOW - HOUR, "finished_at": None if report == "active" else NOW,
+                                  "macs": macs})]
+
     package, runs = "fish-audio-s2-pro-4bit", {}
     groups = {"de7250e146a7": ["1101", "1102", "1103"], "9701220bf30f": ["1201", "1202"],
               "a311a0a9f4f7": ["1301", "1302"], "eda08bae6325": ["1401"], "b8ccda585b97": ["1501"],
