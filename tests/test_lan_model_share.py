@@ -223,6 +223,42 @@ class SpreadTest(Case):
             model_share.start(FISH, fleet_read)
         self.assertEqual(refused.exception.body["code"], "ALREADY_RUNNING")
 
+    def test_a_hub_memory_refusal_is_a_skip_not_a_failure(self) -> None:
+        """2026-10-08: Qwen Low-RAM's plan queued 8 GB Macs; each Hub refused ("needs a Mac with at least
+        16 GB of memory ... Nothing was downloaded") and the plan called that Failed. It is a skip, and the
+        network's next Mac starts its download in the same pass."""
+        refused = {f"{A1}/1101"}
+        real = self.hubs.install_model
+
+        def install(loc, mid, package, *, source=None):
+            if f"{loc}/{mid}" in refused:
+                raise startup_control.StartupError(409, {"detail": (
+                    f"Not on this Mac: {package} needs a Mac with at least 16 GB of memory and this one has "
+                    "8 GB, so it could never run here. Nothing was downloaded.")})
+            return real(loc, mid, package, source=source)
+
+        fleet_read = snapshot((A1, "1101", False), (A1, "1102", False))
+        with patch.object(startup_control, "install_model", install):
+            model_share.start(FISH, fleet_read)
+            model_share.tick(fleet_read)
+        entries = self.entries()
+        self.assertEqual(model_share.text(entries[f"{A1}/1101"]), "Skipped: Not enough memory for this model.")
+        self.assertEqual(entries[f"{A1}/1102"]["state"], "downloading")
+        self.hubs.finish_all()
+        model_share.tick(fleet_read)
+        self.assertEqual(model_share.read_plans()[0]["state"], "finished")
+        self.assertFalse(any(e["state"] == "failed" for e in self.entries().values()))
+
+    def test_a_mac_below_the_packages_tier_is_not_offered_it(self) -> None:
+        """The Image worker's `memory_eligible` is host-level, so the package tier decides (fleet read)."""
+        location = {"local_models": [{"machine": "m", "package_id": "qwen-image-2-1-mflux-q4", "label": "Qwen",
+                                      "memory_eligible": True, "min_unified_memory_gb": 16.0,
+                                      "cache_state": "not_installed"}]}
+        offered = lambda gb: [m["package_id"] for m in fleet.installable_models(location, "m", gb)]  # noqa: E731
+        self.assertEqual(offered(8.59), [], "an 8 GB Mac")
+        self.assertEqual(offered(17.18), ["qwen-image-2-1-mflux-q4"], "a 16 GB Mac (16 GiB)")
+        self.assertEqual(offered(None), ["qwen-image-2-1-mflux-q4"], "unknown memory: the Hub decides")
+
     def test_this_mac_never_lends_its_127_address(self) -> None:
         model_share.set_network(fleet.LOCAL_ID, "A")
         fleet_read = snapshot((fleet.LOCAL_ID, "local", True), (A1, "1101", False))

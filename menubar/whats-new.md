@@ -14,6 +14,12 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.148 — 2026-10-08
+
+### Installing a model on every Mac skips Macs that are too small
+
+- **Fleet > Models > Install on every Mac** no longer queues a Mac with less memory than the model needs. A Mac whose Studio Hub turns the model down for memory now shows **Skipped: Not enough memory for this model.** instead of Failed. Nothing was downloaded on those Macs either way.
+
 ## 0.2.147 — 2026-10-08
 
 ### Image jobs get time for their step count and Mac

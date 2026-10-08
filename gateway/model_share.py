@@ -296,11 +296,18 @@ def _follow(entry: dict[str, Any], resting: dict[str, float], now: float) -> Non
             entry.update(state="failed", detail=tail[0])
 
 
+#: The Hub's refusal of a model the Mac has too little memory for (`standalone._memory_refusal`).
+_MEMORY_REFUSAL = re.compile(r"needs a Mac with at least [\d.]+ GB of memory")
+
+
 def _start(entry: dict[str, Any], package_id: str, source: dict[str, Any] | None, now: float,
            from_entry: dict[str, Any] | None = None) -> bool:
     try:
         answer = startup_control.install_model(entry["location_id"], entry["machine"], package_id, source=source)
     except startup_control.StartupError as error:
+        if _MEMORY_REFUSAL.search(_sentence(error)):   # nothing was downloaded: the same as a plan-time skip
+            entry.update(state="skipped", detail="Not enough memory for this model.")
+            return False
         entry["attempts"] = entry.get("attempts", 0) + 1
         retry = error.body.get("code") in startup_control._REACH_CODES and entry["attempts"] < ATTEMPTS  # noqa: SLF001
         entry.update(state="waiting" if retry else "failed", detail=_sentence(error))

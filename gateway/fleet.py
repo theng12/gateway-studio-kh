@@ -1394,13 +1394,22 @@ def _package_ids(payload: object) -> dict[str, str]:
             and row.get("model_id") and row.get("package_id") and row.get("type", "model") == "model"}
 
 
-def installable_models(location: dict, machine: str) -> list[dict]:
+def installable_models(location: dict, machine: str, memory_gb: object = None) -> list[dict]:
     """What "Install a model…" offers for one Mac (owner decision 2026-10-04): the models its own catalog
-    says it has the memory for (`memory_eligible`), that are not on it and not downloading, by package id."""
+    says it has the memory for (`memory_eligible`), that are not on it and not downloading, by package id.
+
+    `memory_gb` is the Mac's total; a row whose package tier (`min_unified_memory_gb`) is above it is not
+    offered even when the worker calls the host eligible (Image workers publish a host-level
+    `memory_eligible`, so Hub 0.6.158 offered 16 GB Qwen Low-RAM to 8 GB Macs, whose Hub then refused).
+    """
+    def fits(row: dict) -> bool:
+        tier, total = _num(row.get("min_unified_memory_gb")), _num(memory_gb)
+        return tier is None or total is None or total >= tier
+
     found: dict[str, dict] = {}
     for row in location.get("local_models") or []:
         if (row.get("machine") == machine and row.get("memory_eligible") is True and row.get("package_id")
-                and row.get("cache_state") != "cached" and not row.get("active_download")):
+                and row.get("cache_state") != "cached" and not row.get("active_download") and fits(row)):
             found.setdefault(row["package_id"], {"package_id": row["package_id"], "model": row.get("model"),
                                                  "label": row.get("label") or row.get("model"),
                                                  "size_gb": row.get("size_gb")})
@@ -2895,7 +2904,7 @@ def machines_flat(rows: list[dict]) -> list[dict]:
                 "priority_order": priority_order,
                 "chat_priority": bool(priority_order and priority_order[0] == "chat"),
                 "current": _current_job(machine, entry),
-                "installable_models": installable_models(row, mid),
+                "installable_models": installable_models(row, mid, machine.get("memory_gb")),
                 **health_fields(mid, machine, entry, startup, workstation),
             })
         # A machine the activity report knows about but the overview omitted is
