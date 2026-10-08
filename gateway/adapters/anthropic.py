@@ -15,6 +15,7 @@ from typing import Any
 
 import httpx
 
+from ..providers.definitions import default_temperature_only
 from .base import BackendError, BackendRequest, BackendResult, quota_hints
 from .openai_compat import ANTHROPIC_STOP_MAP, CHAT_TIMEOUT
 
@@ -76,8 +77,15 @@ class AnthropicBackend:
         }
         if system:
             body["system"] = system
+        dropped: list[str] = []
         if request.params.get("temperature") is not None:
-            body["temperature"] = request.params["temperature"]
+            # A default-only family answers any temperature with a definite `400`
+            # ("`temperature` is deprecated for this model."), and Story Studio sends
+            # 0.7 on every chat call. Same table the catalogue withholds the control by.
+            if default_temperature_only(request.provider_id, request.model_id):
+                dropped.append("temperature")
+            else:
+                body["temperature"] = request.params["temperature"]
 
         base = (request.values.get("base_url") or request.base_url).rstrip("/")
         try:
@@ -121,11 +129,13 @@ class AnthropicBackend:
             if isinstance(block, dict) and block.get("type") == "text"
         )
 
-        return BackendResult(
-            text=text,
-            payload={
-                "finish_reason": ANTHROPIC_STOP_MAP.get(str(payload.get("stop_reason")), payload.get("stop_reason")),
-                "usage": payload.get("usage"),
-                "model": payload.get("model") or request.model_id,
-            },
-        )
+        result_payload = {
+            "finish_reason": ANTHROPIC_STOP_MAP.get(str(payload.get("stop_reason")), payload.get("stop_reason")),
+            "usage": payload.get("usage"),
+            "model": payload.get("model") or request.model_id,
+        }
+        if dropped:
+            # Recorded, as `openai_compat._chat` does, so nobody reads the output as if
+            # the caller's temperature had been honoured.
+            result_payload["params_dropped"] = dropped
+        return BackendResult(text=text, payload=result_payload)

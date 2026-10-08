@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from typing import Any
@@ -251,6 +252,46 @@ def image_size_for(aspect_ratio: str, width: object = None, height: object = Non
     else:
         chosen = IMAGE_SIZE_BY_RATIO["1:1"]
     return f"{chosen[0]}x{chosen[1]}"
+
+
+#: Chat model families that accept only their own default temperature, keyed by
+#: the provider whose API refuses any other value. Read by **both** the catalogue
+#: (`catalog._chat_row` withholds the `temperature` control) and the adapters
+#: (which drop a temperature the caller sent anyway) — what is offered is what is
+#: sent. Story Studio sends `0.7` on every chat call, so without the adapter half a
+#: model in this table failed every job with a definite `400`.
+#:
+#: * `openai-direct`: the reasoning families (`o1`-`o9`, `gpt-5`+). OpenAI's API
+#:   publishes no `supported_parameters`.
+#: * `anthropic-direct`: measured 2026-10-09 on the owner's gateway,
+#:   `claude-haiku-5-5` answered `HTTP 400: \`temperature\` is deprecated for this
+#:   model.` on three Story jobs. Anthropic documents sampling parameters as
+#:   removed on Opus 4.7/4.8/5/5.5, Sonnet 5/5.5 and the Fable/Mythos line; Haiku
+#:   4.5, Sonnet 4.5/4.6 and Opus 4.5/4.6 still take them. Anthropic's
+#:   `/v1/models/{id}` `capabilities` tree states thinking, effort and the rest but
+#:   nothing about sampling (read for both Haikus the same day).
+#:
+#: Proxies are left out **deliberately**: OpenRouter publishes its own list, and a
+#: third party that accepts `0.7` (Experiential Labs' `gpt-5.6-luna` does) must
+#: keep the control. `ponytail:` a hand-listed family table, not a measured
+#: capability — no provider states it, the same shape as `_HARD_CAP_CHARACTERS`.
+#: Ceiling — a default-only family reached through another provider keeps the
+#: control, and a new Claude family under a new name is sent its temperature (one
+#: settled `400` names it). Upgrade path — delete the table once a provider
+#: publishes "temperature: default-only"; until then the retry in
+#: `openai_compat._chat` is the OpenAI backstop.
+DEFAULT_TEMPERATURE_ONLY: dict[str, re.Pattern[str]] = {
+    "openai-direct": re.compile(r"(?:^|[/-])(?:o[1-9]|gpt-[5-9])(?:[-.]|$)"),
+    "anthropic-direct": re.compile(
+        r"^claude-(?:fable|mythos|opus-4-[7-9]|(?:opus|sonnet|haiku)-[5-9])(?:-|$)"
+    ),
+}
+
+
+def default_temperature_only(provider_id: str, model_id: str) -> bool:
+    """Whether this provider refuses any temperature but the model's own default."""
+    pattern = DEFAULT_TEMPERATURE_ONLY.get(provider_id)
+    return bool(pattern and pattern.search(str(model_id or "").lower()))
 
 #: The words providers use for "this endpoint takes a reference image" and for
 #: "this one takes text only". Read from the model's own statement — the Hub's

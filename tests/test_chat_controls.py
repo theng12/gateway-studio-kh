@@ -73,5 +73,31 @@ class ChatControlTests(unittest.TestCase):
         )
 
 
+    def test_claude_models_without_sampling_do_not_offer_temperature(self) -> None:
+        # Measured 2026-10-09: `claude-haiku-5-5` answered
+        # "`temperature` is deprecated for this model." to Story's 0.7.
+        for model in (
+            "claude-haiku-5-5", "claude-sonnet-5", "claude-sonnet-5-5", "claude-opus-4-7",
+            "claude-opus-4-8", "claude-opus-5", "claude-opus-5-5", "claude-fable-5",
+            "claude-fable-5-1", "claude-mythos-5-1",
+        ):
+            controls = _controls(model, "anthropic-direct")
+            self.assertNotIn("temperature", controls, model)
+            self.assertIn("max_output_tokens", controls, model)
+
+    def test_claude_models_that_take_sampling_keep_it(self) -> None:
+        for model in (
+            "claude-haiku-4-5-20251001", "claude-sonnet-4-5-20250929", "claude-sonnet-4-6",
+            "claude-opus-4-5-20251101", "claude-opus-4-6", "claude-opus-4-1",
+        ):
+            self.assertIn("temperature", _controls(model, "anthropic-direct"), model)
+
+    def test_the_claude_rule_is_scoped_to_anthropic_direct(self) -> None:
+        # OpenRouter publishes its own `supported_parameters`; with none stated a
+        # proxy keeps the control, exactly as for the OpenAI families.
+        self.assertIn("temperature", _controls("anthropic/claude-haiku-5.5", "openrouter-main"))
+        self.assertIn("temperature", _controls("claude-haiku-5-5", "experiential-labs"))
+
+
 if __name__ == "__main__":
     unittest.main()

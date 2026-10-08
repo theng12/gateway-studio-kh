@@ -25,7 +25,6 @@ Story Studio treats the id as opaque and displays `display_name`.
 
 from __future__ import annotations
 
-import re
 import time
 from datetime import datetime, timezone
 from typing import Any
@@ -45,6 +44,7 @@ from .providers.definitions import (
     KIND_STUDIO_HUB,
     KIND_XAI,
     ProviderDefinition,
+    default_temperature_only,
     image_reference_state,
 )
 
@@ -866,25 +866,6 @@ _TTS_CHARACTERS_LOCAL = 15000
 #: both disappear.
 _HARD_CAP_CHARACTERS = {"orpheus": 170, "bark": 150}
 
-#: Chat model families that accept only their own default temperature, keyed by
-#: the provider whose API refuses any other value. OpenAI's own API publishes no
-#: `supported_parameters`, so the over-offer in `_chat_row` handed Story Studio a
-#: `temperature` control these models answer `400` to — and Story Studio, which
-#: sends `0.7` whenever the control is offered, then failed.
-#:
-#: Proxies are left out **deliberately**: OpenRouter publishes its own list, and a
-#: third party that accepts `0.7` (Experiential Labs' `gpt-5.6-luna` does) must
-#: keep the control. `ponytail:` a hand-listed family table, not a measured
-#: capability — no provider states it, the same shape as `_HARD_CAP_CHARACTERS`.
-#: Ceiling — a default-only family reached through another provider keeps the
-#: control. Upgrade path — delete the table once a provider publishes
-#: "temperature: default-only"; until then the retry in `openai_compat._chat` is
-#: the backstop, so a family this table has not learned yet still works, one
-#: wasted `400` later.
-_DEFAULT_TEMPERATURE_ONLY = {
-    "openai-direct": re.compile(r"(?:^|[/-])(?:o[1-9]|gpt-[5-9])(?:[-.]|$)"),
-}
-
 
 def _hard_cap_characters(raw: dict[str, Any]) -> int | None:
     """The character cliff for a model the Hub does **not** long-form split.
@@ -1324,13 +1305,12 @@ def _chat_row(model_id: str, definition: ProviderDefinition, model: dict[str, An
     controls = ["temperature", "max_output_tokens"]
     if parameters is not None:
         controls = [c for c in controls if c == "max_output_tokens" or c in parameters]
-    elif pattern := _DEFAULT_TEMPERATURE_ONLY.get(definition.id):
+    elif default_temperature_only(definition.id, model_id):
         # The provider stated nothing, and this family refuses any temperature but
         # its own default. Withhold the control rather than offer a knob that comes
         # back as a `400`. Only the no-list branch: when a provider does publish
         # `supported_parameters`, its own answer is authoritative and wins.
-        if pattern.search(model_id.lower()):
-            controls = [c for c in controls if c != "temperature"]
+        controls = [c for c in controls if c != "temperature"]
 
     structured = _supports("structured_outputs", "response_format")
     # **A Studio Hub lane states the same fact in its own contract**, and the Hub

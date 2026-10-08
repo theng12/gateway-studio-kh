@@ -14,6 +14,13 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.154 — 2026-10-09
+
+### Claude Haiku 5.5 works again
+
+- Claude Haiku 5.5 failed every chat with "`temperature` is deprecated for this model." The Gateway now leaves temperature out for Claude models that no longer accept it: Haiku 5.5, Sonnet 5 and 5.5, Opus 4.7 and later, and Fable. The job's result notes that the temperature was dropped.
+- Story Studio no longer sees a temperature control for those models. Older Claude models (Haiku 4.5, Sonnet 4.5 and 4.6, Opus 4.5 and 4.6) keep it.
+
 ## 0.2.153 — 2026-10-09
 
 ### Clear the Jobs list in one go

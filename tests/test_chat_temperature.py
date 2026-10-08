@@ -24,7 +24,7 @@ _SANDBOX = sandbox_env()  # never bind to the owner's real Application Support
 
 import httpx  # noqa: E402
 
-from gateway.adapters import openai_compat  # noqa: E402
+from gateway.adapters import anthropic, openai_compat  # noqa: E402
 from gateway.adapters.base import BackendError, BackendRequest  # noqa: E402
 
 
@@ -101,6 +101,61 @@ class ChatTemperatureTests(unittest.TestCase):
 
         self.assertEqual(len(calls), 1)
         self.assertNotIn("temperature", calls[0])
+
+
+def _claude(model_id: str, **params) -> BackendRequest:
+    return BackendRequest(
+        provider_id="anthropic-direct",
+        model_id=model_id,
+        modality="chat",
+        params={"input": [{"role": "user", "content": "hi"}], **params},
+        values={"base_url": "http://mock", "api_key": "k"},
+        base_url="http://mock",
+    )
+
+
+class AnthropicTemperatureTests(unittest.TestCase):
+    """Anthropic refuses any temperature on its newer families with a definite 400:
+    `temperature` is deprecated for this model. (measured on `claude-haiku-5-5`,
+    2026-10-09). The adapter drops it before sending — one request, not a refusal."""
+
+    def _send(self, request: BackendRequest) -> tuple[list[dict], object]:
+        calls: list[dict] = []
+
+        def fake_post(url, *, headers, json, timeout):
+            calls.append(dict(json))
+            return httpx.Response(
+                200,
+                json={"content": [{"type": "text", "text": "ok"}], "stop_reason": "end_turn",
+                      "usage": {"input_tokens": 3, "output_tokens": 1}, "model": request.model_id},
+            )
+
+        with patch.object(anthropic.httpx, "post", fake_post):
+            result = anthropic.AnthropicBackend().generate(request)
+        return calls, result
+
+    def test_haiku_5_5_is_sent_no_temperature(self) -> None:
+        calls, result = self._send(_claude("claude-haiku-5-5", temperature=0.7))
+        self.assertEqual(len(calls), 1)
+        self.assertNotIn("temperature", calls[0])
+        self.assertEqual(result.text, "ok")
+        self.assertEqual(result.payload["params_dropped"], ["temperature"])
+
+    def test_every_default_only_claude_family_is_sent_none(self) -> None:
+        for model in ("claude-opus-5-5", "claude-sonnet-5-5", "claude-opus-4-7", "claude-fable-5-1"):
+            calls, _ = self._send(_claude(model, temperature=0.7))
+            self.assertNotIn("temperature", calls[0], model)
+
+    def test_older_claude_models_keep_their_temperature(self) -> None:
+        for model in ("claude-haiku-4-5-20251001", "claude-sonnet-4-6", "claude-opus-4-6"):
+            calls, result = self._send(_claude(model, temperature=0.7))
+            self.assertEqual(calls[0]["temperature"], 0.7, model)
+            self.assertNotIn("params_dropped", result.payload, model)
+
+    def test_no_temperature_sent_means_nothing_dropped(self) -> None:
+        calls, result = self._send(_claude("claude-haiku-5-5"))
+        self.assertNotIn("temperature", calls[0])
+        self.assertNotIn("params_dropped", result.payload)
 
 
 if __name__ == "__main__":
