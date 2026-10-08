@@ -276,10 +276,11 @@ def image_size_for(aspect_ratio: str, width: object = None, height: object = Non
 #: keep the control. `ponytail:` a hand-listed family table, not a measured
 #: capability — no provider states it, the same shape as `_HARD_CAP_CHARACTERS`.
 #: Ceiling — a default-only family reached through another provider keeps the
-#: control, and a new Claude family under a new name is sent its temperature (one
-#: settled `400` names it). Upgrade path — delete the table once a provider
-#: publishes "temperature: default-only"; until then the retry in
-#: `openai_compat._chat` is the OpenAI backstop.
+#: control, and a new Claude family under a new name is sent its temperature once:
+#: `adapters.anthropic` retries that `400` without it and `learn_default_temperature_only`
+#: remembers the model. Upgrade path — delete the table once a provider publishes
+#: "temperature: default-only"; until then the retries in `openai_compat._chat` and
+#: `adapters.anthropic` are the backstops.
 DEFAULT_TEMPERATURE_ONLY: dict[str, re.Pattern[str]] = {
     "openai-direct": re.compile(r"(?:^|[/-])(?:o[1-9]|gpt-[5-9])(?:[-.]|$)"),
     "anthropic-direct": re.compile(
@@ -288,10 +289,25 @@ DEFAULT_TEMPERATURE_ONLY: dict[str, re.Pattern[str]] = {
 }
 
 
+#: Models a provider refused a temperature for at run time (a definite `400`), so the
+#: adapter stops sending it and the catalogue stops offering it from its next rebuild.
+#: ponytail: in memory, lost on restart — the first such job after a restart pays one
+#: retried `400` again. Upgrade path — add the family to the table above.
+_LEARNED_DEFAULT_TEMPERATURE_ONLY: set[tuple[str, str]] = set()
+
+
+def learn_default_temperature_only(provider_id: str, model_id: str) -> None:
+    """Remember that this provider refused a temperature for this model."""
+    _LEARNED_DEFAULT_TEMPERATURE_ONLY.add((provider_id, str(model_id or "").lower()))
+
+
 def default_temperature_only(provider_id: str, model_id: str) -> bool:
     """Whether this provider refuses any temperature but the model's own default."""
+    model = str(model_id or "").lower()
+    if (provider_id, model) in _LEARNED_DEFAULT_TEMPERATURE_ONLY:
+        return True
     pattern = DEFAULT_TEMPERATURE_ONLY.get(provider_id)
-    return bool(pattern and pattern.search(str(model_id or "").lower()))
+    return bool(pattern and pattern.search(model))
 
 #: The words providers use for "this endpoint takes a reference image" and for
 #: "this one takes text only". Read from the model's own statement — the Hub's

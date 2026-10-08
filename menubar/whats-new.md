@@ -14,6 +14,13 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.155 — 2026-10-09
+
+### Claude models fix themselves when they stop taking temperature
+
+- If a Claude model the Gateway does not know yet answers "`temperature` is deprecated" (or "not supported"), the Gateway asks once more without it. The job succeeds, its result notes that the temperature was dropped, and Story Studio stops seeing a temperature control for that model. Any other refusal is not retried, and nothing is retried more than once. The Gateway remembers this until it restarts.
+- **Qualification** now has rows for Anthropic models (Claude Haiku 5.5 among them). Their token counts were stored under Anthropic's own names and were not being read.
+
 ## 0.2.154 — 2026-10-09
 
 ### Claude Haiku 5.5 works again

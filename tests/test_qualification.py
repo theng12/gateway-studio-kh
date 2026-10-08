@@ -438,6 +438,15 @@ class TheStoreReadsItsOwnNumbersTest(unittest.TestCase):
         self.assertIsNone(sample["completion_tokens"])
         self.assertIsNone(sample["generation_seconds"])
 
+    def test_anthropic_token_names_are_read(self) -> None:
+        # Anthropic states `input_tokens`/`output_tokens`; reading only OpenAI's names
+        # meant no `anthropic-direct` model (Claude Haiku 5.5 among them) ever had a row.
+        self._job(json.dumps({"payload": {"usage": {"input_tokens": 32, "output_tokens": 9}}}))
+        sample = self.store.usage_samples()[0]
+        self.assertEqual((sample["prompt_tokens"], sample["completion_tokens"]), (32, 9))
+        rows = qualification.envelope(self.store)
+        self.assertEqual([(r["provider_id"], r["model_id"]) for r in rows], [("cloud-a", "m")])
+
     def test_the_whole_generated_text_is_never_read(self) -> None:
         # The reason this query exists rather than `list_jobs`: `result_json` holds the
         # full completion, so materialising 500 of them to read four numbers would pull

@@ -158,5 +158,90 @@ class AnthropicTemperatureTests(unittest.TestCase):
         self.assertNotIn("params_dropped", result.payload)
 
 
+class AnthropicTemperatureRetryTests(unittest.TestCase):
+    """A Claude family the table does not know yet: Anthropic's `400` "`temperature` is
+    deprecated for this model." is retried once without it, recorded, and remembered so
+    the catalogue stops offering the control. Any other `400` is not retried."""
+
+    MODEL = "claude-nova-1"  # a name no table entry matches
+
+    def setUp(self) -> None:
+        from gateway.providers import definitions
+
+        self.addCleanup(getattr(definitions, "_LEARNED_DEFAULT_TEMPERATURE_ONLY", set()).clear)
+
+    def _run(self, answers: list[httpx.Response], **params):
+        calls: list[dict] = []
+
+        def fake_post(url, *, headers, json, timeout):
+            calls.append(dict(json))
+            return answers[min(len(calls), len(answers)) - 1]
+
+        with patch.object(anthropic.httpx, "post", fake_post):
+            try:
+                return calls, anthropic.AnthropicBackend().generate(_claude(self.MODEL, **params))
+            except BackendError as exc:
+                return calls, exc
+
+    @staticmethod
+    def _ok() -> httpx.Response:
+        return httpx.Response(200, json={"content": [{"type": "text", "text": "ok"}],
+                                         "stop_reason": "end_turn"})
+
+    @staticmethod
+    def _claude_400(message: str) -> httpx.Response:
+        return httpx.Response(400, json={"type": "error", "error": {
+            "type": "invalid_request_error", "message": message}})
+
+    def test_a_deprecated_temperature_is_dropped_retried_once_and_remembered(self) -> None:
+        from gateway import catalog
+        from gateway.providers.definitions import default_temperature_only
+
+        calls, result = self._run(
+            [self._claude_400("`temperature` is deprecated for this model."), self._ok()],
+            temperature=0.7)
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(calls[0]["temperature"], 0.7)
+        self.assertNotIn("temperature", calls[1])
+        self.assertEqual(result.text, "ok")
+        self.assertEqual(result.payload["params_dropped"], ["temperature"])
+
+        # Remembered: the catalogue withholds the control and the next job sends none.
+        self.assertTrue(default_temperature_only("anthropic-direct", self.MODEL))
+        from types import SimpleNamespace
+        row = catalog._chat_row(self.MODEL, SimpleNamespace(
+            id="anthropic-direct", kind="anthropic", base_url="https://api.anthropic.com/v1",
+            display_name="Anthropic"), {"raw": {"id": self.MODEL}})
+        self.assertNotIn("temperature", row["controls"])
+        calls, result = self._run([self._ok()], temperature=0.7)
+        self.assertEqual(len(calls), 1)
+        self.assertNotIn("temperature", calls[0])
+        self.assertEqual(result.payload["params_dropped"], ["temperature"])
+
+    def test_retried_at_most_once(self) -> None:
+        refusal = self._claude_400("`temperature` is deprecated for this model.")
+        calls, error = self._run([refusal, refusal], temperature=0.7)
+        self.assertEqual(len(calls), 2)
+        self.assertIsInstance(error, BackendError)
+        self.assertEqual(error.status, 400)
+
+    def test_any_other_400_is_not_retried_or_remembered(self) -> None:
+        from gateway.providers.definitions import default_temperature_only
+
+        for message in ("max_tokens: 999999 > 128000, which is the maximum",
+                        "temperature: Input should be less than or equal to 1"):
+            calls, error = self._run([self._claude_400(message), self._ok()], temperature=0.7)
+            self.assertEqual(len(calls), 1, message)
+            self.assertIsInstance(error, BackendError, message)
+            self.assertEqual(error.status, 400, message)
+        self.assertFalse(default_temperature_only("anthropic-direct", self.MODEL))
+
+    def test_no_temperature_sent_means_no_retry(self) -> None:
+        calls, error = self._run(
+            [self._claude_400("`temperature` is deprecated for this model."), self._ok()])
+        self.assertEqual(len(calls), 1)
+        self.assertIsInstance(error, BackendError)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -1330,6 +1330,11 @@ class JobStore:
         a one-token completion. The type has to be checked where it is still a JSON
         type. A stringified `"7"` is refused by the same clause.
 
+        **Either spelling of the token counts.** OpenAI-shaped lanes state
+        `prompt_tokens`/`completion_tokens`; Anthropic states `input_tokens`/
+        `output_tokens`, and reading only the first meant no `anthropic-direct` model
+        ever had a qualification row.
+
         Only the fields a job actually states come back; a row with no `usage` returns
         `NULL`s and is dropped by the reader rather than counted as zero.
         """
@@ -1337,15 +1342,25 @@ class JobStore:
             rows = self._conn.execute(
                 """
             SELECT provider_id, model_id, modality, created_at, updated_at,
-                   CASE WHEN json_valid(result_json)
-                         AND json_type(result_json, '$.payload.usage.prompt_tokens')
-                             IN ('integer', 'real')
-                        THEN json_extract(result_json, '$.payload.usage.prompt_tokens') END
+                   COALESCE(
+                       CASE WHEN json_valid(result_json)
+                             AND json_type(result_json, '$.payload.usage.prompt_tokens')
+                                 IN ('integer', 'real')
+                            THEN json_extract(result_json, '$.payload.usage.prompt_tokens') END,
+                       CASE WHEN json_valid(result_json)
+                             AND json_type(result_json, '$.payload.usage.input_tokens')
+                                 IN ('integer', 'real')
+                            THEN json_extract(result_json, '$.payload.usage.input_tokens') END)
                        AS prompt_tokens,
-                   CASE WHEN json_valid(result_json)
-                         AND json_type(result_json, '$.payload.usage.completion_tokens')
-                             IN ('integer', 'real')
-                        THEN json_extract(result_json, '$.payload.usage.completion_tokens') END
+                   COALESCE(
+                       CASE WHEN json_valid(result_json)
+                             AND json_type(result_json, '$.payload.usage.completion_tokens')
+                                 IN ('integer', 'real')
+                            THEN json_extract(result_json, '$.payload.usage.completion_tokens') END,
+                       CASE WHEN json_valid(result_json)
+                             AND json_type(result_json, '$.payload.usage.output_tokens')
+                                 IN ('integer', 'real')
+                            THEN json_extract(result_json, '$.payload.usage.output_tokens') END)
                        AS completion_tokens,
                    CASE WHEN json_valid(result_json)
                          AND json_type(result_json, '$.payload.generation_seconds')

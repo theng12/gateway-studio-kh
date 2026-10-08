@@ -110,7 +110,10 @@ def _temperature_refused(response: httpx.Response) -> bool:
     if response.status_code != 400:
         return False
     text = response.text.lower()
-    return "temperature" in text and ("does not support" in text or "unsupported" in text)
+    # Anthropic says it as "`temperature` is deprecated for this model." (2026-10-09).
+    return "temperature" in text and any(
+        word in text for word in ("does not support", "unsupported", "not supported", "deprecated")
+    )
 
 
 def _messages(params: dict[str, Any]) -> list[dict[str, Any]]:

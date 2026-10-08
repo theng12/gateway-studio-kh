@@ -15,9 +15,9 @@ from typing import Any
 
 import httpx
 
-from ..providers.definitions import default_temperature_only
+from ..providers.definitions import default_temperature_only, learn_default_temperature_only
 from .base import BackendError, BackendRequest, BackendResult, quota_hints
-from .openai_compat import ANTHROPIC_STOP_MAP, CHAT_TIMEOUT
+from .openai_compat import ANTHROPIC_STOP_MAP, CHAT_TIMEOUT, _temperature_refused
 
 #: `max_tokens` is **required** by the Messages API, so a number has to be sent
 #: whether or not the caller supplied one. The value is **published as ours**:
@@ -88,21 +88,33 @@ class AnthropicBackend:
                 body["temperature"] = request.params["temperature"]
 
         base = (request.values.get("base_url") or request.base_url).rstrip("/")
-        try:
-            response = httpx.post(
-                f"{base}/messages",
-                headers={
-                    "x-api-key": request.values.get("api_key", ""),
-                    "anthropic-version": ANTHROPIC_VERSION,
-                    "Content-Type": "application/json",
-                },
-                json=body,
-                timeout=CHAT_TIMEOUT,
-            )
-        except httpx.HTTPError as exc:
-            raise BackendError(
-                f"network: {exc}", code="PROVIDER_UNAVAILABLE", retryable=True
-            ) from exc
+
+        def send() -> httpx.Response:
+            try:
+                return httpx.post(
+                    f"{base}/messages",
+                    headers={
+                        "x-api-key": request.values.get("api_key", ""),
+                        "anthropic-version": ANTHROPIC_VERSION,
+                        "Content-Type": "application/json",
+                    },
+                    json=body,
+                    timeout=CHAT_TIMEOUT,
+                )
+            except httpx.HTTPError as exc:
+                raise BackendError(
+                    f"network: {exc}", code="PROVIDER_UNAVAILABLE", retryable=True
+                ) from exc
+
+        response = send()
+        if "temperature" in body and _temperature_refused(response):
+            # A family the table above does not know yet. The 400 is definite (nothing
+            # ran, nothing billed), so ask once more without it, as `openai_compat._chat`
+            # does, and remember the model so the catalogue stops offering the control.
+            body.pop("temperature")
+            dropped.append("temperature")
+            learn_default_temperature_only(request.provider_id, request.model_id)
+            response = send()
 
         if response.status_code >= 400:
             status = response.status_code
