@@ -25,6 +25,8 @@ Story Studio treats the id as opaque and displays `display_name`.
 
 from __future__ import annotations
 
+import logging
+import threading
 import time
 from datetime import datetime, timezone
 from typing import Any
@@ -50,6 +52,9 @@ from .providers.definitions import (
 
 ID_SEPARATOR = "::"
 REBUILD_TTL_S = 20.0
+#: How often the background refresher checks the signature (a ~1 ms read); a full rebuild
+#: still happens only on a change or after `REBUILD_TTL_S`.
+REFRESH_EVERY_S = 1.0
 STALE_AFTER_MS = 30 * 60 * 1000
 
 MODALITIES = ("chat", "image", "video", "tts", "transcription", "music")
@@ -1739,12 +1744,47 @@ class Catalog:
         # built the store. Explicit attachment after construction is the only shape
         # that is both cycle-free and actually wired.
         self._store: Any = None
+        self._refresher: threading.Thread | None = None
         self.rebuild(force=True)
 
     def attach_store(self, store: Any) -> None:
         """Give the catalogue the job store it measures from, and rebuild once."""
         self._store = store
         self.rebuild(force=True)
+
+    def start_refresher(self, interval: float = REFRESH_EVERY_S) -> None:
+        """Rebuild in the background so a catalogue read never builds anything.
+
+        0.2.161 rebuilt inside the request whenever the 20 s TTL had passed, and every
+        catalogue route was a sync handler, so a read needed one of the server's 40
+        worker threads. When those were all busy (16:15 on 2026-10-09, 40 artifact-tree
+        walks), `/v1/models` waited minutes behind them while `/health` answered at once.
+        With this running, reads skip the TTL rebuild, and the routes run on threads of their
+        own (`api._CATALOG_THREADS`) with an async auth check. Started from
+        the app's lifespan, so a test or CLI without it keeps rebuilding on read.
+        """
+        if self._refresher is not None and self._refresher.is_alive():
+            return
+
+        def loop() -> None:
+            while True:
+                try:
+                    self.rebuild()
+                except Exception:  # noqa: BLE001 - the refresher must outlive any one bad rebuild
+                    logging.getLogger("gateway.catalog").exception("catalogue rebuild failed")
+                time.sleep(interval)
+
+        self._refresher = threading.Thread(target=loop, name="catalog-refresher", daemon=True)
+        self._refresher.start()
+
+    def _fresh(self) -> None:
+        """With the refresher running, a read rebuilds only for a change it can see (the ~1 ms
+        signature), so a model switched on is in the very next answer; the TTL rebuild, which
+        reads the fleet and the job store, stays in the background."""
+        if self._refresher is None or not self._refresher.is_alive():
+            self.rebuild()
+        elif self._current_signature() != self._signature:
+            self.rebuild(force=True)
 
     # -- building ---------------------------------------------------------
     def _current_signature(self) -> tuple:
@@ -1996,12 +2036,12 @@ class Catalog:
 
     # -- reads ------------------------------------------------------------
     def rows(self, modality: str) -> list[dict[str, Any]]:
-        self.rebuild()
+        self._fresh()
         return self._rows.get(modality, [])
 
 
     def all_rows(self) -> list[dict[str, Any]]:
-        self.rebuild()
+        self._fresh()
         out: list[dict[str, Any]] = []
         for modality in MODALITIES:
             out.extend(self._rows[modality])
@@ -2025,8 +2065,12 @@ class Catalog:
         adds the fact that was missing rather than silently changing a gate Story
         Studio reads. `null` means no provider ever reported a fetch time, which is
         *unknown*, not zero.
+
+        Since 0.2.162 the live gateway rebuilds in the background (`start_refresher`), so
+        `ageMs` can reach `REBUILD_TTL_S` (20 s); `stale` (30 min) is still unreachable
+        while the refresher runs.
         """
-        self.rebuild()
+        self._fresh()
         age_ms = max(0, int((time.time() - self._built_at) * 1000))
         oldest = self._inventory_oldest
         inventory_age_ms = (

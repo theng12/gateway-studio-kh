@@ -14,6 +14,25 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.162 — 2026-10-09
+
+### The model list answers at once, even with the Jobs window open
+
+- **The model list no longer waits behind other work.** Story Studio's model and voice-model lists
+  (`/v1/models`, `/v1/tts/models` and the rest) are now refreshed in the background and answered on
+  threads of their own, so they answer in milliseconds even when the rest of the gateway is busy. A
+  model you switch on or off still shows up in the very next answer.
+- **The Jobs window no longer slows the gateway down.** Its 5-second refresh used to make the
+  gateway count every stored file (about 50,000) on each tick. Those counts piled up until nothing
+  else could be answered, and Story's model list timed out. The Jobs window no longer asks for that
+  count. It also skips a tick while the previous read is still out, and waits longer when the
+  gateway is slow.
+- **Storage totals in Settings are counted once at a time.** If several reads arrive together, they
+  share one count instead of each walking the disk, and the Trash Folder is walked once per count
+  instead of twice.
+
+---
+
 ## 0.2.161 — 2026-10-09
 
 ### An empty or broken file is never handed over as a finished job

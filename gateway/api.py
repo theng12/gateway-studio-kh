@@ -149,6 +149,8 @@ async def lifespan(_: FastAPI):
     worker.start()
     # Keeps the fleet snapshot warm so no request waits on an unreachable site.
     fleet.start_refresher()
+    # Catalogue reads are memory copies from here on; the rebuild runs behind them.
+    catalog.start_refresher()
     # A Studio Hub rollout the last run was in the middle of carries on (`release_rollout`).
     from . import release_rollout
 
@@ -270,6 +272,11 @@ def require_auth(request: Request, authorization: str | None = Header(default=No
         )
     if configured and token != configured:
         raise GatewayError(403, "Invalid API key.", "FORBIDDEN")
+
+
+async def require_auth_async(request: Request, authorization: str | None = Header(default=None)) -> None:
+    """`require_auth` on the event loop, for routes that must not wait for a worker thread."""
+    require_auth(request, authorization)
 
 
 #: A header a caller may set to name itself. **A hint, never a credential** —
@@ -1458,7 +1465,17 @@ def story_checkin(payload: dict[str, Any]) -> Any:
 # ---------------------------------------------------------------------------
 # Catalogue
 # ---------------------------------------------------------------------------
-@app.get("/v1/models", dependencies=[Depends(require_auth)])
+#: **The catalogue has threads of its own (0.2.162),** like `/health`. Live on 2026-10-09 every one of
+#: anyio's 40 shared threads was walking the artifact store, and `/v1/models` timed out at 180 s
+#: behind them. Its auth check is async for the same reason (`require_auth_async`).
+_CATALOG_THREADS = anyio.CapacityLimiter(4)
+
+
+@app.get("/v1/models", dependencies=[Depends(require_auth_async)])
+async def models_registry_route() -> dict[str, Any]:
+    return await anyio.to_thread.run_sync(models_registry, limiter=_CATALOG_THREADS)
+
+
 def models_registry() -> dict[str, Any]:
     """Every model row, across every modality, in one answer.
 
@@ -1472,8 +1489,8 @@ def models_registry() -> dict[str, Any]:
 
 
 def _catalog_handler(modality: str):
-    def handler() -> dict[str, Any]:
-        return catalog.envelope(modality)
+    async def handler() -> dict[str, Any]:
+        return await anyio.to_thread.run_sync(catalog.envelope, modality, limiter=_CATALOG_THREADS)
 
     return handler
 
@@ -1490,7 +1507,7 @@ for _modality, _path in (
         _path,
         _catalog_handler(_modality),
         methods=["GET"],
-        dependencies=[Depends(require_auth)],
+        dependencies=[Depends(require_auth_async)],
         name=f"catalog_{_modality}",
     )
 

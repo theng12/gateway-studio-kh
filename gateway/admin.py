@@ -1109,7 +1109,7 @@ def get_retention() -> dict[str, Any]:
     """How long received artifacts are kept, and how much is there now."""
     from . import retention
 
-    return {**retention.settings(), "usage": retention.usage()}
+    return {**retention.settings(), "usage": retention.shared_usage()}
 
 
 @router.put("/api/settings/retention", dependencies=[Depends(require_admin)])
@@ -1121,7 +1121,7 @@ def set_retention(payload: dict[str, Any]) -> Any:
         max_age_days=payload.get("max_age_days"),
         max_bytes=payload.get("max_bytes"),
     )
-    return {**saved, "usage": retention.usage()}
+    return {**saved, "usage": retention.shared_usage()}
 
 
 @router.get("/api/settings/telegram", dependencies=[Depends(require_admin)])
@@ -1269,15 +1269,20 @@ def prune_artifacts() -> dict[str, Any]:
     result = retention.prune()
     if result.get("blocked_reason"):
         return _error(503, result["blocked_reason"], "RETENTION_PROTECTION_UNAVAILABLE")
-    return {**result, "usage": retention.usage()}
+    return {**result, "usage": retention.shared_usage()}
 
 
 @router.get("/api/artifacts/kept", dependencies=[Depends(require_admin)])
 def list_kept_artifacts() -> dict[str, Any]:
-    """Every pinned artifact, each saying whether its file is still on disk."""
+    """Every pinned artifact, each saying whether its file is still on disk.
+
+    No `usage` since 0.2.162: the Jobs window polls this every 5 s and never read it, and
+    computing it walked the whole artifact store per poll. Settings reads usage from
+    `/api/settings/retention`.
+    """
     from . import retention
 
-    return {"artifacts": retention.kept(), "usage": retention.usage()}
+    return {"artifacts": retention.kept()}
 
 
 @router.post("/api/artifacts/keep", dependencies=[Depends(require_admin)])
@@ -1308,7 +1313,7 @@ def set_artifact_kept(payload: dict[str, Any]) -> Any:
         if bool(payload.get("keep", True))
         else retention.unkeep(chosen["path"])
     )
-    return {**result, "artifacts": retention.kept(), "usage": retention.usage()}
+    return {**result, "artifacts": retention.kept(), "usage": retention.shared_usage()}
 
 
 @router.get(

@@ -96,6 +96,16 @@ final class JobsSection: NSObject, AppSection, NSTableViewDataSource, NSTableVie
     private var selectedJobID: String?
     private var selectionGeneration = 0
     private var reloadGeneration = 0
+    /// **The 5 s tick never stacks reads (0.2.162).** A read still out skips the tick, and a
+    /// slow answer pushes the next tick back, so a busy gateway is asked less, not more.
+    private var readsInFlight = 0
+    private var nextQuietLoad = Date.distantPast
+
+    private func readFinished(startedAt: Date) {
+        readsInFlight = max(readsInFlight - 1, 0)
+        let took = Date().timeIntervalSince(startedAt)
+        nextQuietLoad = took > 2 ? Date().addingTimeInterval(min(took * 2, 60)) : .distantPast
+    }
     private var suppressSelectionCallback = false
 
     /// The section's content, built once and hosted by the main window.
@@ -260,6 +270,7 @@ final class JobsSection: NSObject, AppSection, NSTableViewDataSource, NSTableVie
     }
 
     private func load(quiet: Bool) {
+        if quiet && (readsInFlight > 0 || Date() < nextQuietLoad) { return }
         reloadGeneration += 1
         let requestGeneration = reloadGeneration
 
@@ -270,8 +281,12 @@ final class JobsSection: NSObject, AppSection, NSTableViewDataSource, NSTableVie
 
         // A timer-driven read must not wipe the summary or the detail pane.
         if !quiet || rows.isEmpty { summaryLabel?.stringValue = "Loading…" }
+        readsInFlight += 1
+        let startedAt = Date()
         GatewayAPI.get(path) { [weak self] result in
-            guard let self, self.reloadGeneration == requestGeneration else { return }
+            guard let self else { return }
+            self.readFinished(startedAt: startedAt)
+            guard self.reloadGeneration == requestGeneration else { return }
 
             switch result {
             case .success(let payload):
@@ -416,8 +431,12 @@ final class JobsSection: NSObject, AppSection, NSTableViewDataSource, NSTableVie
     }
 
     private func loadKeptState(requestGeneration: Int) {
+        readsInFlight += 1
+        let startedAt = Date()
         GatewayAPI.get("/admin/api/artifacts/kept") { [weak self] result in
-            guard let self, self.reloadGeneration == requestGeneration else { return }
+            guard let self else { return }
+            self.readFinished(startedAt: startedAt)
+            guard self.reloadGeneration == requestGeneration else { return }
             guard case .success(let payload) = result,
                   let artifacts = payload["artifacts"] as? [[String: Any]] else { return }
 

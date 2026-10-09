@@ -233,9 +233,9 @@ def _physical(info: os.stat_result) -> int:
     return int(blocks) * 512 if blocks is not None else int(info.st_size)
 
 
-def _trash_stats() -> tuple[int, int]:
+def _trash_stats(entries: list | None = None) -> tuple[int, int]:
     files = size = 0
-    for _, _, _, path in _trash_files():
+    for _, _, _, path in _trash_files() if entries is None else entries:
         try:
             size += path.stat().st_size
             files += 1
@@ -398,10 +398,35 @@ def _disk_status() -> dict:
     return diskguard.status()
 
 
+#: One usage walk at a time (0.2.162). The walk visits every artifact and trash file
+#: (~50,000 on 2026-10-09) with a symlink check per path component, and one call per
+#: 5 s Jobs poll stacked up to 40 concurrent walks: every server worker thread, so every
+#: sync route, `/v1/models` included, waited minutes.
+_usage_lock = threading.Lock()
+_usage_last: dict = {"done": 0, "value": None}
+
+
+def shared_usage() -> dict:
+    """`usage()`, but callers that arrive while a walk runs take that walk's answer.
+
+    ponytail: the shared answer may have started just before the caller asked (at most
+    one walk old); a per-caller fresh walk is what stacked up.
+    """
+    seen = _usage_last["done"]
+    with _usage_lock:
+        if _usage_last["done"] != seen and _usage_last["value"] is not None:
+            return _usage_last["value"]
+        value = usage()
+        _usage_last["value"] = value
+        _usage_last["done"] = seen + 1
+        return value
+
+
 def usage() -> dict:
     entries = _files()
     pins = kept()
-    trash_files, trash_bytes = _trash_stats()
+    trash = _trash_files()
+    trash_files, trash_bytes = _trash_stats(trash)
     present = [p for p in pins if p["present"]]
     return {
         "files": len(entries),
@@ -412,7 +437,7 @@ def usage() -> dict:
         "trash_files": trash_files,
         "trash_bytes": trash_bytes,
         "trash_days": TRASH_DAYS,
-        "trash_physical_bytes": sum(e[2] for e in _trash_files()),
+        "trash_physical_bytes": sum(e[2] for e in trash),
         "trash_cap_bytes": trash_cap_bytes(),
         "disk": _disk_status(),
         "trash_path": str(TRASH_DIR),
