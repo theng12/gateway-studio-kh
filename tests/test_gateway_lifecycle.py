@@ -35,6 +35,10 @@ def shutdown(*_):
     closing = True
     server.close()
     (root / (str(os.getpid()) + ".term")).touch()
+    if os.environ.get("FIXTURE_DRAIN_S"):  # the real backend: drain, then exit by itself
+        time.sleep(float(os.environ["FIXTURE_DRAIN_S"]))
+        (root / (str(os.getpid()) + ".drained")).touch()
+        os._exit(0)
 signal.signal(signal.SIGTERM, shutdown)
 while True:
     if closing:
@@ -145,6 +149,10 @@ if mode == "restart" || mode == "restartCleanly" {
     controller.stopAnything { _ in finished = true }
     guard waitFor({ finished }) else { fatalError("stop completion never arrived") }
     guard !alive(oldPID) else { fatalError("adopted backend survived Stop after releasing its listener") }
+} else if mode == "drain" {
+    controller.stop()
+    guard FileManager.default.fileExists(atPath: AppPaths.appSupport.appendingPathComponent("\(oldPID).drained").path)
+    else { fatalError("backend was killed before its drain finished") }
 } else {
     controller.stop()
     guard !alive(oldPID) else { fatalError("backend survived Stop after releasing its listener") }
@@ -162,6 +170,10 @@ class GatewayLifecycleTests(unittest.TestCase):
         source = (ROOT / "menubar/main.swift").read_text()
         state = source[source.index("enum GatewayState {"):source.index("/// Size-based rotation")]
         controller = source[source.index("final class GatewayController {"):source.index("// MARK: - Launch at login")]
+        # The real wait is 20 s; the TERM-resistant fixture would make every mode that long.
+        # 6 s still outlasts the drain fixture's 4 s, which the old 2 s wait killed.
+        assert "static let backendDrainWait: Double = 20.0" in controller
+        controller = controller.replace("backendDrainWait: Double = 20.0", "backendDrainWait: Double = 6.0")
         harness = cls.workspace / "main.swift"
         harness.write_text(STUBS + state + controller + HARNESS)
         cls.binary = cls.workspace / "check"
@@ -194,6 +206,8 @@ class GatewayLifecycleTests(unittest.TestCase):
                        "PYTHONPATH": str(support)}
         if mode == "unrelated":
             environment["FIXTURE_UNRELATED"] = "1"
+        if mode == "drain":
+            environment["FIXTURE_DRAIN_S"] = "4"
         child = None
         try:
             if mode.startswith("adopted") or mode == "unrelated":
@@ -202,7 +216,7 @@ class GatewayLifecycleTests(unittest.TestCase):
                 while not (support / "starts").exists() and time.monotonic() < deadline:
                     time.sleep(.02)
             result = subprocess.run([str(self.binary), mode], env=environment,
-                                    capture_output=True, text=True, timeout=25)
+                                    capture_output=True, text=True, timeout=40)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn("PASS:", result.stdout)
         finally:
@@ -230,6 +244,17 @@ class GatewayLifecycleTests(unittest.TestCase):
 
     def test_stop_known_adopted_backend_without_listener(self):
         self.check_mode("adopted-no-listener")
+
+    def test_stop_waits_for_the_backend_drain(self):
+        self.check_mode("drain")
+
+    def test_app_wait_outlasts_the_backend_drain(self):
+        import re
+        drain = float(re.search(r"^_SHUTDOWN_DRAIN_S = ([\d.]+)$",
+                                (ROOT / "gateway/api.py").read_text(), re.M).group(1))
+        wait = float(re.search(r"static let backendDrainWait: Double = ([\d.]+)",
+                               (ROOT / "menubar/main.swift").read_text()).group(1))
+        self.assertGreaterEqual(wait, drain + 3, "the app must not SIGKILL a backend still draining")
 
     def test_restart_waits_for_old_backend_exit(self):
         self.check_mode("restart")

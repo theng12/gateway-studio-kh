@@ -14,6 +14,14 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.158 — 2026-10-09
+
+### Restarting or updating the Gateway no longer strands jobs
+
+- When the Gateway stops, it first stops starting new jobs, then waits up to 15 seconds for jobs it is sending to be accepted by the Mac or the provider. Waiting jobs stay in the queue untouched and start after the restart. Jobs already rendering on the Macs carry on and are picked up again after the restart.
+- Before, the app stopped the Gateway 2 seconds after asking, so a job caught mid-send landed in Jobs → Needs recovery (2, 10 and 1 jobs in the last three updates). Now the app waits for the Gateway to finish.
+- Updates call a new "prepare restart" step that does the same before the app quits, so even an update from an older app version loses nothing.
+
 ## 0.2.157 — 2026-10-09
 
 ### The Jobs list loads in a blink again

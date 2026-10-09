@@ -688,6 +688,20 @@ class JobStore:
             self._conn.commit()
             return result.rowcount == 1
 
+    def unclaim(self, job_id: str) -> bool:
+        """Undo `mark_running` for a job nothing was sent for (a drain): queued again, no attempt used."""
+        with self._lock:
+            now = time.time()
+            result = self._conn.execute(
+                """UPDATE jobs SET state = 'accepted', next_action_at = ?, updated_at = ?,
+                                   attempt_count = MAX(attempt_count - 1, 0)
+                   WHERE id = ? AND state = 'running'
+                     AND dispatch_started_at IS NULL AND COALESCE(upstream_job_id, '') = ''""",
+                (now, now, job_id),
+            )
+            self._conn.commit()
+            return result.rowcount == 1
+
     # -- the attempt record (A7) -------------------------------------------
     def record_attempt(self, job_id: str, *, location_id: str, code: str,
                        detail: str) -> dict[str, Any] | None:

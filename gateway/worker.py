@@ -1110,6 +1110,18 @@ def _dispatch(job: dict[str, Any], store: JobStore, provider_id: str, model_id: 
     settle_result(job_id, result, store)
 
 
+def restart_can_follow(job: dict[str, Any]) -> bool:
+    """Whether a restart now would resume this running job by its upstream id instead of holding it.
+
+    True only for an upstream id on a lane whose adapter can poll it (`resume`). A Hub chat's
+    `chat:` id cannot be polled, and a cloud lane without `resume` is held even with its id."""
+    upstream = str(job.get("upstream_job_id") or "")
+    if not upstream or (job.get("modality") == "chat" and upstream.startswith("chat:")):
+        return False
+    definition = registry.definition(str(job.get("provider_id") or ""))
+    return definition is not None and getattr(adapter_for(definition), "resume", None) is not None
+
+
 class Worker:
     """Dispatches due jobs to bounded concurrency, respecting three ceilings.
 
@@ -1188,6 +1200,10 @@ class Worker:
         #: 2,758 times per job, every 0.4 s pass). Dropped once the job moves or is admitted.
         #: ponytail: a job that ends while backed off leaves its entry (bytes); prune if that matters.
         self._rebind_backoff: dict[str, tuple[float, float]] = {}
+        #: `job id -> job` for every job thread alive in this process: what a drain waits on.
+        self._running: dict[str, dict[str, Any]] = {}
+        #: Dispatch takes no new work before this `time.time()` (a drain; `inf` on shutdown).
+        self._paused_until = 0.0
 
     def start(self) -> None:
         if self._thread is not None:
@@ -1212,11 +1228,7 @@ class Worker:
                 job = self.store.get(job_id)
                 if not job or job.get("state") != "running":
                     continue
-                if job.get("modality") == "chat" and str(job.get("upstream_job_id") or "").startswith("chat:"):
-                    self.store.hold_interrupted(job_id)
-                    continue
-                definition = registry.definition(str(job.get("provider_id") or ""))
-                if definition is None or getattr(adapter_for(definition), "resume", None) is None:
+                if not restart_can_follow(job):
                     self.store.hold_interrupted(job_id)
                     continue
                 self._book(job)
@@ -1238,6 +1250,34 @@ class Worker:
         if self._thread is not None:
             self._thread.join(timeout=5.0)
             self._thread = None
+
+    # -- drain (a restart never strands a job) -------------------------------
+    def dispatch_paused(self) -> bool:
+        return time.time() < self._paused_until
+
+    def resume_dispatch(self) -> None:
+        self._paused_until = 0.0
+
+    def unsettled_sends(self) -> list[str]:
+        """Jobs running here that a restart now would hold: no id a restart can follow yet."""
+        left = []
+        for job_id in list(self._running):
+            row = self.store.get(job_id)
+            if row and row.get("state") == "running" and not restart_can_follow(row):
+                left.append(job_id)
+        return left
+
+    def drain(self, timeout: float, pause_s: float = float("inf")) -> list[str]:
+        """Take no new work for `pause_s`, then wait up to `timeout` for every in-flight send to get
+        an id a restart can follow (or to settle). Returns the job ids still unsettled.
+
+        Queued jobs are not touched; a job claimed but not yet sent goes back to the queue (`_run`).
+        A render already followable by its id is not waited for: the next start resumes it."""
+        self._paused_until = time.time() + pause_s
+        deadline = time.time() + timeout
+        while (left := self.unsettled_sends()) and time.time() < deadline:
+            time.sleep(0.25)  # one PK read per running job per pass; light on the store lock
+        return left
 
     # -- admission ---------------------------------------------------------
     def _site_lane_in_flight(self, provider_id: str, modality: str) -> int:
@@ -1562,7 +1602,10 @@ class Worker:
     # -- running -----------------------------------------------------------
     def _run(self, job: dict[str, Any], resume: bool = False) -> None:
         """One job on its own thread. Never raises."""
+        self._running[job["id"]] = job
         try:
+            if not resume and self.dispatch_paused() and self.store.unclaim(job["id"]):
+                return  # a drain began after the claim and before any send: back to the queue
             _MOVE_HOOKS[job["id"]] = lambda moved: self._move(job, moved)
             _ROOM_HOOKS[job["id"]] = lambda pid, claim=False: self._site_room(job, pid, claim)
             if resume:
@@ -1595,6 +1638,7 @@ class Worker:
             _MOVE_HOOKS.pop(job["id"], None)
             _ROOM_HOOKS.pop(job["id"], None)
             self._release(job)
+            self._running.pop(job["id"], None)
 
     def _loop(self) -> None:
         while not self._stop.is_set():
@@ -1609,7 +1653,8 @@ class Worker:
             try:
                 with self._budget_lock:
                     groups = dict(self._per_group)
-                due = scarcest_first(self.store.due(), groups)
+                # A drain takes no new work; queued jobs stay queued, untouched.
+                due = [] if self.dispatch_paused() else scarcest_first(self.store.due(), groups)
             except Exception:  # noqa: BLE001
                 log.exception("worker could not read due jobs")
                 due = []
@@ -1721,5 +1766,6 @@ class Worker:
             "last_pass_at": self.last_pass_at,
             "consecutive_failures": self.pass_failures,
             "in_flight": self.active(),
+            "dispatch_paused": self.dispatch_paused(),
             "hold_sweep": dict(self.hold_sweep),
         }

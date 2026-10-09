@@ -813,6 +813,11 @@ final class GatewayController {
         return targets
     }
 
+    /// After TERM the backend drains: it takes no new work and waits up to 15 s
+    /// (`api._SHUTDOWN_DRAIN_S`) for in-flight sends to get an upstream id. A SIGKILL
+    /// before that turns a send into a "needs recovery" hold, so wait for it, plus a margin.
+    static let backendDrainWait: Double = 20.0
+
     /// TERM may close the listener while shutdown threads keep the process alive.
     /// Wait for the exact processes, then escalate; never infer exit from a free port.
     private func terminateBackends(_ targets: [BackendIdentity]) {
@@ -822,7 +827,7 @@ final class GatewayController {
             while targets.contains(where: { $0.isRunning }),
                   ProcessInfo.processInfo.systemUptime < deadline { usleep(50_000) }
         }
-        wait(2.0)
+        wait(GatewayController.backendDrainWait)
         for target in targets { target.signal(SIGKILL) }
         wait(1.0)
     }
@@ -926,9 +931,9 @@ final class GatewayController {
 
     /// Warn before anything that interrupts the gateway while it has work in flight.
     ///
-    /// Job threads die with the process, and an outcome the gateway cannot know becomes a
-    /// manual recovery hold, so a Quit or Restart mid-batch leaves the owner holds to clear.
-    /// Warn-and-confirm, not drain. Fails open: a gateway that does not answer has nothing
+    /// The backend drains on stop (`terminateBackends`): sends in progress get their upstream id
+    /// and running work resumes after a restart. Only a send still unanswered after the drain
+    /// becomes a manual recovery hold. Fails open: a gateway that does not answer has nothing
     /// to lose, and the owner must always be able to stop it.
     func confirmIfBusy(_ verb: String, then proceed: @escaping (Bool) -> Void) {
         GatewayAPI.get("/admin/api/status", timeout: 3) { result in
@@ -941,8 +946,8 @@ final class GatewayController {
             proceed(PageKit.confirm(
                 "\(verb) the gateway?",
                 "\(running) job\(running == 1 ? " is" : "s are") running and \(waiting) waiting. "
-                    + "This interrupts them; work that was already handed to a provider may need "
-                    + "manual recovery on the Jobs page.",
+                    + "Waiting jobs stay queued, and jobs being sent get up to 15 seconds to finish "
+                    + "sending. Work a provider cannot resume may need manual recovery on the Jobs page.",
                 ok: verb
             ))
         }

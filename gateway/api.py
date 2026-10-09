@@ -27,6 +27,7 @@ from __future__ import annotations
 
 
 import json
+import logging
 import os
 import re
 import time
@@ -115,8 +116,10 @@ def upload_limit_bytes(model_id: str | None) -> int:
     return _MAX_UPLOAD_BYTES
 
 
-#: How long a TERM waits for in-flight jobs to settle before the process exits.
-_SHUTDOWN_DRAIN_S = 4.0
+#: How long a TERM waits for in-flight sends to get an id a restart can follow (or to settle).
+#: ponytail: a fixed 15 s; a send still unanswered after it is held as before. The app waits
+#: this plus a margin before SIGKILL (`menubar/main.swift` `terminateBackends`): keep them in step.
+_SHUTDOWN_DRAIN_S = 15.0
 
 
 @asynccontextmanager
@@ -162,12 +165,16 @@ async def lifespan(_: FastAPI):
     try:
         yield
     finally:
-        # **A short drain, never a long one.** Stop admitting work first, then give jobs that are
-        # finishing (saving an artifact, sending its receipt) a few seconds to record it. A job
-        # still rendering is not waited for: its upstream id is already stored, and the next start
-        # resumes polling it (`Worker._resume_interrupted`).
+        # **A bounded drain, so a restart never strands a job.** Take no new work, then wait for
+        # every in-flight send to get an id the next start can follow (or to settle). A job still
+        # rendering under such an id is not waited for: the next start resumes polling it
+        # (`Worker._resume_interrupted`). Queued jobs are untouched.
+        left = worker.drain(_SHUTDOWN_DRAIN_S)
+        if left:
+            logging.getLogger("gateway.api").warning(
+                "shutdown: %d send(s) still unanswered after %.0fs: %s",
+                len(left), _SHUTDOWN_DRAIN_S, ", ".join(left))
         worker.stop()
-        worker.wait_idle(timeout=_SHUTDOWN_DRAIN_S)
         fleet.stop_refresher()
         notifier.stop()
 

@@ -116,6 +116,25 @@ def admin_ui() -> HTMLResponse:
 # ---------------------------------------------------------------------------
 # Status
 # ---------------------------------------------------------------------------
+@router.post("/api/maintenance/drain", dependencies=[Depends(require_admin)])
+def maintenance_drain(timeout_s: float = 15.0, pause_s: float = 120.0) -> dict[str, Any]:
+    """Prepare a restart: take no new work, wait for in-flight sends, say when a restart is safe.
+
+    `safe` means a restart now holds nothing: every running job has an id the next start resumes.
+    Queued jobs stay queued. Dispatch resumes by itself after `pause_s`, so an install that aborts
+    never leaves the queue paused, or at once on `DELETE`."""
+    pause_s = min(max(pause_s, 1.0), 900.0)
+    left = worker.drain(min(max(timeout_s, 0.0), 60.0), pause_s=pause_s)
+    return {"safe": not left, "unsettled": left, "dispatch_paused_s": pause_s,
+            "in_flight": worker.active()}
+
+
+@router.delete("/api/maintenance/drain", dependencies=[Depends(require_admin)])
+def maintenance_resume() -> dict[str, Any]:
+    worker.resume_dispatch()
+    return {"dispatch_paused": worker.dispatch_paused()}
+
+
 @router.get("/api/status", dependencies=[Depends(require_admin)])
 def status() -> dict[str, Any]:
     return {
