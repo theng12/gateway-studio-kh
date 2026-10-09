@@ -30,6 +30,7 @@ import json
 import logging
 import os
 import re
+import signal
 import time
 import uuid
 from contextlib import asynccontextmanager
@@ -122,8 +123,28 @@ def upload_limit_bytes(model_id: str | None) -> int:
 _SHUTDOWN_DRAIN_S = 15.0
 
 
+def _pause_dispatch_on_term() -> None:
+    """TERM stops dispatch at once, not when the shutdown below finally runs.
+
+    uvicorn installs its TERM handler before startup and then, on TERM, waits for open requests
+    before running the lifespan shutdown; with Story's connections open that wait can be long, and
+    the dispatcher kept sending new work all through it. Chained, so uvicorn still shuts down."""
+    previous = signal.getsignal(signal.SIGTERM)
+
+    def on_term(sig: int, frame: Any) -> None:
+        worker.pause_dispatch()
+        if callable(previous):
+            previous(sig, frame)
+
+    try:
+        signal.signal(signal.SIGTERM, on_term)
+    except ValueError:  # not the main thread (a TestClient's portal): there is no TERM to catch
+        pass
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
+    _pause_dispatch_on_term()
     worker.start()
     # Keeps the fleet snapshot warm so no request waits on an unreachable site.
     fleet.start_refresher()

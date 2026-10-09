@@ -184,6 +184,21 @@ class TheDrainIsBounded(_Case):
         self.assertLessEqual(api._SHUTDOWN_DRAIN_S, 30, "a drain is bounded")
 
 
+class TermStopsDispatchAtOnce(unittest.TestCase):
+    def test_term_pauses_dispatch_before_uvicorn_shuts_down(self) -> None:
+        import signal
+        seen: list[int] = []
+        original = signal.signal(signal.SIGTERM, lambda sig, _frame: seen.append(sig))  # uvicorn's
+        self.addCleanup(signal.signal, signal.SIGTERM, original)
+        self.addCleanup(live_worker.resume_dispatch)
+        api._pause_dispatch_on_term()
+        self.assertFalse(live_worker.dispatch_paused())
+        os.kill(os.getpid(), signal.SIGTERM)
+        time.sleep(0.05)
+        self.assertTrue(live_worker.dispatch_paused(), "no new send starts once TERM arrives")
+        self.assertEqual(seen, [signal.SIGTERM], "uvicorn's own handler still runs")
+
+
 class TheDrainRoute(unittest.TestCase):
     def test_drain_reports_safe_pauses_dispatch_and_resumes(self) -> None:
         self.addCleanup(live_worker.resume_dispatch)

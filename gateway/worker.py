@@ -1255,6 +1255,9 @@ class Worker:
     def dispatch_paused(self) -> bool:
         return time.time() < self._paused_until
 
+    def pause_dispatch(self, seconds: float = float("inf")) -> None:
+        self._paused_until = time.time() + seconds
+
     def resume_dispatch(self) -> None:
         self._paused_until = 0.0
 
@@ -1273,7 +1276,7 @@ class Worker:
 
         Queued jobs are not touched; a job claimed but not yet sent goes back to the queue (`_run`).
         A render already followable by its id is not waited for: the next start resumes it."""
-        self._paused_until = time.time() + pause_s
+        self.pause_dispatch(pause_s)
         deadline = time.time() + timeout
         while (left := self.unsettled_sends()) and time.time() < deadline:
             time.sleep(0.25)  # one PK read per running job per pass; light on the store lock

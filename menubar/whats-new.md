@@ -14,6 +14,12 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.159 — 2026-10-09
+
+### A stop pauses new jobs the moment it is asked
+
+- The Gateway now stops starting new jobs as soon as it is told to stop, instead of only after it has finished answering open requests from Story Studio. Jobs being sent still get their 15 seconds, and waiting jobs stay queued.
+
 ## 0.2.158 — 2026-10-09
 
 ### Restarting or updating the Gateway no longer strands jobs
