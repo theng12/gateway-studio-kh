@@ -2204,6 +2204,7 @@ def list_jobs(
                 # nothing. `None` means the request said nothing about itself.
                 "caller": job.get("caller"),
                 "job_group": job.get("job_group"),
+                "priority": job.get("priority") or "normal",
                 # Why a job is queued rather than running. `accepted` alone cannot
                 # tell "not dispatched yet" from "the fleet was busy and we are
                 # waiting", and only one of those is worth the owner's attention.
@@ -2345,6 +2346,7 @@ def queue_view(limit: int = Query(200, ge=1, le=1000)) -> dict[str, Any]:
             "model_name": labels.get((provider_id, model_id), model_id),
             "caller": job.get("caller"),
             "job_group": job.get("job_group"),
+            "priority": job.get("priority") or "normal",
             "created_at": created,
             "age_seconds": round(now - created, 1) if isinstance(created, (int, float)) else None,
             "queue_position": rank.get("position"),
@@ -2462,6 +2464,8 @@ def queue_view(limit: int = Query(200, ge=1, le=1000)) -> dict[str, Any]:
         # counted over the whole table rather than the `limit` rows above.
         "by_caller": store.active_counts_by_caller(),
         "by_group": store.active_counts_by_caller("job_group"),
+        # Normal and background (0.2.165) apart, so 300 queued songs read as background, not a jam.
+        "background": store.stats()["background"],
         "truncated": len(jobs) >= limit,
         "jobs": jobs,
         "lanes": lanes,
@@ -2658,6 +2662,11 @@ def fleet_snapshot(force: bool = False) -> dict[str, Any]:
     # LAN model sharing (2026-10-05): each row's network, and every "Install on every Mac" in progress, live.
     model_share.stamp_networks(out)
     out["model_installs"] = model_share.status()
+    # This Gateway's own queue, background (0.2.165) apart: "312 background music waiting" is not a jam.
+    jobs = store.stats()
+    out["gateway_queue"] = {"waiting": int(jobs["by_state"].get("accepted", 0)),
+                            "running": int(jobs["by_state"].get("running", 0)),
+                            "background": jobs["background"]}
     return out
 
 

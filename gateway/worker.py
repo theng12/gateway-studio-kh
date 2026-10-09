@@ -40,7 +40,7 @@ from .adapters.base import requests_started
 from .config import ARTIFACT_DIR
 from .providers import registry
 from .providers.definitions import KIND_STUDIO_HUB
-from .store import HUB_RESENDABLE_MODALITIES, NEVER_SENT_SUFFIX, RECOVERY_UNKNOWN, JobStore
+from .store import BACKGROUND, HUB_RESENDABLE_MODALITIES, NEVER_SENT_SUFFIX, RECOVERY_UNKNOWN, JobStore
 from . import fleet
 
 #: Modality → the Hub's own operation name, for reading a site's per-operation
@@ -264,8 +264,18 @@ _TERMINAL_UPSTREAM_STATES = frozenset(
     {"failed", "error", "cancelled", "canceled", "refused", "expired"}
 )
 
+def is_background(job: dict[str, Any]) -> bool:
+    return job.get("priority") == BACKGROUND
+
+
+def fair_key(job: dict[str, Any]) -> str:
+    """Whose turn a background job is: its project run (`job_group`), else its caller."""
+    return str(job.get("job_group") or job.get("caller") or "")
+
+
 def scarcest_first(jobs: list[dict[str, Any]],
-                   group_in_flight: dict[str, int] | None = None) -> list[dict[str, Any]]:
+                   group_in_flight: dict[str, int] | None = None,
+                   background_in_flight: dict[str, int] | None = None) -> list[dict[str, Any]]:
     """Order due work without bypassing the worker's existing admission authority.
 
     A fleet job reads the preference of its already-bound location once per distinct
@@ -283,11 +293,17 @@ def scarcest_first(jobs: list[dict[str, Any]],
     waiting jobs. So a 20-image redo submitted behind a 500-image wave interleaves with it
     instead of waiting for all 500 (sim: done after 152 s, not 903 s). A job with no group is
     its own group — turn 1 — so a queue with no groups is ordered exactly as before.
+
+    **Background jobs (0.2.165) come after every normal job**, however long they have waited, and
+    take turns among themselves by `fair_key` (project run, else caller) counting that key's running
+    background jobs (`background_in_flight`): two projects' pools share the idle Macs round-robin.
     """
     pools: dict[tuple[str, str], float] = {}
     local_preferences: dict[tuple[str, str, str], float | None] = {}
     group_in_flight = group_in_flight or {}
+    background_in_flight = background_in_flight or {}
     turns: dict[tuple[float, str], int] = {}
+    background_turns: dict[str, int] = {}
 
     def pool(job: dict[str, Any]) -> float:
         if not str(job.get("provider_id") or "").startswith(fleet.PROVIDER_PREFIX):
@@ -322,6 +338,10 @@ def scarcest_first(jobs: list[dict[str, Any]],
         return local_preferences[key]
 
     def rank(job: dict[str, Any], index: int) -> tuple[float, float, int, int]:
+        if is_background(job):
+            key = fair_key(job)
+            background_turns[key] = background_turns.get(key, background_in_flight.get(key, 0)) + 1
+            return 3.0, float(background_turns[key]), 0, index
         provider_id = str(job.get("provider_id") or "")
         if not provider_id.startswith(fleet.PROVIDER_PREFIX):
             scarcity, group_turn = turn(job)
@@ -1293,6 +1313,9 @@ class Worker:
         #: `(model, modality)` shapes for which a late rebind found no site with room this
         #: pass, so the rest of the queue behind them does not repeat the search. Cleared each pass.
         self._nowhere: set[tuple[str, str]] = set()
+        #: `(model, modality)` of normal fleet jobs still waiting, read once per pass at the first
+        #: background job (`_background_room`); `None` until read. Cleared each pass.
+        self._normal_waiting: set[tuple[str, str]] | None = None
         self.hold_sweep: dict[str, int] = {}
         #: `(provider_id, model_id) -> jobs this pass left waiting for that site`: the line a speed-
         #: ranked job would join by staying (`_rebind`). Cleared each pass.
@@ -1514,7 +1537,7 @@ class Worker:
             if lane_budget.source != concurrency.SOURCE_FLEET \
                     and self._lane_in_flight.get(modality, 0) >= lane_budget.limit:
                 return False
-            if self._room(provider_id, modality, model_id, provider_budget, supply) <= 0:
+            if self._job_room(job, provider_id, provider_budget, supply) <= 0:
                 return False
             self._book(job)
             self.budgets[provider_id] = provider_budget.as_dict()
@@ -1548,7 +1571,7 @@ class Worker:
         budget = self._provider_budget(provider_id, modality, model_id)
         supply = self._model_supply(provider_id)
         with self._budget_lock:
-            room = self._room(provider_id, modality, model_id, budget, supply)
+            room = self._job_room(job, provider_id, budget, supply)
             if claim and room > 0:
                 self._move(job, provider_id)
             now = time.monotonic()
@@ -1612,6 +1635,49 @@ class Worker:
                 room = min(room, slots + pending - held)
         return room
 
+    def _job_room(self, job: dict[str, Any], provider_id: str,
+                  budget: concurrency.Budget | None = None, supply: dict[str, int] | None = None) -> int:
+        """`_room` for this job at one site, and for a background job no more than `_background_room`."""
+        modality = str(job.get("modality") or "")
+        model_id = str(job.get("model_id") or "")
+        room = self._room(provider_id, modality, model_id, budget, supply)
+        if room > 0 and is_background(job) and provider_id.startswith(fleet.PROVIDER_PREFIX):
+            room = min(room, self._background_room(provider_id, model_id))
+        return room
+
+    def _background_room(self, provider_id: str, model_id: str) -> int:
+        """Macs at this site a background job may take now: idle ones no normal job is waiting for.
+
+        **Only an idle Mac, never the Hub's queue.** A background job sent to a site with no free Mac
+        would wait in the Hub's FIFO queue and be taken ahead of normal work sent after it, so the
+        bound is the Hub's own count of idle Macs for this model (`model_supply[model].available`),
+        less our sends there the snapshot may not show yet. A site that does not state it gets none.
+
+        **Production first.** While a normal job waits (due or deferred) for a model this site has an
+        idle Mac for, that Mac is the normal job's: no background job is sent here (the Hub picks the
+        Mac, so the whole site waits). Background work already running is never stopped; it finishes
+        and the Mac takes normal work next.
+        ponytail: idle Macs from a snapshot up to one refresh old, less every send in `_JUST_SENT_S`
+        (any lane) — it under-fills for a few seconds after a burst rather than over-fill.
+        """
+        row = next((r for r in fleet.snapshot(allow_stale=True).get("locations") or []
+                    if str(r.get("provider_id") or "") == provider_id), None) or {}
+        supply = row.get("model_supply") or {}
+
+        def idle(model: str) -> int:
+            entry = supply.get(model)
+            return int(entry.get("available") or 0) if isinstance(entry, dict) else 0
+
+        if self._normal_waiting is None:
+            self._normal_waiting = getattr(self.store, "waiting_normal_shapes", lambda: set())()
+        if any(idle(model) > 0 for model, _lane in self._normal_waiting):
+            return 0
+        now = time.monotonic()
+        with self._budget_lock:
+            sent = sum(now - t < _JUST_SENT_S for (pid, _lane), times in self._sent.items()
+                       if pid == provider_id for t in times)
+        return idle(model_id) - sent
+
     def _rebind(self, job: dict[str, Any]) -> bool:
         """Late bind: move a job that was never sent off a full site onto one with room.
 
@@ -1638,7 +1704,7 @@ class Worker:
         try:
             # A site with room keeps its job, unless the owner paused it.
             model_id = str(job.get("model_id") or "")
-            if self._room(provider_id, modality, model_id) > 0 and not fleet.is_paused_provider(provider_id):
+            if self._job_room(job, provider_id) > 0 and not fleet.is_paused_provider(provider_id):
                 return False
             if fleet.pinned_location(json.loads(job.get("params") or "{}")):
                 return False
@@ -1763,11 +1829,16 @@ class Worker:
             # failures is published, so an operator can tell "idle" from "wedged".
             self._nowhere.clear()
             self._ahead.clear()
+            self._normal_waiting = None
             try:
                 with self._budget_lock:
                     groups = dict(self._per_group)
+                background: dict[str, int] = {}
+                for running in list(self._running.values()):
+                    if is_background(running):
+                        background[fair_key(running)] = background.get(fair_key(running), 0) + 1
                 # A drain takes no new work; queued jobs stay queued, untouched.
-                due = [] if self.dispatch_paused() else scarcest_first(self.store.due(), groups)
+                due = [] if self.dispatch_paused() else scarcest_first(self.store.due(), groups, background)
             except Exception:  # noqa: BLE001
                 log.exception("worker could not read due jobs")
                 due = []

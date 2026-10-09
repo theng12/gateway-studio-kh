@@ -57,7 +57,7 @@ from . import retention
 from .notifier import notifier
 from .activity import is_story_path, record
 from .runtime import store, worker
-from .store import TERMINAL_STATES, artifacts_of
+from .store import BACKGROUND, NORMAL, PRIORITIES, TERMINAL_STATES, artifacts_of
 from .worker import cancel_upstream
 from .voices import story_row, tts_output_container, voice_registry, voices_for_model
 
@@ -821,6 +821,7 @@ def _job_envelope(job: dict[str, Any], *, native: bool = False) -> dict[str, Any
         "id": job["id"],
         "state": job["state"],
         "model_id": catalog_encode(job),
+        "priority": job.get("priority") or NORMAL,
         "failure_code": None,
         "failure_class": None,
         "failure_reason": None,
@@ -1096,7 +1097,7 @@ def _pinned_location(params: dict[str, Any]) -> str | None:
     return fleet.pinned_location(params)
 
 
-def _refuse_when_the_queue_is_full() -> None:
+def _refuse_when_the_queue_is_full(background: bool = False) -> None:
     """Refuse a new job when the gateway's own queue is at its published ceiling.
 
     `max_queued_jobs` is published in the admission record Story Studio reads, and Story holds
@@ -1113,7 +1114,11 @@ def _refuse_when_the_queue_is_full() -> None:
     if waiting_of is None:
         return
     try:
-        waiting = len(waiting_of(limit=limit + 1))
+        # **Background work never fills the queue for production (0.2.165).** A normal job counts
+        # only normal jobs waiting; a background job counts everything, so a 500-song pool is held
+        # to the ceiling while a narration job behind it is still accepted.
+        waiting = len(waiting_of(limit=limit + 1) if background
+                      else waiting_of(limit=limit + 1, normal_only=True))
     except Exception:  # noqa: BLE001 - a queue figure must never fail a submission
         return
     if waiting <= limit:
@@ -1228,6 +1233,7 @@ def _submit(
     """
     job_group = params.pop("job_group", None) if isinstance(params, dict) else None
     job_group = job_group if isinstance(job_group, str) and _JOB_GROUP.fullmatch(job_group) else None
+    priority = _pop_priority(params)
     # **A replay is not a new submission, so it is answered before anything can refuse it.** A
     # caller whose 202 was lost re-POSTs the same key; the job already exists, and a full queue,
     # a model that went offline since, or an unresolvable id must not turn "here is the job you
@@ -1244,7 +1250,7 @@ def _submit(
                     "IDEMPOTENCY_KEY_REUSED",
                 )
             return already, False
-    _refuse_when_the_queue_is_full()
+    _refuse_when_the_queue_is_full(priority == BACKGROUND)
     _refuse_when_the_disk_is_low()
     definition, model = catalog.resolve(
         modality, compound_id, only_location=_pinned_location(params),
@@ -1290,7 +1296,25 @@ def _submit(
         idempotency_key=idempotency_key,
         caller=caller,
         job_group=job_group,
+        priority=priority,
     )
+
+
+def _pop_priority(params: Any) -> str:
+    """Take `priority` out of the request (never forwarded upstream) and check it.
+
+    `normal` (the default; absent or null is normal, so an old client is unchanged) or `background`:
+    bulk work that runs only on idle Macs no normal job is waiting for, and never pre-empts.
+    Anything else is refused before anything is queued: a typo must not silently become normal work.
+    """
+    value = params.pop("priority", None) if isinstance(params, dict) else None
+    if value is None:
+        return NORMAL
+    if isinstance(value, str) and value.strip().lower() in PRIORITIES:
+        return value.strip().lower()
+    raise GatewayError(
+        400, f"priority must be one of {', '.join(PRIORITIES)}; got {value!r}. Omit it for normal work.",
+        "INVALID_PARAMS")
 
 
 #: A job group as Story sends it: `<project-slug>/<episode-id | project>` (INTERFACES-0144, D6).
@@ -1512,6 +1536,56 @@ for _modality, _path in (
     )
 
 
+@app.get("/v1/fleet/capacity", dependencies=[Depends(require_auth)])
+def fleet_capacity(response: Response, modality: str | None = None,
+                   model: str | None = None) -> dict[str, Any]:
+    """How much of each fleet model the Macs can run right now, to size a submit window (0.2.165).
+
+    Per model: `eligible_macs` (reachable Macs that can run it), `idle_macs` (the Hubs' own count of
+    those free now; background work runs only there), and this Gateway's `running`/`queued` jobs of
+    it, split `normal`/`background`. `modality` (music, image, tts, ...) and `model` (the catalogue
+    id or the bare model id) narrow it. Read from the fleet snapshot the dispatcher already holds
+    and one grouped count, so it is cheap; cache it for a few seconds.
+    """
+    from . import fleet
+
+    if modality is not None and modality not in fleet.HUB_OPERATION_BY_MODALITY:
+        raise GatewayError(400, f"modality must be one of {', '.join(fleet.HUB_OPERATION_BY_MODALITY)}; "
+                                f"got {modality!r}.", "INVALID_PARAMS")
+    wanted = model.split("::", 1)[-1] if model else None
+    counts: dict[tuple[str, str], dict[str, dict[str, int]]] = {}
+    for row in store.priority_counts():
+        entry = counts.setdefault((row["modality"], row["model_id"]), {
+            "running": {NORMAL: 0, BACKGROUND: 0}, "queued": {NORMAL: 0, BACKGROUND: 0}})
+        entry["running"][row["priority"]] += row["running"]
+        entry["queued"][row["priority"]] += row["waiting"]
+    models: dict[tuple[str, str], dict[str, Any]] = {}
+    for lane in [modality] if modality else list(fleet.HUB_OPERATION_BY_MODALITY):
+        for definition, item in registry.models.enabled_models(lane):
+            model_id = str(item.get("model_id") or "")
+            if (not definition.id.startswith(fleet.PROVIDER_PREFIX) or (lane, model_id) in models
+                    or (wanted is not None and model_id != wanted)):
+                continue
+            candidates = fleet.routing_candidates(model_id, lane)
+            models[(lane, model_id)] = {
+                "id": encode_model_id(fleet.publish_id(definition.id), model_id),
+                "model_id": model_id,
+                "modality": lane,
+                "locations": len(candidates),
+                "eligible_macs": sum(0 if c.get("spent") else int(c["slots"]) for c in candidates),
+                "idle_macs": sum(int(c.get("available") or 0) for c in candidates),
+                **counts.get((lane, model_id), {"running": {NORMAL: 0, BACKGROUND: 0},
+                                                 "queued": {NORMAL: 0, BACKGROUND: 0}}),
+            }
+    response.headers["Cache-Control"] = "private, max-age=5"
+    return {
+        "generated_at": time.time(),
+        "fleet_generated_at": fleet.snapshot(allow_stale=True).get("generated_at"),
+        "max_queued_jobs": int(admission()["max_queued_jobs"]),
+        "models": list(models.values()),
+    }
+
+
 @app.get("/v1/voices", dependencies=[Depends(require_auth)])
 def voices(
     model_id: str | None = None,
@@ -1727,6 +1801,7 @@ def chat_completions(payload: dict[str, Any]) -> dict[str, Any]:
     is implemented so switching transports does not dead-end.
     """
     payload.pop("job_group", None)  # no job here to order, and a group is never forwarded upstream
+    _pop_priority(payload)  # likewise: checked, never forwarded
     model_id = str(payload.get("model") or payload.get("model_id") or "")
     definition, model = catalog.resolve("chat", model_id)
     if definition is None or model is None:
@@ -2507,6 +2582,8 @@ async def confirm_transcription(
     }
     if isinstance(body, dict) and body.get("job_group"):
         payload["job_group"] = body["job_group"]  # the confirm creates the job, so the group rides here
+    if isinstance(body, dict) and body.get("priority") is not None:
+        payload["priority"] = body["priority"]
     job, created = _submit("transcription", model_id, payload, key, caller=caller)
     if created:
         response.status_code = 202

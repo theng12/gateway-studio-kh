@@ -38,6 +38,9 @@ NEVER_SENT_SUFFIX = (
 )
 
 TERMINAL_STATES = frozenset({"succeeded", "failed", "cancelled"})
+#: The request field `priority` (0.2.165): `normal` (the default, stored NULL) or `background`.
+NORMAL, BACKGROUND = "normal", "background"
+PRIORITIES = (NORMAL, BACKGROUND)
 UNKNOWN_OUTCOME_CODE = "UNKNOWN_OUTCOME"
 RECOVERY_UNKNOWN = "unknown_outcome"
 #: The Studio Hub lanes submitted through `/api/hub/jobs`, which answers a repeated `clientRequestId`
@@ -148,6 +151,9 @@ _ADDED_COLUMNS: tuple[tuple[str, str], ...] = (
     # dispatcher can give projects turns. Advisory: never sent to a Hub, never part of idempotency;
     # absent means the job is its own group, which is the order every job had before.
     ("job_group", "TEXT"),
+    # `background` (0.2.165): bulk work that runs only on Macs no normal job is waiting for. NULL is
+    # normal, so every job before this column, and every client that never sends the field, is normal.
+    ("priority", "TEXT"),
     # While a running job's Hub item is still queued: `{"reason", "next_try_at", "since"}` as JSON.
     # Published as `waiting` on the job envelope; null as soon as a Mac starts rendering.
     ("waiting_json", "TEXT"),
@@ -494,6 +500,7 @@ class JobStore:
         provider_id: str | None = None,
         caller: str | None = None,
         job_group: str | None = None,
+        priority: str | None = None,
     ) -> tuple[dict[str, Any], bool]:
         """Create a job, or return the existing one for a repeated key.
 
@@ -515,8 +522,8 @@ class JobStore:
                 """
                 INSERT INTO jobs (id, idempotency_key, modality, model_id, provider_id,
                                   state, params, created_at, updated_at, next_action_at, caller,
-                                  job_group)
-                VALUES (?, ?, ?, ?, ?, 'accepted', ?, ?, ?, ?, ?, ?)
+                                  job_group, priority)
+                VALUES (?, ?, ?, ?, ?, 'accepted', ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     job_id,
@@ -530,6 +537,7 @@ class JobStore:
                     now + 0.8,
                     (caller or "").strip()[:200] or None,
                     job_group or None,
+                    priority if priority == BACKGROUND else None,
                 ),
             )
             self._conn.commit()
@@ -915,8 +923,10 @@ class JobStore:
     _QUEUE_RANK_SQL = """
         (SELECT COUNT(*) FROM jobs AS ahead
           WHERE ahead.state = 'accepted' AND ahead.modality = j.modality
-            AND (ahead.created_at < j.created_at
-                 OR (ahead.created_at = j.created_at AND ahead.id < j.id))) AS ahead_count,
+            AND ((ahead.priority IS NOT NULL) < (j.priority IS NOT NULL)
+                 OR ((ahead.priority IS NOT NULL) = (j.priority IS NOT NULL)
+                     AND (ahead.created_at < j.created_at
+                          OR (ahead.created_at = j.created_at AND ahead.id < j.id))))) AS ahead_count,
         (SELECT COUNT(*) FROM jobs AS lane
           WHERE lane.state = 'accepted' AND lane.modality = j.modality) AS queue_size
     """
@@ -961,7 +971,34 @@ class JobStore:
         rank = self.queue_rank(job_id)
         return rank["position"] if rank is not None else None
 
-    def waiting_jobs(self, *, limit: int = 200) -> list[dict[str, Any]]:
+    def waiting_normal_shapes(self) -> set[tuple[str, str]]:
+        """`(model_id, modality)` of every normal fleet job still waiting, due or deferred.
+
+        What a background job must not take a Mac from (`Worker._background_room`).
+        """
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT DISTINCT model_id, modality FROM jobs WHERE state = 'accepted' "
+                " AND priority IS NULL AND provider_id LIKE 'studio-hub-%'"
+            ).fetchall()
+        return {(str(row["model_id"] or ""), str(row["modality"] or "")) for row in rows}
+
+    def priority_counts(self) -> list[dict[str, Any]]:
+        """`[{modality, model_id, priority, waiting, running}]` over every unfinished job."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT modality, model_id, COALESCE(priority, 'normal') AS priority, state, COUNT(*) AS n "
+                "  FROM jobs WHERE state IN ('accepted', 'running') GROUP BY 1, 2, 3, 4"
+            ).fetchall()
+        out: dict[tuple[str, str, str], dict[str, Any]] = {}
+        for row in rows:
+            entry = out.setdefault((row["modality"], row["model_id"], row["priority"]), {
+                "modality": row["modality"], "model_id": row["model_id"], "priority": row["priority"],
+                "waiting": 0, "running": 0})
+            entry["waiting" if row["state"] == "accepted" else "running"] += int(row["n"])
+        return list(out.values())
+
+    def waiting_jobs(self, *, limit: int = 200, normal_only: bool = False) -> list[dict[str, Any]]:
         """The queue itself: every job waiting to be dispatched, oldest first.
 
         The console's queue view reads this rather than `list_jobs(state="accepted")`
@@ -972,7 +1009,8 @@ class JobStore:
         with self._lock:
             rows = self._conn.execute(
                 "SELECT * FROM jobs WHERE state = 'accepted' "
-                " ORDER BY created_at, id LIMIT ?",
+                + (" AND priority IS NULL" if normal_only else "")
+                + " ORDER BY created_at, id LIMIT ?",
                 (max(int(limit), 1),),
             ).fetchall()
         return [self._row_dict(row) for row in rows]
@@ -1818,7 +1856,17 @@ class JobStore:
                 "SELECT MAX(created_at) AS t FROM jobs"
             ).fetchone()
             archived = self._conn.execute("SELECT COUNT(*) AS n FROM job_summaries").fetchone()["n"]
+        background: dict[str, Any] = {"waiting": 0, "running": 0, "waiting_by_modality": {}}
+        for row in self.priority_counts():
+            if row["priority"] == BACKGROUND:
+                background["waiting"] += row["waiting"]
+                background["running"] += row["running"]
+                if row["waiting"]:
+                    lane = background["waiting_by_modality"]
+                    lane[row["modality"]] = lane.get(row["modality"], 0) + row["waiting"]
         return {
+            # Background jobs (0.2.165) are inside `by_state` too; this says how many of them there are.
+            "background": background,
             "by_state": by_state,
             "by_modality": by_modality,
             "total": sum(by_state.values()),
