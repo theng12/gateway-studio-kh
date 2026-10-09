@@ -388,13 +388,39 @@ def _next_machine(store: JobStore, job_id: str, model_id: str, modality: str,
     if sum(entry.get("code") not in _UNCOUNTED_ATTEMPT_CODES for entry in attempts) >= int(policy["max_attempts"]):
         # The ceiling the owner named. The failure path builds the sentence from this log.
         return None
-    chosen, _note = fleet.route(model_id, modality, exclude_locations=tried)
+    room = _ROOM_HOOKS.get(job_id)
+    if room is None:
+        chosen, _note = fleet.route(model_id, modality, exclude_locations=tried)
+    else:
+        chosen, _note = fleet.route(model_id, modality, exclude_locations=tried, load=room)
     if chosen is None or _location(chosen.id) in tried:
         return None
     record_route = getattr(store, "record_route", None)
+    # **A re-route takes a lane with room, or waits here (10-08 pile-up).** The claim books the job at
+    # the new site only while its lane has room, under the worker's lock, so a burst of moves cannot
+    # all read the same free slot. Every lane full: the job goes back to our queue bound to the best
+    # site, nothing sent, and normal dispatch (`_admit`, then `_rebind`) sends it when a lane frees.
+    if room is not None and room(chosen.id, claim=True)[0] <= 0:
+        defer = getattr(store, "defer", None)
+        if record_route is None or defer is None:
+            return None
+        record_route(job_id, chosen.id)
+        defer(job_id, delay_s=0, unsent=True,
+              reason=f"waiting for room: every location offering {model_id} is full")
+        return QUEUED_IN_GATEWAY
     if record_route is not None:
         record_route(job_id, chosen.id)
     return chosen.id
+
+
+#: `_next_machine`'s answer when every lane that could take the job is full: it is queued here again.
+QUEUED_IN_GATEWAY = "queued-in-gateway"
+#: How far back a send counts as "just sent", i.e. one the fleet snapshot may not show yet.
+#: ponytail: about one refresh (15 s) plus a slow fan-out; read the snapshot's own age if it drifts.
+_JUST_SENT_S = 30.0
+#: A late rebind that raised waits this long before the next try, doubling up to the cap.
+_REBIND_BACKOFF_S = 1.0
+_REBIND_BACKOFF_CAP_S = 60.0
 
 
 def _tried_everything_detail(attempts: list[dict[str, Any]], *, limit: int) -> str:
@@ -686,6 +712,9 @@ def settle_result(job_id: str, result: Any, store: JobStore) -> None:
 #: worker's booking follows the job to its new location (F2). Keyed by id so `execute_job` keeps
 #: the `(job, store)` shape every caller and test uses.
 _MOVE_HOOKS: dict[str, Callable[[str], None]] = {}
+#: `job id -> room(provider_id, claim=False) -> (room, ours, just_sent)`: the worker's live books for
+#: this job's lane at a site, so a re-route ranks and claims by them (`fleet.apply_load`).
+_ROOM_HOOKS: dict[str, Callable[..., tuple[int, int, int]]] = {}
 
 
 def _moved(job_id: str, provider_id: str) -> None:
@@ -942,10 +971,13 @@ def _dispatch(job: dict[str, Any], store: JobStore, provider_id: str, model_id: 
                 )
                 if moved is not None:
                     log.warning("job %s: %s went silent mid-job; moving it to %s and cancelling "
-                                "the abandoned attempt", job_id, provider_id, moved)
+                                "the abandoned attempt", job_id, provider_id,
+                                "the Gateway queue (every lane full)" if moved == QUEUED_IN_GATEWAY else moved)
                     threading.Thread(target=cancel_upstream, args=(abandoned, store),
                                      kwargs={"record": False}, daemon=True,
                                      name=f"gateway-cancel-{job_id[:8]}").start()
+                    if moved == QUEUED_IN_GATEWAY:
+                        return
                     provider_id = moved
                     resume_id = ""
                     _moved(job_id, moved)
@@ -973,6 +1005,10 @@ def _dispatch(job: dict[str, Any], store: JobStore, provider_id: str, model_id: 
                     store, job_id, model_id, modality, provider_id,
                     code=exc.code, detail=detail,
                 )
+                if moved == QUEUED_IN_GATEWAY:
+                    log.warning("job %s: %s could not run it (%s); every other lane is full, so it "
+                                "waits in the Gateway queue", job_id, provider_id, exc.code)
+                    return
                 if moved is not None:
                     log.warning(
                         "job %s: %s could not run it (%s); trying %s next",
@@ -1142,6 +1178,16 @@ class Worker:
         #: pass, so the rest of the queue behind them does not repeat the search. Cleared each pass.
         self._nowhere: set[tuple[str, str]] = set()
         self.hold_sweep: dict[str, int] = {}
+        #: `(provider_id, model_id) -> jobs this pass left waiting for that site`: the line a speed-
+        #: ranked job would join by staying (`_rebind`). Cleared each pass.
+        self._ahead: dict[tuple[str, str], int] = {}
+        #: `(provider_id, modality) -> monotonic times` of our sends in the last `_JUST_SENT_S`:
+        #: what the fleet snapshot cannot have seen yet (`fleet.apply_load`).
+        self._sent: dict[tuple[str, str], list[float]] = {}
+        #: `job id -> (retry at, delay)` after a late rebind raised (10-07: "database is locked"
+        #: 2,758 times per job, every 0.4 s pass). Dropped once the job moves or is admitted.
+        #: ponytail: a job that ends while backed off leaves its entry (bytes); prune if that matters.
+        self._rebind_backoff: dict[str, tuple[float, float]] = {}
 
     def start(self) -> None:
         if self._thread is not None:
@@ -1334,6 +1380,27 @@ class Worker:
             self._per_model[model] = self._per_model.get(model, 0) + 1
             if job.get("job_group"):
                 self._per_group[job["job_group"]] = self._per_group.get(job["job_group"], 0) + 1
+            now = time.monotonic()
+            self._sent[key] = [t for t in self._sent.get(key, ()) if now - t < _JUST_SENT_S] + [now]
+
+    def _site_room(self, job: dict[str, Any], provider_id: str,
+                   claim: bool = False) -> tuple[int, int, int]:
+        """`(room, ours, just_sent)` for this job's model and lane at one site (`fleet.apply_load`).
+
+        `claim`: when there is room, move this running job's booking there in the same lock, so two
+        re-routes in one burst cannot both take the last slot.
+        """
+        modality = str(job.get("modality") or "")
+        model_id = str(job.get("model_id") or "")
+        budget = self._provider_budget(provider_id, modality, model_id)
+        supply = self._model_supply(provider_id)
+        with self._budget_lock:
+            room = self._room(provider_id, modality, model_id, budget, supply)
+            if claim and room > 0:
+                self._move(job, provider_id)
+            now = time.monotonic()
+            sent = sum(now - t < _JUST_SENT_S for t in self._sent.get((provider_id, modality), ()))
+            return room, self._per_lane.get((provider_id, modality), 0), sent
 
     def _not_fleet_in_flight(self) -> int:
         """Running jobs the owner's `global` bounds: everything but fleet-lane work at a location."""
@@ -1412,6 +1479,9 @@ class Worker:
         shape = (str(job.get("model_id") or ""), modality)
         if shape in self._nowhere:
             return False
+        backoff = self._rebind_backoff.get(job["id"])
+        if backoff is not None and time.monotonic() < backoff[0]:
+            return False
         try:
             # A site with room keeps its job, unless the owner paused it.
             model_id = str(job.get("model_id") or "")
@@ -1422,10 +1492,29 @@ class Worker:
             tried = {str(fleet.controller_id_from(provider_id))}
             for value in getattr(self.store, "attempted_locations", lambda _id: [])(job["id"]):
                 tried.add(str(fleet.controller_id_from(str(value)) or value))
+            if fleet.speed_ranked(model_id):
+                # Qwen (owner 2026-10-09): stay in line for a fast Mac unless a site with room would
+                # finish it sooner. This site is ranked too, with our jobs already waiting for it.
+                # A paused site is not a line to stay in.
+                here = "" if fleet.is_paused_provider(provider_id) else str(fleet.controller_id_from(provider_id))
+                ahead = self._ahead.get((provider_id, model_id), 0)
+                pool = fleet.apply_load(
+                    fleet.routing_candidates(model_id, modality, exclude_locations=tried - {here}),
+                    lambda pid: self._site_room(job, pid))
+                best = min(pool, default=None, key=lambda c: fleet.rank_candidate(
+                    c, str(job["id"]), ahead if c["provider_id"] == provider_id else 0))
+                if (best is None or best["provider_id"] == provider_id or best["room"] <= 0
+                        or not rebind(job["id"], from_provider=provider_id,
+                                      to_provider=best["provider_id"])):
+                    return False
+                self._rebind_backoff.pop(job["id"], None)
+                job["provider_id"] = best["provider_id"]
+                return True
             candidates = [
-                c for c in fleet.routing_candidates(
-                    str(job.get("model_id") or ""), modality, exclude_locations=tried)
-                if self._room(c["provider_id"], modality, model_id) > 0
+                c for c in fleet.apply_load(
+                    fleet.routing_candidates(model_id, modality, exclude_locations=tried),
+                    lambda pid: self._site_room(job, pid))
+                if c["room"] > 0
             ]
             if not candidates:
                 self._nowhere.add(shape)
@@ -1433,10 +1522,16 @@ class Worker:
             best = min(candidates, key=lambda c: fleet.rank_candidate(c, str(job["id"])))
             if not rebind(job["id"], from_provider=provider_id, to_provider=best["provider_id"]):
                 return False
+            self._rebind_backoff.pop(job["id"], None)
             job["provider_id"] = best["provider_id"]
             return True
-        except Exception:  # noqa: BLE001 - a failed rebind leaves the job where it is
-            log.exception("late rebind of %s failed", job.get("id"))
+        except Exception as exc:  # noqa: BLE001 - a failed rebind leaves the job where it is
+            # Backed off per job, doubling to a cap, and logged once per job rather than every pass.
+            delay = min(backoff[1] * 2, _REBIND_BACKOFF_CAP_S) if backoff else _REBIND_BACKOFF_S
+            self._rebind_backoff[job["id"]] = (time.monotonic() + delay, delay)
+            if backoff is None:
+                log.warning("late rebind of %s failed: %s; retrying with backoff up to %.0fs "
+                            "(logged once)", job.get("id"), exc, _REBIND_BACKOFF_CAP_S, exc_info=True)
             return False
 
     def _release(self, job: dict[str, Any]) -> None:
@@ -1469,6 +1564,7 @@ class Worker:
         """One job on its own thread. Never raises."""
         try:
             _MOVE_HOOKS[job["id"]] = lambda moved: self._move(job, moved)
+            _ROOM_HOOKS[job["id"]] = lambda pid, claim=False: self._site_room(job, pid, claim)
             if resume:
                 execute_job(job, self.store, resume=True)
             else:
@@ -1497,6 +1593,7 @@ class Worker:
             )
         finally:
             _MOVE_HOOKS.pop(job["id"], None)
+            _ROOM_HOOKS.pop(job["id"], None)
             self._release(job)
 
     def _loop(self) -> None:
@@ -1508,6 +1605,7 @@ class Worker:
             # say otherwise (audit M6). The pass is wrapped whole and the count of consecutive
             # failures is published, so an operator can tell "idle" from "wedged".
             self._nowhere.clear()
+            self._ahead.clear()
             try:
                 with self._budget_lock:
                     groups = dict(self._per_group)
@@ -1525,7 +1623,10 @@ class Worker:
                     # Reserve first, then claim: a claim that fails must not leave the
                     # budget holding a slot nobody will ever release.
                     if not self._admit(job) and not (self._rebind(job) and self._admit(job)):
+                        key = (str(job.get("provider_id") or ""), str(job.get("model_id") or ""))
+                        self._ahead[key] = self._ahead.get(key, 0) + 1
                         continue
+                    self._rebind_backoff.pop(job["id"], None)
                     if not self.store.mark_running(job["id"]):
                         self._release(job)
                         continue

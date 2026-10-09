@@ -809,7 +809,8 @@ class JobStore:
         return [str(value) for value in _loads_list(row["attempted_locations"])] \
             if row is not None else []
 
-    def defer(self, job_id: str, *, delay_s: float, reason: str, new_round: bool = False) -> bool:
+    def defer(self, job_id: str, *, delay_s: float, reason: str, new_round: bool = False,
+              unsent: bool = False) -> bool:
         """Put an accepted-nothing job back in the queue instead of failing it.
 
         **A busy fleet is not a broken job.** A site with no free machine right now
@@ -834,6 +835,10 @@ class JobStore:
         both ignore a job that carries them), the locations tried so far are forgotten, and the
         attempt log's entries are marked `waited`, so when a Mac frees up *any* location -
         including the one that handed it back - may take the job and the retry ceiling starts afresh.
+
+        `unsent`: a re-route found every lane full and bound the job to a site it has not sent to
+        (`worker._next_machine`). Only the dispatch stamp and batch id go, so the late rebind may
+        move it; the tried locations and the attempt log stay.
         """
         with self._lock:
             row = self._conn.execute(
@@ -846,6 +851,8 @@ class JobStore:
                 "next_action_at": time.time() + max(float(delay_s), 0.0),
                 "defer_reason": reason[:300],
             }
+            if unsent:
+                fields.update(upstream_job_id=None, dispatch_started_at=None)
             if new_round:
                 fields.update(
                     upstream_job_id=None, dispatch_started_at=None, attempted_locations="[]",
@@ -1588,6 +1595,29 @@ class JobStore:
             **({"by_model_class": ranked("by_model_class")} if mac_class is not None else {}),
             "sampled": len(rows),
         }
+
+    def speed_samples(self, model_id: str, *, limit: int = 500) -> list[tuple[str, str, float]]:
+        """`(provider_id, hub_machine, generation_seconds)` for this model's latest successes.
+
+        What `fleet` ranks a slow image model by (Qwen, owner 2026-10-09). Scalars in SQL, newest first.
+        ponytail: whole-job seconds whatever the steps; divide by steps if callers start mixing them.
+        """
+        with self._lock:
+            rows = self._conn.execute(
+                """
+            SELECT provider_id,
+                   json_extract(result_json, '$.payload.hub_machine') AS machine,
+                   json_extract(result_json, '$.payload.generation_seconds') AS seconds
+              FROM jobs
+             WHERE state = 'succeeded' AND model_id = ? AND json_valid(result_json)
+             ORDER BY created_at DESC
+             LIMIT ?
+                """,
+                (model_id, limit),
+            ).fetchall()
+        return [(str(row["provider_id"] or ""), str(row["machine"] or ""), float(row["seconds"]))
+                for row in rows
+                if row["machine"] and isinstance(row["seconds"], (int, float)) and row["seconds"] > 0]
 
     def tts_speed_samples(self, model_id: str, *, limit: int = 500) -> list[tuple[str, str, float]]:
         """`(provider_id, hub_machine, rtf)` for this voice model's latest successful jobs.

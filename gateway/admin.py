@@ -2102,19 +2102,8 @@ def generation_analytics(
     )
 
 
-#: Unified-memory sizes Apple ships; a Mac reports its total in GB or GiB (16 GiB = 17.18 GB).
-_MEMORY_CLASSES = (8, 16, 18, 24, 32, 36, 48, 64, 96, 128, 192, 256, 512)
-
-
-def mac_class(chip: Any, memory_gb: Any) -> str:
-    """"M4 · 16 GB": the chip family without "Apple", and the shipped memory size."""
-    family = str(chip or "").replace("Apple", "").strip() or "unknown chip"
-    try:
-        gb = float(memory_gb)
-    except (TypeError, ValueError):
-        return f"{family} · ? GB"
-    size = max((c for c in _MEMORY_CLASSES if c <= gb + 0.5), default=round(gb))
-    return f"{family} · {size} GB"
+#: "M4 · 16 GB". Lives in `fleet` now (routing ranks Qwen by it); re-exported for its old callers.
+mac_class = fleet.mac_class
 
 
 @router.get("/api/analytics/daily", dependencies=[Depends(require_admin)])

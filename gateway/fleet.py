@@ -35,6 +35,7 @@ import stat
 import threading
 import time
 import uuid
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -4005,6 +4006,41 @@ def _routing_preference(row: dict, model_id: str, modality: str, slots: int) -> 
                 if isinstance(machine, dict) and machine.get("machine")}
     nodes = {str(node.get("id") or ""): node for node in row.get("nodes") or []
              if isinstance(node, dict) and node.get("id")}
+    eligible = _eligible_macs(row, model_id, modality)
+    if not eligible:
+        return _NEUTRAL_PRIORITY, max(slots, 1)
+
+    # A busy Mac cannot donate its preference to a different idle Mac. When the Hub names at least
+    # one available model-specific slot, score only those Macs; if every fitting Mac is busy, their
+    # ranks still break ties between equally loaded locations without claiming capacity exists.
+    available = {machine: model for machine, model in eligible.items() if model.get("available") is True}
+    if available:
+        eligible = available
+
+    scores: list[float] = []
+    for machine in eligible:
+        order = _machine_priority_order(machines.get(machine) or {}, nodes.get(machine) or {})
+        if not order:
+            scores.append(_NEUTRAL_PRIORITY)
+        elif function in order:
+            scores.append(float(order.index(function)))
+        else:
+            scores.append(_UNLISTED_PRIORITY)
+    best = min(scores)
+    return best, sum(score == best for score in scores)
+
+
+def _eligible_macs(row: dict, model_id: str, modality: str) -> dict[str, dict]:
+    """`machine -> local model row` for the Macs at this site that may run `model_id` now.
+
+    Ready, memory-eligible, not paused, not resting after a memory refusal, serving it, reachable,
+    enabled and not a resting workstation: the rule `_routing_preference` scores by.
+    """
+    function = _PRIORITY_FUNCTION_BY_MODALITY.get(modality, modality)
+    machines = {str(machine.get("machine") or ""): machine for machine in row.get("machines") or []
+                if isinstance(machine, dict) and machine.get("machine")}
+    nodes = {str(node.get("id") or ""): node for node in row.get("nodes") or []
+             if isinstance(node, dict) and node.get("id")}
     paused = {machine for machine, node in nodes.items() if node.get("paused") is True}
     workers = [worker for worker in row.get("workers") or [] if isinstance(worker, dict)
                and model_id in (worker.get("models") or [])]
@@ -4031,27 +4067,7 @@ def _routing_preference(row: dict, model_id: str, modality: str, slots: int) -> 
             if (fact.get("reachable") is not False and fact.get("enabled") is not False
                     and not (workstation and workstation_resting({"workstation": workstation}))):
                 eligible[machine] = model
-    if not eligible:
-        return _NEUTRAL_PRIORITY, max(slots, 1)
-
-    # A busy Mac cannot donate its preference to a different idle Mac. When the Hub names at least
-    # one available model-specific slot, score only those Macs; if every fitting Mac is busy, their
-    # ranks still break ties between equally loaded locations without claiming capacity exists.
-    available = {machine: model for machine, model in eligible.items() if model.get("available") is True}
-    if available:
-        eligible = available
-
-    scores: list[float] = []
-    for machine in eligible:
-        order = _machine_priority_order(machines.get(machine) or {}, nodes.get(machine) or {})
-        if not order:
-            scores.append(_NEUTRAL_PRIORITY)
-        elif function in order:
-            scores.append(float(order.index(function)))
-        else:
-            scores.append(_UNLISTED_PRIORITY)
-    best = min(scores)
-    return best, sum(score == best for score in scores)
+    return eligible
 
 
 def _as_optional_int(value: object) -> int | None:
@@ -4267,11 +4283,10 @@ def routing_candidates(
     # view up to one refresher interval old can be wrong about a site that died
     # seconds ago, and the job then settles as `failed` -- which is the outcome
     # this endpoint already prefers to making the caller wait.
-    rows = {
-        str(row.get("id")): row
-        for row in (snapshot(allow_stale=True).get("locations") or [])
-    }
+    locations = snapshot(allow_stale=True).get("locations") or []
+    rows = {str(row.get("id")): row for row in locations}
     candidates: list[dict] = []
+    seconds: Callable[[str, str], float] | None = None
     for definition, model in registry.models.enabled_models(modality):
         location_id = controller_id_from(definition.id)
         if location_id is None:
@@ -4333,6 +4348,11 @@ def routing_candidates(
         if not capacity:
             queue = len(row.get("running_jobs") or [])
         preference, preference_slots = _routing_preference(row, model_id, modality, slots)
+        speed = {}
+        if speed_ranked(model_id):
+            if seconds is None:
+                seconds = _mac_seconds(rows, model_id, locations)
+            speed = _site_speed(row, model_id, modality, seconds, available)
 
         candidates.append({
             "provider_id": definition.id,
@@ -4348,11 +4368,132 @@ def routing_candidates(
             "spent": spent,
             "preference": preference,
             "preference_slots": preference_slots,
+            **speed,
         })
     return [c for c in candidates if not c["spent"]] or candidates
 
 
-def rank_candidate(candidate: dict, routing_key: str) -> tuple:
+#: **Prefer fast Macs for Qwen** (owner decision 2026-10-09). 20-step medians on 10-08: This Mac
+#: (M2 Max) 228 s, M4 600-610 s, M2 16 GB 812 s, M1 16 GB 949 s. A slow image model is routed by
+#: when a new job would *finish*, not by queue pressure: a fast Mac first, a slow one only when
+#: waiting for a fast one would finish later. Every other model keeps the pressure rank.
+def speed_ranked(model_id: str) -> bool:
+    return "qwen-image" in str(model_id).lower()
+
+
+#: The fallback when no Mac of a class has history for the model: those 10-08 medians by chip family.
+_CHIP_SECONDS = {"M2 Max": 228.0, "M4": 605.0, "M2": 812.0, "M1": 949.0}
+#: A Mac with neither history nor a known chip is assumed as slow as the slowest measured.
+_UNMEASURED_S = 949.0
+#: Half a job: how long, on average, the job a busy Mac is running still has to go.
+_RUNNING_REMAINDER = 0.5
+_SPEED_TTL_S = 60.0
+_speed_cache: dict[str, tuple[float, list]] = {}
+
+
+def _speed_samples(model_id: str) -> list:
+    """`(provider_id, machine, seconds)` of this model's recent successes, read at most once a minute."""
+    now = time.monotonic()
+    cached = _speed_cache.get(model_id)
+    if cached is not None and now - cached[0] < _SPEED_TTL_S:
+        return cached[1]
+    try:
+        from .runtime import store
+        samples = store.speed_samples(model_id)
+    except Exception:  # noqa: BLE001 - no history is "unmeasured", never a failed route
+        samples = []
+    _speed_cache[model_id] = (now, samples)
+    return samples
+
+
+#: Unified-memory sizes Apple ships; a Mac reports its total in GB or GiB (16 GiB = 17.18 GB).
+_MEMORY_CLASSES = (8, 16, 18, 24, 32, 36, 48, 64, 96, 128, 192, 256, 512)
+
+
+def mac_class(chip: object, memory_gb: object) -> str:
+    """"M4 · 16 GB": the chip family without "Apple", and the shipped memory size."""
+    family = str(chip or "").replace("Apple", "").strip() or "unknown chip"
+    try:
+        gb = float(memory_gb)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return f"{family} · ? GB"
+    size = max((c for c in _MEMORY_CLASSES if c <= gb + 0.5), default=round(gb))
+    return f"{family} · {size} GB"
+
+
+_seconds_memo: dict[str, tuple[object, list, Callable[[str, str], float]]] = {}
+
+
+def _mac_seconds(rows: dict, model_id: str, locations: object = None) -> Callable[[str, str], float]:
+    """`(provider_id, machine) -> expected seconds`: its own median, else its class's, else its chip's.
+
+    Memoised per model while the snapshot (`locations`) and the sample read stay the same objects:
+    a queue of waiting Qwen jobs re-ranks every dispatch pass.
+    """
+    import statistics
+
+    samples = _speed_samples(model_id)
+    memo = _seconds_memo.get(model_id)
+    if memo is not None and locations is not None and memo[0] is locations and memo[1] is samples:
+        return memo[2]
+    classes = {(str(row.get("provider_id") or ""), str(mac.get("machine") or "")):
+               mac_class(mac.get("chip"), mac.get("memory_gb"))
+               for row in rows.values() for mac in row.get("machines") or [] if isinstance(mac, dict)}
+    own: dict[tuple[str, str], list[float]] = {}
+    by_class: dict[str, list[float]] = {}
+    for provider_id, machine, seconds in samples:
+        own.setdefault((provider_id, machine), []).append(seconds)
+        known = classes.get((provider_id, machine), "")
+        if known and "unknown" not in known and "?" not in known:
+            by_class.setdefault(known, []).append(seconds)
+    own_median = {key: statistics.median(values) for key, values in own.items()}
+    class_median = {key: statistics.median(values) for key, values in by_class.items()}
+
+    def seconds(provider_id: str, machine: str) -> float:
+        if (provider_id, machine) in own_median:
+            return own_median[(provider_id, machine)]
+        known = classes.get((provider_id, machine), "")
+        if known in class_median:
+            return class_median[known]
+        return _CHIP_SECONDS.get(known.split(" · ")[0], _UNMEASURED_S)
+    if locations is not None:
+        _seconds_memo[model_id] = (locations, samples, seconds)
+    return seconds
+
+
+def _site_speed(row: dict, model_id: str, modality: str, seconds: Callable[[str, str], float],
+                available: int | None) -> dict:
+    """`fast_s` (the fastest fitting Mac here) and `idle_s` (the idle ones' times, fastest first).
+
+    The Hub, not the Gateway, picks the Mac inside a site, so this is the best the site can do.
+    """
+    provider_id = str(row.get("provider_id") or "")
+    eligible = _eligible_macs(row, model_id, modality)
+    fitting = [m for m, model in eligible.items() if model.get("available") is True] or list(eligible)
+    busy = {str(w.get("machine") or "") for w in row.get("workers") or []
+            if isinstance(w, dict) and w.get("busy") is True}
+    times = sorted(seconds(provider_id, m) for m in fitting)
+    idle = sorted(seconds(provider_id, m) for m in fitting if m not in busy)
+    if available is not None:
+        idle = idle[:max(available, 0)]
+    return {"fast_s": times[0] if times else _UNMEASURED_S, "idle_s": idle}
+
+
+def expected_finish_s(candidate: dict, ahead: int = 0) -> float:
+    """Seconds until a new job sent here would finish, `ahead` more of ours waiting before it.
+
+    An idle fitting Mac: its own time. None (all busy, or our lane here full): the fastest Mac's
+    time after the backlog per fitting Mac and the running job's remainder.
+    ponytail: the site's whole queue stands in for this model's; split it if mixed queues mislead.
+    """
+    idle = [] if candidate.get("room", 1) <= 0 else list(candidate.get("idle_s") or [])
+    if ahead < len(idle):
+        return idle[ahead]
+    backlog = max(int(candidate["queue"]) + ahead - len(idle), 0)
+    return candidate["fast_s"] * (1 + _RUNNING_REMAINDER + backlog / candidate["slots"])
+
+
+def rank_candidate(candidate: dict, routing_key: str, ahead: int = 0) -> tuple:
     """The order `route` picks by, lowest first -- and what a late rebind re-ranks with.
 
     A free fitting slot first, then queue pressure per **fitting** machine, the best preference
@@ -4362,14 +4503,38 @@ def rank_candidate(candidate: dict, routing_key: str) -> tuple:
     Macs no longer dilute a heavy model's share. The lottery is weighted by the fitting Macs at the
     site's best rank for this function; old Hubs use every fitting slot and keep today's behavior.
     """
+    full = candidate.get("room", 1) <= 0  # only set by `apply_load`: a full lane ranks last
     pressure = candidate["queue"] / candidate["slots"]
     no_free = (candidate["available"] or 0) <= 0
+    if "fast_s" in candidate:
+        # A speed-ranked model: the expected finish decides, waiting for a full lane included.
+        full, no_free, pressure = False, False, expected_finish_s(candidate, ahead)
     preference = float(candidate.get("preference", _NEUTRAL_PRIORITY))
     lottery = _weighted_tiebreak(
         routing_key, candidate["location_id"],
         int(candidate.get("preference_slots") or candidate["slots"]),
     )
-    return (no_free, pressure, preference, lottery, candidate["location_id"])
+    return (full, no_free, pressure, preference, lottery, candidate["location_id"])
+
+
+def apply_load(candidates: list[dict], load: Callable[[str], tuple[int, int, int]]) -> list[dict]:
+    """Candidates as this Gateway's own books see them now, for a re-route or late rebind.
+
+    The snapshot is up to one refresh old, so every move in a burst read the same free slots and
+    queue: overnight 10-08 This Mac (TTS limit 1) held 39 re-routed TTS jobs. `load(provider_id)`
+    is the worker's `(room, ours, just_sent)` for this job's lane at that site: `room` is the lane
+    budget left (0 ranks it last, see `rank_candidate`), `ours` our jobs running there (a floor
+    under the snapshot's queue), `just_sent` jobs we sent there since about the snapshot (taken off
+    its free count). Priorities, preferences and the lottery are unchanged.
+    """
+    out = []
+    for candidate in candidates:
+        room, ours, just_sent = load(str(candidate["provider_id"]))
+        available = candidate.get("available")
+        out.append(dict(candidate, room=room, queue=max(int(candidate["queue"]), ours),
+                        available=None if available is None else available - just_sent,
+                        **({"idle_s": candidate["idle_s"][just_sent:]} if "idle_s" in candidate else {})))
+    return out
 
 
 def pool_size(model_id: str, modality: str) -> int:
@@ -4389,16 +4554,21 @@ def route(
     routing_key: str = "",
     only_location: str | None = None,
     exclude_locations: set[str] | None = None,
+    load: Callable[[str], tuple[int, int, int]] | None = None,
 ) -> tuple[ProviderDefinition | None, str]:
     """Choose the location that should run this model. Never raises.
 
     Returns the location's provider definition and a human note naming the choice,
     or `(None, reason)` when nothing can take it. `exclude_locations` is how the
-    worker asks for the **next** site after one refused the model at submit.
+    worker asks for the **next** site after one refused the model at submit. `load` (a re-route)
+    ranks by the worker's live books (`apply_load`); a full lane is still returned, last, so the
+    caller can tell "every lane is full" from "nowhere".
     """
     candidates = routing_candidates(
         model_id, modality, only_location=only_location, exclude_locations=exclude_locations
     )
+    if load is not None and candidates:
+        candidates = apply_load(candidates, load)
     if not candidates:
         if only_location is not None:
             return None, f"the location that owns this voice ({only_location}) cannot run {model_id}"

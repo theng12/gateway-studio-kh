@@ -14,6 +14,25 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.156 — 2026-10-09
+
+### Re-routed jobs no longer pile onto one Mac
+
+- When a job is moved after a failure or a silent Mac, the Gateway now counts the jobs it has just sent and each site's lane limit. A burst of moves spreads across sites with room, and none goes past a site's limit. Overnight, This Mac (voice limit 1) had been given up to 39 moved narration jobs.
+- If every site that could run the job is full, the job waits in the Gateway queue and goes out as soon as a lane frees, instead of queueing on a full Mac.
+
+### Every site going quiet at once no longer abandons renders
+
+- If 3 or more remote sites stop answering within the same minute, the problem is on this side (the Gateway or the network), not at the Macs. The Gateway keeps asking about those jobs instead of re-running them elsewhere, until the sites answer or the job's own time limit ends it. One site going quiet on its own is still moved after a minute, as before.
+
+### Qwen thumbnails prefer fast Macs
+
+- Qwen Image jobs now go where they will finish soonest: This Mac and the M4s first, using each Mac's measured times (or its chip when it has none yet). A slower M1 or M2 takes one only when waiting for a fast Mac would finish later. Other models route as before.
+
+### Quieter retries when the job database is busy
+
+- A job the Gateway could not move because the database was busy is retried after 1 s, then 2 s, 4 s and so on up to 1 minute, and the log says so once per job instead of every half-second.
+
 ## 0.2.155 — 2026-10-09
 
 ### Claude models fix themselves when they stop taking temperature

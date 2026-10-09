@@ -26,6 +26,7 @@ import time
 import threading
 from pathlib import Path
 from typing import Any, Callable
+from urllib.parse import urlsplit
 
 import httpx
 
@@ -57,6 +58,50 @@ QUEUE_WAIT_CEILING_S = 3 * 3600.0
 #: the deadline below bounds it either way -- so a Mac that really is gone still
 #: produces its named hold, just not on the first refused connection.
 POLL_DROP_GRACE_S = 60.0
+
+#: **Every site silent at once is our fault, not theirs** (10-09 06:26 and 06:57: all remote sites
+#: went quiet together and 59 renders still in progress were abandoned and re-run). When this many
+#: remote sites lost contact within `FLEET_OUTAGE_WINDOW_S` of each other and are still silent, a
+#: poll keeps asking past the grace instead of raising `lost_contact`, until the site answers or the
+#: job's own deadline ends it. One site going silent alone is moved after the grace, as before.
+#: ponytail: a fixed count fits today's 8-site fleet; scale it with the remote site count if that shrinks.
+FLEET_OUTAGE_SITES = 3
+FLEET_OUTAGE_WINDOW_S = 60.0
+#: `base -> [first, last]` monotonic times of a remote Hub's current run of failed polls, shared by
+#: every poll thread. Dropped on the first answer.
+_SILENT: dict[str, list[float]] = {}
+_SILENT_LOCK = threading.Lock()
+
+
+def _is_local_base(base: str) -> bool:
+    return urlsplit(base).hostname in {"127.0.0.1", "localhost", "::1"}
+
+
+def _note_poll(base: str, now: float, *, failed: bool) -> None:
+    """Record one poll's outcome at `base` for `_fleet_outage`."""
+    with _SILENT_LOCK:
+        if not failed:
+            _SILENT.pop(base, None)
+            return
+        entry = _SILENT.get(base)
+        if entry is None or now - entry[1] > FLEET_OUTAGE_WINDOW_S:
+            _SILENT[base] = [now, now]  # a new silence, not the tail of an old one
+        else:
+            entry[1] = now
+
+
+def _fleet_outage(base: str, now: float) -> bool:
+    """`FLEET_OUTAGE_SITES` remote sites, `base` among them, fell silent within one window and still are."""
+    if _is_local_base(base):
+        return False
+    with _SILENT_LOCK:
+        mine = _SILENT.get(base)
+        if mine is None:
+            return False
+        together = sum(1 for other, (first, last) in _SILENT.items()
+                       if not _is_local_base(other) and abs(first - mine[0]) <= FLEET_OUTAGE_WINDOW_S
+                       and now - last <= FLEET_OUTAGE_WINDOW_S)
+    return together >= FLEET_OUTAGE_SITES
 # Aligned with the Hub's own claim TTL floor (request timeout 300s + margin).
 JOB_DEADLINE_S = 900.0
 
@@ -721,6 +766,7 @@ def _poll_batch(
     #: Hub is answering. Reset by any successful poll, so a Hub that drops one
     #: request an hour is never mistaken for one that has gone away.
     dropped_since: float | None = None
+    outage_logged = False
     while True:
         now = time.monotonic()
         if running:
@@ -766,7 +812,15 @@ def _poll_batch(
             # so re-reading it is a GET on something that exists -- idempotent, and
             # the only question that settles the outcome. Giving up here is what
             # turned a finished render into a failure (see `POLL_DROP_GRACE_S`).
+            _note_poll(base, now, failed=True)
             if now - dropped_since < POLL_DROP_GRACE_S:
+                time.sleep(POLL_INTERVAL_S)
+                continue
+            if _fleet_outage(base, now):
+                if not outage_logged:
+                    outage_logged = True
+                    log.warning("batch %s at %s: at least %s remote sites went silent together; still polling "
+                                "rather than moving the job", batch_id, base, FLEET_OUTAGE_SITES)
                 time.sleep(POLL_INTERVAL_S)
                 continue
             raise BackendError(
@@ -786,6 +840,7 @@ def _poll_batch(
                 },
             )
         # The Hub answered, so whatever happened before is over.
+        _note_poll(base, now, failed=False)
         dropped_since = None
         if response.status_code >= 400:
             raise BackendError(
