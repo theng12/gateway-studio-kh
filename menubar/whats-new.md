@@ -14,6 +14,24 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.163 — 2026-10-09
+
+### Claude models can write scene plans and image prompts
+
+- **Claude now returns JSON that follows Story Studio's layout exactly.** When Story Studio asks
+  for a set layout (scene plans, image prompts), the Gateway sends that layout to Anthropic, which
+  only lets the model write answers that fit it. Claude Haiku 5.5 is now listed as supporting
+  structured output, so Story Studio can use it for those steps. Gemini can stay as the backup.
+- **This is based on what Anthropic says about each model.** Any Claude model that Anthropic lists
+  as supporting structured output (Haiku 5.5, Haiku 4.5, Sonnet, Opus) is marked as supporting it.
+  The flag shows up after the Anthropic model list is next refreshed.
+- **An answer that does not fit is a failed try, not a result.** If Claude stops early, refuses, or
+  returns something outside the layout (for example the wrong number of scenes), the Gateway does
+  not pass it on. A model pool moves straight on to its next model.
+- Requests without a layout are sent exactly as before.
+
+---
+
 ## 0.2.162 — 2026-10-09
 
 ### The model list answers at once, even with the Jobs window open

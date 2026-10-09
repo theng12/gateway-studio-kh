@@ -301,7 +301,10 @@ def _anthropic_models(definition: ProviderDefinition, values: dict[str, str]) ->
             model_id=str(e.get("id", "")).strip(),
             display_name=_clean(str(e.get("display_name") or ""), str(e.get("id", ""))),
             modality="chat",
-            raw={"id": e.get("id"), "created_at": e.get("created_at")},
+            # `capabilities` is Anthropic's own per-model tree (`structured_outputs.supported`,
+            # `thinking`, `effort`, …); `catalog._chat_row` reads `structured_outputs` from it.
+            raw={"id": e.get("id"), "created_at": e.get("created_at"),
+                 "capabilities": e.get("capabilities")},
         )
         for e in entries
         if isinstance(e, dict) and e.get("id")

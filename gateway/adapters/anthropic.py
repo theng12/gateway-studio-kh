@@ -11,6 +11,8 @@ it earns its own adapter. Two differences matter:
 
 from __future__ import annotations
 
+import json
+import re
 from typing import Any
 
 import httpx
@@ -31,6 +33,139 @@ from .openai_compat import ANTHROPIC_STOP_MAP, CHAT_TIMEOUT, _temperature_refuse
 #: already flows through `_limit_with_source` ahead of this fallback, per model.
 DEFAULT_MAX_TOKENS = 4096
 ANTHROPIC_VERSION = "2023-06-01"
+
+
+#: JSON Schema keywords the Messages API answers with a `400` inside `output_config.format`
+#: ("If you use an unsupported feature, you'll receive a 400 error"), where every object also
+#: needs `additionalProperties: false`. Story Studio's contracts use most of these (`minItems`
+#: = scene count, `maxLength`, `minimum`), so `_wire_schema` removes them before sending, as
+#: Anthropic's own SDKs do, and `_schema_problem` checks them on the answer instead.
+#: `minItems` 0 or 1 is accepted by the API and kept.
+_UNSUPPORTED_KEYWORDS = frozenset({
+    "minLength", "maxLength", "pattern", "minimum", "maximum", "exclusiveMinimum",
+    "exclusiveMaximum", "multipleOf", "minItems", "maxItems", "uniqueItems",
+    "minProperties", "maxProperties", "patternProperties",
+})
+
+
+def _requested_schema(params: dict[str, Any]) -> dict[str, Any] | None:
+    """The JSON schema the caller asked for, in the shape every other chat lane receives it.
+
+    Story Studio sends OpenAI's `response_format: {type: "json_schema", json_schema: {name,
+    strict, schema}}` (`productResponseFormat`); `openai_compat` and `studio_hub` forward it
+    as is. `json_object` without a schema has no Anthropic equivalent and stays prompt-only.
+    """
+    response_format = params.get("response_format")
+    if not isinstance(response_format, dict) or response_format.get("type") != "json_schema":
+        return None
+    spec = response_format.get("json_schema")
+    schema = spec.get("schema") if isinstance(spec, dict) else None
+    return schema if isinstance(schema, dict) else None
+
+
+def _is_object(node: dict[str, Any]) -> bool:
+    kind = node.get("type")
+    return "properties" in node or kind == "object" or (isinstance(kind, list) and "object" in kind)
+
+
+def _wire_schema(node: Any) -> Any:
+    """`node` as the Messages API accepts it: unsupported keywords out, objects closed."""
+    if isinstance(node, list):
+        return [_wire_schema(item) for item in node]
+    if not isinstance(node, dict):
+        return node
+    out: dict[str, Any] = {}
+    for key, value in node.items():
+        if key in _UNSUPPORTED_KEYWORDS and not (key == "minItems" and value in (0, 1)):
+            continue
+        if key in {"properties", "$defs", "definitions"} and isinstance(value, dict):
+            # Keys here are property names, not keywords: a field called `pattern` stays.
+            out[key] = {name: _wire_schema(sub) for name, sub in value.items()}
+        elif key in {"enum", "const", "default", "examples"}:
+            out[key] = value
+        else:
+            out[key] = _wire_schema(value)
+    if _is_object(out):
+        out["additionalProperties"] = False
+    return out
+
+
+_TYPES: dict[str, Any] = {
+    "object": lambda v: isinstance(v, dict),
+    "array": lambda v: isinstance(v, list),
+    "string": lambda v: isinstance(v, str),
+    "boolean": lambda v: isinstance(v, bool),
+    "null": lambda v: v is None,
+    "number": lambda v: isinstance(v, (int, float)) and not isinstance(v, bool),
+    "integer": lambda v: (isinstance(v, int) and not isinstance(v, bool))
+    or (isinstance(v, float) and v.is_integer()),
+}
+
+
+def _schema_problem(value: Any, schema: Any, at: str = "$") -> str | None:
+    """The first way `value` breaks `schema`, or `None`.
+
+    The caller's **original** schema, so the keywords `_wire_schema` removed are checked here.
+    ponytail: the JSON Schema subset Story Studio's contracts use (type, enum, const, anyOf,
+    properties/required/additionalProperties, items, the length/count/range keywords and
+    `pattern`); `$ref` and the rest pass unchecked. Upgrade path: the `jsonschema` package if
+    a caller ever sends more.
+    """
+    if not isinstance(schema, dict):
+        return None
+    kinds = schema.get("type")
+    if kinds is not None:
+        kinds = kinds if isinstance(kinds, list) else [kinds]
+        if not any(_TYPES.get(str(k), lambda v: True)(value) for k in kinds):
+            return f"{at} is not {'/'.join(map(str, kinds))}"
+    if "enum" in schema and value not in schema["enum"]:
+        return f"{at} is not one of the allowed values"
+    if "const" in schema and value != schema["const"]:
+        return f"{at} is not the required value"
+    if isinstance(schema.get("anyOf"), list) and all(
+        _schema_problem(value, option, at) for option in schema["anyOf"]
+    ):
+        return f"{at} matches none of its options"
+    if isinstance(value, str):
+        if len(value) < schema.get("minLength", 0):
+            return f"{at} is shorter than {schema['minLength']}"
+        if "maxLength" in schema and len(value) > schema["maxLength"]:
+            return f"{at} is longer than {schema['maxLength']}"
+        if "pattern" in schema and not re.search(str(schema["pattern"]), value):
+            return f"{at} does not match its pattern"
+    if _TYPES["number"](value):
+        if "minimum" in schema and value < schema["minimum"]:
+            return f"{at} is below {schema['minimum']}"
+        if "maximum" in schema and value > schema["maximum"]:
+            return f"{at} is above {schema['maximum']}"
+        if "exclusiveMinimum" in schema and value <= schema["exclusiveMinimum"]:
+            return f"{at} is not above {schema['exclusiveMinimum']}"
+        if "exclusiveMaximum" in schema and value >= schema["exclusiveMaximum"]:
+            return f"{at} is not below {schema['exclusiveMaximum']}"
+    if isinstance(value, list):
+        if len(value) < schema.get("minItems", 0):
+            return f"{at} has {len(value)} items, fewer than {schema['minItems']}"
+        if "maxItems" in schema and len(value) > schema["maxItems"]:
+            return f"{at} has {len(value)} items, more than {schema['maxItems']}"
+        for index, item in enumerate(value):
+            problem = _schema_problem(item, schema.get("items"), f"{at}[{index}]")
+            if problem:
+                return problem
+    if isinstance(value, dict):
+        properties = schema.get("properties") if isinstance(schema.get("properties"), dict) else {}
+        for name in schema.get("required") or []:
+            if name not in value:
+                return f"{at}.{name} is missing"
+        if schema.get("additionalProperties") is False:
+            extra = sorted(set(value) - set(properties))
+            if extra:
+                return f"{at}.{extra[0]} is not allowed"
+        for name, sub in properties.items():
+            if name in value:
+                problem = _schema_problem(value[name], sub, f"{at}.{name}")
+                if problem:
+                    return problem
+    return None
 
 
 def _split_system(messages: list[dict[str, Any]]) -> tuple[str, list[dict[str, Any]]]:
@@ -77,6 +212,15 @@ class AnthropicBackend:
         }
         if system:
             body["system"] = system
+        # **Guaranteed structured output** (`output_config.format`, GA): the API constrains
+        # decoding to the schema and returns the JSON in the ordinary text block, so the
+        # result below has the same shape as every other lane's. Chosen over a forced tool
+        # call because `tool_choice` `any`/`tool` is a `400` on the newest Claude models.
+        schema = _requested_schema(request.params)
+        if schema is not None:
+            body["output_config"] = {
+                "format": {"type": "json_schema", "schema": _wire_schema(schema)}
+            }
         dropped: list[str] = []
         if request.params.get("temperature") is not None:
             # A default-only family answers any temperature with a definite `400`
@@ -140,6 +284,29 @@ class AnthropicBackend:
             for block in blocks
             if isinstance(block, dict) and block.get("type") == "text"
         )
+
+        if schema is not None:
+            # The guarantee has two documented exceptions, a refusal and a `max_tokens` cut,
+            # and the keywords `_wire_schema` removed are not enforced upstream. An answer that
+            # misses the schema is a failed attempt: settled (the call finished, nothing is
+            # pending upstream) and retryable, so a pool moves on to its next member.
+            stop = payload.get("stop_reason")
+            if stop in {"refusal", "max_tokens"}:
+                problem = f"the answer stopped early ({stop})"
+            else:
+                try:
+                    problem = _schema_problem(json.loads(text), schema)
+                except ValueError:
+                    problem = "the answer is not JSON"
+            if problem:
+                raise BackendError(
+                    f"{request.provider_id}: answer does not match the requested JSON schema: "
+                    f"{problem}"[:300],
+                    code="PROVIDER_FAILED",
+                    retryable=True,
+                    upstream_accepted=True,
+                    upstream_settled=True,
+                )
 
         result_payload = {
             "finish_reason": ANTHROPIC_STOP_MAP.get(str(payload.get("stop_reason")), payload.get("stop_reason")),

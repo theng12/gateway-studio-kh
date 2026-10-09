@@ -1378,8 +1378,19 @@ def _chat_row(model_id: str, definition: ProviderDefinition, model: dict[str, An
             hub_mode = "json_object"
     if hub_mode is not None:
         structured = True
+    # **Anthropic states it per model** in `/v1/models` `capabilities.structured_outputs`
+    # (`supported: true/false`), and `adapters.anthropic` turns a `json_schema` request into
+    # `output_config.format`, where the API constrains decoding to the schema. That is the
+    # strong mode, so it is published as `request_json_schema` and Story sends its schema.
+    capabilities = raw.get("capabilities")
+    stated = capabilities.get("structured_outputs") if isinstance(capabilities, dict) else None
+    stated = stated.get("supported") if isinstance(stated, dict) else None
+    if structured is None and hub_mode is None and isinstance(stated, bool):
+        structured = stated
     if hub_mode is not None:
         structured_mode = hub_mode
+    elif stated is True and structured:
+        structured_mode = "request_json_schema"
     elif parameters is None or not structured:
         structured_mode = None
     elif "response_format" in parameters:
