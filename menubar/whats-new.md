@@ -14,6 +14,23 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.165 — 2026-10-09
+
+### Big music batches fill idle Macs without slowing production
+
+- **Story Studio can now send work as "background".** Background jobs, such as a channel's song
+  pool, run only on Macs that are idle and that no normal job is waiting for. Narration, scene
+  images and chat always go first, even when they arrive after hundreds of queued songs.
+- **Nothing is stopped halfway.** A song that has started finishes (about 2.5 minutes), and that
+  Mac takes the waiting normal work next.
+- **Two projects share fairly.** When two song pools are queued, they take turns instead of the
+  first one using every Mac.
+- **The queue says what is background.** The Jobs window shows a waiting background job as
+  "Background", and its summary and Fleet → Jobs say how many are waiting, for example
+  "312 background music waiting", so a big batch does not look like a jam.
+
+---
+
 ## 0.2.164 — 2026-10-09
 
 ### Claude models show their real output limit

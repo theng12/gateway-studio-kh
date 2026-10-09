@@ -1,0 +1,299 @@
+#!/usr/bin/env python3
+"""The background job class (0.2.165, owner 2026-10-09: "say i approve a pool of 500 songs, can we fill
+up the fleet if there's nothing else generating?").
+
+  * `priority: "background"` on any request; absent/null is normal, anything else is refused;
+  * normal work is dispatched before queued background work, whenever it arrived;
+  * background fills idle Macs (the Hub's own idle count), never the Hub's queue, and never a site
+    with an idle Mac a waiting normal job could use;
+  * no pre-emption: running background work finishes, then the Mac takes normal work;
+  * two background clients take turns;
+  * `GET /v1/fleet/capacity` and the queue ceiling that background never fills for production.
+"""
+from __future__ import annotations
+
+import atexit
+import json
+import os
+import shutil
+import sys
+import tempfile
+import threading
+import time
+import types
+import unittest
+from pathlib import Path
+from unittest.mock import patch
+
+_TEMP_ROOT = Path(tempfile.mkdtemp(prefix="gateway-background-"))
+atexit.register(shutil.rmtree, _TEMP_ROOT, ignore_errors=True)
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+os.environ.update({
+    "GATEWAY_APP_SUPPORT": str(_TEMP_ROOT),
+    "GATEWAY_DATA": str(_TEMP_ROOT / "data"),
+    "GATEWAY_DB": str(_TEMP_ROOT / "data" / "jobs.sqlite3"),
+    "GATEWAY_CREDENTIALS": str(_TEMP_ROOT / "data" / "credentials.json"),
+    "GATEWAY_MODEL_CACHE": str(_TEMP_ROOT / "data" / "models_cache.json"),
+    "GATEWAY_ENV_FILE": str(_TEMP_ROOT / ".env"),
+    "GATEWAY_NO_MIGRATE": "1",
+    "STUDIOHUB_READY_FILE": str(_TEMP_ROOT / "no-hub-ready.json"),
+})
+
+from fastapi import Response  # noqa: E402
+
+from gateway import api, concurrency, fleet  # noqa: E402
+from gateway.api import GatewayError  # noqa: E402
+from gateway import worker as worker_module  # noqa: E402
+from gateway.providers import registry  # noqa: E402
+from gateway.store import JobStore  # noqa: E402
+from gateway.worker import Worker, scarcest_first  # noqa: E402
+
+MUSIC, IMAGE = "stable-audio-3", "flux-klein"
+OPS = {"music": "music.generation", "image": "image.text_to_image"}
+
+
+def _pid(location_id: str) -> str:
+    return f"{fleet.PROVIDER_PREFIX}{location_id}"
+
+
+def _site(location_id: str, macs: int, idle: dict[str, int]) -> dict:
+    """One location of `macs` Macs that all run both models; `idle` is the Hub's free count per model."""
+    return {
+        "id": location_id, "provider_id": _pid(location_id), "label": location_id,
+        "reachable": True, "machines": [], "machine_summary": {"reachable": macs}, "running_jobs": [],
+        "capacity": {"queue_depth": 0, "by_operation": {op: {
+            "eligible_physical_machine_slots_total": macs,
+            "available_physical_machine_slots": macs} for op in OPS.values()}},
+        "model_supply": {model: {"eligible": macs, "available": idle.get(model, 0)} for model in (MUSIC, IMAGE)},
+    }
+
+
+class _Base(unittest.TestCase):
+    def setUp(self) -> None:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        settings = Path(tmp.name) / "provider-concurrency.local.json"
+        settings.write_text(json.dumps({"global": 50}), encoding="utf-8")
+        self.sites: list[dict] = []
+        rows = {modality: [] for modality in OPS}
+
+        def enabled(modality):
+            return [(types.SimpleNamespace(id=row["provider_id"]),
+                     {"model_id": MUSIC if modality == "music" else IMAGE, "modality": modality, "raw": {}})
+                    for row in self.sites] if modality in rows else []
+
+        for patcher in (patch.object(concurrency, "SETTINGS_PATH", settings),
+                        patch.object(fleet, "snapshot", lambda *a, **k: {"locations": self.sites}),
+                        patch.object(registry.models, "enabled_models", enabled)):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        concurrency.reset_for_tests()
+        self.addCleanup(concurrency.reset_for_tests)
+        self.store = JobStore(Path(tmp.name) / "jobs.sqlite3")
+        self.addCleanup(self.store.close)
+        self._n = 0
+
+    def job(self, model: str = MUSIC, *, background: bool = False, group: str | None = None,
+            site: str = "g") -> str:
+        self._n += 1
+        row, _ = self.store.submit(
+            modality="music" if model == MUSIC else "image", model_id=model, params={},
+            idempotency_key=f"k{self._n}", provider_id=_pid(site), job_group=group,
+            priority="background" if background else None)
+        # Due now, in arrival order (the 0.8 s first-dispatch delay is not what is tested here).
+        with self.store._lock:
+            self.store._conn.execute("UPDATE jobs SET next_action_at = 0, created_at = ? WHERE id = ?",
+                                     (time.time() - 60 + self._n, row["id"]))
+            self.store._conn.commit()
+        return row["id"]
+
+
+class _Running:
+    """A real Worker over the real store; every job holds its Mac until `finish(id)`."""
+
+    def __init__(self, store: JobStore) -> None:
+        self.store = store
+        self.started: list[str] = []
+        self.gates: dict[str, threading.Event] = {}
+        self.lock = threading.Lock()
+
+    def execute(self, job, store) -> None:
+        gate = threading.Event()
+        with self.lock:
+            self.gates[job["id"]] = gate
+            self.started.append(job["id"])
+        gate.wait(10)
+        store.succeed(job["id"], result={})
+
+    def __enter__(self):
+        self.patch = patch.object(worker_module, "execute_job", self.execute)
+        self.patch.start()
+        self.worker = Worker(self.store, interval_s=0.01, pool_size=0)
+        self.worker.start()
+        return self
+
+    def settle(self, seconds: float = 0.4) -> list[str]:
+        time.sleep(seconds)
+        with self.lock:
+            return list(self.started)
+
+    def finish(self, job_id: str) -> None:
+        self.gates[job_id].set()
+        deadline = time.time() + 5
+        while self.store.get(job_id)["state"] != "succeeded" and time.time() < deadline:
+            time.sleep(0.01)
+        time.sleep(0.05)  # the job thread releases its booking after `succeed`
+
+    def __exit__(self, *exc):
+        for gate in list(self.gates.values()):
+            gate.set()
+        self.worker.wait_idle(10)
+        self.worker.stop()
+        self.patch.stop()
+        return False
+
+
+class SchedulingTest(_Base):
+    def test_normal_beats_queued_background(self) -> None:
+        # One idle Mac; three songs queued first, then one narration-class job: the normal one runs.
+        self.sites = [_site("g", macs=1, idle={MUSIC: 1})]
+        songs = [self.job(background=True) for _ in range(3)]
+        normal = self.job()
+        with _Running(self.store) as run:
+            self.assertEqual(run.settle(), [normal])
+        self.assertTrue(all(self.store.get(s)["state"] in ("accepted", "succeeded") for s in songs))
+
+    def test_background_fills_idle_macs_and_never_the_hub_queue(self) -> None:
+        # Four idle Macs, ten songs: four run now; the other six wait here, not in the Hub's queue.
+        self.sites = [_site("g", macs=4, idle={MUSIC: 4})]
+        songs = [self.job(background=True) for _ in range(10)]
+        with _Running(self.store) as run:
+            started = run.settle()
+            self.assertEqual(started, songs[:4])
+            # The Hub says every Mac is busy now: no more go, whatever the lane budget would allow.
+            self.sites = [_site("g", macs=8, idle={MUSIC: 0})]
+            self.assertEqual(run.settle(), songs[:4])
+
+    def test_a_site_with_an_idle_mac_a_waiting_normal_job_could_use_takes_no_background(self) -> None:
+        # The image lane here is full by our books (one image running per Mac) so an image job
+        # waits, while the Hub shows a Mac idle that could run it: that Mac is the image job's.
+        self.sites = [_site("g", macs=1, idle={MUSIC: 1, IMAGE: 1})]
+        worker = Worker(self.store, interval_s=10.0, pool_size=0)
+        with worker._budget_lock:
+            worker._per_lane[(_pid("g"), "image")] = 1
+            worker._per_model[(_pid("g"), "image", IMAGE)] = 1
+        self.job(IMAGE)
+        song = self.store.get(self.job(background=True))
+        self.assertFalse(worker._admit(song))
+        # Once no Mac that could run the image job is idle, the song may take the music Mac.
+        self.sites = [_site("g", macs=1, idle={MUSIC: 1, IMAGE: 0})]
+        worker._normal_waiting = None  # a new pass reads the waiting work again
+        self.assertTrue(worker._admit(song))
+
+    def test_no_preemption_then_the_mac_takes_normal_work_next(self) -> None:
+        self.sites = [_site("g", macs=1, idle={MUSIC: 1})]
+        first = self.job(background=True)
+        with _Running(self.store) as run:
+            self.assertEqual(run.settle(), [first])
+            self.sites = [_site("g", macs=1, idle={MUSIC: 0})]
+            later_song = self.job(background=True)
+            normal = self.job()
+            # The song keeps running: nothing cancels or re-sends it, and the normal job waits.
+            self.assertEqual(run.settle(), [first])
+            self.assertEqual(self.store.get(first)["state"], "running")
+            self.assertIsNone(self.store.get(first).get("cancel_requested_at"))
+            # The song ends, the Mac is idle again: the normal job goes, not the queued song.
+            self.sites = [_site("g", macs=1, idle={MUSIC: 1})]
+            run.finish(first)
+            self.assertEqual(run.settle(), [first, normal])
+            self.assertEqual(self.store.get(later_song)["state"], "accepted")
+
+    def test_two_background_clients_take_turns(self) -> None:
+        self.sites = [_site("g", macs=4, idle={MUSIC: 4})]
+        a = [self.job(background=True, group="channel-a/pool") for _ in range(6)]
+        b = [self.job(background=True, group="channel-b/pool") for _ in range(6)]
+        with _Running(self.store) as run:
+            started = run.settle()
+        self.assertEqual(sorted(started), sorted(a[:2] + b[:2]))
+
+    def test_turns_count_the_songs_already_running(self) -> None:
+        jobs = [{"id": f"a{i}", "priority": "background", "job_group": "a", "provider_id": "cloud"}
+                for i in range(3)]
+        jobs += [{"id": f"b{i}", "priority": "background", "job_group": "b", "provider_id": "cloud"}
+                 for i in range(3)]
+        jobs.append({"id": "n", "provider_id": "cloud"})
+        order = [j["id"] for j in scarcest_first(jobs, {}, {"a": 2})]
+        # a has two running, so b goes first until the turns are level; normal work ahead of both.
+        self.assertEqual(order, ["n", "b0", "b1", "a0", "b2", "a1", "a2"])
+
+
+class RequestFieldTest(_Base):
+    def submit(self, payload: dict, key: str):
+        self.sites = [_site("g", macs=2, idle={MUSIC: 2})]
+        with patch.object(api, "store", self.store), \
+                patch.object(api.catalog, "resolve", lambda *a, **k: (
+                    types.SimpleNamespace(id=_pid("g")), {"model_id": MUSIC})):
+            return api._submit("music", f"{fleet.FLEET_PROVIDER_ID}::{MUSIC}", payload, key)[0]
+
+    def test_an_old_client_with_no_field_is_normal(self) -> None:
+        job = self.submit({"prompt": "rain"}, "old")
+        self.assertIsNone(job["priority"])
+        self.assertEqual(api._job_envelope(job)["priority"], "normal")
+
+    def test_background_is_stored_and_never_forwarded(self) -> None:
+        job = self.submit({"prompt": "rain", "priority": "Background"}, "bg")
+        self.assertEqual(job["priority"], "background")
+        self.assertNotIn("priority", json.loads(job["params"]))
+        self.assertEqual(api._job_envelope(job)["priority"], "background")
+        self.assertEqual(self.submit({"priority": "normal"}, "n")["priority"], None)
+
+    def test_an_unknown_value_is_refused_and_nothing_is_queued(self) -> None:
+        for value in ("urgent", 1, ""):
+            with self.assertRaises(GatewayError) as caught:
+                self.submit({"priority": value}, f"bad-{value}")
+            self.assertEqual(caught.exception.status, 400)
+            self.assertIn("priority must be one of normal, background", caught.exception.detail)
+        self.assertEqual(self.store.waiting_jobs(), [])
+
+    def test_a_background_backlog_never_fills_the_queue_for_normal_work(self) -> None:
+        with patch.object(api, "admission", lambda: {"max_queued_jobs": 2}):
+            for i in range(3):
+                self.submit({"priority": "background"}, f"song-{i}")
+            with self.assertRaises(GatewayError) as caught:
+                self.submit({"priority": "background"}, "song-over")
+            self.assertEqual(caught.exception.status, 429)
+            self.assertEqual(self.submit({}, "narration")["priority"], None)
+
+    def test_a_background_job_queues_behind_every_normal_job_of_its_lane(self) -> None:
+        song = self.submit({"priority": "background"}, "song")
+        normal = self.submit({}, "later")
+        self.assertEqual(self.store.queue_rank(normal["id"]), {"position": 1, "size": 2})
+        self.assertEqual(self.store.queue_rank(song["id"]), {"position": 2, "size": 2})
+
+
+class CapacityEndpointTest(_Base):
+    def test_capacity_per_model_with_queued_counts_by_class(self) -> None:
+        self.sites = [_site("a", macs=11, idle={MUSIC: 3}), _site("b", macs=5, idle={MUSIC: 0})]
+        for _ in range(4):
+            self.job(background=True, site="a")
+        self.job(site="b")
+        response = Response()
+        with patch.object(api, "store", self.store):
+            body = api.fleet_capacity(response, modality="music", model=f"{fleet.FLEET_PROVIDER_ID}::{MUSIC}")
+        self.assertEqual(response.headers["Cache-Control"], "private, max-age=5")
+        [row] = body["models"]
+        self.assertEqual((row["model_id"], row["locations"], row["eligible_macs"], row["idle_macs"]),
+                         (MUSIC, 2, 16, 3))
+        self.assertEqual(row["queued"], {"normal": 1, "background": 4})
+        self.assertEqual(row["running"], {"normal": 0, "background": 0})
+        self.assertIn("max_queued_jobs", body)
+
+    def test_capacity_needs_the_api_key_and_refuses_an_unknown_lane(self) -> None:
+        route = next(r for r in api.app.routes if getattr(r, "path", "") == "/v1/fleet/capacity")
+        self.assertIn(api.require_auth, [d.dependency for d in route.dependencies])
+        with self.assertRaises(GatewayError):
+            api.fleet_capacity(Response(), modality="songs")
+
+
+if __name__ == "__main__":
+    unittest.main()

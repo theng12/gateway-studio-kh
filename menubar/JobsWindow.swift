@@ -357,6 +357,7 @@ final class JobsSection: NSObject, AppSection, NSTableViewDataSource, NSTableVie
         let last = stats["last_job_at"] as? Double
         summaryLabel.stringValue = "\(rows.count) shown · \(succeeded) succeeded · "
             + "\(failed) failed · \(total) total · last \(GatewayAPI.relativeTime(last))"
+            + Self.backgroundNote(stats["background"] as? [String: Any])
             + (bulkNote.map { " · \($0)" } ?? "")
     }
 
@@ -651,6 +652,10 @@ final class JobsSection: NSObject, AppSection, NSTableViewDataSource, NSTableVie
         // The project run this job takes turns with (`<project>/<episode>`); omitted when none was sent.
         if let group = string(job["job_group"]), !group.isEmpty {
             detailStack.addArrangedSubview(PageKit.help("Group \(group)"))
+        }
+        if string(job["priority"]) == "background" {
+            detailStack.addArrangedSubview(PageKit.help(
+                "Background: runs only on an idle Mac that no normal job is waiting for, and is never stopped once started."))
         }
 
         // **Waiting, not failed.** A job the fleet could not take yet goes back in
@@ -1228,6 +1233,10 @@ final class JobsSection: NSObject, AppSection, NSTableViewDataSource, NSTableVie
         if job["cancel_requested"] as? Bool == true {
             return "cancellation requested"
         }
+        // A queued background job (bulk work for idle Macs) is not a jam: its own grey word.
+        if string(job["priority"]) == "background", string(job["state"]) == "accepted" {
+            return "background"
+        }
         return string(job["state"]) ?? "unknown"
     }
 
@@ -1235,6 +1244,14 @@ final class JobsSection: NSObject, AppSection, NSTableViewDataSource, NSTableVie
     private func stateHealth(_ job: [String: Any]) -> Health {
         if job["recovery_required"] as? Bool == true { return .bad }
         return Health(state: displayState(job))
+    }
+
+    /// " · 312 background music waiting": queued background work, said apart so it does not read as a jam.
+    static func backgroundNote(_ background: [String: Any]?) -> String {
+        let lanes = (background?["waiting_by_modality"] as? [String: Any] ?? [:])
+            .compactMapValues { ($0 as? NSNumber)?.intValue }.filter { $0.value > 0 }
+        return lanes.sorted { $0.key < $1.key }
+            .map { " · \($0.value) background \(typeName($0.key).lowercased()) waiting" }.joined()
     }
 
     /// "TTS", "Image", "Transcription": the acronym keeps its capitals (`capitalized` made it "Tts").

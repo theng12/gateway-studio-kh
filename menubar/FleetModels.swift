@@ -33,9 +33,12 @@ struct FleetSnapshot: Decodable {
     var fleetWarnings: FleetWarningSetting?
     /// Every "Install on every Mac that can run it", newest first (`FleetModelSpread.swift`); `[]` from an older gateway.
     var modelInstalls: [FleetModelSpread] = []
+    /// This Gateway's own queue with background work (0.2.165) apart; nil from an older gateway.
+    var gatewayQueue: FleetGatewayQueue?
 
     private enum CodingKeys: String, CodingKey {
-        case generatedAt, summary, locations, machines, running, issues, models, release, fleetWarnings, modelInstalls
+        case generatedAt, summary, locations, machines, running, issues, models, release, fleetWarnings, modelInstalls,
+             gatewayQueue
     }
 
     /// An empty snapshot, for the "could not read the fleet" case: every table is
@@ -71,6 +74,32 @@ struct FleetSnapshot: Decodable {
         release = try? c.decode(FleetReleaseState.self, forKey: .release)
         fleetWarnings = try? c.decode(FleetWarningSetting.self, forKey: .fleetWarnings)
         modelInstalls = lenientArray(c, forKey: .modelInstalls)
+        gatewayQueue = try? c.decode(FleetGatewayQueue.self, forKey: .gatewayQueue)
+    }
+}
+
+/// `gateway_queue`: jobs waiting and running here, and how many of them are background work.
+struct FleetGatewayQueue: Decodable {
+    struct Background: Decodable {
+        var waiting: Int?
+        var running: Int?
+        var waitingByModality: [String: Int]?
+    }
+    var waiting: Int?
+    var running: Int?
+    var background: Background?
+
+    /// "Gateway queue: 4 waiting, 9 running · 312 background music waiting (idle Macs only)".
+    var text: String {
+        let bg = background?.waiting ?? 0
+        let normal = max((waiting ?? 0) - bg, 0)
+        var line = "Gateway queue: \(normal) waiting, \(running ?? 0) running"
+        let lanes = (background?.waitingByModality ?? [:]).filter { $0.value > 0 }.sorted { $0.key < $1.key }
+        if !lanes.isEmpty {
+            line += " · " + lanes.map { "\($0.value) background \(FleetFormat.words($0.key).lowercased()) waiting" }
+                .joined(separator: ", ") + " (they run only on idle Macs)"
+        }
+        return line
     }
 }
 

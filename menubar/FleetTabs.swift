@@ -2090,6 +2090,7 @@ final class FleetJobsTab: FleetTabView {
     private var running: FleetTableController!
     private let activity = FleetTableController(columns: FleetJobsTab.activityColumns(), rowHeight: 44)
     private let runningTitle = PageKit.sectionTitle("Running now")
+    private let queueLine = PageKit.help("")
     private let activityTitle = PageKit.sectionTitle("Work by machine")
     private let problemsTitle = PageKit.sectionTitle("Needs attention")
     private let problems = NSStackView()
@@ -2107,6 +2108,8 @@ final class FleetJobsTab: FleetTabView {
         let header = PageKit.row([runningTitle, NSView(), refresh])
         page.addArrangedSubview(header)
         fullWidth(header)
+        page.addArrangedSubview(queueLine)
+        fullWidth(queueLine)
         page.addArrangedSubview(running.container)
         fullWidth(running.container)
         page.addArrangedSubview(activityTitle)
@@ -2145,6 +2148,8 @@ final class FleetJobsTab: FleetTabView {
         }
         running.setRows(runningRows)
         activity.setRows(activityRows)
+        queueLine.stringValue = snapshot.gatewayQueue?.text ?? ""
+        queueLine.isHidden = snapshot.gatewayQueue == nil
         rebuildProblems(runningRows)
     }
 
