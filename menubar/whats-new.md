@@ -14,6 +14,13 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.160 — 2026-10-09
+
+### A Mac job caught mid-send by a restart is sent again, not parked
+
+- If the Gateway restarts while a job for one of your Macs is still being sent, it now sends that job again to the same Mac group after the restart, instead of putting it in Jobs → Needs recovery. The Studio Hub recognises a repeat of the same job, so if the first send arrived it simply carries on with that one; it never runs the job twice, and it never sends it to a second group.
+- If the repeat cannot be confirmed, the job goes to Needs recovery as before. Paid cloud jobs (fal, kie, xai, bfl, minimax) are unchanged: they still wait for you, so nothing is charged twice.
+
 ## 0.2.159 — 2026-10-09
 
 ### A stop pauses new jobs the moment it is asked

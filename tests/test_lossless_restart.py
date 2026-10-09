@@ -117,14 +117,17 @@ class AnInFlightSendCompletesAndIsNotHeld(_Case):
         self.assertFalse(job["recovery_required"])
         self.assertEqual(after.interrupted, [job_id])
 
-    def test_without_the_drain_the_same_send_is_held(self) -> None:
-        """The control: a restart mid-send is exactly the hold this release removes."""
+    def test_without_the_drain_the_same_fleet_send_is_left_for_a_re_send(self) -> None:
+        """The control: a restart mid-send has no batch id. A fleet send is no longer held (0.2.160):
+        the next start re-sends it to the same site with the same key (`test_restart_resend.py`)."""
         job_id = self.submit("b")
         sends = _Sends(send_s=1.0)
         self.start(sends)
         self.assertTrue(sends.sending.wait(3))
-        job = self.restart().get(job_id)
-        self.assertEqual((job["state"], job["error_code"]), ("failed", "UNKNOWN_OUTCOME"))
+        after = self.restart()
+        job = after.get(job_id)
+        self.assertEqual((job["state"], job["error_code"], job["upstream_job_id"]), ("running", None, None))
+        self.assertEqual(after.interrupted, [job_id])
 
 
 class QueuedJobsStayQueued(_Case):

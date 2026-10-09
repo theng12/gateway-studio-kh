@@ -39,7 +39,7 @@ from .adapters.base import requests_started
 from .config import ARTIFACT_DIR
 from .providers import registry
 from .providers.definitions import KIND_STUDIO_HUB
-from .store import NEVER_SENT_SUFFIX, RECOVERY_UNKNOWN, JobStore
+from .store import HUB_RESENDABLE_MODALITIES, NEVER_SENT_SUFFIX, RECOVERY_UNKNOWN, JobStore
 from . import fleet
 
 #: Modality → the Hub's own operation name, for reading a site's per-operation
@@ -764,8 +764,9 @@ def execute_job(job: dict[str, Any], store: JobStore, *, resume: bool = False) -
     if resume:
         # Already dispatched: the enablement gates and the dispatch window below are for work not
         # yet sent. What was sent is followed to its end whatever was toggled since.
-        _dispatch(job, store, provider_id, model_id, modality, params,
-                  str(current.get("upstream_job_id") or ""))
+        upstream = str(current.get("upstream_job_id") or "")
+        _dispatch(job, store, provider_id, model_id, modality, params, upstream,
+                  resend=not upstream)
         return
 
     # Re-check enablement at execution time. A provider can be switched off
@@ -818,8 +819,11 @@ def execute_job(job: dict[str, Any], store: JobStore, *, resume: bool = False) -
 
 
 def _dispatch(job: dict[str, Any], store: JobStore, provider_id: str, model_id: str,
-              modality: str, params: dict[str, Any], resume_id: str) -> None:
-    """Call the adapter and settle what it answers. `resume_id` polls that upstream id first."""
+              modality: str, params: dict[str, Any], resume_id: str, *, resend: bool = False) -> None:
+    """Call the adapter and settle what it answers. `resume_id` polls that upstream id first.
+
+    `resend`: a restart re-sends a fleet job whose first send was unanswered (`restart_can_resend`).
+    Anything short of the Hub's own settled answer is held, never moved: the first send may run."""
     job_id = job["id"]
     current = (store.get(job_id) if hasattr(store, "get") else job) or job
     params["_job_id"] = job_id
@@ -923,6 +927,8 @@ def _dispatch(job: dict[str, Any], store: JobStore, provider_id: str, model_id: 
             if exc.code == "PROVIDER_SUBMISSION_UNCERTAIN":
                 # Explicit ambiguity outranks even a wrapped 400 from a pool member.
                 unknown = True
+            if resend and not exc.upstream_settled:
+                unknown = True  # the first send may be running at this site: hold, never move
             # **The owner cancelled this job, so a failure now is the cancel arriving, not a
             # reason to try another machine.** The Hub answers a cancelled item with an error, the
             # loop below would treat that as a known failure and re-submit the job elsewhere, and
@@ -943,7 +949,7 @@ def _dispatch(job: dict[str, Any], store: JobStore, provider_id: str, model_id: 
             # starting a second one. Not to another location: that one has no way to know. Once the
             # queue-wait budget is spent the location counts as silent (below).
             kind_is_hub = getattr(definition, "kind", "") == "studio_hub"
-            if (kind_is_hub and not resume_id and (exc.recovery or {}).get("replayable")
+            if (kind_is_hub and not resume_id and not resend and (exc.recovery or {}).get("replayable")
                     and current.get("cancel_requested_at") is None
                     and _defer_if_transient(store, job_id, exc, current, unknown=False, replay=True)):
                 log.warning("job %s: %s did not answer its submit (%s); replaying it, attempt %s of %s",
@@ -961,7 +967,7 @@ def _dispatch(job: dict[str, Any], store: JobStore, provider_id: str, model_id: 
             # attempts used up, or an owner cancel in flight - it stays the hold it always was.
             # A resumed job whose Hub answers never gets here; a `resume` 404 and a Hub-reported
             # `uncertain` item carry no `lost_contact`, so they stay holds too.
-            if (unknown and pinned is None and kind_is_hub
+            if (unknown and pinned is None and kind_is_hub and not resend
                     and (exc.recovery or {}).get("lost_contact")
                     and current.get("cancel_requested_at") is None):
                 abandoned = dict(current, provider_id=provider_id)
@@ -1081,7 +1087,7 @@ def _dispatch(job: dict[str, Any], store: JobStore, provider_id: str, model_id: 
             return
         except Exception as exc:  # noqa: BLE001 - a backend bug must not kill the worker
             log.exception("job %s raised unexpectedly", job_id)
-            if requests_started() == sends_before and not resume_id:
+            if requests_started() == sends_before and not resume_id and not resend:
                 # **A gateway bug before any request is a plain failure, not an unknown outcome.**
                 # Nothing reached a provider, so there is nothing to reconcile and a retry cannot
                 # duplicate work (the 0.2.97 pool `AttributeError` is the case that taught this).
@@ -1120,6 +1126,21 @@ def restart_can_follow(job: dict[str, Any]) -> bool:
         return False
     definition = registry.definition(str(job.get("provider_id") or ""))
     return definition is not None and getattr(adapter_for(definition), "resume", None) is not None
+
+
+def restart_can_resend(job: dict[str, Any]) -> bool:
+    """Whether a restart re-sends this running fleet job instead of holding it (owner 2026-10-09).
+
+    Its send was unanswered at shutdown, so there is no batch id to follow. The Hub answers a repeated
+    client request id with the batch it already made (durable, across a Hub restart), so the same key
+    to the same site attaches to that batch, or runs the job once if the Hub never got it. Only a
+    Studio Hub site, on a lane that dedupes that way, with no cancel asked for."""
+    if (job.get("upstream_job_id") or not job.get("dispatch_started_at")
+            or job.get("cancel_requested_at") is not None
+            or job.get("modality") not in HUB_RESENDABLE_MODALITIES):
+        return False
+    definition = registry.definition(str(job.get("provider_id") or ""))
+    return definition is not None and getattr(definition, "kind", "") == KIND_STUDIO_HUB
 
 
 class Worker:
@@ -1218,7 +1239,8 @@ class Worker:
         The store left them `running` (`JobStore.interrupted`). A lane whose adapter can poll by
         id (`resume`) is polled on its own thread exactly as before the restart, counted against
         the budgets like any running job but never refused by them — the work is already running
-        upstream. Any other lane gets the restart hold, as every lane used to.
+        upstream. A fleet send unanswered at shutdown is re-sent (`restart_can_resend`).
+        Any other lane gets the restart hold, as every lane used to.
         """
         ids = list(getattr(self.store, "interrupted", None) or [])
         if ids:
@@ -1228,12 +1250,17 @@ class Worker:
                 job = self.store.get(job_id)
                 if not job or job.get("state") != "running":
                     continue
-                if not restart_can_follow(job):
+                if restart_can_follow(job):
+                    log.warning("job %s: resuming upstream %s on %s after a restart",
+                                job_id, job.get("upstream_job_id"), job.get("provider_id"))
+                elif restart_can_resend(job):
+                    self.store.note_restart_resend(job_id)
+                    log.warning("job %s: its send to %s was unanswered at shutdown; re-sending it "
+                                "there with the same key", job_id, job.get("provider_id"))
+                else:
                     self.store.hold_interrupted(job_id)
                     continue
                 self._book(job)
-                log.warning("job %s: resuming upstream %s on %s after a restart",
-                            job_id, job.get("upstream_job_id"), job.get("provider_id"))
                 threading.Thread(
                     target=self._run, args=(job,), kwargs={"resume": True},
                     name=f"gateway-job-{job_id[:8]}", daemon=True,

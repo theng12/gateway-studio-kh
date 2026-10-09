@@ -118,7 +118,8 @@ def upload_limit_bytes(model_id: str | None) -> int:
 
 
 #: How long a TERM waits for in-flight sends to get an id a restart can follow (or to settle).
-#: ponytail: a fixed 15 s; a send still unanswered after it is held as before. The app waits
+#: ponytail: a fixed 15 s; a fleet send still unanswered after it is re-sent at the next start
+#: (same site, same key: `worker.restart_can_resend`), a cloud one held as before. The app waits
 #: this plus a margin before SIGKILL (`menubar/main.swift` `terminateBackends`): keep them in step.
 _SHUTDOWN_DRAIN_S = 15.0
 

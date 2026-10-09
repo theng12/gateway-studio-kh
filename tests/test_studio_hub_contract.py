@@ -2123,8 +2123,13 @@ class RestartResumesInFlightTests(_HubCase):
         self.assertEqual(job["recovery_context"]["batch_id"], BATCH, "the hold sweep can ask again")
         self.assertNotIn(("POST", "/api/hub/jobs"), hub.calls)
 
-    def test_no_upstream_id_is_an_unknown_outcome(self) -> None:
+    def test_no_upstream_id_is_re_sent_not_held(self) -> None:
+        """0.2.160: a fleet send unanswered at shutdown is re-sent with the same key (see
+        `test_restart_resend.py`); a lane the Hub does not dedupe that way keeps the hold."""
         store, job_id = self._interrupted("resume-no-id", upstream="")
+        self.assertEqual(store.interrupted, [job_id])
+        self.assertEqual(store.get(job_id)["state"], "running")
+        store, job_id = self._interrupted("resume-no-id-srt", upstream="", modality="transcription")
         self.assertEqual(store.interrupted, [])
         job = store.get(job_id)
         self.assertEqual((job["state"], job["error_code"]), ("failed", "UNKNOWN_OUTCOME"))

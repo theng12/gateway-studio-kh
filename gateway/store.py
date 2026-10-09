@@ -40,6 +40,10 @@ NEVER_SENT_SUFFIX = (
 TERMINAL_STATES = frozenset({"succeeded", "failed", "cancelled"})
 UNKNOWN_OUTCOME_CODE = "UNKNOWN_OUTCOME"
 RECOVERY_UNKNOWN = "unknown_outcome"
+#: The Studio Hub lanes submitted through `/api/hub/jobs`, which answers a repeated `clientRequestId`
+#: with the batch it already made, from a SQLite ledger that survives a Hub restart (Hub `broker.py`
+#: `_submit_batch_locked`). Transcription (dedupe only while a batch is active) and chat are not.
+HUB_RESENDABLE_MODALITIES = frozenset({"image", "tts", "music", "video"})
 RECOVERY_RETRYABLE = "retryable"
 CANCEL_REQUESTED = "requested"
 CANCEL_CONFIRMED = "confirmed"
@@ -158,6 +162,9 @@ _ADDED_COLUMNS: tuple[tuple[str, str], ...] = (
     # was local to one call, which is why a job that deferred and came back could be sent
     # to the same machine twice.
     ("attempted_locations", "TEXT"),
+    # When a restart re-sent this fleet job to the same site with the same key (0.2.160): its first
+    # send was still unanswered at shutdown, and the Hub answers a repeated key with that batch.
+    ("restart_resent_at", "REAL"),
     # Every settled attempt, in order: `[{"location", "code", "detail", "at"}]`. The
     # terminal failure after the last attempt **names the machines and why each failed**,
     # and that sentence has to be built from a record rather than reconstructed from the
@@ -252,8 +259,8 @@ class JobStore:
         self._lock = threading.RLock()
         self._conn = sqlite3.connect(self.path, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
-        #: Jobs found `running` with an upstream id when this store opened: still running upstream,
-        #: so the worker resumes polling them (or holds them) on start. See `_recover_interrupted`.
+        #: Jobs found `running` with an upstream id (or a fleet send with none yet) when this store
+        #: opened: the worker resumes or re-sends them (or holds them) on start. See `_recover_interrupted`.
         self.interrupted: list[str] = []
         self._hold_sweep_after = ""
         self._conn.executescript(_SCHEMA)
@@ -377,7 +384,8 @@ class JobStore:
         the Hub itself stated.
         """
         rows = self._conn.execute(
-            "SELECT id, upstream_job_id, dispatch_started_at FROM jobs WHERE state = 'running'"
+            "SELECT id, modality, provider_id, upstream_job_id, dispatch_started_at, "
+            "cancel_requested_at FROM jobs WHERE state = 'running'"
         ).fetchall()
         if not rows:
             return 0
@@ -417,6 +425,15 @@ class JobStore:
             if row["upstream_job_id"]:
                 self.interrupted.append(row["id"])
                 continue
+            # **A fleet send unanswered at shutdown is re-sent, not held** (owner 2026-10-09: "allow
+            # re-send"). The Hub de-duplicates `/api/hub/jobs` by client request id in its durable
+            # ledger, so the worker re-sends it to the same site with the same key
+            # (`worker.restart_can_resend` has the whole rule; anything it refuses is held there).
+            if (str(row["provider_id"] or "").startswith("studio-hub-")
+                    and row["modality"] in HUB_RESENDABLE_MODALITIES
+                    and row["cancel_requested_at"] is None):
+                self.interrupted.append(row["id"])
+                continue
             self._write_restart_hold(row["id"], "", now)
         return len(rows) - requeued - len(self.interrupted)
 
@@ -448,6 +465,9 @@ class JobStore:
             """,
             (UNKNOWN_OUTCOME_CODE, detail, RECOVERY_UNKNOWN, detail, context, now, job_id),
         )
+
+    def note_restart_resend(self, job_id: str) -> None:
+        self._update(job_id, restart_resent_at=time.time())
 
     def hold_interrupted(self, job_id: str) -> None:
         """The restart hold, for an interrupted job whose lane cannot be polled by its id."""
