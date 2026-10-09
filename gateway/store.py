@@ -1856,14 +1856,15 @@ class JobStore:
                 "SELECT MAX(created_at) AS t FROM jobs"
             ).fetchone()
             archived = self._conn.execute("SELECT COUNT(*) AS n FROM job_summaries").fetchone()["n"]
-        background: dict[str, Any] = {"waiting": 0, "running": 0, "waiting_by_modality": {}}
-        for row in self.priority_counts():
-            if row["priority"] == BACKGROUND:
-                background["waiting"] += row["waiting"]
-                background["running"] += row["running"]
-                if row["waiting"]:
-                    lane = background["waiting_by_modality"]
-                    lane[row["modality"]] = lane.get(row["modality"], 0) + row["waiting"]
+            # Background rows only, one indexed search per state (no sort): a few hundred at most.
+            background: dict[str, Any] = {"waiting": 0, "running": 0, "waiting_by_modality": {}}
+            for state, key in (("accepted", "waiting"), ("running", "running")):
+                for row in self._conn.execute(
+                        "SELECT modality FROM jobs WHERE state = ? AND priority IS NOT NULL", (state,)):
+                    background[key] += 1
+                    if key == "waiting":
+                        lane = background["waiting_by_modality"]
+                        lane[row["modality"]] = lane.get(row["modality"], 0) + 1
         return {
             # Background jobs (0.2.165) are inside `by_state` too; this says how many of them there are.
             "background": background,
