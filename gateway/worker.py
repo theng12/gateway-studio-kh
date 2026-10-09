@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import json
 import logging
+import struct
 import threading
 import time
 from pathlib import Path
@@ -529,6 +530,86 @@ def _ext_for(media_type: str | None) -> str:
     return _EXT_BY_MEDIA.get((media_type or "").split(";")[0].strip(), "bin")
 
 
+def _mp4_problem(content: bytes) -> str | None:
+    """Walk the top-level boxes: an m4a/mp4 needs `ftyp` and `moov`, and no box may run past the end."""
+    pos, end, seen = 0, len(content), set()
+    while pos + 8 <= end:
+        size, name = struct.unpack(">I4s", content[pos:pos + 8])
+        if size == 1:
+            if pos + 16 > end:
+                return "is cut off inside a box header"
+            size = struct.unpack(">Q", content[pos + 8:pos + 16])[0]
+        elif size == 0:
+            size = end - pos
+        if size < 8 or pos + size > end:
+            return f"is cut off: its '{name.decode('latin-1')}' box runs past the end"
+        seen.add(name)
+        pos += size
+    if b"ftyp" not in seen:
+        return "has no 'ftyp' box"
+    if b"moov" not in seen:
+        return "has no 'moov' box (moov atom not found)"
+    return None
+
+
+_AUDIO_SIGNATURES = (b"RIFF", b"fLaC", b"OggS")
+_CHECKED_AUDIO = {"audio/wav", "audio/flac", "audio/x-flac", "audio/ogg"}
+_CHECKED_IMAGES = {"image/png", "image/jpeg", "image/webp"}
+
+
+def _is_image(head: bytes) -> bool:
+    if head[:8] == b"\x89PNG\r\n\x1a\n":  # a PNG must open with an IHDR of non-zero size
+        return head[12:16] == b"IHDR" and len(head) >= 24 and min(struct.unpack(">II", head[16:24])) > 0
+    return (head[:3] == b"\xff\xd8\xff" or (head[:4] == b"RIFF" and head[8:12] == b"WEBP")
+            or head[:4] == b"GIF8" or head[4:8] == b"ftyp")  # ftyp: HEIC/AVIF
+
+
+def artifact_problem(content: bytes | None, media_type: str | None) -> str | None:
+    """Why these bytes are not a usable artifact, or `None`. Header bytes only, never a decode.
+
+    Measured 2026-10-09: a Hub voice item finished `done` with a 0-byte m4a, the Gateway stored it
+    and marked the job succeeded, and Story failed its narration three times collecting it. Run
+    over all 20,761 stored artifacts this flags that one file and nothing else.
+
+    Lenient about a *label*, strict about a *broken file*: a paid lane whose CDN calls a JPEG
+    `image/png` still delivered a good picture, and refusing it would pay twice. So an image type
+    needs any image header, an audio type any audio signature, and anything that opens with `ftyp`
+    must have its `moov` and no box cut short (unless it is labelled an image). MP3 has no container and an unknown type nothing to
+    read: size only.
+    """
+    if not content:
+        return "is empty (0 bytes)"
+    kind = (media_type or "").split(";")[0].strip().lower()
+    head = content[:24]
+    if head[4:8] == b"ftyp" and not kind.startswith("image/"):  # HEIC/AVIF carry `meta`, not `moov`
+        return _mp4_problem(content)
+    if kind in ("audio/mp4", "audio/x-m4a", "video/mp4"):
+        return "has no 'ftyp' box"
+    if kind in _CHECKED_IMAGES and not _is_image(head):
+        return f"is not a valid {kind} file"
+    if kind in _CHECKED_AUDIO and not (head[:4] in _AUDIO_SIGNATURES or head[:3] == b"ID3"
+                                       or (head[0] == 0xFF and len(head) > 1 and head[1] & 0xE0 == 0xE0)):
+        return f"is not a valid {kind} file"
+    return None
+
+
+def _check_artifacts(result: Any) -> None:
+    """Refuse a result whose artifact is empty or broken, as a **settled, known** failure.
+
+    Raised from inside the dispatch, so the ordinary A7 rule applies: a fleet job is retried on
+    another Mac, a cloud lane follows its own rules. Nothing is written and no delivery receipt is
+    sent, so the Hub keeps its copy. The adopt path gets the same refusal and keeps its hold.
+    """
+    for index, artifact in enumerate(getattr(result, "artifacts", None) or []):
+        problem = artifact_problem(artifact.content, artifact.media_type)
+        if problem:
+            raise BackendError(
+                f"the provider answered done, but artifact {index} {problem}; not kept",
+                code="INVALID_ARTIFACT", upstream_accepted=True, upstream_settled=True,
+                retryable=True,
+            )
+
+
 def _params_for(definition: Any, params: dict[str, Any]) -> dict[str, Any]:
     """The job's params as one provider should see them.
 
@@ -661,6 +742,7 @@ def settle_result(job_id: str, result: Any, store: JobStore) -> None:
     if row and row.get("state") == "succeeded":
         log.warning("job %s: ignoring a late result, the job already succeeded", job_id)
         return
+    _check_artifacts(result)  # the adopt path's guard; a live result was checked in `_dispatch`
     try:
         diskguard.require_room(sum(len(a.content or b"") for a in result.artifacts))
     except diskguard.DiskLow as low:
@@ -879,6 +961,7 @@ def _dispatch(job: dict[str, Any], store: JobStore, provider_id: str, model_id: 
         sends_before = requests_started()
         try:
             result = adapter.resume(request) if resume_id else adapter.generate(request)
+            _check_artifacts(result)
             break
         except BackendError as exc:
             log.warning("job %s failed via %s: %s", job_id, provider_id, exc)

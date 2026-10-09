@@ -14,6 +14,13 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.161 — 2026-10-09
+
+### An empty or broken file is never handed over as a finished job
+
+- Before the Gateway marks a job done, it now checks the file it got back: it must not be empty, a sound or video file must be complete (an m4a or mp4 needs its index), and a picture must have a real image header. A file that fails the check is treated as a failed try, so a job for one of your Macs is sent to another Mac, as any other failure would be. The Mac that made the bad file is not told it was received, so it keeps its copy.
+- This happened once: a narration for EP0038 came back from a Mac as an empty file and was marked done, and Story Studio failed three times collecting it. Of about 20,800 files kept, that is the only empty or broken one.
+
 ## 0.2.160 — 2026-10-09
 
 ### A Mac job caught mid-send by a restart is sent again, not parked

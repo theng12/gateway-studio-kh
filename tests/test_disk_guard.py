@@ -273,7 +273,8 @@ class RefusalTests(unittest.TestCase):
             def succeed(self, *a, **k):  # pragma: no cover - must not be reached
                 raise AssertionError("settled a job whose artifact could not be written")
 
-        artifact = types.SimpleNamespace(content=b"x" * 1024, media_type="image/png")
+        png = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01"
+        artifact = types.SimpleNamespace(content=png + b"x" * 1000, media_type="image/png")
         result = types.SimpleNamespace(artifacts=[artifact], deliver=None, text="", payload={})
         written: list[str] = []
         with patch.object(Path, "write_bytes", lambda self, data: written.append(str(self))):

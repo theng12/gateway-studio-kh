@@ -37,7 +37,7 @@ from gateway.store import JobStore  # noqa: E402
 _ROOT = Path(_SANDBOX.name)
 HUB = "https://site-a.test"
 SITE = "studio-hub-a"
-ARTIFACT = b"png-bytes"
+ARTIFACT = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01png-bytes"
 
 
 class _Registry:

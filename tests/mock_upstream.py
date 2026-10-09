@@ -842,8 +842,11 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if path in {"/minimax-video.mp4", "/minimax-music.mp3"}:
-            media = "video/mp4" if path.endswith(".mp4") else "audio/mpeg"
-            self._bytes(200, b"\x00\x00\x00\x18ftypmp42" + b"\x00" * 64, media)
+            if path.endswith(".mp4"):  # ftyp + moov: the Gateway refuses an mp4 with no moov
+                self._bytes(200, b"\x00\x00\x00\x18ftypmp42" + b"\x00" * 12
+                            + b"\x00\x00\x00\x08moov", "video/mp4")
+            else:
+                self._bytes(200, b"ID3\x04\x00\x00\x00\x00\x00\x00" + b"\xff\xfb" + b"\x00" * 62, "audio/mpeg")
             return
 
         if path.endswith("/models"):

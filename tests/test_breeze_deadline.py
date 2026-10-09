@@ -167,7 +167,7 @@ class _DeadlineAt:
             exc.evidence = {"hub_batch_id": "batch-a", "hub_machine": "m1-01", "run_seconds": 3040.2}
             raise exc
         from gateway.adapters.base import BackendResult
-        return BackendResult(content=b"audio", media_type="audio/wav",
+        return BackendResult(content=b"RIFF\x24\x00\x00\x00WAVEfmt ", media_type="audio/wav",
                              payload={"hub_machine": "m4-01", "hub_batch_id": "batch-b"})
 
 

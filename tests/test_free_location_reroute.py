@@ -40,6 +40,8 @@ from gateway.adapters.base import BackendResult  # noqa: E402
 from gateway.store import JobStore  # noqa: E402
 
 A, B = "studio-hub-a", "studio-hub-b"
+#: A real PNG header: the Gateway refuses an artifact that is not the file its type says.
+PNG = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01"
 BASE = {A: "https://hub-a.test", B: "https://hub-b.test"}
 
 
@@ -81,7 +83,7 @@ class _Fleet:
         if method == "POST" and path.endswith("/ack"):
             return httpx.Response(200, json={"ok": True})
         if method == "GET" and path.endswith("/artifact"):
-            return httpx.Response(200, content=f"bytes-from-{host}".encode(),
+            return httpx.Response(200, content=PNG + f"bytes-from-{host}".encode(),
                                   headers={"content-type": "image/png"})
         if host == "a" and (self.a_dies or self.a_404):
             if self.a_404 and method == "GET":
@@ -170,7 +172,7 @@ class SilentFreeLocationIsMovedTests(_Case):
         row = self.job("silent-1")
         job = self.run_job(fleet, row)
         self.assertEqual(job["state"], "succeeded", job.get("error_detail"))
-        self.assertEqual(Path(job["asset_path"]).read_bytes(), b"bytes-from-b")
+        self.assertEqual(Path(job["asset_path"]).read_bytes(), PNG + b"bytes-from-b")
         self.assertEqual(job["provider_id"], B)
         self.assertFalse(job["recovery_required"], "a free location's silence is not a hold")
         self.assertEqual(fleet.submits("b"), ["/api/hub/jobs"], "re-dispatched once, at the other")
@@ -269,7 +271,7 @@ class SubmitThatDoesNotAnswerTests(_Case):
         self.assertEqual((seen[-1]["state"], seen[-1]["provider_id"]), ("succeeded", A))
         self.assertEqual(fleet.created, {"a": 1, "b": 0}, "the replay found the batch the Hub already made")
         self.assertEqual(len(fleet.submits("a")), 2)
-        self.assertEqual(Path(seen[-1]["asset_path"]).read_bytes(), b"bytes-from-a")
+        self.assertEqual(Path(seen[-1]["asset_path"]).read_bytes(), PNG + b"bytes-from-a")
 
     def test_a_location_that_never_answers_its_submit_is_moved_once_the_wait_is_spent(self) -> None:
         fleet = _Fleet(a_dies=False, a_submit=["timeout-forever"])
@@ -313,7 +315,7 @@ class LateResultTests(_Case):
         before = (Path(job["asset_path"]).read_bytes(), job["result"] if "result" in job else None,
                   job["artifacts"] if "artifacts" in job else None)
         delivered: list[bool] = []
-        late = BackendResult(content=b"bytes-from-a", media_type="image/png",
+        late = BackendResult(content=PNG + b"bytes-from-a", media_type="image/png",
                              payload={"hub_batch_id": "batch-a"},
                              deliver=lambda: delivered.append(True) or {"ok": True})
         worker_module.settle_result(job["id"], late, self.store)
@@ -396,7 +398,7 @@ class RestartIsNotADeathTests(_Case):
         fleet = _Fleet(a_dies=False, a_blips=2, a_states=["running", "running", "done"])
         job = self._restart(fleet, "resume-live")
         self.assertEqual((job["state"], job["provider_id"]), ("succeeded", A), job.get("error_detail"))
-        self.assertEqual(Path(job["asset_path"]).read_bytes(), b"bytes-from-a")
+        self.assertEqual(Path(job["asset_path"]).read_bytes(), PNG + b"bytes-from-a")
         self.assertEqual(fleet.submits("a") + fleet.submits("b"), [], "never resubmitted")
         self.assertEqual(self.routed, [])
 

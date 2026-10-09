@@ -59,6 +59,10 @@ import gateway.worker as worker_module  # noqa: E402
 
 HUB = "https://hub.test"
 BATCH = "hub-batch-1"
+#: Real headers: the Gateway refuses an artifact that is not the file its type says (0.2.161).
+ARTIFACT_BYTES = b"RIFF\x24\x00\x00\x00WAVE" + b"artifact-bytes"
+M4A_BYTES = b"\x00\x00\x00\x14ftypM4A \x00\x00\x00\x00isom\x00\x00\x00\x08moov"
+PNG_BYTES = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01"
 
 
 class _Hub:
@@ -73,7 +77,7 @@ class _Hub:
         self,
         *,
         states: list[str] | None = None,
-        artifact: bytes = b"artifact-bytes",
+        artifact: bytes = ARTIFACT_BYTES,
         ack_status: int = 200,
         cancel_status: int = 200,
         item: dict[str, Any] | None = None,
@@ -334,7 +338,7 @@ class DeliveryReceiptTests(_HubCase):
     def test_image_delivery_is_acknowledged(self) -> None:
         hub = _Hub()
         result = self.generate_then_deliver(hub, self.request(modality="image", params={"prompt": "a cat"}))
-        self.assertEqual(result.content, b"artifact-bytes")
+        self.assertEqual(result.content, ARTIFACT_BYTES)
         self.assertEqual(hub.acks, [f"/api/hub/jobs/{BATCH}/items/0/ack"])
         self.assertTrue(result.payload["delivery_ack"]["ok"])
         self.assertEqual(result.payload["delivery_ack"]["status"], 200)
@@ -372,7 +376,7 @@ class DeliveryReceiptTests(_HubCase):
         receipt = result.payload["delivery_ack"]
         self.assertFalse(receipt["ok"])
         self.assertEqual(receipt["status"], 409)
-        self.assertEqual(result.content, b"artifact-bytes")
+        self.assertEqual(result.content, ARTIFACT_BYTES)
 
     def test_the_receipt_names_the_route_it_used(self) -> None:
         hub = _Hub()
@@ -403,7 +407,7 @@ class _FakeAdapter:
             return self._receipt
 
         return BackendResult(
-            content=b"image-bytes", media_type="image/png", payload=payload, deliver=deliver
+            content=PNG_BYTES, media_type="image/png", payload=payload, deliver=deliver
         )
 
 
@@ -1794,7 +1798,7 @@ class HubContractHardeningTests(_HubCase):
     def test_a_transient_artifact_error_is_retried(self) -> None:
         hub = _Hub(artifact_failures=2)
         result = self.generate(hub, self.request(modality="image", params={"prompt": "x"}))
-        self.assertEqual(result.content, b"artifact-bytes")
+        self.assertEqual(result.content, ARTIFACT_BYTES)
 
     def test_an_artifact_that_never_arrives_is_a_hold_not_a_crash(self) -> None:
         hub = _Hub(artifact_failures=99)
@@ -1869,7 +1873,7 @@ class HubContractHardeningTests(_HubCase):
     def test_a_5xx_or_unreadable_poll_is_ridden_out_like_a_dropped_socket(self) -> None:
         hub = _Hub(poll_faults=[502, "<html>proxy</html>", 503], states=["running", "done"])
         result = self.generate(hub, self.request(modality="image", params={"prompt": "x"}))
-        self.assertEqual(result.content, b"artifact-bytes")
+        self.assertEqual(result.content, ARTIFACT_BYTES)
 
     def test_a_4xx_poll_is_still_fatal_at_once(self) -> None:
         hub = _Hub(poll_faults=[404])
@@ -2040,7 +2044,7 @@ class AdoptedHoldTests(_HubCase):
         self.assertEqual(job["state"], "succeeded")
         self.assertFalse(job["recovery_required"])
         self.assertIsNone(job["error_code"])
-        self.assertEqual(Path(job["asset_path"]).read_bytes(), b"artifact-bytes")
+        self.assertEqual(Path(job["asset_path"]).read_bytes(), ARTIFACT_BYTES)
         self.assertEqual(hub.acks, [f"/api/hub/jobs/{BATCH}/items/0/ack"])
 
     def test_bytes_that_do_not_verify_leave_the_hold_alone(self) -> None:
@@ -2091,7 +2095,7 @@ class RestartResumesInFlightTests(_HubCase):
         job = store.get(job_id)
         self.assertEqual(job["state"], "succeeded")
         self.assertIsNone(job["error_code"])
-        self.assertEqual(Path(job["asset_path"]).read_bytes(), b"artifact-bytes")
+        self.assertEqual(Path(job["asset_path"]).read_bytes(), ARTIFACT_BYTES)
         self.assertNotIn(("POST", "/api/hub/jobs"), hub.calls, "resumed, never resubmitted")
         self.assertEqual(hub.acks, [f"/api/hub/jobs/{BATCH}/items/0/ack"])
 
@@ -2223,7 +2227,7 @@ class OutputFormatTests(_HubCase):
         self.assertEqual(self._item_params("tts", {"text": "hi", "voice_id": "v"}), {"voice_id": "v"})
 
     def test_a_compressed_artifact_is_recorded_as_delivered(self) -> None:
-        hub = _Hub(artifact=b"\x00\x00\x00\x1cftypM4A ", artifact_media_type="audio/mp4")
+        hub = _Hub(artifact=M4A_BYTES, artifact_media_type="audio/mp4")
         result = self.generate_then_deliver(
             hub, self.request(modality="music", params={"prompt": "x", "output_format": "m4a"}))
         self.assertEqual(result.media_type, "audio/mp4")
@@ -2277,7 +2281,7 @@ class OutputFormatTests(_HubCase):
         class _M4a:
             def generate(self, request: BackendRequest) -> BackendResult:
                 self.seen = dict(request.params)
-                return BackendResult(content=b"\x00\x00\x00\x1cftypM4A ", media_type="audio/mp4",
+                return BackendResult(content=M4A_BYTES, media_type="audio/mp4",
                                      payload={"hub_batch_id": BATCH})
 
         class _HubRegistry(_Registry):

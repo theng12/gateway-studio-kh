@@ -283,7 +283,7 @@ class EndToEndThroughThreeSitesTest(unittest.TestCase):
             if self.behaviour == "engine":
                 raise BackendError("ffmpeg not found on PATH", code="PROVIDER_FAILED",
                                    upstream_accepted=False, upstream_settled=True)
-            return BackendResult(content=b"png", media_type="image/png")
+            return BackendResult(content=b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01", media_type="image/png")
 
     def _run_single_site(self, behaviour: str, *, params=None, extra_sites=False):
         return self._run([behaviour], sites=["a", "b"] if extra_sites else ["a"], params=params)

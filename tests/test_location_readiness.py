@@ -94,7 +94,7 @@ class _RefuseFirstLocation:
                 retryable=True,
                 upstream_accepted=False,
             )
-        return BackendResult(content=b"image-bytes", media_type="image/png", payload={})
+        return BackendResult(content=b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01", media_type="image/png", payload={})
 
 
 class CanPublishReadinessTests(unittest.TestCase):
