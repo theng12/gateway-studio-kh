@@ -303,8 +303,15 @@ def _anthropic_models(definition: ProviderDefinition, values: dict[str, str]) ->
             modality="chat",
             # `capabilities` is Anthropic's own per-model tree (`structured_outputs.supported`,
             # `thinking`, `effort`, …); `catalog._chat_row` reads `structured_outputs` from it.
+            #
+            # `max_tokens` is Anthropic's per-model output cap (Models API; Haiku 5.5 states
+            # 128K). It is kept under `max_completion_tokens`, the spelling `catalog._chat_row`
+            # already reads, so the row publishes the model's own figure (source `provider`)
+            # instead of the adapter's 4,096 fallback. Absent stays `None`, and the owner's
+            # `model-limits.local.json` or that fallback answer as before.
             raw={"id": e.get("id"), "created_at": e.get("created_at"),
-                 "capabilities": e.get("capabilities")},
+                 "capabilities": e.get("capabilities"),
+                 "max_completion_tokens": e.get("max_tokens")},
         )
         for e in entries
         if isinstance(e, dict) and e.get("id")

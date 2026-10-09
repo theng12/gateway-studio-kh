@@ -14,6 +14,21 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.164 — 2026-10-09
+
+### Claude models show their real output limit
+
+- **Claude Haiku 5.5 now lists 128,000 output tokens instead of 4,096.** The Gateway used to
+  publish its own small default for every Claude model, so Story Studio split scene plans into
+  small groups of 10 scenes and sent the whole episode context again for each group. It now reads
+  the limit Anthropic states for each model in its model list.
+- **Your own limits file still applies when Anthropic says nothing.** If Anthropic's list does not
+  carry a limit for a model, the Gateway uses your `model-limits.local.json` value, and then the
+  old default, as before.
+- The limit shows up after the Anthropic model list is next refreshed. Nothing else changes.
+
+---
+
 ## 0.2.163 — 2026-10-09
 
 ### Claude models can write scene plans and image prompts

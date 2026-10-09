@@ -222,5 +222,33 @@ class CapabilityFlagTests(unittest.TestCase):
         self.assertEqual(result.models[0].raw["capabilities"], caps)
 
 
+class PublishedOutputLimitTests(unittest.TestCase):
+    """Anthropic's own `max_tokens` is the published `max_output_tokens` (0.2.164)."""
+
+    def _discovered_row(self, entry: dict) -> dict:
+        answer = httpx.Response(200, json={"data": [entry]})
+        definition = SimpleNamespace(base_url="http://mock")
+        with patch.object(discovery.httpx, "get", lambda *a, **k: answer):
+            raw = discovery._anthropic_models(definition, {"api_key": "k"}).models[0].raw
+        provider = SimpleNamespace(id="anthropic-direct", kind=KIND_ANTHROPIC)
+        return catalog._chat_row(entry["id"], provider, {"raw": raw})
+
+    def test_the_models_list_figure_is_published_as_the_providers(self) -> None:
+        row = self._discovered_row({"id": "claude-haiku-5-5", "max_tokens": 128000,
+                                    "max_input_tokens": 1000000})
+        self.assertEqual(row["max_output_tokens"], 128000)
+        self.assertEqual(row["max_output_tokens_source"], "provider")
+
+    def test_a_list_without_it_keeps_the_adapter_default_as_ours(self) -> None:
+        row = self._discovered_row({"id": "claude-haiku-5-5"})
+        self.assertEqual(row["max_output_tokens"], anthropic.DEFAULT_MAX_TOKENS)
+        self.assertEqual(row["max_output_tokens_source"], "gateway")
+
+    def test_the_context_window_is_not_touched(self) -> None:
+        row = self._discovered_row({"id": "claude-haiku-5-5", "max_tokens": 128000,
+                                    "max_input_tokens": 1000000})
+        self.assertIsNone(row["context_window_tokens"])
+
+
 if __name__ == "__main__":
     unittest.main()
