@@ -8,6 +8,8 @@ import Foundation
 
 enum GatewayAPIError: LocalizedError {
     case notRunning
+    /// `/health` answers but a read ran out of time: slow, not down (0.2.157).
+    case busy
     case badURL
     case unauthorized
     case http(Int)
@@ -31,6 +33,7 @@ enum GatewayAPIError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .notRunning: return "The gateway is not running."
+        case .busy: return "The gateway is busy, retrying…"
         case .badURL: return "Bad gateway URL."
         case .unauthorized: return "The gateway rejected the API key."
         case .http(let code): return "The gateway returned HTTP \(code)."
@@ -316,7 +319,10 @@ enum GatewayAPI {
                 return
             }
             if let error {
-                finish(.failure(error))
+                // `isRunning` passed above, so `/health` answers: a timed-out read is a busy
+                // gateway; the visible page re-reads on the window's 5 s timer. Writes keep the plain error.
+                let busy = method == "GET" && (error as? URLError)?.code == .timedOut
+                finish(.failure(busy ? GatewayAPIError.busy : error))
                 return
             }
             guard let response = response as? HTTPURLResponse else {

@@ -2231,11 +2231,7 @@ def list_jobs(
     bulk = {
         "as_of": as_of,
         "removable_failed": store.dismissable_failed_count(as_of),
-        "needs_recovery": sum(
-            1 for job in store.holds(limit=1000)
-            if job.get("recovery_required") and job.get("state") == "failed"
-            and float(job.get("updated_at") or 0) <= as_of
-        ),
+        "needs_recovery": store.needs_recovery_count(as_of),
     }
     return {"jobs": rows, "stats": store.stats(), "next_before": next_before, "bulk": bulk}
 

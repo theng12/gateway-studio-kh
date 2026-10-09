@@ -14,6 +14,14 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.157 — 2026-10-09
+
+### The Jobs list loads in a blink again
+
+- With about 51,000 jobs on record, opening Jobs took 6 to 21 seconds, and meanwhile the app could show "The gateway is not running" and "Starting…" although the Gateway was fine. The job database now has indexes for the list, its filters, the counts and the dispatcher's queue, so a 200- or 500-job page takes a few hundredths of a second on a copy of this Mac's data (was 0.6 to 1 s there, and much longer under live load). The first start after the update builds the indexes once, in about a second or two.
+- The Gateway's health check now has its own lane, so a busy moment can no longer make the app think the Gateway has stopped.
+- If a page ever does time out while the Gateway is answering, it says "The gateway is busy, retrying…" and tries again on its own, instead of "The gateway is not running".
+
 ## 0.2.156 — 2026-10-09
 
 ### Re-routed jobs no longer pile onto one Mac

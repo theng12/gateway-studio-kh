@@ -36,6 +36,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+import anyio
 import httpx
 from fastapi import Depends, FastAPI, File, Form, Header, Query, Request, Response, UploadFile
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -1263,7 +1264,18 @@ _JOB_GROUP = re.compile(r"[A-Za-z0-9._:/-]{1,120}")
 # ---------------------------------------------------------------------------
 # Health
 # ---------------------------------------------------------------------------
+#: **`/health` never waits behind other requests** (0.2.157). Sync routes share anyio's one
+#: 40-thread pool; when store-bound requests (Story's polls, a slow Jobs list) filled it, `/health`
+#: queued for seconds although its own work takes ~1 ms, the app's 2.5 s probe timed out, and the
+#: window said "The gateway is not running". Two threads of its own keep it answering.
+_HEALTH_THREADS = anyio.CapacityLimiter(2)
+
+
 @app.get("/health")
+async def health_route() -> dict[str, Any]:
+    return await anyio.to_thread.run_sync(health, limiter=_HEALTH_THREADS)
+
+
 def health() -> dict[str, Any]:
     return {
         "status": "ok",

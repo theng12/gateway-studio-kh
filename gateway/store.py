@@ -80,6 +80,15 @@ CREATE INDEX IF NOT EXISTS jobs_state_next ON jobs(state, next_action_at);
 -- The notifier asks "what settled in this window", and a window read must not walk every job's
 -- (large) result_json to find out.
 CREATE INDEX IF NOT EXISTS jobs_updated ON jobs(updated_at);
+-- **Every hot read walks an index, never the table** (0.2.157). The store is one connection behind
+-- one lock, so a full scan of ~50k rows (~300 MB with result_json) held every other request and
+-- job thread for it: the Jobs list took 6-21 s live and starved the threadpool `/health` needs.
+-- Newest-first pages (all, and per state), the stats/queue counts, and the dispatcher's open set.
+CREATE INDEX IF NOT EXISTS jobs_created ON jobs(created_at);
+CREATE INDEX IF NOT EXISTS jobs_state_created ON jobs(state, created_at);
+CREATE INDEX IF NOT EXISTS jobs_modality_state ON jobs(modality, state);
+CREATE INDEX IF NOT EXISTS jobs_open ON jobs(created_at, id)
+    WHERE state NOT IN ('succeeded', 'failed', 'cancelled');
 -- What the Analytics page needs of a job after `archive_old` removed it: six scalars, never
 -- the prompt or the generated text. `generation_analytics` reads this beside `jobs`.
 CREATE TABLE IF NOT EXISTS job_summaries (
@@ -1261,6 +1270,17 @@ class JobStore:
             return int(self._conn.execute(
                 f"SELECT COUNT(*) FROM jobs WHERE {_DISMISSABLE} AND updated_at <= ?",  # noqa: S608
                 (time.time() if before is None else before,),
+            ).fetchone()[0])
+
+    def needs_recovery_count(self, before: float) -> int:
+        """Failed jobs whose outcome is unknown, last changed at or before `before` (the Jobs bulk count).
+
+        An indexed COUNT; it used to load up to 1,000 whole hold rows to count them in Python.
+        """
+        with self._lock:
+            return int(self._conn.execute(
+                "SELECT COUNT(*) FROM jobs WHERE state = 'failed' AND recovery_state = ? AND updated_at <= ?",
+                (RECOVERY_UNKNOWN, before),
             ).fetchone()[0])
 
     def dismiss_failed(self, before: float | None = None) -> int:
