@@ -35,6 +35,7 @@ _LOCAL_UNITS = {
     "transcription": ("per_second",),
     "music": ("per_request",),
     "embeddings": ("input_per_1m_tokens",),
+    "vision": ("per_request",),
 }
 
 #: fal's `unit` word (its pricing endpoint) -> our unit key. A unit not listed here is

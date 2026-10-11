@@ -187,7 +187,9 @@ _MODALITIES_BY_KIND: dict[str, frozenset[str]] = {
     # now publishes none; the lane stays so a video model a Hub adds later runs without a change
     # here. With none published, Video offers only the cloud providers' models.
     # Embeddings (Hub 0.6.165): the free local meaning check for Story's ideas.
-    KIND_STUDIO_HUB: frozenset({"chat", "image", "tts", "music", "transcription", "video", "embeddings"}),
+    # Vision (Hub 0.6.166): free local image analysis (depth, subject, points, segments).
+    KIND_STUDIO_HUB: frozenset({"chat", "image", "tts", "music", "transcription", "video", "embeddings",
+                                "vision"}),
     # Chat is delegated to the OpenAI shim; image and video are native.
     KIND_XAI: frozenset({"chat", "image", "video"}),
     # A pool is chat only. Its members are chat models by construction, and a

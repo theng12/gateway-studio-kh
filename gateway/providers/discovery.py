@@ -560,6 +560,8 @@ _HUB_STATED_MODALITY = {
     "chat": "chat",
     # Hub 0.6.165: the Embeddings Studio (engine `embed-mlx`).
     "embeddings": "embeddings",
+    # Hub 0.6.166: image analysis (engine `vision-mlx`): depth, subject, points, segments.
+    "vision": "vision",
     "text": "chat",
     "llm": "chat",
 }
@@ -906,6 +908,10 @@ def _studio_hub(definition: ProviderDefinition, values: dict[str, str]) -> Disco
             # definite `true` is the one thing that lets a caller know the finished episode will
             # discard it. Tri-state, like every other unstated fact — absent stays None.
             raw["generates_audio"] = facts.get("generates_audio")
+            # A vision model's analysis tasks and whether it is the Hub's default for them (0.6.166).
+            for key in ("tasks", "default"):
+                if key in facts:
+                    raw[key] = facts[key]
         models.append(
             DiscoveredModel(
                 model_id=model_id,

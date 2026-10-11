@@ -57,7 +57,7 @@ REBUILD_TTL_S = 20.0
 REFRESH_EVERY_S = 1.0
 STALE_AFTER_MS = 30 * 60 * 1000
 
-MODALITIES = ("chat", "image", "video", "tts", "transcription", "music", "embeddings")
+MODALITIES = ("chat", "image", "video", "tts", "transcription", "music", "embeddings", "vision")
 
 # Which field carries the serving provider, per modality.
 #
@@ -80,6 +80,7 @@ _PROVIDER_FIELD = {
     "transcription": "provider_name",
     "music": "provider_name",
     "embeddings": "provider_name",
+    "vision": "provider_name",
 }
 
 #: Extra aliases published alongside `provider_name`, for readers that already
@@ -102,6 +103,7 @@ _CAPABILITY_MODALITY = {
     "transcription": "audio",
     "music": "audio",
     "embeddings": "text",
+    "vision": "image",
 }
 _CAPABILITY_OPERATION = {
     "chat": "chat.response",
@@ -113,6 +115,9 @@ _CAPABILITY_OPERATION = {
     # Not in Story's capability vocabulary, so its legacy reader drops the row; the dedicated
     # `/v1/embeddings/models` route and `/v1/embeddings` are how embeddings are used.
     "embeddings": "text.embedding",
+    # Image analysis (Hub 0.6.166 `vision-mlx`): likewise outside Story's legacy vocabulary; use
+    # `/v1/vision/models` and `/v1/vision/analyze`.
+    "vision": "image.analysis",
 }
 
 #: The cloud fallback ratio list, and **only** that: a `studio_hub` row builds its own
@@ -1541,6 +1546,20 @@ def _embeddings_row(model_id: str, definition: ProviderDefinition,
             "max_input_tokens": texts.get("max_tokens_per_item")}
 
 
+def vision_tasks(model: dict[str, Any]) -> list[str] | None:
+    """The analysis tasks a vision model publishes (`depth`, `subject`, ...): `None` if the Hub said nothing."""
+    raw = model.get("raw") or {}
+    contract = raw.get("lane_contract") if isinstance(raw.get("lane_contract"), dict) else {}
+    tasks = raw.get("tasks") or contract.get("tasks")
+    return [str(task) for task in tasks] if isinstance(tasks, list) else None
+
+
+def _vision_row(model_id: str, definition: ProviderDefinition, model: dict[str, Any]) -> dict[str, Any]:
+    """A vision (image analysis) row: which tasks the Hub says this model does, and whether it is the default."""
+    return {"kind": "vision", "capabilities": ["vision"], "tasks": vision_tasks(model),
+            "default": (model.get("raw") or {}).get("default") is True}
+
+
 def _music_row(model_id: str, definition: ProviderDefinition, model: dict[str, Any]) -> dict[str, Any]:
     """A music lane row.
 
@@ -1636,6 +1655,7 @@ _ROW_BUILDERS = {
     "chat": _chat_row,
     "music": _music_row,
     "embeddings": _embeddings_row,
+    "vision": _vision_row,
 }
 
 

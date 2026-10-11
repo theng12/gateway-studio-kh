@@ -1527,6 +1527,7 @@ for _modality, _path in (
     ("music", "/v1/music/models"),
     ("transcription", "/v1/transcription/models"),
     ("embeddings", "/v1/embeddings/models"),
+    ("vision", "/v1/vision/models"),
 ):
     app.add_api_route(
         _path,
@@ -1935,6 +1936,221 @@ def embeddings(payload: dict[str, Any]) -> dict[str, Any]:
     raise GatewayError(503, "No Mac could run this embeddings batch right now. "
                             + " · ".join(refusals), "NO_EMBEDDINGS_ENGINE",
                        headers={"Retry-After": "30"})
+
+
+# ---------------------------------------------------------------------------
+# Vision (image analysis)
+# ---------------------------------------------------------------------------
+VISION_TASKS = ("depth", "subject", "points", "segments")
+#: How many Macs one request may try before it gives up.
+VISION_MAX_MACS = 3
+VISION_MAX_IMAGE_BYTES = 12 * 1024 * 1024
+_VISION_FIELDS = frozenset({"tasks", "image", "model", "text", "regions", "source_job_id", "site", "priority"})
+_VISION_MIMES = ("image/jpeg", "image/png", "image/webp")
+_VISION_WHY = ("source-mac", "caller-site", "any")
+_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost"})
+
+
+def _vision_invalid(detail: str) -> GatewayError:
+    return GatewayError(422, detail, "INVALID_REQUEST")
+
+
+def _no_vision_engine(detail: str) -> GatewayError:
+    return GatewayError(503, detail, "NO_VISION_ENGINE", headers={"Retry-After": "30"})
+
+
+def _vision_image(image: Any) -> dict[str, Any]:
+    """The image as the Hub takes it: `{b64, mime?}` (at most 12 MB decoded) or `{url}` (http/https)."""
+    from urllib.parse import urlsplit
+    import base64
+    import binascii
+
+    if isinstance(image, dict) and set(image) == {"url"}:
+        url = image["url"]
+        parts = urlsplit(url) if isinstance(url, str) else None
+        if not parts or parts.scheme not in ("http", "https") or not parts.hostname:
+            raise _vision_invalid("image.url must be an http or https address.")
+        return {"url": url}
+    if not isinstance(image, dict) or "b64" not in image or set(image) - {"b64", "mime"}:
+        raise _vision_invalid('image must be {"b64": "...", "mime": "image/jpeg"} or {"url": "https://..."}.')
+    if image.get("mime", "image/jpeg") not in _VISION_MIMES:
+        raise _vision_invalid(f"image.mime must be one of {', '.join(_VISION_MIMES)}.")
+    try:
+        size = len(base64.b64decode(image["b64"], validate=True))
+    except (binascii.Error, TypeError, ValueError):
+        size = 0
+    if not size:
+        raise _vision_invalid("image.b64 is not a base64-encoded image.")
+    if size > VISION_MAX_IMAGE_BYTES:
+        raise _vision_invalid(f"The image is {size / 1048576:.1f} MB; at most 12 MB is accepted. "
+                              "Send a downscaled ~768 px JPEG.")
+    return dict(image)
+
+
+def _vision_models(tasks: list[str], named: Any) -> tuple[list[str], dict[str, dict[str, Any]]]:
+    """The bare model ids to send, and per model the locations (id -> definition) that switched it on."""
+    from .catalog import decode_model_id, vision_tasks
+
+    rows: dict[str, dict[str, Any]] = {}
+    for definition, model in registry.models.enabled_models("vision"):
+        entry = rows.setdefault(model["model_id"], {"tasks": None, "default": False, "sites": {}})
+        entry["tasks"] = entry["tasks"] or vision_tasks(model)
+        entry["default"] = entry["default"] or (model.get("raw") or {}).get("default") is True
+        entry["sites"][fleet.controller_id_from(definition.id) or definition.id] = definition
+    menu = "; ".join(f"{encode_model_id(fleet.FLEET_PROVIDER_ID, model_id)} does "
+                     + ", ".join(rows[model_id]["tasks"] or ["(not stated)"]) for model_id in sorted(rows))
+    install = ("install one on a Studio Hub (0.6.166 or newer) and switch it on in the Gateway.")
+    if named is None:
+        chosen = []
+        for task in tasks:
+            able = sorted((model_id for model_id, entry in rows.items() if task in (entry["tasks"] or ())),
+                          key=lambda model_id: (not rows[model_id]["default"], model_id))
+            if not able:
+                raise _no_vision_engine(f'No Mac offers a vision model that does "{task}" right now: {install}')
+            chosen.append(able[0])
+    else:
+        names = [named] if isinstance(named, str) else named
+        if not isinstance(names, list) or not names or not all(isinstance(n, str) and n for n in names):
+            raise _vision_invalid("model must be a model id or a list of model ids.")
+        chosen = []
+        for name in names:
+            provider_id, model_id = decode_model_id(name)
+            if provider_id not in ("", fleet.FLEET_PROVIDER_ID) or not model_id:
+                raise GatewayError(404, f'Model "{name}" is not a vision model on this gateway; use a '
+                                        f"{fleet.FLEET_PROVIDER_ID}::<id> row from /v1/vision/models.",
+                                   "MODEL_NOT_FOUND")
+            chosen.append(model_id)
+        if not rows:
+            raise _no_vision_engine(f"No Mac offers a vision model right now: {install}")
+        unknown = [model_id for model_id in chosen if model_id not in rows]
+        if unknown:
+            raise _vision_invalid(f"{', '.join(unknown)}: not a vision model switched on here. Available: {menu}.")
+        for task in tasks:
+            if not any(rows[model_id]["tasks"] is None or task in rows[model_id]["tasks"] for model_id in chosen):
+                raise _vision_invalid(f'None of the named models does "{task}". Available: {menu}.')
+    needed = list(dict.fromkeys(chosen))
+    return needed, {model_id: rows[model_id]["sites"] for model_id in needed}
+
+
+def _vision_macs(needed: list[str], sites: dict[str, dict[str, Any]],
+                 source_job_id: Any, site: Any, client_host: str) -> list[tuple[str, str, str]]:
+    """`(location_id, machine, why)` for every Mac with every needed model ready, nearest first.
+
+    Owner rule (keep Tailscale traffic low): the Mac that generated the image (`source-mac`), then the
+    caller's own site (`caller-site`: `site`, else the location whose controller or joined Mac has the
+    caller's address), then any other Mac (`any`). Ready = what fleet routing calls eligible (installed
+    and ready, fits in memory, not paused, not a resting Lite Mode Mac, reachable) and files `cached`.
+    """
+    import random
+
+    source_location = source_machine = None
+    job = store.get(source_job_id) if isinstance(source_job_id, str) and source_job_id else None
+    if job:
+        source_location = fleet.controller_id_from(str(job.get("provider_id") or ""))
+        try:
+            result = json.loads(job.get("result_json") or "{}")
+        except ValueError:
+            result = {}
+        source_machine = ((result or {}).get("payload") or {}).get("hub_machine")
+
+    def host(url: Any) -> str:
+        from urllib.parse import urlsplit
+
+        name = urlsplit(str(url or "")).hostname or ""
+        return "127.0.0.1" if name in _LOOPBACK_HOSTS else name
+
+    caller = "127.0.0.1" if client_host in _LOOPBACK_HOSTS else client_host
+    locations = fleet.snapshot(allow_stale=True).get("locations") or []
+    if not (isinstance(site, str) and site):
+        site = next((str(row.get("id")) for row in locations if caller and caller in
+                     {host(row.get("url"))} | {host(node.get("address")) for node in row.get("nodes") or []
+                                               if isinstance(node, dict)}), None)
+    macs: list[tuple[str, str, str]] = []
+    for row in locations:
+        location = str(row.get("id") or "")
+        if (not all(location in sites[model_id] for model_id in needed) or not row.get("reachable")
+                or not fleet._takes_customer_jobs(row)):
+            continue
+        ready = None
+        for model_id in needed:
+            here = {machine for machine, model in fleet._eligible_macs(row, model_id, "vision").items()
+                    if model.get("cache_state") == "cached"}
+            ready = here if ready is None else ready & here
+        for machine in sorted(ready or ()):
+            why = ("source-mac" if (location, machine) == (source_location, source_machine)
+                   else "caller-site" if location == site else "any")
+            macs.append((location, machine, why))
+    # ponytail: random spread within a tier; rank by each Mac's load if one ever queues up.
+    return sorted(macs, key=lambda mac: (_VISION_WHY.index(mac[2]), random.random()))
+
+
+@app.post("/v1/vision/analyze", dependencies=[Depends(require_auth)])
+def vision_analyze(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    """Image analysis (depth, subject, points, segments) on the fleet's vision engine: free, local, synchronous.
+
+    Only fleet models serve here, so this can never spend. The Mac is picked nearest the image first
+    (`_vision_macs`); one that refuses or cannot be reached is skipped for the next, up to
+    `VISION_MAX_MACS`. The answer is the Hub's own, plus `served_by`, `attempts` and `network`.
+    """
+    unsupported = sorted(set(payload) - _VISION_FIELDS)
+    if unsupported:
+        raise _vision_invalid(f"{', '.join(unsupported)}: not supported; this route accepts "
+                              f"{', '.join(sorted(_VISION_FIELDS))}.")
+    tasks = payload.get("tasks")
+    if (not isinstance(tasks, list) or not tasks or len(set(map(str, tasks))) != len(tasks)
+            or not all(task in VISION_TASKS for task in tasks)):
+        raise _vision_invalid(f"tasks must be a non-empty list of different tasks from {', '.join(VISION_TASKS)}.")
+    body: dict[str, Any] = {"tasks": tasks, "image": _vision_image(payload.get("image"))}
+    text = payload.get("text")
+    if text is not None:
+        if not isinstance(text, str) or not text.strip() or len(text) > 500:
+            raise _vision_invalid("text must be a non-empty phrase of at most 500 characters.")
+        body["text"] = text
+    regions = payload.get("regions")
+    if regions is not None:
+        if (not isinstance(regions, list) or not 1 <= len(regions) <= 8
+                or not all(isinstance(r, str) and r.strip() and len(r) <= 40 for r in regions)):
+            raise _vision_invalid("regions must be a list of 1 to 8 names (each at most 40 characters).")
+        body["regions"] = regions
+    if payload.get("priority", "normal") not in PRIORITIES:
+        raise _vision_invalid('priority must be "normal" or "background".')
+    for field in ("source_job_id", "site"):
+        if payload.get(field) is not None and not isinstance(payload.get(field), str):
+            raise _vision_invalid(f"{field} must be a string.")
+    needed, sites = _vision_models(tasks, payload.get("model"))
+    body["model"] = needed
+    client_host = request.client.host if getattr(request, "client", None) else ""
+    macs = _vision_macs(needed, sites, payload.get("source_job_id"), payload.get("site"), client_host)
+    attempts: list[str] = []
+    for location, machine, why in macs[:VISION_MAX_MACS]:
+        definition = sites[needed[0]][location]
+        call = BackendRequest(
+            provider_id=definition.id, model_id=needed[0], modality="vision",
+            params={"machine": machine, "body": body}, values=registry.credentials.resolved(definition.id),
+            base_url=definition.base_url, display_name=definition.display_name)
+        try:
+            result = adapter_for(definition).generate(call)
+        except BackendError as exc:
+            if not exc.retryable:
+                raise GatewayError(exc.status or 502, str(exc), exc.code) from exc
+            attempts.append(f"{definition.display_name} ({machine}) {exc}")
+            continue
+        answer = dict(result.payload["answer"])
+        fleet_id = lambda model_id: encode_model_id(fleet.FLEET_PROVIDER_ID, str(model_id))  # noqa: E731
+        if isinstance(answer.get("models"), dict):
+            answer["models"] = {task: fleet_id(model_id) for task, model_id in answer["models"].items()}
+        if isinstance(answer.get("revisions"), dict):
+            answer["revisions"] = {fleet_id(model_id): sha for model_id, sha in answer["revisions"].items()}
+        return answer | {
+            "served_by": {"location_id": location, "machine": machine, "why": why},
+            "attempts": attempts,
+            "network": {"request_bytes": result.payload["request_bytes"],
+                        "response_bytes": result.payload["response_bytes"]},
+        }
+    if not attempts:
+        raise _no_vision_engine(f"No Mac has {', '.join(needed)} installed and ready right now (awake, not "
+                                "paused, enough free memory). Install it on a Studio Hub (0.6.166 or newer).")
+    raise _no_vision_engine("No Mac could analyse this image right now. " + " · ".join(attempts))
 
 
 # ---------------------------------------------------------------------------

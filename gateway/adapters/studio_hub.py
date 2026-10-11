@@ -26,7 +26,7 @@ import time
 import threading
 from pathlib import Path
 from typing import Any, Callable
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit
 
 import httpx
 
@@ -2270,12 +2270,66 @@ def _generate_embeddings(request: BackendRequest) -> BackendResult:
     return BackendResult(payload={"vectors": vectors, "usage": payload.get("usage") or {}})
 
 
+#: An analysis takes seconds; this only bounds a Mac that stopped answering.
+VISION_TIMEOUT_S = 90.0
+
+
+def _generate_vision(request: BackendRequest) -> BackendResult:
+    """One image analysis on one Mac of a Hub location (Hub 0.6.166+, engine `vision-mlx`).
+
+    `params`: `machine` (the Hub's name for the Mac, `local` = the controller's own) and `body` (the
+    Hub request). The controller's own Mac answers on the peer route `/studio/vision/v1/vision/analyze`,
+    a joined Mac through its controller's relay `/api/hub/fleet/nodes/{machine}/vision/analyze`.
+    Synchronous and admitted like embeddings (no lease). A 422 is the caller's; anything else is this
+    Mac's, so the caller may try another.
+    """
+    base = _resolve_base(request)
+    machine = str(request.params.get("machine") or "local")
+    path = ("/studio/vision/v1/vision/analyze" if machine == "local"
+            else f"/api/hub/fleet/nodes/{quote(machine, safe='')}/vision/analyze")
+    body = json.dumps(request.params["body"]).encode()
+    try:
+        response = httpx.post(base + path, content=body,
+                              headers={**_headers(request), "Content-Type": "application/json"},
+                              timeout=httpx.Timeout(VISION_TIMEOUT_S, connect=5.0))
+    except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
+        raise BackendError(f"could not be reached ({type(exc).__name__})", code="LOCATION_UNREACHABLE",
+                           retryable=True, upstream_accepted=False) from exc
+    except httpx.HTTPError as exc:
+        raise BackendError(f"did not answer in time ({type(exc).__name__})",
+                           code="SITE_CAPACITY_UNAVAILABLE", retryable=True) from exc
+    if response.status_code == 422:
+        raise BackendError("the Hub refused the request: "
+                           + (_hub_refusal_reason(response) or response.text[:300]),
+                           code="INVALID_REQUEST", status=422, retryable=False, upstream_accepted=False)
+    if response.status_code in (404, 405) and not _hub_refusal_code(response):
+        raise BackendError("its Studio Hub has no vision route (needs 0.6.166 or newer) or does not "
+                           f"know the model (HTTP {response.status_code})", code="LOCATION_NOT_READY",
+                           status=response.status_code, retryable=True, upstream_accepted=False)
+    if response.status_code >= 400:
+        code = _hub_refusal_code(response)
+        raise BackendError(_refusal_sentence(code, response) if code else
+                           f"refused it (HTTP {response.status_code}): {response.text[:200]}",
+                           code="LOCATION_NOT_READY", status=response.status_code,
+                           retryable=True, upstream_accepted=False)
+    try:
+        answer = response.json()
+    except ValueError:
+        answer = None
+    if not isinstance(answer, dict):
+        raise BackendError("the Hub returned an unreadable analysis", code="PROVIDER_FAILED", retryable=True)
+    return BackendResult(payload={"answer": answer, "request_bytes": len(body),
+                                  "response_bytes": response.num_bytes_downloaded or len(response.content)})
+
+
 class StudioHubBackend:
     def generate(self, request: BackendRequest) -> BackendResult:
         if request.modality == "chat":
             return _generate_chat(request)
         if request.modality == "embeddings":
             return _generate_embeddings(request)
+        if request.modality == "vision":
+            return _generate_vision(request)
         if request.modality in {"image", "tts", "music", "video"}:
             return _generate_image_or_voice(request)
         if request.modality == "transcription":

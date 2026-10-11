@@ -14,6 +14,22 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.167 — 2026-10-11
+
+### Your Macs can now look at a picture and describe its shape
+
+- **New: `POST /v1/vision/analyze`.** Story Studio can send a picture and ask for any of four
+  things: how far away each part is (`depth`), where the main subject is (`subject`), points of
+  interest (`points`), and areas like sky, water, clouds or fire (`segments`).
+- **It runs on your Macs and costs nothing.** The work goes to Studio Hub's new vision engine
+  (Hub 0.6.166) with Depth Anything V2 Small and Florence-2. Only fleet models serve here, so it
+  can never spend money.
+- **It stays close to the picture.** The Mac that made the picture is asked first, then a Mac at
+  the same shop as the caller, then any other Mac, so less traffic crosses the internet. A Mac that
+  is busy, paused or missing the model is skipped (up to three are tried).
+- **When no Mac has the model,** the answer says so (`503 NO_VISION_ENGINE`) in plain words.
+  `GET /v1/vision/models` lists the vision models and the tasks each one does.
+
 ## 0.2.166 — 2026-10-11
 
 ### A free meaning check for Story's ideas, on your own Macs
