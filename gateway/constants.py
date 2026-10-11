@@ -121,6 +121,10 @@ def zero_pricing(modality: str) -> dict[str, Any]:
             base |= {
                 "credits_per_request": 0,
             }
+        case "embeddings":
+            base |= {
+                "input_credits_per_million_tokens": 0,
+            }
 
     return base
 

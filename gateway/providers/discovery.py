@@ -558,6 +558,8 @@ _HUB_STATED_MODALITY = {
     # the same row starts publishing with no change to this table.
     "video": "video",
     "chat": "chat",
+    # Hub 0.6.165: the Embeddings Studio (engine `embed-mlx`).
+    "embeddings": "embeddings",
     "text": "chat",
     "llm": "chat",
 }

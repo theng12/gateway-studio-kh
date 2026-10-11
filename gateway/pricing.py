@@ -34,6 +34,7 @@ _LOCAL_UNITS = {
     "tts": ("per_1k_chars",),
     "transcription": ("per_second",),
     "music": ("per_request",),
+    "embeddings": ("input_per_1m_tokens",),
 }
 
 #: fal's `unit` word (its pricing endpoint) -> our unit key. A unit not listed here is

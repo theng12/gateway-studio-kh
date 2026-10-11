@@ -14,6 +14,19 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.166 — 2026-10-11
+
+### A free meaning check for Story's ideas, on your own Macs
+
+- **New: `POST /v1/embeddings`.** Story Studio can send a list of short texts and get back one
+  vector per text, in the same shape OpenAI uses. Two ideas that say the same thing in different
+  words get vectors that point the same way, which is how Story will spot a repeated idea.
+- **It runs on your Macs and costs nothing.** The work goes to Studio Hub's new Embeddings Studio
+  (Hub 0.6.165) with the model BGE small en v1.5 MLX bf16. Only fleet models serve here, so it can
+  never spend money. It does not wait behind narration or image jobs.
+- **When no Mac has the model,** the answer says so (`503 NO_EMBEDDINGS_ENGINE`) and Story keeps
+  its word-overlap check.
+
 ## 0.2.165 — 2026-10-09
 
 ### Big music batches fill idle Macs without slowing production

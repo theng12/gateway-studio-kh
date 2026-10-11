@@ -57,7 +57,7 @@ REBUILD_TTL_S = 20.0
 REFRESH_EVERY_S = 1.0
 STALE_AFTER_MS = 30 * 60 * 1000
 
-MODALITIES = ("chat", "image", "video", "tts", "transcription", "music")
+MODALITIES = ("chat", "image", "video", "tts", "transcription", "music", "embeddings")
 
 # Which field carries the serving provider, per modality.
 #
@@ -79,6 +79,7 @@ _PROVIDER_FIELD = {
     "video": "provider_name",
     "transcription": "provider_name",
     "music": "provider_name",
+    "embeddings": "provider_name",
 }
 
 #: Extra aliases published alongside `provider_name`, for readers that already
@@ -100,6 +101,7 @@ _CAPABILITY_MODALITY = {
     "tts": "audio",
     "transcription": "audio",
     "music": "audio",
+    "embeddings": "text",
 }
 _CAPABILITY_OPERATION = {
     "chat": "chat.response",
@@ -108,6 +110,9 @@ _CAPABILITY_OPERATION = {
     "tts": "voice.tts",
     "transcription": "audio.transcription",
     "music": "music.generate",
+    # Not in Story's capability vocabulary, so its legacy reader drops the row; the dedicated
+    # `/v1/embeddings/models` route and `/v1/embeddings` are how embeddings are used.
+    "embeddings": "text.embedding",
 }
 
 #: The cloud fallback ratio list, and **only** that: a `studio_hub` row builds its own
@@ -1520,6 +1525,22 @@ def _chat_row(model_id: str, definition: ProviderDefinition, model: dict[str, An
     }
 
 
+def _embeddings_row(model_id: str, definition: ProviderDefinition,
+                    model: dict[str, Any]) -> dict[str, Any]:
+    """An embeddings row: what the vectors are, read from the Hub's own lane contract.
+
+    `null` where the Hub stated nothing (an older Hub), never a guessed dimension.
+    """
+    contract = (model.get("raw") or {}).get("lane_contract") or {}
+    artifact = contract.get("artifact") if isinstance(contract.get("artifact"), dict) else {}
+    texts = next((item for item in contract.get("parameters") or []
+                  if isinstance(item, dict) and item.get("name") == "input"), {})
+    return {"kind": "embeddings", "capabilities": ["embeddings"],
+            "dimensions": artifact.get("dimensions"), "normalized": artifact.get("normalized"),
+            "max_inputs": texts.get("max_items"),
+            "max_input_tokens": texts.get("max_tokens_per_item")}
+
+
 def _music_row(model_id: str, definition: ProviderDefinition, model: dict[str, Any]) -> dict[str, Any]:
     """A music lane row.
 
@@ -1614,6 +1635,7 @@ _ROW_BUILDERS = {
     "transcription": _transcription_row,
     "chat": _chat_row,
     "music": _music_row,
+    "embeddings": _embeddings_row,
 }
 
 

@@ -68,7 +68,7 @@ def _fleet_definitions_by_id() -> dict[str, ProviderDefinition]:
             # The Hub's own routes: readiness first, because standalone
             # `/api/hub/capabilities` advertises zero models (see the local
             # provider's definition).
-            modalities=("chat", "image", "tts", "music", "transcription", "video"),
+            modalities=("chat", "image", "tts", "music", "transcription", "video", "embeddings"),
             discovery=DISCOVERY_STUDIO_HUB,
             description=f"Studio Hub controller at {url}.",
             credential_fields=(

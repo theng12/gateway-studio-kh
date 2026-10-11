@@ -2222,10 +2222,60 @@ def _generate_chat(request: BackendRequest) -> BackendResult:
     )
 
 
+#: One batch of short texts takes well under a second; this only bounds a Mac that stopped answering.
+EMBEDDINGS_TIMEOUT_S = 60.0
+
+
+def _generate_embeddings(request: BackendRequest) -> BackendResult:
+    """One embeddings batch on a Hub location's Embeddings Studio (Hub 0.6.165+).
+
+    `POST {base}/studio/embeddings/v1/embeddings`, the peer route: the Hub admits it like any other
+    work (paused Mac, Lite Mode, model readiness) but holds no machine lease, so it runs beside a
+    narration instead of behind it. Synchronous, so the answer is the result: a vector per input.
+    """
+    base = _resolve_base(request)
+    headers = {**_headers(request), "Content-Type": "application/json"}
+    texts = request.params.get("input")
+    try:
+        response = httpx.post(f"{base}/studio/embeddings/v1/embeddings", headers=headers,
+                              json={"model": request.model_id, "input": texts},
+                              timeout=httpx.Timeout(EMBEDDINGS_TIMEOUT_S, connect=5.0))
+    except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
+        raise BackendError(f"could not reach the Hub at {base} ({type(exc).__name__})",
+                           code="LOCATION_UNREACHABLE", retryable=True,
+                           upstream_accepted=False) from exc
+    except httpx.HTTPError as exc:
+        raise BackendError(f"hub embeddings failed: {exc}", code="SITE_CAPACITY_UNAVAILABLE",
+                           retryable=True) from exc
+    if response.status_code >= 400:
+        code = _hub_refusal_code(response)
+        if response.status_code == 422:
+            raise BackendError(f"the Hub refused the input: {response.text[:300]}",
+                               code="INVALID_REQUEST", status=422, retryable=False,
+                               upstream_accepted=False)
+        # Any other refusal, or a 404 from a Hub older than the lane: try another location.
+        raise BackendError(_refusal_sentence(code, response) if code else
+                           f"hub embeddings HTTP {response.status_code}: {response.text[:200]}",
+                           code="LOCATION_NOT_READY", status=response.status_code,
+                           retryable=True, upstream_accepted=False)
+    try:
+        payload = response.json()
+        vectors = [row["embedding"] for row in sorted(payload["data"], key=lambda row: row["index"])]
+    except (ValueError, KeyError, TypeError) as exc:
+        raise BackendError("the Hub returned an unreadable embeddings answer",
+                           code="PROVIDER_FAILED", retryable=True) from exc
+    if len(vectors) != len(texts) or not all(isinstance(vector, list) and vector for vector in vectors):
+        raise BackendError(f"the Hub returned {len(vectors)} vectors for {len(texts)} inputs",
+                           code="PROVIDER_FAILED", retryable=True)
+    return BackendResult(payload={"vectors": vectors, "usage": payload.get("usage") or {}})
+
+
 class StudioHubBackend:
     def generate(self, request: BackendRequest) -> BackendResult:
         if request.modality == "chat":
             return _generate_chat(request)
+        if request.modality == "embeddings":
+            return _generate_embeddings(request)
         if request.modality in {"image", "tts", "music", "video"}:
             return _generate_image_or_voice(request)
         if request.modality == "transcription":

@@ -1526,6 +1526,7 @@ for _modality, _path in (
     ("tts", "/v1/tts/models"),
     ("music", "/v1/music/models"),
     ("transcription", "/v1/transcription/models"),
+    ("embeddings", "/v1/embeddings/models"),
 ):
     app.add_api_route(
         _path,
@@ -1852,6 +1853,88 @@ def chat_completions(payload: dict[str, Any]) -> dict[str, Any]:
         ],
         "usage": (result.payload or {}).get("usage"),
     }
+
+
+# ---------------------------------------------------------------------------
+# Embeddings
+# ---------------------------------------------------------------------------
+#: OpenAI's own per-request ceiling; the Hub's lane states the same number.
+EMBEDDINGS_MAX_INPUTS = 2048
+#: How many locations one request may try before it gives up.
+EMBEDDINGS_MAX_LOCATIONS = 3
+_EMBEDDINGS_FIELDS = frozenset({"model", "input", "encoding_format", "user"})
+
+
+@app.post("/v1/embeddings", dependencies=[Depends(require_auth)])
+def embeddings(payload: dict[str, Any]) -> dict[str, Any]:
+    """OpenAI-compatible embeddings on the fleet's Embeddings Studio: free, local, synchronous.
+
+    `{model, input: [...]}` -> `{object: "list", data: [{embedding, index}], model, usage}`. Only
+    fleet models (`studio-hub::<id>`; a bare id means the same) serve here, so this can never spend.
+    Interactive work: no job, no queue. The fleet's own routing picks the location; a location that
+    refuses or cannot be reached is skipped for the next one, up to `EMBEDDINGS_MAX_LOCATIONS`.
+    """
+    unsupported = sorted(set(payload) - _EMBEDDINGS_FIELDS)
+    if unsupported:
+        raise GatewayError(422, f"{', '.join(unsupported)}: not supported; this route accepts "
+                                f"{', '.join(sorted(_EMBEDDINGS_FIELDS))}.", "INVALID_REQUEST")
+    if payload.get("encoding_format", "float") != "float":
+        raise GatewayError(422, "encoding_format: only float is served.", "INVALID_REQUEST")
+    texts = payload.get("input")
+    texts = [texts] if isinstance(texts, str) else texts
+    if (not isinstance(texts, list) or not texts
+            or not all(isinstance(text, str) and text.strip() for text in texts)):
+        raise GatewayError(422, "input must be a non-empty string or a non-empty list of "
+                                "non-empty strings.", "INVALID_REQUEST")
+    if len(texts) > EMBEDDINGS_MAX_INPUTS:
+        raise GatewayError(422, f"input has {len(texts)} items; at most {EMBEDDINGS_MAX_INPUTS} "
+                                "per request.", "INVALID_REQUEST")
+    from .catalog import decode_model_id
+
+    requested = str(payload.get("model") or "")
+    provider_id, model_id = decode_model_id(requested)
+    if provider_id not in ("", fleet.FLEET_PROVIDER_ID) or not model_id:
+        raise GatewayError(404, f'Model "{requested}" is not an embeddings model on this gateway; '
+                                f"use a {fleet.FLEET_PROVIDER_ID}::<id> row from "
+                                "/v1/embeddings/models.", "MODEL_NOT_FOUND")
+    offered = {definition.id: (definition, model)
+               for definition, model in registry.models.enabled_models("embeddings")
+               if model["model_id"] == model_id}
+    tried: set[str] = set()
+    refusals: list[str] = []
+    while len(tried) < EMBEDDINGS_MAX_LOCATIONS:
+        chosen, note = fleet.route(model_id, "embeddings", routing_key=uuid.uuid4().hex,
+                                   exclude_locations=tried)
+        if chosen is None or chosen.id not in offered:
+            if not refusals:
+                refusals.append(note)
+            break
+        definition, model = offered[chosen.id]
+        tried.add(fleet.controller_id_from(definition.id) or definition.id)
+        request = BackendRequest(
+            provider_id=definition.id, model_id=model_id, modality="embeddings",
+            params={"input": texts}, values=registry.credentials.resolved(definition.id),
+            base_url=definition.base_url, display_name=definition.display_name)
+        try:
+            result = adapter_for(definition).generate(request)
+        except BackendError as exc:
+            if not exc.retryable:
+                raise GatewayError(exc.status or 502, str(exc), exc.code) from exc
+            refusals.append(f"{definition.display_name}: {exc}")
+            continue
+        usage = result.payload.get("usage") or {}
+        return {"object": "list", "model": encode_model_id(fleet.FLEET_PROVIDER_ID, model_id),
+                "data": [{"object": "embedding", "index": index, "embedding": vector}
+                         for index, vector in enumerate(result.payload["vectors"])],
+                "usage": {"prompt_tokens": usage.get("prompt_tokens"),
+                          "total_tokens": usage.get("total_tokens")}}
+    if not offered and not tried:
+        raise GatewayError(503, f'No Mac offers the embeddings model "{model_id}" right now: install '
+                                "it on a Studio Hub (0.6.165 or newer) and switch it on.",
+                           "NO_EMBEDDINGS_ENGINE")
+    raise GatewayError(503, "No Mac could run this embeddings batch right now. "
+                            + " · ".join(refusals), "NO_EMBEDDINGS_ENGINE",
+                       headers={"Retry-After": "30"})
 
 
 # ---------------------------------------------------------------------------
