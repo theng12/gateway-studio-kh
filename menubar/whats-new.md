@@ -14,6 +14,18 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.169 — 2026-10-11
+
+### Breeze narration works for every voice that has segments
+
+Breeze TTS 2 clones from a clip **and its words**, and refused every voice with no saved transcript.
+A voice added from a loose clip never has one, so its words are now taken from the timestamped
+segments its annotation made (a Whisper loop such as "stats stats stats…" is left out). A staged
+clip is also staged again when its words change: before, a corrected transcript went unused until
+the 36-hour reuse window ran out or the Gateway restarted.
+
+---
+
 ## 0.2.168 — 2026-10-11
 
 ### Add one voice without adding the whole folder

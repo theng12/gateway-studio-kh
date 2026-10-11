@@ -293,5 +293,41 @@ class ReferenceContainerTests(unittest.TestCase):
         self.assertTrue(posted["url"].endswith("/api/hub/voice-references"))
 
 
+    def test_a_voice_without_a_transcript_stages_its_segments_words(self) -> None:
+        """Breeze needs the words; a loose import has only segments (2026-10-11 outage)."""
+        segments = [{"start": 0.0, "end": 2.0, "text": "The tusk catches you."},
+                    {"start": 2.0, "end": 2.4, "text": "with " + "stats " * 40}]
+        self.assertEqual(studio_hub.segments_text(segments), "The tusk catches you.")
+        self.assertEqual(studio_hub.segments_text(None), "")
+        clip = _make_clip(self.root / "m.wav", "wav")
+        voice = type("V", (), {"raw": {"reference_path": str(clip), "reference_transcript": "",
+                                       "reference_segments": segments},
+                               "display_name": "Mark", "language": "", "id": "voice-m"})()
+        request = type("R", (), {"params": {"voice_id": "studio-hub-local::voice-m"}})()
+        with patch.object(voices, "resolve", return_value=voice):
+            reference = studio_hub._reference_for(request)
+        self.assertEqual(reference["transcript"], "The tusk catches you.")
+        voice.raw["reference_transcript"] = "  Saved words.  "
+        with patch.object(voices, "resolve", return_value=voice):
+            self.assertEqual(studio_hub._reference_for(request)["transcript"], "Saved words.")
+
+        staged: list[str] = []
+
+        class FakeHub:
+            def post(self, url, headers=None, files=None, data=None):
+                staged.append(data["transcript"])
+                kept = hashlib.sha256(files["audio"][1]).hexdigest()
+                return type("Resp", (), {"status_code": 200, "json": lambda self: {
+                    "asset_id": f"asset-{len(staged)}", "sha256": kept}})()
+
+        studio_hub._REFERENCE_CACHE.clear()
+        first = studio_hub._voice_placement(FakeHub(), "http://hub.test", {}, "v", reference)
+        self.assertEqual(studio_hub._voice_placement(FakeHub(), "http://hub.test", {}, "v", reference), first)
+        # Same clip, corrected words: staged again, not the cached transcript-less asset.
+        fixed = dict(reference, transcript="Saved words.")
+        self.assertNotEqual(studio_hub._voice_placement(FakeHub(), "http://hub.test", {}, "v", fixed), first)
+        self.assertEqual(staged, ["The tusk catches you.", "Saved words."])
+
+
 if __name__ == "__main__":
     unittest.main()

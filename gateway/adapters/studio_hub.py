@@ -1404,7 +1404,14 @@ def _voice_placement(
         )
     # Read before the cache, not after it: which recording this is *is* part of the
     # question the cache answers.
-    key = _reference_cache_key(voice_id, base, _clip_digest(path))
+    # The words staged with the clip are part of the placement too: the Hub's asset identity
+    # includes them, and keyed on the bytes alone a corrected transcript (restored, or segments
+    # that arrived after the first staging) went unused until the reuse window ran out.
+    words = json.dumps([reference.get("transcript") or "", reference.get("segments") or [],
+                        reference.get("language") or ""], sort_keys=True)
+    key = _reference_cache_key(
+        voice_id, base, _clip_digest(path) + ":" + hashlib.sha256(words.encode()).hexdigest()[:16]
+    )
     cached = _REFERENCE_CACHE.get(key)
     if cached and time.time() < cached[2]:
         return cached[1]
@@ -1412,6 +1419,24 @@ def _voice_placement(
     asset_id, expires_at = _stage_voice_reference(client, base, headers, voice_id, path, reference)
     _remember_reference(key, "asset", asset_id, _reuse_until(staged_at, expires_at))
     return asset_id
+
+
+def segments_text(segments: Any) -> str:
+    """The words of timestamped segments, in order — minus Whisper's looping tails.
+
+    A segment whose words are mostly one word repeated ("with better stats stats stats …",
+    seen on Todd's clip) is a transcription hallucination over silence, not speech, and a
+    clone conditioned on it reads words the clip never says.
+    """
+    texts = []
+    for segment in segments if isinstance(segments, list) else []:
+        text = str((segment or {}).get("text") or "").strip() if isinstance(segment, dict) else ""
+        words = text.lower().split()
+        if len(words) > 8 and len(set(words)) * 4 < len(words):
+            continue
+        if text:
+            texts.append(text)
+    return " ".join(texts)
 
 
 def _reference_for(request: BackendRequest) -> dict[str, Any] | None:
@@ -1432,10 +1457,16 @@ def _reference_for(request: BackendRequest) -> dict[str, Any] | None:
     path = str(raw.get("reference_path") or "")
     if not path:
         return None
+    segments = raw.get("reference_segments") or []
     return {
         "path": path,
-        "transcript": str(raw.get("reference_transcript") or ""),
-        "segments": raw.get("reference_segments") or [],
+        # A voice imported from a loose clip has no saved transcript, only the timestamped
+        # segments its annotation produced. Breeze TTS 2 refuses a reference without its words
+        # (the Hub derives them from segments only when it cuts a window, and Breeze publishes
+        # no window), so the words come from the segments rather than the voice failing.
+        "transcript": str(raw.get("reference_transcript") or "").strip()
+        or segments_text(segments),
+        "segments": segments,
         "name": voice.display_name,
         # Sent so the Hub's staged copy carries the same facts this gateway knows.
         # `language` is part of the Hub's asset identity, so leaving it out made
