@@ -647,98 +647,197 @@ def discover(folder: Path) -> tuple[list[dict], list[dict]]:
         return [], [{"name": str(folder), "reason": "That is not a folder."}]
 
     for entry in sorted(folder.iterdir()):
-        if entry.name.startswith("."):
-            continue
-        if entry.is_dir():
-            audio = _audio_in(entry)
-            if audio is None:
-                skipped.append({"name": entry.name, "reason": "No audio file inside it."})
-                continue
-            metadata = _metadata(entry)
-            full_name = str(metadata.get("name") or entry.name)
-            item = {
-                # The clip's bytes, not the folder's name — see `voice_id_for_digest`.
-                "slug_id": f"voice-{_slug(entry.name)}",
-                "display_name": _short_name(full_name) or entry.name,
-                "full_name": full_name,
-                # **Not `or "en"`.** A clip whose language nobody stated was stored
-                # as English and republished as this voice's own, which also made the
-                # readiness gate's "it has no language" unreachable. The Hub really
-                # does require a language ("language is required"), so the honest
-                # sequence is: store nothing, refuse the push locally in one sentence,
-                # and let the owner state it.
-                "language": str(metadata.get("language") or ""),
-                "gender": metadata.get("gender"),
-                "audio": audio,
-                "transcript": _text(entry / "transcript.txt"),
-            }
-        elif entry.suffix.lower() in AUDIO_EXTENSIONS:
-            # A loose file is a voice: one clip, one entry. Any sidecar transcript
-            # beside it is used if it is there.
-            full_name = entry.stem
-            # A loose clip is a voice with no folder to carry its facts, so a sibling
-            # `<name>.json` is read if it is there — the same way the transcript
-            # sidecar already is. **Without it the language is empty, not "en":** a
-            # bare audio file states nothing, and inventing English is what made the
-            # fleet receive a voice labelled in a language nobody chose. A voice with
-            # no language cannot be pushed, and the readiness gate says so in one
-            # sentence before the Hub would answer 400 naming only a field.
-            sidecar = _metadata_for_file(entry)
-            item = {
-                "slug_id": f"voice-{_slug(entry.stem)}",
-                "display_name": _short_name(str(sidecar.get("name") or full_name)) or entry.stem,
-                "full_name": full_name,
-                "language": str(sidecar.get("language") or ""),
-                "gender": sidecar.get("gender"),
-                "audio": entry,
-                "transcript": _text(entry.with_suffix(".txt")),
-            }
-        else:
-            # Other files are just other files. Reporting them would bury the one
-            # skip that matters — a folder with no audio in it — under a list of
-            # transcripts and `.DS_Store`.
-            continue
-
-        try:
-            item["digest"] = clip_digest(item["audio"])
-        except OSError as exc:
-            # An unreadable clip has no identity, so it cannot be stored as one.
-            skipped.append({"name": item["display_name"], "reason": f"Could not read it: {exc}"})
-            continue
-        item["id"] = voice_id_for_digest(item["digest"])
-        found.append(item)
+        if not entry.name.startswith("."):
+            _discover_entry(entry, found, skipped)
     return found, skipped
 
 
-def _existing_id_for(by_id: dict[str, dict], item: dict, digest: str) -> str | None:
-    """The voice this clip already *is*, if the catalogue holds one.
+def discover_paths(paths: list[Path]) -> tuple[list[dict], list[dict]]:
+    """What the owner picked one by one: each file is a clip, each folder is read as `discover` reads one.
 
-    Bytes first, and bytes alone where they can speak:
-
-    * **the same digest, under any name** — the same recording, so it is the same
-      voice and its row is updated rather than a second one created. This is what
-      makes a re-import of the owner's existing library land on the ten voices he
-      already has (all ten store a digest that matches their clip on disk).
-    * **a name-minted id with no digest** — a row this gateway created before
-      bytes were recorded, which it therefore cannot vouch for. The name is the
-      only evidence such a row has, so a re-import of it updates in place.
-    * **already stored under the byte id** — defensive; the digest match above
-      should have found it.
-
-    A *different* clip claiming a name that is already taken is deliberately **not**
-    matched: the existing row's recording is not overwritten, and the caller says
-    so out loud.
+    The picker used to accept folders only, so adding one voice meant adding a whole folder.
     """
-    for entry in by_id.values():
-        if entry.get("audio_sha256") == digest:
-            return str(entry.get("id") or "") or None
+    found: list[dict] = []
+    skipped: list[dict] = []
+    for path in paths:
+        if path.is_dir():
+            more, missed = discover(path)
+            found += more
+            skipped += missed
+        elif path.is_file() and path.suffix.lower() in AUDIO_EXTENSIONS:
+            _discover_entry(path, found, skipped)
+        else:
+            skipped.append({"name": path.name or str(path), "source": str(path),
+                            "reason": "Not an audio file this can read." if path.exists() else "Not found."})
+    return found, skipped
+
+
+def _discover_entry(entry: Path, found: list[dict], skipped: list[dict]) -> None:
+    """One picked thing — a voice folder or a loose clip — into `found`, or `skipped` with a reason."""
+    if entry.is_dir():
+        audio = _audio_in(entry)
+        if audio is None:
+            skipped.append({"name": entry.name, "source": str(entry),
+                            "reason": "No audio file inside it."})
+            return
+        metadata = _metadata(entry)
+        full_name = str(metadata.get("name") or entry.name)
+        item = {
+            # The clip's bytes, not the folder's name — see `voice_id_for_digest`.
+            "slug_id": f"voice-{_slug(entry.name)}",
+            "display_name": _short_name(full_name) or entry.name,
+            "full_name": full_name,
+            # **Not `or "en"`.** A clip whose language nobody stated was stored
+            # as English and republished as this voice's own, which also made the
+            # readiness gate's "it has no language" unreachable. The Hub really
+            # does require a language ("language is required"), so the honest
+            # sequence is: store nothing, refuse the push locally in one sentence,
+            # and let the owner state it.
+            "language": str(metadata.get("language") or ""),
+            "gender": metadata.get("gender"),
+            "audio": audio,
+            "transcript": _text(entry / "transcript.txt"),
+        }
+    elif entry.suffix.lower() in AUDIO_EXTENSIONS:
+        # A loose file is a voice: one clip, one entry. Any sidecar transcript
+        # beside it is used if it is there.
+        full_name = entry.stem
+        # A loose clip is a voice with no folder to carry its facts, so a sibling
+        # `<name>.json` is read if it is there — the same way the transcript
+        # sidecar already is. **Without it the language is empty, not "en":** a
+        # bare audio file states nothing, and inventing English is what made the
+        # fleet receive a voice labelled in a language nobody chose. A voice with
+        # no language cannot be pushed, and the readiness gate says so in one
+        # sentence before the Hub would answer 400 naming only a field.
+        sidecar = _metadata_for_file(entry)
+        item = {
+            "slug_id": f"voice-{_slug(entry.stem)}",
+            "display_name": _short_name(str(sidecar.get("name") or full_name)) or entry.stem,
+            "full_name": full_name,
+            "language": str(sidecar.get("language") or ""),
+            "gender": sidecar.get("gender"),
+            "audio": entry,
+            "transcript": _text(entry.with_suffix(".txt")),
+        }
+    else:
+        # Other files are just other files. Reporting them would bury the one
+        # skip that matters — a folder with no audio in it — under a list of
+        # transcripts and `.DS_Store`.
+        return
+
+    try:
+        item["digest"] = clip_digest(item["audio"])
+    except OSError as exc:
+        # An unreadable clip has no identity, so it cannot be stored as one.
+        skipped.append({"name": item["display_name"], "source": str(entry),
+                        "reason": f"Could not read it: {exc}"})
+        return
+    item["id"] = voice_id_for_digest(item["digest"])
+    item["source"] = str(entry)
+    found.append(item)
+
+
+def _legacy_id_for(by_id: dict[str, dict], item: dict) -> str | None:
+    """A row this gateway minted from a *name* before it recorded bytes, if this clip is it.
+
+    Such a row has no digest, so the name is the only evidence it has, and a re-import of
+    it updates in place. Every other match is by bytes (a skip) or by name (a question).
+    """
     slug_id = str(item.get("slug_id") or "")
     legacy = by_id.get(slug_id)
-    if legacy is not None and not legacy.get("audio_sha256"):
-        return slug_id
-    if item["id"] in by_id:
-        return str(item["id"])
-    return None
+    return slug_id if legacy is not None and not legacy.get("audio_sha256") else None
+
+
+def _free_id(by_id: dict[str, dict], digest: str) -> str:
+    """`voice-<sha[:12]>`, or a later 12-hex window of the same digest when that id is taken.
+
+    Taken only after a **Replace**, which keeps a voice's id while its bytes change, so the
+    id of the old recording can still be held by the voice that replaced it.
+    """
+    for start in range(0, len(digest) - 11):
+        candidate = f"voice-{digest[start:start + 12]}"
+        if candidate not in by_id:
+            return candidate
+    return f"voice-{digest}"
+
+
+def _name_key(name: object) -> str:
+    return str(name or "").strip().casefold()
+
+
+def _free_name(by_id: dict[str, dict], name: str) -> str:
+    """`Chris 2`, `Chris 3`… — the first that no voice uses."""
+    used = {_name_key(v.get("display_name")) for v in by_id.values()}
+    n = 2
+    while _name_key(f"{name} {n}") in used:
+        n += 1
+    return f"{name} {n}"
+
+
+def imported_at(entry: dict) -> float | None:
+    """When this voice's clip came in: stamped at import, else its folder's creation time.
+
+    Voices imported before the stamp existed still have the folder they were created with,
+    and re-imports never re-created it, so its birth time is the first import.
+    """
+    if entry.get("imported_at"):
+        return float(entry["imported_at"])
+    if not entry.get("reference_path"):
+        return None
+    try:
+        info = Path(str(entry["reference_path"])).parent.stat()
+    except OSError:
+        return None
+    return float(getattr(info, "st_birthtime", 0) or info.st_mtime)
+
+
+def clip_seconds(entry: dict) -> float | None:
+    """The clip's length: as recorded, else read from the WAV header (never guessed)."""
+    if entry.get("duration_seconds"):
+        return float(entry["duration_seconds"])
+    path = entry.get("reference_path")
+    return voice_audio.seconds(Path(str(path))) if path else None
+
+
+def _summary(entry: dict) -> dict:
+    """How the owner tells two same-named voices apart: id, length, import date."""
+    return {
+        "id": entry.get("id"),
+        "display_name": entry.get("display_name"),
+        "duration_seconds": clip_seconds(entry),
+        "imported_at": imported_at(entry),
+    }
+
+
+def backup_dir() -> Path:
+    """Where a removed voice, or a replaced clip, is moved. Never deleted, never aged out."""
+    return LIBRARY_DIR.parent / "voice-backups"
+
+
+def _back_up(entry: dict, reason: str) -> Path:
+    """Move a voice's folder into `voice-backups/`, with its catalogue row beside it.
+
+    Raises OSError rather than carrying on: a replace or remove that could not keep the
+    old copy must not go ahead and lose it.
+    """
+    voice_id = str(entry.get("id") or "")
+    stamp = time.strftime("%Y%m%dT%H%M%S", time.gmtime())
+    target = backup_dir() / f"{voice_id}--{stamp}--{reason}"
+    n = 2
+    while target.exists():
+        target = backup_dir() / f"{voice_id}--{stamp}-{n}--{reason}"
+        n += 1
+    target.parent.mkdir(parents=True, exist_ok=True)
+    source = voice_dir(voice_id)
+    if source.is_dir():
+        shutil.move(str(source), str(target))
+    else:
+        target.mkdir()
+    (target / "entry.json").write_text(
+        json.dumps({**entry, "backed_up_at": time.time(), "reason": reason}, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    return target
 
 
 def place_reference(source: Path, directory: Path) -> tuple[Path, Path | None]:
@@ -831,102 +930,160 @@ def migrate_references() -> dict:
     return {"migrated": migrated, "failed": failed}
 
 
-def import_folder(folder: Path) -> dict:
-    """Copy every voice found into the library and add it to the catalogue.
+def import_folder(folder: Path, resolutions: dict | None = None) -> dict:
+    """Every voice in a folder (`discover`), imported by `import_found`."""
+    return import_found(*discover(folder), resolutions)
 
-    **The clip's bytes are the identity.** A re-import of the same recording
-    updates the voice it already is — whatever it is now called — instead of
-    adding a second one. A recording the catalogue has not seen becomes a voice
-    of its own, even if another voice already uses that name: replacing the older
-    recording would destroy it, and the caller is told what happened rather than
-    left with two rows and no explanation.
+
+def import_paths(paths: list[Path], resolutions: dict | None = None) -> dict:
+    """The files and folders the owner picked one by one, imported by `import_found`."""
+    return import_found(*discover_paths(paths), resolutions)
+
+
+#: What the owner may answer for a clip whose name is taken (`resolutions[source]`).
+KEEP_BOTH, SKIP, REPLACE = "keep_both", "skip", "replace:"
+
+
+def import_found(found: list[dict], skipped: list[dict], resolutions: dict | None = None) -> dict:
+    """Copy each discovered clip into the library and the catalogue — or say why not.
+
+    **The clip's bytes are the identity**, and nothing already here is changed by accident:
+
+    * **the same recording** (same sha256, under any name) is *skipped* and named as such.
+      It used to be re-imported over the voice it already was, which reset that voice's
+      language, gender and fleet permission to whatever the new file said — usually nothing;
+    * **a different recording under a name that is taken** is *not added*. It comes back in
+      `conflicts`, and the caller asks the owner and sends the answer back in `resolutions`,
+      keyed by the conflict's `source`: `keep_both` (added as "Name 2"), `skip`, or
+      `replace:<voice-id>` — that voice keeps its id (channels using it keep working) and
+      gets the new clip, the old folder moved to `voice-backups/` and the clip re-transcribed.
+      Adding silently produced second Chris/Christian/Leo rows indistinguishable in the list;
+    * a row minted from a name before bytes were recorded (no digest) updates in place.
     """
-    found, skipped = discover(folder)
+    resolutions = resolutions or {}
     payload = _read_catalog()
     by_id = {str(v.get("id")): v for v in payload.get("voices") or [] if v.get("id")}
 
     imported: list[dict] = []
     notes: list[str] = []
+    conflicts: list[dict] = []
     for item in found:
         digest = str(item["digest"])
-        voice_id = _existing_id_for(by_id, item, digest) or str(item["id"])
-        target_dir = LIBRARY_DIR / voice_id
-        target_dir.mkdir(parents=True, exist_ok=True)
+        source = str(item["source"])
+        name = str(item["display_name"])
+        same = next((v for v in by_id.values() if v.get("audio_sha256") == digest), None)
+        if same is not None:
+            skipped.append({
+                "name": name, "source": source, "duplicate": True, "id": same.get("id"),
+                "reason": f"The same recording is already here as “{same.get('display_name')}”.",
+            })
+            continue
+
+        previous: dict = {}
+        voice_id = _legacy_id_for(by_id, item)
+        clashes = [] if voice_id else [
+            v for v in by_id.values() if _name_key(v.get("display_name")) == _name_key(name)
+        ]
+        choice = str(resolutions.get(source) or "")
+        if clashes and not choice:
+            conflicts.append({
+                "name": name,
+                "source": source,
+                "message": f"A voice named “{name}” already exists.",
+                "duration_seconds": voice_audio.seconds(Path(item["audio"])),
+                "suggested_name": _free_name(by_id, name),
+                "existing": [_summary(v) for v in clashes],
+            })
+            continue
+        if clashes and choice.startswith(REPLACE):
+            target = choice[len(REPLACE):]
+            previous = next((v for v in clashes if v.get("id") == target), {})
+            if not previous:
+                skipped.append({"name": name, "source": source,
+                                "reason": f"There is no voice {target} named “{name}” to replace."})
+                continue
+            voice_id = target
+        elif clashes and choice == KEEP_BOTH:
+            name = _free_name(by_id, name)
+        elif clashes:
+            skipped.append({"name": name, "source": source,
+                            "reason": f"A voice named “{name}” already exists; you chose Skip."})
+            continue
+        voice_id = voice_id or _free_id(by_id, digest)
+
+        target_dir = voice_dir(voice_id)
         try:
-            target, original = place_reference(item["audio"], target_dir)
+            if previous:
+                # The new clip is staged first and the old folder backed up only then, so a
+                # failed copy leaves the voice as it was. Kept, not overwritten: the old clip
+                # is the only copy of that recording.
+                staging = LIBRARY_DIR / f".incoming-{voice_id}"
+                target, original = place_reference(item["audio"], staging)
+                _back_up(previous, "replaced")
+                os.replace(staging, target_dir)
+                target = target_dir / target.name
+                original = target_dir / original.name if original is not None else None
+            else:
+                target_dir.mkdir(parents=True, exist_ok=True)
+                target, original = place_reference(item["audio"], target_dir)
         except OSError as exc:
-            skipped.append({"name": item["display_name"], "reason": f"Could not copy: {exc}"})
+            skipped.append({"name": name, "source": source, "reason": f"Could not copy: {exc}"})
             continue
         if target.suffix.lower() != ".wav" and voice_audio.plain_media_type(target) is None:
             notes.append(
-                f"\u201c{item['display_name']}\u201d could not be converted to WAV, so its "
+                f"“{name}” could not be converted to WAV, so its "
                 f"reference is kept as it came; it may not preview in the app."
             )
 
-        entry = {
-            **{k: v for k, v in (by_id.get(voice_id) or {}).items()
-               if k in {"reference_segments", "preview_available", "duration_seconds"}},
-            "id": voice_id,
-            "display_name": item["display_name"],
-            "full_name": item["full_name"],
-            "language": item["language"],
-            "gender": _gender(item["gender"]),
-            # Read by the Hub's shared-voice validation, which refuses a push
-            # without a license and an explicit acknowledgement. **Both start
-            # unset**: permission to clone and distribute is the owner's to grant
-            # per voice, deliberately, because some of his voices are private.
-            # Adding a clip must never be mistaken for granting it.
+        if previous:
+            entry = dict(previous)
+            # A fact the new clip states wins; nothing stated keeps the voice's own.
+            entry["language"] = item["language"] or entry.get("language") or ""
+            if item["gender"]:
+                entry["gender"] = _gender(item["gender"])
+            if entry.get("permission_acknowledged"):
+                notes.append(f"“{name}” has a new recording, so it is private again: "
+                             "fleet permission was given for the old one.")
+            entry.pop("license", None)
+            entry.pop("original_path", None)
+        else:
+            entry = {
+                "id": voice_id,
+                "display_name": name,
+                "full_name": item["full_name"],
+                "language": item["language"],
+                "gender": _gender(item["gender"]),
+                "description": item["full_name"],
+                "provider": "Studio Hub (this Mac)",
+                "engine_name": "Qwen3 TTS",
+                "engine_id": "qwen3-tts",
+                "model_family": "qwen3-tts",
+                "tts_model_id": DEFAULT_TTS_MODEL,
+                "voice_tier": "custom",
+                "output_format": "wav",
+            }
+        entry.update({
+            # Read by the Hub's shared-voice validation, which refuses a push without a
+            # license and an explicit acknowledgement. **Both start unset**: permission to
+            # clone and distribute is the owner's to grant per voice (and per recording),
+            # deliberately, because some of his voices are private.
             "permission_acknowledged": False,
             "shared_at": None,
-            "description": item["full_name"],
-            "provider": "Studio Hub (this Mac)",
-            "engine_name": "Qwen3 TTS",
-            "engine_id": "qwen3-tts",
-            "model_family": "qwen3-tts",
-            "tts_model_id": DEFAULT_TTS_MODEL,
-            "voice_tier": "custom",
-            "output_format": "wav",
             "preview_available": False,
             "reference_path": str(target),
             "reference_transcript": item["transcript"],
-            # Stored so a location lookup can compare without reading the file:
-            # it is the one field that means the same thing on both sides.
-            # (the *original* recording; `reference_sha256` is the reference file's.)
+            # Segments are measured against a clip; a new clip has none until transcribed.
+            "reference_segments": None,
+            # The *original* recording, compared without reading the file;
+            # `reference_sha256` is the reference file's.
             "audio_sha256": digest,
             "reference_sha256": clip_digest(target),
-        }
+            # What tells two same-named voices apart in the list.
+            "duration_seconds": voice_audio.seconds(target),
+            "imported_at": time.time(),
+        })
         if original is not None:
             entry["original_path"] = str(original)
-        # A re-import of changed audio invalidates segments measured against the
-        # old clip; keeping them would describe audio that is no longer there.
-        # The comparison **includes the case where the old row has no digest** —
-        # `previous.get(...) and ...` skipped exactly the rows that could not be
-        # vouched for, which is the case that most needs the guard. The cost is
-        # one unnecessary re-transcription for a pre-digest row; the alternative
-        # is publishing timings for a recording nobody can match to them.
-        previous = by_id.get(voice_id) or {}
-        if previous.get("audio_sha256") != digest:
-            entry.pop("reference_segments", None)
-        if not entry.get("reference_segments"):
-            entry.setdefault("reference_segments", None)
-
-        # A used name with different bytes: the new clip gets a voice of its own,
-        # so the older recording is not destroyed. Silence here would leave two
-        # rows with one name and no explanation of where the second came from.
-        if voice_id == item["id"]:
-            clash = next(
-                (v for v in by_id.values()
-                 if v.get("display_name") == entry["display_name"]
-                 and v.get("audio_sha256") != digest),
-                None,
-            )
-            if clash:
-                notes.append(
-                    f"\u201c{entry['display_name']}\u201d is already here with different "
-                    f"audio, so this recording was added as a second voice "
-                    f"({voice_id}) rather than replacing it. Delete whichever you "
-                    f"do not want."
-                )
 
         by_id[voice_id] = entry
         # The folder, not just the catalogue row: clip plus transcript plus
@@ -934,10 +1091,11 @@ def import_folder(folder: Path) -> dict:
         write_voice_files(entry)
         imported.append({
             "id": voice_id,
-            "display_name": entry["display_name"],
-            "source": str(item["audio"]),
+            "display_name": name,
+            "source": source,
+            "replaced": bool(previous),
             "has_transcript": bool(item["transcript"]),
-            "needs_segments": not entry.get("reference_segments"),
+            "needs_segments": True,
         })
 
     payload["voices"] = list(by_id.values())
@@ -945,12 +1103,70 @@ def import_folder(folder: Path) -> dict:
     return {
         "imported": imported,
         "skipped": skipped,
+        # Not added until the owner says what to do with a name that is taken.
+        "conflicts": conflicts,
         # Things that happened and are not a failure: said out loud rather than
         # left for the owner to notice in the table.
         "notes": notes,
         "catalog": str(catalog_path()),
         "library": str(LIBRARY_DIR),
     }
+
+
+def remove(voice_id: str) -> dict | None:
+    """Take a voice out of the catalogue; its folder moves to `voice-backups/`. None if unknown.
+
+    Never a delete: `restore` puts it back under the same id, so a channel that used it
+    works again.
+    """
+    wanted = catalogue_id(voice_id)
+    payload = _read_catalog()
+    entry = next((v for v in payload.get("voices") or [] if str(v.get("id")) == wanted), None)
+    if entry is None:
+        return None
+    entry = {**entry, "duration_seconds": clip_seconds(entry), "imported_at": imported_at(entry)}
+    backup = _back_up(entry, "removed")
+    payload["voices"] = [v for v in payload["voices"] if str(v.get("id")) != wanted]
+    _write_catalog(payload)
+    return {"removed": wanted, "display_name": entry.get("display_name"), "backup": backup.name}
+
+
+def removed() -> list[dict]:
+    """Removed voices that can be restored, newest first."""
+    out: list[dict] = []
+    root = backup_dir()
+    for folder in sorted(root.iterdir(), reverse=True) if root.is_dir() else []:
+        if not folder.name.endswith("--removed"):
+            continue
+        try:
+            entry = json.loads((folder / "entry.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        out.append({**_summary(entry), "backup": folder.name, "removed_at": entry.get("backed_up_at")})
+    return out
+
+
+def restore(backup: str) -> dict:
+    """Put a removed voice back under its own id. Raises ValueError naming why it cannot."""
+    folder = backup_dir() / Path(backup).name
+    if not backup.endswith("--removed") or not (folder / "entry.json").is_file():
+        raise ValueError("There is no removed voice by that name.")
+    entry = json.loads((folder / "entry.json").read_text(encoding="utf-8"))
+    entry.pop("backed_up_at", None)
+    entry.pop("reason", None)
+    voice_id = str(entry.get("id") or "")
+    payload = _read_catalog()
+    clash = next((v for v in payload.get("voices") or []
+                  if v.get("id") == voice_id or v.get("audio_sha256") == entry.get("audio_sha256")), None)
+    if clash is not None or voice_dir(voice_id).exists():
+        holder = f" by “{clash.get('display_name')}”" if clash else ""
+        raise ValueError(f"“{entry.get('display_name')}” cannot come back: this recording "
+                         f"or its id is already in use{holder}.")
+    shutil.move(str(folder), str(voice_dir(voice_id)))
+    payload["voices"].append(entry)
+    _write_catalog(payload)
+    write_voice_files(entry)
+    return {"restored": voice_id, "display_name": entry.get("display_name")}
 
 
 # ---------------------------------------------------------------------------

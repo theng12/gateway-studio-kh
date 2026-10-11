@@ -45,6 +45,8 @@ def main() -> int:
         print(f"  {voice['display_name']:12} {note}")
     for item in result["skipped"]:
         print(f"  skipped {item['name']}: {item['reason']}")
+    for item in result["conflicts"]:
+        print(f"  NOT added {item['name']}: {item['message']} (use the app to keep both, replace or skip)")
 
     if not args.annotate:
         print("\nrun with --annotate (or use the app) to transcribe them; a voice "

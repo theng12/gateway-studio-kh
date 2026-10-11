@@ -860,7 +860,7 @@ class VoiceReferenceMetadataTests(_HubCase):
                     "voice-abc123",
                     clip,
                     reference if reference is not None else self._reference(clip),
-                )
+                )[0]
         finally:
             client.close()
 
@@ -968,7 +968,8 @@ class VoiceReferenceMetadataTests(_HubCase):
 
     def test_the_clip_is_staged_once_per_location_and_reused(self) -> None:
         clip = self._clip()
-        hub = _Hub(reference=self._staged_payload(clip))
+        hub = _Hub(reference=self._staged_payload(
+            clip, expires_at=time.time() + hub_module._STAGED_TTL_S))
         reference = self._reference(clip)
         hub_module._REFERENCE_CACHE.clear()
         client = httpx.Client(transport=httpx.MockTransport(hub.handler))
@@ -984,6 +985,28 @@ class VoiceReferenceMetadataTests(_HubCase):
         self.assertEqual(hub.calls.count(("POST", "/api/hub/voice-references")), 1)
         # A reused asset must outlive the reuse window, or a queued job finds it expired.
         self.assertGreater(hub_module._STAGED_TTL_S, hub_module._REFERENCE_TTL_S)
+        self.assertEqual(hub_module._REFERENCE_TTL_S, 3 * 86400)  # owner, 2026-10-11
+
+    def test_a_hub_that_keeps_the_clip_for_less_shortens_the_reuse(self) -> None:
+        """Hub 0.6.166 clamps a staged clip to 48 h: reuse must end before it expires there."""
+        now = time.time()
+        self.assertEqual(hub_module._reuse_until(now, now + 48 * 3600), now + 36 * 3600)
+        self.assertEqual(hub_module._reuse_until(now, now + 400 * 3600), now + hub_module._REFERENCE_TTL_S)
+        self.assertEqual(hub_module._reuse_until(now, None), now + hub_module._REFERENCE_TTL_S)
+        clip = self._clip()
+        hub = _Hub(reference=self._staged_payload(clip, expires_at=now + 3600))
+        hub_module._REFERENCE_CACHE.clear()
+        client = httpx.Client(transport=httpx.MockTransport(hub.handler))
+        try:
+            with self.hub_client(hub):
+                for _ in range(2):
+                    hub_module._voice_placement(
+                        client, HUB, {"X-Hub-Token": "t"}, "voice-abc123", self._reference(clip))
+        finally:
+            client.close()
+            hub_module._REFERENCE_CACHE.clear()
+        # An hour left at the Hub is inside the headroom, so it is staged again, never reused.
+        self.assertEqual(hub.calls.count(("POST", "/api/hub/voice-references")), 2)
 
 
 class UncertainIsARecoveryHoldTests(_HubCase):

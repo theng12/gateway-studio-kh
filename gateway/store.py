@@ -1015,6 +1015,26 @@ class JobStore:
             ).fetchall()
         return [self._row_dict(row) for row in rows]
 
+    def voice_use(self, raw_voice_id: str, *, since: float) -> list[dict[str, Any]]:
+        """TTS jobs since `since` whose params name this voice, per caller, busiest first.
+
+        Matched on `<raw id>"` inside the stored params, so both the published
+        (`provider::voice-…`) and the plain spelling count. ponytail: a LIKE over the
+        window's TTS params (index on created_at bounds it); a voice column if it gets hot.
+        """
+        if not raw_voice_id:
+            return []
+        needle = f'%{raw_voice_id}"%'
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT COALESCE(caller, '') AS caller, COUNT(*) AS n, MAX(created_at) AS last "
+                "FROM jobs WHERE created_at >= ? AND modality = 'tts' AND params LIKE ? "
+                "GROUP BY caller ORDER BY n DESC",
+                (since, needle),
+            ).fetchall()
+        return [{"caller": row["caller"], "jobs": int(row["n"]), "last_used_at": row["last"]}
+                for row in rows]
+
     def active_counts_by_caller(self, column: str = "caller") -> dict[str, dict[str, int]]:
         """`{caller: {"waiting", "running"}}` over every unfinished job (or by `job_group`).
 

@@ -233,6 +233,15 @@ class ReferenceContainerTests(unittest.TestCase):
         self.assertEqual(voice_import.voices()[0]["reference_path"], str(clip))
 
     # -- staging and TTS (fakes, no fleet) -------------------------------------
+    def test_flac_is_staged_only_when_it_is_provably_lossless(self) -> None:
+        wav = _make_clip(self.root / "a.wav", "wav")
+        flac = voice_audio.lossless_flac(wav)
+        self.assertIsNotNone(flac)
+        self.assertEqual(flac[:4], b"fLaC")
+        self.assertIsNone(voice_audio.lossless_flac(_make_clip(self.root / "b.mp3", "mp3")))
+        with patch.object(voice_audio.subprocess, "run", side_effect=OSError("no afconvert")):
+            self.assertIsNone(voice_audio.lossless_flac(wav))
+
     def test_staging_hashes_the_new_file_and_tts_uses_it(self) -> None:
         entry = self._mismatched_voice()
         self._write_catalog(entry)
@@ -269,8 +278,16 @@ class ReferenceContainerTests(unittest.TestCase):
         studio_hub._REFERENCE_CACHE.clear()
         asset_id = studio_hub._voice_placement(FakeHub(), "http://hub.test", {}, voice.id, reference)
         self.assertEqual(asset_id, "asset-1")
-        self.assertEqual(posted["audio"], wav.read_bytes())
-        self.assertEqual(posted["sha"], _sha(wav))
+        # Staged as lossless FLAC: different bytes, the same samples (decoded back here).
+        self.assertEqual(posted["audio"][:4], b"fLaC")
+        self.assertLess(len(posted["audio"]), wav.stat().st_size)
+        flac = self.root / "staged.flac"
+        flac.write_bytes(posted["audio"])
+        back = self.root / "staged.wav"
+        voice_audio.to_wav(flac, back)
+        self.assertEqual(voice_audio._riff(back.read_bytes())[b"data"],
+                         voice_audio._riff(wav.read_bytes())[b"data"])
+        self.assertEqual(posted["sha"], hashlib.sha256(posted["audio"]).hexdigest())
         self.assertNotEqual(posted["sha"], entry["audio_sha256"])  # the old container's digest
         self.assertIn("A half second tone.", posted["transcript"])
         self.assertTrue(posted["url"].endswith("/api/hub/voice-references"))

@@ -14,16 +14,36 @@ transcribes each clip **through Studio Hub**. With no Hub it refuses.
 - **Two shapes are accepted, because both are things people have**: a folder of
   per-voice folders and a folder of loose audio files. The old importer read only
   the first, so a hand-dropped clip was silently skipped — the "I copied it in and
-  nothing happened" case.
+  nothing happened" case. **Since 0.2.168 files can be picked one by one** (`files`
+  on `POST /admin/api/voices/add`): the picker took folders only, so adding one voice
+  (Christopher, 2026-10-11) meant importing the whole 14-file folder.
 - **The clip's bytes are a voice's identity, never its name.** The id is
-  `voice-<sha256[:12]>`, and an import matches an existing voice by **digest first**,
-  so the same recording under any name updates that voice (verified: ten unseen names
-  → ten voices, every id unchanged). Deriving the id from a file name let `Morgan`
-  and `morgan!` overwrite one another, because the on-disk path *was* the id.
-  - **A different recording claiming a taken name becomes a second voice, and the
-    import says so** (`notes`, rendered in the Voices window). Overwriting would
-    destroy a take the owner may have no copy of; silence would leave two rows called
-    "Morgan" unexplained.
+  `voice-<sha256[:12]>` (a later 12-hex window of the digest when a Replace holds that id).
+  Deriving the id from a file name let `Morgan` and `morgan!` overwrite one another,
+  because the on-disk path *was* the id.
+  - **The same recording, under any name, is skipped and named as such** (`skipped`,
+    `duplicate: true`). Until 0.2.167 it was re-imported over the voice it already was,
+    which reset that voice's language, gender and fleet permission to whatever the file
+    stated — usually nothing.
+  - **A different recording claiming a taken name is not added.** It comes back in
+    `conflicts` ("A voice named X already exists", with each existing voice's length and
+    import date) and the app asks: *Keep Both* (added as "X 2"), *Replace the clip of the
+    existing X*, or *Skip*; the answer is sent back as `resolutions[source]`. Adding it
+    silently is how the owner got second Chris/Christian/Leo rows that looked identical.
+  - **Replace keeps the voice id** (channels using it keep working), keeps its name,
+    language and gender unless the new clip states them, drops its segments so it is
+    transcribed again, and makes it private again (permission was given for the old
+    recording). The old folder moves to `DATA_DIR/voice-backups/<id>--<time>--replaced/`
+    with its catalogue row as `entry.json` — never deleted, never aged out.
+- **Remove moves, Restore brings back.** `DELETE /admin/api/voices/<id>` on one of this
+  Mac's own voices moves its folder to `voice-backups/<id>--<time>--removed/`; `GET
+  /admin/api/voices/removed` lists them and `POST /admin/api/voices/restore` puts one back
+  under the same id. A voice narrated with in the last 30 days (the gateway's own TTS job
+  history — it cannot see Story's channel settings) is refused `409 VOICE_IN_USE` unless
+  `confirm_in_use=true`; the app shows who used it (`GET …/usage`) and asks a second time.
+- **The list shows each local voice's clip length and import date** (`duration_seconds`,
+  `imported_at`): measured at import, else read from the WAV header and the voice
+  folder's creation time, which re-imports never changed.
   - Segments are dropped whenever the digest differs **or the older row has none**.
     The guard read `previous.get("audio_sha256") and...`, which skipped exactly the
     rows that could not be vouched for. One unnecessary re-transcription is the price

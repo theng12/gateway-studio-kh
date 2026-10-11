@@ -10,6 +10,7 @@
 // importing all of them would be worse than useless.
 
 import Cocoa
+import UniformTypeIdentifiers
 
 final class VoicesSection: NSObject, AppSection, NSTableViewDataSource, NSTableViewDelegate,
                            NSSearchFieldDelegate {
@@ -149,6 +150,12 @@ final class VoicesSection: NSObject, AppSection, NSTableViewDataSource, NSTableV
         table.usesAlternatingRowBackgroundColors = false
         table.backgroundColor = .clear
         table.allowsMultipleSelection = true
+        // Right-click a row to remove it; acts on the clicked row (`removeClicked`).
+        let rowMenu = NSMenu()
+        let removeItem = NSMenuItem(title: "Remove Voice…", action: #selector(removeClicked), keyEquivalent: "")
+        removeItem.target = self
+        rowMenu.addItem(removeItem)
+        table.menu = rowMenu
         table.style = .fullWidth
         table.columnAutoresizingStyle = .noColumnAutoresizing
         table.intercellSpacing = NSSize(width: DS.Space.xs, height: 0)
@@ -157,6 +164,8 @@ final class VoicesSection: NSObject, AppSection, NSTableViewDataSource, NSTableV
             ("on", "", 34, false),
             ("preview", "", 30, false),
             ("name", "Voice", 210, true),
+            // Length and import date: without them two voices with one name look identical.
+            ("clip", "Clip", 150, true),
             ("language", "Language", 80, false),
             ("fleet", "Fleet", 80, false),
             ("details", "Description", 280, true),
@@ -177,7 +186,7 @@ final class VoicesSection: NSObject, AppSection, NSTableViewDataSource, NSTableV
         // Voice and Description take the spare width; the checkbox, play button and short columns keep theirs.
         card.onLayout = { [weak self] in
             guard let self else { return }
-            PageKit.fitColumns(of: self.table, in: scroll, flex: ["name": (1, 210), "details": (1.4, 280), "language": (0.3, 80), "fleet": (0.3, 80), "source": (0.3, 80)])
+            PageKit.fitColumns(of: self.table, in: scroll, flex: ["name": (1, 210), "clip": (0.5, 150), "details": (1.4, 280), "language": (0.3, 80), "fleet": (0.3, 80), "source": (0.3, 80)])
         }
         PageKit.addFull(card, to: root)
         // A *required* floor was the whole reason this page could grow the window: the natural height came
@@ -217,6 +226,9 @@ final class VoicesSection: NSObject, AppSection, NSTableViewDataSource, NSTableV
         add("Allow Fleet Sharing…", #selector(allowSharing))
         add("Share with Fleet", #selector(shareWithFleet))
         add("Make Private", #selector(makePrivate))
+        more.menu?.addItem(.separator())
+        add("Remove Voice…", #selector(removeSelected))
+        add("Restore Removed Voice…", #selector(restoreRemoved))
         more.menu?.addItem(.separator())
         add("Add to My Account", #selector(addSelected))
         addMenuItem = more.menu?.items.last
@@ -270,41 +282,113 @@ final class VoicesSection: NSObject, AppSection, NSTableViewDataSource, NSTableV
         }
     }
 
-    /// Stock the catalogue from a folder the owner picks.
+    /// Stock the catalogue from audio files, or a folder, the owner picks.
     ///
-    /// Both shapes are accepted because both are things people have: a folder of
-    /// per-voice folders, and a folder of loose audio files — which is what you get
-    /// by copying a clip in and expecting it to become a voice.
+    /// Files are the common case — one clip is one voice — so they can be picked one by one
+    /// (⌘-click for several). Picking only a folder still works the way it always did: a
+    /// folder of per-voice folders, or a folder of loose audio files.
     @objc private func pickVoices() {
         let panel = NSOpenPanel()
-        panel.canChooseFiles = false
+        panel.canChooseFiles = true
         panel.canChooseDirectories = true
-        panel.allowsMultipleSelection = false
-        panel.prompt = "Add voices"
+        panel.allowsMultipleSelection = true
+        panel.allowedContentTypes = [.audio]
+        panel.prompt = "Add Voices"
         panel.message =
-            "Pick a folder of voices, or a folder of audio files. One voice per folder, "
-            + "or one voice per file — either works."
-        guard panel.runModal() == .OK, let folder = panel.url else { return }
+            "Pick one or more audio files — each becomes a voice — or a folder of them."
+        guard panel.runModal() == .OK, !panel.urls.isEmpty else { return }
 
+        var body: [String: Any] = ["annotate": true]
+        if panel.urls.count == 1, panel.urls[0].hasDirectoryPath {
+            body["folder"] = panel.urls[0].path
+        } else {
+            body["files"] = panel.urls.map(\.path)
+        }
+        addVoices(body, earlier: nil)
+    }
+
+    /// Post one add, then ask about every name that is already taken and post the answers.
+    ///
+    /// The gateway adds nothing under a taken name on its own: a second "Chris" that looks
+    /// exactly like the first is how the duplicates happened. `earlier` is the first pass,
+    /// whose additions the second pass sees again as "already here" and must not report so.
+    private func addVoices(_ body: [String: Any], earlier: [String: Any]?) {
         summaryLabel.textColor = .secondaryLabelColor
         summaryLabel.stringValue = "Adding voices…"
-        GatewayAPI.post("/admin/api/voices/add", body: [
-            "folder": folder.path,
-            "annotate": true,
-        ]) { [weak self] result in
+        GatewayAPI.post("/admin/api/voices/add", body: body, timeout: 120) { [weak self] result in
             guard let self else { return }
             switch result {
             case .failure(let error):
                 self.summaryLabel.textColor = Health.warn.text
                 self.summaryLabel.stringValue = "Could not add them — \(error.localizedDescription)"
             case .success(let payload):
-                let imported = payload["imported"] as? [[String: Any]] ?? []
-                let skipped = payload["skipped"] as? [[String: Any]] ?? []
+                let conflicts = payload["conflicts"] as? [[String: Any]] ?? []
+                if earlier == nil, !conflicts.isEmpty {
+                    self.reload()
+                    var resolutions: [String: String] = [:]
+                    for conflict in conflicts {
+                        guard let source = conflict["source"] as? String else { continue }
+                        resolutions[source] = self.askAboutTakenName(conflict)
+                    }
+                    var again = body
+                    again["resolutions"] = resolutions
+                    self.addVoices(again, earlier: payload)
+                    return
+                }
+                var imported = payload["imported"] as? [[String: Any]] ?? []
+                var skipped = payload["skipped"] as? [[String: Any]] ?? []
+                if let earlier {
+                    let first = earlier["imported"] as? [[String: Any]] ?? []
+                    let firstSources = Set(first.compactMap { $0["source"] as? String })
+                    imported = first + imported
+                    skipped = skipped.filter { !firstSources.contains($0["source"] as? String ?? "") }
+                }
                 self.reportAdded(imported: imported, skipped: skipped,
-                                 notes: payload["notes"] as? [String] ?? [],
+                                 notes: (earlier?["notes"] as? [String] ?? [])
+                                     + (payload["notes"] as? [String] ?? []),
                                  annotation: payload["annotation"] as? [String: Any])
             }
         }
+    }
+
+    /// "A voice named X already exists": keep both, replace the existing clip, or skip.
+    /// Returns the gateway's answer for that clip (`keep_both`, `replace:<id>`, `skip`).
+    private func askAboutTakenName(_ conflict: [String: Any]) -> String {
+        let name = conflict["name"] as? String ?? "?"
+        let existing = conflict["existing"] as? [[String: Any]] ?? []
+        let alert = NSAlert()
+        alert.messageText = conflict["message"] as? String ?? "A voice named \u{201C}\(name)\u{201D} already exists."
+        alert.informativeText =
+            "The clip you picked (\(Self.clipLabel(conflict["duration_seconds"], nil))) is a different "
+            + "recording from the existing " + existing.map {
+                "\u{201C}\($0["display_name"] as? String ?? name)\u{201D} (\(Self.clipLabel($0["duration_seconds"], $0["imported_at"])))"
+            }.joined(separator: " and ")
+            + ".\n\nReplacing keeps that voice's id, so channels using it keep working; its old clip "
+            + "is kept in the gateway's voice backups and the new one is transcribed again."
+        alert.addButton(withTitle: "Keep Both (name it \(conflict["suggested_name"] as? String ?? "\(name) 2"))")
+        for voice in existing {
+            alert.addButton(withTitle: existing.count == 1
+                ? "Replace the Clip of the Existing \(name)"
+                : "Replace \(name) (\(Self.clipLabel(voice["duration_seconds"], voice["imported_at"])))")
+        }
+        alert.addButton(withTitle: "Skip")
+        let index = alert.runModal().rawValue - NSApplication.ModalResponse.alertFirstButtonReturn.rawValue
+        if index == 0 { return "keep_both" }
+        if index >= 1, index <= existing.count, let id = existing[index - 1]["id"] as? String {
+            return "replace:\(id)"
+        }
+        return "skip"
+    }
+
+    /// "12s · 21 Sep 2026": what tells two voices with one name apart.
+    static func clipLabel(_ seconds: Any?, _ importedAt: Any?) -> String {
+        var bits: [String] = []
+        if let seconds = seconds as? Double { bits.append("\(Int(seconds.rounded()))s") }
+        if let stamp = importedAt as? Double {
+            bits.append("added " + DateFormatter.localizedString(
+                from: Date(timeIntervalSince1970: stamp), dateStyle: .medium, timeStyle: .none))
+        }
+        return bits.isEmpty ? "length not known" : bits.joined(separator: " · ")
     }
 
     /// Say what was added, then follow the transcription that makes them usable.
@@ -319,8 +403,15 @@ final class VoicesSection: NSObject, AppSection, NSTableViewDataSource, NSTableV
             : "Added \(names.count) voice\(names.count == 1 ? "" : "s"): "
               + names.prefix(4).joined(separator: ", ")
               + (names.count > 4 ? " +\(names.count - 4) more" : "")
-        if !skipped.isEmpty {
-            line += " · skipped " + skipped.compactMap { $0["name"] as? String }
+        // The same recording again is not a problem, just a fact; anything else skipped is named.
+        let duplicates = skipped.filter { $0["duplicate"] as? Bool == true }
+        let others = skipped.filter { $0["duplicate"] as? Bool != true }
+        if !duplicates.isEmpty {
+            line += " · \(duplicates.count) already here (same recording): "
+                + duplicates.compactMap { $0["name"] as? String }.prefix(3).joined(separator: ", ")
+        }
+        if !others.isEmpty {
+            line += " · skipped " + others.compactMap { $0["name"] as? String }
                 .prefix(3).joined(separator: ", ")
         }
         if !notes.isEmpty {
@@ -689,6 +780,141 @@ final class VoicesSection: NSObject, AppSection, NSTableViewDataSource, NSTableV
     }
 
 
+
+    // MARK: Remove and restore
+
+    /// A voice id carries `::` and may carry `/`; this client builds URLs by concatenation.
+    private static func pathComponent(_ voiceId: String) -> String {
+        let unreserved = CharacterSet(charactersIn:
+            "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~")
+        return voiceId.addingPercentEncoding(withAllowedCharacters: unreserved) ?? voiceId
+    }
+
+    @objc private func removeSelected() {
+        let chosen = selectedRows()
+        guard chosen.count == 1 else {
+            summaryLabel.textColor = Health.warn.text
+            summaryLabel.stringValue = "Select one voice to remove."
+            return
+        }
+        confirmRemove(chosen[0])
+    }
+
+    /// The row's context menu acts on the row that was right-clicked, not the selection.
+    @objc private func removeClicked() {
+        let row = table.clickedRow
+        guard row >= 0, row < rows.count else { return }
+        confirmRemove(rows[row])
+    }
+
+    /// Remove one voice after saying exactly which one — and, when Story Studio has used it
+    /// lately, asking a second time and naming who used it.
+    ///
+    /// This Mac's own voices are moved to the gateway's voice backups, never deleted, and
+    /// More → Restore Removed Voice… brings them back under the same id.
+    private func confirmRemove(_ voice: [String: Any]) {
+        guard let voiceId = voice["id"] as? String else { return }
+        let name = voice["display_name"] as? String ?? voiceId
+        let local = (voice["provider_id"] as? String) == Self.localProviderId
+        let encoded = Self.pathComponent(voiceId)
+
+        let first = NSAlert()
+        first.messageText = "Remove \u{201C}\(name)\u{201D}?"
+        first.informativeText = (local
+            ? "Clip: \(Self.clipLabel(voice["duration_seconds"], voice["imported_at"]))\nID: \(voiceId)\n\n"
+              + "It leaves this list and Story Studio. Its clip, transcript and timings move to the "
+              + "gateway's voice backups; More → Restore Removed Voice… brings it back under the same id."
+            : "ID: \(voiceId)\n\nIt is removed from this gateway, not from the provider.")
+        first.addButton(withTitle: "Remove")
+        first.addButton(withTitle: "Cancel")
+        guard first.runModal() == .alertFirstButtonReturn else { return }
+
+        GatewayAPI.get("/admin/api/voices/\(encoded)/usage") { [weak self] result in
+            guard let self else { return }
+            let used = (try? result.get())?["used_by"] as? [[String: Any]] ?? []
+            var confirmed = false
+            if !used.isEmpty {
+                let second = NSAlert()
+                second.alertStyle = .warning
+                second.messageText = "\u{201C}\(name)\u{201D} was used for narration in the last 30 days"
+                second.informativeText = used.map { use in
+                    let who = (use["caller"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? "an unnamed caller"
+                    let when = (use["last_used_at"] as? Double).map {
+                        DateFormatter.localizedString(from: Date(timeIntervalSince1970: $0),
+                                                      dateStyle: .medium, timeStyle: .short)
+                    } ?? "?"
+                    return "\(who): \(use["jobs"] as? Int ?? 0) jobs, last \(when)"
+                }.joined(separator: "\n")
+                    + "\n\nA Story Studio channel still set to this voice will fail its next narration."
+                second.addButton(withTitle: "Remove Anyway")
+                second.addButton(withTitle: "Cancel")
+                guard second.runModal() == .alertFirstButtonReturn else { return }
+                confirmed = true
+            }
+            GatewayAPI.delete("/admin/api/voices/\(encoded)" + (confirmed ? "?confirm_in_use=true" : "")) {
+                [weak self] result in
+                guard let self else { return }
+                self.reload {
+                    switch result {
+                    case .failure(let error):
+                        self.summaryLabel.textColor = Health.warn.text
+                        self.summaryLabel.stringValue = "Could not remove \(name) — \(error.localizedDescription)"
+                    case .success:
+                        self.summaryLabel.textColor = .secondaryLabelColor
+                        self.summaryLabel.stringValue = local
+                            ? "Removed \(name). Its files are in the gateway's voice backups."
+                            : "Removed \(name)."
+                    }
+                }
+            }
+        }
+    }
+
+    /// Bring back a voice that was removed, under its own id.
+    @objc private func restoreRemoved() {
+        GatewayAPI.get("/admin/api/voices/removed") { [weak self] result in
+            guard let self else { return }
+            let removed = (try? result.get())?["voices"] as? [[String: Any]] ?? []
+            guard !removed.isEmpty else {
+                self.summaryLabel.textColor = .secondaryLabelColor
+                self.summaryLabel.stringValue = "No removed voices to restore."
+                return
+            }
+            let picker = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 380, height: 26))
+            for voice in removed {
+                let when = (voice["removed_at"] as? Double).map {
+                    DateFormatter.localizedString(from: Date(timeIntervalSince1970: $0),
+                                                  dateStyle: .medium, timeStyle: .short)
+                } ?? "?"
+                picker.addItem(withTitle: "\(voice["display_name"] as? String ?? "?") — "
+                               + "\(Self.clipLabel(voice["duration_seconds"], voice["imported_at"])) — removed \(when)")
+                picker.lastItem?.representedObject = voice["backup"]
+            }
+            let alert = NSAlert()
+            alert.messageText = "Restore a removed voice"
+            alert.informativeText = "It comes back under the same id, so channels that used it work again."
+            alert.accessoryView = picker
+            alert.addButton(withTitle: "Restore")
+            alert.addButton(withTitle: "Cancel")
+            guard alert.runModal() == .alertFirstButtonReturn,
+                  let backup = picker.selectedItem?.representedObject as? String else { return }
+            GatewayAPI.post("/admin/api/voices/restore", body: ["backup": backup]) { [weak self] result in
+                guard let self else { return }
+                self.reload {
+                    switch result {
+                    case .failure(let error):
+                        self.summaryLabel.textColor = Health.warn.text
+                        self.summaryLabel.stringValue = "Could not restore it — \(error.localizedDescription)"
+                    case .success(let payload):
+                        self.summaryLabel.textColor = .secondaryLabelColor
+                        self.summaryLabel.stringValue =
+                            "Restored \(payload["display_name"] as? String ?? "the voice")."
+                    }
+                }
+            }
+        }
+    }
+
     /// Save a provider voice the owner already has the id of.
     ///
     /// The library search can only find what the provider will search for, so a
@@ -1035,6 +1261,14 @@ final class VoicesSection: NSObject, AppSection, NSTableViewDataSource, NSTableV
         case "name":
             field.stringValue = voice["display_name"] as? String ?? "?"
             field.font = TextRole.secondary.font
+        case "clip":
+            if (voice["provider_id"] as? String) == Self.localProviderId {
+                field.stringValue = Self.clipLabel(voice["duration_seconds"], voice["imported_at"])
+                field.textColor = .secondaryLabelColor
+            } else {
+                field.stringValue = "—"
+                field.textColor = .tertiaryLabelColor
+            }
         case "language":
             field.stringValue = (voice["language"] as? String ?? "").uppercased()
             field.textColor = .secondaryLabelColor

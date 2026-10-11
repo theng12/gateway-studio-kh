@@ -2880,7 +2880,14 @@ uvicorn.run("gateway.api:app", host="127.0.0.1", port=int(sys.argv[2]), log_leve
                 # reusing the module-level name, which this function binds much
                 # later — hence the `UnboundLocalError` this check first raised.
                 from gateway import voice_import as _vi
-                _refused = _vi.start_annotation()
+                # `voice_import` binds `hub_base_url` at its own import, which can come
+                # first (`voices` reads the clip length through it), so it is patched too.
+                _vi_base = _vi.hub_base_url
+                _vi.hub_base_url = _hub.hub_base_url
+                try:
+                    _refused = _vi.start_annotation()
+                finally:
+                    _vi.hub_base_url = _vi_base
                 check("and the annotation pass refuses once, with the actionable reason",
                       _refused.get("running") is False
                       and "not reachable" in str(_refused.get("error")),
@@ -3147,7 +3154,12 @@ uvicorn.run("gateway.api:app", host="127.0.0.1", port=int(sys.argv[2]), log_leve
             check("re-adding the same folder updates rather than duplicates",
                   len(after["voices"]) == len(catalog["voices"]),
                   f"{len(catalog['voices'])} -> {len(after['voices'])}")
-            check("and reports what it saw again", len(again["imported"]) == 2)
+            # The same recordings again are skipped and named as such. Re-importing over them
+            # used to reset each voice's language, gender and fleet permission.
+            check("and reports them as already here, not as imported",
+                  again["imported"] == [] and len(again["skipped"]) == 3
+                  and sum(1 for s in again["skipped"] if s.get("duplicate")) == 2,
+                  f"{again['imported']} {again['skipped']}")
 
             # The same recording, arriving under a name the catalogue has never
             # seen. Bytes are the identity, so this is that voice and not a second
@@ -3161,44 +3173,64 @@ uvicorn.run("gateway.api:app", host="127.0.0.1", port=int(sys.argv[2]), log_leve
                           json={"folder": str(elsewhere), "annotate": False}).json()
             after_rename = json.loads(Path(added["catalog"]).read_text())
             check("the same clip under a different name is the same voice",
-                  [v["id"] for v in renamed["imported"]] == [blue["id"]],
-                  f"{[v['id'] for v in renamed['imported']]} vs {blue['id']}")
+                  renamed["imported"] == []
+                  and [v.get("id") for v in renamed["skipped"]] == [blue["id"]]
+                  and "same recording" in renamed["skipped"][0]["reason"],
+                  f"{renamed['imported']} {renamed['skipped']}")
             check("and it does not add a row",
                   len(after_rename["voices"]) == len(catalog["voices"]),
                   f"{len(catalog['voices'])} -> {len(after_rename['voices'])}")
-            # The name is a label the last import owns; the identity did not move.
-            # Worth pinning, because "the id is the bytes" is only half the rule —
-            # the other half is that a rename is a rename and not a new voice.
-            check("a renamed clip takes the new label on the voice it already was",
+            check("and the voice it already was keeps its own name",
                   next(v for v in after_rename["voices"] if v["id"] == blue["id"])
-                  ["display_name"] == "Renamed Blue",
+                  ["display_name"] == "Blue",
                   f"{[v['display_name'] for v in after_rename['voices'] if v['id'] == blue['id']]}")
 
-            # A *different* recording claiming a name that is already taken. The
-            # older take is not destroyed, and the owner is told rather than left
-            # with two rows called Morgan and no explanation.
+            # A *different* recording claiming a name that is already taken. It is not added
+            # until the owner says how: a second "Morgan" identical in the list is how the
+            # owner's duplicate Chris/Christian/Leo happened (2026-10-11).
             clash_dir = tmp / "picked-clash"
             clash_dir.mkdir()
             write_wav(clash_dir / "Morgan.wav", seconds=0.4)  # different bytes
+            clash_file = str(clash_dir / "Morgan.wav")
             clashed = req(client, "POST", "/admin/api/voices/add",
-                          json={"folder": str(clash_dir), "annotate": False}).json()
+                          json={"files": [clash_file], "annotate": False}).json()
+            check("a different recording under a used name is asked about, not added",
+                  clashed["imported"] == [] and len(clashed["conflicts"]) == 1
+                  and clashed["conflicts"][0]["message"] == "A voice named \u201cMorgan\u201d already exists."
+                  and clashed["conflicts"][0]["existing"][0]["id"] == stored["id"],
+                  f"{clashed}")
+            kept_both = req(client, "POST", "/admin/api/voices/add",
+                            json={"files": [clash_file], "annotate": False,
+                                  "resolutions": {clash_file: "keep_both"}}).json()
             after_clash = json.loads(Path(added["catalog"]).read_text())
-            same_name = [v for v in after_clash["voices"] if v["display_name"] == "Morgan"]
-            check("a different recording under a used name becomes its own voice",
-                  len(same_name) == 2, f"{[v['id'] for v in same_name]}")
-            check("the recording it was imported over is still there",
-                  stored["id"] in {v["id"] for v in same_name},
-                  f"{[v['id'] for v in same_name]}")
-            check("and the owner is told, rather than left to notice",
-                  len(clashed.get("notes") or []) == 1
-                  and "different" in clashed["notes"][0],
-                  f"{clashed.get('notes')}")
+            same_name = [v for v in after_clash["voices"] if v["display_name"] in {"Morgan", "Morgan 2"}]
+            check("keep both adds it as Morgan 2, beside the older take",
+                  [v["display_name"] for v in kept_both["imported"]] == ["Morgan 2"]
+                  and stored["id"] in {v["id"] for v in same_name} and len(same_name) == 2,
+                  f"{kept_both} {[v['id'] for v in same_name]}")
 
             # Put the catalogue back to the two voices the rest of this section
             # reasons about; the clash above is evidence, not state to keep.
             for extra in [v["id"] for v in same_name if v["id"] != stored["id"]]:
+                gone = req(client, "DELETE", f"/admin/api/voices/studio-hub-local::{extra}")
+                check("one of this Mac's own voices can be removed",
+                      gone.status_code == 200 and gone.json().get("removed") == extra, gone.text[:200])
+                listed = req(client, "GET", "/admin/api/voices/removed").json()["voices"]
+                check("and is listed as restorable, with its length",
+                      [v["id"] for v in listed] == [extra] and listed[0]["duration_seconds"],
+                      f"{listed}")
+                back = req(client, "POST", "/admin/api/voices/restore",
+                           json={"backup": listed[0]["backup"]})
+                check("restore brings it back under the same id",
+                      back.status_code == 200 and any(
+                          v["id"] == extra for v in json.loads(Path(added["catalog"]).read_text())["voices"]),
+                      back.text[:200])
                 req(client, "DELETE", f"/admin/api/voices/{extra}")
             catalog = json.loads(Path(added["catalog"]).read_text())
+            check("the catalogue is back to one Morgan",
+                  [v["display_name"] for v in catalog["voices"]].count("Morgan") == 1
+                  and "Morgan 2" not in [v["display_name"] for v in catalog["voices"]],
+                  f"{[v['display_name'] for v in catalog['voices']]}")
 
             # The folder that was picked is one the owner will empty later — a
             # Downloads folder, a temporary copy. The voice must not depend on it.

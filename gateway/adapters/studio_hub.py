@@ -1308,13 +1308,28 @@ def _retry_item(
 #: voice, and that location had never seen the asset. Invisible with a single
 #: location, which is why it survived; with several it fails the moment a second
 #: controller reuses a cached voice.
+#: The third element is when the placement stops being reused (a deadline, not a stamp).
 _REFERENCE_CACHE: dict[tuple[str, str, str], tuple[str, str, float]] = {}
-_REFERENCE_TTL_S = 6 * 3600.0
-#: How long the Hub keeps a staged clip: the reuse window plus room for a queued job.
-_STAGED_TTL_S = _REFERENCE_TTL_S + 6 * 3600.0
+#: How long one staged clip is reused: 3 days (owner, 2026-10-11; was 6 h).
+_REFERENCE_TTL_S = 3 * 86400.0
+#: Room left between the last reuse and the Hub's own expiry, for a job queued behind a busy Hub
+#: (the adapter's queue ceiling is 3 h).
+_REUSE_HEADROOM_S = 12 * 3600.0
+#: How long the Hub is asked to keep a staged clip: the reuse window plus the headroom. **The Hub
+#: may keep it for less** (Hub `execution_assets.MAX_TTL_SECONDS`, 48 h as of 0.6.166), so reuse
+#: also ends `_REUSE_HEADROOM_S` before the `expires_at` the Hub answers (`_reuse_until`).
+_STAGED_TTL_S = _REFERENCE_TTL_S + _REUSE_HEADROOM_S
 
 
-def _remember_reference(key: tuple[str, str, str], kind: str, value: str) -> None:
+def _reuse_until(staged_at: float, expires_at: object) -> float:
+    """When a placement stops being reused: the reuse window, cut short by the Hub's own expiry."""
+    until = staged_at + _REFERENCE_TTL_S
+    if isinstance(expires_at, (int, float)):
+        until = min(until, float(expires_at) - _REUSE_HEADROOM_S)
+    return until
+
+
+def _remember_reference(key: tuple[str, str, str], kind: str, value: str, until: float) -> None:
     """Store a placement and drop the ones that have expired.
 
     The key carries the clip's digest, so every re-import of a voice adds a key
@@ -1325,9 +1340,9 @@ def _remember_reference(key: tuple[str, str, str], kind: str, value: str) -> Non
     location. Above a few thousand voices this wants a heap or an ordered dict.
     """
     now = time.time()
-    for stale in [k for k, v in _REFERENCE_CACHE.items() if (now - v[2]) >= _REFERENCE_TTL_S]:
+    for stale in [k for k, v in _REFERENCE_CACHE.items() if v[2] <= now]:
         _REFERENCE_CACHE.pop(stale, None)
-    _REFERENCE_CACHE[key] = (kind, value, now)
+    _REFERENCE_CACHE[key] = (kind, value, until)
 
 
 def _reference_cache_key(voice_id: str, base: str, digest: str) -> tuple[str, str, str]:
@@ -1391,10 +1406,11 @@ def _voice_placement(
     # question the cache answers.
     key = _reference_cache_key(voice_id, base, _clip_digest(path))
     cached = _REFERENCE_CACHE.get(key)
-    if cached and (time.time() - cached[2]) < _REFERENCE_TTL_S:
+    if cached and time.time() < cached[2]:
         return cached[1]
-    asset_id = _stage_voice_reference(client, base, headers, voice_id, path, reference)
-    _remember_reference(key, "asset", asset_id)
+    staged_at = time.time()
+    asset_id, expires_at = _stage_voice_reference(client, base, headers, voice_id, path, reference)
+    _remember_reference(key, "asset", asset_id, _reuse_until(staged_at, expires_at))
     return asset_id
 
 
@@ -1489,8 +1505,8 @@ def _stage_voice_reference(
     voice_id: str,
     path: Path,
     reference: dict[str, Any],
-) -> str:
-    """Upload a voice's reference clip and return the Hub's asset id.
+) -> tuple[str, object]:
+    """Upload a voice's reference clip; return the Hub's asset id and the `expires_at` it states.
 
     Qwen3 *Base* models are cloning models: without a reference they fail with
     "Voice cloning needs a reference voice or private reference upload". So the
@@ -1501,11 +1517,19 @@ def _stage_voice_reference(
     part of what the Hub stores and fingerprints: sending only the audio left the
     staged copy a poorer description of the voice than the gateway already had.
     """
-    audio = path.read_bytes()
+    from .. import voice_audio  # an audio utility, not the voice catalogue
+
+    # **Lossless FLAC when it is provably lossless** (`voice_audio.lossless_flac`: decoded back
+    # and compared sample for sample), else the file as it is. ~40% of the bytes for the same
+    # samples: Christopher's 105 s clip stages as 3.67 MB instead of 9.30 MB. The Hub and its
+    # Voice Studio accept `.flac` and decode it with libsndfile to the same samples as the WAV.
+    flac = voice_audio.lossless_flac(path)
+    audio = flac if flac is not None else path.read_bytes()
+    name = path.with_suffix(".flac").name if flac is not None else path.name
     # One read feeds both the upload and the declared digest: hashing the file a
     # second time would let the two describe different bytes.
     digest = hashlib.sha256(audio).hexdigest()
-    files = {"audio": (path.name, audio, "application/octet-stream")}
+    files = {"audio": (name, audio, "application/octet-stream")}
     # `transcript_segments` is not optional for Qwen3 Base: the worker refuses a
     # reference without aligned timestamps
     # (REFERENCE_TRANSCRIPT_ALIGNMENT_REQUIRED). They are generated by
@@ -1521,7 +1545,7 @@ def _stage_voice_reference(
         # the reference a voice is cloned from.
         "sha256": digest,
         "source_asset_id": str(reference.get("source_id") or voice_id)[:500],
-        # Outlives the placement cache by a queue's worth: an asset reused just before
+        # Outlives the placement cache by `_REUSE_HEADROOM_S`: an asset reused just before
         # the cache lets go still has to be readable when a busy Hub finally dispatches
         # the job (the adapter's queue ceiling is 3 h).
         "ttl_seconds": str(int(_STAGED_TTL_S)),
@@ -1570,8 +1594,8 @@ def _stage_voice_reference(
         transcript=bool(transcript.strip() or segments),
     )
 
-    # Caching happens in `_voice_placement`, which is the only caller.
-    return asset_id
+    # Caching happens in `_voice_placement`, which is the only caller; it needs the expiry too.
+    return asset_id, payload.get("expires_at")
 
 
 def _generate_image_or_voice(request: BackendRequest) -> BackendResult:

@@ -158,10 +158,12 @@ class Voice:
             # imported and annotated against, which decides nothing at render
             # time, so it is published under a name that says so.
             "minted_against_model": (self.raw or {}).get("tts_model_id"),
-            # The clip's own length, when it was measured at import. Reported
-            # rather than inferred: a voice whose duration was never recorded
-            # says `None` instead of a plausible guess.
+            # The clip's own length: measured at import, or read from the WAV header.
+            # Reported rather than inferred: a clip that cannot be measured says
+            # `None` instead of a plausible guess.
             "duration_seconds": (self.raw or {}).get("duration_seconds"),
+            # When a local voice's clip was imported (epoch seconds); `None` elsewhere.
+            "imported_at": (self.raw or {}).get("imported_at"),
             # **These three used to live only in `raw`, which is never
             # serialised.** The menu bar app read `row["raw"]["owner_id"]` and
             # `row["raw"]["permission_acknowledged"]`, so it sent no owner for an
@@ -384,6 +386,8 @@ def _local_voices() -> list[Voice]:
     except (json.JSONDecodeError, OSError):
         return []
     entries = payload.get("voices") if isinstance(payload, dict) else payload
+    from .voice_import import clip_seconds, imported_at  # lazy: voice_import reaches back into this module
+
     voices: list[Voice] = []
     for entry in entries or []:
         if not isinstance(entry, dict) or not entry.get("id"):
@@ -410,7 +414,10 @@ def _local_voices() -> list[Voice]:
                     # Needed to say whether a model's window will cut it, and it
                     # is the *clip* length rather than the speech span the
                     # segments describe.
-                    "duration_seconds": entry.get("duration_seconds"),
+                    "duration_seconds": clip_seconds(entry),
+                    # When the clip came in. With the length, what tells two voices
+                    # with the same name apart in the Voices list.
+                    "imported_at": imported_at(entry),
                     # Carried through so the Studio Hub adapter can stage the
                     # clone reference without re-reading the catalogue file.
                     "reference_path": entry.get("reference_path"),

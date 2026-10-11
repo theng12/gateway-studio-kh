@@ -1781,10 +1781,13 @@ def voice_library(provider_id: str, q: str = "", page: int = 0) -> Any:
 
 @router.post("/api/voices/add", dependencies=[Depends(require_admin)])
 def add_voices(payload: dict[str, Any]) -> Any:
-    """Stock the catalogue from a folder the owner picked.
+    """Stock the catalogue from audio files, or a folder, the owner picked.
 
-    Two shapes are accepted, because both are things people actually have: a folder
-    of per-voice folders, and a folder of loose audio files. Each voice's clip is
+    `files` is what the picker sends for a hand-picked selection (one clip is one voice; a
+    folder in it is read like `folder`). `folder` takes two shapes, because both are things
+    people actually have: a folder of per-voice folders, and a folder of loose audio files.
+    A name that is already taken by a different recording comes back in `conflicts` and
+    is added only once `resolutions` says how (`voice_import.import_found`). Each voice's clip is
     copied into the gateway's own library so the voice survives the source folder
     being moved, and then transcribed through Studio Hub to produce the segments
     Qwen3 Base requires. Named `add` rather than `import` because
@@ -1794,12 +1797,22 @@ def add_voices(payload: dict[str, Any]) -> Any:
     from . import voice_import
 
     folder = str(payload.get("folder") or "").strip()
-    if not folder:
-        return _error(400, "Pick a folder to add voices from.")
-    result = voice_import.import_folder(Path(folder).expanduser())
-    if not result["imported"] and not result["skipped"]:
+    files = [str(f).strip() for f in payload.get("files") or [] if str(f).strip()]
+    resolutions = payload.get("resolutions") or {}
+    if not isinstance(resolutions, dict):
+        return _error(422, "resolutions must be {source: 'keep_both' | 'skip' | 'replace:<voice id>'}")
+    if files:
+        # Picked one by one: a clip each, or a folder read the same way as `folder`.
+        result = voice_import.import_paths([Path(f).expanduser() for f in files], resolutions)
+    elif folder:
+        result = voice_import.import_folder(Path(folder).expanduser(), resolutions)
+    else:
+        return _error(400, "Pick audio files, or a folder, to add voices from.")
+    if not result["imported"] and not result["skipped"] and not result["conflicts"]:
         return _error(400, "That folder has no audio files in it.")
-    if payload.get("annotate", True):
+    # Not while names are still in question: the answer comes back as a second add, and a
+    # pass already running would not pick up the clips that one replaces.
+    if payload.get("annotate", True) and not result["conflicts"]:
         result["annotation"] = voice_import.start_annotation(
             str(payload.get("transcription_model") or ""),
             force=bool(payload.get("force")),
@@ -1991,12 +2004,73 @@ def voice_preview(voice_id: str) -> Any:
     return Response(content=content, media_type=media_type)
 
 
+@router.get("/api/voices/removed", dependencies=[Depends(require_admin)])
+def removed_voices() -> dict[str, Any]:
+    """This Mac's voices that were removed and can be restored (`voice-backups/`)."""
+    from . import voice_import
+
+    return {"voices": voice_import.removed()}
+
+
+@router.post("/api/voices/restore", dependencies=[Depends(require_admin)])
+def restore_voice(payload: dict[str, Any]) -> Any:
+    from . import voice_import
+
+    try:
+        return voice_import.restore(str(payload.get("backup") or ""))
+    except (ValueError, OSError) as exc:
+        return _error(409, str(exc))
+
+
+#: How far back a voice counts as "recently used" before it may be removed without a second yes.
+VOICE_IN_USE_DAYS = 30
+
+
+def _voice_use(raw_id: str) -> list[dict[str, Any]]:
+    return store.voice_use(raw_id, since=time.time() - VOICE_IN_USE_DAYS * 86400)
+
+
+@router.get("/api/voices/{voice_id:path}/usage", dependencies=[Depends(require_admin)])
+def voice_usage(voice_id: str) -> Any:
+    """Who rendered narration with this voice lately, per caller: `[{caller, jobs, last_used_at}]`.
+
+    Asked before a remove, so the confirmation can name it.
+    """
+    from .voices import split_id
+
+    raw = split_id(voice_id)[1] or voice_id
+    return {"voice_id": voice_id, "days": VOICE_IN_USE_DAYS, "used_by": _voice_use(raw)}
+
+
 @router.delete("/api/voices/{voice_id:path}", dependencies=[Depends(require_admin)])
-def forget_voice(voice_id: str) -> Any:
-    removed = voice_registry().remove_custom(voice_id)
-    if not removed:
-        return _error(404, "that voice is discovered from the provider, not added here")
-    return {"removed": voice_id}
+def forget_voice(voice_id: str, confirm_in_use: bool = False) -> Any:
+    """Remove a voice: a provider voice saved here, or one of this Mac's own.
+
+    One of this Mac's own leaves the catalogue and its folder moves to `voice-backups/`
+    (`voice_import.remove`; `POST /api/voices/restore` brings it back under the same id).
+    **A voice narrated with in the last 30 days is refused (409, `VOICE_IN_USE`) unless
+    `confirm_in_use=true`**, and `GET …/usage` names who used it and when, so the app can ask
+    a second time naming them: a channel still pointing at it would fail its next
+    narration. The gateway cannot see Story's channel settings, so its own job history is
+    the evidence; a voice set on a channel but not rendered for 30 days is not caught.
+    """
+    from . import voice_import
+
+    # Either spelling of one of this Mac's own (`studio-hub-local::voice-…` or `voice-…`).
+    raw = voice_import.catalogue_id(voice_id)
+    mine = next((v for v in voice_import.voices() if str(v.get("id")) == raw), None)
+    if mine is None:
+        if not voice_registry().remove_custom(voice_id):
+            return _error(404, "that voice is discovered from the provider, not added here")
+        return {"removed": voice_id}
+    if not confirm_in_use and _voice_use(raw):
+        return _error(409, (
+            f"\u201c{mine.get('display_name')}\u201d was used for narration in the last "
+            f"{VOICE_IN_USE_DAYS} days; confirm to remove it anyway."), code="VOICE_IN_USE")
+    try:
+        return voice_import.remove(raw)
+    except OSError as exc:
+        return _error(500, f"Could not move it to the voice backups, so it was not removed: {exc}")
 
 
 # ---------------------------------------------------------------------------

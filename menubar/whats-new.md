@@ -14,6 +14,36 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.168 — 2026-10-11
+
+### Add one voice without adding the whole folder
+
+- **Add Voices… now picks audio files.** Pick one clip, or ⌘-click several; each becomes a voice.
+  Picking a folder still works as before.
+- **The same recording is never added twice.** If a clip is already here, under any name, it is
+  skipped and the result says which voice it already is.
+- **A name that is already taken is a question, not a second voice.** If you add a different
+  clip called "Chris" while a Chris exists, you choose: **Keep Both** (it becomes "Chris 2"),
+  **Replace the Clip of the Existing Chris**, or **Skip**. Replace keeps that voice's id, so
+  channels that use it keep working; the new clip is transcribed again and the old one is kept
+  in the gateway's voice backups.
+- **Remove a voice, and bring it back.** More → **Remove Voice…** (or right-click a row). The
+  confirmation names the voice, its clip length and when it was added; if Story Studio narrated
+  with it in the last 30 days, a second confirmation says who and when. Nothing is deleted: the
+  files move to the gateway's voice backups, and More → **Restore Removed Voice…** puts it back
+  under the same id.
+- **Two voices with the same name can be told apart.** A new **Clip** column shows each of your
+  voices' length and the date it was added.
+
+### Voice clips travel lighter and are sent less often
+
+- **A voice's clip is sent to a location in lossless FLAC instead of WAV**: the same sound, sample
+  for sample, in about 40% of the bytes (Christopher: 3.7 MB instead of 9.3 MB). Each clip is
+  checked before it is sent: if its FLAC would not decode to exactly the same samples, the WAV goes.
+- **A clip sent to a location is reused for up to 3 days** (it was 6 hours), so narration does not
+  re-upload it for every chapter. Today's Studio Hub keeps a sent clip for 2 days, so reuse stops
+  12 hours before that (36 hours) until the Hub keeps clips longer.
+
 ## 0.2.167 — 2026-10-11
 
 ### Your Macs can now look at a picture and describe its shape
