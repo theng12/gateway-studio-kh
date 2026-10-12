@@ -106,6 +106,7 @@ class Yue2DeadlineTests(unittest.TestCase):
         want = 2 * (hub_module.YUE2_SLOWEST_S_PER_SONG_S * 210 + hub_module.YUE2_SLOWEST_LOAD_S)
         self.assertEqual(self.deadline({"duration_seconds": 210}), want)
         self.assertGreater(want, 900)
+        self.assertEqual(want, 3222.0, "2 x (7.1 x 210 + 120): twice the slowest measured Mac (M1 16 GB)")
         self.assertEqual(self.deadline({"duration_seconds": 210}, model="stabilityai/stable-audio-3-optimized"), 900)
         self.assertEqual(self.deadline({}, stated=900), max(900, 2 * hub_module.YUE2_SLOWEST_LOAD_S))
 

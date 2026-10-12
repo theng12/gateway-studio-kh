@@ -14,6 +14,15 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.175 — 2026-10-12
+
+### Song time limits come from the measured slowest Mac
+
+The YuE2 song limit now uses the measured speed of the slowest Mac (an M1 16 GB: about 7 seconds of work
+per second of song), doubled: a 3½-minute song gets about 54 minutes. It was a provisional, larger figure.
+
+---
+
 ## 0.2.174 — 2026-10-12
 
 ### Long songs are no longer cut off at 15 minutes

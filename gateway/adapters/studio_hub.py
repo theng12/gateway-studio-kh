@@ -573,7 +573,9 @@ def _tts_length_deadline(request: BackendRequest, machine: str | None = None) ->
 #: The music lane's flat 900 s cut 3-4 min songs (7 of 18 at 15:44). Hub 0.6.170 states the same number
 #: on the batch item (`deadline_s`) and its bridge stops there; this keeps an older Hub's songs alive too.
 YUE2_MODEL_ID = "vanch007/mlx-Yue2-3B"
-YUE2_SLOWEST_S_PER_SONG_S = 12.0  # provisional until the per-class measurement; see SPEED-fleet.md
+#: Measured 2026-10-12 on 3.5 min songs: M1 16 GB 7.09 s per song-second (the slowest; load included),
+#: M2 16 GB 5.92, M4 16 GB 4.77, M4 24 GB 4.90. Hub 0.6.170's `yue2.SLOWEST_S_PER_SONG_S` is the same.
+YUE2_SLOWEST_S_PER_SONG_S = 7.1
 YUE2_SLOWEST_LOAD_S = 120.0
 YUE2_DEADLINE_MARGIN = 2.0
 
