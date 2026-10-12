@@ -14,6 +14,16 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.172 — 2026-10-12
+
+### A job can name the site it runs at
+
+A request may now say `"site": "<location id>"` (for example a YuE2 song you want measured on one
+location). The job stays at that location, including when a Mac fails and it is tried again, and the
+field is never sent on to a Mac. A site that cannot take work is ignored and the job routes as usual.
+
+---
+
 ## 0.2.171 — 2026-10-12
 
 ### Sung songs take their turn like any other job

@@ -164,6 +164,13 @@ def pinned_location(params: dict) -> str | None:
             if key == "voice_id" and _clip_travels_with_job(value):
                 continue
             return location_id if _location_takes_customer_jobs(location_id) else None
+    # 0.2.172: a request may name its site outright (`"site": "<controller id>"` or `"studio-hub-<id>"`),
+    # e.g. a music job measured on one location. It stays in the job's params (so a late re-route keeps
+    # it) and is never forwarded to a Hub (`studio_hub._HUB_MUSIC_PARAMS` is an allowlist).
+    site = str(params.get("site") or "").strip()
+    if site:
+        location_id = controller_id_from(site) or site
+        return location_id if _location_takes_customer_jobs(location_id) else None
     return None
 
 

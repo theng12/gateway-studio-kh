@@ -1225,6 +1225,16 @@ class VoicePinTests(unittest.TestCase):
                 fleet.pinned_location({"voice_id": "studio-hub-ghost::voice-a"}), "ghost"
             )
 
+    def test_a_request_can_name_its_site_and_an_agent_site_is_not_pinned(self) -> None:
+        # 0.2.172: `site` pins any job (a YuE2 song measured on one location), in either spelling.
+        rows = [_location("ctrl", role="controller", drained=False),
+                _location("local", role="agent", drained=True)]
+        with patch.object(fleet, "snapshot", return_value={"locations": rows}):
+            self.assertEqual(fleet.pinned_location({"site": "ctrl"}), "ctrl")
+            self.assertEqual(fleet.pinned_location({"site": "studio-hub-ctrl"}), "ctrl")
+            self.assertIsNone(fleet.pinned_location({"site": "local"}))
+            self.assertIsNone(fleet.pinned_location({"lyrics": "la"}))
+
     def _gateway_voice(self, clip: Path):
         from gateway import voices
         voice = types.SimpleNamespace(raw={"reference_path": str(clip)})
