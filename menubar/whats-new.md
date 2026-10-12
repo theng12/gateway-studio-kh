@@ -14,6 +14,19 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.173 — 2026-10-12
+
+### The admin pages work from a phone, with a password
+
+Open `http://<this Mac's Tailscale address>:8787/admin` in Safari on your phone. A menu at the top
+switches between Fleet (which Macs are online, what each is doing, versions, queue), Jobs, Models,
+Providers, Create and Content Packs, and every page fits the phone's width. Sign in with a browser
+password you set in **Settings → Browser password** (the gateway API key also works); Sign Out ends
+the session, and changing or removing the password signs every browser out. Fleet in the browser is
+read-only: pausing, updates and installs stay in this app.
+
+---
+
 ## 0.2.172 — 2026-10-12
 
 ### A job can name the site it runs at

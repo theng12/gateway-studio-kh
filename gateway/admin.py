@@ -12,6 +12,8 @@ on the LAN. Both the configured bind and actual request peer are checked.
 
 from __future__ import annotations
 
+import hmac
+import html
 import json
 import re
 import time
@@ -31,7 +33,7 @@ from fastapi import (
     Response,
     UploadFile,
 )
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from starlette.concurrency import run_in_threadpool
 
 from .activity import story_activity
@@ -43,7 +45,7 @@ from . import pricing
 from .pricing import row_price
 from . import qualification
 from . import release_publisher, release_rollout
-from . import model_share, startup_control
+from . import admin_session, model_share, startup_control
 from .config import is_loopback, request_is_loopback
 from .hub import hub_status
 from .providers import definitions, registry
@@ -61,21 +63,52 @@ class AdminError(Exception):
         self.detail = detail
 
 
-def require_admin(
-    request: Request, authorization: str | None = Header(default=None)
-) -> None:
-    """Loopback is trusted; anything else must present the gateway key."""
-    if is_loopback() and request_is_loopback(request):
-        return
-    if not authorization or not authorization.lower().startswith("bearer "):
-        raise AdminError(401, "Admin API requires a bearer token when not bound to loopback.")
+def _key_matches(candidate: str) -> bool:
     from .config import gateway_api_key
 
     expected = gateway_api_key()
-    if not expected:
+    return bool(expected) and hmac.compare_digest(candidate.encode(), expected.encode())
+
+
+def require_admin(
+    request: Request, authorization: str | None = Header(default=None)
+) -> None:
+    """Loopback is trusted; anything else presents the gateway key or a browser session.
+
+    The session is the cookie `/admin/login` sets (`admin_session`). SameSite=Strict
+    keeps other sites from sending it, and a write carried by it must also name this
+    origin, so a cross-site form cannot act with it.
+    """
+    if is_loopback() and request_is_loopback(request):
+        return
+    if not authorization or not authorization.lower().startswith("bearer "):
+        if admin_session.valid_session(request.cookies.get(admin_session.COOKIE)):
+            if request.method not in ("GET", "HEAD", "OPTIONS") and not admin_session.same_origin(request):
+                raise AdminError(403, "Cross-site request refused.")
+            return
+        raise AdminError(401, "Admin API requires a bearer token when not bound to loopback.")
+    from .config import gateway_api_key
+
+    if not gateway_api_key():
         raise AdminError(503, "Set GATEWAY_API_KEY before using the gateway beyond loopback.")
-    if authorization[7:].strip() != expected:
+    if not _key_matches(authorization[7:].strip()):
         raise AdminError(403, "Invalid API key.")
+
+
+def require_local_app(
+    request: Request, authorization: str | None = Header(default=None)
+) -> None:
+    """The app's own window on this Mac, never a browser session: the key from this Mac.
+
+    Used for the browser password itself, so a signed-in browser cannot change it.
+    """
+    if not request_is_loopback(request):
+        raise AdminError(403, "Set the browser password in the Gateway app on its own Mac.")
+    if is_loopback():
+        return
+    bearer = (authorization or "")
+    if not bearer.lower().startswith("bearer ") or not _key_matches(bearer[7:].strip()):
+        raise AdminError(403, "Set the browser password in the Gateway app on its own Mac.")
 
 
 # FastAPI needs the exception registered on the app, so the router returns a
@@ -99,7 +132,14 @@ def _error(status: int, detail: str, code: str | None = None) -> JSONResponse:
 # ---------------------------------------------------------------------------
 @router.get("", response_class=HTMLResponse)
 @router.get("/", response_class=HTMLResponse)
-def admin_ui() -> HTMLResponse:
+def admin_ui(request: Request) -> HTMLResponse:
+    # The page holds no secrets — every figure on it comes from `/admin/api`, which
+    # authenticates on its own — so this Mac (the app's window) always gets it. A
+    # browser elsewhere signs in first, so it lands on a page that works.
+    token = request.cookies.get(admin_session.COOKIE)
+    signed_in = admin_session.valid_session(token)
+    if not (request_is_loopback(request) or signed_in):
+        return _login_page()
     if not _UI_PATH.exists():
         return HTMLResponse("<h1>gateway-kh</h1><p>Admin UI file is missing.</p>", status_code=500)
     # **`no-store`, because the page is read from disk on every request and a cached
@@ -107,10 +147,125 @@ def admin_ui() -> HTMLResponse:
     # WKWebView, so without it a reload after an edit can serve the previous page and
     # a fix looks like it did not apply — which is exactly how a styling change gets
     # reported as broken twice.
-    return HTMLResponse(
+    page = HTMLResponse(
         _UI_PATH.read_text(encoding="utf-8"),
         headers={"Cache-Control": "no-store, must-revalidate"},
     )
+    if signed_in:
+        _set_session_cookie(page, token)  # sliding: 30 days from the last visit
+    return page
+
+
+# ---------------------------------------------------------------------------
+# Browser sign-in (password set in the app, or the gateway key)
+# ---------------------------------------------------------------------------
+_LOGIN_HTML = """<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>gateway-kh — sign in</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { margin: 0; background: Canvas; color: CanvasText;
+    font: 15px/1.5 -apple-system, BlinkMacSystemFont, system-ui, sans-serif; }
+  main { max-width: 380px; margin: 12vh auto 0; padding: 0 16px; }
+  h1 { font-size: 26px; font-weight: 600; margin: 0 0 8px; }
+  p { color: color-mix(in srgb, CanvasText 60%, Canvas); margin: 0 0 16px; }
+  input { width: 100%; box-sizing: border-box; font: inherit; padding: 10px 12px; border-radius: 8px;
+    border: 1px solid color-mix(in srgb, CanvasText 20%, Canvas); background: Canvas; color: CanvasText; }
+  button { width: 100%; margin-top: 12px; font: inherit; font-weight: 600; padding: 10px; border: 0;
+    border-radius: 8px; background: AccentColor; color: AccentColorText; }
+  .bad { color: #d70015; }
+  @media (prefers-color-scheme: dark) { .bad { color: #ff6961; } }
+</style></head>
+<body><main>
+  <h1>Gateway</h1>
+  <p>__NOTE__</p>
+  __ERROR__
+  <form method="post" action="/admin/login">
+    <input type="text" name="username" value="gateway-kh" autocomplete="username" hidden>
+    <input type="password" name="password" placeholder="__PLACEHOLDER__" autocomplete="current-password" autofocus required>
+    <button type="submit">Sign In</button>
+  </form>
+</main></body></html>
+"""
+
+
+def _login_page(error: str = "", status: int = 200) -> HTMLResponse:
+    if admin_session.password_set():
+        note = "Sign in with the browser password set in the Gateway app."
+        placeholder = "Password"
+    else:
+        note = ("No browser password is set yet. Set one in the Gateway app on the Mac: "
+                "Settings, Browser password. Until then, sign in with the gateway API key.")
+        placeholder = "Gateway API key"
+    body = (_LOGIN_HTML.replace("__NOTE__", html.escape(note))
+            .replace("__PLACEHOLDER__", html.escape(placeholder))
+            .replace("__ERROR__", f'<p class="bad">{html.escape(error)}</p>' if error else ""))
+    return HTMLResponse(body, status_code=status, headers={"Cache-Control": "no-store"})
+
+
+def _set_session_cookie(response: Response, token: str) -> None:
+    # Not `secure`: the Tailscale address is plain http, where a Secure cookie is never sent back.
+    response.set_cookie(admin_session.COOKIE, token, max_age=admin_session.IDLE_SECONDS,
+                        httponly=True, samesite="strict", path="/admin")
+
+
+@router.get("/login", response_class=HTMLResponse)
+def admin_login_page() -> HTMLResponse:
+    return _login_page()
+
+
+@router.post("/login")
+async def admin_login(request: Request) -> Response:
+    from urllib.parse import parse_qs
+
+    if not admin_session.same_origin(request):
+        return _login_page("This sign-in did not come from this page. Open it again and retry.", 403)
+    address = request.client.host if request.client else "?"
+    wait = admin_session.retry_after(address)
+    if wait:
+        return _login_page(f"Too many attempts. Try again in {wait} seconds.", 429)
+    form = parse_qs((await request.body()).decode("utf-8", "replace"))
+    secret = (form.get("password") or [""])[0]
+    ok = await run_in_threadpool(admin_session.check_password, secret) or _key_matches(secret.strip())
+    if not ok:
+        admin_session.note_failure(address)
+        return _login_page("That is not the password.", 401)
+    admin_session.note_success(address)
+    response = RedirectResponse("/admin", status_code=303)
+    _set_session_cookie(response, admin_session.create_session())
+    return response
+
+
+@router.post("/logout")
+def admin_logout(request: Request) -> Response:
+    if not admin_session.same_origin(request):
+        return _error(403, "Cross-site request refused.")
+    admin_session.end_session(request.cookies.get(admin_session.COOKIE))
+    response = JSONResponse({"signed_out": True})
+    response.delete_cookie(admin_session.COOKIE, path="/admin")
+    return response
+
+
+@router.get("/api/settings/browser-password", dependencies=[Depends(require_admin)])
+def get_browser_password() -> dict[str, Any]:
+    return {"set": admin_session.password_set(), "min_length": admin_session.MIN_LENGTH}
+
+
+@router.put("/api/settings/browser-password", dependencies=[Depends(require_local_app)])
+async def set_browser_password(payload: dict[str, Any]) -> Any:
+    """Set or replace it. Every signed-in browser is signed out."""
+    try:
+        await run_in_threadpool(admin_session.set_password, payload.get("password"))
+    except ValueError as exc:
+        return _error(422, str(exc), "BROWSER_PASSWORD_REFUSED")
+    return {"set": True, "min_length": admin_session.MIN_LENGTH}
+
+
+@router.delete("/api/settings/browser-password", dependencies=[Depends(require_local_app)])
+def remove_browser_password() -> dict[str, Any]:
+    admin_session.remove_password()
+    return {"set": False, "min_length": admin_session.MIN_LENGTH}
 
 
 # ---------------------------------------------------------------------------

@@ -365,9 +365,50 @@
     padding: var(--s4) 0; border-bottom: 1px solid var(--line);
   }
   .recent .item:last-child { border-bottom: 0; }
+
+  /* ---- Plain-browser navigation (a phone over Tailscale) ----------------------
+     In the app the window's sidebar is the navigation, so this bar stays hidden
+     there (`__GATEWAY_IN_APP__`). In a browser it is the only way between pages. */
+  #web-nav {
+    position: sticky; top: 0; z-index: 10; display: flex; align-items: center; gap: var(--s8);
+    padding: var(--s8) var(--s16); background: var(--bg); border-bottom: 1px solid var(--line);
+  }
+  #web-nav[hidden] { display: none; }
+  #web-nav .web-title { font-weight: 600; font-size: 15px; }
+  #web-nav select { width: auto; min-width: 150px; font-size: 15px; }
+  /* Fleet: one card per location, a grid of Mac tiles inside it that folds to one
+     column on a phone, so nothing on the page scrolls sideways. */
+  .fleet-macs {
+    display: grid; grid-template-columns: repeat(auto-fill, minmax(min(250px, 100%), 1fr));
+    gap: 1px; background: var(--line); border-top: 1px solid var(--line);
+  }
+  .fleet-mac { background: var(--panel); padding: var(--s8) var(--s16); min-width: 0; }
+  .fleet-mac .name { font-size: 13px; }
+  .fleet-mac .cat, .fleet-mac .hint { overflow-wrap: anywhere; }
+  #fleet-summary { gap: var(--s12); margin: 0 0 var(--s12); }
+  .fleet-issue { padding: var(--s6) var(--s16); border-top: 1px solid var(--line); font-size: 12px; overflow-wrap: anywhere; }
+  .fleet-issue:first-child { border-top: 0; }
+  summary.fleet-issue { cursor: pointer; padding: var(--s8) var(--s16); }
+  @media (max-width: 640px) {
+    main { padding: var(--s16); }
+    h1 { font-size: 22px; }
+  }
 </style>
 </head>
 <body>
+<nav id="web-nav" hidden>
+  <span class="web-title">Gateway</span>
+  <select id="web-page" aria-label="Page" onchange="location.hash = this.value">
+    <option value="fleet">Fleet</option>
+    <option value="jobs">Jobs</option>
+    <option value="models">Models</option>
+    <option value="providers">Providers</option>
+    <option value="create">Create</option>
+    <option value="packs">Content Packs</option>
+  </select>
+  <span class="spacer"></span>
+  <button class="sm" onclick="signOut()">Sign Out</button>
+</nav>
 <main>
   <!-- Shown only when the gateway refuses a request for want of a key. It appears
        when the gateway is bound beyond loopback — for Tailscale or the LAN — where
@@ -385,8 +426,27 @@
       </div>
     </div>
   </div>
+  <!-- FLEET (browser only; the app has its own native Fleet page) -->
+  <section id="view-fleet" style="display:none">
+    <div class="heading">
+      <h1>Fleet</h1>
+      <p>Which Macs are online and what each one is doing. Read-only here: pausing, updates
+         and installs stay in the Gateway app's Fleet page.</p>
+    </div>
+    <div class="row stat" id="fleet-summary"></div>
+    <div id="fleet-issues"></div>
+    <div id="fleet-body"><div class="empty">Reading the fleet…</div></div>
+  </section>
+  <!-- JOBS (browser only) -->
+  <section id="view-jobs" style="display:none">
+    <div class="heading">
+      <h1>Jobs</h1>
+      <p>The latest 100 jobs, newest first.</p>
+    </div>
+    <div id="jobs-body"><div class="empty">Reading jobs…</div></div>
+  </section>
   <!-- MODELS -->
-  <section id="view-models">
+  <section id="view-models" style="display:none">
     <div class="heading">
       <h1>Models</h1>
       <p>Every model this gateway has discovered. Only ticked models are offered to Story Studio —
@@ -728,9 +788,13 @@ const ago = (t) => { if (!t) return 'never'; const s = Date.now()/1000 - t;
 // The key comes from `window.__GATEWAY_ADMIN_TOKEN__` when the menu-bar app
 // injected it (the app owns `.env`, so pasting is unnecessary there) and from
 // `localStorage` otherwise, so a browser on another device pastes it once.
+// In a plain browser the session cookie from `/admin/login` carries identity instead,
+// so a stale pasted key cannot override it.
+const IN_APP = !!window.__GATEWAY_IN_APP__;
+
 function adminToken() {
   const injected = window.__GATEWAY_ADMIN_TOKEN__;
-  const stored = localStorage.getItem('gatewayAdminToken') || '';
+  const stored = IN_APP ? (localStorage.getItem('gatewayAdminToken') || '') : '';
   return String(injected || stored).trim();
 }
 
@@ -742,6 +806,8 @@ function adminHeaders(extra) {
 }
 
 function showTokenPrompt(detail) {
+  // A browser signs in on the login page (password or key); its session ended or never began.
+  if (!IN_APP) { location.href = '/admin/login'; return; }
   const bar = document.getElementById('token-bar');
   if (!bar) return;
   bar.style.display = '';
@@ -855,6 +921,10 @@ function setView(view) {
   // it stacks four unrelated subjects, and splitting them is not a decision the
   // sidebar can express.
   state.view = view;
+  const pick = document.getElementById('web-page');
+  if (pick) pick.value = view;
+  document.getElementById('view-fleet').style.display = view === 'fleet' ? '' : 'none';
+  document.getElementById('view-jobs').style.display = view === 'jobs' ? '' : 'none';
   document.getElementById('view-models').style.display = view === 'models' ? '' : 'none';
   document.getElementById('view-providers').style.display = view === 'providers' ? '' : 'none';
   document.getElementById('view-create').style.display = view === 'create' ? '' : 'none';
@@ -862,6 +932,8 @@ function setView(view) {
   if (view === 'models') { loadModels(); loadFreshness(); }
   else if (view === 'providers') { loadProviders(); loadConcurrency(); loadMeasured(); loadQueue(); }
   else if (view === 'packs') loadContentShelf();
+  else if (view === 'fleet') loadFleet();
+  else if (view === 'jobs') loadJobs();
   else loadCreate();
   // A `#queue` link opens the Providers page **on the queue tab**. It used to scroll the
   // queue section into view, which only worked while every section shared one column; now
@@ -2807,7 +2879,11 @@ function viewFromHash() {
   if (hash.startsWith('queue')) return 'providers';
   if (hash.startsWith('create')) return 'create';
   if (hash.startsWith('packs')) return 'packs';
-  return 'models';
+  if (hash.startsWith('fleet')) return 'fleet';
+  if (hash.startsWith('jobs')) return 'jobs';
+  if (hash.startsWith('models')) return 'models';
+  // The app always names its page; a browser with no hash opens on Fleet.
+  return IN_APP ? 'models' : 'fleet';
 }
 
 window.addEventListener('hashchange', () => setView(viewFromHash()));
@@ -3232,7 +3308,107 @@ async function openCreateJob(id) {
 }
 
 
+// ---------------------------------------------------------------------------
+// Fleet and Jobs, for a plain browser. The app draws these natively; this reads
+// the same `/admin/api/fleet` and `/admin/api/jobs` and only shows them.
+// ---------------------------------------------------------------------------
+const FLEET_STATES = {
+  working: ['info', 'Working'], just_finished: ['ok', 'Just finished'],
+  needs_attention: ['warn', 'Needs attention'], offline: ['bad', 'Offline'],
+};
+
+function fleetMac(m) {
+  const [cls, word] = FLEET_STATES[m.state] || ['', m.state || (m.reachable ? 'Online' : 'Offline')];
+  const cur = m.current || null;
+  const doing = cur ? [cur.studio, String(cur.model || '').split('/').pop(), cur.started_at ? 'started ' + ago(cur.started_at) : '']
+    .filter(Boolean).join(' · ') : '';
+  const version = m.hub_version
+    ? 'Hub ' + m.hub_version + (m.version_status && m.version_status !== 'latest' ? ` (${m.version_status})` : '') : '';
+  const facts = [
+    version, m.chip, m.memory_gb ? Math.round(m.memory_gb) + ' GB' : '',
+    m.disk_free_gb != null ? Math.round(m.disk_free_gb) + ' GB free' : '',
+    `${m.completed ?? 0} done · ${m.failed ?? 0} failed`,
+    !m.reachable && m.node_last_seen_at ? 'seen ' + ago(m.node_last_seen_at) : '',
+  ].filter(Boolean);
+  return `<div class="fleet-mac">
+    <div class="row"><span class="name">${esc(m.label || m.machine)}</span><span class="badge ${cls}">${esc(word)}</span></div>
+    ${doing ? `<div class="cat">${esc(doing)}</div>` : ''}
+    ${m.attention ? `<div class="msg bad">${esc(m.attention)}</div>` : ''}
+    <div class="hint">${esc(facts.join(' · '))}</div>
+  </div>`;
+}
+
+async function loadFleet() {
+  const box = document.getElementById('fleet-body');
+  let d;
+  try { d = await api('/fleet'); }
+  catch (e) { box.innerHTML = `<div class="empty">Could not read the fleet: ${esc(e.message)}</div>`; return; }
+  if (state.view !== 'fleet') return;
+  const s = d.summary || {}, q = d.gateway_queue || {};
+  document.getElementById('fleet-summary').innerHTML = [
+    `<span><b>${s.machines_online ?? '?'}</b> of ${s.machines ?? '?'} Macs online</span>`,
+    `<span><b>${s.pulse?.working ?? 0}</b> working</span>`,
+    `<span><b>${s.locations_up ?? '?'}</b> of ${s.locations ?? '?'} locations up</span>`,
+    `<span>Queue <b>${q.waiting ?? 0}</b> waiting, <b>${q.running ?? 0}</b> running</span>`,
+    `<span>Updated ${ago(d.generated_at)}</span>`,
+  ].join('');
+  const issues = d.issues || [];
+  // Folded by default: on a phone a dozen warnings would push every Mac off the first screen.
+  const issuesBox = document.getElementById('fleet-issues');
+  const open = issuesBox.querySelector('details')?.open ? ' open' : '';
+  issuesBox.innerHTML = issues.length ? `<details class="card"${open}><summary class="fleet-issue">
+      <b>${issues.length} warning${issues.length === 1 ? '' : 's'}</b></summary>${issues.map(i =>
+    `<div class="fleet-issue"><span class="badge ${i.severity === 'error' ? 'bad' : 'warn'}">${esc(i.location || i.severity)}</span> ${esc(i.message)}</div>`
+  ).join('')}</details>` : '';
+  const machines = d.machines || [];
+  box.innerHTML = (d.locations || []).map(L => {
+    const macs = machines.filter(m => m.location_id === L.id);
+    const online = macs.filter(m => m.reachable).length;
+    const badges = [
+      `<span class="badge ${L.reachable ? 'ok' : 'bad'}">${L.reachable ? 'Online' : 'Unreachable'}</span>`,
+      L.version ? `<span class="badge ${L.version_status === 'latest' ? '' : 'warn'}">Hub ${esc(L.version)}${L.version_status && L.version_status !== 'latest' ? ' · ' + esc(L.version_status) : ''}</span>` : '',
+      `<span class="badge">${online} of ${macs.length} Macs</span>`,
+      `<span class="badge">${(L.running_jobs || []).length} running</span>`,
+      L.capacity?.queue_depth ? `<span class="badge info">${L.capacity.queue_depth} queued</span>` : '',
+    ].join('');
+    return `<div class="card"><div class="card-head"><div class="card-main">
+        <div class="name">${esc(L.label || L.id)}</div><div class="card-badges">${badges}</div>
+        ${L.error ? `<div class="msg bad">${esc(L.error)}</div>` : ''}
+      </div></div>
+      ${macs.length ? `<div class="fleet-macs">${macs.map(fleetMac).join('')}</div>` : ''}
+    </div>`;
+  }).join('') || '<div class="empty">No locations.</div>';
+}
+
+async function loadJobs() {
+  const box = document.getElementById('jobs-body');
+  let d;
+  try { d = await api('/jobs?limit=100'); }
+  catch (e) { box.innerHTML = `<div class="empty">Could not read jobs: ${esc(e.message)}</div>`; return; }
+  if (state.view !== 'jobs') return;
+  const rows = d.jobs || [];
+  box.innerHTML = rows.length ? `<div class="tablewrap"><table><thead><tr>
+      <th>Job</th><th>State</th><th>Model</th><th>Where</th><th>Caller</th><th class="num">Created</th>
+    </tr></thead><tbody>${rows.map(j => `<tr>
+      <td class="mid">${esc(j.short_id || String(j.id).slice(0, 8))}</td>
+      <td><span class="badge ${stateBadgeClass(j.state)}">${esc(j.state)}</span></td>
+      <td>${esc(j.modality)} · ${esc(j.model_name || j.model_id)}</td>
+      <td>${esc(j.provider_name || '')}</td>
+      <td>${esc(j.caller || '')}</td>
+      <td class="num">${ago(j.created_at)}</td>
+    </tr>`).join('')}</tbody></table></div>` : '<div class="empty">No jobs yet.</div>';
+}
+
+async function signOut() {
+  try { await fetch('/admin/logout', { method: 'POST' }); } catch (e) { /* the login page follows either way */ }
+  location.href = '/admin/login';
+}
+
 (async function init() {
+  if (!IN_APP) {
+    document.getElementById('web-nav').hidden = false;
+    localStorage.removeItem('gatewayAdminToken');
+  }
   await loadStatus();
   await setView(viewFromHash());
   // The queue is live state, so it refreshes with the status line while it is the
@@ -3241,6 +3417,8 @@ async function openCreateJob(id) {
   setInterval(() => {
     loadStatus();
     if (state.view === 'providers') loadQueue();
+    else if (state.view === 'fleet') loadFleet();
+    else if (state.view === 'jobs') loadJobs();
   }, 15000);
 })();
 </script>

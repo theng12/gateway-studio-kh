@@ -97,6 +97,7 @@ final class ConsoleSection: NSObject, AppSection, WKNavigationDelegate, WKUIDele
         // is in place before the page's first request; a browser on another device
         // still pastes its own, and the console prefers the injected value.
         let config = WKWebViewConfiguration()
+        config.userContentController.addUserScript(Self.inAppScript)
         let key = EnvFile.apiKey()
         if !key.isEmpty {
             config.userContentController.addUserScript(Self.credentialScript(key))
@@ -191,6 +192,14 @@ final class ConsoleSection: NSObject, AppSection, WKNavigationDelegate, WKUIDele
         return host
     }
 
+    /// Tells the console it is inside this window, whose sidebar is the navigation, so it
+    /// hides the page menu and Sign Out it shows in a plain browser (a phone over Tailscale).
+    private static let inAppScript = WKUserScript(
+        source: "window.__GATEWAY_IN_APP__ = true;",
+        injectionTime: .atDocumentStart,
+        forMainFrameOnly: true
+    )
+
     private static func credentialScript(_ key: String) -> WKUserScript {
         WKUserScript(
             source: "window.__GATEWAY_ADMIN_TOKEN__ = \(jsString(key));",
@@ -213,6 +222,7 @@ final class ConsoleSection: NSObject, AppSection, WKNavigationDelegate, WKUIDele
         injectedKey = key
         let controller = webView.configuration.userContentController
         controller.removeAllUserScripts()
+        controller.addUserScript(Self.inAppScript)
         if !key.isEmpty {
             controller.addUserScript(Self.credentialScript(key))
         }

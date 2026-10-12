@@ -31,6 +31,12 @@ apply here and to delegated workers.
   Missing signing identity fails closed, never silently regenerates. Download
   URLs are absolute same-Gateway-origin (the Content Store protocol exception
   to relative generation-artifact URLs), with exact-release short-lived grants.
+- Browser `/admin` (phone over Tailscale): a remote peer without a session gets the login page;
+  password (owner-set in the app's Settings, scrypt hash in `APP_SUPPORT/admin-password.json`) or the
+  gateway key mints an HttpOnly SameSite=Strict cookie (not Secure: plain http). `admin_session.py`
+  holds sessions/backoff/CSRF; the password routes accept only this Mac with the key
+  (`require_local_app`). Never set a password in the owner's real state; tests use a temp profile.
+  The app injects `__GATEWAY_IN_APP__`, which hides the browser page menu inside its window.
 - The real-Hub fleet suite requires explicit `GATEWAY_ALLOW_LIVE_GENERATION=1`;
   do not include it in offline smoke testing. Keep GitHub Actions disabled.
 

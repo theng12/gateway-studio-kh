@@ -40,6 +40,7 @@ final class SettingsSection: NSObject, AppSection {
     private var publisherTechnicalDetails: NSStackView!
     private var releaseIdentityStatus: NSTextField!
     private let telegram = TelegramSettings()
+    private let browserPassword = BrowserPasswordSettings()
     private let backups = BackupPanel()
 
     /// What the retention fields last showed from the gateway, to tell a change from a re-read.
@@ -226,6 +227,8 @@ final class SettingsSection: NSObject, AppSection {
 
         // ---- Telegram: messages to the owner's phone about the fleet
         section("Telegram", telegram.rows, in: root)
+        // ---- the password a phone browser signs in with at /admin (gateway/admin_session.py)
+        section("Browser password", browserPassword.rows, in: root)
         // ---- backups (keys, credentials, roster, voices): gateway/backup.py
         section("Backups", backups.rows(), in: root)
 
@@ -333,6 +336,7 @@ final class SettingsSection: NSObject, AppSection {
         loadRetention()
         loadReleaseIdentity()
         telegram.load()
+        browserPassword.load()
         backups.reload()
     }
 
