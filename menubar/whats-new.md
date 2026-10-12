@@ -14,6 +14,12 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.176 — 2026-10-13
+
+### Clearer evidence for waiting fleet jobs
+
+Support can inspect why a Studio Hub job waited and which Mac eventually accepted it, using the job already recorded by Gateway. This requires Hub 0.6.172. Job routing and your pause settings keep their existing behavior.
+
 ## 0.2.175 — 2026-10-12
 
 ### Song time limits come from the measured slowest Mac

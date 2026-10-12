@@ -15,6 +15,7 @@ from __future__ import annotations
 import hmac
 import html
 import json
+import math
 import re
 import time
 from pathlib import Path
@@ -1652,6 +1653,178 @@ def create_status(job_id: str) -> Any:
     if job is None:
         return _error(404, f"no job '{job_id}'")
     return {**_job_envelope(job, native=True), "outputs": _admin_outputs(job)}
+
+
+_DISPATCH_TRACE_GATES = frozenset({
+    "admission_refused",
+    "batch_cancelled",
+    "catalog_missing",
+    "execution_lease_expired",
+    "faster_machine_preferred",
+    "higher_priority_work",
+    "item_no_longer_queued",
+    "item_temporarily_ineligible",
+    "lite_mode_blocked",
+    "machine_blocked",
+    "machine_disabled",
+    "machine_lease_busy",
+    "machine_reserved",
+    "memory_skip",
+    "memory_wait",
+    "model_not_cached",
+    "model_protected",
+    "peer_not_dispatch_ready",
+    "remote_local_excluded",
+    "revision_evidence_missing",
+    "revision_mismatch",
+    "routing_excluded",
+    "studio_busy",
+    "studio_disabled",
+    "studio_maintenance",
+    "unknown",
+    "voice_not_synchronized",
+    "worker_not_up",
+})
+_DISPATCH_TRACE_ID = re.compile(r"^[A-Za-z0-9_.:@-]{1,80}$")
+_DISPATCH_TRACE_ROWS = 65
+_DISPATCH_TRACE_BYTES = 32 * 1024
+_DISPATCH_TRACE_NUMBER_MAX = 10 ** 15
+_UPSTREAM_STATES = frozenset({
+    "cancel_requested", "cancelled", "complete", "completed", "done", "error",
+    "failed", "queued", "running", "succeeded", "uncertain",
+})
+
+
+def _safe_dispatch_trace_id(value: object) -> str:
+    text = value if isinstance(value, str) else ""
+    return text if _DISPATCH_TRACE_ID.fullmatch(text) else "unknown"
+
+
+def _safe_dispatch_trace_number(value: object) -> int | float | None:
+    if type(value) is int and 0 <= value <= _DISPATCH_TRACE_NUMBER_MAX:
+        return value
+    if (type(value) is float and math.isfinite(value)
+            and 0 <= value <= _DISPATCH_TRACE_NUMBER_MAX):
+        return value
+    return None
+
+
+def _bounded_dispatch_trace(value: object) -> dict[str, Any] | None:
+    """Project a Hub trace onto the fixed, credential-free admin contract."""
+    if not isinstance(value, dict) or value.get("version") != 1:
+        return None
+    raw_candidates = value.get("candidates")
+    raw_queued_items = value.get("queued_items")
+    truncated = bool(value.get("truncated"))
+    candidates = []
+    if isinstance(raw_candidates, list):
+        truncated = truncated or len(raw_candidates) > _DISPATCH_TRACE_ROWS
+        for row in raw_candidates[:_DISPATCH_TRACE_ROWS]:
+            if not isinstance(row, dict):
+                truncated = True
+                continue
+            gate = row.get("gate")
+            candidates.append({
+                "machine": _safe_dispatch_trace_id(row.get("machine")),
+                "studio": _safe_dispatch_trace_id(row.get("studio")),
+                "gate": (gate if isinstance(gate, str) and gate in _DISPATCH_TRACE_GATES
+                         else "unknown"),
+            })
+    elif raw_candidates is not None:
+        truncated = True
+    queued_items = []
+    if isinstance(raw_queued_items, list):
+        truncated = truncated or len(raw_queued_items) > _DISPATCH_TRACE_ROWS
+        for item in raw_queued_items[:_DISPATCH_TRACE_ROWS]:
+            safe_item = _safe_dispatch_trace_number(item)
+            if type(safe_item) is int:
+                queued_items.append(safe_item)
+            else:
+                truncated = True
+    elif raw_queued_items is not None:
+        truncated = True
+    trace: dict[str, Any] = {
+        "version": 1,
+        "queued_items": queued_items,
+        "candidates": candidates,
+        "truncated": truncated,
+    }
+    blocked_at = _safe_dispatch_trace_number(value.get("blocked_at"))
+    if blocked_at is not None:
+        trace["blocked_at"] = blocked_at
+    elif value.get("blocked_at") is not None:
+        trace["truncated"] = True
+    selected = value.get("selected")
+    if isinstance(selected, dict):
+        safe_selected: dict[str, Any] = {
+            "machine": _safe_dispatch_trace_id(selected.get("machine")),
+            "studio": _safe_dispatch_trace_id(selected.get("studio")),
+        }
+        selected_at = _safe_dispatch_trace_number(selected.get("at"))
+        if selected_at is not None:
+            safe_selected["at"] = selected_at
+        elif selected.get("at") is not None:
+            trace["truncated"] = True
+        selected_index = _safe_dispatch_trace_number(selected.get("item_index"))
+        if type(selected_index) is int:
+            safe_selected["item_index"] = selected_index
+        elif selected.get("item_index") is not None:
+            trace["truncated"] = True
+        trace["selected"] = safe_selected
+    elif selected is not None:
+        trace["truncated"] = True
+    while len(json.dumps(trace, separators=(",", ":")).encode()) > _DISPATCH_TRACE_BYTES and candidates:
+        candidates.pop()
+        trace["truncated"] = True
+    while len(json.dumps(trace, separators=(",", ":")).encode()) > _DISPATCH_TRACE_BYTES and queued_items:
+        queued_items.pop()
+        trace["truncated"] = True
+    if len(json.dumps(trace, separators=(",", ":")).encode()) > _DISPATCH_TRACE_BYTES:
+        trace = {"version": 1, "queued_items": [], "candidates": [], "truncated": True}
+    return trace
+
+
+@router.get("/api/jobs/{job_id}/upstream", dependencies=[Depends(require_admin)])
+def upstream_job_trace(job_id: str) -> Any:
+    """Read bounded Hub placement evidence through a stored Gateway job link."""
+    from .adapters import studio_hub
+    from .providers.definitions import KIND_STUDIO_HUB
+
+    job = store.get(job_id)
+    if job is None:
+        return _error(404, "job not found")
+    provider_id = str(job.get("provider_id") or "")
+    definition = registry.definition(provider_id)
+    if definition is None or definition.kind != KIND_STUDIO_HUB:
+        return _error(409, "job has no Studio Hub upstream")
+    upstream_id = str(job.get("upstream_job_id") or "")
+    if not upstream_id:
+        return _error(409, "job has no accepted Studio Hub batch")
+    values = registry.credentials.resolved(provider_id)
+    base_url = str(values.get("base_url") or definition.base_url or "")
+    snapshot = studio_hub.batch_snapshot(
+        values,
+        base_url,
+        upstream_id,
+        kind=str(job.get("modality") or "image"),
+        local=provider_id == fleet.provider_id_for(fleet.LOCAL_ID),
+    )
+    if snapshot is None:
+        return _error(502, "Studio Hub did not answer")
+    if not snapshot.get("known"):
+        return _error(404, "Studio Hub batch not found")
+    summary = snapshot.get("summary")
+    trace = _bounded_dispatch_trace(
+        summary.get("dispatch_trace") if isinstance(summary, dict) else None
+    )
+    selected = trace.get("selected") if isinstance(trace, dict) else None
+    state = str(snapshot.get("state") or "").lower()
+    return {
+        "job_id": _safe_dispatch_trace_id(job.get("id") or job_id),
+        "state": state if state in _UPSTREAM_STATES else "unknown",
+        "selected_machine": selected.get("machine") if isinstance(selected, dict) else None,
+        "dispatch_trace": trace,
+    }
 
 
 @router.post("/api/create/status/{job_id}/cancel", dependencies=[Depends(require_admin)])
