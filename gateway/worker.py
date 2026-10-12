@@ -1640,8 +1640,9 @@ class Worker:
         """`_room` for this job at one site, and for a background job no more than `_background_room`.
 
         A model with a fleet-wide cap (`concurrency.model_fleet_cap`, YuE2) gets no more than the room
-        left under it, this job's own booking excluded when it is already running and re-routing
-        (`_submit` stores every such job as background, whatever the caller sent).
+        left under it, this job's own booking excluded when it is already running and re-routing. Its
+        priority is the caller's (0.2.171, owner 2026-10-12: images are not the priority, so a sung song
+        need not wait behind them; the cap alone bounds how many Macs sing).
         """
         modality = str(job.get("modality") or "")
         model_id = str(job.get("model_id") or "")

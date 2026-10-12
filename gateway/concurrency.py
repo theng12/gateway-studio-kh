@@ -174,12 +174,10 @@ def _positive_int(value: Any) -> int | None:
     return int(value)
 
 
-#: **Fleet-wide ceilings for one model** (owner 2026-10-12, songs with lyrics). YuE2 3B (8-bit AR +
-#: bf16 NAR, MLX) sings on the 16 GB+ Macs that also make most of the images, ~25-40 min a song, so
-#: at most this many run across the whole fleet at once, and always as background work (only an
-#: idle Mac, never ahead of a waiting normal job). The owner's `"models": {"<model id>": N}` in the
-#: settings file overrides it; `0` lifts the cap.
-DEFAULT_MODEL_FLEET_CAPS: dict[str, int] = {"vanch007/mlx-Yue2-3B": 2}
+#: **Fleet-wide ceilings for one model** — none by default (0.2.171, owner 2026-10-12: every Mac runs
+#: one generation at a time and scene images are low priority, so YuE2 songs need no cap to shield them).
+#: The owner may set one in the settings file, `"models": {"<model id>": N}`; `0` lifts it again.
+DEFAULT_MODEL_FLEET_CAPS: dict[str, int] = {}
 
 
 def model_fleet_cap(model_id: str) -> int | None:

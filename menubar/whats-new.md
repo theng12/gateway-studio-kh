@@ -14,6 +14,17 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.171 — 2026-10-12
+
+### Sung songs take their turn like any other job
+
+Every Mac makes one thing at a time, and scene pictures are the lowest-priority work, so YuE2 songs no
+longer need a limit of two at a time or a background-only rule. A song request keeps the priority it
+was sent with, and Story Studio sends sung songs as normal work. The per-model limit is still there if
+you want one: `provider-concurrency.local.json` → `"models": {"vanch007/mlx-Yue2-3B": 4}`.
+
+---
+
 ## 0.2.170 — 2026-10-12
 
 ### Sung songs (YuE2) take at most two Macs at a time

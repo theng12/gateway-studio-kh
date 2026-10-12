@@ -278,8 +278,8 @@ class ModelFleetCapTest(_Base):
         concurrency.SETTINGS_PATH.write_text(json.dumps({"global": 50, "models": {MUSIC: n}}), encoding="utf-8")
         concurrency.reset_for_tests()
 
-    def test_yue2_is_capped_at_two_by_default_and_the_owner_can_change_or_lift_it(self) -> None:
-        self.assertEqual(concurrency.model_fleet_cap("vanch007/mlx-Yue2-3B"), 2)
+    def test_no_model_is_capped_by_default_and_the_owner_can_set_or_lift_one(self) -> None:
+        self.assertIsNone(concurrency.model_fleet_cap("vanch007/mlx-Yue2-3B"))
         self.assertIsNone(concurrency.model_fleet_cap(MUSIC))
         self.cap(3)
         self.assertEqual(concurrency.model_fleet_cap(MUSIC), 3)
@@ -299,12 +299,12 @@ class ModelFleetCapTest(_Base):
             self.sites = [_site("g", macs=4, idle={MUSIC: 0}), _site("h", macs=4, idle={MUSIC: 0})]
         self.assertTrue(set(started) <= set(songs))
 
-    def test_a_capped_model_is_stored_as_background_whatever_the_caller_sent(self) -> None:
+    def test_a_capped_model_keeps_the_callers_priority(self) -> None:
+        # 0.2.171 (owner 2026-10-12: images are not the priority): the cap bounds YuE2, not the queue class.
         self.cap(2)
-        job = RequestFieldTest.submit(self, {"prompt": "rain"}, "sung")
-        self.assertEqual(job["priority"], "background")
-        self.cap(0)
-        self.assertIsNone(RequestFieldTest.submit(self, {"prompt": "rain"}, "plain")["priority"])
+        self.assertIsNone(RequestFieldTest.submit(self, {"prompt": "rain"}, "sung")["priority"])
+        self.assertEqual(RequestFieldTest.submit(self, {"prompt": "rain", "priority": "background"}, "bg")["priority"],
+                         "background")
 
     def test_a_running_song_re_routing_does_not_count_against_itself(self) -> None:
         self.cap(1)

@@ -1288,11 +1288,6 @@ def _submit(
                 f"A key identifies one request; use a new one for this {modality} request.",
                 "IDEMPOTENCY_KEY_REUSED",
             )
-    # A model with a fleet-wide cap (YuE2) is always background work: it only takes an idle Mac and
-    # never goes ahead of a waiting normal job, whatever the caller sent (owner 2026-10-12).
-    from . import concurrency
-    if definition.id.startswith("studio-hub") and concurrency.model_fleet_cap(model["model_id"]) is not None:
-        priority = BACKGROUND
     return store.submit(
         modality=modality,
         model_id=model["model_id"],
