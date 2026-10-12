@@ -567,6 +567,28 @@ def _tts_length_deadline(request: BackendRequest, machine: str | None = None) ->
                audio_s * rtf * TTS_DEADLINE_MARGIN + TTS_DEADLINE_OVERHEAD_S)
 
 
+#: **A YuE2 song's run allowance** (owner 2026-10-12): the slowest measured Mac's seconds of compute per
+#: second of song x the requested length, plus its model load, x 2 (100 % overhead) — one number for
+#: every Mac, from the slowest one. Measured table: `_orchestra/audit-20261012/lyrics-flow/SPEED-fleet.md`.
+#: The music lane's flat 900 s cut 3-4 min songs (7 of 18 at 15:44). Hub 0.6.170 states the same number
+#: on the batch item (`deadline_s`) and its bridge stops there; this keeps an older Hub's songs alive too.
+YUE2_MODEL_ID = "vanch007/mlx-Yue2-3B"
+YUE2_SLOWEST_S_PER_SONG_S = 12.0  # provisional until the per-class measurement; see SPEED-fleet.md
+YUE2_SLOWEST_LOAD_S = 120.0
+YUE2_DEADLINE_MARGIN = 2.0
+
+
+def _yue2_length_deadline(request: BackendRequest) -> float:
+    """A YuE2 song's own allowance from its requested length; `0` for anything else."""
+    if request.modality != "music" or str(request.model_id or "") != YUE2_MODEL_ID:
+        return 0.0
+    try:
+        song = max(0.0, float((request.params or {}).get("duration_seconds") or 0))
+    except (TypeError, ValueError):
+        song = 0.0
+    return YUE2_DEADLINE_MARGIN * (YUE2_SLOWEST_S_PER_SONG_S * song + YUE2_SLOWEST_LOAD_S)
+
+
 def lane_deadline_seconds(request: BackendRequest | None, machine: str | None = None) -> float:
     """How long to poll this job, as the **lane that enforces it** states it.
 
@@ -614,7 +636,7 @@ def lane_deadline_seconds(request: BackendRequest | None, machine: str | None = 
                 # than failing every poll instantly on a nonsensical number.
                 if isinstance(stated, (int, float)) and not isinstance(stated, bool) and stated > 0:
                     base = float(stated)
-            return max(base, _tts_length_deadline(request, machine))
+            return max(base, _tts_length_deadline(request, machine), _yue2_length_deadline(request))
     except Exception:  # noqa: BLE001 - an unreadable contract is "unstated"
         return JOB_DEADLINE_S
     return JOB_DEADLINE_S

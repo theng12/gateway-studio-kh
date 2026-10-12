@@ -90,6 +90,26 @@ class PerMacDeadlineTests(unittest.TestCase):
         self.assertEqual(hub_module._tts_rtf(A, "other-model", "m1-01"), hub_module.TTS_FALLBACK_RTF)
 
 
+class Yue2DeadlineTests(unittest.TestCase):
+    """0.2.174 (owner 2026-10-12): a YuE2 song's allowance = 2 x (slowest s per song-second x length + load)."""
+
+    def deadline(self, params: dict, model: str = "vanch007/mlx-Yue2-3B", stated: float = 900) -> float:
+        from gateway.providers import registry
+
+        raw = {"lane_contract": {"deadline_seconds": stated}}
+        request = BackendRequest(provider_id=A, model_id=model, modality="music", params=params,
+                                 values={}, base_url="http://hub-a.test")
+        with patch.object(registry.models, "models_for", return_value=[{"model_id": model, "raw": raw}]):
+            return hub_module.lane_deadline_seconds(request)
+
+    def test_a_song_gets_its_own_allowance_and_other_music_keeps_the_lane_number(self) -> None:
+        want = 2 * (hub_module.YUE2_SLOWEST_S_PER_SONG_S * 210 + hub_module.YUE2_SLOWEST_LOAD_S)
+        self.assertEqual(self.deadline({"duration_seconds": 210}), want)
+        self.assertGreater(want, 900)
+        self.assertEqual(self.deadline({"duration_seconds": 210}, model="stabilityai/stable-audio-3-optimized"), 900)
+        self.assertEqual(self.deadline({}, stated=900), max(900, 2 * hub_module.YUE2_SLOWEST_LOAD_S))
+
+
 class PollRereadsTheLimitTests(unittest.TestCase):
     def poll(self, items: list[dict], deadline_for_machine):
         answers = list(items)

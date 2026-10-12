@@ -14,6 +14,16 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.174 — 2026-10-12
+
+### Long songs are no longer cut off at 15 minutes
+
+A YuE2 song now gets its own time limit from its length: twice the slowest Mac's speed for a song that
+long, plus loading. A 3½-minute song gets about 1½ hours instead of the music lane's 15 minutes, which
+had stopped 3–4 minute songs on the 16 GB and 24 GB M4 Macs part-way through.
+
+---
+
 ## 0.2.173 — 2026-10-12
 
 ### The admin pages work from a phone, with a password
