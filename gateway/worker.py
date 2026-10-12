@@ -1637,11 +1637,23 @@ class Worker:
 
     def _job_room(self, job: dict[str, Any], provider_id: str,
                   budget: concurrency.Budget | None = None, supply: dict[str, int] | None = None) -> int:
-        """`_room` for this job at one site, and for a background job no more than `_background_room`."""
+        """`_room` for this job at one site, and for a background job no more than `_background_room`.
+
+        A model with a fleet-wide cap (`concurrency.model_fleet_cap`, YuE2) gets no more than the room
+        left under it, this job's own booking excluded when it is already running and re-routing
+        (`_submit` stores every such job as background, whatever the caller sent).
+        """
         modality = str(job.get("modality") or "")
         model_id = str(job.get("model_id") or "")
         room = self._room(provider_id, modality, model_id, budget, supply)
-        if room > 0 and is_background(job) and provider_id.startswith(fleet.PROVIDER_PREFIX):
+        fleet_site = provider_id.startswith(fleet.PROVIDER_PREFIX)
+        cap = concurrency.model_fleet_cap(model_id) if fleet_site else None
+        if room > 0 and cap is not None:
+            with self._budget_lock:
+                running = sum(n for (p, _lane, m), n in self._per_model.items()
+                              if m == model_id and p.startswith(fleet.PROVIDER_PREFIX))
+            room = min(room, cap - running + int(job.get("id") in self._running))
+        if room > 0 and fleet_site and is_background(job):
             room = min(room, self._background_room(provider_id, model_id))
         return room
 

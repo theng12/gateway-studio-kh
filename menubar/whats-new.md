@@ -14,6 +14,19 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.170 — 2026-10-12
+
+### Sung songs (YuE2) take at most two Macs at a time
+
+YuE2 sings on the 16 GB Macs, which also make most of the images, and one song keeps a Mac busy for
+about half an hour. So at most **two** YuE2 songs now run across the whole fleet at once, and they
+are always background work: a song only starts on an idle Mac and never ahead of a waiting image,
+whatever priority the request asked for. The fleet capacity reading tells Story Studio the same, so
+it keeps only a short line of songs waiting. The number can be changed in
+`provider-concurrency.local.json` (`"models": {"vanch007/mlx-Yue2-3B": 3}`; `0` lifts it).
+
+---
+
 ## 0.2.169 — 2026-10-11
 
 ### Breeze narration works for every voice that has segments

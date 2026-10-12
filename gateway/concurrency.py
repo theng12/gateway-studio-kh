@@ -174,6 +174,22 @@ def _positive_int(value: Any) -> int | None:
     return int(value)
 
 
+#: **Fleet-wide ceilings for one model** (owner 2026-10-12, songs with lyrics). YuE2 3B (8-bit AR +
+#: bf16 NAR, MLX) sings on the 16 GB+ Macs that also make most of the images, ~25-40 min a song, so
+#: at most this many run across the whole fleet at once, and always as background work (only an
+#: idle Mac, never ahead of a waiting normal job). The owner's `"models": {"<model id>": N}` in the
+#: settings file overrides it; `0` lifts the cap.
+DEFAULT_MODEL_FLEET_CAPS: dict[str, int] = {"vanch007/mlx-Yue2-3B": 2}
+
+
+def model_fleet_cap(model_id: str) -> int | None:
+    """At most this many jobs of `model_id` running on the fleet at once, or `None` (no cap)."""
+    raw = _read_file().get("models")
+    if isinstance(raw, dict) and model_id in raw:
+        return _positive_int(raw[model_id])
+    return DEFAULT_MODEL_FLEET_CAPS.get(model_id)
+
+
 def _optional_int(value: Any) -> int | None:
     """A stated count, **preserving a stated zero**, or `None` when nothing was said.
 

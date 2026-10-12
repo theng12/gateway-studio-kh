@@ -271,6 +271,61 @@ class RequestFieldTest(_Base):
         self.assertEqual(self.store.queue_rank(song["id"]), {"position": 2, "size": 2})
 
 
+class ModelFleetCapTest(_Base):
+    """A fleet-wide cap per model (0.2.170, owner 2026-10-12: YuE2 sings, at most N at once)."""
+
+    def cap(self, n) -> None:
+        concurrency.SETTINGS_PATH.write_text(json.dumps({"global": 50, "models": {MUSIC: n}}), encoding="utf-8")
+        concurrency.reset_for_tests()
+
+    def test_yue2_is_capped_at_two_by_default_and_the_owner_can_change_or_lift_it(self) -> None:
+        self.assertEqual(concurrency.model_fleet_cap("vanch007/mlx-Yue2-3B"), 2)
+        self.assertIsNone(concurrency.model_fleet_cap(MUSIC))
+        self.cap(3)
+        self.assertEqual(concurrency.model_fleet_cap(MUSIC), 3)
+        self.cap(0)
+        self.assertIsNone(concurrency.model_fleet_cap(MUSIC))
+
+    def test_at_most_the_cap_runs_across_every_site(self) -> None:
+        # Two sites with four idle Macs each, ten songs: two run, whichever sites they landed on.
+        self.cap(2)
+        self.sites = [_site("g", macs=4, idle={MUSIC: 4}), _site("h", macs=4, idle={MUSIC: 4})]
+        songs = [self.job(background=True, site="g" if i % 2 else "h") for i in range(10)]
+        with _Running(self.store) as run:
+            started = run.settle()
+            self.assertEqual(len(started), 2)
+            run.finish(started[0])
+            self.assertEqual(len(run.settle()), 3)
+            self.sites = [_site("g", macs=4, idle={MUSIC: 0}), _site("h", macs=4, idle={MUSIC: 0})]
+        self.assertTrue(set(started) <= set(songs))
+
+    def test_a_capped_model_is_stored_as_background_whatever_the_caller_sent(self) -> None:
+        self.cap(2)
+        job = RequestFieldTest.submit(self, {"prompt": "rain"}, "sung")
+        self.assertEqual(job["priority"], "background")
+        self.cap(0)
+        self.assertIsNone(RequestFieldTest.submit(self, {"prompt": "rain"}, "plain")["priority"])
+
+    def test_a_running_song_re_routing_does_not_count_against_itself(self) -> None:
+        self.cap(1)
+        self.sites = [_site("g", macs=2, idle={MUSIC: 2}), _site("h", macs=2, idle={MUSIC: 2})]
+        worker = Worker(self.store, interval_s=10.0, pool_size=0)
+        song = self.store.get(self.job(background=True))
+        self.assertTrue(worker._admit(song))
+        other = self.store.get(self.job(background=True))
+        self.assertLessEqual(worker._job_room(other, _pid("h")), 0)
+        worker._running[song["id"]] = song
+        self.assertGreater(worker._site_room(song, _pid("h"))[0], 0)
+
+    def test_capacity_shows_only_the_room_under_the_cap(self) -> None:
+        self.cap(2)
+        self.sites = [_site("a", macs=11, idle={MUSIC: 9})]
+        response = Response()
+        with patch.object(api, "store", self.store):
+            [row] = api.fleet_capacity(response, modality="music", model=MUSIC)["models"]
+        self.assertEqual((row["idle_macs"], row["fleet_cap"], row["eligible_macs"]), (2, 2, 11))
+
+
 class CapacityEndpointTest(_Base):
     def test_capacity_per_model_with_queued_counts_by_class(self) -> None:
         self.sites = [_site("a", macs=11, idle={MUSIC: 3}), _site("b", macs=5, idle={MUSIC: 0})]

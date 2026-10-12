@@ -1288,6 +1288,11 @@ def _submit(
                 f"A key identifies one request; use a new one for this {modality} request.",
                 "IDEMPOTENCY_KEY_REUSED",
             )
+    # A model with a fleet-wide cap (YuE2) is always background work: it only takes an idle Mac and
+    # never goes ahead of a waiting normal job, whatever the caller sent (owner 2026-10-12).
+    from . import concurrency
+    if definition.id.startswith("studio-hub") and concurrency.model_fleet_cap(model["model_id"]) is not None:
+        priority = BACKGROUND
     return store.submit(
         modality=modality,
         model_id=model["model_id"],
@@ -1549,7 +1554,7 @@ def fleet_capacity(response: Response, modality: str | None = None,
     id or the bare model id) narrow it. Read from the fleet snapshot the dispatcher already holds
     and one grouped count, so it is cheap; cache it for a few seconds.
     """
-    from . import fleet
+    from . import concurrency, fleet
 
     if modality is not None and modality not in fleet.HUB_OPERATION_BY_MODALITY:
         raise GatewayError(400, f"modality must be one of {', '.join(fleet.HUB_OPERATION_BY_MODALITY)}; "
@@ -1569,15 +1574,23 @@ def fleet_capacity(response: Response, modality: str | None = None,
                     or (wanted is not None and model_id != wanted)):
                 continue
             candidates = fleet.routing_candidates(model_id, lane)
+            count = counts.get((lane, model_id), {"running": {NORMAL: 0, BACKGROUND: 0},
+                                                  "queued": {NORMAL: 0, BACKGROUND: 0}})
+            idle = sum(int(c.get("available") or 0) for c in candidates)
+            # A fleet-wide cap (YuE2) is what this model can really start now, so a caller sizing its
+            # window from `idle_macs` keeps only a short line waiting instead of one per idle Mac.
+            cap = concurrency.model_fleet_cap(model_id)
+            if cap is not None:
+                idle = max(0, min(idle, cap - sum(count["running"].values())))
             models[(lane, model_id)] = {
                 "id": encode_model_id(fleet.publish_id(definition.id), model_id),
                 "model_id": model_id,
                 "modality": lane,
                 "locations": len(candidates),
                 "eligible_macs": sum(0 if c.get("spent") else int(c["slots"]) for c in candidates),
-                "idle_macs": sum(int(c.get("available") or 0) for c in candidates),
-                **counts.get((lane, model_id), {"running": {NORMAL: 0, BACKGROUND: 0},
-                                                 "queued": {NORMAL: 0, BACKGROUND: 0}}),
+                "idle_macs": idle,
+                **({"fleet_cap": cap} if cap is not None else {}),
+                **count,
             }
     response.headers["Cache-Control"] = "private, max-age=5"
     return {
