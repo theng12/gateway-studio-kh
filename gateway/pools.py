@@ -45,6 +45,7 @@ from .providers.definitions import (
 
 #: The provider id every pool is published under.
 POOL_PROVIDER_ID = "pool"
+ROUTING_STRICT_ORDER = "strict_order"
 
 POOLS_PATH = Path(os.environ.get("GATEWAY_POOLS") or (DATA_DIR / "pools.json"))
 
@@ -53,7 +54,7 @@ POOLS_PATH = Path(os.environ.get("GATEWAY_POOLS") or (DATA_DIR / "pools.json"))
 _revision = 0
 
 #: Parsed-file cache, keyed on (revision, mtime) exactly like the fleet roster.
-_cache: dict[str, Any] = {"key": None, "pools": []}
+_cache: dict[str, Any] = {"key": None, "pools": [], "invalid_routing_policies": []}
 
 
 def revision() -> int:
@@ -71,6 +72,7 @@ def _load() -> list[dict[str, Any]]:
         return _cache["pools"]
 
     pools: list[dict[str, Any]] = []
+    invalid_routing_policies: list[tuple[str, str]] = []
     try:
         parsed = json.loads(POOLS_PATH.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
@@ -89,6 +91,15 @@ def _load() -> list[dict[str, Any]]:
                 # A pool with no members is not a pool. Dropped rather than
                 # published as a row that resolves to nothing and fails on use.
                 continue
+            try:
+                routing_policy = _clean_routing_policy(item.get("routing_policy"))
+            except ValueError:
+                # A hand-edited unknown policy must not silently become the
+                # default free-first policy and change which paid model runs.
+                invalid_routing_policies.append(
+                    (name, str(item.get("routing_policy") or "").strip())
+                )
+                continue
             pools.append(
                 {
                     "name": name,
@@ -97,15 +108,28 @@ def _load() -> list[dict[str, Any]]:
                     "members": list(dict.fromkeys(members)),
                     "created_at": item.get("created_at"),
                     "updated_at": item.get("updated_at"),
+                    **({"routing_policy": routing_policy} if routing_policy else {}),
                 }
             )
     pools.sort(key=lambda p: p["name"])
-    _cache = {"key": key, "pools": pools}
+    _cache = {
+        "key": key,
+        "pools": pools,
+        "invalid_routing_policies": invalid_routing_policies,
+    }
     return pools
 
 
 def _save(pools: list[dict[str, Any]]) -> None:
     global _revision
+    _load()
+    invalid = _cache.get("invalid_routing_policies") or []
+    if invalid:
+        name, policy = invalid[0]
+        raise ValueError(
+            f"cannot modify pools while '{name}' has unknown routing policy '{policy}'; "
+            "repair that saved policy first"
+        )
     payload = {"version": 1, "pools": pools}
     write_secret(POOLS_PATH, json.dumps(payload, indent=2) + "\n")
     _revision += 1
@@ -132,6 +156,11 @@ def get(name: str) -> dict[str, Any] | None:
 def members(name: str) -> list[str]:
     pool = get(name)
     return list(pool["members"]) if pool else []
+
+
+def routing_policy(name: str) -> str | None:
+    pool = get(name)
+    return pool.get("routing_policy") if pool else None
 
 
 def definition() -> ProviderDefinition | None:
@@ -226,9 +255,13 @@ def _with_health(pool: dict[str, Any]) -> dict[str, Any]:
             }
         )
     out["members_detail"] = rows
-    # The pool's rule (adapters/pool.py): paid members wait until every free one is out for the day.
-    out["paid_last_resort"] = (any(r["paid"] for r in rows)
-                               and any(r["paid"] is False for r in rows))
+    # Default pools use free-first. An explicitly ordered pool uses the stored
+    # sequence, while every member's live paid/free fact remains visible above.
+    out["paid_last_resort"] = (
+        pool.get("routing_policy") != ROUTING_STRICT_ORDER
+        and any(r["paid"] for r in rows)
+        and any(r["paid"] is False for r in rows)
+    )
     out["cooling_count"] = sum(1 for r in rows if r["cooldown_until"])
     out["resolvable_count"] = sum(1 for r in rows if r["resolves"])
     return out
@@ -262,8 +295,10 @@ def create(
     *,
     display_name: str = "",
     description: str = "",
+    routing_policy: str | None = None,
 ) -> dict[str, Any]:
     cleaned = _clean(name, members)
+    policy = _clean_routing_policy(routing_policy)
     now = time.time()
     pool = {
         "name": cleaned["name"],
@@ -272,6 +307,7 @@ def create(
         "members": cleaned["members"],
         "created_at": now,
         "updated_at": now,
+        **({"routing_policy": policy} if policy else {}),
     }
     _save([p for p in _load() if p["name"] != pool["name"]] + [pool])
     return pool
@@ -283,6 +319,7 @@ def update(
     members: list[str] | None = None,
     display_name: str | None = None,
     description: str | None = None,
+    routing_policy: str | None = None,
 ) -> dict[str, Any] | None:
     existing = get(name)
     if existing is None:
@@ -293,6 +330,12 @@ def update(
         existing["display_name"] = display_name.strip() or existing["name"]
     if description is not None:
         existing["description"] = description.strip()
+    if routing_policy is not None:
+        policy = _clean_routing_policy(routing_policy)
+        if policy:
+            existing["routing_policy"] = policy
+        else:
+            existing.pop("routing_policy", None)
     existing["updated_at"] = time.time()
     _save([existing if p["name"] == existing["name"] else p for p in _load()])
     return existing
@@ -334,3 +377,12 @@ def _clean(name: str, members: list[str]) -> dict[str, Any]:
     if not seen:
         raise ValueError("a pool needs at least one member")
     return {"name": clean_name, "members": seen}
+
+
+def _clean_routing_policy(value: Any) -> str | None:
+    policy = str(value or "").strip()
+    if not policy:
+        return None
+    if policy != ROUTING_STRICT_ORDER:
+        raise ValueError(f"unknown pool routing policy '{policy}'")
+    return policy

@@ -28,6 +28,9 @@ when every free member is out for the day, unavailable, or failed this job for a
 or when the wait has reached `FREE_WAIT_CEILING_S` (15 min; owner decision 2026-10-03: past the
 ceiling the pool falls back to its paid member(s) in order rather than failing).
 
+An opt-in `strict_order` pool keeps its stored order instead. This is for an explicit paid primary,
+free backups, and paid last fallback; live chargeability is still recorded on every attempt.
+
 The members are resolved through `catalog.resolve`, never from the raw strings, so
 a member the owner has since disabled is skipped for the same reason it would be
 refused on its own: a toggle has to still be a toggle when the job runs.
@@ -97,14 +100,14 @@ def _cancel_requested(request: BackendRequest) -> bool:
     return (store.get(str(job_id)) or {}).get("cancel_requested_at") is not None
 
 
-def _is_request_shaped_failure(error: BackendError) -> bool:
-    """Whether trying another model is pointless because the request is wrong.
+def _stops_chain(error: BackendError) -> bool:
+    """Whether trying another model would repeat a request or evade a refusal.
 
     Deliberately narrow. Provider 400s cover model-specific restrictions as well
     as malformed requests, so their status alone cannot speak for every member.
     `INVALID_REQUEST` is emitted by gateway-side validation and therefore can.
     """
-    return error.code == "INVALID_REQUEST"
+    return error.code in {"INVALID_REQUEST", "POLICY_REFUSAL"}
 
 
 def _outcome_known(error: BackendError, sent: bool) -> bool:
@@ -139,6 +142,7 @@ class PoolBackend(Backend):
         from .. import pool_cooldowns, pools, pricing
 
         members = pools.members(request.model_id)
+        routing_policy = pools.routing_policy(request.model_id)
         if not members:
             # The catalogue publishes a pool only while it has members, so this is
             # a pool deleted between publish and use. Named rather than silently
@@ -154,7 +158,13 @@ class PoolBackend(Backend):
         #: failure. `ambiguous`: some member may have left work running upstream. Until one does, the
         #: pool's failure is a known one — a member that failed before sending anything must not make
         #: it "unknown".
-        walk: dict[str, Any] = {"last": None, "tried": 0, "ambiguous": False, "stop": False}
+        walk: dict[str, Any] = {
+            "last": None,
+            "tried": 0,
+            "ambiguous": False,
+            "accepted_settled": False,
+            "stop": False,
+        }
 
         # Resolve first, so "every member is cooling down" is judged over the members that
         # could answer at all (a disabled one is not a candidate and must not hide the rule).
@@ -173,6 +183,15 @@ class PoolBackend(Backend):
                 candidates.append((member, definition, model))
 
         def call(member: str, definition: Any, model: dict[str, Any], paid: bool) -> BackendResult | None:
+            if _cancel_requested(request):
+                cancelled = BackendError(
+                    f"Pool '{request.model_id}': cancelled before dispatching {member}.",
+                    code="POOL_WAIT_CANCELLED",
+                    upstream_accepted=None if walk["ambiguous"] else False,
+                    upstream_settled=not walk["ambiguous"],
+                )
+                cancelled.evidence = {"pool_attempts": attempts}
+                raise cancelled
             walk["tried"] += 1
             member_request = BackendRequest(
                 provider_id=definition.id,
@@ -191,16 +210,22 @@ class PoolBackend(Backend):
             try:
                 result = self._adapter_for(definition).generate(member_request)
             except BackendError as exc:
+                walk["accepted_settled"] = (
+                    walk["accepted_settled"]
+                    or (exc.upstream_accepted is True and exc.upstream_settled)
+                )
                 ambiguous = not _outcome_known(exc, requests_started() != sends_before)
                 walk["ambiguous"] = walk["ambiguous"] or ambiguous
                 attempts.append(
                     {
                         "member": member,
                         "outcome": "failed",
+                        "paid": paid,
                         "code": exc.code,
                         "status": exc.status,
                         "retryable": bool(exc.retryable),
                         "detail": str(exc)[:400],
+                        **({"evidence": dict(exc.evidence)} if exc.evidence else {}),
                     }
                 )
                 walk["last"] = exc
@@ -212,10 +237,14 @@ class PoolBackend(Backend):
                         recovery={**(exc.recovery or {}), "pool_member": member,
                                   "provider_id": definition.id, "pool_attempts": attempts},
                     )
-                    uncertain.evidence = getattr(exc, "evidence", None)
+                    uncertain.evidence = {
+                        **(dict(exc.evidence) if exc.evidence else {}),
+                        "pool_attempts": attempts,
+                    }
                     raise uncertain from exc
-                # Gateway validation proved the request is wrong for every member.
-                walk["stop"] = _is_request_shaped_failure(exc)
+                # Gateway validation proved the request is wrong for every member,
+                # or the provider explicitly refused the content on policy grounds.
+                walk["stop"] = _stops_chain(exc)
                 return None
             except Exception as exc:  # noqa: BLE001
                 # An adapter bug on one member must not take the pool down with it.
@@ -249,7 +278,8 @@ class PoolBackend(Backend):
             result.payload = payload
             return result
 
-        def in_order(group: list[tuple[str, Any, dict[str, Any]]], paid: bool) -> BackendResult | None:
+        def in_order(group: list[tuple[str, Any, dict[str, Any]]], paid: bool | None,
+                     *, strict: bool = False) -> BackendResult | None:
             """**Skip what is out of quota, until its reset.** A member that already said "quota" is
             not asked again every job. But never fail outright because of a memory: if every member of
             `group` is cooling, the one that recovers soonest is tried, since the provider's window
@@ -257,14 +287,16 @@ class PoolBackend(Backend):
             cooling = {c[0]: pool_cooldowns.until(c[0]) for c in group}
             ready = [c for c in group if cooling[c[0]] is None]
             if not ready and group:
-                ready = [min(group, key=lambda c: cooling[c[0]] or 0.0)]
+                ready = [group[0] if strict else min(group, key=lambda c: cooling[c[0]] or 0.0)]
             for member, _definition, _model in group:
                 if cooling[member] is not None and all(member != r[0] for r in ready):
                     attempts.append(
                         {"member": member, "outcome": "cooling-down", "until": cooling[member]}
                     )
             for member, definition, model in ready:
-                answer = call(member, definition, model, paid)
+                member_paid = (pricing.model_chargeable(definition, model)
+                               if paid is None else paid)
+                answer = call(member, definition, model, member_paid)
                 if answer is not None or walk["stop"]:
                     return answer
             return None
@@ -274,7 +306,9 @@ class PoolBackend(Backend):
         # kind walks as it always has.
         paid = [c for c in candidates if pricing.model_chargeable(c[1], c[2])]
         free = [c for c in candidates if c not in paid]
-        if free and paid:
+        if routing_policy == pools.ROUTING_STRICT_ORDER:
+            result = in_order(candidates, None, strict=True)
+        elif free and paid:
             result = self._free_first(request, free, call, walk, attempts)
             if result is None and not walk["stop"]:
                 result = in_order(paid, True)
@@ -282,10 +316,12 @@ class PoolBackend(Backend):
         else:
             result = in_order(candidates, bool(paid))
         if result is not None:
-            if free and result.payload["pool"]["paid"] and walk.get("ceiling_fallback"):
+            if (routing_policy != pools.ROUTING_STRICT_ORDER and free
+                    and result.payload["pool"]["paid"] and walk.get("ceiling_fallback")):
                 log.warning("pool %s: free members rate-limited for %d min → used paid member %s",
                             request.model_id, FREE_WAIT_CEILING_S // 60, result.payload["pool"]["used"])
-            elif free and result.payload["pool"]["paid"]:
+            elif (routing_policy != pools.ROUTING_STRICT_ORDER and free
+                  and result.payload["pool"]["paid"]):
                 # Money was spent while the pool has free members: say so where the owner looks.
                 log.warning("pool %s: free members out for the day → used paid member %s",
                             request.model_id, result.payload["pool"]["used"])
@@ -297,13 +333,21 @@ class PoolBackend(Backend):
         detail = "; ".join(
             f"{a['member']}: {a.get('detail') or a['outcome']}" for a in attempts
         )[:600]
-        raise BackendError(
+        error = BackendError(
             f"Pool '{request.model_id}' had no member that could answer — {detail}",
             code=(last.code if last else "POOL_EXHAUSTED"),
             status=(last.status if last else 502),
             retryable=bool(last.retryable) if last else False,
-            upstream_accepted=None if walk["ambiguous"] else False,
+            upstream_accepted=(None if walk["ambiguous"] else
+                               bool(walk["accepted_settled"])),
+            upstream_settled=not walk["ambiguous"],
+            recovery=last.recovery if last else None,
         )
+        error.evidence = {
+            **(dict(last.evidence) if last and last.evidence else {}),
+            "pool_attempts": attempts,
+        }
+        raise error
 
     def _free_first(self, request: BackendRequest, free: list[tuple[str, Any, dict[str, Any]]],
                     call: Any, walk: dict[str, Any], attempts: list[dict[str, Any]]) -> BackendResult | None:

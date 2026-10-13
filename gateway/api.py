@@ -740,6 +740,18 @@ def scrub(value: Any) -> Any:
     return value
 
 
+def _scrub_failure_evidence(value: Any) -> Any:
+    """Scrub diagnostics while keeping generated partial responses verbatim."""
+    if isinstance(value, dict):
+        return {
+            key: item if key == "partial_response" else _scrub_failure_evidence(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_scrub_failure_evidence(item) for item in value]
+    return scrub(value)
+
+
 def _iso(moment: Any) -> str | None:
     if not isinstance(moment, (int, float)):
         return None
@@ -934,8 +946,14 @@ def _job_envelope(job: dict[str, Any], *, native: bool = False) -> dict[str, Any
 
     if job["state"] == "failed":
         body["failure_code"] = job.get("error_code") or "PROVIDER_FAILED"
-        body["failure_class"] = "provider_error"
+        body["failure_class"] = {
+            "POLICY_REFUSAL": "content_refused",
+            "INCOMPLETE_OUTPUT": "incomplete_output",
+        }.get(body["failure_code"], "provider_error")
         body["failure_reason"] = job.get("error_detail") or "generation failed"
+        for key in ("partial_response", "pool_attempts"):
+            if payload.get(key) is not None:
+                body[key] = payload[key]
     elif is_cancelled:
         body["failure_code"] = "CANCELLED"
         body["failure_class"] = "cancelled"
@@ -952,9 +970,10 @@ def _job_envelope(job: dict[str, Any], *, native: bool = False) -> dict[str, Any
 
     if not native:
         for key in ("failure_reason", "recovery_detail", "cancel_remote", "attempts",
-                    "queue_reason"):
+                    "pool_attempts", "queue_reason"):
             if body.get(key) is not None:
-                body[key] = scrub(body[key])
+                body[key] = (_scrub_failure_evidence(body[key]) if key == "pool_attempts"
+                             else scrub(body[key]))
     return body
 
 
@@ -1802,7 +1821,7 @@ def cancel_chat_response(job_id: str) -> dict[str, Any]:
 
 
 @app.post("/v1/chat/completions", dependencies=[Depends(require_auth)])
-def chat_completions(payload: dict[str, Any]) -> dict[str, Any]:
+def chat_completions(payload: dict[str, Any]) -> Any:
     """Synchronous rollback route.
 
     Story Studio only selects this when
@@ -1829,6 +1848,18 @@ def chat_completions(payload: dict[str, Any]) -> dict[str, Any]:
     try:
         result = adapter_for(definition).generate(request)
     except BackendError as exc:
+        if exc.code == "INCOMPLETE_OUTPUT":
+            evidence = dict(exc.evidence or {})
+            body: dict[str, Any] = {
+                "detail": str(exc),
+                "code": exc.code,
+                "failure_code": exc.code,
+                "failure_class": "incomplete_output",
+            }
+            for key in ("partial_response", "pool_attempts"):
+                if evidence.get(key) is not None:
+                    body[key] = evidence[key]
+            return JSONResponse(status_code=502, content=_scrub_failure_evidence(body))
         # Never 402: a drained provider account must not lock Story Studio's key.
         raise GatewayError(502, str(exc), exc.code) from exc
     except Exception as exc:  # noqa: BLE001

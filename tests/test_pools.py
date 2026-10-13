@@ -120,6 +120,37 @@ class PoolStoreTests(_TempEnv):
         stored = self.pools.get("free")
         self.assertEqual(["a::one", "b::two"], stored["members"])
         self.assertEqual("Free lanes", stored["display_name"])
+        self.assertIsNone(stored.get("routing_policy"))
+
+    def test_strict_order_round_trips_and_an_ordinary_update_preserves_it(self):
+        self.pools.create(
+            "writing",
+            ["anthropic::haiku", "google-free::gemini", "openrouter::luna"],
+            routing_policy="strict_order",
+        )
+        self.pools.update("writing", display_name="Writing fallback")
+        stored = self.pools.get("writing")
+        self.assertEqual("strict_order", stored["routing_policy"])
+        self.assertEqual("Writing fallback", stored["display_name"])
+
+    def test_an_unknown_routing_policy_is_refused(self):
+        with self.assertRaisesRegex(ValueError, "routing policy"):
+            self.pools.create("writing", ["a::one"], routing_policy="paid_first")
+
+    def test_an_unknown_saved_policy_blocks_unrelated_edits_without_data_loss(self):
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        original = (
+            '{"version":1,"pools":['
+            '{"name":"valid","members":["a::one"]},'
+            '{"name":"future","description":"keep me","members":["b::two"],'
+            '"routing_policy":"future_policy"}]}'
+        )
+        self.path.write_text(original)
+
+        with self.assertRaisesRegex(ValueError, "future.*future_policy"):
+            self.pools.update("valid", display_name="Changed")
+
+        self.assertEqual(original, self.path.read_text())
 
     def test_order_is_kept_because_it_is_the_priority(self):
         # The member order *is* the routing policy: first member is tried first.
@@ -672,6 +703,25 @@ class PoolAdminTests(_TempEnv):
         self.assertEqual(422, caught.exception.status)
         self.assertIn("namespaced", str(caught.exception))
 
+    def test_the_admin_surface_accepts_and_preserves_strict_order(self):
+        from gateway import admin
+
+        created = admin.create_pool({
+            "name": "writing", "members": ["a::one"], "routing_policy": "strict_order"
+        })
+        self.assertEqual("strict_order", created["pool"]["routing_policy"])
+        updated = admin.update_pool("writing", {"display_name": "Writing"})
+        self.assertEqual("strict_order", updated["pool"]["routing_policy"])
+
+    def test_the_admin_surface_refuses_an_unknown_routing_policy(self):
+        from gateway import admin
+
+        with self.assertRaises(admin.AdminError) as caught:
+            admin.create_pool({
+                "name": "writing", "members": ["a::one"], "routing_policy": "paid_first"
+            })
+        self.assertEqual(422, caught.exception.status)
+
 
 class PoolPaidLastResortTests(_TempEnv):
     """Owner decision 2026-10-03: a paid member is used only when every free member is out for
@@ -750,6 +800,114 @@ class PoolPaidLastResortTests(_TempEnv):
         luna = {"model_id": "openai/gpt-6-luna",
                 "raw": {"pricing": {"prompt": "0.0000001", "completion": "0.0000005"}}}
         self.assertTrue(pricing.model_chargeable(definition("openrouter-main"), luna))
+
+    def test_strict_order_keeps_paid_primary_free_backup_and_paid_last(self):
+        from gateway.adapters.base import BackendError
+
+        self.pools.create(
+            "mix", ["haiku::x", "f-gemini::x", "luna::x"], routing_policy="strict_order"
+        )
+        backend, _ = self._backend({
+            "haiku::x": BackendError("technical", code="PROVIDER_FAILED", status=503,
+                                      upstream_settled=True),
+            "f-gemini::x": BackendError("quota", code="PROVIDER_QUOTA_EXHAUSTED", status=429,
+                                         upstream_settled=True),
+            "luna::x": self._ok("luna"),
+        })
+        result = backend.generate(self._request())
+        self.assertEqual("luna", result.text)
+        self.assertEqual(
+            ["haiku::x", "f-gemini::x", "luna::x"],
+            [attempt["member"] for attempt in result.payload["pool"]["attempts"]],
+        )
+        self.assertEqual([True, False, True],
+                         [attempt["paid"] for attempt in result.payload["pool"]["attempts"]])
+
+    def test_strict_order_stops_on_a_structured_policy_refusal(self):
+        from gateway.adapters.base import BackendError
+
+        refusal = BackendError("refused", code="POLICY_REFUSAL", upstream_accepted=True,
+                               upstream_settled=True)
+        refusal.evidence = {"finish_reason": "refusal"}
+        self.pools.create(
+            "mix", ["haiku::x", "f-gemini::x", "luna::x"], routing_policy="strict_order"
+        )
+        backend, adapters = self._backend({
+            "haiku::x": refusal,
+            "f-gemini::x": self._ok("gemini"),
+            "luna::x": self._ok("luna"),
+        })
+        with self.assertRaises(BackendError) as caught:
+            backend.generate(self._request())
+        self.assertEqual("POLICY_REFUSAL", caught.exception.code)
+        self.assertEqual([], adapters["f-gemini::x"].calls + adapters["luna::x"].calls)
+        self.assertEqual("refusal", caught.exception.evidence["finish_reason"])
+        self.assertEqual("haiku::x", caught.exception.evidence["pool_attempts"][0]["member"])
+
+    def test_strict_order_falls_back_on_incomplete_output_and_keeps_the_partial(self):
+        from gateway.adapters.base import BackendError
+
+        incomplete = BackendError("cut short", code="INCOMPLETE_OUTPUT", retryable=True,
+                                  upstream_accepted=True, upstream_settled=True)
+        incomplete.evidence = {
+            "partial_response": {"text": "chapter one", "finish_reason": "length"}
+        }
+        self.pools.create("mix", ["haiku::x", "f-gemini::x"], routing_policy="strict_order")
+        backend, _ = self._backend({"haiku::x": incomplete, "f-gemini::x": self._ok("complete")})
+        result = backend.generate(self._request())
+        self.assertEqual("complete", result.text)
+        first = result.payload["pool"]["attempts"][0]
+        self.assertEqual("chapter one", first["evidence"]["partial_response"]["text"])
+
+    def test_strict_order_exhaustion_keeps_partial_and_attempt_evidence(self):
+        from gateway.adapters.base import BackendError
+
+        incomplete = BackendError("cut short", code="INCOMPLETE_OUTPUT", retryable=True,
+                                  upstream_accepted=True, upstream_settled=True)
+        incomplete.evidence = {
+            "partial_response": {"text": "kept words", "finish_reason": "length"}
+        }
+        self.pools.create("mix", ["haiku::x"], routing_policy="strict_order")
+        backend, _ = self._backend({"haiku::x": incomplete})
+        with self.assertRaises(BackendError) as caught:
+            backend.generate(self._request())
+        self.assertEqual("kept words", caught.exception.evidence["partial_response"]["text"])
+        self.assertEqual("haiku::x", caught.exception.evidence["pool_attempts"][0]["member"])
+
+    def test_strict_order_holds_an_unknown_paid_send_without_dispatching_the_next_member(self):
+        from gateway.adapters.base import BackendError, note_request_started
+
+        class _UnknownPaid(_FakeAdapter):
+            def generate(self, request):
+                note_request_started()
+                return super().generate(request)
+
+        self.pools.create("mix", ["haiku::x", "f-gemini::x"], routing_policy="strict_order")
+        backend, adapters = self._backend({
+            "haiku::x": BackendError("connection lost", code="PROVIDER_UNAVAILABLE", retryable=True),
+            "f-gemini::x": self._ok("gemini"),
+        })
+        adapters["haiku::x"] = _UnknownPaid(adapters["haiku::x"].outcome)
+        with self.assertRaises(BackendError) as caught:
+            backend.generate(self._request())
+        self.assertEqual("PROVIDER_SUBMISSION_UNCERTAIN", caught.exception.code)
+        self.assertEqual([], adapters["f-gemini::x"].calls)
+        self.assertEqual("haiku::x", caught.exception.recovery["pool_member"])
+
+    def test_strict_order_honours_cancellation_before_dispatching_a_later_member(self):
+        from gateway.adapters.base import BackendError
+
+        self.pools.create("mix", ["haiku::x", "luna::x"], routing_policy="strict_order")
+        backend, adapters = self._backend({
+            "haiku::x": BackendError("technical", code="PROVIDER_FAILED",
+                                      upstream_settled=True),
+            "luna::x": self._ok("luna"),
+        })
+        with patch.object(self.adapter_module, "_cancel_requested", side_effect=[False, True]):
+            with self.assertRaises(BackendError) as caught:
+                backend.generate(self._request(_job_id="job-1"))
+        self.assertEqual("POOL_WAIT_CANCELLED", caught.exception.code)
+        self.assertEqual([], adapters["luna::x"].calls)
 
     def test_a_free_member_on_a_minute_limit_is_waited_for_and_paid_is_never_called(self):
         self.pools.create("mix", ["f1::x", "f2::x", "paid::x"])

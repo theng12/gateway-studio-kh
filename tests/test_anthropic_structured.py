@@ -161,10 +161,16 @@ class SchemaAnswerTests(unittest.TestCase):
         extra = {"results": GOOD["results"], "note": "hi"}
         self._assert_failed_attempt(_claude(json.dumps(extra)), "note is not allowed")
 
-    def test_prose_a_cut_answer_and_a_refusal_fail(self) -> None:
+    def test_prose_that_misses_the_schema_fails(self) -> None:
         self._assert_failed_attempt(_claude("Here are your prompts: ..."), "not JSON")
-        self._assert_failed_attempt(_claude('{"results": [', stop="max_tokens"), "max_tokens")
-        self._assert_failed_attempt(_claude(json.dumps(GOOD), stop="refusal"), "refusal")
+
+    def test_a_cut_answer_and_a_refusal_keep_their_typed_outcomes(self) -> None:
+        _, cut = _run(_claude('{"results": [', stop="max_tokens"), response_format=RESPONSE_FORMAT)
+        self.assertEqual("INCOMPLETE_OUTPUT", cut.code)
+        self.assertEqual('{"results": [', cut.evidence["partial_response"]["text"])
+        _, refusal = _run(_claude(json.dumps(GOOD), stop="refusal"), response_format=RESPONSE_FORMAT)
+        self.assertEqual("POLICY_REFUSAL", refusal.code)
+        self.assertFalse(refusal.retryable)
 
     def test_validator_types(self) -> None:
         problem = anthropic._schema_problem

@@ -14,6 +14,12 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.178 — 2026-10-13
+
+### Writing backups can follow your selected order
+
+An ordered writing pool tries its members in the saved order. Existing pools keep their current routing. Known unfinished responses retain their text and attempt evidence; a refusal stops the chain, and an unknown accepted outcome waits for recovery.
+
 ## 0.2.177 — 2026-10-13
 
 ### One model download per network

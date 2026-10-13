@@ -126,6 +126,37 @@ class WorkerTest(unittest.TestCase):
         self.assertEqual(job["recovery_state"], RECOVERY_UNKNOWN)
         self.assertTrue(job["recovery_required"])
 
+    def test_a_pool_of_known_failures_does_not_become_an_unknown_hold(self) -> None:
+        adapters = {
+            "a::x": _Raises(
+                BackendError("quota", code="PROVIDER_QUOTA_EXHAUSTED", status=429),
+                sends=True,
+            ),
+            "b::x": _Raises(KeyError("pre-send bug"), sends=False),
+        }
+
+        def resolve(_modality, member):
+            return (
+                SimpleNamespace(
+                    id=member, kind="openai_compatible", base_url="", display_name=member,
+                ),
+                {"model_id": "x"},
+            )
+
+        backend = PoolBackend()
+        backend.attach(resolve, lambda definition: adapters[definition.id])
+        backend._credentials_for = lambda _p: {}
+        with patch("gateway.pools.members", return_value=list(adapters)), \
+                patch("gateway.pools.routing_policy", return_value=None), \
+                patch("gateway.pool_cooldowns.until", return_value=None), \
+                patch("gateway.pool_cooldowns.note_failure"):
+            job = self.run_job(backend, "known-pool-walk")
+
+        self.assertEqual(job["state"], "failed")
+        self.assertFalse(job["recovery_required"])
+        self.assertNotEqual(job["recovery_state"], RECOVERY_UNKNOWN)
+        self.assertNotIn("Upstream outcome is unknown", job["error_detail"])
+
 
 class PoolTest(unittest.TestCase):
     def backend(self, adapters: dict, members: list[str]) -> PoolBackend:

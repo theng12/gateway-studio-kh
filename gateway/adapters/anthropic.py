@@ -284,20 +284,35 @@ class AnthropicBackend:
             for block in blocks
             if isinstance(block, dict) and block.get("type") == "text"
         )
+        stop = payload.get("stop_reason")
+        if stop in {"refusal", "max_tokens"}:
+            code = "POLICY_REFUSAL" if stop == "refusal" else "INCOMPLETE_OUTPUT"
+            error = BackendError(
+                f"{request.provider_id}: answer stopped early ({stop})",
+                code=code,
+                retryable=stop == "max_tokens",
+                upstream_accepted=True,
+                upstream_settled=True,
+            )
+            error.evidence = {"finish_reason": stop}
+            if stop == "max_tokens":
+                error.evidence["partial_response"] = {
+                    "text": text,
+                    "finish_reason": ANTHROPIC_STOP_MAP.get(str(stop), stop),
+                    "usage": payload.get("usage"),
+                    "model": payload.get("model") or request.model_id,
+                }
+            raise error
 
         if schema is not None:
             # The guarantee has two documented exceptions, a refusal and a `max_tokens` cut,
             # and the keywords `_wire_schema` removed are not enforced upstream. An answer that
             # misses the schema is a failed attempt: settled (the call finished, nothing is
             # pending upstream) and retryable, so a pool moves on to its next member.
-            stop = payload.get("stop_reason")
-            if stop in {"refusal", "max_tokens"}:
-                problem = f"the answer stopped early ({stop})"
-            else:
-                try:
-                    problem = _schema_problem(json.loads(text), schema)
-                except ValueError:
-                    problem = "the answer is not JSON"
+            try:
+                problem = _schema_problem(json.loads(text), schema)
+            except ValueError:
+                problem = "the answer is not JSON"
             if problem:
                 raise BackendError(
                     f"{request.provider_id}: answer does not match the requested JSON schema: "

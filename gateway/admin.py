@@ -489,6 +489,7 @@ def create_pool(body: dict[str, Any]) -> Any:
             [str(m) for m in (body.get("members") or [])],
             display_name=str(body.get("display_name") or ""),
             description=str(body.get("description") or ""),
+            routing_policy=str(body.get("routing_policy") or ""),
         )
     except ValueError as exc:
         raise AdminError(422, str(exc)) from exc
@@ -509,6 +510,7 @@ def update_pool(name: str, body: dict[str, Any]) -> Any:
             members=[str(m) for m in body["members"]] if "members" in body else None,
             display_name=str(body["display_name"]) if "display_name" in body else None,
             description=str(body["description"]) if "description" in body else None,
+            routing_policy=str(body["routing_policy"]) if "routing_policy" in body else None,
         )
     except ValueError as exc:
         raise AdminError(422, str(exc)) from exc

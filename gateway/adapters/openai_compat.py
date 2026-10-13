@@ -220,8 +220,30 @@ def _chat(request: BackendRequest) -> BackendResult:
     if isinstance(text, list):
         text = "".join(p.get("text", "") for p in text if isinstance(p, dict))
 
+    finish_reason = choice.get("finish_reason")
+    refusal = message.get("refusal")
+    if finish_reason in {"content_filter", "length"} or refusal:
+        policy_refusal = finish_reason == "content_filter" or bool(refusal)
+        error = BackendError(
+            f"{request.provider_id}: answer stopped early "
+            f"({finish_reason or 'refusal'})",
+            code="POLICY_REFUSAL" if policy_refusal else "INCOMPLETE_OUTPUT",
+            retryable=not policy_refusal,
+            upstream_accepted=True,
+            upstream_settled=True,
+        )
+        error.evidence = {"finish_reason": finish_reason or "refusal"}
+        if not policy_refusal:
+            error.evidence["partial_response"] = {
+                "text": text or "",
+                "finish_reason": finish_reason,
+                "usage": payload.get("usage"),
+                "model": payload.get("model") or request.model_id,
+            }
+        raise error
+
     result_payload = {
-        "finish_reason": choice.get("finish_reason"),
+        "finish_reason": finish_reason,
         "usage": payload.get("usage"),
         "model": payload.get("model") or request.model_id,
     }

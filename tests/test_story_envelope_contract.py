@@ -136,6 +136,22 @@ class EnvelopeContractTests(_Case):
         api.store.record_waiting(job["id"], {"reason": "x", "next_try_at": None, "since": 1.0})
         self.assertIsNone(self.get(f"/v1/images/{job['id']}")["waiting"])
 
+    def test_typed_chat_failures_publish_their_class_and_preserved_evidence(self) -> None:
+        for code, failure_class in (
+            ("POLICY_REFUSAL", "content_refused"),
+            ("INCOMPLETE_OUTPUT", "incomplete_output"),
+        ):
+            job = self.job("chat", dispatched=True)
+            evidence = {
+                "partial_response": {"text": "kept words", "finish_reason": "length"},
+                "pool_attempts": [{"member": "haiku::x", "outcome": "failed"}],
+            }
+            api.store.fail(job["id"], code=code, detail="stopped", evidence=evidence)
+            body = api._job_envelope(api.store.get(job["id"]))
+            self.assertEqual(failure_class, body["failure_class"])
+            self.assertEqual(evidence["partial_response"], body["partial_response"])
+            self.assertEqual(evidence["pool_attempts"], body["pool_attempts"])
+
 
 class ScrubTests(_Case):
     def test_no_address_or_hub_route_survives_in_any_published_text(self) -> None:
