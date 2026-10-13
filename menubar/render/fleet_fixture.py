@@ -475,19 +475,21 @@ def installs() -> list:
             has, lite = mid == "1101", mid == "imac-2"
             machines.append({"location_id": loc, "machine": mid, "label": mid, "reachable": True,
                              "workstation": {"enabled": True} if lite else None,
+                             "hub_version": "0.6.174",
                              "installable_models": [] if has or lite else [{"package_id": package,
                                                                             "label": "Fish S2 Pro 4-bit"}]})
             rows.append({"machine": mid, "package_id": package, "label": "Fish S2 Pro 4-bit",
                          "cache_state": "cached" if has else "absent", "memory_eligible": not lite})
-        models.append({"id": loc, "local_models": rows})
+        models.append({"id": loc, "version": "0.6.174", "local_models": rows})
     fleet_read = {"machines": machines, "locations": models}
 
     def share(loc, mid, pkg):
         return {"ok": True, "share": {"url_base": f"http://{mid}/files", "token": "t", "files": []}}
 
-    def install(loc, mid, pkg, *, source=None):
+    def install(loc, mid, pkg, *, source=None, peer_only=False):
+        assert not peer_only or source is not None, "strict fixture copies require a source"
         runs[mid] = {"id": mid, "state": "running", "total_bytes": 3_500_000_000, "bytes_done": 0,
-                     "source_used": "lan" if source else "internet"}
+                     "source_used": "lan" if source else "internet", "peer_only": peer_only}
         return {"ok": True, "run": dict(runs[mid])}
 
     def status(loc, mid, run):

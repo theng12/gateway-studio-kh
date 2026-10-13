@@ -14,10 +14,9 @@ speed, spreading like a tree.
   waiting Mac copy from a Mac on its network that has the model (each finished Mac becomes a source; a
   source lends to at most `SHARES_PER_SOURCE` at once, idle Macs first). A Mac with no free source waits
   for one rather than pulling from the internet; only a network with no usable copy at all downloads.
-* **Relay**: the share on the source's controller, then the download with `source` on the target's
-  (`startup_control.share_model` / `install_model`). A source whose Hub cannot share (`HUB_TOO_OLD`), is
-  busy (429) or does not answer is left alone for a while; with no other source the Mac downloads from the
-  internet, and its row keeps the sentence saying why.
+* **Relay**: the share on the source's controller, then a strict LAN download on the target's
+  (`startup_control.share_model` / `install_model`). A known verified source that is resting,
+  unreachable or busy keeps the network waiting; only a network with no known copy starts an internet seed.
 """
 from __future__ import annotations
 
@@ -50,6 +49,8 @@ REST_TOO_OLD = 3600.0
 TICK = 5.0
 KEEP_FINISHED = 5
 ACTIVE = ("copying", "downloading")
+LAN_ONLY_HUB_VERSION = (0, 6, 174)
+LAN_ONLY_HUB_VERSION_TEXT = "0.6.174"
 _ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
 
 _lock = threading.RLock()
@@ -303,7 +304,9 @@ _MEMORY_REFUSAL = re.compile(r"needs a Mac with at least [\d.]+ GB of memory")
 def _start(entry: dict[str, Any], package_id: str, source: dict[str, Any] | None, now: float,
            from_entry: dict[str, Any] | None = None) -> bool:
     try:
-        answer = startup_control.install_model(entry["location_id"], entry["machine"], package_id, source=source)
+        answer = startup_control.install_model(
+            entry["location_id"], entry["machine"], package_id, source=source,
+            **({"peer_only": True} if source is not None else {}))
     except startup_control.StartupError as error:
         if _MEMORY_REFUSAL.search(_sentence(error)):   # nothing was downloaded: the same as a plan-time skip
             entry.update(state="skipped", detail="Not enough memory for this model.")
@@ -351,6 +354,7 @@ def _advance(plan: dict[str, Any], snapshot: dict[str, Any]) -> None:
     package_id = plan["package_id"]
     resting: dict[str, float] = {k: v for k, v in (plan.get("resting") or {}).items() if v > now}
     rows = {f"{r.get('location_id')}/{r.get('machine')}": r for r in snapshot.get("machines") or []}
+    controller_versions = {str(r.get("id")): r.get("version") for r in snapshot.get("locations") or []}
     macs = plan["macs"]
     for entry in macs:
         entry["network"] = _norm(entry.get("network") or "")   # a plan started before names were normalised
@@ -381,9 +385,13 @@ def _advance(plan: dict[str, Any], snapshot: dict[str, Any]) -> None:
 
     table = networks()
     sources: dict[str, list[str]] = {}
+    known_sources: dict[str, list[str]] = {}
     for key in held:
         row = rows.get(key) or {}
-        name = network_of(row.get("location_id"), row.get("machine"), table) if row else ""
+        identity = row or known.get(key) or {}
+        name = network_of(identity.get("location_id"), identity.get("machine"), table) if identity else ""
+        if name and not key.startswith(f"{fleet.LOCAL_ID}/"):
+            known_sources.setdefault(name, []).append(key)
         if name and lender(key):
             sources.setdefault(name, []).append(key)
     load: dict[str, int] = {}
@@ -404,6 +412,21 @@ def _advance(plan: dict[str, Any], snapshot: dict[str, Any]) -> None:
         bucket = network or f"~{entry['key']}"
         notes: list[str] = []
         tried = False
+        if known_sources.get(network):
+            version = (rows.get(entry["key"]) or {}).get("hub_version")
+            version_key = fleet._version_key(version)  # noqa: SLF001 - shared fleet wire-version parser
+            if version_key is None or version_key < LAN_ONLY_HUB_VERSION:
+                entry["detail"] = (
+                    f"Waiting: this Mac needs Studio Hub {LAN_ONLY_HUB_VERSION_TEXT} for LAN-only model "
+                    f"copies (reported {str(version or 'unknown')}).")
+                continue
+            controller_version = controller_versions.get(str(entry["location_id"]))
+            controller_key = fleet._version_key(controller_version)  # noqa: SLF001
+            if controller_key is None or controller_key < LAN_ONLY_HUB_VERSION:
+                entry["detail"] = (
+                    f"Waiting: this Mac's controller needs Studio Hub {LAN_ONLY_HUB_VERSION_TEXT} to relay "
+                    f"LAN-only model copies (reported {str(controller_version or 'unknown')}).")
+                continue
         # Idle Macs first, then the least busy; never one that just refused or failed.
         for key in sorted((k for k in sources.get(network, []) if k not in resting and k != entry["key"]
                            and load.get(k, 0) < SHARES_PER_SOURCE),
@@ -434,6 +457,8 @@ def _advance(plan: dict[str, Any], snapshot: dict[str, Any]) -> None:
         elif bucket in internet:
             entry["detail"] = f"Waiting for the internet download on network {network} to finish." if network \
                 else "Waiting to download."
+        elif known_sources.get(network):
+            entry["detail"] = f"Waiting for a known verified copy on network {network} to become available."
         elif _start(entry, package_id, None, now):
             internet.add(bucket)
         entry["note"] = "; ".join(notes) or entry.get("note")

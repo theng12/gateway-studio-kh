@@ -491,23 +491,32 @@ MODEL_INSTALL_TOO_OLD = ("This controller's Studio Hub cannot install models fro
 
 
 MODEL_SHARE_TOO_OLD = ("This controller's Studio Hub cannot share models between Macs yet. It needs Studio Hub "
-                       "0.6.146: until then its Macs download from the internet.")
+                       "0.6.146: update it before using this Mac as a LAN source.")
 
 
 def install_model(controller_id: str, machine_id: str, package_id: str, *, source: dict[str, Any] | None = None,
-                  client: httpx.Client | None = None) -> dict[str, Any]:
+                  peer_only: bool = False, client: httpx.Client | None = None) -> dict[str, Any]:
     """Start a model download on one Mac (owner decision 2026-10-04), through its controller.
 
     The Mac's Hub refuses an unknown package, a shelved model, a full disk and a model it has too
     little memory to run, each in its own sentence, which is passed through. Answers
     `{"ok": true, "node", "run": {"id", "state", "total_bytes", ...}}`; follow it with
-    `model_install_status`. `source` is a LAN share from `share_model` (Studio Hub 0.6.146): the Mac copies
-    the files from that Mac and falls back to the internet by itself. The share's token is never audited.
+    `model_install_status`. `source` is a LAN share from `share_model`; `peer_only=True` requires Studio Hub
+    0.6.174 and forbids internet fallback. The share's token is never audited.
     """
     if not _MACHINE_ID.fullmatch(machine_id or "") or not _MACHINE_ID.fullmatch(package_id or ""):
         raise StartupError(400, {"ok": False, "code": "BAD_MACHINE", "detail": "machine or model id is not valid"})
+    if not isinstance(peer_only, bool):
+        raise StartupError(400, {"ok": False, "code": "VALUE_REQUIRED",
+                                 "detail": "peer_only must be true or false"})
+    if peer_only and source is None:
+        raise StartupError(400, {"ok": False, "code": "SOURCE_REQUIRED",
+                                 "detail": "A LAN-only model copy requires a source share."})
+    payload: dict[str, Any] = {"source": source} if source else {}
+    if peer_only:
+        payload["peer_only"] = True
     return _node_post(
-        controller_id, machine_id, f"model-packages/{package_id}/download", {"source": source} if source else {},
+        controller_id, machine_id, f"model-packages/{package_id}/download", payload,
         event="model_install", too_old=MODEL_INSTALL_TOO_OLD,
         refused="The controller refused this gateway's credential for installing models.",
         audit_fields={"package": package_id, "source": "lan" if source else "internet"}, client=client,

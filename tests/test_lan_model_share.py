@@ -7,7 +7,7 @@ What these pin:
 * the spread: a Mac copies only from a Mac on its own named network, never across; a network with no copy
   downloads from the internet once at a time; every source lends to at most two; finished Macs lend in turn;
 * skips: Lite Mode for a model it does not run, This Mac while paused for generation, offline Macs;
-* an older Hub (no share route) means that Mac downloads from the internet, with the HUB_TOO_OLD sentence;
+* an older source Hub (no share route) leaves that network waiting, with the HUB_TOO_OLD sentence;
 * the plan lives in a file: a Gateway restart keeps following the same downloads instead of starting new ones.
 """
 from __future__ import annotations
@@ -39,17 +39,19 @@ SHOPS = "4bb919aee2e4"
 
 def snapshot(*macs: tuple) -> dict:
     """`(location, machine, has_it, **extra)` rows, shaped like the Fleet read."""
-    machines, models = [], {}
+    machines, models, versions = [], {}, {}
     for loc, mid, has, *extra in macs:
         extra = extra[0] if extra else {}
         fits = extra.get("fits", True)
         machines.append({"location_id": loc, "machine": mid, "label": mid, "reachable": extra.get("reachable", True),
                          "current": extra.get("current"), "workstation": extra.get("workstation"),
-                         "node_paused": extra.get("paused"),
+                         "node_paused": extra.get("paused"), "hub_version": extra.get("hub_version", "0.6.174"),
                          "installable_models": [] if has or not fits else [{"package_id": FISH, "label": "Fish S2"}]})
         models.setdefault(loc, []).append({"machine": mid, "package_id": FISH, "label": "Fish S2",
                                            "cache_state": "cached" if has else "absent", "memory_eligible": fits})
-    return {"machines": machines, "locations": [{"id": loc, "local_models": rows} for loc, rows in models.items()]}
+        versions[loc] = extra.get("controller_version", versions.get(loc, "0.6.174"))
+    return {"machines": machines, "locations": [
+        {"id": loc, "version": versions[loc], "local_models": rows} for loc, rows in models.items()]}
 
 
 class FakeHubs:
@@ -59,6 +61,7 @@ class FakeHubs:
         self.runs: dict[str, dict] = {}
         self.shares: list[str] = []
         self.installs: list[tuple[str, str | None]] = []   # (target, source url_base or None)
+        self.peer_only: list[bool] = []
         self.too_old: set[str] = set()
         for name in ("share_model", "install_model", "model_install_status"):
             patcher = patch.object(startup_control, name, getattr(self, name))
@@ -73,11 +76,12 @@ class FakeHubs:
         return {"ok": True, "share": {"url_base": f"http://{mid}/share", "token": "secret-token", "files": [],
                                       "revision": "r1"}}
 
-    def install_model(self, loc, mid, package, *, source=None):
+    def install_model(self, loc, mid, package, *, source=None, peer_only=False):
         run = f"run-{len(self.runs) + 1}"
         self.runs[run] = {"id": run, "state": "running", "total_bytes": 100, "bytes_done": 0, "target": f"{loc}/{mid}",
                           "source_used": "lan" if source else "internet"}
         self.installs.append((f"{loc}/{mid}", (source or {}).get("url_base")))
+        self.peer_only.append(peer_only)
         return {"ok": True, "run": dict(self.runs[run])}
 
     def model_install_status(self, loc, mid, run):
@@ -207,6 +211,61 @@ class SpreadTest(Case):
         self.assertEqual(waiting[0]["detail"], "Waiting for a Mac on network A to copy from.")
         self.assertTrue(all(source for _, source in self.hubs.installs), "nobody went to the internet")
 
+    def test_lan_starts_are_strict_and_a_known_unavailable_source_blocks_an_internet_seed(self) -> None:
+        fleet_read = snapshot((A1, "1101", True), (A1, "1102", False))
+        model_share.start(FISH, fleet_read)
+        plan = model_share.read_plans()[0]
+        plan["resting"] = {f"{A1}/1101": time.time() + 60}
+        model_share._save([plan])
+        model_share.tick(fleet_read)
+        self.assertEqual(self.hubs.installs, [], "a resting verified source still owns the network copy")
+        self.assertIn("verified copy", self.entries()[f"{A1}/1102"]["detail"])
+
+        plan = model_share.read_plans()[0]
+        plan["resting"] = {}
+        model_share._save([plan])
+        model_share.tick(fleet_read)
+        self.assertEqual(self.hubs.peer_only, [True])
+
+    def test_an_unreachable_verified_source_waits_instead_of_starting_another_internet_copy(self) -> None:
+        fleet_read = snapshot((A1, "1101", True, {"reachable": False}), (A1, "1102", False))
+        model_share.start(FISH, fleet_read)
+        model_share.tick(fleet_read)
+        self.assertEqual(self.hubs.installs, [])
+        self.assertIn("verified copy", self.entries()[f"{A1}/1102"]["detail"])
+
+    def test_a_durable_verified_source_missing_from_the_fleet_rows_still_owns_its_network_copy(self) -> None:
+        model_share.start(FISH, snapshot((A1, "1101", True), (A1, "1102", False)))
+        without_source_row = snapshot((A1, "1102", False))
+        model_share.tick(without_source_row)
+        self.assertEqual(self.hubs.installs, [])
+        self.assertIn("verified copy", self.entries()[f"{A1}/1102"]["detail"])
+
+    def test_old_or_unknown_target_waits_for_the_strict_lan_protocol(self) -> None:
+        for version in ("0.6.173", None):
+            with self.subTest(version=version):
+                model_share._save([])
+                self.hubs.installs.clear()
+                self.hubs.peer_only.clear()
+                fleet_read = snapshot((A1, "1101", True),
+                                      (A1, "1102", False, {"hub_version": version}))
+                model_share.start(FISH, fleet_read)
+                model_share.tick(fleet_read)
+                self.assertEqual(self.hubs.installs, [])
+                detail = self.entries()[f"{A1}/1102"]["detail"]
+                self.assertIn("Studio Hub 0.6.174", detail)
+                self.assertIn("unknown" if version is None else version, detail)
+
+    def test_an_old_controller_waits_instead_of_dropping_the_strict_protocol_bit(self) -> None:
+        fleet_read = snapshot((A1, "1101", True),
+                              (A1, "1102", False, {"controller_version": "0.6.173"}))
+        model_share.start(FISH, fleet_read)
+        model_share.tick(fleet_read)
+        self.assertEqual(self.hubs.installs, [])
+        detail = self.entries()[f"{A1}/1102"]["detail"]
+        self.assertIn("controller", detail)
+        self.assertIn("0.6.173", detail)
+
     def test_skips_lite_mode_this_mac_paused_and_offline(self) -> None:
         fleet_read = snapshot((A1, "1101", False),
                               (SHOPS, "imac-1", False, {"fits": False, "workstation": {"enabled": True}}),
@@ -266,13 +325,13 @@ class SpreadTest(Case):
         model_share.tick(fleet_read)
         self.assertEqual((self.hubs.shares, self.hubs.installs), ([], [(f"{A1}/1101", None)]))
 
-    def test_an_older_hub_means_the_internet_for_that_mac_with_the_sentence(self) -> None:
+    def test_an_old_source_hub_keeps_the_verified_copy_reserved_for_lan(self) -> None:
         self.hubs.too_old.add(f"{A1}/1101")
         fleet_read = snapshot((A1, "1101", True), (A1, "1102", False))
         model_share.start(FISH, fleet_read)
         model_share.tick(fleet_read)
         entry = self.entries()[f"{A1}/1102"]
-        self.assertEqual((entry["state"], self.hubs.installs), ("downloading", [(f"{A1}/1102", None)]))
+        self.assertEqual((entry["state"], self.hubs.installs), ("waiting", []))
         self.assertIn("needs Studio Hub 0.6.146", entry["note"])
 
     def test_a_gateway_restart_keeps_following_the_same_downloads(self) -> None:
@@ -372,11 +431,15 @@ class RelayTest(unittest.TestCase):
         source = {"url_base": "http://100.64.0.9:47873/api/hub/model-share/x", "token": "very-secret", "files": [],
                   "revision": "r1"}
         _, seen = self.call(startup_control.install_model,
-                            httpx.Response(200, json={"ok": True, "run": {"id": "run-1"}}), source=source)
-        self.assertEqual(json.loads(seen[0].content), {"source": source})
+                            httpx.Response(200, json={"ok": True, "run": {"id": "run-1"}}),
+                            source=source, peer_only=True)
+        self.assertEqual(json.loads(seen[0].content), {"source": source, "peer_only": True})
         self.assertNotIn("very-secret", startup_control.audit_path().read_text())
         _, seen = self.call(startup_control.install_model, httpx.Response(200, json={"ok": True, "run": {"id": "r"}}))
         self.assertEqual(json.loads(seen[0].content), {}, "no source: the internet, exactly as before")
+        error, seen = self.call(startup_control.install_model, httpx.Response(200, json={}),
+                                source=None, peer_only=True)
+        self.assertEqual((error.status, seen), (400, []))
 
 
 class AFinishedInstallIsSwitchedOnTest(Case):

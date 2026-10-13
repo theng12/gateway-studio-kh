@@ -67,6 +67,17 @@ class RelayTest(unittest.TestCase):
         self.assertIn("model_install_requested", self.events())
         self.assertIn("model_install_result", self.events())
 
+    def test_peer_only_is_a_boolean_and_is_forwarded_only_when_requested(self) -> None:
+        source = {"url_base": "http://100.64.0.9/share/token/files", "revision": "a" * 40}
+        seen: list[httpx.Request] = []
+        client = httpx.Client(transport=httpx.MockTransport(
+            lambda request: seen.append(request) or httpx.Response(200, json={"ok": True, "run": {"id": "r"}})))
+        startup_control.install_model("ctl1", "node-1-hub", FISH, source=source, peer_only=True, client=client)
+        self.assertEqual(json.loads(seen[0].content), {"source": source, "peer_only": True})
+        with self.assertRaises(startup_control.StartupError) as caught:
+            startup_control.install_model("ctl1", "node-1-hub", FISH, source=source, peer_only="yes", client=client)
+        self.assertEqual(caught.exception.status, 400)
+
     def test_the_status_read_goes_the_same_way_and_is_not_audited(self) -> None:
         run = {"id": "run-1", "state": "running", "total_bytes": 100, "bytes_done": 42}
         answer, seen = self.call(httpx.Response(200, json={"ok": True, "run": run}),

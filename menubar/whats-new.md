@@ -14,6 +14,12 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.177 — 2026-10-13
+
+### One model download per network
+
+Fleet model sharing waits for an existing verified copy when its Mac is busy or temporarily unavailable. LAN copies require Studio Hub 0.6.174 or later, so a stalled copy stays on the local network. Files already verified remain available.
+
 ## 0.2.176 — 2026-10-13
 
 ### Clearer evidence for waiting fleet jobs
