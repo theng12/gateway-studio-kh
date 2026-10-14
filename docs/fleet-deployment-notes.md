@@ -179,3 +179,17 @@ visible in the UI (M17, and the owner's decision B):
 
 The `_orchestra` audit that produced this section is
 `_orchestra/AUDIT-gateway-studiohub-20260928.md`, finding M17.
+# Scoped model-sharing destinations (0.2.179)
+
+The normal `POST /admin/api/fleet/model-installs` accepts an optional `targets`
+array of exact `location_id/machine` keys alongside `package_id`. Omitting it
+keeps the existing fleet-wide behavior. A present scope must be nonempty,
+unique, canonical, and known to the current fleet snapshot; malformed, null,
+or unknown values fail before a plan is admitted.
+
+Only those machines become destinations. Verified cached peers outside the
+scope can still lend within their network, using the existing strict LAN
+protocol, source leases, capacity, and retry rules. The scope persists through
+Gateway restart. Existing memory, offline, and model-off decisions remain in
+effect; a returning offline machine needs fresh eligibility and a later safe
+continuation. This does not add controls to the individual download route.

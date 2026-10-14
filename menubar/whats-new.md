@@ -14,6 +14,12 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.179 — 2026-10-14
+
+### Model distribution can target selected Macs
+
+Guarded model distribution can now target selected Macs without assigning the rest of the fleet. Existing LAN sharing, memory checks, and your disabled-model choices are preserved.
+
 ## 0.2.178 — 2026-10-13
 
 ### Writing backups can follow your selected order
