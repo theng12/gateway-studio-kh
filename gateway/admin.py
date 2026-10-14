@@ -3638,9 +3638,10 @@ def fleet_machine_network(controller_id: str, machine_id: str, payload: dict[str
 
 @router.post("/api/fleet/model-installs", dependencies=[Depends(require_admin)])
 def fleet_install_everywhere(payload: dict[str, Any]) -> Any:
-    """Install a model on every Mac that can run it (`{"package_id"}`): one internet download per network, then
+    """Install a model on every eligible Mac, or only explicit `targets`: one internet download per network, then
     Mac-to-Mac copies on the LAN (`model_share`). Answers `{"plan"}`; progress rides on `GET /api/fleet`."""
-    return _share_call(lambda: {"plan": model_share.start(str(payload.get("package_id") or ""))})
+    scope = {"targets": payload["targets"]} if "targets" in payload else {}
+    return _share_call(lambda: {"plan": model_share.start(str(payload.get("package_id") or ""), **scope)})
 
 
 @router.get("/api/fleet/model-installs", dependencies=[Depends(require_admin)])

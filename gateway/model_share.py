@@ -52,6 +52,7 @@ ACTIVE = ("copying", "downloading")
 LAN_ONLY_HUB_VERSION = (0, 6, 174)
 LAN_ONLY_HUB_VERSION_TEXT = "0.6.174"
 _ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
+_ALL_TARGETS = object()
 
 _lock = threading.RLock()
 _thread: threading.Thread | None = None
@@ -183,11 +184,30 @@ def _why_not(row: dict[str, Any], model: dict[str, Any] | None) -> str:
     return "Not enough memory for this model."
 
 
-def start(package_id: str, snapshot: dict[str, Any] | None = None) -> dict[str, Any]:
+def start(package_id: str, snapshot: dict[str, Any] | None = None, *, targets: object = _ALL_TARGETS) -> dict[str, Any]:
     """Plan installing `package_id` on every Mac that can run it and start the spread. Answers the plan's view."""
     if not isinstance(package_id, str) or not _ID.fullmatch(package_id):
         raise ShareError(400, "model id is not valid", "BAD_MODEL")
+    scope: list[str] | None = None
+    if targets is not _ALL_TARGETS:
+        if not isinstance(targets, list) or not targets:
+            raise ShareError(400, "targets must be a nonempty array of location_id/machine keys", "BAD_TARGETS")
+        scope = []
+        for target in targets:
+            parts = target.split("/") if isinstance(target, str) else []
+            if len(parts) != 2 or not all(_ID.fullmatch(part) for part in parts):
+                raise ShareError(400, "each target must be a canonical location_id/machine key", "BAD_TARGETS")
+            if target in scope:
+                raise ShareError(400, "targets must not contain duplicates", "BAD_TARGETS")
+            scope.append(target)
     snapshot = snapshot if snapshot is not None else fleet.snapshot()
+    if scope is not None:
+        known = {f"{row.get('location_id')}/{row.get('machine')}" for row in snapshot.get("machines") or []
+                 if isinstance(row, dict) and row.get("location_id") and row.get("machine")}
+        unknown = [target for target in scope if target not in known]
+        if unknown:
+            raise ShareError(400, f"No such target: {unknown[0]}", "UNKNOWN_TARGET")
+    scope_set = set(scope) if scope is not None else None
     with _lock:
         plans = read_plans()
         if any(p.get("package_id") == package_id and p.get("state") == "running" for p in plans):
@@ -201,6 +221,8 @@ def start(package_id: str, snapshot: dict[str, Any] | None = None) -> dict[str, 
             if not loc or not mid:
                 continue
             key = f"{loc}/{mid}"
+            if scope_set is not None and key not in scope_set:
+                continue
             model = models.get(key)
             offered = next((m for m in row.get("installable_models") or [] if m.get("package_id") == package_id), None)
             label = label or (offered or {}).get("label") or (model or {}).get("label")
@@ -221,6 +243,8 @@ def start(package_id: str, snapshot: dict[str, Any] | None = None) -> dict[str, 
         macs.sort(key=lambda e: (e["network"] or "~", str(e["label"]).lower()))
         plan = {"id": uuid.uuid4().hex[:12], "package_id": package_id, "label": label or package_id,
                 "state": "running", "created_at": round(time.time(), 3), "macs": macs, "resting": {}}
+        if scope is not None:
+            plan["targets"] = scope
         startup_control.audit("model_spread_started", package=package_id, plan=plan["id"],
                               macs=sum(e["state"] == "waiting" for e in macs))
         _save([plan, *plans])
