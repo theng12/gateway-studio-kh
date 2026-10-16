@@ -14,6 +14,12 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.180 — 2026-10-16
+
+### Rejected narration takes are kept for listening review
+
+When a narration section still fails its quality check on the last try, the Gateway now keeps a link to that final take so you can listen to it with the reason it was rejected. The job still counts as failed, and the take is never delivered or used automatically.
+
 ## 0.2.179 — 2026-10-14
 
 ### Model distribution can target selected Macs

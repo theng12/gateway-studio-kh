@@ -193,3 +193,13 @@ protocol, source leases, capacity, and retry rules. The scope persists through
 Gateway restart. Existing memory, offline, and model-off decisions remain in
 effect; a returning offline machine needs fresh eligibility and a later safe
 continuation. This does not add controls to the individual download route.
+
+# Rejected narration review candidates (0.2.180)
+
+When a Studio Hub TTS section fails its quality gate on the final try (Hub
+0.6.181 or later), the Gateway binds the Hub's inactive review-only candidate
+to the failed job in the same commit as the failure. Admin-only
+`GET /admin/api/jobs/{job_id}/review-candidate` returns its receipt, and
+`GET /admin/api/jobs/{job_id}/review-candidate/audio` returns the WAV only after
+every byte matches that receipt. The job's failure is unchanged; the candidate
+is never delivered or imported. An older Hub answers 404 and nothing is bound.
