@@ -14,6 +14,12 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.182 — 2026-10-16
+
+### A slow Mac no longer hides its models
+
+When a Mac's model list is slow to answer, the Gateway now keeps the list it already had and tries again instead of treating the Mac as having no models. Before, a slow answer could briefly withhold a model that only that Mac has, and a queued job waiting for it would fail.
+
 ## 0.2.181 — 2026-10-16
 
 ### See and empty each Mac's Trash Folder

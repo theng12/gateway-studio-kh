@@ -217,3 +217,15 @@ loopback request; the API key, a browser session or loopback alone get 403, and
 a changed count or size is 409 `TRASH_CHANGED` with nothing deleted. The app now
 starts uvicorn with `--timeout-graceful-shutdown 3`, so open client requests can
 no longer hold an install's restart for minutes.
+
+# Keeping the last model list (0.2.182)
+
+`_hub_catalog` now answers `None` for a catalogue read that did not answer
+(timeout, HTTP error, or no rows) instead of `{}`, and `DiscoveryResult`
+carries `catalogue_missing`. `ModelInventory.refresh` treats a missing
+catalogue as an error and keeps the rows of the last answer that did have
+per-Mac facts, so a model only a node has is not withheld on the controller's
+own disk while the read fails; the next refresh retries. A first discovery with
+no earlier answer still lists the packages exactly as before, and a successful
+but empty catalogue is also read as unread (kept rows, error set) — the
+fail-safe direction.
