@@ -14,6 +14,16 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.181 — 2026-10-16
+
+### See and empty each Mac's Trash Folder
+
+Fleet > Machines > "…" > Trash… shows what Studio Hub moved to a Mac's Trash Folder, with totals by kind and age and the disk space left. You can move items to that Mac's macOS Trash, where they can still be recovered, or delete them permanently. Trash on All Macs… shows every Mac at once. Permanent delete works only from this app on its own Mac, and asks you to confirm the exact count and size first. Macs need Studio Hub 0.6.182; older ones say so.
+
+### Updates no longer wait on slow open requests
+
+When the Gateway stops for an update or restart, it now gives open requests a few seconds to finish instead of waiting on them indefinitely, so an update no longer leaves the Gateway down for minutes.
+
 ## 0.2.180 — 2026-10-16
 
 ### Rejected narration takes are kept for listening review

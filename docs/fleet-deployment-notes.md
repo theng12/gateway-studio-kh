@@ -203,3 +203,17 @@ to the failed job in the same commit as the failure. Admin-only
 `GET /admin/api/jobs/{job_id}/review-candidate/audio` returns the WAV only after
 every byte matches that receipt. The job's failure is unchanged; the candidate
 is never delivered or imported. An older Hub answers 404 and nothing is bound.
+
+# Fleet Trash Folder and bounded shutdown (0.2.181)
+
+Studio Hub 0.6.182 moves what it retires to its Trash Folder instead of
+deleting it. Admin `GET /admin/api/fleet/controllers/{c}/machines/{m}/trash`
+relays that Mac's Trash Folder listing; a Mac on an older Hub answers
+`{"supported": false, "needs_hub": "0.6.182"}`. `POST .../trash/move-to-macos-trash`
+(normal admin auth) moves items to that Mac's macOS Trash. `POST .../trash/delete`
+also requires the owner console: a per-launch secret the menubar app hands to
+the gateway it spawns on stdin and sends back as `X-Gateway-Owner-Console` on a
+loopback request; the API key, a browser session or loopback alone get 403, and
+a changed count or size is 409 `TRASH_CHANGED` with nothing deleted. The app now
+starts uvicorn with `--timeout-graceful-shutdown 3`, so open client requests can
+no longer hold an install's restart for minutes.
