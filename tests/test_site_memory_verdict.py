@@ -143,6 +143,48 @@ class SiteReadinessAnyMacTests(unittest.TestCase):
         self.assertIn("not installed", _withheld(_package(installed=False), old) or "")
 
 
+class CatalogueReadFailureTests(unittest.TestCase):
+    """A catalogue read that fails must not erase the last good answer (1607 Gemma, 2026-10-16).
+
+    The 1600 controller's aggregate catalogue is slow while its busy node works. One read that timed
+    out produced rows with no per-Mac facts, so the controller's own disk (`not_installed`) withheld
+    a model only a node has, and a queued job failed MODEL_NOT_OFFERABLE until the next refresh.
+    """
+
+    def _inventory(self) -> ModelInventory:
+        return ModelInventory(_Credentials(), path=Path(tempfile.mkdtemp(dir=_TEMP_ROOT)) / "models.json",
+                              definition_lookup=lambda pid: HUB, definitions_lookup=lambda: [HUB])
+
+    def _refresh(self, inventory: ModelInventory, catalogue) -> object:
+        def fake_get(url, **_kwargs):
+            if url.endswith("/model-packages"):
+                body = {"packages": [_package(installed=False)]}
+            elif catalogue is None:
+                raise discovery.httpx.ReadTimeout("slow catalogue")
+            else:
+                body = {"models": catalogue}
+            return SimpleNamespace(status_code=200, text="", json=lambda: body)
+
+        with patch.object(discovery.httpx, "get", fake_get):
+            return inventory.refresh(HUB.id, hub_version="0.6.180")
+
+    def _reason(self, inventory: ModelInventory) -> str | None:
+        model = next(m for m in inventory.models_for(HUB.id) if m["model_id"] == FISH)
+        return inventory.withhold_reason(HUB, model)
+
+    def test_a_failed_catalogue_read_keeps_the_last_answer(self) -> None:
+        inventory = self._inventory()
+        self.assertIsNone(self._refresh(inventory, [_mac("local", cached=False), _mac("1504", cached=True)]).error)
+        self.assertIsNone(self._reason(inventory))
+        self.assertIsNotNone(self._refresh(inventory, None).error)
+        self.assertIsNone(self._reason(inventory))
+
+    def test_a_first_discovery_without_a_catalogue_still_lists_the_packages(self) -> None:
+        inventory = self._inventory()
+        self.assertIsNone(self._refresh(inventory, None).error)
+        self.assertIn("not installed", self._reason(inventory) or "")
+
+
 class FleetSiteVerdictTests(unittest.TestCase):
     def test_supply_rows_of_one_model_on_different_revisions_add_up(self) -> None:
         index = fleet._model_supply_index([

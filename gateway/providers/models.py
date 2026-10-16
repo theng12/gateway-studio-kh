@@ -131,6 +131,14 @@ class ModelInventory:
 
         with self._lock:
             entry = self._data["providers"].setdefault(provider_id, {})
+            # **A catalogue that did not answer must not erase the last one that did.** Without its
+            # per-Mac rows every model reads off the controller's own disk, so a model only a node has
+            # is withheld and a queued job fails MODEL_NOT_OFFERABLE (1607 Gemma, 2026-10-16: the busy
+            # site's catalogue timed out now and then). Keep the rows and retry; a first discovery with
+            # no earlier answer still lists the packages, as before.
+            if result.catalogue_missing and any(
+                    "catalogued" in (m.get("raw") or {}) for m in entry.get("models") or []):
+                result.error = "the Hub's catalogue did not answer; keeping the last model list"
             entry["fetched_at"] = result.fetched_at
             entry["error"] = result.error
             if result.error is None:

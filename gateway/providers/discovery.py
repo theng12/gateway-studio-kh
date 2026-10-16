@@ -58,6 +58,9 @@ class DiscoveryResult:
     #: gateway has never heard of produced the same empty inventory as a Hub with
     #: no models at all. Kept so the count and the engine names can be published.
     skipped: list[dict[str, Any]] = field(default_factory=list)
+    #: The Hub's catalogue did not answer, so these rows carry no per-Mac facts (`ModelInventory.refresh`
+    #: keeps the last answer instead of replacing it with these).
+    catalogue_missing: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -567,7 +570,7 @@ _HUB_STATED_MODALITY = {
 }
 
 
-def _hub_catalog(base: str, token: str, *, local: bool = False) -> dict[str, dict[str, Any]]:
+def _hub_catalog(base: str, token: str, *, local: bool = False) -> dict[str, dict[str, Any]] | None:
     """Per-model capabilities and reference contracts, from the Hub's catalogue.
 
     `/api/hub/model-packages` answers *what is installed*; `/api/hub/catalog`
@@ -588,6 +591,8 @@ def _hub_catalog(base: str, token: str, *, local: bool = False) -> dict[str, dic
 
     Indexed by `repo` (the Hub's spelling of a model id), falling back to any
     `model_id` key so a future rename does not silently empty this map.
+
+    `None` when the read did not answer (timeout, HTTP error, no rows): "unread" is not "empty".
     """
     from ..hub import hub_headers  # local import: avoids a cycle
 
@@ -598,13 +603,13 @@ def _hub_catalog(base: str, token: str, *, local: bool = False) -> dict[str, dic
             timeout=TIMEOUT,
         )
     except httpx.HTTPError:
-        return {}
+        return None
     if response.status_code >= 400:
-        return {}
+        return None
     payload = response.json() or {}
     rows = payload.get("models") or payload.get("items") or []
     if not isinstance(rows, list):
-        return {}
+        return None
 
     # **One row per worker, not per model.** The Hub's aggregate catalogue passes every studio's
     # rows through, one per Mac (`hub_machine`), and each states `memory_eligible` for *its own*
@@ -621,7 +626,7 @@ def _hub_catalog(base: str, token: str, *, local: bool = False) -> dict[str, dic
         key = str(row.get("repo") or row.get("model_id") or "").strip()
         if key and (key not in indexed or _site_rank(row) > _site_rank(indexed[key])):
             indexed[key] = row
-    return indexed
+    return indexed or None
 
 
 def mac_ready(row: dict[str, Any]) -> bool:
@@ -759,6 +764,8 @@ def _studio_hub(definition: ProviderDefinition, values: dict[str, str]) -> Disco
     # an empty map leaves every model's reference facts absent, which readers
     # report as unverified rather than as "this model cannot clone".
     catalog = _hub_catalog(base, values.get("hub_token", ""), local=local)
+    catalogue_missing = catalog is None
+    catalog = catalog or {}
 
     models: list[DiscoveredModel] = []
     #: engine -> {count, model_ids} for packages this gateway cannot classify.
@@ -927,6 +934,7 @@ def _studio_hub(definition: ProviderDefinition, values: dict[str, str]) -> Disco
         )
     return DiscoveryResult(
         models=models,
+        catalogue_missing=catalogue_missing,
         skipped=[
             {
                 "engine": engine,
