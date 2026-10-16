@@ -1717,6 +1717,8 @@ if !duplicates.isEmpty {
     exit(0)
 }
 
+// A gateway that exits before the owner-console secret is written must not kill this app with SIGPIPE.
+signal(SIGPIPE, SIG_IGN)
 let application = NSApplication.shared
 let delegate = AppDelegate()
 application.delegate = delegate

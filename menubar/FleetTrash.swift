@@ -211,7 +211,10 @@ enum FleetTrash {
         guard sure.runModal() == .alertSecondButtonReturn else { return }
         each(reports, { report, finished in
             guard let path = path(report.machine, "/delete") else { return finished("no machine id") }
-            GatewayAPI.post(path, body: ["items": "all", "confirm": true, "expected_count": report.count,
+            // The ids that were listed and confirmed, not "all": the Mac then deletes exactly these.
+            let ids = (report.payload?["items"] as? [[String: Any]] ?? []).compactMap { $0["id"] as? String }
+            guard !ids.isEmpty else { return finished("no item list; look again") }
+            GatewayAPI.post(path, body: ["items": ids, "confirm": true, "expected_count": report.count,
                                          "expected_bytes": report.bytes],
                             timeout: 900, ownerConsole: true) { result in
                 switch result {

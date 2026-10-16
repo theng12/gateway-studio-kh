@@ -236,7 +236,7 @@ def _read_owner_secret() -> None:
 
 
 def owner_console(value: str | None) -> bool:
-    return bool(_owner_secret) and bool(value) and hmac.compare_digest(str(value), _owner_secret)
+    return bool(_owner_secret) and bool(value) and hmac.compare_digest(str(value).encode(), _owner_secret.encode())
 
 
 if os.environ.get("GATEWAY_OWNER_CONSOLE_STDIN") == "1":

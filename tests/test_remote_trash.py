@@ -177,6 +177,14 @@ class OwnerConsoleTests(_Isolated):
         self.assertTrue(admin_session.owner_console(SECRET))
         self.assertFalse(admin_session.owner_console(None))
 
+    def test_a_non_ascii_header_is_a_403_not_a_500(self) -> None:
+        admin_session._owner_secret = SECRET
+        self.assertFalse(admin_session.owner_console("caf\u00e9" * 10))
+        for value in ("caf\u00e9".encode("utf-8"), "caf\u00e9".encode("latin-1")):
+            headers = {**self.KEY, admin_session.OWNER_HEADER: value}
+            self.assertEqual(self.client("127.0.0.1").post(self.DELETE, headers=headers, json=self.BODY).status_code, 403)
+        self.assertEqual(self.deleted, [])
+
 
 if __name__ == "__main__":
     unittest.main()
