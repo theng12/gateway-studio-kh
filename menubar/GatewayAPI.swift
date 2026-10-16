@@ -50,6 +50,18 @@ enum GatewayAPIError: LocalizedError {
     }
 }
 
+/// The owner's own app window, told apart from anything else that can reach the gateway (owner decision 4g).
+///
+/// Loopback is trusted and the API key also signs a browser in, so an agent holding the key looks like the
+/// owner to every ordinary admin route. A per-launch secret, made here and kept only in this process, is
+/// handed to the gateway this app spawns on a stdin pipe (`GatewayController.spawn`), never argv, the
+/// environment or a file. The native client sends it back on the few routes that need the owner himself;
+/// the web console is never given it. A gateway this app adopted instead of spawning never received it.
+enum OwnerConsole {
+    static let header = "X-Gateway-Owner-Console"
+    static let secret: String = (0..<32).map { _ in String(format: "%02x", UInt8.random(in: 0...255)) }.joined()
+}
+
 enum GatewayAPI {
     static func url(_ path: String) -> URL? {
         guard path.hasPrefix("/"), !path.hasPrefix("//") else { return nil }
@@ -82,13 +94,17 @@ enum GatewayAPI {
         request("GET", path, timeout: timeout, completion: completion)
     }
 
+    /// `ownerConsole` proves the request comes from this app's own window (`OwnerConsole`): only for the
+    /// actions the gateway allows nowhere else, such as a permanent Trash Folder delete.
     static func post(
         _ path: String,
         body: [String: Any]? = nil,
         timeout: TimeInterval = 15,
+        ownerConsole: Bool = false,
         completion: ((Result<[String: Any], Error>) -> Void)? = nil
     ) {
-        request("POST", path, body: body, timeout: timeout, completion: completion ?? { _ in })
+        request("POST", path, body: body, timeout: timeout, ownerConsole: ownerConsole,
+                completion: completion ?? { _ in })
     }
 
     static func patch(
@@ -277,6 +293,7 @@ enum GatewayAPI {
         _ path: String,
         body: [String: Any]? = nil,
         timeout: TimeInterval = 15,
+        ownerConsole: Bool = false,
         completion: @escaping (Result<[String: Any], Error>) -> Void
     ) {
         guard GatewayController.shared.isRunning else {
@@ -305,6 +322,9 @@ enum GatewayAPI {
         if let body {
             req.setValue("application/json", forHTTPHeaderField: "Content-Type")
             req.httpBody = try? JSONSerialization.data(withJSONObject: body)
+        }
+        if ownerConsole {
+            req.setValue(OwnerConsole.secret, forHTTPHeaderField: OwnerConsole.header)
         }
 
         let finish: (Result<[String: Any], Error>) -> Void = { result in

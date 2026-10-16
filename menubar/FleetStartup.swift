@@ -156,6 +156,9 @@ extension FleetStartup {
             }
             if configurable {
                 menu.addItem(ClosureMenuItem("Network…") { FleetNetwork.editMachine(machine, done: done) })
+                // Studio Hub's Trash Folder on this Mac, or on every Mac (FleetTrash.swift).
+                menu.addItem(ClosureMenuItem("Trash…") { FleetTrash.show(machine, done: done) })
+                menu.addItem(ClosureMenuItem("Trash on All Macs…") { FleetTrash.showAll(done: done) })
             }
             FleetModelInstall.menuItems(for: machine, done: done).forEach(menu.addItem)
             if !actions.isEmpty {

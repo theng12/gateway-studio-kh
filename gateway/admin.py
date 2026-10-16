@@ -112,6 +112,18 @@ def require_local_app(
         raise AdminError(403, "Set the browser password in the Gateway app on its own Mac.")
 
 
+def require_owner_console(request: Request) -> None:
+    """The owner's own Gateway app window and nothing else: not the key, a browser session or loopback alone.
+
+    Checked on top of `require_admin` for actions that cannot be undone (a permanent Trash Folder delete).
+    The proof is the per-launch secret only the app holds (`admin_session.OWNER_HEADER`).
+    """
+    if not (request_is_loopback(request)
+            and admin_session.owner_console(request.headers.get(admin_session.OWNER_HEADER))):
+        raise AdminError(403, "Permanent delete works only from the Gateway app on its own Mac (Fleet > Machines "
+                              "> … > Trash…). If the app did not start this gateway, restart it from the app.")
+
+
 # FastAPI needs the exception registered on the app, so the router returns a
 # plain JSONResponse from handlers that can fail instead of raising a custom type.
 def _error(status: int, detail: str, code: str | None = None) -> JSONResponse:
@@ -3677,6 +3689,48 @@ def fleet_machine_transcribe(
         return startup_control.transcribe_on_machine(
             controller_id, machine_id, content, Path(file.filename or "").name or "audio.wav",
             model=model.strip(), language=language.strip(), word_timestamps=word_timestamps)
+    except startup_control.StartupError as error:
+        return JSONResponse(status_code=error.status, content=error.body)
+
+
+@router.get(
+    "/api/fleet/controllers/{controller_id}/machines/{machine_id}/trash",
+    dependencies=[Depends(require_admin)],
+)
+def fleet_machine_trash(controller_id: str, machine_id: str) -> Any:
+    """One Mac's Trash Folder (owner decision 4g): items, totals by kind and age, disk free. A Mac on a Studio Hub
+    older than 0.6.182 answers `{"supported": false, "needs_hub": "0.6.182"}` (`startup_control.trash_list`)."""
+    try:
+        return startup_control.trash_list(controller_id, machine_id)
+    except startup_control.StartupError as error:
+        return JSONResponse(status_code=error.status, content=error.body)
+
+
+@router.post(
+    "/api/fleet/controllers/{controller_id}/machines/{machine_id}/trash/move-to-macos-trash",
+    dependencies=[Depends(require_admin)],
+)
+def fleet_machine_trash_move(controller_id: str, machine_id: str, payload: dict[str, Any]) -> Any:
+    """Move Trash Folder items to that Mac's macOS Trash. Body `{"items": "all" | [ids]}`. Recoverable there."""
+    try:
+        return startup_control.trash_move(controller_id, machine_id, payload.get("items"))
+    except startup_control.StartupError as error:
+        return JSONResponse(status_code=error.status, content=error.body)
+
+
+@router.post(
+    "/api/fleet/controllers/{controller_id}/machines/{machine_id}/trash/delete",
+    dependencies=[Depends(require_admin), Depends(require_owner_console)],
+)
+def fleet_machine_trash_delete(controller_id: str, machine_id: str, payload: dict[str, Any]) -> Any:
+    """Permanently delete Trash Folder items. Body `{"items", "confirm": true, "expected_count", "expected_bytes"}`.
+
+    Owner's app window only (`require_owner_console`): an API key, a browser session or a local process cannot.
+    The Mac re-measures; a different count or bytes is 409 `TRASH_CHANGED` and nothing is deleted.
+    """
+    try:
+        return startup_control.trash_delete(controller_id, machine_id, payload.get("items"), payload.get("confirm"),
+                                            payload.get("expected_count"), payload.get("expected_bytes"))
     except startup_control.StartupError as error:
         return JSONResponse(status_code=error.status, content=error.body)
 

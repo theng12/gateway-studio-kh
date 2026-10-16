@@ -565,6 +565,7 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
         machinesTab.update(
             machines: snapshot.machines, studios: snapshot.studiosByMachine, filter: filter)
         startupBar.update(machines: snapshot.machines)
+        FleetTrash.everyMac = snapshot.machines   // "Trash on All Macs…" (FleetTrash.swift)
         modelsTab.update(
             models: snapshot.allLocalModels,
             workers: snapshot.locations.flatMap { $0.workers },

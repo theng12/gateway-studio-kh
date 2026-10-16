@@ -88,6 +88,7 @@ enum GatewayAPI {
     }
 }
 enum PageKit { static func confirm(_ title: String, _ message: String, ok: String) -> Bool { true } }
+enum OwnerConsole { static let secret = String(repeating: "s", count: 64) }
 '''
 
 HARNESS = r'''

@@ -705,6 +705,11 @@ final class GatewayController {
         // on loopback would leave the admin API — which can change providers and
         // spend money — open to the whole network.
         environment["GATEWAY_HOST"] = EnvFile.host()
+        // The owner-console secret (`OwnerConsole`) goes over this pipe, written once after launch: never
+        // argv, the environment or a file, all of which other processes of this user can read.
+        environment["GATEWAY_OWNER_CONSOLE_STDIN"] = "1"
+        let ownerPipe = Pipe()
+        task.standardInput = ownerPipe
         task.environment = environment
 
         if !FileManager.default.fileExists(atPath: logPath) {
@@ -768,6 +773,8 @@ final class GatewayController {
 
         do {
             try task.run()
+            ownerPipe.fileHandleForWriting.write(Data((OwnerConsole.secret + "\n").utf8))
+            ownerPipe.fileHandleForWriting.closeFile()
             process = task
             // We own this one now, so there is nothing adopted to stop.
             adoptedProcess = nil

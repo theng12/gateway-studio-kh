@@ -23,6 +23,7 @@ import json
 import math
 import os
 import secrets
+import sys
 import threading
 import time
 from pathlib import Path
@@ -208,3 +209,35 @@ def same_origin(request) -> bool:
     if not source or not host or source == "null":
         return False
     return urlsplit(source).netloc.lower() == host.lower()
+
+
+# ---------------------------------------------------------------------------
+# Owner console: actions only the owner's own Gateway app window may take.
+#
+# Loopback is trusted and the gateway key also signs a browser in, so neither tells the owner apart
+# from an agent holding the key. A permanent delete (a Mac's Trash Folder) therefore also needs this
+# per-launch secret: the app makes it, keeps it in memory, and hands it to the gateway it spawns on a
+# stdin pipe (never argv, the environment or a file, which other processes of this user can read).
+# Only the app's native client sends it back, as `OWNER_HEADER`. A gateway the app adopted instead of
+# spawning never got it, so the action stays refused until the app restarts the gateway.
+# ---------------------------------------------------------------------------
+OWNER_HEADER = "X-Gateway-Owner-Console"
+_owner_secret = ""
+
+
+def _read_owner_secret() -> None:
+    global _owner_secret
+    try:
+        line = sys.stdin.readline(512).strip()
+    except (OSError, ValueError):
+        return
+    if len(line) >= 32:
+        _owner_secret = line
+
+
+def owner_console(value: str | None) -> bool:
+    return bool(_owner_secret) and bool(value) and hmac.compare_digest(str(value), _owner_secret)
+
+
+if os.environ.get("GATEWAY_OWNER_CONSOLE_STDIN") == "1":
+    threading.Thread(target=_read_owner_secret, name="owner-console-secret", daemon=True).start()

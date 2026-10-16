@@ -583,6 +583,66 @@ def transcribe_on_machine(controller_id: str, machine_id: str, audio: bytes, fil
     )
 
 
+# A Mac's Trash Folder (owner decision 4g, 2026-10-16): Studio Hub never hard-deletes what it retires, so the
+# owner lists, moves to macOS Trash, or permanently deletes it from here instead of visiting each Mac.
+TRASH_HUB = "0.6.182"
+TRASH_TOO_OLD = f"Needs Studio Hub {TRASH_HUB} to manage its Trash Folder from the Gateway."
+#: A large Trash Folder takes a while to measure and delete; the Hub's relay waits 900 s.
+_TRASH_TIMEOUT = httpx.Timeout(960.0, connect=6.0)
+
+
+def _trash(controller_id: str, machine_id: str, route: str, body: dict[str, Any] | None, *, event: str,
+           audit_fields: dict[str, Any], method: str = "POST", client: httpx.Client | None = None) -> dict[str, Any]:
+    if not _MACHINE_ID.fullmatch(machine_id or ""):
+        raise StartupError(400, {"ok": False, "code": "BAD_MACHINE", "detail": "machine id is not valid"})
+    return _node_post(controller_id, machine_id, route, body, event=event, too_old=TRASH_TOO_OLD,
+                      refused="The controller refused this gateway's credential for Trash Folder actions.",
+                      audit_fields=audit_fields, client=client, method=method, timeout=_TRASH_TIMEOUT)
+
+
+def trash_list(controller_id: str, machine_id: str, *, client: httpx.Client | None = None) -> dict[str, Any]:
+    """One Mac's Trash Folder: `items` (`id`, `kind`, `bytes`, `age_days`), `count`, `bytes`, `by_kind`,
+    `by_age` and `disk`. A Mac whose Studio Hub is older answers `supported: false` with `needs_hub`, not an error."""
+    try:
+        answer = _trash(controller_id, machine_id, "trash", None, event="trash_list", audit_fields={},
+                        method="GET", client=client)
+    except StartupError as error:
+        if error.body.get("code") != "HUB_TOO_OLD":
+            raise
+        return {"ok": True, "supported": False, "needs_hub": TRASH_HUB, "detail": TRASH_TOO_OLD,
+                "machine": machine_id}
+    return {**answer, "supported": True}
+
+
+def _trash_items(items: object) -> object:
+    if items == "all" or (isinstance(items, list) and items and all(isinstance(i, str) for i in items)):
+        return items
+    raise StartupError(400, {"ok": False, "code": "BAD_ITEMS", "detail": 'items must be "all" or a list of item ids'})
+
+
+def trash_move(controller_id: str, machine_id: str, items: object, *,
+               client: httpx.Client | None = None) -> dict[str, Any]:
+    """Move Trash Folder items (`"all"` or ids) to that Mac's macOS Trash. Answers `moved` and `failed`."""
+    items = _trash_items(items)
+    return _trash(controller_id, machine_id, "trash/move-to-macos-trash", {"items": items}, event="trash_move",
+                  audit_fields={"items": items if items == "all" else len(items)}, client=client)
+
+
+def trash_delete(controller_id: str, machine_id: str, items: object, confirm: object, expected_count: object,
+                 expected_bytes: object, *, client: httpx.Client | None = None) -> dict[str, Any]:
+    """Permanently delete Trash Folder items. The Mac re-measures and refuses a count or bytes that differ from
+    what the owner confirmed (409 `TRASH_CHANGED`, nothing deleted). Answers `deleted`, `freed_bytes`, `failed`."""
+    items = _trash_items(items)
+    if confirm is not True or any(type(v) is not int or v < 0 for v in (expected_count, expected_bytes)):
+        raise StartupError(400, {"ok": False, "code": "CONFIRM_REQUIRED",
+                                 "detail": "Permanent delete needs confirm: true, expected_count and expected_bytes."})
+    return _trash(controller_id, machine_id, "trash/delete",
+                  {"items": items, "confirm": True, "expected_count": expected_count, "expected_bytes": expected_bytes},
+                  event="trash_delete", client=client,
+                  audit_fields={"items": items if items == "all" else len(items), "count": expected_count,
+                                "bytes": expected_bytes})
+
+
 def enable_autostart_where_off(*, dry_run: bool = False,
                                machines: list[dict[str, Any]] | None = None,
                                ask=request) -> dict[str, Any]:
