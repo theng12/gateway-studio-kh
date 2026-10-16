@@ -206,6 +206,17 @@ class ChatLaneTests(unittest.TestCase):
         )
         # The worker's own generation time, not this gateway's round trip.
         self.assertEqual(result.payload["generation_seconds"], 2.5)
+        self.assertIsNone(result.payload["hub_machine"], "a Hub that names no Mac is not guessed")
+
+    def test_the_mac_a_controller_relayed_to_is_attributed(self) -> None:
+        # A controller relays a node-only model to the node and names it (Hub fleet chat relay).
+        answer = httpx.Response(
+            200, headers={"X-StudioHub-Machine": "node1607"},
+            json={"choices": [{"message": {"content": "node answer"}, "finish_reason": "stop"}]},
+            request=httpx.Request("POST", f"{BASE}/studio/chat/v1/chat/completions"))
+        with patch("gateway.adapters.studio_hub.httpx.post", return_value=answer):
+            result = StudioHubBackend().generate(_request())
+        self.assertEqual(result.payload["hub_machine"], "node1607")
 
     def test_a_hub_that_cannot_serve_the_model_is_a_location_refusal(self) -> None:
         # `MODEL_NOT_PACKAGED` / `MODEL_NOT_READY` are *site* properties: the Hub
