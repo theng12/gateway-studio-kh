@@ -662,6 +662,7 @@ def _fail(
     recovery_detail: str | None = None,
     recovery_context: dict[str, Any] | None = None,
     evidence: dict[str, Any] | None = None,
+    review_candidate: dict[str, Any] | None = None,
 ) -> None:
     """Settle a real store, while keeping the small legacy test double usable."""
     try:
@@ -674,6 +675,7 @@ def _fail(
             recovery_detail=recovery_detail,
             recovery_context=recovery_context,
             **({"evidence": evidence} if evidence else {}),
+            **({"review_candidate": review_candidate} if review_candidate else {}),
         )
     except TypeError as exc:
         if "unexpected keyword" not in str(exc):
@@ -1176,6 +1178,9 @@ def _dispatch(job: dict[str, Any], store: JobStore, provider_id: str, model_id: 
                         "This voice exists only on that location, so it was not moved to another Mac."
                         if pinned is not None else "No other location offering this model could take it."
                     ) + " Nothing was charged; run it again."
+            # Only here, where no re-route is left, does a refused narration section's review
+            # candidate bind to the job: an attempt that moved on to another location binds none.
+            candidate = getattr(exc, "review_candidate", None)
             _fail(
                 store,
                 job_id,
@@ -1186,6 +1191,8 @@ def _dispatch(job: dict[str, Any], store: JobStore, provider_id: str, model_id: 
                 recovery_detail=recovery_detail if unknown else None,
                 recovery_context=exc.recovery if unknown else None,
                 evidence=getattr(exc, "evidence", None),
+                review_candidate=(dict(candidate, provider_id=provider_id)
+                                  if candidate and not unknown else None),
             )
             return
         except Exception as exc:  # noqa: BLE001 - a backend bug must not kill the worker

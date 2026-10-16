@@ -1829,6 +1829,73 @@ def upstream_job_trace(job_id: str) -> Any:
     }
 
 
+_REVIEW_NO_STORE = {"Cache-Control": "no-store, private, max-age=0", "Pragma": "no-cache",
+                    "X-Content-Type-Options": "nosniff"}
+
+
+def _review_candidate_source(job_id: str) -> tuple[Any, Any]:
+    """The job's protected review locator and its Studio Hub location as stored *now*.
+
+    Read from the locator alone, so a dismissed or archived job still reaches its candidate.
+    Nothing here comes from the caller but the job id.
+    """
+    from .providers.definitions import KIND_STUDIO_HUB
+
+    locator = store.review_locator(job_id)
+    if locator is None:
+        return None, _error(404, "job has no review candidate")
+    provider_id = str(locator["provider_id"])
+    definition = registry.definition(provider_id)
+    if definition is None or definition.kind != KIND_STUDIO_HUB:
+        return None, _error(409, "the job's location is no longer a Studio Hub")
+    values = registry.credentials.resolved(provider_id)
+    base_url = str(values.get("base_url") or definition.base_url or "")
+    local = provider_id == fleet.provider_id_for(fleet.LOCAL_ID)
+    return (locator, values, base_url, local), None
+
+
+@router.get("/api/jobs/{job_id}/review-candidate", dependencies=[Depends(require_admin)])
+def job_review_candidate(job_id: str) -> Any:
+    """A refused narration section kept for listening: inactive, never delivered or imported."""
+    from .adapters import studio_hub
+
+    source, refusal = _review_candidate_source(job_id)
+    if refusal is not None:
+        return refusal
+    locator, values, base_url, local = source
+    try:
+        receipt = studio_hub.review_candidate_receipt(values, base_url, locator, local=local)
+    except studio_hub.ReviewCandidateUnavailable as exc:
+        return _error(exc.status, exc.reason)
+    return JSONResponse({
+        "gateway_job_id": job_id, "provider_id": locator["provider_id"],
+        "hub_batch_id": locator["batch_id"], "hub_item_index": locator["item_index"],
+        "active": False, "disposition": "review_only", "deliverable": False, "imported": False,
+        **{key: receipt.get(key) for key in (
+            "worker_job_id", "client_request_id", "section", "settings", "revisions", "quality",
+            "audio", "terminal", "captured_at", "published_at", "schema", "receipt_sha256")},
+        "audio_url": f"/admin/api/jobs/{job_id}/review-candidate/audio",
+    }, headers=_REVIEW_NO_STORE)
+
+
+@router.get("/api/jobs/{job_id}/review-candidate/audio", dependencies=[Depends(require_admin)])
+def job_review_candidate_audio(job_id: str) -> Any:
+    """The candidate's WAV for listening, returned only once every byte matched its receipt."""
+    from .adapters import studio_hub
+
+    source, refusal = _review_candidate_source(job_id)
+    if refusal is not None:
+        return refusal
+    locator, values, base_url, local = source
+    try:
+        body = studio_hub.review_candidate_audio(values, base_url, locator, local=local)
+    except studio_hub.ReviewCandidateUnavailable as exc:
+        return _error(exc.status, exc.reason)
+    return Response(content=body, media_type="audio/wav", headers={
+        **_REVIEW_NO_STORE, "X-Content-SHA256": locator["pcm_sha256"],
+        "Content-Disposition": f'inline; filename="{job_id}-rejected-section.wav"'})
+
+
 @router.post("/api/create/status/{job_id}/cancel", dependencies=[Depends(require_admin)])
 def create_cancel(job_id: str) -> Any:
     from .api import _job_envelope

@@ -174,6 +174,10 @@ class BackendError(Exception):
         # What the lane stated about the failed attempt (a Studio Hub item's machine, batch and
         # run seconds), kept on the failed job's record. Set by the adapter that knows it.
         self.evidence: dict[str, Any] | None = None
+        # A Studio Hub narration section the quality gate refused, kept there for listening:
+        # `{"batch_id", "item_index", "receipt_sha256", "pcm_bytes", "pcm_sha256"}`, already
+        # verified against the Hub. Never media, a credential or an address; never a result.
+        self.review_candidate: dict[str, Any] | None = None
 
 
 def quota_hints(response: Any) -> dict[str, Any]:

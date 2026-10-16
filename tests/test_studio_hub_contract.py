@@ -125,6 +125,9 @@ class _Hub:
         self.duplicate = duplicate
         #: Fields the item carries while it is `queued` (a deferral's `error` and `retry_at`).
         self.queued_item = queued_item or {}
+        #: The Hub's review-candidate answer for a refused narration item (a callable is asked
+        #: each time), or `None` for a Hub that has none (404).
+        self.review: Any = None
 
     # ── the transport ────────────────────────────────────────────────────
     def handler(self, request: httpx.Request) -> httpx.Response:
@@ -219,7 +222,41 @@ class _Hub:
             return httpx.Response(
                 200, json={"batch_id": BATCH, "items": [item]}
             )
+        if method == "GET" and path == f"/api/hub/jobs/{BATCH}/items/0/review-candidate":
+            answer = self.review() if callable(self.review) else self.review
+            if answer is None:
+                return httpx.Response(404, json={"detail": "this item has no review candidate"})
+            return httpx.Response(200, json=answer)
         return httpx.Response(404, json={"detail": f"no route for {method} {path}"})
+
+
+#: A refused narration section's WAV and the Hub's answer about it (`job_review_candidate`).
+REVIEW_PCM = b"RIFF\x24\x00\x00\x00WAVEfmt " + bytes(range(200))
+REVIEW_SHA = hashlib.sha256(REVIEW_PCM).hexdigest()
+
+
+def canonical_sha256(value: Any) -> str:
+    """The Voice worker's receipt digest, spelled out here rather than borrowed from the adapter."""
+    return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":"),
+                                     ensure_ascii=False).encode()).hexdigest()
+
+
+SECTION_REFUSAL = ("SectionQualityError: Section 6 of 7 came out silent on all 4 attempts, so the "
+                   "audio was not delivered (attempt 4: voiced 2.54 s < 4.06 s).")
+
+
+def review_answer(*, batch: str = BATCH, pcm: bytes = REVIEW_PCM, text: str = "section text",
+                  **changes: Any) -> dict[str, Any]:
+    receipt = {"schema": "studiohub.rejected-voice-review-candidate.v1", "active": False,
+               "disposition": "review_only", "worker_job_id": "c85e8c5d0a1b",
+               "client_request_id": f"studiohub:{batch}:0",
+               "section": {"index": 6, "total": 7, "attempt": 4, "text": text},
+               "audio": {"media_type": "audio/wav", "bytes": len(pcm),
+                         "sha256": hashlib.sha256(pcm).hexdigest()}}
+    receipt["receipt_sha256"] = canonical_sha256(receipt)
+    return {"batch_id": batch, "item_index": 0, "active": False, "disposition": "review_only",
+            "deliverable": False, "imported": False, "receipt": receipt,
+            "audio_url": f"/api/hub/jobs/{batch}/items/0/review-candidate/audio", **changes}
 
 
 class _HubCase(unittest.TestCase):
@@ -2397,6 +2434,195 @@ class OutputFormatSubmitTests(unittest.TestCase):
             self._post("image", {"output_format": None})
         self.assertEqual(seen[0], seen[1])
         self.assertNotIn("output_format", seen[0])
+
+
+class _Body(httpx.SyncByteStream):
+    """A Hub audio body that counts what it handed out and whether it was closed."""
+
+    def __init__(self, chunks: list[bytes], *, endless: bool = False, fail: bool = False) -> None:
+        self.chunks, self.endless, self.fail = chunks, endless, fail
+        self.sent = self.closed = 0
+
+    def __iter__(self):
+        for chunk in self.chunks:
+            self.sent += len(chunk)
+            yield chunk
+        if self.fail:
+            raise httpx.ReadError("the Hub dropped the connection")
+        while self.endless:
+            self.sent += 4096
+            yield b"x" * 4096
+
+    def close(self) -> None:
+        self.closed += 1
+
+
+class ReviewCandidateAdapterTests(_HubCase):
+    """A refused narration section is bound by its verified locator, never by a guess."""
+
+    def refused(self, code: str = "TTS_SECTION_SILENT") -> _Hub:
+        return _Hub(states=["error"], item={"state": "error", "error": SECTION_REFUSAL,
+                                            "error_code": code})
+
+    def failure(self, hub: _Hub, modality: str = "tts") -> BackendError:
+        with self.assertRaises(BackendError) as raised:
+            self.generate(hub, self.request(modality=modality, params={"text": "x"}))
+        return raised.exception
+
+    def test_a_refused_section_carries_its_verified_locator_and_the_same_failure(self) -> None:
+        hub = self.refused()
+        hub.review = review_answer()
+        exc = self.failure(hub)
+        self.assertEqual(exc.code, "PROVIDER_FAILED")
+        self.assertTrue(exc.upstream_settled)
+        self.assertEqual(str(exc), f"hub item error: TTS_SECTION_SILENT: {SECTION_REFUSAL}")
+        self.assertEqual(exc.evidence["hub_batch_id"], BATCH)
+        self.assertEqual(exc.review_candidate, {
+            "batch_id": BATCH, "item_index": 0,
+            "receipt_sha256": review_answer()["receipt"]["receipt_sha256"],
+            "pcm_bytes": len(REVIEW_PCM), "pcm_sha256": REVIEW_SHA})
+
+    def test_nothing_is_bound_unless_the_hub_proves_an_inactive_candidate(self) -> None:
+        tampered = review_answer()
+        tampered["receipt"]["section"]["text"] = "other words"
+        for name, answer in (
+            ("none", None), ("tampered", tampered), ("active", review_answer(active=True)),
+            ("deliverable", review_answer(deliverable=True)),
+            ("other batch", review_answer(batch="other-batch")),
+            ("not a wav", review_answer(pcm=b"")),
+        ):
+            with self.subTest(name):
+                hub = self.refused()
+                hub.review = answer
+                exc = self.failure(hub)
+                self.assertEqual(exc.code, "PROVIDER_FAILED")
+                self.assertIsNone(exc.review_candidate)
+
+    def test_only_a_section_quality_failure_asks_for_a_candidate(self) -> None:
+        hub = self.refused(code="MODEL_PAUSED")
+        hub.review = review_answer()
+        self.assertIsNone(self.failure(hub).review_candidate)
+        self.assertNotIn(("GET", f"/api/hub/jobs/{BATCH}/items/0/review-candidate"), hub.calls)
+
+    def run_job(self, hub: _Hub, store: JobStore, key: str, moves: list[Any]) -> dict[str, Any]:
+        row, _ = store.submit(modality="tts", model_id="model/test", params={"text": "x"},
+                              idempotency_key=key, provider_id="studio-hub-test")
+        self.assertTrue(store.mark_running(row["id"]))
+        with patch.object(worker_module, "registry", _Registry()), patch.object(
+            worker_module, "adapter_for", return_value=hub_module.StudioHubBackend()
+        ), patch.object(worker_module, "_next_machine", side_effect=moves), self.hub_client(hub):
+            worker_module.execute_job(row, store)
+        return row
+
+    def test_the_final_failure_binds_the_locator_with_the_job_in_one_commit(self) -> None:
+        hub = self.refused()
+        hub.review = review_answer()
+        store = JobStore(_TEMP_ROOT / "review-bind.sqlite3")
+        try:
+            row = self.run_job(hub, store, "review-bind", [None])
+            failed = store.get(row["id"])
+            self.assertEqual((failed["state"], failed["error_code"]), ("failed", "PROVIDER_FAILED"))
+            self.assertIn(SECTION_REFUSAL, failed["error_detail"])
+            locator = store.review_locator(row["id"])
+            self.assertEqual({key: locator[key] for key in ("provider_id", "batch_id", "item_index",
+                                                             "pcm_bytes", "pcm_sha256")},
+                             {"provider_id": "studio-hub-test", "batch_id": BATCH, "item_index": 0,
+                              "pcm_bytes": len(REVIEW_PCM), "pcm_sha256": REVIEW_SHA})
+            self.assertIsNone(failed.get("artifacts_json"))
+        finally:
+            store.close()
+
+    def test_an_attempt_that_moved_on_to_another_location_binds_nothing(self) -> None:
+        answers = iter([review_answer(text="first location"), review_answer(text="second location")])
+        hub = self.refused()
+        hub.review = lambda: next(answers)
+        store = JobStore(_TEMP_ROOT / "review-reroute.sqlite3")
+        try:
+            row = self.run_job(hub, store, "review-reroute", ["studio-hub-second", None])
+            locator = store.review_locator(row["id"])
+            self.assertEqual(locator["provider_id"], "studio-hub-second")
+            self.assertEqual(locator["receipt_sha256"],
+                             review_answer(text="second location")["receipt"]["receipt_sha256"])
+        finally:
+            store.close()
+
+
+class ReviewCandidateAudioTests(unittest.TestCase):
+    """The admin playback body: read at most one byte past the receipt, and proved before use."""
+
+    LOCATOR = {"provider_id": "studio-hub-test", "batch_id": BATCH, "item_index": 0,
+               "receipt_sha256": review_answer()["receipt"]["receipt_sha256"],
+               "pcm_bytes": len(REVIEW_PCM), "pcm_sha256": REVIEW_SHA}
+
+    def read(self, body: _Body, headers: list[tuple[str, str]] | None = None, *,
+             meta: dict[str, Any] | None = None, values: dict[str, str] | None = None):
+        sent: list[httpx.Request] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            sent.append(request)
+            if request.url.path.endswith("/review-candidate"):
+                return httpx.Response(200, json=meta or review_answer())
+            return httpx.Response(200, stream=body, headers=headers if headers is not None else [
+                ("content-type", "audio/wav"), ("content-length", str(len(REVIEW_PCM))),
+                ("x-content-sha256", REVIEW_SHA)])
+
+        real = httpx.Client
+
+        def factory(*args: Any, **kwargs: Any) -> httpx.Client:
+            kwargs.pop("transport", None)
+            return real(transport=httpx.MockTransport(handler), **kwargs)
+
+        with patch.object(hub_module.httpx, "Client", side_effect=factory):
+            try:
+                return hub_module.review_candidate_audio(
+                    values if values is not None else {"hub_token": "site-token"},
+                    HUB, self.LOCATOR, local=False), sent
+            except hub_module.ReviewCandidateUnavailable as exc:
+                return exc, sent
+
+    def test_exact_bytes_are_returned_and_every_hop_closed(self) -> None:
+        body = _Body([REVIEW_PCM[:7], REVIEW_PCM[7:]])
+        answer, sent = self.read(body)
+        self.assertEqual(answer, REVIEW_PCM)
+        self.assertEqual(body.closed, 1)
+        self.assertEqual([request.method for request in sent], ["GET", "GET"])
+        self.assertEqual(sent[0].headers["x-hub-token"], "site-token")
+
+    def test_a_body_that_differs_anywhere_is_never_returned(self) -> None:
+        flipped = REVIEW_PCM[:-1] + bytes([REVIEW_PCM[-1] ^ 1])
+        typed = [("content-type", "audio/wav"), ("content-length", str(len(REVIEW_PCM)))]
+        cases = {
+            "one byte over": (_Body([REVIEW_PCM, b"x"]), None),
+            "endless": (_Body([REVIEW_PCM], endless=True), None),
+            "early end": (_Body([REVIEW_PCM[:-1]]), None),
+            "same length, other bytes": (_Body([flipped]), None),
+            "dropped mid-body": (_Body([REVIEW_PCM[:5]], fail=True), None),
+            "other type": (_Body([REVIEW_PCM]), [("content-type", "audio/mpeg"),
+                                                 ("content-length", str(len(REVIEW_PCM))),
+                                                 ("x-content-sha256", REVIEW_SHA)]),
+            "no digest": (_Body([REVIEW_PCM]), typed),
+            "two digests": (_Body([REVIEW_PCM]), typed + [("x-content-sha256", REVIEW_SHA)] * 2),
+            "other digest": (_Body([REVIEW_PCM]), typed + [("x-content-sha256", "0" * 64)]),
+            "other length": (_Body([REVIEW_PCM]), [("content-type", "audio/wav"),
+                                                   ("content-length", str(len(REVIEW_PCM) + 1)),
+                                                   ("x-content-sha256", REVIEW_SHA)]),
+        }
+        for name, (body, headers) in cases.items():
+            with self.subTest(name):
+                answer, _sent = self.read(body, headers)
+                self.assertIsInstance(answer, hub_module.ReviewCandidateUnavailable)
+                self.assertEqual(answer.status, 502)
+                self.assertEqual(body.closed, 1)
+                self.assertLessEqual(body.sent, len(REVIEW_PCM) + 4096)
+
+    def test_a_receipt_that_is_not_the_bound_one_reads_no_audio(self) -> None:
+        body = _Body([REVIEW_PCM])
+        answer, sent = self.read(body, meta=review_answer(text="another take"))
+        self.assertEqual((answer.status, len(sent), body.sent), (502, 1, 0))
+
+    def test_a_remote_location_without_a_current_credential_is_not_asked(self) -> None:
+        answer, sent = self.read(_Body([REVIEW_PCM]), values={})
+        self.assertEqual((answer.status, sent), (503, []))
 
 
 if __name__ == "__main__":

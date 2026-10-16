@@ -22,6 +22,7 @@ import hashlib
 import json
 import logging
 import math
+import re
 import time
 import threading
 from pathlib import Path
@@ -991,6 +992,9 @@ def _poll_batch(
                 )
             if hub_code:  # MODEL_PAUSED, MACHINE_DISABLED, ...: terminal, but say which
                 message = f"{hub_code}: {message or 'no detail'}"
+            candidate = (_review_candidate_locator(client, base, headers, batch_id, item_index)
+                         if hub_code.startswith("TTS_SECTION_") and jobs_path == "/api/hub/jobs"
+                         else None)
             # **The Hub has finished this item, it produced nothing, and nothing is pending.**
             # The batch id recorded at submit does not contradict that: a batch is a container the
             # Hub creates *before* it validates the item, so a refused or failed item leaves an id
@@ -1001,11 +1005,13 @@ def _poll_batch(
             # "Upstream outcome is unknown; reconcile the provider request before retrying; the
             # gateway will not resubmit it automatically". The artifact-fetch path below does *not*
             # set this, so a failure after a successful item keeps its hold.
-            raise BackendError(
+            failure = BackendError(
                 f"hub item {state}: {message or 'no detail'}",
                 code="IMAGE_FAILED" if item is None else "PROVIDER_FAILED",
                 upstream_settled=True,
             )
+            failure.review_candidate = candidate
+            raise failure
         time.sleep(POLL_INTERVAL_S)
 
     if ran < limit:
@@ -1055,6 +1061,135 @@ def _poll_batch(
         code="PROVIDER_SUBMISSION_UNCERTAIN",
         retryable=True,
     )
+
+
+# ── Rejected-section review candidates ────────────────────────────────────────────────────────
+# A narration section the Voice quality gate refused on every attempt is kept on its worker, inactive,
+# so the owner can listen to it (Hub `review-candidate` routes). It is never a result, an artifact or
+# anything delivered or imported; these reads only ever GET.
+REVIEW_MAX_PCM_BYTES = 64 * 1024 * 1024
+_SHA256_HEX = re.compile(r"[0-9a-f]{64}")
+
+
+class ReviewCandidateUnavailable(Exception):
+    def __init__(self, status: int, reason: str) -> None:
+        super().__init__(reason)
+        self.status = status
+        self.reason = reason
+
+
+def _review_sha256(value: Any) -> str:
+    """The Voice worker's canonical receipt digest, recomputed here."""
+    return hashlib.sha256(json.dumps(
+        value, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False,
+    ).encode()).hexdigest()
+
+
+def _checked_review(answer: Any, batch_id: str, item_index: int) -> dict[str, Any]:
+    """The Hub's review-candidate answer, re-proved here: its receipt, or ValueError."""
+    receipt = answer.get("receipt") if isinstance(answer, dict) else None
+    audio = receipt.get("audio") if isinstance(receipt, dict) else None
+    if not isinstance(audio, dict):
+        raise ValueError("review candidate")
+    body = {key: value for key, value in receipt.items() if key != "receipt_sha256"}
+    if (answer.get("active") is not False or answer.get("disposition") != "review_only"
+            or answer.get("deliverable") is not False or answer.get("imported") is not False
+            or answer.get("batch_id") != batch_id or answer.get("item_index") != item_index
+            or receipt.get("active") is not False or receipt.get("disposition") != "review_only"
+            or receipt.get("receipt_sha256") != _review_sha256(body)
+            or audio.get("media_type") != "audio/wav" or type(audio.get("bytes")) is not int
+            or not 0 < audio["bytes"] <= REVIEW_MAX_PCM_BYTES
+            or not isinstance(audio.get("sha256"), str) or not _SHA256_HEX.fullmatch(audio["sha256"])):
+        raise ValueError("review candidate")
+    return receipt
+
+
+def _review_candidate_locator(client: httpx.Client, base: str, headers: dict[str, str],
+                              batch_id: str, item_index: int) -> dict[str, Any] | None:
+    """The Hub's verified candidate for a refused narration item, as a credential-free locator."""
+    try:
+        response = client.get(f"{base}/api/hub/jobs/{batch_id}/items/{item_index}/review-candidate",
+                              headers=headers)
+        if response.status_code != 200:
+            return None
+        receipt = _checked_review(response.json(), batch_id, item_index)
+    except (httpx.HTTPError, ValueError, TypeError):
+        return None
+    return {"batch_id": batch_id, "item_index": item_index,
+            "receipt_sha256": receipt["receipt_sha256"],
+            "pcm_bytes": receipt["audio"]["bytes"], "pcm_sha256": receipt["audio"]["sha256"]}
+
+
+def _review_hub(values: dict[str, Any], base_url: str, local: bool) -> tuple[str, dict[str, str]]:
+    from ..hub import hub_headers
+
+    token = str((values or {}).get("hub_token") or "")
+    if not local and not token:
+        raise ReviewCandidateUnavailable(503, "this location has no current Studio Hub credential")
+    base = _hold_base(base_url, local)
+    if not base:
+        raise ReviewCandidateUnavailable(503, "this location has no Studio Hub address")
+    return base, hub_headers(token, local=local)
+
+
+def review_candidate_receipt(values: dict[str, Any], base_url: str, locator: dict[str, Any],
+                             *, local: bool) -> dict[str, Any]:
+    """Read a bound candidate's receipt from its Hub now, and prove it is the one bound."""
+    base, headers = _review_hub(values, base_url, local)
+    route = f"{base}/api/hub/jobs/{locator['batch_id']}/items/{locator['item_index']}/review-candidate"
+    try:
+        with httpx.Client(timeout=httpx.Timeout(30.0, connect=6.0)) as client:
+            response = client.get(route, headers=headers)
+    except httpx.HTTPError as exc:
+        raise ReviewCandidateUnavailable(502, "Studio Hub did not answer") from exc
+    if response.status_code == 404:
+        raise ReviewCandidateUnavailable(404, "the review candidate is no longer available")
+    try:
+        if response.status_code != 200:
+            raise ValueError("status")
+        receipt = _checked_review(response.json(), locator["batch_id"], locator["item_index"])
+        if (receipt["receipt_sha256"], receipt["audio"]["bytes"], receipt["audio"]["sha256"]) != (
+                locator["receipt_sha256"], locator["pcm_bytes"], locator["pcm_sha256"]):
+            raise ValueError("binding")
+    except (ValueError, TypeError) as exc:
+        raise ReviewCandidateUnavailable(502, "the review candidate did not match its record") from exc
+    return receipt
+
+
+def review_candidate_audio(values: dict[str, Any], base_url: str, locator: dict[str, Any],
+                           *, local: bool) -> bytes:
+    """The bound candidate's WAV, read to at most one byte past its receipt and fully verified.
+
+    Nothing is returned until the count and SHA-256 match exactly, so a caller never holds a
+    partial or different body.
+    """
+    review_candidate_receipt(values, base_url, locator, local=local)
+    base, headers = _review_hub(values, base_url, local)
+    expected, digest = int(locator["pcm_bytes"]), str(locator["pcm_sha256"])
+    route = (f"{base}/api/hub/jobs/{locator['batch_id']}/items/{locator['item_index']}"
+             "/review-candidate/audio")
+    body = bytearray()
+    try:
+        with httpx.Client(timeout=httpx.Timeout(120.0, connect=6.0)) as client, \
+                client.stream("GET", route, headers=headers) as response:
+            if response.status_code != 200:
+                raise ReviewCandidateUnavailable(
+                    404 if response.status_code == 404 else 502,
+                    "the review candidate's audio is not available")
+            claimed = {name: response.headers.get_list(name)
+                       for name in ("content-type", "content-length", "x-content-sha256")}
+            if claimed != {"content-type": ["audio/wav"], "content-length": [str(expected)],
+                           "x-content-sha256": [digest]}:
+                raise ReviewCandidateUnavailable(502, "the review candidate's audio did not match its record")
+            for chunk in response.iter_bytes():
+                body += chunk[:expected + 1 - len(body)]
+                if len(body) > expected:
+                    break
+    except httpx.HTTPError as exc:
+        raise ReviewCandidateUnavailable(502, "the review candidate's audio was cut short") from exc
+    if len(body) != expected or hashlib.sha256(body).hexdigest() != digest:
+        raise ReviewCandidateUnavailable(502, "the review candidate's audio did not match its record")
+    return bytes(body)
 
 
 #: How long the Gateway waits, after asking the Hub to stop a job it gave up on, for the worker's own

@@ -109,7 +109,24 @@ CREATE TABLE IF NOT EXISTS job_summaries (
     seconds      REAL,
     bytes        REAL
 );
+-- Where a failed narration's refused section is kept for listening (a Studio Hub item's review
+-- candidate). Written once with the failure, never updated, and outside `archive_old`: an archived
+-- job keeps its candidate reachable from the admin routes.
+CREATE TABLE IF NOT EXISTS review_candidate_locators (
+    gateway_job_id  TEXT PRIMARY KEY,
+    provider_id     TEXT NOT NULL,
+    batch_id        TEXT NOT NULL,
+    item_index      INTEGER NOT NULL,
+    receipt_sha256  TEXT NOT NULL,
+    pcm_bytes       INTEGER NOT NULL,
+    pcm_sha256      TEXT NOT NULL,
+    created_at      REAL NOT NULL,
+    schema_version  INTEGER NOT NULL
+);
 """
+REVIEW_LOCATOR_FIELDS = ("provider_id", "batch_id", "item_index", "receipt_sha256", "pcm_bytes",
+                         "pcm_sha256")
+REVIEW_LOCATORS_PER_PROVIDER = 32
 
 # Columns added after the first release. Applied idempotently so an existing
 # Phase 0 database keeps working instead of needing to be deleted.
@@ -611,12 +628,16 @@ class JobStore:
         recovery_detail: str | None = None,
         recovery_context: dict[str, Any] | None = None,
         evidence: dict[str, Any] | None = None,
+        review_candidate: dict[str, Any] | None = None,
     ) -> None:
         """Settle once, retaining a late failure without reopening a terminal row.
 
         `evidence` is what the lane stated about the failed attempt (a Studio Hub item's machine,
         batch and run seconds), kept as the result payload so the job record and the analytics read
         it at the same `$.payload.hub_machine` path a success uses.
+
+        `review_candidate` binds the refused narration section kept at the Hub, in this same
+        commit; a late failure never binds one.
         """
         with self._lock:
             row = self._conn.execute(
@@ -653,7 +674,43 @@ class JobStore:
                     **({"result_json": json.dumps({"payload": evidence})} if evidence else {}),
                 },
             )
+            if review_candidate:
+                try:
+                    self._bind_review_candidate_locked(job_id, review_candidate)
+                except (sqlite3.Error, KeyError, TypeError) as exc:   # the failure still settles
+                    log.warning("job %s: review candidate not bound (%s)", job_id, type(exc).__name__)
             self._conn.commit()
+
+    def _bind_review_candidate_locked(self, job_id: str, locator: dict[str, Any]) -> None:
+        """Insert once; an identical replay is a no-op, a conflict or a full provider binds nothing."""
+        row = self._conn.execute(
+            "SELECT * FROM review_candidate_locators WHERE gateway_job_id = ?", (job_id,)
+        ).fetchone()
+        if row is not None:
+            if any(row[key] != locator.get(key) for key in REVIEW_LOCATOR_FIELDS):
+                log.warning("job %s: a different review candidate was refused", job_id)
+            return
+        used = self._conn.execute(
+            "SELECT COUNT(*) FROM review_candidate_locators WHERE provider_id = ?",
+            (locator.get("provider_id"),),
+        ).fetchone()[0]
+        if used >= REVIEW_LOCATORS_PER_PROVIDER:
+            log.warning("job %s: review candidate not bound (location holds %s)", job_id, used)
+            return
+        self._conn.execute(
+            "INSERT INTO review_candidate_locators (gateway_job_id, "
+            + ", ".join(REVIEW_LOCATOR_FIELDS) + ", created_at, schema_version) "
+            "VALUES (?,?,?,?,?,?,?,?,1)",
+            (job_id, *(locator[key] for key in REVIEW_LOCATOR_FIELDS), time.time()),
+        )
+
+    def review_locator(self, job_id: str) -> dict[str, Any] | None:
+        """A job's bound review candidate, live or archived."""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM review_candidate_locators WHERE gateway_job_id = ?", (job_id,)
+            ).fetchone()
+        return dict(row) if row else None
 
     def record_discard_remote(self, job_id: str, answer: dict[str, Any]) -> bool:
         """Persist what the upstream answered when an operator resolved a hold."""
