@@ -677,6 +677,11 @@ final class GatewayController {
             // of setting it.
             "--host", EnvFile.host(), "--port", String(port),
             "--no-proxy-headers",
+            // Without a bound, TERM waits for every open client request first; on 2026-10-16
+            // the mini's slow open requests held an install's old backend for 11.6 min with
+            // nothing serving. 3 s + the 15 s lifespan drain (`_SHUTDOWN_DRAIN_S`) stays inside
+            // `backendDrainWait` (20 s): keep the three in step.
+            "--timeout-graceful-shutdown", "3",
             "--log-level", "warning",
         ]
         task.currentDirectoryURL = workingDirectory

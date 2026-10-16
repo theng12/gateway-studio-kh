@@ -153,6 +153,8 @@ class Task4Native(unittest.TestCase):
         self.assertIn("New requests use it immediately", settings)
         self.assertIn("ConsoleSection.refreshCredentials()", settings)
         self.assertIn("--no-proxy-headers", launcher)
+        # Bounded wait for open requests on TERM, so an install can't sit with nothing serving.
+        self.assertIn('"--timeout-graceful-shutdown", "3"', launcher)
         self.assertIn("GATEWAY_APP_SUPPORT", launcher)
         self.assertIn("private static func explicitAppSupport()", launcher)
         self.assertIn('override.appendingPathComponent("gateway-kh.log")', launcher)
