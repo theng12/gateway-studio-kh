@@ -229,3 +229,12 @@ own disk while the read fails; the next refresh retries. A first discovery with
 no earlier answer still lists the packages exactly as before, and a successful
 but empty catalogue is also read as unread (kept rows, error set) — the
 fail-safe direction.
+
+# Chat lane Mac attribution (0.2.183)
+
+Every other Studio Hub lane publishes `payload.hub_machine`; the chat lane left it
+absent, so a relayed completion (a controller dispatching a node-only model)
+could not be named. `gateway/adapters/studio_hub.py` now reads the Hub's
+`X-StudioHub-Machine` response header into that same field, `null` where the Hub
+states nothing. Pairs with Studio Hub 0.6.183, which relays a controller's Chat
+request for a node-only model to one node.

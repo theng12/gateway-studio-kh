@@ -14,6 +14,12 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.183 — 2026-10-17
+
+### Chat jobs say which Mac ran them
+
+When a Chat completion is served by another Mac in the fleet, the Gateway now records which Mac it was, the same way the other kinds of work already do. Fleet latency measurements for Chat name that Mac too. Nothing changes about where the work runs.
+
 ## 0.2.182 — 2026-10-16
 
 ### A slow Mac no longer hides its models
