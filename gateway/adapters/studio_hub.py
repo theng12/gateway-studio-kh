@@ -2432,6 +2432,9 @@ def _generate_chat(request: BackendRequest) -> BackendResult:
             # resident — it excludes a cold turn's model load, so it is neither
             # this gateway's round trip nor a substitute for one.
             "generation_seconds": hub.get("elapsed_seconds"),
+            # The Mac that answered (`local`, or the node a controller relayed it to), as every
+            # other Hub lane records it. Absent from a Hub that does not state it.
+            "hub_machine": response.headers.get("X-StudioHub-Machine"),
         },
     )
 
