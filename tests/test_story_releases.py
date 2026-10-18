@@ -141,6 +141,146 @@ class StoryReleaseTests(unittest.TestCase):
         self.assertEqual(len(trashed), 1)
         self.assertEqual(story_releases.current()["version"], "1.4.259")
 
+    def test_a_range_request_resumes_and_the_whole_file_still_hashes(self) -> None:
+        # The Story updater restarts a ~240 MB transfer after every mid-stream stall; this
+        # route is where a resume has to work. First byte offset chosen mid-file.
+        descriptor = self.publish("1.4.317")
+        full = self.client.get("/v1/apps/story/release/file", headers=AUTH).content
+        self.assertEqual((len(full), hashlib.sha256(full).hexdigest()),
+                         (descriptor["bytes"], descriptor["sha256"]))
+        mid = len(full) // 3
+        resumed = self.client.get("/v1/apps/story/release/file",
+                                  headers={**AUTH, "Range": f"bytes={mid}-"})
+        self.assertEqual(resumed.status_code, 206)
+        self.assertEqual(resumed.headers["content-range"], f"bytes {mid}-{len(full) - 1}/{len(full)}")
+        self.assertEqual(resumed.headers["accept-ranges"], "bytes")
+        self.assertEqual(resumed.headers["content-length"], str(len(full) - mid))
+        self.assertEqual(resumed.content, full[mid:])
+        # A range that STARTS AT ZERO is still a range: 206, not a plain 200 (the numeric
+        # start is 0, so the decision must not key on "start").
+        zero_open = self.client.get("/v1/apps/story/release/file",
+                                    headers={**AUTH, "Range": "bytes=0-"})
+        self.assertEqual(zero_open.status_code, 206)
+        self.assertEqual(zero_open.headers["content-range"], f"bytes 0-{len(full) - 1}/{len(full)}")
+        self.assertEqual(zero_open.content, full)
+        zero_closed = self.client.get("/v1/apps/story/release/file",
+                                      headers={**AUTH, "Range": "bytes=0-5"})
+        self.assertEqual(zero_closed.status_code, 206)
+        self.assertEqual(zero_closed.headers["content-range"], f"bytes 0-5/{len(full)}")
+        self.assertEqual(zero_closed.headers["content-length"], "6")
+        self.assertEqual(zero_closed.content, full[:6])
+
+    def test_if_range_with_a_stale_validator_serves_the_whole_file(self) -> None:
+        # A resumed partial that belongs to a REPLACED artifact must never be glued to the
+        # new one: a mismatched If-Range is answered with the full 200, per RFC 9110 §13.1.6.
+        self.publish("1.4.317")
+        full = self.client.get("/v1/apps/story/release/file", headers=AUTH).content
+        stale = hashlib.sha256(b"some-older-artifact").hexdigest()
+        response = self.client.get("/v1/apps/story/release/file",
+                                   headers={**AUTH, "Range": "bytes=10-", "If-Range": stale})
+        self.assertEqual(response.status_code, 200)
+        self.assertNotIn("content-range", {k.lower() for k in response.headers})
+        self.assertEqual(response.content, full)
+        # The matching validator resumes.
+        ok = self.client.get("/v1/apps/story/release/file",
+                             headers={**AUTH, "Range": "bytes=10-",
+                                      "If-Range": story_releases.current()["sha256"]})
+        self.assertEqual(ok.status_code, 206)
+        self.assertEqual(ok.content, full[10:])
+        # The validator is evaluated BEFORE the 416: a STALE partial whose offset is past the
+        # new file's end is still the replaced artifact's business, so it gets the full 200 —
+        # never a 416. The same out-of-bounds range with the MATCHING validator may 416.
+        past_end = f"bytes={len(full)}-"
+        stale_past = self.client.get("/v1/apps/story/release/file",
+                                     headers={**AUTH, "Range": past_end, "If-Range": stale})
+        self.assertEqual(stale_past.status_code, 200)
+        self.assertEqual(stale_past.content, full)
+        matching_past = self.client.get("/v1/apps/story/release/file",
+                                        headers={**AUTH, "Range": past_end,
+                                                 "If-Range": story_releases.current()["sha256"]})
+        self.assertEqual(matching_past.status_code, 416)
+        self.assertEqual(matching_past.headers["content-range"], f"bytes */{len(full)}")
+
+    def test_an_out_of_range_start_is_416_and_other_units_are_ignored(self) -> None:
+        self.publish("1.4.317")
+        total = story_releases.current()["bytes"]
+        too_far = self.client.get("/v1/apps/story/release/file", headers={**AUTH, "Range": f"bytes={total}-"})
+        self.assertEqual(too_far.status_code, 416)
+        self.assertEqual(too_far.headers["content-range"], f"bytes */{total}")
+        # A malformed/other-unit Range is not honoured: plain 200 full body, never a 500.
+        weird = self.client.get("/v1/apps/story/release/file", headers={**AUTH, "Range": "items=0-5"})
+        self.assertEqual(weird.status_code, 200)
+        suffix = self.client.get("/v1/apps/story/release/file", headers={**AUTH, "Range": "bytes=-100"})
+        self.assertEqual(suffix.status_code, 200)
+        # A closed range `bytes=N-M` is honoured with its INCLUSIVE end clamped to the file.
+        mid, end = total // 4, total // 2
+        closed = self.client.get("/v1/apps/story/release/file",
+                                 headers={**AUTH, "Range": f"bytes={mid}-{end}"})
+        self.assertEqual(closed.status_code, 206)
+        self.assertEqual(closed.headers["content-range"], f"bytes {mid}-{end}/{total}")
+        self.assertEqual(closed.headers["content-length"], str(end - mid + 1))
+        full = self.client.get("/v1/apps/story/release/file", headers=AUTH).content
+        self.assertEqual(closed.content, full[mid:end + 1])
+        # An end beyond EOF clamps to the last byte, still 206.
+        over = self.client.get("/v1/apps/story/release/file",
+                               headers={**AUTH, "Range": f"bytes={mid}-{len(full) * 2}"})
+        self.assertEqual(over.status_code, 206)
+        self.assertEqual(over.headers["content-range"], f"bytes {mid}-{len(full) - 1}/{total}")
+        self.assertEqual(over.content, full[mid:])
+        # Reversed bounds are ignored with the full 200, never a 500 or an empty 206.
+        reversed_range = self.client.get("/v1/apps/story/release/file",
+                                         headers={**AUTH, "Range": "bytes=20-10"})
+        self.assertEqual(reversed_range.status_code, 200)
+        self.assertEqual(reversed_range.content, full)
+        # Multiple ranges are ignored (single-range support only), full 200.
+        multi = self.client.get("/v1/apps/story/release/file",
+                                headers={**AUTH, "Range": "bytes=0-1,5-6"})
+        self.assertEqual(multi.status_code, 200)
+        self.assertEqual(multi.content, full)
+
+    def test_a_malformed_or_oversized_digit_header_is_200_not_500(self) -> None:
+        # F1: `int("5"*5000)` is valid Python but a needless 5,000-digit conversion, and a
+        # value that is not plain ASCII digits (e.g. "+5", "0x10") must be ignored, not
+        # raise or produce a partial answer. Raw non-ASCII bytes in a header cannot reach
+        # this handler through httpx's str-encoding transport (they raise client-side in
+        # httpx 0.28 before the server is called), so the Unicode shapes are untestable
+        # here; the server's `ascii_digits` guard still covers them for real traffic.
+        # NOTE the boundary: " 5" is a VALID range after HTTP whitespace stripping
+        # (`bytes=5-` with padded spaces), so it belongs to the 206 case below, not here.
+        self.publish("1.4.317")
+        full = self.client.get("/v1/apps/story/release/file", headers=AUTH).content
+        for bad in ("5" * 5000, "0x10", "+5", ""):
+            for header in (f"bytes={bad}-", f"bytes={bad}-{bad}"):
+                response = self.client.get("/v1/apps/story/release/file",
+                                           headers={**AUTH, "Range": header})
+                self.assertEqual(response.status_code, 200, header[:40])
+                self.assertEqual(response.content, full, header[:40])
+        # A start that is valid ASCII but exceeds the 20-digit cap is ignored too.
+        huge = self.client.get("/v1/apps/story/release/file",
+                               headers={**AUTH, "Range": "bytes=123456789012345678901234567890-"})
+        self.assertEqual(huge.status_code, 200)
+        self.assertEqual(huge.content, full)
+        # Whitespace-padded ASCII digits are stripped by the server and honoured: 206.
+        padded = self.client.get("/v1/apps/story/release/file", headers={**AUTH, "Range": "bytes= 5-"})
+        self.assertEqual(padded.status_code, 206)
+        self.assertEqual(padded.headers["content-range"], f"bytes 5-{len(full) - 1}/{len(full)}")
+        self.assertEqual(padded.headers["content-length"], str(len(full) - 5))
+        self.assertEqual(padded.content, full[5:])
+
+    def test_a_replaced_artifact_invalidates_a_saved_resume(self) -> None:
+        # The discriminating end-to-end shape: partial of 317-v1 + If-Range(v1 sha) while
+        # 317-v2 is published → the client gets the full new file, so its size+sha256 check
+        # can only pass against the new artifact, never a mixed one.
+        first = self.publish("1.4.317")
+        full_first = self.client.get("/v1/apps/story/release/file", headers=AUTH).content
+        self.publish("1.4.318")
+        partial_headers = {**AUTH, "Range": "bytes=5-", "If-Range": first["sha256"]}
+        response = self.client.get("/v1/apps/story/release/file", headers=partial_headers)
+        full_second = self.client.get("/v1/apps/story/release/file", headers=AUTH).content
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.content, full_second)
+        self.assertNotEqual(full_first, full_second)
+
     def test_retention_recycles_superseded_release_but_preserves_the_active_offer(self) -> None:
         self.publish("1.4.258")
         active = self.publish("1.4.259")
