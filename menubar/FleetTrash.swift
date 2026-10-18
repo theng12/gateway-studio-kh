@@ -22,15 +22,46 @@ enum FleetTrash {
         var count: Int { (payload?["count"] as? NSNumber)?.intValue ?? 0 }
         var bytes: Int64 { (payload?["bytes"] as? NSNumber)?.int64Value ?? 0 }
         var deletable: Bool { supported && count > 0 }
+        /// The gateway labels every reading: `fresh`, `stale`, `unreachable` or `unknown`. A payload from an
+        /// older gateway states none, which is `unknown` — never claimed as fresh.
+        var status: String { payload?["status"] as? String ?? "unknown" }
+        /// Only a fresh reading is counted in a fleet total: an offline Mac states no size at all, and an old
+        /// reading is not a measurement now.
+        var isFresh: Bool { status == "fresh" && supported }
+        /// When the Mac's own Hub walked the folder (`measured_at`), passed through by the gateway.
+        var measuredAt: Date? {
+            (payload?["measured_at"] as? NSNumber).map { Date(timeIntervalSince1970: $0.doubleValue) }
+        }
+        var checked: String {
+            guard let measuredAt else { return "checked time unknown" }
+            if Date().timeIntervalSince(measuredAt) < 5 { return "checked just now" }
+            return "checked " + FleetTrash.relative.localizedString(for: measuredAt, relativeTo: Date())
+        }
         var free: String? {
-            ((payload?["disk"] as? [String: Any])?["free_bytes"] as? NSNumber).map { size($0.int64Value) + " free" }
+            ((payload?["disk"] as? [String: Any])?["free_bytes"] as? NSNumber).map { FleetTrash.size($0.int64Value) + " free" }
         }
         var line: String {
             if let error { return "\(name): could not read (\(error))" }
-            if !supported { return "\(name): needs Hub \(payload?["needs_hub"] as? String ?? "0.6.182")" }
-            return "\(name): \(count) item\(count == 1 ? "" : "s"), \(size(bytes))" + (free.map { " · \($0)" } ?? "")
+            if !supported {
+                if status == "unreachable" {
+                    return "\(name): unreachable — \((payload?["detail"] as? String) ?? "it did not answer")"
+                }
+                return "\(name): needs Hub \(payload?["needs_hub"] as? String ?? "0.6.182")"
+            }
+            let held = "\(count) item\(count == 1 ? "" : "s"), \(FleetTrash.size(bytes))" + (free.map { " · \($0)" } ?? "")
+            switch status {
+            case "fresh": return "\(name): \(held) · \(checked)"
+            case "stale": return "\(name): \(held) · STALE, \(checked)"
+            default: return "\(name): \(held) · \(status), \(checked)"
+            }
         }
     }
+
+    private static let relative: RelativeDateTimeFormatter = {
+        let formatter = RelativeDateTimeFormatter()
+        formatter.unitsStyle = .full
+        return formatter
+    }()
 
     static func size(_ bytes: Int64) -> String {
         ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
@@ -96,6 +127,7 @@ enum FleetTrash {
                              + size((row["bytes"] as? NSNumber)?.int64Value ?? 0))
             }
         }
+        lines.append("\n\(report.checked)" + (report.isFresh ? "" : " — \(report.status); not counted as fresh"))
         return lines.joined(separator: "\n")
     }
 
@@ -129,11 +161,19 @@ enum FleetTrash {
         load(machines) { reports in
             let sorted = reports.sorted { $0.bytes > $1.bytes }
             let deletable = sorted.filter(\.deletable)
-            let total = deletable.reduce(Int64(0)) { $0 + $1.bytes }
+            // The claimed fleet total counts fresh readings only; offline and stale Macs are named, not zeroed.
+            let fresh = sorted.filter(\.isFresh)
+            let notCounted = sorted.filter { !$0.isFresh }
+            let total = fresh.reduce(Int64(0)) { $0 + $1.bytes }
             let alert = NSAlert()
             alert.messageText = "Trash Folders on \(machines.count) Mac\(machines.count == 1 ? "" : "s")"
-            alert.informativeText = "\(size(total)) in \(deletable.reduce(0) { $0 + $1.count }) items on "
-                + "\(deletable.count) Mac\(deletable.count == 1 ? "" : "s"). Studio Hub never empties them by itself."
+            var text = "\(size(total)) in \(fresh.reduce(0) { $0 + $1.count }) items on "
+                + "\(fresh.count) Mac\(fresh.count == 1 ? "" : "s"), counted from fresh readings. "
+                + "Studio Hub never empties them by itself."
+            if !notCounted.isEmpty {
+                text += "\n\(notCounted.count) Mac\(notCounted.count == 1 ? "" : "s") not counted (offline, stale or unknown)."
+            }
+            alert.informativeText = text
             alert.accessoryView = listView(sorted.map(\.line))
             alert.addButton(withTitle: "Close")
             if !deletable.isEmpty {

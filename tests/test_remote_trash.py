@@ -2,6 +2,7 @@
 
 * listing and "Move to macOS Trash" go through the Mac's controller on the fleet credential, behind the
   normal admin auth; a Mac (or controller) on an older Hub reads as `needs_hub: 0.6.182`, not an error;
+  an unreachable Mac is labelled `unreachable` with no size, and only `fresh` readings count in a total;
 * a permanent delete needs the owner's own app window: the per-launch secret only the app holds, on a
   loopback request. The gateway key, a browser session or loopback alone are refused, so an agent that
   holds the key cannot delete anything;
@@ -14,6 +15,7 @@ import json
 import os
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -66,7 +68,8 @@ class RelayTests(_Isolated):
 
     def test_the_listing_goes_to_the_controllers_node_route_on_the_fleet_credential(self) -> None:
         got = startup_control.trash_list("ctl1", "node-1", client=self.client(httpx.Response(200, json=LISTING)))
-        self.assertEqual((got["supported"], got["bytes"]), (True, 8192))
+        self.assertEqual((got["supported"], got["status"], got["bytes"]), (True, "fresh", 8192))
+        self.assertAlmostEqual(got["measured_at"], time.time(), delta=5)   # stamped when no Hub time is stated
         self.assertEqual(str(self.seen[0].url), "http://100.64.0.2:47873/api/hub/fleet/nodes/node-1/trash")
         self.assertEqual(self.seen[0].headers["x-hub-token"], "fleet-token")
 
@@ -77,12 +80,36 @@ class RelayTests(_Isolated):
                                                  "detail": "That Mac needs Studio Hub 0.6.182"})):  # old node
             got = startup_control.trash_list("ctl1", "node-1", client=self.client(answer))
             self.assertEqual((got["ok"], got["supported"], got["needs_hub"]), (True, False, "0.6.182"), answer)
+            self.assertEqual(got["status"], "unknown", answer)
 
-    def test_an_unreachable_mac_is_still_an_error(self) -> None:
-        with self.assertRaises(startup_control.StartupError) as caught:
-            startup_control.trash_list("ctl1", "node-1", client=self.client(httpx.Response(
-                502, json={"ok": False, "code": "NODE_UNREACHABLE", "detail": "asleep"})))
-        self.assertEqual(caught.exception.body["code"], "NODE_UNREACHABLE")
+    def test_an_unreachable_mac_is_labelled_with_no_size(self) -> None:
+        got = startup_control.trash_list("ctl1", "node-1", client=self.client(httpx.Response(
+            502, json={"ok": False, "code": "NODE_UNREACHABLE", "detail": "asleep"})))
+        self.assertEqual((got["ok"], got["supported"], got["status"], got["machine"]),
+                         (True, False, "unreachable", "node-1"))
+        self.assertEqual(got["detail"], "asleep")
+        self.assertNotIn("bytes", got)
+
+    def test_only_a_fresh_reading_is_counted_in_a_fleet_total(self) -> None:
+        now = time.time()
+        fresh = startup_control.trash_list("ctl1", "node-1", client=self.client(httpx.Response(
+            200, json={**LISTING, "measured_at": now})))
+        stale = startup_control.trash_list("ctl1", "node-2", client=self.client(httpx.Response(
+            200, json={**LISTING, "measured_at": now - startup_control.TRASH_STALE_S - 1, "bytes": 4096})))
+        unreachable = startup_control.trash_list("ctl1", "node-3", client=self.client(httpx.Response(
+            502, json={"ok": False, "code": "NODE_UNREACHABLE", "detail": "asleep"})))
+        unknown = startup_control.trash_list("ctl1", "node-4", client=self.client(httpx.Response(
+            409, json={"ok": False, "code": "HUB_TOO_OLD", "needs_hub": "0.6.182"})))
+        rows = [fresh, stale, unreachable, unknown]
+        self.assertEqual([row["status"] for row in rows], ["fresh", "stale", "unreachable", "unknown"])
+        self.assertEqual(fresh["measured_at"], now)                        # the Hub's own measurement time passes through
+        self.assertAlmostEqual(stale["age_seconds"], startup_control.TRASH_STALE_S + 1, delta=1)
+        # The fleet total sums fresh rows only; every other row is named and left unsized, never zeroed.
+        self.assertEqual(sum(int(row.get("bytes") or 0) for row in rows if row["status"] == "fresh"), 8192)
+        self.assertEqual(sum(1 for row in rows if row["status"] != "fresh"), 3)
+        for row in rows[2:]:
+            self.assertFalse(row["supported"])
+            self.assertNotIn("bytes", row)
 
     def test_delete_sends_the_confirmed_count_and_bytes_and_passes_a_mismatch_through(self) -> None:
         changed = httpx.Response(409, json={"ok": False, "code": "TRASH_CHANGED", "count": 3, "bytes": 9})

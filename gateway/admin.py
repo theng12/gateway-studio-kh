@@ -3698,8 +3698,11 @@ def fleet_machine_transcribe(
     dependencies=[Depends(require_admin)],
 )
 def fleet_machine_trash(controller_id: str, machine_id: str) -> Any:
-    """One Mac's Trash Folder (owner decision 4g): items, totals by kind and age, disk free. A Mac on a Studio Hub
-    older than 0.6.182 answers `{"supported": false, "needs_hub": "0.6.182"}` (`startup_control.trash_list`)."""
+    """One Mac's Trash Folder (owner decision 4g): items, totals by kind and age, disk free, `measured_at`
+    and `status` (`fresh` / `stale` / `unreachable` / `unknown`). Only a fresh reading may be counted in a
+    fleet total. A Mac on a Studio Hub older than 0.6.182 answers
+    `{"supported": false, "needs_hub": "0.6.182"}`; an unreachable one answers `status: unreachable`
+    instead of an error, so a partial fleet answer still lists it (`startup_control.trash_list`)."""
     try:
         return startup_control.trash_list(controller_id, machine_id)
     except startup_control.StartupError as error:

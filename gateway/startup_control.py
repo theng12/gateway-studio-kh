@@ -589,6 +589,23 @@ TRASH_HUB = "0.6.182"
 TRASH_TOO_OLD = f"Needs Studio Hub {TRASH_HUB} to manage its Trash Folder from the Gateway."
 #: A large Trash Folder takes a while to measure and delete; the Hub's relay waits 900 s.
 _TRASH_TIMEOUT = httpx.Timeout(960.0, connect=6.0)
+#: A Trash Folder reading older than this is labelled `stale` and left out of a claimed fresh total.
+TRASH_STALE_S = 300.0
+
+
+def _trash_freshness(answer: dict[str, Any], *, now: float | None = None) -> dict[str, Any]:
+    """`status`, `measured_at` and `age_seconds` for one Mac's Trash reading.
+
+    The Hub stamps `measured_at` when it walks the folder, so this is passed through; a Hub that states
+    none gets the Gateway's receipt time. Only `fresh` may be counted in a fleet total: an unreachable Mac
+    or one whose Hub is too old states no size, and an old reading is not a measurement now.
+    """
+    now = time.time() if now is None else float(now)
+    stated = answer.get("measured_at")
+    measured = float(stated) if isinstance(stated, (int, float)) and not isinstance(stated, bool) else now
+    age = max(0.0, now - measured)
+    return {"status": "fresh" if age <= TRASH_STALE_S else "stale", "measured_at": measured,
+            "age_seconds": round(age, 3)}
 
 
 def _trash(controller_id: str, machine_id: str, route: str, body: dict[str, Any] | None, *, event: str,
@@ -602,16 +619,23 @@ def _trash(controller_id: str, machine_id: str, route: str, body: dict[str, Any]
 
 def trash_list(controller_id: str, machine_id: str, *, client: httpx.Client | None = None) -> dict[str, Any]:
     """One Mac's Trash Folder: `items` (`id`, `kind`, `bytes`, `age_days`), `count`, `bytes`, `by_kind`,
-    `by_age` and `disk`. A Mac whose Studio Hub is older answers `supported: false` with `needs_hub`, not an error."""
+    `by_age`, `disk`, plus `status` (`fresh` / `stale` / `unreachable` / `unknown`) and `measured_at`.
+    A Mac whose Studio Hub is older answers `supported: false` with `needs_hub`; one out of reach answers
+    `status: unreachable`, so a partial fleet result still lists every Mac and no size is invented."""
     try:
         answer = _trash(controller_id, machine_id, "trash", None, event="trash_list", audit_fields={},
                         method="GET", client=client)
     except StartupError as error:
-        if error.body.get("code") != "HUB_TOO_OLD":
-            raise
-        return {"ok": True, "supported": False, "needs_hub": TRASH_HUB, "detail": TRASH_TOO_OLD,
-                "machine": machine_id}
-    return {**answer, "supported": True}
+        code = str(error.body.get("code") or "")
+        if code == "HUB_TOO_OLD":
+            return {"ok": True, "supported": False, "needs_hub": TRASH_HUB, "detail": TRASH_TOO_OLD,
+                    "machine": machine_id, "status": "unknown", "measured_at": None}
+        if code in _REACH_CODES:
+            return {"ok": True, "supported": False, "machine": machine_id, "status": "unreachable",
+                    "measured_at": None,
+                    "detail": str(error.body.get("detail") or "This Mac did not answer.")}
+        raise
+    return {**answer, "supported": True, **_trash_freshness(answer)}
 
 
 def _trash_items(items: object) -> object:
