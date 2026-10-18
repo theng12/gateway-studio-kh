@@ -14,6 +14,12 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.184 — 2026-10-18
+
+### Story updates can resume a download
+
+If a Story Studio release download stops partway, the Gateway can now send only the rest of the file when the Story app asks to resume. A saved partial from an older release is never mixed with a newer one: the app gets the fresh file in full instead. Current Story clients still download in one piece, because they do not ask to resume yet.
+
 ## 0.2.183 — 2026-10-17
 
 ### Chat jobs say which Mac ran them

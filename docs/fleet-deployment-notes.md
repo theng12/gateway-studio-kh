@@ -238,3 +238,19 @@ could not be named. `gateway/adapters/studio_hub.py` now reads the Hub's
 `X-StudioHub-Machine` response header into that same field, `null` where the Hub
 states nothing. Pairs with Studio Hub 0.6.183, which relays a controller's Chat
 request for a node-only model to one node.
+
+# Story release range resume (0.2.184)
+
+`GET /v1/apps/story/release/file` now answers a single-range `Range` header, so a
+Story Studio release download can resume instead of restarting. `bytes=N-`
+returns 206 with `Content-Range: bytes N-<last>/<total>`; `bytes=N-M` is honoured
+with its inclusive end clamped to the last byte. A start at or past the end
+answers 416 with `Content-Range: bytes */<total>`. An `If-Range` that is not the
+current descriptor's sha256 gets the full 200, so a partial from a replaced
+artifact is never mixed with the new one; the validator is checked before the
+416, so a stale partial past the new file's end also gets the full 200. Suffix,
+reversed, multiple, non-`bytes`, malformed, Unicode-digit and over-20-digit
+ranges are ignored with the full authenticated 200; accepted bounds are ASCII
+digits only. Full responses now advertise `Accept-Ranges: bytes`. The current
+Story client does not send `Range` or `If-Range`, so its download behaviour is
+unchanged.
