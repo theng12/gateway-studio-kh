@@ -14,6 +14,20 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.185 — 2026-10-19
+
+### The Trash Folder's own limits are yours to set
+
+The Trash Folder moves files on to macOS Trash after 7 days (the default), or once it holds 20 GB — and both numbers are now editable beside the received-artifact limits in Settings. Nothing is ever deleted: the Gateway only hands files to macOS Trash, and it never empties it. Pinned files, work in flight and files newer than an hour are still kept.
+
+### Each Mac's Trash says when it was last checked
+
+Fleet > Machines > Trash… shows when each Mac's Trash Folder was last measured and marks a stale or unreachable reading. Those Macs stay in the list, saying so, but they are left out of the total instead of being counted with a size that is no longer true.
+
+### Old logs, voice backups and job archives age out by themselves
+
+Log rotations, voice backups and archived job records older than the received-artifact limit are moved into the Gateway's Trash Folder instead of being deleted or kept forever, and backup pruning moves an old archive rather than unlinking it.
+
 ## 0.2.184 — 2026-10-18
 
 ### Story updates can resume a download

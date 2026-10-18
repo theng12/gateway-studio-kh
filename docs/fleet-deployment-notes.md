@@ -254,3 +254,30 @@ ranges are ignored with the full authenticated 200; accepted bounds are ASCII
 digits only. Full responses now advertise `Accept-Ranges: bytes`. The current
 Story client does not send `Range` or `If-Range`, so its download behaviour is
 unchanged.
+
+# Trash Folder freshness and self-aging data (0.2.185)
+
+The Trash Folder's own limits are now the owner's: `retention.json` carries
+`trash_days` and `trash_cap_bytes` (default **7 days / 20 GB**), editable beside
+the received-artifact limits in Settings, and `/admin/api/settings/retention`
+accepts them. `retention.usage()` reports the saved pair. The artifact limits
+themselves are unchanged (3 days / 8 GB by default), and the one-hour grace,
+pins, and protected in-flight inputs still apply.
+
+A Mac's Trash reading now says when it was taken. `startup_control.trash_list`
+passes the Hub's `measured_at` through and adds `status` (`fresh` / `stale` /
+`unreachable` / `unknown`) and `age_seconds`; a reading older than
+`TRASH_STALE_S` (300 s) is `stale`, a Hub older than 0.6.182 is `unknown`, and a
+Mac that cannot be reached answers `status: unreachable` instead of an error, so
+a partial fleet answer still lists every Mac. Only a `fresh` reading is counted
+in a fleet total, and the Trash dialog names the Macs it left out.
+
+Generated data now ages out by itself, and nothing is unlinked. The app retires
+its oldest `gateway-kh.log` rotation into `data/_trash/logs` instead of removing
+it; voice backups older than the artifact retention, and job-archive
+`jobs-*.jsonl` month files older than it, retire into the Gateway Trash on the
+hourly pass (`voice_import.sweep_backups`, `store._retire_archive`, the one
+named mtime exception in `retention._trash_files` for `_trash/logs`). Backup
+pruning no longer deletes: `backup.prune` moves an old archive and keeps it in
+place when the move fails or the target name already exists, and reports how
+many it actually moved.
