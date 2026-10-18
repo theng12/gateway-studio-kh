@@ -1817,6 +1817,36 @@ class JobStore:
             and row["seconds"] > 0 and row["audio_s"] > 0
         ]
 
+    def _retire_archive(self, out_dir: Path, moment: float) -> int:
+        """Retire month files older than the artifact retention into the Gateway Trash.
+
+        Every archived row is already summarised in `job_summaries`; the month file is full-record
+        history, and the owner asked that generated data ages out by itself. A failed move keeps the
+        file in place; nothing here is unlinked.
+        """
+        try:
+            from . import retention
+
+            cutoff = moment - retention.settings()["max_age_days"] * 86400.0
+        except Exception:  # noqa: BLE001 - retention must never stop archiving
+            return 0
+        retired = 0
+        try:
+            files = sorted(out_dir.glob("jobs-*.jsonl"))
+        except OSError:
+            return 0
+        for path in files:
+            try:
+                if path.is_symlink() or not path.is_file() or path.stat().st_mtime >= cutoff:
+                    continue
+            except OSError:
+                continue
+            try:
+                retired += int(retention.retire(path, root=out_dir, namespace="job-archive", now=moment))
+            except Exception:  # noqa: BLE001
+                continue
+        return retired
+
     def archive_old(
         self,
         *,
@@ -1847,7 +1877,8 @@ class JobStore:
                 (cutoff,),
             ).fetchall()
             if not rows:
-                return {"archived": 0, "days": float(days), "file_count": 0, "vacuumed": False}
+                return {"archived": 0, "days": float(days), "file_count": 0, "vacuumed": False,
+                        "retired_files": self._retire_archive(out_dir, moment)}
             by_month: dict[str, list[sqlite3.Row]] = {}
             for row in rows:
                 month = time.strftime("%Y-%m", time.gmtime(row["created_at"]))
@@ -1897,7 +1928,7 @@ class JobStore:
                 self._conn.execute("VACUUM")
                 vacuumed = True
         return {"archived": len(done_ids), "days": float(days), "file_count": files,
-                "vacuumed": vacuumed}
+                "vacuumed": vacuumed, "retired_files": self._retire_archive(out_dir, moment)}
 
     def protected_input_paths(self) -> set[str]:
         """Inputs held by queued, running, or explicitly recoverable jobs."""

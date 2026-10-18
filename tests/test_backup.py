@@ -237,10 +237,16 @@ class BackupTests(unittest.TestCase):
         self.assertEqual(sorted(p.name for p in folder.iterdir()),
                          sorted(names[2:] + ["notes.txt", "kh-backup-latest.tar.gz"]))
         self.assertEqual(sorted(p.name for p in trash.iterdir()), names[:2])
-        # No trash on that volume: our own old archive is deleted, nothing else.
-        self.assertEqual(backup.prune(folder, 1, None), 2)
+        # No trash on that volume: the old archives stay in place, never unlinked.
+        self.assertEqual(backup.prune(folder, 1, None), 0)
         self.assertEqual(sorted(p.name for p in folder.iterdir()),
-                         sorted([names[4], "notes.txt", "kh-backup-latest.tar.gz"]))
+                         sorted(names[2:] + ["notes.txt", "kh-backup-latest.tar.gz"]))
+        # A trash place that cannot be written to also keeps the source.
+        blocked = self.root / "not-a-folder"
+        blocked.write_text("x")
+        self.assertEqual(backup.prune(folder, 1, blocked), 0)
+        self.assertEqual(sorted(p.name for p in folder.iterdir()),
+                         sorted(names[2:] + ["notes.txt", "kh-backup-latest.tar.gz"]))
 
     def test_nightly_is_off_by_default_and_runs_once_after_its_time(self) -> None:
         chosen = backup.settings()

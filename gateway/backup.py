@@ -342,18 +342,26 @@ def _ours(folder: Path) -> list[Path]:
 
 
 def prune(folder: Path, keep: int, trash: Path | None) -> int:
-    """Keep the newest `keep` of our archives; move older ones to `trash` (same volume) or delete."""
+    """Keep the newest `keep` of our archives; move older ones to `trash` (same volume).
+
+    A backup is never unlinked. If there is no trash place, or the move fails, the archive stays where
+    it is and is reported by the returned count of archives actually moved.
+    """
     old = _ours(folder)[:-keep] if keep > 0 else []
+    moved = 0
     for path in old:
-        if trash is not None:
-            try:
-                trash.mkdir(parents=True, exist_ok=True)
-                os.rename(path, trash / path.name)
+        if trash is None:
+            continue
+        try:
+            trash.mkdir(parents=True, exist_ok=True)
+            target = trash / path.name
+            if target.exists():
                 continue
-            except OSError:
-                pass
-        path.unlink(missing_ok=True)  # only ever a kh-backup-*.tar.gz we wrote
-    return len(old)
+            os.rename(path, target)
+            moved += 1
+        except OSError:
+            continue   # keep it in place; never replace the copy the owner might need
+    return moved
 
 
 def _deliver(archive: Path, dest: dict[str, Any], keep: int) -> int:

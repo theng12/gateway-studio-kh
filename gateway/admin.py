@@ -1284,12 +1284,14 @@ def get_retention() -> dict[str, Any]:
 
 @router.put("/api/settings/retention", dependencies=[Depends(require_admin)])
 def set_retention(payload: dict[str, Any]) -> Any:
-    """Change the limits. Whichever is reached first prunes."""
+    """Change the limits. Whichever is reached first prunes; the Trash Folder has its own pair."""
     from . import retention
 
     saved = retention.save(
         max_age_days=payload.get("max_age_days"),
         max_bytes=payload.get("max_bytes"),
+        trash_days=payload.get("trash_days"),
+        trash_cap_bytes=payload.get("trash_cap_bytes"),
     )
     return {**saved, "usage": retention.shared_usage()}
 

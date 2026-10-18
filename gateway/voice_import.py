@@ -810,8 +810,42 @@ def _summary(entry: dict) -> dict:
 
 
 def backup_dir() -> Path:
-    """Where a removed voice, or a replaced clip, is moved. Never deleted, never aged out."""
+    """Where a removed voice, or a replaced clip, is moved. Never unlinked; older backups retire into
+    the Gateway Trash after the artifact retention (`sweep_backups`)."""
     return LIBRARY_DIR.parent / "voice-backups"
+
+
+def sweep_backups(now: float | None = None, *, days: float | None = None) -> dict:
+    """Retire backup folders older than the artifact retention into the Gateway Trash.
+
+    One folder per removed or replaced voice, written once, so its modification time is when the backup
+    was taken. A failed move leaves it where it is; nothing here is unlinked. The live voice library is
+    never touched.
+    """
+    from . import retention
+
+    moment = time.time() if now is None else now
+    keep_days = retention.settings()["max_age_days"] if days is None else float(days)
+    cutoff = moment - keep_days * 86400.0
+    root = backup_dir()
+    retired = failed = 0
+    if not root.is_dir() or root.is_symlink():
+        return {"retired": 0, "failed": 0, "days": keep_days}
+    try:
+        entries = sorted(root.iterdir())
+    except OSError:
+        return {"retired": 0, "failed": 0, "days": keep_days}
+    for entry in entries:
+        try:
+            if entry.is_symlink() or not entry.is_dir() or entry.stat().st_mtime >= cutoff:
+                continue
+        except OSError:
+            continue
+        if retention.retire(entry, root=root, namespace="voice-backups", now=moment, tree=True):
+            retired += 1
+        else:
+            failed += 1
+    return {"retired": retired, "failed": failed, "days": keep_days}
 
 
 def _back_up(entry: dict, reason: str) -> Path:

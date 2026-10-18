@@ -346,6 +346,17 @@ class ArchiveTests(unittest.TestCase):
         self.assertTrue(done["vacuumed"])
         self.assertEqual(self.store._conn.execute("PRAGMA freelist_count").fetchone()[0], 0)
 
+    def test_archived_month_files_age_out_into_the_trash_folder(self) -> None:
+        old = self._job("old", age_days=120)
+        self.assertEqual(self.store.archive_old(days=90)["archived"], 1)
+        [archive] = list((Path(self.store.path).parent / "job-archive").glob("jobs-*.jsonl"))
+        ancient = time.time() - 10 * 86400
+        os.utime(archive, (ancient, ancient))
+        done = self.store.archive_old(days=90)          # no new rows; the sweep still runs
+        self.assertEqual(done["retired_files"], 1)
+        self.assertFalse(archive.exists())
+        self.assertEqual(len(list(retention.TRASH_DIR.rglob(archive.name))), 1)
+
     def test_nothing_is_deleted_when_the_archive_cannot_be_written(self) -> None:
         old = self._job("old", age_days=120)
         blocker = Path(self._tmp.name) / "blocked"

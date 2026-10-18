@@ -148,6 +148,27 @@ class RecoverableRetentionTests(unittest.TestCase):
         self.assertEqual([p.name for p in self.calls],['z-older.bin'])
         self.assertTrue(new.exists())
 
+    def test_the_trash_policy_is_owner_adjustable_and_defaults_to_seven_days_and_twenty_gig(self):
+        defaults=retention.settings()
+        self.assertEqual((defaults['trash_days'],defaults['trash_cap_bytes']),(7.0,20*1024**3))
+        saved=retention.save(trash_days=2,trash_cap_bytes=3*1024**3)
+        self.assertEqual((saved['trash_days'],saved['trash_cap_bytes']),(2.0,3*1024**3))
+        kept=retention.save(max_age_days=1)          # omitted values keep what is there
+        self.assertEqual((kept['trash_days'],kept['trash_cap_bytes']),(2.0,3*1024**3))
+        moved=self.retire('old.bin',self.now-3*86400)
+        result=retention.prune(now=self.now,store=Store())
+        self.assertEqual(result['recycled_files'],1)  # three days old, owner set two
+        self.assertFalse(moved.exists())
+
+    def test_retired_log_rotations_age_out_with_the_trash_policy(self):
+        logs=self.trash/'logs'; logs.mkdir(parents=True)
+        log=logs/'gateway-kh.log.2-1790000000'; log.write_bytes(b'log')
+        born=self.now-8*86400; os.utime(log,(born,born))
+        result=retention.prune(now=self.now,store=Store())
+        self.assertFalse(log.exists())
+        self.assertEqual(result['recycled_files'],1)
+        self.assertEqual(len(self.calls),1)
+
     def test_cap_counts_allocated_blocks_instead_of_sparse_logical_size(self):
         from types import SimpleNamespace
         self.assertEqual(retention._physical(SimpleNamespace(st_blocks=0,st_size=30*1024**3)),0)

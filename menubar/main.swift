@@ -360,20 +360,48 @@ enum LogRotation {
     static let maxBytes: UInt64 = 8 * 1024 * 1024
     static let keep = 2   // gateway-kh.log + .1 + .2 = 24 MB at most
 
+    /// Retire a rotation nobody needs any more into `data/_trash/logs`, where the gateway's own
+    /// retention policy moves it to macOS Trash. Never unlinked; a failed move keeps it in place.
+    private static func retire(_ path: String, data: URL) -> Bool {
+        let fm = FileManager.default
+        let folder = data.appendingPathComponent("_trash/logs", isDirectory: true)
+        do {
+            try fm.createDirectory(at: folder, withIntermediateDirectories: true)
+            let stamp = Int(Date().timeIntervalSince1970)
+            var target = folder.appendingPathComponent("\(URL(fileURLWithPath: path).lastPathComponent)-\(stamp)")
+            var n = 2
+            while fm.fileExists(atPath: target.path) {
+                target = folder.appendingPathComponent(
+                    "\(URL(fileURLWithPath: path).lastPathComponent)-\(stamp)-\(n)")
+                n += 1
+            }
+            try fm.moveItem(atPath: path, toPath: target.path)
+            return true
+        } catch {
+            return false
+        }
+    }
+
     @discardableResult
-    static func rotateIfNeeded(path: String, handle: FileHandle?, maxBytes: UInt64 = LogRotation.maxBytes) -> Bool {
+    static func rotateIfNeeded(path: String, handle: FileHandle?, maxBytes: UInt64 = LogRotation.maxBytes,
+                               data: URL = AppPaths.data) -> Bool {
         let fm = FileManager.default
         guard let size = (try? fm.attributesOfItem(atPath: path))?[.size] as? UInt64, size > maxBytes else {
             return false
         }
-        // Oldest first: .1 -> .2, then the live file -> .1.
-        for index in stride(from: keep, through: 2, by: -1) {
+        // Oldest first: the last rotation retires to the Trash Folder, then .N-1 -> .N, ..., .1 -> .2,
+        // and the live file -> .1. Anything that cannot be moved aborts instead of being unlinked.
+        let oldest = "\(path).\(keep)"
+        if fm.fileExists(atPath: oldest), !retire(oldest, data: data) { return false }
+        for index in stride(from: keep - 1, through: 1, by: -1) {
+            let newer = "\(path).\(index + 1)"
             let older = "\(path).\(index)"
-            try? fm.removeItem(atPath: older)
-            try? fm.moveItem(atPath: "\(path).\(index - 1)", toPath: older)
+            guard fm.fileExists(atPath: older) else { continue }
+            if fm.fileExists(atPath: newer) { return false }
+            do { try fm.moveItem(atPath: older, toPath: newer) } catch { return false }
         }
         let first = "\(path).1"
-        try? fm.removeItem(atPath: first)
+        guard !fm.fileExists(atPath: first) else { return false }
         guard (try? fm.copyItem(atPath: path, toPath: first)) != nil else { return false }
         if let handle {
             return ftruncate(handle.fileDescriptor, 0) == 0

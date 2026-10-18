@@ -28,6 +28,8 @@ final class SettingsSection: NSObject, AppSection {
     private var storyBaseField: NSTextField!
     private var retentionDaysField: NSTextField!
     private var retentionGBField: NSTextField!
+    private var trashDaysField: NSTextField!
+    private var trashGBField: NSTextField!
     private var retentionUsageLabel: NSTextField!
     private var loginCheck: NSButton!
     private var autoStartCheck: NSButton!
@@ -204,20 +206,30 @@ final class SettingsSection: NSObject, AppSection {
         retentionDaysField.widthAnchor.constraint(equalToConstant: Self.numberWidth).isActive = true
         retentionGBField = NSTextField(string: "")
         retentionGBField.widthAnchor.constraint(equalToConstant: Self.numberWidth).isActive = true
+        trashDaysField = NSTextField(string: "")
+        trashDaysField.widthAnchor.constraint(equalToConstant: Self.numberWidth).isActive = true
+        trashGBField = NSTextField(string: "")
+        trashGBField.widthAnchor.constraint(equalToConstant: Self.numberWidth).isActive = true
         retentionUsageLabel = PageKit.label("", .secondary, colour: .secondaryLabelColor, wrapping: true)
         section("Received artifacts", [
             PageKit.help(
                 "Images, audio and subtitles pass through this Mac on their way to Story Studio, "
                 + "which keeps its own copy. They are moved to the Trash Folder when either limit is "
-                + "reached — whichever comes first, oldest first. After 7 days there, or beyond 20 GB, "
-                + "the oldest files move to macOS Trash for recovery. Gateway never empties macOS Trash. "
-                + "Pinned files, work in flight and files newer than an hour are kept."
+                + "reached — whichever comes first, oldest first. The Trash Folder itself moves the "
+                + "oldest files to macOS Trash at its own limits (default 7 days or 20 GB). "
+                + "Gateway never empties macOS Trash. Pinned files, work in flight and files newer than an hour are kept."
             ),
             PageKit.formRow("Keep for", [PageKit.row([
                 retentionDaysField,
                 PageKit.label("days, or", .secondary, colour: .secondaryLabelColor),
                 retentionGBField,
                 PageKit.label("GB", .secondary, colour: .secondaryLabelColor),
+            ])]),
+            PageKit.formRow("Trash Folder", [PageKit.row([
+                trashDaysField,
+                PageKit.label("days, or", .secondary, colour: .secondaryLabelColor),
+                trashGBField,
+                PageKit.label("GB before macOS Trash", .secondary, colour: .secondaryLabelColor),
             ])]),
             PageKit.formRow("In use", [
                 retentionUsageLabel,
@@ -412,6 +424,8 @@ final class SettingsSection: NSObject, AppSection {
                 // defaults. An empty field is honest; a wrong number is not.
                 self.fill(self.retentionDaysField, "")
                 self.fill(self.retentionGBField, "")
+                self.fill(self.trashDaysField, "")
+                self.fill(self.trashGBField, "")
                 self.loadedRetention = [:]
                 if case .failure(let error) = result {
                     self.retentionUsageLabel?.stringValue =
@@ -428,6 +442,14 @@ final class SettingsSection: NSObject, AppSection {
                 self.loadedRetention["max_bytes"] = bytes
                 self.fill(self.retentionGBField, String(format: "%g", bytes / (1024 * 1024 * 1024)))
             }
+            if let days = payload["trash_days"] as? Double {
+                self.loadedRetention["trash_days"] = days
+                self.fill(self.trashDaysField, String(format: "%g", days))
+            }
+            if let bytes = payload["trash_cap_bytes"] as? Double {
+                self.loadedRetention["trash_cap_bytes"] = bytes
+                self.fill(self.trashGBField, String(format: "%g", bytes / (1024 * 1024 * 1024)))
+            }
             self.describeRetention(payload["usage"] as? [String: Any])
         }
     }
@@ -438,11 +460,13 @@ final class SettingsSection: NSObject, AppSection {
         let bytes = (usage["bytes"] as? Double) ?? 0
         let formatted = ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .file)
         let trashBytes = Int64((usage["trash_bytes"] as? Double) ?? 0)
-        let trashDays = usage["trash_days"] as? Int ?? 7
+        let trashDays = (usage["trash_days"] as? Double) ?? 7
+        let trashCap = Int64((usage["trash_cap_bytes"] as? Double) ?? 20 * 1024 * 1024 * 1024)
         let trash = ByteCountFormatter.string(fromByteCount: trashBytes, countStyle: .file)
+        let cap = ByteCountFormatter.string(fromByteCount: trashCap, countStyle: .file)
         retentionUsageLabel?.stringValue =
             "\(files) file\(files == 1 ? "" : "s"), \(formatted) — Story Studio keeps its own copy\n"
-            + "Trash Folder: \(trash), moved to macOS Trash after \(trashDays) days or beyond 20 GB"
+            + "Trash Folder: \(trash), moved to macOS Trash after \(String(format: "%g", trashDays)) days or beyond \(cap)"
         if let warning = usage["warning"] as? String, !warning.isEmpty {
             retentionUsageLabel?.stringValue += "\n" + warning
         }
@@ -455,6 +479,8 @@ final class SettingsSection: NSObject, AppSection {
         let fields = [
             (retentionDaysField!, "max_age_days", 1.0, "days"),
             (retentionGBField!, "max_bytes", 1024.0 * 1024 * 1024, "GB"),
+            (trashDaysField!, "trash_days", 1.0, "days"),
+            (trashGBField!, "trash_cap_bytes", 1024.0 * 1024 * 1024, "GB"),
         ]
         for (field, key, scale, unit) in fields {
             let text = field.stringValue.trimmingCharacters(in: .whitespaces)
@@ -486,7 +512,8 @@ final class SettingsSection: NSObject, AppSection {
         guard PageKit.confirm(
             "Move old received artifacts to the Trash Folder now?",
             "Files older than \(retentionDaysField.stringValue) days, or beyond \(retentionGBField.stringValue) GB "
-                + "(oldest first), move to the Trash Folder. After 7 days there, or beyond 20 GB, "
+                + "(oldest first), move to the Trash Folder. After \(trashDaysField.stringValue) days there, or "
+                + "beyond \(trashGBField.stringValue) GB, "
                 + "the oldest files move to macOS Trash. Gateway never empties macOS Trash. Now: \(retentionUsageLabel.stringValue). "
                 + "Pinned files and anything newer than an hour are kept.",
             ok: "Prune"

@@ -3,9 +3,10 @@
 First-stage configurable limits default to three days/eight GB, with pins,
 one-hour grace and live/held job inputs protected. Retired files keep their
 source mtime; timestamp buckets record the actual retirement time instead.
-Both current and legacy runtime trash are transferred after seven days or
-oldest first when their combined physical size exceeds twenty GB. Native
-transfer failures preserve the source. Gateway never empties macOS Trash.
+Both current and legacy runtime trash are transferred to macOS Trash after a
+configurable seven days (default), or oldest first when their combined physical
+size exceeds a configurable twenty GB. Native transfer failures preserve the
+source. Gateway never empties macOS Trash.
 """
 
 from __future__ import annotations
@@ -36,7 +37,8 @@ GB = 1024**3
 #: Runtime trash is separate from the developer project's owner-managed _trash.
 TRASH_DIR = Path(str(DATA_DIR)) / "_trash"
 LEGACY_TRASH_DIR = Path(str(DATA_DIR)) / "trash"
-TRASH_DAYS = 7
+#: Defaults for the runtime-trash policy; the owner's `retention.json` may change both.
+TRASH_DAYS = 7.0
 TRASH_CAP_BYTES = 20 * GB
 _BUCKET_FORMAT = "%Y-%m-%dT%H-%M-%S.%fZ"
 _trash_lock = threading.RLock()
@@ -56,27 +58,31 @@ PRUNE_INTERVAL_S = 3600.0
 _state_lock = threading.Lock()
 
 
-def _clamp_age(value: object) -> float:
+def _clamp_age(value: object, default: float = DEFAULT_MAX_AGE_DAYS) -> float:
     try:
         days = float(value)
     except (TypeError, ValueError):
-        return DEFAULT_MAX_AGE_DAYS
+        return default
     # A fraction of a day is legitimate (triaging), zero is not: it would mean
     # "delete everything the moment it is old enough to touch".
     return min(max(days, 0.05), 3650.0)
 
 
-def _clamp_bytes(value: object) -> int:
+def _clamp_bytes(value: object, default: int = DEFAULT_MAX_BYTES) -> int:
     try:
         size = int(float(value))
     except (TypeError, ValueError):
-        return DEFAULT_MAX_BYTES
+        return default
     # Floor of 1 MB: a smaller cap cannot hold a single video and would just churn.
     return min(max(size, 1024 * 1024), 10 * 1024**4)
 
 
 def settings() -> dict:
-    """The current limits, read fresh so an edit applies on the next pass."""
+    """The current limits, read fresh so an edit applies on the next pass.
+
+    The first pair is the live artifact store; the second is the runtime Trash Folder,
+    whose defaults are seven days and twenty GB.
+    """
     raw: dict = {}
     try:
         raw = json.loads(SETTINGS_PATH.read_text(encoding="utf-8"))
@@ -87,10 +93,13 @@ def settings() -> dict:
     return {
         "max_age_days": _clamp_age(raw.get("max_age_days", DEFAULT_MAX_AGE_DAYS)),
         "max_bytes": _clamp_bytes(raw.get("max_bytes", DEFAULT_MAX_BYTES)),
+        "trash_days": _clamp_age(raw.get("trash_days", TRASH_DAYS), TRASH_DAYS),
+        "trash_cap_bytes": _clamp_bytes(raw.get("trash_cap_bytes", TRASH_CAP_BYTES), TRASH_CAP_BYTES),
     }
 
 
-def save(*, max_age_days: object = None, max_bytes: object = None) -> dict:
+def save(*, max_age_days: object = None, max_bytes: object = None,
+         trash_days: object = None, trash_cap_bytes: object = None) -> dict:
     """Store new limits. Omitted values keep what is there."""
     current = settings()
     updated = {
@@ -99,6 +108,12 @@ def save(*, max_age_days: object = None, max_bytes: object = None) -> dict:
         ),
         "max_bytes": _clamp_bytes(
             max_bytes if max_bytes is not None else current["max_bytes"]
+        ),
+        "trash_days": _clamp_age(
+            trash_days if trash_days is not None else current["trash_days"], TRASH_DAYS
+        ),
+        "trash_cap_bytes": _clamp_bytes(
+            trash_cap_bytes if trash_cap_bytes is not None else current["trash_cap_bytes"], TRASH_CAP_BYTES
         ),
     }
     SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -245,8 +260,8 @@ def _trash_stats(entries: list | None = None) -> tuple[int, int]:
 
 
 def trash_cap_bytes(total: int | None = None) -> int:
-    """Fixed combined runtime-trash cap; `total` retained for caller compatibility."""
-    return TRASH_CAP_BYTES
+    """Owner-adjustable combined runtime-trash cap; `total` retained for caller compatibility."""
+    return settings()["trash_cap_bytes"]
 
 
 def _trash_files() -> list[tuple[str, float, int, Path]]:
@@ -254,6 +269,9 @@ def _trash_files() -> list[tuple[str, float, int, Path]]:
 
     Legacy dates conservatively mean the end of that UTC day. Unknown buckets
     are left alone; there is no inferred retirement time or manual migration.
+    The one named exception is `_trash/logs`, where the app retires its own log
+    rotations: a file there carries its own mtime, because it is written by us,
+    not a date bucket.
     """
     out: list[tuple[str, float, int, Path]] = []
     for root in (TRASH_DIR, LEGACY_TRASH_DIR):
@@ -271,6 +289,15 @@ def _trash_files() -> list[tuple[str, float, int, Path]]:
                     if _safe_path(path, root) and path.is_file():
                         out.append((folder.name, retired, _physical(path.stat()), path))
             except (OSError, ValueError):
+                continue
+    logs = TRASH_DIR / "logs"
+    if logs.is_dir() and not logs.is_symlink():
+        for path in logs.rglob("*"):
+            try:
+                if _safe_path(path, TRASH_DIR) and path.is_file():
+                    info = path.stat()
+                    out.append(("logs", info.st_mtime, _physical(info), path))
+            except OSError:
                 continue
     out.sort(key=lambda entry: (entry[1], str(entry[3])))
     return out
@@ -317,11 +344,12 @@ def _transfer_trash(moment: float, *, cap: int | None = None) -> dict:
     global _last_transfer
     with _trash_lock:
         entries = _trash_files()
+        limits = settings()
         total = sum(entry[2] for entry in entries)
         limit = trash_cap_bytes() if cap is None else cap
         files = moved = failures = capped = 0
         for _, retired, size, path in entries:
-            aged = moment - retired > TRASH_DAYS * 86400
+            aged = moment - retired > limits["trash_days"] * 86400
             if not aged and total <= limit:
                 continue
             root = TRASH_DIR if path.is_relative_to(TRASH_DIR) else LEGACY_TRASH_DIR
@@ -355,12 +383,16 @@ def _day(moment: float) -> str:
     return datetime.fromtimestamp(moment, timezone.utc).strftime("%Y-%m-%d")
 
 
-def retire(path: Path, *, root: Path, namespace: str = "", now: float | None = None) -> bool:
-    """Shared retirement for artifacts and superseded/failed Story releases."""
+def retire(path: Path, *, root: Path, namespace: str = "", now: float | None = None,
+           tree: bool = False) -> bool:
+    """Shared retirement for artifacts, superseded/failed Story releases, and whole backup folders.
+
+    `tree=True` moves a directory as one unit (a voice backup), so its files stay together in the Trash.
+    """
     moment = time.time() if now is None else now
     with _trash_lock:
         try:
-            if not _safe_path(path, root) or not path.is_file():
+            if not _safe_path(path, root) or not (path.is_dir() if tree else path.is_file()):
                 return False
             bucket = datetime.fromtimestamp(moment, timezone.utc).strftime(_BUCKET_FORMAT)
             target = TRASH_DIR / bucket / namespace / path.relative_to(root)
@@ -428,6 +460,7 @@ def usage() -> dict:
     trash = _trash_files()
     trash_files, trash_bytes = _trash_stats(trash)
     present = [p for p in pins if p["present"]]
+    limits = settings()
     return {
         "files": len(entries),
         "bytes": sum(size for _, _, size in entries),
@@ -436,9 +469,9 @@ def usage() -> dict:
         # the size cap is measured against.
         "trash_files": trash_files,
         "trash_bytes": trash_bytes,
-        "trash_days": TRASH_DAYS,
+        "trash_days": limits["trash_days"],
         "trash_physical_bytes": sum(e[2] for e in trash),
-        "trash_cap_bytes": trash_cap_bytes(),
+        "trash_cap_bytes": limits["trash_cap_bytes"],
         "disk": _disk_status(),
         "trash_path": str(TRASH_DIR),
         "legacy_trash_path": str(LEGACY_TRASH_DIR),
@@ -579,6 +612,15 @@ def _guard_and_compact() -> None:
         if done["archived"]:
             print(f"[retention] archived {done['archived']} job(s) older than "
                   f"{done['days']:g} days to {done['file_count']} file(s)", flush=True)
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        from . import voice_import
+
+        swept = voice_import.sweep_backups()
+        if swept["retired"]:
+            print(f"[retention] retired {swept['retired']} voice backup(s) older than "
+                  f"{swept['days']:g} days to the Trash Folder", flush=True)
     except Exception:  # noqa: BLE001
         pass
 

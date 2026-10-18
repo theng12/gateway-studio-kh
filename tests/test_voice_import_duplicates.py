@@ -9,6 +9,7 @@ Replace keeps the voice id, and Remove/Restore move folders instead of deleting 
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import sys
 import tempfile
@@ -150,6 +151,28 @@ class DuplicateHandlingTests(unittest.TestCase):
         again = voice_import.import_paths([old_clip], {str(old_clip): "keep_both"})
         self.assertNotEqual(again["imported"][0]["id"], voice_id)
         self.assertEqual(len(voice_import.voices()), 2)
+
+    def test_old_voice_backups_retire_into_the_gateway_trash_but_the_library_stays(self) -> None:
+        from gateway import retention
+        held = self.root / "data" / "voice-library" / "kept-voice"
+        held.mkdir(parents=True)
+        (held / "reference.wav").write_bytes(b"live")
+        root = voice_import.backup_dir()
+        old = root / "voice-old--20260101T000000--removed"
+        fresh = root / "voice-new--20260102T000000--removed"
+        old.mkdir(parents=True)
+        (old / "reference.wav").write_bytes(b"old")
+        fresh.mkdir(parents=True)
+        moment = time.time()
+        for path, when in ((old, moment - 10 * 86400), (fresh, moment)):
+            os.utime(path, (when, when))
+        result = voice_import.sweep_backups(moment, days=3)
+        self.assertEqual((result["retired"], result["failed"]), (1, 0))
+        self.assertFalse(old.exists())
+        self.assertTrue(fresh.exists())
+        [retired] = list(retention.TRASH_DIR.rglob(old.name))
+        self.assertEqual((retired / "reference.wav").read_bytes(), b"old")
+        self.assertEqual((held / "reference.wav").read_bytes(), b"live")
 
     def test_replace_names_only_a_voice_of_that_name(self) -> None:
         voice_import.import_paths([_clip(self.picked / "Chris.wav", 1.0)])
