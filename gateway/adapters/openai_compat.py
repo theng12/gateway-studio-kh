@@ -20,7 +20,14 @@ from typing import Any
 
 import httpx
 
-from .base import Artifact, BackendError, BackendRequest, BackendResult, quota_hints
+from .base import (
+    Artifact,
+    BackendError,
+    BackendRequest,
+    BackendResult,
+    caller_max_output_tokens,
+    quota_hints,
+)
 
 CHAT_TIMEOUT = httpx.Timeout(300.0, connect=10.0, read=300.0)
 MEDIA_TIMEOUT = httpx.Timeout(600.0, connect=10.0, read=600.0)
@@ -173,7 +180,10 @@ def _chat(request: BackendRequest) -> BackendResult:
 
     if request.params.get("temperature") is not None:
         body["temperature"] = request.params["temperature"]
-    max_tokens = request.params.get("max_output_tokens") or request.params.get("max_tokens")
+    # **Every spelling the caller might use** (`base.caller_max_output_tokens`): this lane
+    # used to read two of the three, so a caller that used OpenAI's current
+    # `max_completion_tokens` had its allowance dropped here while the Hub lane honoured it.
+    max_tokens = caller_max_output_tokens(request.params)
     if max_tokens:
         body["max_tokens"] = max_tokens
 

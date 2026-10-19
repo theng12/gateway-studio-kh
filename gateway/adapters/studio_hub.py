@@ -31,7 +31,13 @@ from urllib.parse import quote, urlsplit
 
 import httpx
 
-from .base import BackendError, BackendRequest, BackendResult, note_request_started
+from .base import (
+    BackendError,
+    BackendRequest,
+    BackendResult,
+    caller_max_output_tokens,
+    note_request_started,
+)
 
 log = logging.getLogger(__name__)
 
@@ -2212,11 +2218,11 @@ def _chat_body(request: BackendRequest) -> dict[str, Any]:
     for key in ("temperature", "top_p", "seed", "thinking"):
         if request.params.get(key) is not None:
             body[key] = request.params[key]
-    max_tokens = (
-        request.params.get("max_completion_tokens")
-        or request.params.get("max_output_tokens")
-        or request.params.get("max_tokens")
-    )
+    # The caller's own answer length, under every spelling it may use
+    # (`base.caller_max_output_tokens`) — this lane read all three by hand while the other
+    # two read a subset, which is how the same request came to be answered differently
+    # depending on which lane served it.
+    max_tokens = caller_max_output_tokens(request.params)
     if max_tokens:
         body["max_tokens"] = max_tokens
     response_format = request.params.get("response_format")

@@ -18,7 +18,13 @@ from typing import Any
 import httpx
 
 from ..providers.definitions import default_temperature_only, learn_default_temperature_only
-from .base import BackendError, BackendRequest, BackendResult, quota_hints
+from .base import (
+    BackendError,
+    BackendRequest,
+    BackendResult,
+    caller_max_output_tokens,
+    quota_hints,
+)
 from .openai_compat import ANTHROPIC_STOP_MAP, CHAT_TIMEOUT, _temperature_refused
 
 #: `max_tokens` is **required** by the Messages API, so a number has to be sent
@@ -207,12 +213,14 @@ class AnthropicBackend:
         body: dict[str, Any] = {
             "model": request.model_id,
             # **The caller's number, then the model's published one, then ours.** The caller
-            # always wins. Absent a caller value the allowance is the one this gateway publishes
-            # for the model (`catalog.published_output_cap` — Anthropic states 128,000 for Haiku
+            # always wins, under every spelling it may use (`base.caller_max_output_tokens`:
+            # `max_completion_tokens` is OpenAI's current name for the field and was being
+            # dropped here, which sent this adapter's private 4,096 in the caller's place).
+            # Absent a caller value the allowance is the one this gateway publishes for the
+            # model (`catalog.published_output_cap` — Anthropic states 128,000 for Haiku
             # 5.5), so a long answer is not cut at 4,096 while the catalogue promises 128,000.
             # The constant is only the last resort: no published cap, no caller value.
-            "max_tokens": request.params.get("max_output_tokens")
-            or request.params.get("max_tokens")
+            "max_tokens": caller_max_output_tokens(request.params)
             or request.max_output_tokens
             or DEFAULT_MAX_TOKENS,
             "messages": messages or [{"role": "user", "content": ""}],
