@@ -100,7 +100,9 @@ enum FleetTrash {
         group.notify(queue: .main) { done(reports.compactMap { $0 }) }
     }
 
-    private static func listView(_ lines: [String]) -> NSView {
+    /// A scrolling monospaced list for an alert's accessory view. Shared with the other Fleet confirms
+    /// that have to name one line per Mac (FleetMacTrash.swift, FleetLiteMode.swift).
+    static func listView(_ lines: [String]) -> NSView {
         let scroll = NSScrollView(frame: NSRect(x: 0, y: 0, width: 480, height: min(260, 22 + 17 * lines.count)))
         let text = NSTextView(frame: scroll.bounds)
         text.string = lines.joined(separator: "\n")

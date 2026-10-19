@@ -79,6 +79,7 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
     private lazy var locationsTab = FleetLocationsTab(frame: .zero)
     private lazy var machinesTab = FleetMachinesTab(frame: .zero)
     private let startupBar = FleetStartupBar(frame: .zero)
+    private let macTrashBar = FleetMacTrashBar(frame: .zero)
     private lazy var modelsTab = FleetModelsTab(frame: .zero)
     private lazy var jobsTab = FleetJobsTab(frame: .zero)
     private lazy var storyTab = FleetStoryTab(frame: .zero)
@@ -138,6 +139,12 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
         let reloadAfterStartup: () -> Void = { [weak self] in self?.reload(force: true) }
         startupBar.onChange = reloadAfterStartup
         machinesTab.startupAccessory.addArrangedSubview(startupBar)
+        // macOS's own Trash setting (FleetMacTrash.swift): the per-Mac "Turn on" and the bulk bar.
+        macTrashBar.onChange = reloadAfterStartup
+        machinesTab.startupAccessory.addArrangedSubview(macTrashBar)
+        machinesTab.macTrashCell = { row in
+            FleetMacTrashCell(machine: row, done: reloadAfterStartup)
+        }
         let resetCounters = NSButton(title: "Reset Job Counters…", target: self, action: #selector(resetCounters))
         resetCounters.controlSize = .small
         resetCounters.toolTip = "Count every Mac's done and failed jobs from now on. Nothing is deleted."
@@ -520,6 +527,7 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
         )
         machinesTab.update(machines: [], studios: [:], filter: filter)
         startupBar.update(machines: [])
+        macTrashBar.update(machines: [])
         modelsTab.update(models: [], workers: [], filter: filter)
         jobsTab.update(snapshot: empty, filter: filter)
         // A location filter that outlived its locations would hide the next read's
@@ -565,6 +573,7 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
         machinesTab.update(
             machines: snapshot.machines, studios: snapshot.studiosByMachine, filter: filter)
         startupBar.update(machines: snapshot.machines)
+        macTrashBar.update(machines: snapshot.machines)   // "Turn On for All Macs That Are Off"
         FleetTrash.everyMac = snapshot.machines   // "Trash on All Macs…" (FleetTrash.swift)
         modelsTab.update(
             models: snapshot.allLocalModels,

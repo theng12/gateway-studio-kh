@@ -1270,6 +1270,9 @@ final class FleetMachinesTab: NSView {
     /// strip above the table that holds the bulk "Enable Auto-Start" bar. Left empty, the tab only shows the
     /// badge, which is all the layout test needs.
     var startupCell: ((FleetMachine) -> NSView)?
+    /// Injected by the Fleet page (FleetMacTrash.swift): the macOS Trash cell with its "Turn on" button.
+    /// Left unset, the tab draws the plain badge.
+    var macTrashCell: ((FleetMachine) -> NSView)?
     let startupAccessory = NSStackView()
 
     override init(frame frameRect: NSRect) {
@@ -1424,6 +1427,56 @@ final class FleetMachinesTab: NSView {
                     if let make = self?.startupCell { return make(row) }
                     let (health, text) = FleetStartup.health(row.startup)
                     return fleetBadgeCell(text, health, tooltip: FleetStartup.tooltip(row.startup, name: row.label ?? row.machine ?? "This Mac"))
+                }
+            ),
+            // macOS's own 30-day Trash emptying (FleetMacTrash.swift): every Hub retirement ends in macOS
+            // Trash, so a Mac without it fills its disk. Self-contained, like the Startup column.
+            FleetColumn(
+                id: "mactrash", title: "Trash auto-empty", width: 128, minWidth: 108,
+                text: { FleetMacTrash.health(machine($0)?.startup).text },
+                sortValue: { row in
+                    // Off first when sorted ascending: those are the Macs that need the button.
+                    switch machine(row)?.startup?.macosTrashAutoEmpty {
+                    case false?: return .number(0)
+                    case true?: return .number(2)
+                    default: return .number(1)
+                    }
+                },
+                tooltip: { FleetMacTrash.tooltip(machine($0)?.startup,
+                                                 name: machine($0)?.label ?? machine($0)?.machine ?? "This Mac") },
+                // Without the injected cell (the layout test) the plain badge is drawn.
+                cell: { [weak self] any in
+                    guard let row = machine(any) else { return NSView() }
+                    if let make = self?.macTrashCell { return make(row) }
+                    let (health, text) = FleetMacTrash.health(row.startup)
+                    return fleetBadgeCell(text, health,
+                                          tooltip: FleetMacTrash.tooltip(row.startup,
+                                                                         name: row.label ?? row.machine ?? "This Mac"))
+                }
+            ),
+            // Each Mac's Lite Mode, in one plain column (FleetLiteMode.swift). Show only: the settings
+            // themselves are edited from the "…" menu on the Startup column.
+            FleetColumn(
+                id: "litemode", title: "Lite Mode", width: 116, minWidth: 100,
+                text: { machine($0).map { FleetLiteMode.state($0).text } ?? "—" },
+                sortValue: { row in
+                    // Off first when sorted ascending: a Mac that will not lend its idle time is the one
+                    // the owner is looking for.
+                    guard let machine = machine(row) else { return .none }
+                    switch FleetLiteMode.state(machine).text {
+                    case "Off": return .number(0)
+                    case "On": return .number(2)
+                    default: return .number(1)
+                    }
+                },
+                tooltip: { FleetLiteMode.tooltip(machine($0),
+                                                 name: machine($0)?.label ?? machine($0)?.machine ?? "This Mac") },
+                cell: { any in
+                    guard let row = machine(any) else { return NSView() }
+                    let (health, text) = FleetLiteMode.state(row)
+                    return fleetBadgeCell(text, health,
+                                          tooltip: FleetLiteMode.tooltip(row,
+                                                                         name: row.label ?? row.machine ?? "This Mac"))
                 }
             ),
             FleetColumn(

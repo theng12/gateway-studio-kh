@@ -20,6 +20,11 @@ struct FleetStartupFact: Decodable {
     var servicesRunning: Running?
     /// Why this Mac's last Studio Hub update failed (Hub 0.6.152); `nil` when it reported none.
     var lastUpdateError: FleetUpdateError?
+    /// macOS's own "Remove items from the Trash after 30 days" (`com.apple.finder FXRemoveOldTrashItems`),
+    /// which rides in this same `startup` object (Hub 0.6.187). It is not a startup setting, but it is
+    /// reported by the same Hub process and arrives on the same wire field, so it is decoded here.
+    /// `nil` is a Hub too old to say - **unknown**, never off. See `FleetMacTrash.swift`.
+    var macosTrashAutoEmpty: Bool?
 
     struct Running: Decodable {
         var up: Int?

@@ -2313,7 +2313,8 @@ def disk_summary(machines: list[dict]) -> dict:
 #: The only keys of a Mac's `startup` report this gateway republishes. The Hub is somebody else's
 #: process, so what reaches the console is a fixed shape, never whatever the node chose to send.
 _STARTUP_KEYS = ("open_at_login", "open_at_login_saved", "start_services_on_launch", "app_version",
-                 "last_start_at", "app_reporting", "stale", "observed_at", "reported_at", "last_update_error")
+                 "last_start_at", "app_reporting", "stale", "observed_at", "reported_at", "last_update_error",
+                 "macos_trash_auto_empty")
 
 #: Where a Studio Hub update stopped (Hub 0.6.152 `startup.last_update_error.phase`).
 _UPDATE_ERROR_PHASES = frozenset({"verifying", "staging", "downloading", "installing"})
@@ -2350,12 +2351,17 @@ def _startup_fact(machine: dict, node: dict) -> dict | None:
     a Mac nobody has heard from since. A report the controller is repeating from before the Mac
     went quiet carries `stale: true`. The two settings are published as the booleans the Hub sent;
     anything else becomes `None`.
+
+    `macos_trash_auto_empty` (Hub 0.6.187) rides in the same object: macOS's own "Remove items from
+    the Trash after 30 days", which every Hub retirement ends up in. `None` there is a Hub too old
+    to say, never "off".
     """
     raw = machine.get("startup") if isinstance(machine.get("startup"), dict) else node.get("startup")
     if not isinstance(raw, dict):
         return None
     out: dict = {key: raw.get(key) for key in _STARTUP_KEYS}
-    for key in ("open_at_login", "open_at_login_saved", "start_services_on_launch", "app_reporting", "stale"):
+    for key in ("open_at_login", "open_at_login_saved", "start_services_on_launch", "app_reporting", "stale",
+                "macos_trash_auto_empty"):
         if not isinstance(out[key], bool):
             out[key] = None
     running = raw.get("services_running")
