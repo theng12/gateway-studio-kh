@@ -2464,7 +2464,9 @@ class OutputFormatSubmitTests(unittest.TestCase):
     def test_unknown_values_are_a_400_for_every_modality(self) -> None:
         bad = {
             "image": ["webp", "m4a", "", 7, ["png"]],
-            "music": ["mp3", "jpeg", "flac", 1],
+            # `flac` is no longer unknown to a music request: a Studio Hub music lane delivers it
+            # (YuE2's native file is FLAC), so the music door admits it. It is asserted good below.
+            "music": ["mp3", "jpeg", 1],
             "tts": ["mp3", "png", "flac", "mp3_44100_128"],
         }
         for modality, values in bad.items():
@@ -2487,13 +2489,40 @@ class OutputFormatSubmitTests(unittest.TestCase):
         ):
             for modality, value, expected in [
                 ("image", "jpeg", "jpeg"), ("image", " PNG ", "png"),
-                ("music", "m4a", "m4a"), ("music", "wav", "wav"),
+                ("music", "m4a", "m4a"), ("music", "wav", "wav"), ("music", "flac", "flac"),
                 ("tts", "M4A", "m4a"), ("tts", "wav", "wav"),
             ]:
                 with self.subTest(modality=modality, value=value):
                     self.assertEqual(self._post(modality, {"output_format": value}).status_code, 200)
                     self.assertEqual(seen[-1], (modality, {
                         "model_id": "model/test", "prompt": "x", "text": "x", "output_format": expected}))
+
+    def test_a_lane_declared_format_is_admitted_even_off_the_flat_list(self) -> None:
+        """**The row the catalogue publishes is the authority on the door's vocabulary.**
+
+        The lane states its own `output_format` enum; the catalogue relays it onto the row, so a
+        format the lane publishes must be admitted even when it is not in the modality's flat list.
+        This is the seam that let a YuE2 row advertise `flac` while the door answered 400.
+        """
+        lane = SimpleNamespace(id="studio-hub-test", kind="studio_hub")
+        raw = {"lane_contract": {"parameters": [
+            {"name": "output_format", "type": "string", "required": False,
+             "enum": ["opus", "m4a"], "request_only": True}]}}
+        seen: list[tuple[str, dict[str, Any]]] = []
+
+        def fake_submit(modality: str, _model: str, params: dict[str, Any], *_a: Any, **_k: Any):
+            seen.append((modality, dict(params)))
+            return {"id": "job_x", "modality": modality, "state": "accepted"}, False
+
+        with patch.object(self.api.catalog, "resolve",
+                          side_effect=lambda *_a, **_k: (lane, {"model_id": "m", "raw": raw})), \
+                patch.object(self.api, "_submit", side_effect=fake_submit), \
+                patch.object(self.api, "_job_envelope", side_effect=lambda job: job):
+            self.assertEqual(self._post("music", {"output_format": " OPUS "}).status_code, 200)
+            self.assertEqual(seen[-1][1]["output_format"], "opus")
+            # A lane that states nothing still gets the flat list, and nothing else.
+            with patch.object(self.api.catalog, "resolve", side_effect=lambda *_a, **_k: (lane, None)):
+                self.assertEqual(self._post("music", {"output_format": "opus"}).status_code, 400)
 
     def test_absent_and_null_are_the_same_native_request(self) -> None:
         seen: list[dict[str, Any]] = []

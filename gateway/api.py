@@ -1257,9 +1257,18 @@ def _refuse_when_the_disk_is_low(extra_bytes: int = 0) -> None:
 #: The optional `output_format` request, per modality: the container a Studio Hub lane should
 #: deliver instead of its native WAV / PNG. Absent means native, which is what every caller before
 #: this field got. One fixed preset per name (AAC / JPEG) lives in the Hub; there is no quality knob.
+#:
+#: **A floor, not the whole answer.** A value outside this list is still admitted when the named
+#: model's own catalogue row publishes it (`_published_output_formats`) — a lane is the authority
+#: on what it accepts, so the door must not refuse a format the catalogue advertises.
+#: This list is what the rest falls back to: a request naming no model, a model whose lane states
+#: no `output_format` enum, and the cloud providers. Music carries `flac` because a Studio Hub
+#: music lane really delivers it — YuE2's native file *is* FLAC (the Hub music lane's
+#: `_native_format`) and `adapters/studio_hub._FORMAT_BY_MEDIA` already maps `audio/flac` to
+#: `.flac`, so the door was refusing a container it could already describe and receive.
 OUTPUT_FORMATS = {
     "image": ("png", "jpeg"),
-    "music": ("wav", "m4a"),
+    "music": ("wav", "flac", "m4a"),
     "tts": ("wav", "m4a"),
 }
 
@@ -1280,18 +1289,50 @@ def _validate_tts_pauses(payload: dict[str, Any]) -> None:
                 400, f"{name} must be a number of seconds, 0 or more; got {value!r}.", "INVALID_PARAMS")
 
 
+def _published_output_formats(modality: str, payload: dict[str, Any]) -> tuple[str, ...]:
+    """The delivery formats the named model's own catalogue row publishes, or `()`.
+
+    **One source of truth: the row the catalogue publishes.** A Studio Hub lane states its delivery
+    formats in its own `lane_contract`; `catalog._output_formats` relays them onto the row, and this
+    reads that same declaration back, so a row can never advertise a format the door refuses. A
+    YuE2 music lane declares `["flac", "m4a"]` and its native file *is* FLAC, while this door
+    answered 400 for `flac` — the catalogue offered a container the door would not take.
+
+    `catalog.resolve` returns the *inventory* model, not the published row (the same distinction
+    `tts_quote` records), so the row's own `_output_formats` is what is read. Nothing is invented:
+    a model whose lane states no enum, a model this gateway does not offer, and a request naming no
+    model all answer `()`, and the flat list stands.
+    """
+    compound = str(payload.get("model_id") or payload.get("model") or "")
+    if not compound:
+        return ()
+    definition, model = catalog.resolve(modality, compound)
+    if definition is None or model is None:
+        return ()
+    # `catalog` here is the catalogue *instance*; the row builder is a module function.
+    from .catalog import _output_formats
+
+    published = _output_formats(definition, model.get("raw") or {}).get("output_formats")
+    return tuple(published or ())
+
+
 def _validate_output_format(modality: str, payload: dict[str, Any]) -> None:
     """Refuse an `output_format` the modality does not define, before anything is queued or charged.
 
     Normalised in place (` JPEG ` -> `jpeg`) so the stored job and the Hub see one spelling. `null`
-    is the same as absent.
+    is the same as absent. What a modality defines is its flat list *plus* whatever the named
+    model's own row publishes (`_published_output_formats`) — the lane owns its own vocabulary.
     """
     value = payload.get("output_format")
     if value is None:
         payload.pop("output_format", None)
         return
-    allowed = OUTPUT_FORMATS[modality]
     cleaned = value.strip().lower() if isinstance(value, str) else None
+    allowed = OUTPUT_FORMATS[modality]
+    if cleaned not in allowed:
+        # **Only a value the flat list refuses needs the lane asked.** A caller sending `m4a` or
+        # `png` — which is every caller before this field existed — never pays for a resolution.
+        allowed = tuple(dict.fromkeys([*allowed, *_published_output_formats(modality, payload)]))
     if cleaned not in allowed:
         raise GatewayError(
             400,

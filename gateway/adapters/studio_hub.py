@@ -488,8 +488,10 @@ _HUB_MUSIC_PARAMS = (
     "instrumental",
     "lyrics",
     "vocal_language",
-    # The delivery container (`wav`/`m4a`), validated at submit. Optional: absent keeps the lane's
-    # native file, and a node that predates it drops the field and answers with that native file.
+    # The delivery container, validated at submit against the modality's list *plus* whatever this
+    # model's own row publishes (`api.OUTPUT_FORMATS` / `api._published_output_formats`), so a lane
+    # that delivers FLAC (`audio/flac` below) is one a caller may ask for. Optional: absent keeps the
+    # lane's native file, and a node that predates it drops the field and answers with that native file.
     "output_format",
 )
 
