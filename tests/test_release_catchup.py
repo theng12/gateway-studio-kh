@@ -186,7 +186,7 @@ class Decisions(Base):
         detail = self.outcome()["detail"]
         self.assertIn("doesn't trust this Gateway's App Update Key", detail)
         self.assertIn("App Update Key public key", detail)
-        self.assertIn("Technical details", detail)
+        self.assertIn("App Update Key into Hub → Connections", detail)
         self.assertIn("then compare fingerprints", detail)
         self.assertIn(FP, detail)
 

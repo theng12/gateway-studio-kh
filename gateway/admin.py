@@ -1276,24 +1276,47 @@ def bulk_models(payload: dict[str, Any]) -> Any:
 
 @router.get("/api/settings/retention", dependencies=[Depends(require_admin)])
 def get_retention() -> dict[str, Any]:
-    """How long received artifacts are kept, and how much is there now."""
+    """The four limits, and nothing else.
+
+    **Deliberately no `usage` here.** The report walks every artifact and trash file, and
+    `_safe_path` resolves each one, so it costs seconds on a real store — measured on this Mac's
+    10,350 artifacts and 41,668 trash entries: 3.1 s warm, past 15 s cold, and minutes once walks
+    queue behind each other. The limits are one small JSON read. The Settings form *is* the four
+    numbers, and while they rode on that walk the app abandoned the read at its ceiling and blanked
+    the whole form. The report has its own route so it can be slow alone.
+    """
     from . import retention
 
-    return {**retention.settings(), "usage": retention.shared_usage()}
+    return retention.settings()
+
+
+@router.get("/api/settings/retention/usage", dependencies=[Depends(require_admin)])
+def get_retention_usage() -> dict[str, Any]:
+    """What is stored now, for the Settings page's "in use" line.
+
+    Slow by nature: it walks the artifact store and the Trash Folder. Read it on its own so a
+    caller's own ceiling can be about the walk rather than about the limits beside it.
+    """
+    from . import retention
+
+    return {"usage": retention.shared_usage()}
 
 
 @router.put("/api/settings/retention", dependencies=[Depends(require_admin)])
 def set_retention(payload: dict[str, Any]) -> Any:
-    """Change the limits. Whichever is reached first prunes; the Trash Folder has its own pair."""
+    """Change the limits. Whichever is reached first prunes; the Trash Folder has its own pair.
+
+    The answer is the saved limits alone, for the same reason the read is: a write that answers in
+    a second is one the app can report honestly, and this one used to carry the usage walk too.
+    """
     from . import retention
 
-    saved = retention.save(
+    return retention.save(
         max_age_days=payload.get("max_age_days"),
         max_bytes=payload.get("max_bytes"),
         trash_days=payload.get("trash_days"),
         trash_cap_bytes=payload.get("trash_cap_bytes"),
     )
-    return {**saved, "usage": retention.shared_usage()}
 
 
 @router.get("/api/settings/telegram", dependencies=[Depends(require_admin)])

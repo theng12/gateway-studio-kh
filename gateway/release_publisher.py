@@ -473,7 +473,7 @@ def _refusal(response: httpx.Response) -> dict[str, Any]:
         try:
             fingerprint = identity()["fingerprint"]
             reason = (f"{reason.strip()} Copy this Gateway's App Update Key public key from "
-                      "Gateway → Settings → App Update Key → Technical details into Hub → "
+                      "Gateway → Settings → App Update Key into Hub → "
                       "Connections → App updates, then compare fingerprints "
                       f"(this Gateway: {fingerprint}).")
         except ReleaseError:
@@ -968,7 +968,7 @@ def _untrusted(row: dict[str, Any], fingerprint: str) -> str | None:
     return ("it doesn't trust this Gateway's App Update Key"
             + (f" (it trusts {held[:12]}…)" if held else " (no key is installed)")
             + "; copy this Gateway's App Update Key public key from Gateway → Settings → "
-              "App Update Key → Technical details into Hub → Connections → App updates, "
+              "App Update Key into Hub → Connections → App updates, "
               f"then compare fingerprints (this Gateway: {fingerprint})")
 
 

@@ -2602,7 +2602,7 @@ uvicorn.run("gateway.api:app", host="127.0.0.1", port=int(sys.argv[2]), log_leve
             # of the same age to go, so the check cannot pass on a broken sweep.
             if kie_music_envelope:
                 artifact_dir = Path(
-                    req(client, "GET", "/admin/api/settings/retention")
+                    req(client, "GET", "/admin/api/settings/retention/usage")
                     .json()["usage"]["path"]
                 )
                 unpinned = artifact_dir / "e2e-unpinned-old.bin"
@@ -3723,8 +3723,15 @@ uvicorn.run("gateway.api:app", host="127.0.0.1", port=int(sys.argv[2]), log_leve
             check("the defaults are the ones asked for: 3 days or 10 GB",
                   got["max_age_days"] == 3 and got["max_bytes"] == 10 * 1024**3,
                   f"{got['max_age_days']} days / {got['max_bytes']} bytes")
+            # **The limits read must not walk the store.** It used to carry `usage`, whose walk of
+            # every artifact and trash file took seconds — measured 3.1 s warm and past 15 s cold on
+            # a real store — and the app abandons a read at 15 s, which blanked the whole Settings
+            # form. The numbers are one small file; the report is its own route.
+            check("and the limits read answers without walking the store",
+                  "usage" not in got, f"keys={sorted(got)}")
             check("and it reports what is actually stored",
-                  got["usage"]["files"] >= 4, f"{got['usage']}")
+                  req(client, "GET", "/admin/api/settings/retention/usage")
+                  .json()["usage"]["files"] >= 4, f"{got}")
 
             out = req(client, "POST", "/admin/api/artifacts/prune", json={}).json()
             check("pruning removes what is past the age limit",
@@ -3733,7 +3740,8 @@ uvicorn.run("gateway.api:app", host="127.0.0.1", port=int(sys.argv[2]), log_leve
             trash = tmp / "_trash"
             check("pruned files go to the Trash Folder, not oblivion",
                   sorted(p.name for p in trash.rglob("*.mp4")) == ["ancient.mp4", "old.mp4"]
-                  and req(client, "GET", "/admin/api/settings/retention").json()["usage"]["trash_files"] >= 2,
+                  and req(client, "GET", "/admin/api/settings/retention/usage")
+                  .json()["usage"]["trash_files"] >= 2,
                   f"{sorted(trash.rglob('*'))}")
             check("and keeps what is inside it", recent.exists() and fresh.exists())
             check("a file newer than the protection window is never removed",

@@ -1122,8 +1122,8 @@ final class FleetLocationsTab: FleetTabView {
         }
         let fingerprint = (trust.fingerprint ?? "").trimmingCharacters(in: .whitespaces)
         guard !fingerprint.isEmpty else {
-            return "App Update Key: none installed yet — copy the public key from Gateway → Settings → App Update Key → Technical details "
-                + "into Hub → Connections → App updates, then compare fingerprints."
+            return "App Update Key: none installed yet — copy it from Gateway → Settings → App Update Key "
+                + "into Hub → Connections → App updates, then compare the first eight characters."
         }
         let who = (trust.publisherId ?? "").trimmingCharacters(in: .whitespaces)
         let short = String(fingerprint.prefix(12))

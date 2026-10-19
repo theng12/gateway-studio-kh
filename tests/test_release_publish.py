@@ -173,7 +173,7 @@ class ReleasePublish(unittest.TestCase):
         self.assertEqual(outcome["status"], 409)
         self.assertIn("App Update Key is installed", outcome["detail"])
         self.assertIn("App Update Key public key", outcome["detail"])
-        self.assertIn("Technical details", outcome["detail"])
+        self.assertIn("App Update Key into Hub → Connections", outcome["detail"])
         self.assertIn("then compare fingerprints", outcome["detail"])
         self.assertIn(identity["fingerprint"], outcome["detail"])
         self.assertNotIn("install this gateway's publisher fingerprint", outcome["detail"].lower())
