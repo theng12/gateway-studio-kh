@@ -486,6 +486,7 @@ enum GatewayAPI {
             compiled = subprocess.run(
                 ["swiftc", "-swift-version", "5", "-framework", "AppKit",
                  "menubar/PageKit.swift", "menubar/FleetModels.swift", "menubar/FleetStartupModel.swift", "menubar/FleetLastStop.swift", "menubar/FleetWorkstation.swift",
+                 "menubar/FleetMacTrashModel.swift",
                  "menubar/FleetTabs.swift", "menubar/FleetGroups.swift", "menubar/SecretField.swift",
                  "menubar/FleetBanner.swift",
                  str(source), "-o", str(binary)],

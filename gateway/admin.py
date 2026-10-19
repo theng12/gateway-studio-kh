@@ -3740,6 +3740,41 @@ def fleet_machine_trash_delete(controller_id: str, machine_id: str, payload: dic
         return JSONResponse(status_code=error.status, content=error.body)
 
 
+@router.post(
+    "/api/fleet/controllers/{controller_id}/machines/{machine_id}/macos-trash-auto-empty/enable",
+    dependencies=[Depends(require_admin)],
+)
+def fleet_machine_enable_macos_trash(controller_id: str, machine_id: str) -> Any:
+    """Turn on one Mac's Finder "Remove items from the Trash after 30 days".
+
+    Finder > Settings > Advanced, the preference `com.apple.finder FXRemoveOldTrashItems`. Every
+    retirement a Studio Hub makes ends in macOS Trash, so a Mac without this fills its disk until
+    someone empties the Trash by hand. **One way only**: there is no route here or on the Hub that
+    turns it off. No body. Relayed through the Mac's controller on the fleet credential; the answer
+    carries the value the Mac **read back**, not the write's exit code, so a write that did not stick
+    is a refusal (`NOT_APPLIED`). A Mac on a Hub older than 0.6.187 answers `HUB_TOO_OLD`; one that is
+    not answering answers `NODE_UNREACHABLE`, which no remote action can fix.
+    """
+    try:
+        return startup_control.enable_macos_trash_auto_empty(controller_id, machine_id)
+    except startup_control.StartupError as error:
+        return JSONResponse(status_code=error.status, content=error.body)
+
+
+@router.post("/api/fleet/trash/enable-macos-auto-empty", dependencies=[Depends(require_admin)])
+def fleet_enable_macos_trash_everywhere(payload: dict[str, Any]) -> Any:
+    """Turn it on for every Mac whose Hub reported it off.
+
+    `{"dry_run": true}` lists what it would do and touches nothing. Macs that said nothing (an older
+    Hub) are never touched, and a Mac that is not answering is listed with why and skipped - it never
+    blocks the Macs that are. Nothing is turned off.
+    """
+    dry_run = payload.get("dry_run", False)
+    if not isinstance(dry_run, bool):
+        return _error(400, "dry_run must be true or false", "BAD_REQUEST")
+    return startup_control.enable_macos_trash_auto_empty_where_off(dry_run=dry_run)
+
+
 def _share_call(fn) -> Any:
     try:
         return fn()

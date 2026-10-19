@@ -667,22 +667,48 @@ def trash_delete(controller_id: str, machine_id: str, items: object, confirm: ob
                                 "bytes": expected_bytes})
 
 
-def enable_autostart_where_off(*, dry_run: bool = False,
-                               machines: list[dict[str, Any]] | None = None,
-                               ask=request) -> dict[str, Any]:
-    """Turn "Start services on startup" on for every Mac that reported it off.
+# A Mac's macOS Trash preference (owner request 2026-10-19, Studio Hub 0.6.187). Every retirement a Hub
+# makes ends in macOS Trash, so a Mac whose Finder never empties that Trash fills its disk - and across
+# ~53 Macs nobody could tell which ones were set. The Hub reads it into `startup.macos_trash_auto_empty`
+# on every machine row. These turn it **on**, never off: the Hub has no route that turns it off.
+MACOS_TRASH_HUB = "0.6.187"
+MACOS_TRASH_TOO_OLD = f"Needs Studio Hub {MACOS_TRASH_HUB} to turn on macOS's Trash setting from the Gateway."
+#: `defaults write` plus the read-back the Hub verifies; nothing here waits on a user.
+_MACOS_TRASH_TIMEOUT = httpx.Timeout(90.0, connect=6.0)
 
-    Only Macs whose Hub said `false` are touched (never `unknown`: an older Hub cannot take the
-    request, and guessing would turn a settings change into a pile of refusals). A Mac that is
-    currently unreachable is listed, not tried - its controller cannot pass anything on. The result
-    names every Mac and what happened, so the one button can be audited afterwards.
+
+def enable_macos_trash_auto_empty(controller_id: str, machine_id: str, *,
+                                  client: httpx.Client | None = None) -> dict[str, Any]:
+    """Turn on one Mac's Finder "Remove items from the Trash after 30 days", through its controller.
+
+    One way only: the Hub has no route that turns it off, so nothing here can. The answer carries the
+    value the Mac **read back**, not the write's exit code - a write that did not stick is a refusal
+    (`NOT_APPLIED`). A Hub older than 0.6.187 answers `HUB_TOO_OLD`; a Mac that is not answering
+    answers `NODE_UNREACHABLE`, which no remote action can fix.
+    """
+    if not _MACHINE_ID.fullmatch(machine_id or ""):
+        raise StartupError(400, {"ok": False, "code": "BAD_MACHINE", "detail": "machine id is not valid"})
+    return _node_post(controller_id, machine_id, "macos-trash-auto-empty/enable", {},
+                      event="macos_trash_enable", too_old=MACOS_TRASH_TOO_OLD,
+                      refused="The controller refused this gateway's credential for this Mac.",
+                      audit_fields={}, client=client, timeout=_MACOS_TRASH_TIMEOUT)
+
+
+def _enable_where_off(fact_key: str, ask, *, event: str, dry_run: bool,
+                      machines: list[dict[str, Any]] | None) -> dict[str, Any]:
+    """Ask every reachable Mac whose Hub said `fact_key` is off, and name each one in the answer.
+
+    Only Macs whose Hub said `false` are touched (never `unknown`: an older Hub cannot take the request,
+    and guessing would turn a settings change into a pile of refusals). A Mac that is currently
+    unreachable is listed, not tried - its controller cannot pass anything on, so it never blocks the
+    rest. The result names every Mac and what happened, so the one button can be audited afterwards.
     """
     rows = machines if machines is not None else (fleet.snapshot(force=True).get("machines") or [])
     targets: list[dict[str, Any]] = []
     skipped: list[dict[str, Any]] = []
     for machine in rows:
         fact = machine.get("startup")
-        if not fact or fact.get("start_services_on_launch") is not False:
+        if not fact or fact.get(fact_key) is not False:
             continue
         reachable = machine.get("reachable") is True and not fact.get("stale")
         entry = {"location_id": machine.get("location_id"), "machine": machine.get("machine"),
@@ -691,16 +717,14 @@ def enable_autostart_where_off(*, dry_run: bool = False,
             skipped.append({**entry, "reason": _unreachable_reason(machine)})
         else:
             targets.append(entry)
-    audit("bulk_enable_autostart", dry_run=dry_run, would_ask=len(targets), skipped=len(skipped))
+    audit(event, dry_run=dry_run, would_ask=len(targets), skipped=len(skipped))
     if dry_run:
         return {"dry_run": True, "asked": 0, "would_ask": targets, "skipped": skipped,
                 "applied": [], "failed": []}
 
     def one(entry: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any] | None, dict[str, Any] | None]:
         try:
-            answer = ask(str(entry["location_id"]), str(entry["machine"]),
-                         "set_start_services_on_launch", True)
-            return entry, answer, None
+            return entry, ask(str(entry["location_id"]), str(entry["machine"])), None
         except StartupError as error:
             return entry, None, error.body
 
@@ -713,9 +737,38 @@ def enable_autostart_where_off(*, dry_run: bool = False,
             else:
                 body = error or answer or {}
                 failed.append({**entry, "code": body.get("code"), "detail": body.get("detail")})
-    audit("bulk_enable_autostart_done", asked=len(targets), applied=len(applied), failed=len(failed))
+    audit(f"{event}_done", asked=len(targets), applied=len(applied), failed=len(failed))
     return {"dry_run": False, "asked": len(targets), "applied": applied, "failed": failed,
             "skipped": skipped}
+
+
+def enable_autostart_where_off(*, dry_run: bool = False,
+                               machines: list[dict[str, Any]] | None = None,
+                               ask=request) -> dict[str, Any]:
+    """Turn "Start services on startup" on for every Mac that reported it off.
+
+    Only Macs whose Hub said `false` are touched (never `unknown`: an older Hub cannot take the
+    request, and guessing would turn a settings change into a pile of refusals). A Mac that is
+    currently unreachable is listed, not tried - its controller cannot pass anything on. The result
+    names every Mac and what happened, so the one button can be audited afterwards.
+    """
+    return _enable_where_off("start_services_on_launch",
+                             lambda controller, machine: ask(controller, machine,
+                                                             "set_start_services_on_launch", True),
+                             event="bulk_enable_autostart", dry_run=dry_run, machines=machines)
+
+
+def enable_macos_trash_auto_empty_where_off(*, dry_run: bool = False,
+                                            machines: list[dict[str, Any]] | None = None,
+                                            ask=enable_macos_trash_auto_empty) -> dict[str, Any]:
+    """Turn macOS's Trash setting on for every Mac whose Hub said it is off.
+
+    Same rules as `enable_autostart_where_off`, and the same answer: a Mac that is offline or stale is
+    listed with why and skipped, never blocking the ones that are answering. Nothing turns it off.
+    """
+    return _enable_where_off("macos_trash_auto_empty",
+                             lambda controller, machine: ask(controller, machine),
+                             event="bulk_enable_macos_trash", dry_run=dry_run, machines=machines)
 
 
 def _unreachable_reason(machine: dict[str, Any]) -> str:
