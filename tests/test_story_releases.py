@@ -323,6 +323,52 @@ class StoryReleaseTests(unittest.TestCase):
         bad = self.client.post("/v1/apps/story/checkin", json={"instance_id": "../x"}, headers=AUTH)
         self.assertEqual(bad.status_code, 422)
 
+    def checkin(self, instance: str = "Mac-mini", **update) -> None:
+        response = self.client.post(
+            "/v1/apps/story/checkin",
+            json={"instance_id": instance, "version": "1.4.257", "update": update}, headers=AUTH)
+        self.assertEqual(response.status_code, 200, response.text)
+
+    def record(self, instance: str = "Mac-mini") -> dict:
+        return story_releases._read_json(story_releases._instances_file())[instance]
+
+    def test_a_reported_byte_count_is_recorded_and_times_the_progress(self) -> None:
+        """`update_progress_at` is what the watchdog reads to tell a slow download from a stopped one."""
+        self.publish("1.4.258")
+        self.checkin(phase="downloading", version="1.4.258", downloaded_bytes=1000, total_bytes=9000)
+        first = self.record()
+        self.assertEqual((first["update"]["downloaded_bytes"], first["update"]["total_bytes"]), (1000, 9000))
+        started = first["update_progress_at"]
+
+        time.sleep(0.01)
+        self.checkin(phase="downloading", version="1.4.258", downloaded_bytes=1000, total_bytes=9000)
+        self.assertEqual(self.record()["update_progress_at"], started)  # nothing moved
+
+        self.checkin(phase="downloading", version="1.4.258", downloaded_bytes=2000, total_bytes=9000)
+        self.assertGreater(self.record()["update_progress_at"], started)
+
+    def test_an_older_story_that_states_no_bytes_is_still_timed(self) -> None:
+        """A Mac that reports nothing to compare is *unmeasurable*, never silently "stalled"."""
+        self.publish("1.4.258")
+        self.checkin(phase="failed", version="1.4.258", error="The download was refused (403).")
+        row = self.record()
+        self.assertIsNone(row["update"]["downloaded_bytes"])
+        self.assertIsInstance(row["update_progress_at"], float)
+        self.assertEqual(row["update"]["error"], "The download was refused (403).")
+
+    def test_an_unfamiliar_phase_is_none_not_a_guess(self) -> None:
+        self.publish("1.4.258")
+        self.checkin(phase="frobnicating")
+        self.assertIsNone(self.record()["update"]["phase"])
+
+    def test_the_instances_route_carries_the_progress_stamp(self) -> None:
+        self.publish("1.4.258")
+        self.checkin(phase="downloading", version="1.4.258", downloaded_bytes=10)
+        row = self.client.get("/admin/api/story/instances").json()["instances"][0]
+        self.assertIsInstance(row["update_progress_at"], float)
+        self.assertEqual(row["update"]["downloaded_bytes"], 10)
+
+
     def test_the_queue_view_counts_by_caller_and_group(self) -> None:
         from gateway.runtime import store
         store.submit(modality="image", model_id="m", params={}, idempotency_key=None,

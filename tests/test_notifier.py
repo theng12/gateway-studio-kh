@@ -18,6 +18,7 @@ import wave
 from datetime import datetime
 from io import BytesIO
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -75,10 +76,12 @@ def machine(name: str, loc: str = "g1", group: str = "Studio 1", **over) -> dict
     return row
 
 
-def snap(machines=(), locations=None, running=()) -> dict:
+def snap(machines=(), locations=None, running=(), summary=None, issues=None) -> dict:
     locs = locations if locations is not None else [
         {"id": "g1", "label": "Studio 1", "reachable": True, "url": "http://x", "local": False}]
-    return {"locations": locs, "machines": list(machines), "running": list(running)}
+    return {"locations": locs, "machines": list(machines), "running": list(running),
+            "summary": summary if summary is not None else {},
+            "issues": list(issues or [])}
 
 
 class Base(unittest.TestCase):
@@ -130,6 +133,9 @@ class SettingsAndSecret(Base):
         self.assertTrue(events["daily_summary"])
         for key in ("disk_memory", "jobs_trouble", "release", "backup", "holds", "credentials", "gateway_restart"):
             self.assertFalse(events[key], key)
+        # The watchdog is on by default: every one of these faults went unnoticed for hours.
+        for key in ("fleet_watchdog", "story_update", "gateway_health"):
+            self.assertTrue(events[key], key)
         pub = self.n.public_settings()
         self.assertFalse(pub["quiet_hours"]["enabled"])
         self.assertEqual(pub["summary_time"], "08:00")
@@ -619,6 +625,247 @@ class DailySummary(Base):
         self.assertIn("Went offline yesterday: Mini A", self.n.build_summary(at(8)))
 
 
+class FleetWatchdog(Base):
+    """The faults that were noticed hours or days late, each with its own window."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        # Every default except the daily summary: these windows run for hours, so a test that
+        # crosses 08:00 would collect a summary it is not asking about.
+        self.configure(events={"daily_summary": False})
+        from gateway import story_releases
+
+        path = story_releases._instances_file()  # shared by the whole module: clear it per test
+        path.unlink(missing_ok=True)
+        self.addCleanup(lambda: path.unlink(missing_ok=True))
+
+    # ---- 2. a Mac behind the published Studio Hub
+
+    def behind(self, name: str = "Mini A", **over) -> dict:
+        return machine(name, version_status="behind", hub_version="0.6.180", **over)
+
+    def test_a_mac_behind_the_hub_alerts_only_after_six_hours(self) -> None:
+        self.snapshot = snap([self.behind()], summary={"hub_latest": "0.6.186"})
+        self.run_ticks(0, 60, nt.HUB_BEHIND_S - 120)
+        self.assertEqual(self.transport.sent, [])
+        self.run_ticks(nt.HUB_BEHIND_S + 60)
+        self.assertIn("Mini A (Studio 1) is on Studio Hub 0.6.180, not 0.6.186", self.transport.sent[0])
+
+    def test_the_hubs_own_reason_for_a_stopped_update_is_quoted(self) -> None:
+        self.snapshot = snap([self.behind(startup={"last_update_error": {
+            "phase": "installing", "reason": "The app is not in /Applications."}})], summary={"hub_latest": "0.6.186"})
+        self.run_ticks(0, nt.HUB_BEHIND_S + 60)
+        self.assertIn("the update stopped while installing: The app is not in /Applications.",
+                      self.transport.sent[0])
+
+    def test_an_updating_mac_and_a_latest_one_are_not_alerts(self) -> None:
+        self.snapshot = snap([machine("Mini A", version_status="updating", hub_version="0.6.180"),
+                              machine("Mini B", version_status="latest", hub_version="0.6.186"),
+                              machine("Mini C", version_status="unknown", hub_version=None,
+                                      location_reachable=False, reachable=False)],
+                             summary={"hub_latest": "0.6.186"})
+        self.run_ticks(0, nt.HUB_BEHIND_S + 60)
+        self.assertEqual(self.transport.sent, [])
+
+    def test_the_mac_behind_comes_back_and_the_message_says_so(self) -> None:
+        self.snapshot = snap([self.behind()], summary={"hub_latest": "0.6.186"})
+        self.run_ticks(0, nt.HUB_BEHIND_S + 60)
+        self.snapshot = snap([machine("Mini A", version_status="latest", hub_version="0.6.186")],
+                             summary={"hub_latest": "0.6.186"})
+        self.run_ticks(0, 61)
+        self.assertIn("is on the newest Studio Hub again", self.transport.sent[-1])
+
+    def test_the_six_hour_window_survives_a_restart(self) -> None:
+        """A Gateway update must not restart the clock on the Mac it is watching."""
+        self.snapshot = snap([self.behind()], summary={"hub_latest": "0.6.186"})
+        self.run_ticks(0, 60)
+        restarted = nt.Notifier(
+            transport=self.transport, clock=self.clock, sleep=lambda s: None,
+            settings_path=self.dir / "telegram.json", state_path=self.dir / "state.json", sync=True,
+            snapshot=lambda: self.snapshot, store=self.store, disk_status=lambda: self.disk)
+        self.clock.now += nt.HUB_BEHIND_S
+        restarted.tick()
+        self.assertEqual(len(self.transport.sent), 1)
+        self.assertIn("is on Studio Hub 0.6.180", self.transport.sent[0])
+
+    # ---- 4. a site with no Mac for a model it offers
+
+    def site(self, **over) -> dict:
+        row = {"id": "g1", "label": "Studio 1", "reachable": True, "role": "controller",
+               "machines": [], "nodes": [], "local_models": [], "workers": []}
+        row.update(over)
+        return row
+
+    @staticmethod
+    def enable(*models):
+        """`registry.models.enabled_models` for the six modalities, with one definition per model."""
+        from gateway.providers import registry
+
+        def walk(modality):
+            return [(SimpleNamespace(id=f"studio-hub-g1"), {"model_id": m, "modality": modality})
+                    for m, kind in models if kind == modality]
+
+        return patch.object(registry.models, "enabled_models", walk)
+
+    def test_a_site_with_no_mac_for_an_enabled_model(self) -> None:
+        row = self.site(local_models=[{"model": "gemma-4-26b", "machine": "mini", "memory_eligible": False}],
+                        workers=[{"machine": "mini", "models": ["gemma-4-26b"], "drained": True}])
+        self.snapshot = snap([], locations=[row])
+        with self.enable(("gemma-4-26b", "chat")):
+            self.run_ticks(0, 61, nt.SITE_NO_MACHINE_S + 120)
+        self.assertIn("Studio 1 has no Mac free for gemma-4-26b", self.transport.sent[0])
+
+    def test_a_site_that_names_no_mac_is_unknown_not_empty(self) -> None:
+        self.snapshot = snap([], locations=[self.site()])
+        with self.enable(("gemma-4-26b", "chat")):
+            self.run_ticks(0, 61, nt.SITE_NO_MACHINE_S + 120)
+        self.assertEqual(self.transport.sent, [])
+
+    def test_a_site_with_one_eligible_mac_is_quiet(self) -> None:
+        row = self.site(machines=[{"machine": "mini", "reachable": True}],
+                        local_models=[{"model": "gemma-4-26b", "machine": "mini", "memory_eligible": True}],
+                        workers=[{"machine": "mini", "models": ["gemma-4-26b"]}])
+        self.snapshot = snap([], locations=[row])
+        with self.enable(("gemma-4-26b", "chat")):
+            self.run_ticks(0, 61, nt.SITE_NO_MACHINE_S + 120)
+        self.assertEqual(self.transport.sent, [])
+
+    def test_a_mac_that_cannot_fit_the_model_is_not_eligible(self) -> None:
+        """The router's own rule: a Mac the Hub says cannot fit it does not count as a machine."""
+        row = self.site(machines=[{"machine": "mini", "reachable": True}],
+                        local_models=[{"model": "gemma-4-26b", "machine": "mini", "memory_eligible": False}],
+                        workers=[{"machine": "mini", "models": ["gemma-4-26b"]}])
+        self.snapshot = snap([], locations=[row])
+        with self.enable(("gemma-4-26b", "chat")):
+            self.run_ticks(0, 61, nt.SITE_NO_MACHINE_S + 120)
+        self.assertIn("no Mac free for gemma-4-26b", self.transport.sent[0])
+
+    def test_a_site_that_cannot_take_customer_work_is_not_an_alert(self) -> None:
+        row = self.site(role="agent", local_models=[
+            {"model": "gemma-4-26b", "machine": "mini", "memory_eligible": False}])
+        self.snapshot = snap([], locations=[row])
+        with self.enable(("gemma-4-26b", "chat")):
+            self.run_ticks(0, 61, nt.SITE_NO_MACHINE_S + 120)
+        self.assertEqual(self.transport.sent, [])
+
+    # ---- 5. a lane with work waiting and nothing running
+
+    def test_a_lane_with_work_waiting_and_nothing_running(self) -> None:
+        for _ in range(3):
+            self.add_job("image", "accepted", created_at=self.clock.now - 2400)
+        self.run_ticks(0, 61)
+        self.assertIn("Image work is waiting and nothing is running: 3 jobs, the oldest for 41 min",
+                      self.transport.sent[0])
+
+    def test_a_lane_with_something_running_is_not_stuck(self) -> None:
+        for _ in range(3):
+            self.add_job("image", "accepted", created_at=self.clock.now - 2400)
+        self.add_job("image", "running")
+        self.run_ticks(0, 61)
+        self.assertEqual(self.transport.sent, [])
+
+    def test_a_lane_younger_than_thirty_minutes_is_not_stuck(self) -> None:
+        self.add_job("image", "accepted", created_at=self.clock.now - 600)
+        self.run_ticks(0, 61)
+        self.assertEqual(self.transport.sent, [])
+
+    def test_the_lane_moving_again_resolves_it(self) -> None:
+        self.add_job("image", "accepted", created_at=self.clock.now - 2400)
+        self.run_ticks(0, 61)
+        with self.store._lock:
+            self.store._conn.execute("UPDATE jobs SET state = 'running'")
+            self.store._conn.commit()
+        # The job checks run at most once a minute, so the lane is only re-read on the second tick.
+        self.run_ticks(0, 61, 122, 183)
+        self.assertIn("The image lane is moving again", self.transport.sent[-1])
+
+    # ---- 3. a Story Mac whose updater failed or stopped moving
+
+    def story(self, name: str = "mini", *, phase: str = "downloading", version: str = "1.4.326",
+              ago: float = 3 * 3600, error: str | None = None, **over) -> None:
+        from gateway import story_releases
+
+        path = story_releases._instances_file()
+        rows = json.loads(path.read_text()) if path.exists() else {}
+        row = {"instance_id": name, "machine": name, "version": "1.4.320", "channels": 1, "queue": {},
+               "update": {"phase": phase, "version": version, "error": error}, "server_mode": False,
+               "last_seen": time.time(), "update_progress_at": self.clock.now - ago}
+        row.update(over)
+        rows[name] = row
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(rows))
+
+    def test_a_story_updater_that_failed_two_hours_ago(self) -> None:
+        self.story(phase="failed", error="The download was refused (403).")
+        self.run_ticks(0, 61)
+        self.assertIn("mini failed its update to Story 1.4.326 3 h ago: The download was refused (403).",
+                      self.transport.sent[0])
+
+    def test_a_download_that_has_not_moved_for_two_hours(self) -> None:
+        self.story(phase="downloading")
+        self.run_ticks(0, 61)
+        self.assertIn("has not moved to Story 1.4.326 3 h ago", self.transport.sent[0])
+
+    def test_an_updater_inside_its_two_hours_is_quiet(self) -> None:
+        self.story(phase="downloading", ago=1800)
+        self.run_ticks(0, 61)
+        self.assertEqual(self.transport.sent, [])
+
+    def test_waiting_for_the_queue_to_drain_is_not_stalling(self) -> None:
+        """`ready` and `draining` are the updater working, however long the queue takes."""
+        self.story(phase="draining")
+        self.story("mini-2", phase="ready")
+        self.run_ticks(0, 61)
+        self.assertEqual(self.transport.sent, [])
+
+    def test_a_newer_release_moves_the_target_and_restarts_the_clock(self) -> None:
+        from gateway import story_releases
+
+        self.story(phase="downloading", version="1.4.326")
+        with patch.object(story_releases, "current", lambda: {"version": "1.4.330"}):
+            self.run_ticks(0, 61)
+        self.assertEqual(self.transport.sent, [])
+
+    def test_a_byte_count_that_moved_is_not_a_stall(self) -> None:
+        """`update_progress_at` is what the Gateway's own check-in writes; a moving download resets it."""
+        self.story(phase="downloading", ago=600)
+        self.run_ticks(0, 61)
+        self.assertEqual(self.transport.sent, [])
+
+    def test_an_offline_story_mac_is_not_a_stall(self) -> None:
+        self.story(phase="failed", last_seen=time.time() - 3 * 3600)
+        self.run_ticks(0, 61)
+        self.assertEqual(self.transport.sent, [])
+
+    # ---- the Alerts list and the switches
+
+    def test_the_alerts_list_shows_what_is_open_and_what_cleared(self) -> None:
+        self.snapshot = snap([self.behind()], summary={"hub_latest": "0.6.186"})
+        self.run_ticks(0, nt.HUB_BEHIND_S + 60)
+        current = self.n.alerts()["current"]
+        self.assertEqual(len(current), 1)
+        self.assertIn("Mini A", current[0]["text"])
+        self.assertIsNone(current[0]["resolved_at"])
+        self.snapshot = snap([machine("Mini A", version_status="latest", hub_version="0.6.186")],
+                             summary={"hub_latest": "0.6.186"})
+        self.run_ticks(0, 61)
+        self.assertEqual(self.n.alerts()["current"], [])
+        self.assertEqual(len(self.n.alerts()["recent"]), 1)
+
+    def test_a_watchdog_switched_off_sends_nothing_and_forgets_quietly(self) -> None:
+        self.n.save_settings({"events": {"fleet_watchdog": False}})
+        self.snapshot = snap([self.behind()], summary={"hub_latest": "0.6.186"})
+        self.run_ticks(0, nt.HUB_BEHIND_S + 60)
+        self.assertEqual(self.transport.sent, [])
+
+    def test_one_message_per_incident_however_often_it_is_checked(self) -> None:
+        self.snapshot = snap([self.behind()], summary={"hub_latest": "0.6.186"})
+        self.run_ticks(0, nt.HUB_BEHIND_S + 60)
+        for _ in range(10):
+            self.run_ticks(60)
+        self.assertEqual(len(self.transport.sent), 1)
+
+
 class ReleaseAndApi(Base):
     def test_release_sentences(self) -> None:
         ok = {"release": {"version": "0.6.127"}, "locations": {"a": {"ok": True}, "b": {"ok": True}}}
@@ -660,6 +907,29 @@ class ReleaseAndApi(Base):
             self.assertTrue(r.json()["ok"])
             self.assertNotIn(TOKEN, r.text)
             self.assertEqual(len(self.transport.sent), 1)
+
+    def test_the_alerts_route_serves_the_notifiers_own_list(self) -> None:
+        from fastapi.testclient import TestClient
+
+        from gateway import api
+
+        with patch.object(nt.notifier, "settings_path", self.dir / "t.json"), \
+                patch.object(nt.notifier, "state_path", self.dir / "s.json"), \
+                patch.object(nt.notifier, "transport", self.transport):
+            client = TestClient(api.app, client=("127.0.0.1", 54321))
+            self.addCleanup(client.close)
+            r = client.get("/admin/api/alerts")
+            self.assertEqual(r.status_code, 200)
+            self.assertEqual(r.json(), {"current": [], "recent": [], "configured": False})
+            (self.dir / "s.json").write_text(json.dumps({"alerts": [
+                {"key": "hub:g1:mini", "event": "fleet_watchdog", "text": "Mini A is behind",
+                 "icon": "🧩", "at": 100.0, "resolved_at": None},
+                {"key": "lane:image", "event": "fleet_watchdog", "text": "Image work is waiting",
+                 "icon": "🚧", "at": 50.0, "resolved_at": 80.0},
+            ]}))
+            body = client.get("/admin/api/alerts").json()
+            self.assertEqual([a["key"] for a in body["current"]], ["hub:g1:mini"])
+            self.assertEqual([a["key"] for a in body["recent"]], ["lane:image"])
 
 
 if __name__ == "__main__":

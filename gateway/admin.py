@@ -1324,6 +1324,19 @@ def test_telegram(payload: dict[str, Any] | None = None) -> dict[str, Any]:
     return notifier.send_test(body.get("bot_token"), body.get("chat_id"))
 
 
+@router.get("/api/alerts", dependencies=[Depends(require_admin)])
+def alerts_view(limit: int = Query(50, ge=1, le=200)) -> dict[str, Any]:
+    """What the notifier has open now, and what it recently resolved.
+
+    The same incidents it messages the owner about, read from the same state file, so the Settings
+    page's Alerts list is what the notifier acted on rather than a second opinion derived from the
+    fleet. Empty until something has been wrong; it is not a log of every check.
+    """
+    from .notifier import notifier
+
+    return notifier.alerts(limit=limit)
+
+
 @router.get("/api/settings/fleet-warnings", dependencies=[Depends(require_admin)])
 def get_fleet_warnings() -> dict[str, Any]:
     """Which kinds of Fleet warning the owner hid (macOS automatic updates, Time Machine)."""

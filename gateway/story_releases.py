@@ -237,14 +237,48 @@ def _count(value: Any) -> int | None:
     return int(value) if isinstance(value, (int, float)) and not isinstance(value, bool) and value >= 0 else None
 
 
+#: What an updater reports while it works. `downloaded_bytes` needs Story 1.4.323+; an older Mac
+#: states nothing and the field stays absent rather than becoming a zero.
+_UPDATE_MOVEMENT = ("phase", "version", "downloaded_bytes")
+
+
+def _update_fact(raw: object) -> dict[str, Any]:
+    """One Story Mac's update report, with the fields only a newer Story sends.
+
+    `phase` is one of the words Story defines — an unfamiliar one is `None`, never guessed.
+    """
+    update = raw if isinstance(raw, dict) else {}
+    phase = _text(update.get("phase"), 20)
+    return {
+        "phase": phase if phase in _PHASES else None,
+        "version": _text(update.get("version"), 40),
+        "error": _text(update.get("error"), 400),
+        "downloaded_bytes": _count(update.get("downloaded_bytes")),
+        "total_bytes": _count(update.get("total_bytes")),
+    }
+
+
+def _moved(was: object, current: dict[str, Any], prior: object, now: float) -> float:
+    """When this updater last made progress.
+
+    The watchdog reads it to tell a slow download from a stopped one: `now` when the phase, the
+    release or the byte count changed, otherwise the moment it last did. A Mac whose report says
+    none of those (an older Story) keeps whatever it had, so an unmeasurable updater is never
+    called stalled.
+    """
+    before = was if isinstance(was, dict) else {}
+    if any(before.get(key) != current.get(key) for key in _UPDATE_MOVEMENT):
+        return now
+    return float(prior) if isinstance(prior, (int, float)) else now
+
+
 def checkin(payload: dict[str, Any]) -> dict[str, Any]:
     """Record one Story Mac's report; answer with the release and any "Update now"."""
     instance = _text(payload.get("instance_id"), 100)
     if not instance or not _INSTANCE_ID.match(instance):
         raise StoryReleaseError("instance_id is the machine name.", 422, "STORY_BAD_CHECKIN")
     queue = payload.get("queue") if isinstance(payload.get("queue"), dict) else {}
-    update = payload.get("update") if isinstance(payload.get("update"), dict) else {}
-    phase = _text(update.get("phase"), 20)
+    now = time.time()
     record = {
         "instance_id": instance,
         "machine": _text(payload.get("machine")) or instance,
@@ -252,18 +286,19 @@ def checkin(payload: dict[str, Any]) -> dict[str, Any]:
         "channels": _count(payload.get("channels")),
         "queue": {key: _count(queue.get(key)) for key in ("running", "queued", "paused")}
         | {"held": queue.get("held") is True},
-        "update": {"phase": phase if phase in _PHASES else None,
-                   "version": _text(update.get("version"), 40),
-                   "error": _text(update.get("error"), 400)},
+        "update": _update_fact(payload.get("update")),
         "server_mode": payload.get("server_mode") is True,
-        "last_seen": time.time(),
+        "last_seen": now,
     }
+    update = payload.get("update") if isinstance(payload.get("update"), dict) else {}
     if "request_id" in update:
         record["update"]["request_id"] = _text(update.get("request_id"), 100) or None
     release = current()
     with _lock:
         rows = _read_json(_instances_file())
         previous = rows.get(instance) if isinstance(rows.get(instance), dict) else {}
+        record["update_progress_at"] = _moved(
+            previous.get("update"), record["update"], previous.get("update_progress_at"), now)
         requested = previous.get("update_requested_at")
         request_id = previous.get("update_request_id")
         delivered = previous.get("update_request_delivered") is True

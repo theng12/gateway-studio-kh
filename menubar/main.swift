@@ -1023,6 +1023,9 @@ final class GatewayController {
                 guard let data, error == nil,
                       let payload = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
                 else {
+                    // The one fault the Gateway cannot report about itself, watched from here
+                    // (`GatewayLiveness`): two minutes without an answer and the owner is told.
+                    GatewayLiveness.observe(healthy: false)
                     // Only downgrade a running service; never overwrite a failure
                     // message with a vaguer one.
                     if self.process == nil, case .failed = self.state { return }
@@ -1046,8 +1049,10 @@ final class GatewayController {
                 }
                 let providers = (payload["providers"] as? [String: Any])?["enabled"] as? Int ?? 0
                 let models = (payload["models"] as? [String: Any])?["publishable_models"] as? Int ?? 0
-                // Healthy again: clear the backoff so a later crash restarts fast.
+                // Healthy again: clear the backoff so a later crash restarts fast, and say so on
+                // Telegram if the owner was told about the outage.
                 self.restartAttempts = 0
+                GatewayLiveness.observe(healthy: true)
                 self.publish(.running(providers: providers, models: models))
             }
         }.resume()

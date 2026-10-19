@@ -42,6 +42,7 @@ final class SettingsSection: NSObject, AppSection {
     private var publisherTechnicalDetails: NSStackView!
     private var releaseIdentityStatus: NSTextField!
     private let telegram = TelegramSettings()
+    private let alerts = AlertsSettings()
     private let browserPassword = BrowserPasswordSettings()
     private let backups = BackupPanel()
 
@@ -239,6 +240,8 @@ final class SettingsSection: NSObject, AppSection {
 
         // ---- Telegram: messages to the owner's phone about the fleet
         section("Telegram", telegram.rows, in: root)
+        // ---- what the notifier has open and recently cleared (gateway/notifier.py)
+        section("Alerts", alerts.rows, in: root)
         // ---- the password a phone browser signs in with at /admin (gateway/admin_session.py)
         section("Browser password", browserPassword.rows, in: root)
         // ---- backups (keys, credentials, roster, voices): gateway/backup.py
@@ -348,6 +351,7 @@ final class SettingsSection: NSObject, AppSection {
         loadRetention()
         loadReleaseIdentity()
         telegram.load()
+        alerts.load()
         browserPassword.load()
         backups.reload()
     }

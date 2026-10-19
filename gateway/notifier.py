@@ -28,6 +28,13 @@ the previous local day.
 
 Detection runs on the notifier's own thread (`start()`, from the app's lifespan) over the same data
 the pages read: the fleet snapshot the refresher keeps warm, the job store and the queue.
+
+**The fleet watchdog** (owner-approved, 2026-10-19) is the same machinery pointed at the faults that
+were noticed hours or days late: a Mac behind the published Studio Hub, a site whose Macs cannot run
+a model it offers, a Story Mac whose updater failed or stopped moving, and a lane with work waiting
+and nothing running. Each holds for its own window (`HUB_BEHIND_S`, `SITE_NO_MACHINE_S`,
+`STORY_STUCK_S`, `LANE_STUCK_S`) before it is worth a message. The one fault the Gateway cannot see
+is its own freeze, so that check lives in the menu bar app and reports under `gateway_health`.
 """
 
 from __future__ import annotations
@@ -86,6 +93,15 @@ EVENTS: tuple[Event, ...] = (
           "A Studio Hub group or Mac refused the Gateway's access token.", False),
     Event("gateway_restart", "Gateway restarted",
           "The Gateway app started, after an update or a crash.", False),
+    Event("fleet_watchdog", "Something in the fleet is quietly stuck",
+          "A Mac more than six hours behind the published Studio Hub, a site whose Macs cannot "
+          "run a model it offers, or a lane with work waiting and nothing running.", True),
+    Event("story_update", "Story Studio updates",
+          "A Story Mac whose update failed, or has not moved, for over two hours.", True),
+    Event("gateway_health", "Gateway not responding",
+          "Sent by the menu bar app when the Gateway's own /health stops answering for two "
+          "minutes — the one fault the Gateway cannot report about itself. Needs the app running.",
+          True),
 )
 EVENT_KEYS = frozenset(event.key for event in EVENTS)
 
@@ -106,13 +122,25 @@ QUEUE_WAIT_S = 1800.0     # the oldest waiting job is this old
 MAX_BULLETS = 8
 MESSAGE_LIMIT = 3900      # Telegram's is 4096 characters
 
+#: The quiet faults the watchdog exists for (2026-10-19): each is a thing nobody noticed for hours
+#: or days, so each holds for its own window before it is worth a message. The windows are the
+#: owner's: six hours behind a published Hub, thirty minutes with no machine for a model, two hours
+#: on a Story update, thirty minutes with a lane that stopped moving.
+HUB_BEHIND_S = 6 * 3600.0
+SITE_NO_MACHINE_S = 30 * 60.0
+STORY_STUCK_S = 2 * 3600.0
+LANE_STUCK_S = 30 * 60.0
+
+#: What is left in `state["alerts"]` for the Settings page's Alerts list.
+ALERTS_KEPT = 60
+
 _TOKEN_RE = re.compile(r"^\d{5,}:[A-Za-z0-9_-]{20,}$")
 _CHAT_RE = re.compile(r"^(-?\d{3,}|@[A-Za-z][A-Za-z0-9_]{3,})$")
 _HHMM_RE = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
 _BOT_URL_RE = re.compile(r"bot\d+:[A-Za-z0-9_-]+")
 
 #: Incident keys that come from the fleet snapshot (the others come from the job table).
-_FLEET_PREFIXES = frozenset({"loc", "mac", "disk", "cred", "stalled"})
+_FLEET_PREFIXES = frozenset({"loc", "mac", "disk", "cred", "stalled", "hub", "site"})
 
 KIND_LABEL = {"tts": "Voice", "image": "Image", "music": "Music", "video": "Video",
               "transcription": "Subtitles", "chat": "Chat"}
@@ -286,7 +314,6 @@ class Notifier:
         self._sent: deque[float] = deque()
         self._suppressed = 0
         self._last_send_at = 0.0
-        self._pending_open: dict[str, float] = {}
         self._clearing: dict[str, float] = {}
         self._last_jobs_check = 0.0
         self._job_conditions: list[Condition] = []
@@ -717,6 +744,152 @@ class Notifier:
                 back=f"The {what.lower()} job at {job.get('location')} is moving again", icon="⏳"))
         return out
 
+    def hub_behind_conditions(self, snap: dict) -> list[Condition]:
+        """A reachable Mac that is behind the newest Studio Hub this Gateway published.
+
+        `version_status` already distinguishes *behind* from *updating* (`fleet.version_status`), so
+        a Mac inside its install window is not an alert. The Hub's own sentence for where its last
+        update stopped travels with the Mac (`startup.last_update_error`, Hub 0.6.152+, republished
+        by `fleet._update_error_fact`) and is quoted rather than paraphrased — it is the one
+        actionable fact, and it is why the fault was invisible before: the Mac was reachable and
+        its Hub said nothing anywhere the owner looked.
+        """
+        latest = str((snap.get("summary") or {}).get("hub_latest") or "the latest release")
+        out: list[Condition] = []
+        for machine in snap.get("machines") or []:
+            if machine.get("version_status") != "behind":
+                continue
+            group = str(machine.get("location") or "")
+            where = f" ({group})" if group else ""
+            name = str(machine.get("label") or machine.get("machine") or "a Mac")
+            reason = _update_refusal(machine)
+            out.append(Condition(
+                f"hub:{machine.get('location_id')}:{machine.get('machine')}", "fleet_watchdog",
+                f"{name}{where} is on Studio Hub {machine.get('hub_version') or 'an unknown version'}, "
+                f"not {latest}" + (f" — {reason}" if reason else ""),
+                back=f"{name}{where} is on the newest Studio Hub again",
+                icon="🧩", group=group or None, name=name, open_after=HUB_BEHIND_S))
+        return out
+
+    def site_no_machine_conditions(self, snap: dict) -> list[Condition]:
+        """A site that offers a model none of its Macs can run right now.
+
+        The test is `fleet._eligible_macs` — the router's own rule, so an alert here means a submit
+        would be routed to this site and find nothing: ready, memory-eligible, serving the model,
+        reachable, enabled, not paused and not resting after a memory refusal. A site that names no
+        Mac for the model at all is *unknown*, never "none", and stays silent (the same reading
+        `fleet.no_free_mac` uses).
+        """
+        from .fleet import (  # noqa: SLF001 - one routing rule, one place
+            HUB_OPERATION_BY_MODALITY, _eligible_macs, _takes_customer_jobs, controller_id_from)
+        from .providers import registry
+
+        rows = {str(row.get("id")): row for row in snap.get("locations") or []}
+        wanted: dict[str, dict[str, str]] = {}
+        # The modalities a Studio Hub location can serve, from the Hub's own table rather than a
+        # second list here: two copies of one table is how they come apart.
+        for modality in HUB_OPERATION_BY_MODALITY:
+            for definition, model in registry.models.enabled_models(modality):
+                location_id = controller_id_from(definition.id)
+                if location_id in rows:
+                    wanted.setdefault(location_id, {})[str(model.get("model_id"))] = modality
+
+        out: list[Condition] = []
+        for location_id, models in wanted.items():
+            row = rows[location_id]
+            if row.get("reachable") is not True or not _takes_customer_jobs(row):
+                continue
+            label = str(row.get("label") or location_id)
+            for model_id, modality in sorted(models.items()):
+                if not _names_a_machine(row, model_id) or _eligible_macs(row, model_id, modality):
+                    continue
+                out.append(Condition(
+                    f"site:{location_id}:{model_id}", "fleet_watchdog",
+                    f"{label} has no Mac free for {model_id}",
+                    back=f"{label} has a Mac for {model_id} again",
+                    icon="🖥", open_after=SITE_NO_MACHINE_S))
+        return out
+
+    def story_conditions(self, now: float) -> list[Condition]:
+        """A Story Mac whose update failed, or stopped moving, on the release it is fetching.
+
+        Read from `story_releases` — the same rows `/admin/api/story/instances` serves. A newer
+        release being published moves the target, so the clock only ever runs on *this* release.
+        `ready` and `draining` are left out on purpose: waiting for the queue to empty before
+        installing is the updater working, not stalling.
+        """
+        from . import story_releases
+
+        data = story_releases.instances()
+        target = str((data.get("release") or {}).get("version") or "")
+        out: list[Condition] = []
+        for row in data.get("instances") or []:
+            if row.get("status") == "offline":
+                continue
+            update = row.get("update") or {}
+            phase = str(update.get("phase") or "")
+            if phase not in ("downloading", "installing", "failed", "rolled_back"):
+                continue
+            version = str(update.get("version") or "")
+            if target and version and version != target:
+                continue  # a newer release was published: no longer the same release
+            since = row.get("update_progress_at")
+            if not isinstance(since, (int, float)) or now - since < STORY_STUCK_S:
+                continue
+            name = str(row.get("machine") or row.get("instance_id") or "a Story Mac")
+            error = str(update.get("error") or "").strip()
+            what = "failed its update" if phase in ("failed", "rolled_back") else "has not moved"
+            out.append(Condition(
+                f"story:{row.get('instance_id')}", "story_update",
+                f"{name} {what} to Story {version or target or 'the release'}"
+                f" {int((now - since) // 3600)} h ago" + (f": {error[:140]}" if error else ""),
+                back=f"{name}'s Story update is no longer stuck",
+                icon="📱", open_after=OPEN_AFTER_S))
+        return out
+
+    def lane_conditions(self, now: float) -> list[Condition]:
+        """A lane with work waiting and **nothing in flight** for `LANE_STUCK_S`.
+
+        In-flight is the job table's own `running` state (`store.priority_counts`), not the worker's
+        books: the worker is the thing that might be stuck, and asking it would be asking the
+        suspect. `None` from either read is "could not work it out", which is silent — never a
+        lane called stuck because a query failed.
+        """
+        store = self._get_store()
+        try:
+            waiting = store.waiting_jobs(limit=500)
+            counts = store.priority_counts()
+        except Exception as exc:  # noqa: BLE001 - one bad query must not stop the fleet checks
+            log.warning("lane counts failed: %s", type(exc).__name__)
+            return []
+        if not waiting:
+            return []
+        running: dict[str, int] = {}
+        for row in counts:
+            if row.get("running"):
+                lane = str(row.get("modality"))
+                running[lane] = running.get(lane, 0) + int(row["running"])
+        oldest: dict[str, float] = {}
+        count: dict[str, int] = {}
+        for job in waiting:
+            lane = str(job.get("modality") or "")
+            count[lane] = count.get(lane, 0) + 1
+            created = job.get("created_at")
+            if isinstance(created, (int, float)):
+                oldest[lane] = max(oldest.get(lane, 0.0), now - created)
+        out: list[Condition] = []
+        for lane, age in sorted(oldest.items()):
+            if running.get(lane) or age < LANE_STUCK_S:
+                continue
+            label = KIND_LABEL.get(lane, lane or "A")
+            out.append(Condition(
+                f"lane:{lane}", "fleet_watchdog",
+                f"{label} work is waiting and nothing is running: {count[lane]} job"
+                f"{'s' if count[lane] != 1 else ''}, the oldest for {int(age // 60)} min",
+                back=f"The {label.lower()} lane is moving again",
+                icon="🚧", open_after=OPEN_AFTER_S))
+        return out
+
     def job_conditions(self, now: float) -> list[Condition]:
         """Checks that read the job table. Cheap, but not worth doing every 30 s."""
         store = self._get_store()
@@ -774,10 +947,17 @@ class Notifier:
                 out += self.credential_conditions(snap)
             if events["jobs_trouble"]:
                 out += self.stalled_conditions(snap)
+            if events["fleet_watchdog"]:
+                out += self.hub_behind_conditions(snap)
+                out += self.site_no_machine_conditions(snap)
         if now - self._last_jobs_check >= JOBS_EVERY_S:
             self._last_jobs_check = now
             try:
                 self._job_conditions = self.job_conditions(now)
+                if events["fleet_watchdog"]:
+                    self._job_conditions += self.lane_conditions(now)
+                if events["story_update"]:
+                    self._job_conditions += self.story_conditions(now)
             except Exception as exc:  # noqa: BLE001 - one bad query must not stop the fleet checks
                 log.warning("job checks failed: %s", type(exc).__name__)
         out += [c for c in self._job_conditions if events.get(c.event)]
@@ -789,9 +969,15 @@ class Notifier:
 
         When the fleet snapshot is unavailable (`fleet_known` false) the fleet incidents are left
         exactly as they are: not knowing is not the same as the problem being gone.
+
+        Both the pending-open clock and the alert history live in the state file. A six-hour window
+        (a Mac behind the Hub) must survive a Gateway restart, or an update on the machine watching
+        for a stuck fleet would silently restart its own clock.
         """
         state = self._state()
         incidents: dict[str, dict] = dict(state.get("incidents") or {})
+        pending: dict[str, float] = dict(state.get("pending") or {})
+        alerts: list[dict] = [a for a in (state.get("alerts") or []) if isinstance(a, dict)]
         seen = {c.key: c for c in conds}
         opened: list[Condition] = []
         closed: list[Condition] = []
@@ -799,20 +985,22 @@ class Notifier:
             self._clearing.pop(key, None)
             if key in incidents:
                 continue
-            first = self._pending_open.setdefault(key, now)
+            first = pending.setdefault(key, now)
             if now - first >= cond.open_after:
-                self._pending_open.pop(key, None)
+                pending.pop(key, None)
                 incidents[key] = {"event": cond.event, "since": now, "text": cond.text,
                                   "back": cond.back, "icon": cond.icon,
                                   "group": cond.group, "name": cond.name}
                 opened.append(cond)
+                alerts.append({"key": key, "event": cond.event, "text": cond.text,
+                               "icon": cond.icon, "at": now, "resolved_at": None})
                 if cond.event == "offline":
                     log_ = list(state.get("log") or [])
                     log_.append({"at": now, "key": key, "name": cond.name or cond.text,
                                  "group": cond.group})
                     state["log"] = log_[-300:]
-        for key in [k for k in self._pending_open if k not in seen]:
-            self._pending_open.pop(key, None)
+        for key in [k for k in pending if k not in seen]:
+            pending.pop(key, None)
         for key, info in list(incidents.items()):
             if key in seen:
                 continue
@@ -825,13 +1013,36 @@ class Notifier:
             if now - first >= CLEAR_AFTER_S:
                 self._clearing.pop(key, None)
                 incidents.pop(key)
+                for entry in reversed(alerts):
+                    if entry.get("key") == key and entry.get("resolved_at") is None:
+                        entry["resolved_at"] = now
+                        break
                 if info.get("back"):
                     closed.append(Condition(key, info["event"], info.get("text") or "", back=info["back"],
                                             icon=info.get("icon") or "⚠️",
                                             group=info.get("group"), name=info.get("name")))
         state["incidents"] = incidents
+        state["pending"] = pending
+        state["alerts"] = alerts[-ALERTS_KEPT:]
         self._save_state(state)
         return opened, closed
+
+    def alerts(self, limit: int = 50) -> dict[str, Any]:
+        """What is wrong now and what was recently — the Settings page's Alerts list.
+
+        Read from the same state file the incidents are persisted in, so the list is what the
+        notifier acted on rather than a second opinion derived from the fleet.
+        """
+        rows = [a for a in (self._state().get("alerts") or []) if isinstance(a, dict)]
+        current = sorted((a for a in rows if not a.get("resolved_at")),
+                         key=lambda a: float(a.get("at") or 0))
+        recent = sorted((a for a in rows if a.get("resolved_at")),
+                        key=lambda a: float(a.get("resolved_at") or 0), reverse=True)
+        return {
+            "current": current,
+            "recent": recent[: max(int(limit), 1)],
+            "configured": self.ready(),
+        }
 
     def tick(self, now: float | None = None) -> None:
         """One pass: incidents, held messages, and the daily summary. Safe to call at any time."""
@@ -977,6 +1188,39 @@ class Notifier:
 
 
 # --------------------------------------------------------------------------- helpers
+
+
+def _update_refusal(machine: dict) -> str:
+    """Why this Mac's last Studio Hub update stopped, as the Mac itself reported it.
+
+    `startup.last_update_error` (Hub 0.6.152+, republished by `fleet._update_error_fact`) already
+    carries a `reason` sentence and the `phase` it stopped in, and both are the Hub's own words.
+    Nothing stated means no sentence, never a guess at one.
+    """
+    startup = machine.get("startup")
+    fact = startup.get("last_update_error") if isinstance(startup, dict) else None
+    if not isinstance(fact, dict):
+        return ""
+    reason = str(fact.get("reason") or "").strip()
+    phase = str(fact.get("phase") or "").strip()
+    if reason and phase:
+        return f"the update stopped while {phase}: {reason}"
+    return reason or (f"the update stopped while {phase}" if phase else "")
+
+
+def _names_a_machine(row: dict, model_id: str) -> bool:
+    """Whether this site states at least one Mac for `model_id` at all.
+
+    The guard `fleet.no_free_mac` uses: a Hub that names no Mac is *unknown*, and "I could not work
+    out" must never produce the same value as "the answer is none".
+    """
+    for model in row.get("local_models") or []:
+        if isinstance(model, dict) and model_id in (model.get("model_id"), model.get("model")):
+            return True
+    for worker in row.get("workers") or []:
+        if isinstance(worker, dict) and model_id in (worker.get("models") or []):
+            return True
+    return False
 
 
 def _artifact_list(row: dict) -> list:
