@@ -682,11 +682,21 @@ class JobStore:
         """
         with self._lock:
             row = self._conn.execute(
-                "SELECT state FROM jobs WHERE id = ?", (job_id,)
+                "SELECT state, recovery_state FROM jobs WHERE id = ?", (job_id,)
             ).fetchone()
             if row is None:
                 return
-            if row["state"] in TERMINAL_STATES:
+            # **A hold is settled by the answer it was waiting for.** An `unknown_outcome` hold
+            # says the upstream outcome could not be learned (`_write_restart_hold`); a failure
+            # arriving for it *is* that answer, so the job becomes the failure it was instead of
+            # staying a hold whose real code is buried in `late_error_code` (measured live
+            # 2026-10-19: pool chat jobs held as "the gateway restarted" whose own attempt then
+            # answered `LOCATION_NOT_READY` / `PROVIDER_UNAVAILABLE`, and were still held). This is
+            # `succeed()`'s rule for a hold applied to the other outcome. Anything already settled
+            # — a success, a cancel, a hold the operator closed — keeps its verdict.
+            holding = (row["state"] == "failed"
+                       and row["recovery_state"] == RECOVERY_UNKNOWN)
+            if row["state"] in TERMINAL_STATES and not holding:
                 self._update_locked(
                     job_id,
                     {

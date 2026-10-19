@@ -517,6 +517,50 @@ class JobRecoveryTests(unittest.TestCase):
         finally:
             reopened.close()
 
+    def test_a_hold_settles_as_the_failure_that_answered_it(self) -> None:
+        """**A hold is unknown only until the attempt answers, and then it is what the answer said.**
+
+        Measured live 2026-10-19: pool chat jobs held by a restart sweep whose own dispatch then
+        answered `LOCATION_NOT_READY` / `PROVIDER_UNAVAILABLE` kept the hold *and* the sentence
+        "the gateway restarted while this job was in flight", with the real code visible only in
+        `late_error_code` — so Story and the operator saw an unresolvable unknown outcome where
+        the gateway had a proven failure. `fail()` treated every terminal row as settled, while
+        `succeed()` already settles a hold (owner decision 2026-09-30: finished work is adopted,
+        never left `failed / UNKNOWN_OUTCOME`). This is that rule for the other outcome.
+        """
+        store = self.make_store("hold-settles")
+        row = self.submit(store, "hold-settles")
+        self.assertTrue(store.mark_running(row["id"]))
+        self.assertTrue(store.begin_dispatch(row["id"]))
+        store.close()
+
+        reopened = JobStore(store.path)  # a restart really did happen here
+        try:
+            self.assertEqual(reopened.get(row["id"])["recovery_state"], "unknown_outcome")
+
+            reopened.fail(row["id"], code="LOCATION_NOT_READY",
+                          detail="Pool 'writing-haiku-gemini-luna-ordered' had no member "
+                                 "that could answer")
+            settled = reopened.get(row["id"])
+            self.assertEqual(settled["state"], "failed")
+            self.assertEqual(settled["error_code"], "LOCATION_NOT_READY",
+                             "the hold settles as the failure it was, with its own code")
+            self.assertIn("no member", settled["error_detail"])
+            self.assertIsNone(settled["recovery_state"])
+            self.assertFalse(settled["recovery_required"], "nothing left to reconcile")
+            self.assertIsNone(settled["recovery_context"])
+            self.assertNotIn("restarted", settled["error_detail"],
+                             "and no sentence claims a restart settled it")
+
+            # The settled verdict is final: a second answer is a late result, never a rewrite.
+            reopened.fail(row["id"], code="LATE_FAILURE", detail="a later attempt")
+            again = reopened.get(row["id"])
+            self.assertEqual(again["error_code"], "LOCATION_NOT_READY")
+            self.assertEqual(again["late_result_state"], "failed")
+            self.assertEqual(again["late_error_code"], "LATE_FAILURE")
+        finally:
+            reopened.close()
+
 
 if __name__ == "__main__":
     unittest.main()
