@@ -14,6 +14,36 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.187 — 2026-10-19
+
+### The Gateway now raises the alert instead of waiting for someone to notice
+
+Some faults used to sit unnoticed for hours — a Mac whose Studio Hub is many versions behind, a site whose Macs cannot run a model it offers, a Story Mac whose updater has stopped moving on the release it is fetching, and a lane with work waiting and nothing in flight. The Gateway watches for all of them now and raises an alert, and the menu bar app watches the Gateway itself, so a Gateway that has frozen still gets a message out even though the Gateway's own notifier is the thing that is down. Alerts keep an open-and-cleared history, there is a new Alerts card in Settings beside Telegram, and the three new alert kinds — Fleet watchdog, Story update and Gateway health — are on by default.
+
+### See each Mac's Trash auto-empty, and turn it on
+
+Every Studio Hub retirement ends up in macOS Trash, so a Mac whose Finder never empties that Trash fills its disk until somebody empties it by hand — and across a fleet there was no way to tell which Macs had the setting. Fleet → Machines now has a **Trash auto-empty** column reading **On / Off / Unknown**, a **Turn on** button on each Mac, and a bar that turns it on for every Mac that is off, naming each Mac it will touch and each one it skips. Unknown is never drawn as Off: a Hub that says nothing about the setting, and a Mac nobody has heard from since, both read Unknown. It is one way only — nothing here turns the setting off. This half needs Studio Hub 0.6.187; on an older Hub a Mac reads Unknown rather than a wrong answer.
+
+### See each Mac's Lite Mode
+
+The Machines view showed whether a Mac starts its services and whether it answers, but not whether it lends the fleet its idle time. There is now a plain **Lite Mode** column reading **On / Off / Turning on… / Turning off… / Change waiting / Unknown**, sorted with Off first, because a Mac that will not lend its idle time is the one being looked for. A change held for a Mac that was offline reads "Change waiting" — it is your latest word, not the last report.
+
+### Re-discover refreshes the provider you chose, and says what it found
+
+The Models page button re-read every provider's catalogue whatever the filter said, so a press meant for one provider refreshed all of them. It now acts on the provider the filter names — the button says "Re-discover Magpie" — and with nothing filtered a picker beside it chooses between every provider and one, so the fleet-wide run is chosen rather than silent. Every provider card on the Providers page carries its own Re-discover on the row, "Refresh All Models" is plainly "Re-discover all providers", and the page reports what happened: "Magpie: 175 models found", or the error, or the total plus the providers that failed.
+
+### A job that failed for a known reason no longer reads as a gateway restart
+
+Jobs were being shown as "failed / unknown outcome — the gateway restarted while this job was in flight" when no restart had happened. Two causes, both fixed: a second process that merely opened the job database was treated as a restart, and a job held that way kept the label even after its own attempt came back with a reason the Gateway knows. The queue is now claimed by the one process that actually takes it over, and a proven failure settles as that failure. A real restart still holds the work exactly as it did before.
+
+### A model asked for no length now gets its own published answer-length limit
+
+When a caller asked for no maximum length, the Gateway sent 4096 instead of the model's own published figure, so a long writing batch — 75 ideas from a 257 kB prompt — was cut off at the request limit and ended as a failed job. The model's published allowance now travels with the request, per model and per pool member, and 4096 survives only as the last resort when nothing is published at all.
+
+### Received files are kept 3 days, or 10 GB
+
+The default ceiling for files passing through the Gateway is now 10 GB rather than 8 GB. The 3-day default, the Trash Folder's own limits, pins, the one-hour grace period and in-flight protection are unchanged.
+
 ## 0.2.186 — 2026-10-19
 
 ### A slow Mac can no longer freeze the Gateway

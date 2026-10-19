@@ -281,3 +281,62 @@ named mtime exception in `retention._trash_files` for `_trash/logs`). Backup
 pruning no longer deletes: `backup.prune` moves an old archive and keeps it in
 place when the move fails or the target name already exists, and reports how
 many it actually moved.
+
+# Fleet watchdog, macOS Trash auto-empty, and scoped Re-discover (0.2.187)
+
+The Telegram notifier's existing incident machinery (one incident per fault,
+opened, resolved, deduped, rate-capped) now watches the five faults that used to
+be noticed days late: a reachable Mac more than six hours behind the published
+Studio Hub, quoting the Hub's own `last_update_error`; a site whose Macs cannot
+run a model it offers, judged by `fleet._eligible_macs`; a Story Mac whose
+updater failed or stopped moving on the release it is fetching, timed from a new
+`update_progress_at` recorded at check-in (Story 1.4.323+ also reports
+`downloaded_bytes`); a lane with work waiting and nothing in flight for thirty
+minutes; and the Gateway's own freeze, watched from the menu bar app's 3 s
+`/health` probe, which posts to Telegram itself because the Gateway's own
+notifier is the thing that is down. Incidents keep an open/cleared history in
+`state["alerts"]`, the pending-open clock is persisted so a six-hour window
+survives a Gateway restart, `GET /admin/api/alerts` serves the list, Settings has
+an Alerts card beside Telegram, and three event types are on by default:
+`fleet_watchdog`, `story_update`, `gateway_health`.
+
+macOS's 30-day Trash emptying (`com.apple.finder FXRemoveOldTrashItems`) is now
+visible and switchable per Mac. `fleet._startup_fact` republishes
+`macos_trash_auto_empty` as a checked boolean — anything that is not a boolean
+becomes `None`, and `None` is Unknown, never Off.
+`startup_control.enable_macos_trash_auto_empty` relays one Mac's turn-on through
+its controller on the fleet credential, `enable_macos_trash_auto_empty_where_off`
+is the bulk run, and both bulk runs (autostart and this one) now share one
+`_enable_where_off`. The routes are admin-only and **one way only**: nothing
+turns the setting off. The Hub writes the preference through `cfprefsd` — the
+same path Finder's own Settings pane writes it through — and reads it back, so a
+write that did not stick is a refusal (`NOT_APPLIED`), not a success; no Finder
+restart is needed and none is done. **Requires Studio Hub 0.6.187**; on an older
+Hub a Mac answers `HUB_TOO_OLD` and reads Unknown. The companion Hub branch is
+`feat/macos-trash-auto-empty` in `studio-hub-kh`.
+
+The Machines view also gained a plain **Lite Mode** column (On / Off / Turning
+on… / Turning off… / Change waiting / Unknown, sorted Off first). It is show-only
+and needs no Hub change: it reads `workstation`, `lite_off` and
+`lite_mode_pending`, which are already on the machine row. A waiting change that
+leaves `enabled` alone is "Change waiting", not a change of mode.
+
+The Models page's Re-discover now acts on the provider the filter names, through
+the existing `POST /admin/api/providers/{id}/refresh`, instead of posting
+`/refresh-all` whatever the filter said; with nothing filtered, a picker chooses
+between every provider and one. Provider cards carry their own Re-discover on the
+row, and both `refreshProvider` and `saveCreds` write their message after the
+`loadProviders()` redraw that used to destroy the span.
+
+Two job-recovery corrections ride along. The queue is claimed with an `flock` on
+`<db>.owner`, held for the process's life, so only the starter that actually takes
+the queue over sweeps `running` jobs into a restart hold — a second opener (a
+gateway whose bind failed, a CLI, a fixture, a test module) no longer orphans the
+serving gateway's live work. And `fail()` now settles a hold when the attempt
+answers with a code the Gateway knows, so a proven failure can never wear
+"the gateway restarted while this job was in flight" (a second answer is recorded
+in `late_*`, never a rewrite). An omitted `max_tokens` now takes the model's
+published answer-length cap, read from the same `catalog.published_output_cap`
+chooser `_chat_row` uses and carried on `BackendRequest.max_output_tokens`;
+`DEFAULT_MAX_TOKENS` (4096) survives only as the last resort when nothing is
+published.
