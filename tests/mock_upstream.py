@@ -316,9 +316,14 @@ def fleet_node_summary(nodes: list[dict]) -> dict[str, int]:
 #:
 #: On 2026-09-26 Studio Hub raised `FALLBACK_MAX_OUTPUT_TOKENS` `4096 → 16384` and
 #: made the deadline **per lane** (`PEER_PROXY_TIMEOUT_S` was one flat 900 s):
-#: chat 1,800 s; image, voice, transcription and music 900 s; video 7,200 s. This mock
-#: now models the **new** Hub, deliberately before their release is cut, so anything of
-#: ours that breaks on the change breaks here first.
+#: chat 1,800 s; image, voice, transcription and music 900 s; video 7,200 s. **On
+#: 2026-10-19 the owner raised it again, `16384 → 128000`** ("4096 is too small. all
+#: models write more than that. the minimum is at least 128K tokens"), and the chat
+#: deadline stayed 1,800 s — the Hub's own comment re-derives the arithmetic and says
+#: plainly that a genuine 128K answer is now cut by the deadline rather than by the
+#: ceiling. `HUB_CHAT_MAX_OUTPUT_TOKENS` below follows the constant; `HUB_CHAT_DEADLINE_S`
+#: did not move. This mock models the **new** Hub, deliberately before their release is
+#: cut, so anything of ours that breaks on the change breaks here first.
 #:
 #: **Named rather than written inline, and that is the whole point.** Studio Hub's own
 #: suite had **eight chat tests go red** on the change: several asserted the bare
@@ -329,7 +334,7 @@ def fleet_node_summary(nodes: list[dict]) -> dict[str, int]:
 #: as a literal, or sized relative to somebody else's constant, is a number that turns
 #: into a lie without anything going red. Change these in one place; let the tests read
 #: them.
-HUB_CHAT_MAX_OUTPUT_TOKENS = 16_384
+HUB_CHAT_MAX_OUTPUT_TOKENS = 128_000
 HUB_CHAT_CONTEXT_TOKENS = 262_144
 HUB_CHAT_DEADLINE_S = 1800.0
 HUB_VOICE_DEADLINE_S = 900.0
