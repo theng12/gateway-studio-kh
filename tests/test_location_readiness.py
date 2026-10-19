@@ -18,6 +18,7 @@ import os
 import shutil
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -89,6 +90,26 @@ class _RefuseFirstLocation:
         if request.provider_id == "studio-hub-a":
             raise BackendError(
                 "the location cannot serve this model right now (MODEL_NOT_READY)",
+                code="LOCATION_NOT_READY",
+                status=409,
+                retryable=True,
+                upstream_accepted=False,
+            )
+        return BackendResult(content=b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01", media_type="image/png", payload={})
+
+
+class _BusyFirstLocation:
+    """Refuses the first site with the Hub's `MACHINE_BUSY` sentence it is given."""
+
+    def __init__(self, said: str) -> None:
+        self.said = said
+        self.tried: list[str] = []
+
+    def generate(self, request):
+        self.tried.append(request.provider_id)
+        if request.provider_id == "studio-hub-a":
+            raise BackendError(
+                f"the location cannot serve this model right now (MACHINE_BUSY): {self.said}",
                 code="LOCATION_NOT_READY",
                 status=409,
                 retryable=True,
@@ -192,6 +213,75 @@ class RerouteTests(unittest.TestCase):
         # the point of storing it: a reader should not have to know the vocabulary.
         self.assertIn("cannot serve this model right now", settled["defer_reason"] or "")
         self.assertIsNone(settled.get("error_code"), "a waiting job carries no failure")
+
+
+class UpdateDrainTests(unittest.TestCase):
+    """Kind I (2026-10-19) — a location installing an update is not a candidate until it is back.
+
+    The Hub says so itself: *"this Mac is finishing its current work to install an update"* —
+    885 lines across the two live gateway logs on 2026-10-19. The selection re-offered it
+    anyway, and job `97bdce60-90f4-4f47-b789-073744e87ea7` was sent to the same installing Mac
+    **124 times** (`attempt_count` 126) in 80 minutes before failing with a sentence naming that
+    one machine 124 times — a Mac that was going to be back in minutes.
+    """
+
+    DRAIN_SAID = "this Mac is finishing its current work to install an update"
+    BUSY_SAID = "local is reserved for other work on this Mac"
+
+    def setUp(self) -> None:
+        self.store = JobStore(_TEMP_ROOT / f"drain-{id(self)}.sqlite3")
+        self.addCleanup(self.store.close)
+        fleet._DRAIN_COOLDOWN.clear()
+        self.addCleanup(fleet._DRAIN_COOLDOWN.clear)
+
+    def _dispatch_once(self, said: str):
+        row, _ = self.store.submit(
+            modality="image", model_id=MODEL, params={"prompt": "a cat"},
+            idempotency_key=f"drain-{id(self)}-{said[:8]}", provider_id="studio-hub-a",
+        )
+        self.assertTrue(self.store.mark_running(row["id"]))
+        adapter = _BusyFirstLocation(said)
+        with patch.object(worker_module, "registry", _TwoLocations()), \
+                patch.object(worker_module, "adapter_for", return_value=adapter), \
+                patch.object(fleet, "snapshot", _snapshot), \
+                patch.object(registry.models, "enabled_models",
+                             _TwoLocations.models.enabled_models):
+            worker_module.execute_job(row, self.store)
+        return adapter
+
+    def _candidates(self) -> set[str]:
+        with patch.object(fleet, "snapshot", _snapshot), \
+                patch.object(registry.models, "enabled_models",
+                             _TwoLocations.models.enabled_models):
+            return {c["location_id"] for c in fleet.routing_candidates(MODEL, "image")}
+
+    def test_an_installing_location_is_rested_and_offered_again_when_it_is_back(self) -> None:
+        adapter = self._dispatch_once(self.DRAIN_SAID)
+        self.assertEqual(adapter.tried, ["studio-hub-a", "studio-hub-b"],
+                         "the job moved to the location that could take it")
+        self.assertTrue(fleet.is_draining_provider("studio-hub-a"))
+        self.assertEqual(self._candidates(), {"b"}, "and it is not offered again")
+        # The rest is a window, not a permanent exclusion: the install finishes.
+        later = time.time() + fleet.DRAIN_COOLDOWN_S + 1
+        self.assertFalse(fleet.is_draining_provider("studio-hub-a", now=later))
+        self.assertEqual(self._candidates(), {"a", "b"})
+
+    def test_a_mac_that_is_merely_busy_stays_a_candidate(self) -> None:
+        """`MACHINE_BUSY` is not the marker — a busy Mac is a moment, and the code says so.
+
+        *"local is reserved for other work on this Mac"* (27 measured) frees in seconds; resting
+        it for the whole window would delay work the fleet is about to run. Only the install is a
+        deliberate stop.
+        """
+        self._dispatch_once(self.BUSY_SAID)
+        self.assertFalse(fleet.is_draining_provider("studio-hub-a"))
+        self.assertEqual(self._candidates(), {"a", "b"})
+
+    def test_a_non_hub_lane_never_starts_a_rest(self) -> None:
+        fleet.note_drain_refusal("pool", self.DRAIN_SAID)
+        fleet.note_drain_refusal("openrouter-main", self.DRAIN_SAID)
+        self.assertFalse(fleet.is_draining_provider("pool"))
+        self.assertFalse(fleet.is_draining_provider("openrouter-main"))
 
 
 class HealthHeaderTests(unittest.TestCase):

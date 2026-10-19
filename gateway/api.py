@@ -64,7 +64,7 @@ from . import retention
 from .notifier import notifier
 from .activity import is_story_path, record
 from .runtime import store, worker
-from .store import BACKGROUND, NORMAL, PRIORITIES, TERMINAL_STATES, artifacts_of
+from .store import BACKGROUND, HOLD_CLOSED, NORMAL, PRIORITIES, TERMINAL_STATES, artifacts_of
 from .worker import cancel_upstream
 from .voices import story_row, tts_output_container, voice_registry, voices_for_model
 
@@ -605,10 +605,11 @@ def _discard_recovery_hold(job_id: str) -> dict[str, Any]:
             lane = f"Provider '{provider_id}' is no longer configured"
         detail = (
             f"An operator closed this unknown-outcome hold. {lane}, so the provider was not "
-            "told and cannot be: the attempt stays abandoned, and a result it may still "
-            "produce is not collected."
+            "told and cannot be: the attempt stays abandoned. A result it produces anyway is "
+            "still this job's result and is adopted if it arrives — the gateway has stopped "
+            "waiting, not stopped collecting."
         )
-        closed = store.close_recovery_hold(job_id, code="HOLD_CLOSED", detail=detail)
+        closed = store.close_recovery_hold(job_id, code=HOLD_CLOSED, detail=detail)
         return {
             "ok": True,
             "closed": "local",
@@ -620,7 +621,12 @@ def _discard_recovery_hold(job_id: str) -> dict[str, Any]:
         provider_id=provider_id,
         model_id=str(job.get("model_id") or ""),
         modality=str(job.get("modality") or ""),
-        params={},
+        # **The hold's own context travels with the action.** A pool has no upstream id of its
+        # own — the attempt belongs to a *member* — so the member it stopped on is recorded in
+        # this context (`pool.py` writes `pool_member` and the member's `provider_id` there) and
+        # `PoolBackend.discard` is the only reader. Without it the pool lane had no discard route
+        # at all and every pool hold was closed locally.
+        params=dict(job.get("recovery_context") or {}),
         values=registry.credentials.resolved(provider_id),
         base_url=definition.base_url,
         display_name=definition.display_name,
@@ -691,7 +697,10 @@ def _reconcile_recovery_hold(job_id: str) -> dict[str, Any]:
         )
     request = BackendRequest(
         provider_id=provider_id, model_id=str(job.get("model_id") or ""),
-        modality=str(job.get("modality") or ""), params={},
+        modality=str(job.get("modality") or ""),
+        # The hold's own context, for the same reason as the discard route: it is what names a
+        # pool's member (`PoolBackend.reconcile`).
+        params=dict(job.get("recovery_context") or {}),
         values=registry.credentials.resolved(provider_id), base_url=definition.base_url,
         display_name=definition.display_name, upstream_job_id=batch, upstream_item_index=index,
     )

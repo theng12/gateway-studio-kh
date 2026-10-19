@@ -561,6 +561,81 @@ class JobRecoveryTests(unittest.TestCase):
         finally:
             reopened.close()
 
+    def test_a_late_answer_is_adopted_after_an_operator_closed_the_hold(self) -> None:
+        """**A closed hold has stopped *waiting*, not stopped *collecting*.**
+
+        Live, 2026-10-19: an operator closed the pool holds (47 of the 121 `HOLD_CLOSED` rows in
+        the database are that lane), and the jobs' own later attempts kept answering *after* the
+        close — `5986ef32-2bd7-4293-93bf-37b1817dd448` recorded `LOCATION_NOT_READY` in
+        `attempt_log` at 1792387290, minutes past its close. `succeed()` already adopts a late
+        result for an *open* hold (owner decision 2026-09-30: finished work is adopted, never left
+        `failed / UNKNOWN_OUTCOME`), and it excluded a closed one, so a real answer was written to
+        `late_result_state` beside a `failed` verdict — where Story's by-key lookup, which reads
+        `state`, never sees it. `HOLD_CLOSED` is the one close that says nothing about the attempt
+        (nothing was sent upstream), so the same rule belongs there.
+        """
+        output = _TEMP_ROOT / "data" / "artifacts" / "late-after-hold-closed.txt"
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text("the answer")
+        store = self.make_store("hold-closed-late")
+        try:
+            row = self.submit(store, "hold-closed-late")
+            self.assertTrue(store.mark_running(row["id"]))
+            self.assertTrue(store.begin_dispatch(row["id"]))
+            store.fail(row["id"], code="PROVIDER_UNAVAILABLE", detail="no member could answer",
+                       recovery_state="unknown_outcome", recovery_detail="no member could answer")
+            store.close_recovery_hold(row["id"], code="HOLD_CLOSED",
+                                      detail="An operator closed this unknown-outcome hold.")
+            self.assertEqual(store.get(row["id"])["error_code"], "HOLD_CLOSED")
+
+            store.succeed(
+                row["id"],
+                asset_path=str(output),
+                media_type="text/plain",
+                artifacts=[{"asset_id": "0", "path": str(output), "media_type": "text/plain"}],
+                result={"text": "the answer"},
+            )
+
+            settled = store.find_by_idempotency_key("hold-closed-late")
+            self.assertEqual(settled["state"], "succeeded",
+                             "the answer is this job's answer, and Story reads `state`")
+            self.assertIsNone(settled["error_code"], "the closed-hold verdict is gone with it")
+            self.assertIsNone(settled["late_result_state"], "not a footnote beside a failure")
+            self.assertEqual(artifacts_of(settled)[0]["path"], str(output))
+            from gateway.api import _job_envelope
+
+            self.assertEqual(_job_envelope(settled)["output_text"], "the answer",
+                             "and the by-key lookup publishes it, as it does for any success")
+        finally:
+            store.close()
+
+    def test_a_hold_closed_from_the_upstreams_own_record_keeps_its_verdict(self) -> None:
+        """The other side of the same rule, and the reason it is `HOLD_CLOSED` and not "closed".
+
+        `close_hold` closes a hold because the *upstream's own record* settled it — a proved
+        answer, per its own docstring — so a success arriving afterwards does not outrank it.
+        """
+        store = self.make_store("hold-closed-by-record")
+        try:
+            row = self.submit(store, "hold-closed-by-record")
+            self.assertTrue(store.mark_running(row["id"]))
+            self.assertTrue(store.begin_dispatch(row["id"]))
+            store.fail(row["id"], code="UNKNOWN_OUTCOME", detail="the Hub lost the worker",
+                       recovery_state="unknown_outcome", recovery_detail="batch b-1 item 0")
+            self.assertTrue(store.close_hold(
+                row["id"], resolution="failed",
+                detail="the Hub reports batch b-1 finished with state 'error'"))
+
+            store.succeed(row["id"], result={"text": "a later answer"})
+
+            settled = store.get(row["id"])
+            self.assertEqual(settled["state"], "failed", "a proved answer is not rewritten")
+            self.assertEqual(settled["error_code"], "PROVIDER_FAILED")
+            self.assertEqual(settled["late_result_state"], "succeeded",
+                             "the late answer is still recorded, never lost")
+        finally:
+            store.close()
+
 
 if __name__ == "__main__":
     unittest.main()

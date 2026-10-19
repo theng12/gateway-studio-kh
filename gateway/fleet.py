@@ -4277,6 +4277,46 @@ def memory_cooled_machine_ids(row: dict, model_id: str) -> set[str]:
     }
 
 
+#: **A location installing an update is not offered work until it is back** (Kind I, 2026-10-19).
+#: The Hub answers `MACHINE_BUSY: this Mac is finishing its current work to install an update`
+#: when it has deliberately stopped taking work to install. Measured 2026-10-19: 885 such lines
+#: across the two live gateway logs (856 in `.log.1`, 29 in `.log`), and job
+#: `97bdce60-90f4-4f47-b789-073744e87ea7` was sent to the same installing Mac
+#: **124 times** (`attempt_count` 126) before it failed with "tried 3 machines and every one
+#: failed" naming one machine 124 times. `location id -> until`; in memory only, so a restart
+#: forgets it and costs at most one more refusal, the same trade `_MEMORY_COOLDOWN` makes.
+DRAIN_COOLDOWN_S = 15 * 60.0
+_DRAIN_COOLDOWN: dict[str, float] = {}
+#: The Hub's own words for an install. **The sentence, not the code**: `MACHINE_BUSY` is also
+#: "local is reserved for other work on this Mac" (27 measured) and "every Mac with this Chat
+#: model is busy" — a Mac that is merely busy is a moment that frees in seconds, and resting it
+#: for the whole window would delay work the fleet is about to run. Only the install is a stop.
+#: ponytail: a flat window; end the rest from the location's own `version_status` when the
+#: install finishes, if a 15-minute wait for a two-minute install ever shows up in the queue.
+_DRAIN_REFUSAL = re.compile(r"install(?:ing)? an update", re.IGNORECASE)
+
+
+def note_drain_refusal(provider_id: str, detail: str, now: float | None = None) -> None:
+    """Rest a location that said it is installing an update, so selection skips it until it is back."""
+    location = controller_id_from(provider_id)
+    if location and _DRAIN_REFUSAL.search(detail or ""):
+        _DRAIN_COOLDOWN[location] = (time.time() if now is None else now) + DRAIN_COOLDOWN_S
+
+
+def is_draining_provider(provider_id: str, now: float | None = None) -> bool:
+    """True while a location is installing an update and must not be offered work."""
+    location = controller_id_from(provider_id)
+    if location is None:
+        return False
+    until = _DRAIN_COOLDOWN.get(location)
+    if until is None:
+        return False
+    if until <= (time.time() if now is None else now):
+        _DRAIN_COOLDOWN.pop(location, None)
+        return False
+    return True
+
+
 def reachable_machines(row: dict) -> int | None:
     """Macs at a location that are not known to be offline; `None` when the Hub listed none (F3)."""
     machines = [m for m in row.get("machines") or [] if isinstance(m, dict)]
@@ -4363,6 +4403,11 @@ def routing_candidates(
             continue
         # Every Mac here that could run this model is paused: as good as unreachable for it.
         if no_free_mac(row, model_id):
+            continue
+        # **A location installing an update is not a candidate until it is back** (Kind I). It
+        # said so itself, deliberately, and re-offering it is what turned one job into 126
+        # attempts against a Mac that could not answer any of them.
+        if is_draining_provider(definition.id):
             continue
 
         capacity = row.get("capacity") or {}

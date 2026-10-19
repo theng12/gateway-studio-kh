@@ -149,6 +149,55 @@ class RoutingTest(_Paused):
         self.assertEqual(ran, [_pid("a")])
 
 
+class DrainTest(_Paused):
+    """Kind I (2026-10-19) — a location installing an update gets no new work either.
+
+    It is the same shape as the owner's pause: the Mac has deliberately stopped taking work, so a
+    job bound to it must wait or move, not be sent to a machine that cannot answer. Live,
+    `97bdce60-90f4-4f47-b789-073744e87ea7` was sent to the same installing Mac 124 times
+    (`attempt_count` 126) in 80 minutes; the deferral re-offered the location the job stayed bound
+    to, and only `_admit`/`_rebind` can stop that.
+    """
+
+    DRAIN_SAID = "this Mac is finishing its current work to install an update"
+    BUSY_SAID = "local is reserved for other work on this Mac"
+
+    def setUp(self) -> None:
+        super().setUp()
+        fleet._DRAIN_COOLDOWN.clear()
+        self.addCleanup(fleet._DRAIN_COOLDOWN.clear)
+
+    def _run_bound_to_local(self, said: str) -> list[str]:
+        self.store.submit(modality=MODALITY, model_id=MODEL, params={}, idempotency_key="drain",
+                          provider_id=_pid("local"))
+        ran: list[str] = []
+        done = threading.Event()
+
+        def execute(row, store):
+            ran.append(row["provider_id"])
+            store.succeed(row["id"], result={})
+            done.set()
+
+        fleet.note_drain_refusal(_pid("local"), said)
+        with _Fleet([_location("local", eligible=1, available=1), _location("a", eligible=1, available=1)]), \
+                patch.object(worker_module, "execute_job", execute):
+            worker = Worker(self.store, interval_s=0.01, pool_size=0)
+            worker.start()
+            try:
+                self.assertTrue(done.wait(5))
+            finally:
+                worker.wait_idle(5)
+                worker.stop()
+        return ran
+
+    def test_a_queued_job_bound_to_an_installing_location_moves_to_the_fleet(self) -> None:
+        self.assertEqual(self._run_bound_to_local(self.DRAIN_SAID), [_pid("a")])
+
+    def test_a_merely_busy_location_keeps_its_job(self) -> None:
+        """The rest is the *install* sentence, not `MACHINE_BUSY`: a busy Mac frees in seconds."""
+        self.assertEqual(self._run_bound_to_local(self.BUSY_SAID), [_pid("local")])
+
+
 class VoiceTest(_Paused):
     def _voice(self, clip: Path | None):
         raw = {"reference_path": str(clip)} if clip else {}

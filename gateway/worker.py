@@ -106,6 +106,17 @@ _UNCOUNTED_CODES = frozenset({WORKSTATION_YIELDED, "NO_AVAILABLE_MACHINE"})
 _UNCOUNTED_ATTEMPT_CODES = _UNCOUNTED_CODES | _NO_REROUTE_CODES
 
 
+def _takes_no_new_work(provider_id: str) -> bool:
+    """Whether this location must not be sent work *now*.
+
+    Two facts, one predicate, used by every place that decides candidacy: the owner paused the
+    location by hand, or it told us it is installing an update (Kind I, `fleet.DRAIN_COOLDOWN_S`).
+    Both are deliberate stops, so a job bound to one waits or moves rather than being sent to a
+    machine that cannot answer.
+    """
+    return fleet.is_paused_provider(provider_id) or fleet.is_draining_provider(provider_id)
+
+
 def _deadline_reroute_left(store: Any, job_id: str) -> bool:
     """True while this job has not yet been moved after a `DEADLINE_EXCEEDED` (one move only)."""
     attempts_of = getattr(store, "attempts_of", None)
@@ -1009,6 +1020,14 @@ def _dispatch(job: dict[str, Any], store: JobStore, provider_id: str, model_id: 
             log.warning("job %s failed via %s: %s", job_id, provider_id, exc)
             if exc.code == "INSUFFICIENT_MEMORY":
                 fleet.note_memory_refusal(provider_id, model_id, str(exc))  # F1: rest that Mac
+            elif exc.code == "LOCATION_NOT_READY":
+                # **A location that is installing an update has stopped taking work, and saying
+                # so is not a reason to ask it again** (Kind I). `_next_machine`/`_rebind` already
+                # skip what they have tried, but the job stays *bound* to this location, so the
+                # deferral below sent it straight back: 124 refusals from one installing Mac in
+                # 80 minutes. The rest is recorded only for the Hub's own install sentence — a
+                # Mac that is merely busy is a moment and stays a candidate.
+                fleet.note_drain_refusal(provider_id, str(exc))
             current = store.get(job_id) if hasattr(store, "get") else job
             current = current or {}
             # **Nothing was sent, so nothing can be outstanding.** `dispatch_started_at` is stamped
@@ -1606,8 +1625,10 @@ class Worker:
         """
         provider_id = str(job.get("provider_id") or "")
         modality = str(job.get("modality") or "")
-        if fleet.is_paused_provider(provider_id):
-            return False  # the owner paused this location: no new work; `_rebind` moves the job on
+        # **No new work: the owner paused this location, or it is installing an update.** Refusing
+        # is not failing — the job stays due and `_rebind` moves it to a location that is back.
+        if _takes_no_new_work(provider_id):
+            return False
         # Every fleet and store read this admission needs, taken **before** `_budget_lock`:
         # `_job_room` reaches `fleet.snapshot()` (and, for a background job, the store), and
         # the lock order note on `_budget_lock` makes that a deadlock, not a slow read.
@@ -1834,9 +1855,9 @@ class Worker:
         if backoff is not None and time.monotonic() < backoff[0]:
             return False
         try:
-            # A site with room keeps its job, unless the owner paused it.
+            # A site with room keeps its job, unless the owner paused it or it is installing.
             model_id = str(job.get("model_id") or "")
-            if self._job_room(job, provider_id) > 0 and not fleet.is_paused_provider(provider_id):
+            if self._job_room(job, provider_id) > 0 and not _takes_no_new_work(provider_id):
                 return False
             if fleet.pinned_location(json.loads(job.get("params") or "{}")):
                 return False
@@ -1846,8 +1867,8 @@ class Worker:
             if fleet.speed_ranked(model_id):
                 # Qwen (owner 2026-10-09): stay in line for a fast Mac unless a site with room would
                 # finish it sooner. This site is ranked too, with our jobs already waiting for it.
-                # A paused site is not a line to stay in.
-                here = "" if fleet.is_paused_provider(provider_id) else str(fleet.controller_id_from(provider_id))
+                # A paused site is not a line to stay in, and neither is one installing.
+                here = "" if _takes_no_new_work(provider_id) else str(fleet.controller_id_from(provider_id))
                 ahead = self._ahead.get((provider_id, model_id), 0)
                 pool = fleet.apply_load(
                     fleet.routing_candidates(model_id, modality, exclude_locations=tried - {here}),
