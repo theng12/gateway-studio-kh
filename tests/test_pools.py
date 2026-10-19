@@ -95,6 +95,28 @@ class _FakeAdapter:
         return self.outcome
 
 
+class _SettleableAdapter(_FakeAdapter):
+    """A member that keeps a queued attempt and can be asked to abandon or settle it.
+
+    Only Studio Hub has these routes, so the pool's own hold is the one that must be handed
+    to the member: the pool itself has no upstream id to aim at.
+    """
+
+    def __init__(self, outcome):
+        super().__init__(outcome)
+        self.settled: list[tuple[str, str, str]] = []
+
+    def _route(self, action: str, request):
+        self.settled.append((action, request.provider_id, request.upstream_job_id))
+        return {"ok": True, "status": 200, "answer": {"reconciled": True, "item": {"state": "error"}}}
+
+    def discard(self, request):
+        return self._route("discard", request)
+
+    def reconcile(self, request):
+        return self._route("reconcile", request)
+
+
 class _TempEnv(unittest.TestCase):
     def setUp(self):
         from gateway import pools
@@ -1065,6 +1087,140 @@ class PoolPaidLastResortTests(_TempEnv):
             described = self.pools.describe("mix")
         self.assertEqual([False, True], [r["paid"] for r in described["members_detail"]])
         self.assertTrue(described["paid_last_resort"])
+
+
+class PoolHoldSettleTests(_TempEnv):
+    """A pool hold must be settleable — and a free member's silence must not create one.
+
+    Kind A, 2026-10-19. Two halves of one defect, both live:
+
+    * the pool lane had **no `discard`/`reconcile` at all**, so `api` could only close a pool hold
+      locally, with a sentence admitting the provider was never told (47 of the 121 `HOLD_CLOSED`
+      rows in the live database are `provider_id = 'pool'`);
+    * and because a **free** member's silence marked the whole job ambiguous, the hold it produced
+      named no attempt and no upstream id — so there was nothing an operator could have aimed at
+      even once the route existed (`994394bc-e6e4-4e36-b9f6-e8bbacf914ca`: the only outstanding
+      member was the free `magpie::group/story-llm-free`, and closing it locally threw away
+      whatever that lane might still have produced).
+
+    The rule the second half restores is the one this module's own docstring already states:
+    *advance on settled member failures; stop on an uncertain paid send*. A free member may be
+    advanced past, so its silence is a failure of that member, never an unknown outcome for the job.
+    """
+
+    def _backend(self, outcomes):
+        """Members are free when their provider id starts with `f` (`free_tier`), paid otherwise."""
+        from gateway.adapters.pool import PoolBackend
+        from gateway.providers.definitions import ProviderDefinition
+
+        adapters = {m: _FakeAdapter(o) for m, o in outcomes.items()}
+
+        def resolve(_modality, member):
+            if member not in adapters:
+                return None, None
+            provider = member.split("::")[0]
+            return ProviderDefinition(
+                id=provider, display_name=provider, category="language", kind="openai_compatible",
+                base_url="http://example.test", modalities=("chat",), discovery="static",
+                free_tier=provider.startswith("f"),
+            ), {"model_id": "x"}
+
+        backend = PoolBackend()
+        backend.attach(resolve, lambda definition: adapters[f"{definition.id}::x"])
+        return backend, adapters
+
+    def _request(self, name="mix", **params):
+        from gateway.adapters.base import BackendRequest
+
+        return BackendRequest(provider_id="pool", model_id=name, modality="chat",
+                              params={"messages": [], **params}, values={}, base_url="")
+
+    def test_a_free_members_silence_leaves_the_jobs_outcome_known(self):
+        from gateway.adapters.base import BackendError, note_request_started
+
+        class _SilentFree(_FakeAdapter):
+            def generate(self, request):
+                note_request_started()  # the request really went out and never came back
+                return super().generate(request)
+
+        self.pools.create("mix", ["f-magpie::x"])
+        backend, adapters = self._backend({
+            "f-magpie::x": BackendError("network: timed out", code="LOCATION_UNREACHABLE"),
+        })
+        adapters["f-magpie::x"] = _SilentFree(adapters["f-magpie::x"].outcome)
+        with self.assertRaises(BackendError) as caught:
+            backend.generate(self._request())
+        error = caught.exception
+        self.assertIs(False, error.upstream_accepted,
+                      "a free member left nothing chargeable outstanding")
+        self.assertTrue(error.upstream_settled,
+                        "the pool is done asking, so the job is a known failure, not a hold")
+
+    def test_a_paid_members_silence_still_holds_the_job_with_its_member_named(self):
+        from gateway.adapters.base import BackendError, note_request_started
+
+        class _SilentPaid(_FakeAdapter):
+            def generate(self, request):
+                note_request_started()
+                return super().generate(request)
+
+        self.pools.create("mix", ["haiku::x"])
+        backend, adapters = self._backend({
+            "haiku::x": BackendError("connection lost", code="PROVIDER_UNAVAILABLE"),
+        })
+        adapters["haiku::x"] = _SilentPaid(adapters["haiku::x"].outcome)
+        with self.assertRaises(BackendError) as caught:
+            backend.generate(self._request())
+        # The paid send may have been accepted, so the walk stops — and the member it stopped on
+        # is what makes the hold settleable at all.
+        self.assertEqual("PROVIDER_SUBMISSION_UNCERTAIN", caught.exception.code)
+        self.assertEqual("haiku::x", caught.exception.recovery["pool_member"])
+        self.assertEqual("haiku", caught.exception.recovery["provider_id"])
+
+    def test_the_pool_hands_a_hold_to_the_member_that_ran_the_attempt(self):
+        """`api` builds the action's request from the job's recovery context; this is its reader."""
+        from gateway.adapters.base import BackendRequest
+
+        self.pools.create("mix", ["haiku::x"])
+        backend, adapters = self._backend({"haiku::x": None})
+        member = _SettleableAdapter(None)
+        adapters["haiku::x"] = member
+        request = BackendRequest(
+            provider_id="pool", model_id="mix", modality="chat",
+            # Exactly the context `generate` writes when it stops on an uncertain send.
+            params={"hub_batch_id": "batch-1", "hub_item_index": 0,
+                    "pool_member": "haiku::x", "provider_id": "haiku"},
+            values={}, base_url="", upstream_job_id="batch-1", upstream_item_index=0,
+        )
+        self.assertTrue(backend.discard(request)["ok"])
+        self.assertTrue(backend.reconcile(request)["ok"])
+        self.assertEqual([("discard", "haiku", "batch-1"), ("reconcile", "haiku", "batch-1")],
+                         member.settled)
+
+    def test_a_hold_naming_no_member_is_refused_in_words(self):
+        """Never sent to *some* member: a discard aimed at the wrong lane abandons real work."""
+        from gateway.adapters.base import BackendRequest
+
+        self.pools.create("mix", ["haiku::x"])
+        backend, _ = self._backend({"haiku::x": None})
+        answer = backend.discard(BackendRequest(
+            provider_id="pool", model_id="mix", modality="chat", params={}, values={}, base_url="",
+        ))
+        self.assertFalse(answer["ok"])
+        self.assertIn("does not name the pool member", answer["reason"])
+
+    def test_a_member_with_no_route_says_so_rather_than_quoting_one(self):
+        from gateway.adapters.base import BackendRequest
+
+        self.pools.create("mix", ["haiku::x"])
+        backend, _ = self._backend({"haiku::x": None})  # `_FakeAdapter` has no discard
+        answer = backend.discard(BackendRequest(
+            provider_id="pool", model_id="mix", modality="chat",
+            params={"pool_member": "haiku::x", "provider_id": "haiku"},
+            values={}, base_url="",
+        ))
+        self.assertFalse(answer["ok"])
+        self.assertIn("no discard route", answer["reason"])
 
 
 class PoolResolverWiringTests(unittest.TestCase):

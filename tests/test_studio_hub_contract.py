@@ -1592,6 +1592,81 @@ class DiscardActionTests(_HubCase):
         self.assertEqual(response.status_code, 200, response.text)
         self.assertEqual(hub.discards, [f"/api/hub/jobs/{BATCH}/items/0/discard"])
 
+    def _pool_hold(self) -> str:
+        """A pool job settled as uncertain on one member — the shape `pool.generate` leaves.
+
+        `pool_member` and the member's own `provider_id` are what `PoolBackend` writes into the
+        error's `recovery` when the walk stops on an uncertain send; the job carries that as its
+        recovery context.
+        """
+        row, created = self.api.store.submit(
+            modality="music",
+            model_id="writing-haiku-gemini-luna-ordered",
+            params={"prompt": "x"},
+            idempotency_key=f"pool-discard-{self.id()}",
+            provider_id="pool",
+        )
+        self.assertTrue(created)
+        self.assertTrue(self.api.store.mark_running(row["id"]))
+        self.api.store.fail(
+            row["id"],
+            code="PROVIDER_SUBMISSION_UNCERTAIN",
+            detail="the paid member may still be running this attempt",
+            recovery_state="unknown_outcome",
+            recovery_detail="batch hub-batch-1 item 0",
+            recovery_context={
+                "hub_batch_id": BATCH,
+                "hub_item_index": 0,
+                "hub_discard_route": f"/api/hub/jobs/{BATCH}/items/0/discard",
+                "pool_member": "studio-hub-test::model/test",
+                "provider_id": "studio-hub-test",
+                "pool_attempts": [{"member": "studio-hub-test::model/test", "outcome": "failed"}],
+            },
+        )
+        return row["id"]
+
+    def test_a_pool_hold_is_discarded_at_the_member_that_ran_the_attempt(self) -> None:
+        """**The pool lane had no discard route at all**, so `api` closed every pool hold here.
+
+        47 of the 121 `HOLD_CLOSED` rows in the live database are `provider_id = 'pool'`, each
+        carrying the sentence admitting the provider was never told — and the member that may
+        still have been running was never asked. A pool has no upstream id of its own (the attempt
+        belongs to a member), so the member rides in the job's recovery context and the pool
+        adapter forwards the action to it.
+        """
+        from gateway import api as api_module
+        from gateway.adapters.pool import PoolBackend
+
+        hub = _Hub()
+        job_id = self._pool_hold()
+        job = self.api.store.get(job_id)
+        backend = PoolBackend()
+        backend.attach(
+            lambda _modality, _member: (
+                SimpleNamespace(id="studio-hub-test", kind="studio_hub", base_url=HUB,
+                                display_name="Hub"),
+                {"model_id": "model/test"},
+            ),
+            lambda _definition: hub_module.StudioHubBackend(),
+        )
+        with patch.object(self.api.registry, "definition", return_value=SimpleNamespace(
+                    id="pool", kind="pool", base_url="", display_name="Pool")), \
+                patch.object(self.api, "adapter_for", return_value=backend), \
+                patch.object(self.api.registry.credentials, "resolved",
+                             return_value={"hub_token": "t"}), \
+                self.hub_client(hub):
+            self.assertEqual(api_module.recovery_action(job), "discard_upstream")
+            response = self.client.post(f"/admin/api/jobs/{job_id}/discard-uncertain")
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["closed"], "upstream")
+        self.assertEqual(hub.discards, [f"/api/hub/jobs/{BATCH}/items/0/discard"],
+                         "the member that ran the attempt was asked, and only it")
+        closed = self.api.store.get(job_id)
+        self.assertEqual(closed["error_code"], "DISCARDED_UNCERTAIN")
+        self.assertFalse(closed["recovery_required"])
+        self.assertNotIn("no discard route", closed["error_detail"],
+                         "the pool lane has one now")
+
     def test_nothing_discards_on_its_own(self) -> None:
         """An uncertain outcome must not walk itself into a discard."""
         hub = _Hub(

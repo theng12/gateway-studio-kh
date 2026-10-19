@@ -45,6 +45,11 @@ NORMAL, BACKGROUND = "normal", "background"
 PRIORITIES = (NORMAL, BACKGROUND)
 UNKNOWN_OUTCOME_CODE = "UNKNOWN_OUTCOME"
 RECOVERY_UNKNOWN = "unknown_outcome"
+#: The code a hold carries once an operator has closed it **without** the attempt's answer
+#: (`api._discard_recovery_hold`). Named here because `succeed()` reads it to decide adoption:
+#: this is the one close that says nothing about the attempt, so a real answer that turns up
+#: afterwards is still this job's answer.
+HOLD_CLOSED = "HOLD_CLOSED"
 #: The Studio Hub lanes submitted through `/api/hub/jobs`, which answers a repeated `clientRequestId`
 #: with the batch it already made, from a SQLite ledger that survives a Hub restart (Hub `broker.py`
 #: `_submit_batch_locked`). Transcription (dedupe only while a batch is active) and chat are not.
@@ -374,7 +379,9 @@ class JobStore:
 
         `succeed()` now settles such a job itself; this is the same rule applied once to the rows
         written before it did (restarts that raced a finishing job left `failed / UNKNOWN_OUTCOME`
-        beside an artifact on disk that nothing published).
+        beside an artifact on disk that nothing published). A hold an operator closed locally
+        (`HOLD_CLOSED`) is the same case — nothing was sent upstream, so the answer is still the
+        job's — and it is included for the same reason.
         """
         self._conn.execute(
             """
@@ -382,10 +389,11 @@ class JobStore:
                SET state = 'succeeded', recovery_state = NULL, recovery_detail = NULL,
                    recovery_context = NULL, error_code = NULL, error_detail = NULL,
                    retryable = 0, next_action_at = NULL
-             WHERE state = 'failed' AND recovery_state = ? AND late_result_state = 'succeeded'
+             WHERE state = 'failed' AND (recovery_state = ? OR error_code = ?)
+               AND late_result_state = 'succeeded'
                AND (asset_path IS NOT NULL OR result_json IS NOT NULL)
             """,
-            (RECOVERY_UNKNOWN,),
+            (RECOVERY_UNKNOWN, HOLD_CLOSED),
         )
 
     #: The exact failure gateway 0.2.97/0.2.98's pool adapter raised while resolving its members,
@@ -637,8 +645,19 @@ class JobStore:
             # **A result for a job held as an unknown outcome settles the hold** (owner decision,
             # 2026-09-30: finished work is adopted, never left `failed / UNKNOWN_OUTCOME`). Any
             # other terminal job keeps its verdict and records the late result beside it.
+            #
+            # **Including a hold an operator closed without the attempt's answer** (2026-10-19).
+            # `HOLD_CLOSED` is the one close that is a statement about *waiting*, not about the
+            # attempt: nothing was sent upstream, so the answer this job was waiting for may still
+            # arrive, and throwing it away is the one outcome nobody can undo. Measured: a pool
+            # job closed at 13:36 whose own later attempt then answered — recorded in
+            # `late_result_state` beside a `failed` verdict, so Story's by-key lookup read
+            # `failed` and the answer reached nobody. A hold closed from the *upstream's* own
+            # record (`close_hold`) keeps its verdict: that close is a proved answer, and a
+            # later success does not outrank it.
             holding = (existing["state"] == "failed"
-                       and existing.get("recovery_state") == RECOVERY_UNKNOWN)
+                       and (existing.get("recovery_state") == RECOVERY_UNKNOWN
+                            or existing.get("error_code") == HOLD_CLOSED))
             if existing["state"] in TERMINAL_STATES and not holding:
                 if existing["state"] != "succeeded":
                     fields["late_result_state"] = "succeeded"

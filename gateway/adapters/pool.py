@@ -219,7 +219,17 @@ class PoolBackend(Backend):
                     or (exc.upstream_accepted is True and exc.upstream_settled)
                 )
                 ambiguous = not _outcome_known(exc, requests_started() != sends_before)
-                walk["ambiguous"] = walk["ambiguous"] or ambiguous
+                # **A free member's silence is not the *job's* unknown outcome.** The rule at the
+                # top of this file already says a free member may be advanced past; letting the
+                # same silence mark the whole job ambiguous contradicts it and produced a durable
+                # hold that *nobody could settle* — the pool names no upstream id, and its lane had
+                # no discard route, so an operator's only action was to close it locally (47 of
+                # the live `HOLD_CLOSED` rows; e.g. `994394bc-e6e4-4e36-b9f6-e8bbacf914ca`, whose
+                # only outstanding member was the free `magpie::group/story-llm-free`). Nothing was
+                # charged and there is no id to reconcile, so the honest outcome is the failure the
+                # members actually gave — and a *paid* send that may have been accepted still stops
+                # the walk with its member preserved, exactly as before.
+                walk["ambiguous"] = walk["ambiguous"] or (ambiguous and paid)
                 attempts.append(
                     {
                         "member": member,
@@ -254,7 +264,9 @@ class PoolBackend(Backend):
                 # An adapter bug on one member must not take the pool down with it.
                 # This is the same reasoning as the chat route's broad catch, one
                 # level in: the next member may well be a different code path.
-                walk["ambiguous"] = walk["ambiguous"] or requests_started() != sends_before
+                walk["ambiguous"] = walk["ambiguous"] or (
+                    requests_started() != sends_before and paid
+                )  # a free member's silence is not the job's unknown outcome (see above)
                 attempts.append(
                     {"member": member, "outcome": "error", "detail": f"{type(exc).__name__}: {exc}"[:400]}
                 )
@@ -417,6 +429,57 @@ class PoolBackend(Backend):
         from ..providers import registry
 
         return registry.credentials.resolved(provider_id)
+
+    # -- settling a hold ---------------------------------------------------
+    def _forward_to_member(self, action: str, request: BackendRequest) -> dict[str, Any]:
+        """Hand `discard` / `reconcile` to the member that ran the attempt.
+
+        **A pool has no upstream id of its own, so the attempt belongs to a member.** When the
+        walk stopped on an uncertain send, `generate` records which one in the error's `recovery`
+        (`pool_member` and that member's own `provider_id`), and the job carries it as its recovery
+        context — `api._discard_recovery_hold` passes that context as this request's `params`,
+        because nothing else can name the member.
+
+        Without this the pool lane had **no discard route at all** (`api.recovery_action` finds
+        none on the adapter), so every pool hold could only be closed locally, with a sentence
+        admitting the provider was never told: 47 of the 121 `HOLD_CLOSED` rows in the live
+        database are this lane, and the member that may still have been running was never asked.
+        """
+        context = request.params if isinstance(request.params, dict) else {}
+        member = str(context.get("pool_member") or "")
+        if not member or not context.get("provider_id"):
+            return {"ok": False, "status": None,
+                    "reason": "this hold does not name the pool member that ran the attempt"}
+        definition, model = self._resolve("chat", member)
+        if definition is None or model is None:
+            # Disabled, or the provider was switched off, since the hold was written. Named
+            # rather than answered with something else: a discard sent to the wrong lane is
+            # worse than a refusal, and `api` records whichever answer this returns.
+            return {"ok": False, "status": None,
+                    "reason": f"pool member '{member}' is no longer configured"}
+        route = getattr(self._adapter_for(definition), action, None)
+        if route is None:
+            return {"ok": False, "status": None,
+                    "reason": f"the {definition.kind} lane has no {action} route"}
+        return route(BackendRequest(
+            provider_id=definition.id,
+            model_id=str(model.get("model_id") or ""),
+            modality=request.modality,
+            params={},
+            values=self._credentials_for(definition.id),
+            base_url=definition.base_url,
+            display_name=definition.display_name,
+            upstream_job_id=request.upstream_job_id,
+            upstream_item_index=request.upstream_item_index,
+        ))
+
+    def discard(self, request: BackendRequest) -> dict[str, Any]:
+        """Abandon the pool member that may still be running this job's attempt."""
+        return self._forward_to_member("discard", request)
+
+    def reconcile(self, request: BackendRequest) -> dict[str, Any]:
+        """Ask the pool member that ran the attempt to settle it from its own record."""
+        return self._forward_to_member("reconcile", request)
 
 
 __all__ = ["PoolBackend"]
