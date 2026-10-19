@@ -14,6 +14,12 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.188 — 2026-10-19
+
+### Your answer length is honoured wherever you ask for it
+
+A request that names its answer length in any accepted way is honoured on every provider. Otherwise the model's own published limit is used, and 128,000 tokens when a model publishes none. If a provider says that is too large, the request is sent once more at the provider's own maximum.
+
 ## 0.2.187 — 2026-10-19
 
 ### The Gateway now raises the alert instead of waiting for someone to notice
