@@ -14,6 +14,16 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.190 — 2026-10-19
+
+### A music lane's own file formats are accepted
+
+A Studio Hub music lane advertises the file formats it delivers on its catalogue row — a YuE2 lane declares FLAC, and its native file really is FLAC — but a music request only accepted wav and m4a, so a caller that read the row and asked for FLAC was refused. The model's own row is now the authority for what a music request may ask for, and FLAC is added to the music list as well, because the lane can already describe and receive it. Image and voice are unchanged.
+
+### A long writing job is no longer cut off before the Hub is done
+
+Studio Hub works out each chat job's deadline from the job, and it cannot tell a 100-prompt scene pack from a one-line question by reading the body — so Story Studio's own expectation now travels with the request. The chat lanes also no longer time out first: they wait out the Hub's own ceiling of four hours on every path, where before a flat five-minute wait would abandon a job the Hub was still legitimately running. A 100-prompt pack is roughly 2,500 seconds of generation on the fleet's slowest measured Mac before load, prompt and margin. Every other kind of work keeps its own stated limit.
+
 ## 0.2.189 — 2026-10-19
 
 ### A held job now ends as a known answer
