@@ -3861,6 +3861,28 @@ uvicorn.run("gateway.api:app", host="127.0.0.1", port=int(sys.argv[2]), log_leve
                   httpx.get(f"{BASE}/admin/api/fleet/controllers",
                             headers=AUTH).json()["controllers"] == [])
 
+            print("\n\033[1m20b. Re-discovering one provider is not re-discovering them all\033[0m")
+            # The console's re-discover button posted `/refresh-all` whatever the filter said,
+            # so a press meant for one provider re-read every provider's catalogue. The owner,
+            # 2026-10-19: *"i don't know if it runs across all the providers or the one
+            # selected... i only needed magpie refresh."* A scoped press now takes the
+            # per-provider route, and the sentence the page prints ("Magpie: 175 models found",
+            # or the error) is built from exactly this payload — so the shape is asserted on
+            # the wire here, not only against the page's own reader.
+            scoped = httpx.post(f"{BASE}/admin/api/providers/studio-hub-mock/refresh",
+                                headers=AUTH)
+            scoped_body = scoped.json()
+            check("the per-provider route answers the count the scoped button prints",
+                  scoped.status_code == 200
+                  and isinstance(scoped_body.get("discovered"), int)
+                  and scoped_body.get("provider_id") == "studio-hub-mock",
+                  scoped.text[:140])
+            check("and carries `error` either way, so 'found none' cannot read as 'failed'",
+                  "error" in scoped_body, scoped.text[:140])
+            check("a provider that does not exist is refused, not answered with a zero",
+                  httpx.post(f"{BASE}/admin/api/providers/nobody/refresh",
+                             headers=AUTH).status_code == 404)
+
             print("\n\033[1m20. A local voice belongs to whichever models clone\033[0m")
             # The local lane is the one place a recording is the *input*, so
             # "may this voice be used with this model?" is the model's own

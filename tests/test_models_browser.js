@@ -423,14 +423,14 @@ test('re-discovering reloads this page, not only the providers page', async () =
   // The Providers page's own button reloads providers and status, which is everything that page
   // shows. Doing only that here would re-fetch every catalogue and leave the model list unchanged —
   // the exact "I pressed refresh and nothing moved" outcome.
-  const { context, calls } = harness([emptyPage(), emptyPage()]);
-  const button = element('btn');
+  const { context, get, calls } = harness([emptyPage(), emptyPage()]);
+  const button = get('m-rediscover-btn');
   await context.refreshModels(button);
   assert.ok(calls.includes('/refresh-all'), 're-discover must actually re-discover');
   assert.ok(calls.filter(c => c.startsWith('/models?')).length >= 1,
     're-discover must redraw the model list it just refreshed');
   assert.equal(button.disabled, false, 'the button must come back');
-  assert.equal(button.textContent, 'Re-discover Models', 'the label must be restored');
+  assert.equal(button.textContent, 'Re-discover all providers', 'the label must be restored');
 });
 
 test('the button is on the Models page itself', () => {
@@ -441,6 +441,182 @@ test('the button is on the Models page itself', () => {
                               source.indexOf('<section id="view-providers"'));
   assert.match(models, /refreshModels\(this\)/,
     'the Models page has no re-discover control again');
+});
+
+// ---------------------------------------------------------------------------
+// **Which** providers a re-discover touches.
+//
+// The owner, 2026-10-19: *"when i click re-discover models, i don't know if it runs across all
+// the providers or the one selected. i think it should just run for the one selected or let us
+// choose... i only needed magpie refresh."* The button posted `/refresh-all` unconditionally, so
+// a press he meant for Magpie re-read every provider's catalogue. These drive the page's own
+// functions and assert on the **wire** — the route that was called — not on a helper's return
+// value, because the bug was exactly that the wrong route was reached.
+
+function functionSource(name) {
+  const at = source.indexOf(`function ${name}(`);
+  if (at < 0) throw new Error(`${name} is gone from admin_ui.html`);
+  // Keep an `async ` prefix: sliced off, the body is a syntax error, not a missing function.
+  const start = source.lastIndexOf('async ', at) === at - 6 ? at - 6 : at;
+  return source.slice(start, source.indexOf('\n}', at) + 2);
+}
+
+test('a re-discover filtered to one provider asks that provider alone', async () => {
+  const { context, get, calls } = harness([
+    { discovered: 175, error: null },                                   // the provider's own route
+    emptyPage({ providers: [['magpie-main', 'Magpie']] }),              // /models
+    { freshness: { inventoryAgeMs: 1000 } },                            // /catalog
+  ]);
+  context.state.modelProviders = [['magpie-main', 'Magpie']];
+  get('m-provider').value = 'magpie-main';
+  const button = get('m-rediscover-btn');
+  await context.refreshModels(button);
+
+  assert.ok(calls.includes('/providers/magpie-main/refresh'),
+    'the scoped button must take the per-provider route the gateway already has');
+  assert.ok(!calls.includes('/refresh-all'),
+    'a scoped press must not become the whole-fleet fetch the owner complained about');
+  assert.equal(button.textContent, 'Re-discover Magpie',
+    'the button must name the provider it acts on, not just "Models"');
+  assert.equal(get('m-rediscover-msg').textContent, 'Magpie: 175 models found',
+    'the run must say what it found, or "nothing changed" and "it failed" read the same');
+});
+
+test('a scoped re-discover reports the provider\'s error rather than a count', async () => {
+  const { context, get } = harness([
+    { discovered: 0, error: 'invalid api key' },
+    emptyPage(), { freshness: { inventoryAgeMs: 1000 } },
+  ]);
+  context.state.modelProviders = [['magpie-main', 'Magpie']];
+  get('m-provider').value = 'magpie-main';
+  await context.refreshModels(get('m-rediscover-btn'));
+
+  assert.match(get('m-rediscover-msg').textContent, /Magpie: invalid api key/);
+  assert.equal(get('m-rediscover-msg').className, 'msg bad',
+    'a failed discovery must not be drawn as a success');
+});
+
+test('with no provider filtered, the page offers the choice instead of making it', () => {
+  const { context, get } = harness();
+  context.state.modelProviders = [['magpie-main', 'Magpie']];
+
+  context.syncRediscover();
+  assert.notEqual(get('m-rediscover-scope').style.display, 'none',
+    'with nothing filtered the picker is the only thing that says what will be fetched');
+  assert.equal(get('m-rediscover-btn').textContent, 'Re-discover all providers');
+
+  get('m-rediscover').value = 'magpie-main';
+  context.syncRediscover();
+  assert.equal(get('m-rediscover-btn').textContent, 'Re-discover Magpie',
+    'choosing a provider in the picker must name it on the button');
+
+  get('m-provider').value = 'magpie-main';
+  context.syncRediscover();
+  assert.equal(get('m-rediscover-scope').style.display, 'none',
+    'the filter is the scope when it names one; a second control could only contradict it');
+  assert.equal(get('m-rediscover').value, '',
+    'the hidden picker must not keep a scope that would come back on Clear Filters');
+});
+
+test('the picker scopes the run when no filter is set', async () => {
+  const { context, get, calls } = harness([
+    { discovered: 12, error: null }, emptyPage(), { freshness: { inventoryAgeMs: 1 } },
+  ]);
+  context.state.modelProviders = [['magpie-main', 'Magpie']];
+  get('m-rediscover').value = 'magpie-main';
+  await context.refreshModels(get('m-rediscover-btn'));
+
+  assert.ok(calls.includes('/providers/magpie-main/refresh'));
+  assert.ok(!calls.includes('/refresh-all'));
+});
+
+test('a whole-fleet run reports the total and names the providers that failed', async () => {
+  const { context, get, calls } = harness([
+    { outcomes: { 'magpie-main': { count: 175, error: null },
+                  'openrouter-main': { count: 0, error: 'timed out' } } },
+    emptyPage(), { freshness: { inventoryAgeMs: 1 } },
+  ]);
+  context.state.modelProviders = [['magpie-main', 'Magpie'], ['openrouter-main', 'OpenRouter']];
+  await context.refreshModels(get('m-rediscover-btn'));
+
+  assert.ok(calls.includes('/refresh-all'), 'with no provider chosen the whole fleet is the run');
+  assert.deepEqual(calls.filter(c => c.startsWith('/providers/')), [],
+    'the fleet run must not become N per-provider reads');
+  const said = get('m-rediscover-msg').textContent;
+  assert.match(said, /2 providers re-discovered · 175 models found/,
+    `the run must say what it found: ${said}`);
+  assert.match(said, /failed: OpenRouter \(timed out\)/,
+    `a provider that did not answer must be named: ${said}`);
+});
+
+test('the Providers page control says it is the all-providers one, and says what it did', async () => {
+  const nodes = new Map();
+  const node = id => {
+    if (!nodes.has(id)) nodes.set(id, element(id));
+    return nodes.get(id);
+  };
+  const calls = [];
+  const context = vm.createContext({
+    document: { getElementById: node, querySelectorAll: () => [] },
+    // This page never reads `/models`, so the only names it has are its own provider list —
+    // the fallback that keeps a failure from being reported as a bare provider id.
+    state: { providers: [{ id: 'magpie-main', display_name: 'Magpie' },
+                         { id: 'openrouter-main', display_name: 'OpenRouter' }] },
+    esc: s => String(s ?? ''),
+    api: async page => {
+      calls.push(page);
+      return { outcomes: { 'magpie-main': { count: 175, error: null },
+                           'openrouter-main': { count: 0, error: 'timed out' } } };
+    },
+    loadProviders: async () => {},
+    loadStatus: async () => {},
+    alert() {},
+  });
+  const refreshAll = source.indexOf('async function refreshAll(');
+  vm.runInContext(
+    functionSource('providerName') + functionSource('rediscoverAll')
+      + source.slice(refreshAll, source.indexOf('\n}', refreshAll) + 2),
+    context);
+
+  const button = element('btn');
+  await context.refreshAll(button);
+  assert.deepEqual(calls, ['/refresh-all'], 'this one is deliberately the whole fleet');
+  assert.equal(button.textContent, 'Re-discover all providers', 'the label must be restored');
+  const said = node('providers-msg').textContent;
+  assert.match(said, /2 providers re-discovered · 175 models found/,
+    `the page must say what the run found, after the reload that clears the line: ${said}`);
+  assert.match(said, /failed: OpenRouter \(timed out\)/,
+    `a provider that did not answer must be named, not numbered: ${said}`);
+  assert.equal(node('providers-msg').className, 'msg ok');
+});
+
+test('every provider card carries its own Re-discover, visible without expanding', () => {
+  // "i only needed magpie refresh": re-discovering one provider is the common case, and a control
+  // that only exists inside the expanded body is one the page appears not to have.
+  const card = source.slice(source.indexOf('function providerCard(p)'),
+                            source.indexOf('function providerModelList('));
+  const head = card.slice(card.indexOf('<div class="card-actions">'));
+  const actions = head.slice(0, head.indexOf('</div>'));
+  assert.match(actions, /refreshProvider\('\$\{esc\(p\.id\)\}', this\)/,
+    'the per-provider re-discover is not on the row the owner sees');
+  assert.match(actions, /id="msg-\$\{esc\(p\.id\)\}"/,
+    'the result of that button is written into a span that must exist on the collapsed row');
+});
+
+test('the Models page button and its picker are both in the page, not only in the script', () => {
+  const source = fs.readFileSync(path.join(__dirname, '../gateway/admin_ui.html'), 'utf8');
+  const models = source.slice(source.indexOf('<section id="view-models"'),
+                              source.indexOf('<section id="view-providers"'));
+  assert.match(models, /id="m-rediscover"/,
+    'the picker the script drives has no element to drive');
+  assert.match(models, /id="m-rediscover-msg"/,
+    'the run would have nowhere to say what it found');
+  const providers = source.slice(source.indexOf('<section id="view-providers"'),
+                                 source.indexOf('<section id="view-create"'));
+  assert.match(providers, />Re-discover all providers</,
+    'the Providers page button must be plainly the all-providers one');
+  assert.doesNotMatch(providers, /Refresh All Models/,
+    'the old label is back, and it is the one the owner could not tell from the per-provider one');
 });
 
 // ---------------------------------------------------------------------------

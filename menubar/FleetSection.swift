@@ -318,7 +318,7 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
     /// showed none afterwards, and pressing Refresh looked like it did nothing.
     /// "No models" reads as "it has nothing" rather than "nobody has asked it
     /// yet", which is exactly what this page exists to tell apart; the web console
-    /// has "Refresh all models" and this had only a button that said "Refresh".
+    /// has "Re-discover all providers" and this had only a button that said "Refresh".
     ///
     /// Deliberately the *locations* on this page, not `/refresh-all`: that would
     /// also re-read every cloud provider, and the client's 15-second timeout is
