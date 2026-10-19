@@ -48,7 +48,7 @@ FIXTURE = {
                 "ctrl-1": {
                     "ok": False, "status": 409, "code": "PUBLISHER_NOT_TRUSTED",
                     "detail": "no trusted gateway key is installed. Copy this Gateway's App Update Key "
-                              "public key from Gateway → Settings → App Update Key → Technical details "
+                              "public key from Gateway → Settings → App Update Key "
                               "into Hub → Connections → App updates, then compare fingerprints "
                               "(this Gateway: " + "cd" * 32 + ").",
                     "label": "Blue Room", "release": None,

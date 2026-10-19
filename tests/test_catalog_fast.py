@@ -50,10 +50,12 @@ class CatalogRoutesTests(unittest.TestCase):
             release.wait(30)
             return {}
 
-        # 45 slow requests to a sync route hold all 40 of anyio's worker threads.
-        with patch.object(retention, "settings", side_effect=lambda: (slow(), {})[1]), \
+        # 45 slow requests to a sync route hold all 40 of anyio's worker threads. The hog is the
+        # usage walk itself — the slow route that remains after the limits moved off it — so this
+        # keeps measuring the thing that actually blocks workers.
+        with patch.object(retention, "shared_usage", side_effect=lambda: (slow(), {})[1]), \
                 TestClient(api.app, client=LOCAL) as client:
-            hogs = [threading.Thread(target=client.get, args=("/admin/api/settings/retention",))
+            hogs = [threading.Thread(target=client.get, args=("/admin/api/settings/retention/usage",))
                     for _ in range(45)]
             try:
                 for t in hogs:
