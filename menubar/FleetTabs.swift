@@ -1454,6 +1454,31 @@ final class FleetMachinesTab: NSView {
                                                                          name: row.label ?? row.machine ?? "This Mac"))
                 }
             ),
+            // Each Mac's Lite Mode, in one plain column (FleetLiteMode.swift). Show only: the settings
+            // themselves are edited from the "…" menu on the Startup column.
+            FleetColumn(
+                id: "litemode", title: "Lite Mode", width: 116, minWidth: 100,
+                text: { machine($0).map { FleetLiteMode.state($0).text } ?? "—" },
+                sortValue: { row in
+                    // Off first when sorted ascending: a Mac that will not lend its idle time is the one
+                    // the owner is looking for.
+                    guard let machine = machine(row) else { return .none }
+                    switch FleetLiteMode.state(machine).text {
+                    case "Off": return .number(0)
+                    case "On": return .number(2)
+                    default: return .number(1)
+                    }
+                },
+                tooltip: { FleetLiteMode.tooltip(machine($0),
+                                                 name: machine($0)?.label ?? machine($0)?.machine ?? "This Mac") },
+                cell: { any in
+                    guard let row = machine(any) else { return NSView() }
+                    let (health, text) = FleetLiteMode.state(row)
+                    return fleetBadgeCell(text, health,
+                                          tooltip: FleetLiteMode.tooltip(row,
+                                                                         name: row.label ?? row.machine ?? "This Mac"))
+                }
+            ),
             FleetColumn(
                 id: "jobs", title: "Jobs", width: 128, minWidth: 112, hideBelow: 800,
                 text: { row in
