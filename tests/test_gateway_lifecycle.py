@@ -179,7 +179,13 @@ class GatewayLifecycleTests(unittest.TestCase):
         harness.write_text(STUBS + state + controller + HARNESS)
         cls.binary = cls.workspace / "check"
         result = subprocess.run(["swiftc", "-swift-version", "5", "-framework", "Cocoa",
-                                 "-framework", "WebKit", str(harness), "-o", str(cls.binary)],
+                                 "-framework", "WebKit", str(harness),
+                                 # Compiled for real rather than stubbed: `probe()` calls it, and a
+                                 # stub here would be a second copy of its signature to keep honest.
+                                 # It reads `AppPaths.data` (stubbed above) and posts to Telegram
+                                 # only when a `telegram.json` is there, which the fixture has none of.
+                                 str(ROOT / "menubar/GatewayLiveness.swift"),
+                                 "-o", str(cls.binary)],
                                 capture_output=True, text=True, timeout=90)
         if result.returncode:
             cls.preserve_workspace()
