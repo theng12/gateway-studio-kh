@@ -20,6 +20,7 @@ return a result or raise `BackendError`.
 
 from __future__ import annotations
 
+import math
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -305,6 +306,57 @@ def caller_max_output_tokens(params: Any) -> Any:
         if value:
             return value
     return None
+
+
+#: The longest a Chat job may be held, in seconds — **the Hub's own ceiling**, restated here
+#: because this gateway must outwait it. Studio Hub computes each Chat job's deadline from the
+#: job itself (`components/hub/backend/chat_deadline.py`, `CEILING_S`) and never gives it more
+#: than four hours. A chat call bounded by anything shorter than that would cut a job the Hub was
+#: still legitimately running — which is exactly what the flat 300 s read timeout here did to a
+#: 100-prompt scene pack, and what the Hub's per-lane 1,800 s would still have done.
+CHAT_DEADLINE_CEILING_S = 4 * 3600.0
+
+
+def caller_expected_output_tokens(params: Any) -> int | None:
+    """The answer length the caller **expects**, which is what the Hub sizes a deadline from.
+
+    Not the same question as `caller_max_output_tokens`: a ceiling says what may be sent, an
+    expectation says what is coming. Story Studio already computes the second — a scene-prompt
+    pack's own size x its per-scene tokens, an idea batch's token budget — and sends it as
+    `expected_output_tokens`, because the Hub cannot tell a 100-prompt pack from a one-line
+    question by reading the request, and sizing every job from `max_tokens` would make every job
+    three hours long.
+
+    A value that is not a positive whole number is **not forwarded at all** rather than passed on:
+    the Hub's own reader refuses it anyway, and sending junk would only add a second, weaker copy
+    of that refusal.
+    """
+    if not isinstance(params, dict):
+        return None
+    value = params.get("expected_output_tokens")
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, str):
+        try:
+            value = float(value.strip())
+        except ValueError:
+            return None
+    if not isinstance(value, (int, float)) or not math.isfinite(float(value)):
+        return None
+    return int(value) if value > 0 and float(value) == int(value) else None
+
+
+#: The header Studio Hub reads a caller's own expectation from — the Hub's own spelling
+#: (`components/hub/backend/chat_deadline.py`, `HINT_HEADER`). A **header**, not a body field,
+#: because the Hub forwards the body verbatim to the chat worker and the worker refuses a field
+#: it does not know; the headers are rebuilt at every hop, so a header cannot leak onward.
+EXPECTED_OUTPUT_HEADER = "X-StudioHub-Expected-Output-Tokens"
+
+
+def expected_output_header(params: Any) -> dict[str, str]:
+    """`{header: count}` for the Hub, or `{}` when the caller stated no expectation."""
+    hint = caller_expected_output_tokens(params)
+    return {EXPECTED_OUTPUT_HEADER: str(hint)} if hint is not None else {}
 
 
 @runtime_checkable
