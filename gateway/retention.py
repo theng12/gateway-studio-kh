@@ -31,7 +31,7 @@ SETTINGS_PATH = Path(str(DATA_DIR)) / "retention.json"
 KEPT_PATH = Path(str(DATA_DIR)) / "kept.json"
 
 DEFAULT_MAX_AGE_DAYS = 3.0
-DEFAULT_MAX_BYTES = 8 * 1024**3  # 8 GB
+DEFAULT_MAX_BYTES = 10 * 1024**3  # 10 GB
 GB = 1024**3
 
 #: Runtime trash is separate from the developer project's owner-managed _trash.

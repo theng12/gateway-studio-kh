@@ -3720,8 +3720,8 @@ uvicorn.run("gateway.api:app", host="127.0.0.1", port=int(sys.argv[2]), log_leve
             fresh = stage("fresh.mp4", 0.01)            # inside the protected hour
 
             got = req(client, "GET", "/admin/api/settings/retention").json()
-            check("the defaults are the ones asked for: 3 days or 8 GB",
-                  got["max_age_days"] == 3 and got["max_bytes"] == 8 * 1024**3,
+            check("the defaults are the ones asked for: 3 days or 10 GB",
+                  got["max_age_days"] == 3 and got["max_bytes"] == 10 * 1024**3,
                   f"{got['max_age_days']} days / {got['max_bytes']} bytes")
             check("and it reports what is actually stored",
                   got["usage"]["files"] >= 4, f"{got['usage']}")

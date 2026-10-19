@@ -122,9 +122,9 @@ class TrashFolderTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.store.close()
 
-    def test_defaults_are_three_days_and_eight_gb(self) -> None:
+    def test_defaults_are_three_days_and_ten_gb(self) -> None:
         self.assertEqual(retention.DEFAULT_MAX_AGE_DAYS, 3.0)
-        self.assertEqual(retention.DEFAULT_MAX_BYTES, 8 * 1024**3)
+        self.assertEqual(retention.DEFAULT_MAX_BYTES, 10 * 1024**3)
 
     def test_prune_moves_into_dated_trash_and_never_unlinks(self) -> None:
         now = time.time()
