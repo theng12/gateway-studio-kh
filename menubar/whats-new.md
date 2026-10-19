@@ -14,6 +14,28 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.186 — 2026-10-19
+
+### A slow Mac can no longer freeze the Gateway
+
+Health checks used to be able to wait behind a fleet that had stopped answering, which made the menu bar decide the Gateway was not running and left the whole app looking dead. The health check now answers without waiting for the fleet at all, and the Gateway takes the summary it already published instead of re-adding every location on every poll. The result: the app stays in touch and shows what is really happening even when a Mac in the fleet goes quiet.
+
+### One Mac cannot open too many connections
+
+A single caller could open so many requests at once that it used up every worker the Gateway had, and everything else queued behind it. There is now a per-client ceiling, so one Mac's burst is refused in one sentence instead of starving every other caller.
+
+### The App Update Key is one key, ready to paste
+
+The App Update Key section used to show three numbers — a fingerprint first, then two encodings of the key, one of them shortened in the middle. Pasting the wrong one is exactly how a Mac stayed broken for days. It now shows one whole key with a Copy button, captioned with where it is pasted, and the short prefix to compare against is derived from the key right above it. The base64 form, the fingerprint and the "Technical details" disclosure are gone, and the Gateway's own sentences no longer point at them.
+
+### The Keep for and Trash Folder boxes show their values again
+
+Those four boxes came back empty because the limits were read in the same answer as a report that walks every file on disk — seconds warm, minutes cold. The limits are now their own instant read, and the file-count report has its own route, so a slow or silent report can never blank the numbers again.
+
+### Received files are kept 3 days, or 10 GB
+
+The default ceiling for files passing through the Gateway is now 10 GB rather than 8 GB. The 3-day default, the Trash Folder's own 7 days / 20 GB, pins, the one-hour grace period and in-flight protection are unchanged.
+
 ## 0.2.185 — 2026-10-19
 
 ### The Trash Folder's own limits are yours to set
@@ -459,7 +481,7 @@ the 36-hour reuse window ran out or the Gateway restarted.
 
 API key is now called Gateway API Key; the release signing key is now the App Update Key
 
-Settings explains which key is private and which fingerprint can be shared. Public key encodings are available under Technical details.
+Settings explains which key is private and which fingerprint can be shared. Public key encodings are available under Technical details. *(Superseded in 0.2.186: the App Update Key section now shows one whole key with a Copy button — the base64 form, the fingerprint and the Technical details disclosure are gone.)*
 
 ## 0.2.140 — 2026-10-07
 
