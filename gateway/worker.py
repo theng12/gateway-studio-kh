@@ -1290,7 +1290,28 @@ class Worker:
         self.pool_size = pool_size
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
+        #: **`_budget_lock` is a leaf lock. Nothing under it may reach `fleet.snapshot()` or
+        #: the store.** It exists to move the five books below together (`_book`/`_release`);
+        #: one counter read needs no lock at all, because a dict read of an int is atomic
+        #: under the GIL.
+        #:
+        #: The rule is not style, it is a lock order. The fleet fan-out holds
+        #: `fleet._refresh_lock` and calls back into this worker (`fleet._attach_admission` →
+        #: `_site_lane_in_flight`), so a fleet read taken while this is held is the reverse
+        #: order. On 2026-10-19 the two met: a fan-out whose slowest controller took 435 s held
+        #: `_refresh_lock` while `_admit` held `_budget_lock` and waited for the fleet cache,
+        #: 63 of 73 threads parked in `RLock.acquire`, and — because `/health` took both —
+        #: every later request, health included, waited for ever. **Fleet and store first,
+        #: then `_budget_lock`.**
+        #:
+        #: Everything admission needs from the fleet or the store is read by
+        #: `_admission_reads` **before** this lock is taken; `/health` and the fleet fan-out
+        #: read only the published counters below, never this lock.
         self._budget_lock = threading.RLock()  # re-entered by `_book` from `_admit`
+        #: Jobs in flight, republished by `_book`/`_release` and read by `/health`,
+        #: `liveness()` and the console **without** `_budget_lock`, so a health probe can
+        #: never park behind admission, or admission behind a probe.
+        self._active_total = 0
         self._in_flight: dict[str, int] = {}
         self._lane_in_flight: dict[str, int] = {}
         #: `(provider_id, modality) -> running count`. The provider book above is per
@@ -1430,9 +1451,13 @@ class Worker:
         running one image job refused a chat job while a second, free Mac sat there. A
         Mac runs one job at a time and the Hub's free count is per operation, so the two
         numbers that are compared have to be about the same thing.
+
+        **Read without `_budget_lock`.** This is called from `fleet._attach_admission`,
+        which runs inside the fan-out holding `fleet._refresh_lock`: taking the worker lock
+        there is exactly the inversion the lock order note on `_budget_lock` forbids. One
+        read of one int needs no lock — the lock is for moving the five books together.
         """
-        with self._budget_lock:
-            return self._per_lane.get((provider_id, modality), 0)
+        return self._per_lane.get((provider_id, modality), 0)
 
     def _provider_budget(self, provider_id: str, modality: str, model_id: str = "") -> concurrency.Budget:
         """What bounds one provider, from the best source that has an answer.
@@ -1475,8 +1500,13 @@ class Worker:
         return concurrency.cloud_budget(provider_id)
 
     def active(self) -> int:
-        with self._budget_lock:
-            return sum(self._in_flight.values())
+        """Jobs in flight, from the published counter.
+
+        **Never takes `_budget_lock`** — `/health` and `/v1/account/overview` read this on
+        every poll, and a probe that waits on admission is a probe that reports an outage
+        while the gateway is working (see the lock order note on `_budget_lock`).
+        """
+        return self._active_total
 
     def wait_idle(self, timeout: float = 30.0) -> bool:
         """Block until nothing is in flight; `False` if it did not settle in time.
@@ -1514,6 +1544,36 @@ class Worker:
         """
         return self.pool_size if self.pool_size else concurrency.global_limit()
 
+    def _admission_reads(self, job: dict[str, Any], provider_id: str) -> dict[str, Any]:
+        """Everything `_job_room` needs from the **fleet and the store**, read without `_budget_lock`.
+
+        One place, so the rule has one place to be broken. `_room` reads the Hub's chat queue
+        from a fleet snapshot, `_background_room` reads a location's idle Macs and the store's
+        waiting shapes — all of it was previously done *inside* `_budget_lock` (from `_admit`
+        and `_site_room`), and the fleet fan-out takes `_budget_lock` back through
+        `_attach_admission` → `_site_lane_in_flight`. That is the 2026-10-19 hang; see the lock
+        order note on `_budget_lock`.
+
+        The two conditional reads are the ones a plain admission does not need: the chat queue
+        allowance is only for a chat job on a location with no operator limit, and the
+        background reads only for background work. `_background_reads` keeps the per-pass cache
+        of `waiting_normal_shapes`, so the store is still asked once a pass rather than once a
+        background job.
+        """
+        modality = str(job.get("modality") or "")
+        model_id = str(job.get("model_id") or "")
+        reads: dict[str, Any] = {
+            "budget": self._provider_budget(provider_id, modality, model_id),
+            "supply": self._model_supply(provider_id),
+            "pending": 0,
+            "background": None,
+        }
+        if modality == "chat" and concurrency.stated_provider_limit(provider_id) is None:
+            reads["pending"] = int(studio_hub.chat_queue_wait_seconds(provider_id, model_id) > 0)
+        if is_background(job) and provider_id.startswith(fleet.PROVIDER_PREFIX):
+            reads["background"] = self._background_reads(provider_id)
+        return reads
+
     def _admit(self, job: dict[str, Any]) -> bool:
         """Reserve room for one job, or refuse it this pass.
 
@@ -1528,9 +1588,10 @@ class Worker:
         modality = str(job.get("modality") or "")
         if fleet.is_paused_provider(provider_id):
             return False  # the owner paused this location: no new work; `_rebind` moves the job on
-        model_id = str(job.get("model_id") or "")
-        provider_budget = self._provider_budget(provider_id, modality, model_id)
-        supply = self._model_supply(provider_id)
+        # Every fleet and store read this admission needs, taken **before** `_budget_lock`:
+        # `_job_room` reaches `fleet.snapshot()` (and, for a background job, the store), and
+        # the lock order note on `_budget_lock` makes that a deadlock, not a slow read.
+        reads = self._admission_reads(job, provider_id)
         lane_budget = concurrency.lane_budget(modality)
         fleet_job = provider_id.startswith(fleet.PROVIDER_PREFIX) and modality in concurrency.FLEET_LANES
         with self._budget_lock:
@@ -1544,10 +1605,10 @@ class Worker:
             if lane_budget.source != concurrency.SOURCE_FLEET \
                     and self._lane_in_flight.get(modality, 0) >= lane_budget.limit:
                 return False
-            if self._job_room(job, provider_id, provider_budget, supply) <= 0:
+            if self._job_room(job, provider_id, reads) <= 0:
                 return False
             self._book(job)
-            self.budgets[provider_id] = provider_budget.as_dict()
+            self.budgets[provider_id] = reads["budget"].as_dict()
         return True
 
     def _book(self, job: dict[str, Any]) -> None:
@@ -1565,6 +1626,9 @@ class Worker:
                 self._per_group[job["job_group"]] = self._per_group.get(job["job_group"], 0) + 1
             now = time.monotonic()
             self._sent[key] = [t for t in self._sent.get(key, ()) if now - t < _JUST_SENT_S] + [now]
+            # Republished under the lock and read without it (`active`). Derived from the book
+            # itself rather than incremented, so it cannot drift away from it.
+            self._active_total = sum(self._in_flight.values())
 
     def _site_room(self, job: dict[str, Any], provider_id: str,
                    claim: bool = False) -> tuple[int, int, int]:
@@ -1574,11 +1638,10 @@ class Worker:
         re-routes in one burst cannot both take the last slot.
         """
         modality = str(job.get("modality") or "")
-        model_id = str(job.get("model_id") or "")
-        budget = self._provider_budget(provider_id, modality, model_id)
-        supply = self._model_supply(provider_id)
+        # Fleet first, then the lock — see the lock order note on `_budget_lock`.
+        reads = self._admission_reads(job, provider_id)
         with self._budget_lock:
-            room = self._job_room(job, provider_id, budget, supply)
+            room = self._job_room(job, provider_id, reads)
             if claim and room > 0:
                 self._move(job, provider_id)
             now = time.monotonic()
@@ -1610,7 +1673,8 @@ class Worker:
         return {}
 
     def _room(self, provider_id: str, modality: str, model_id: str = "",
-              budget: concurrency.Budget | None = None, supply: dict[str, int] | None = None) -> int:
+              budget: concurrency.Budget | None = None, supply: dict[str, int] | None = None,
+              pending: int | None = None) -> int:
         """How many more jobs of this model this site would take now.
 
         The site's operation budget less our own jobs there — and, **fit-aware (D1)**, no more
@@ -1622,15 +1686,22 @@ class Worker:
         while its 8 GB Macs idle (sim: two Macs, two VoxCPM2 + one Qwen 0.6B — the Qwen job ran
         after the heavy ones; now beside them). A model the Hub publishes no supply for is
         bounded by the operation total alone, as before (`routing_candidates` falls back the same way).
+
+        `budget`, `supply` and `pending` are the fleet readings this needs. A caller that
+        already holds `_budget_lock` **must** pass all three: each `None` fallback below reads
+        the fleet, and a fleet read under that lock is the inversion the lock order note on
+        `_budget_lock` forbids. `_admission_reads` builds them; a caller with the lock released
+        (a test, `_rebind`) may leave them out and they are read here.
         """
         if budget is None:
             budget = self._provider_budget(provider_id, modality, model_id)
         if supply is None:
             supply = self._model_supply(provider_id)
-        with self._budget_lock:
+        if pending is None:
             pending = (int(studio_hub.chat_queue_wait_seconds(provider_id, model_id) > 0)
                        if modality == "chat" and concurrency.stated_provider_limit(provider_id) is None
                        else 0)
+        with self._budget_lock:
             # The chat peer route executes on the controller's own Mac: one execution plus
             # one waiting request, across every model sharing that physical machine.
             ceiling = min(budget.limit, 1) + pending if pending else budget.limit
@@ -1643,17 +1714,23 @@ class Worker:
         return room
 
     def _job_room(self, job: dict[str, Any], provider_id: str,
-                  budget: concurrency.Budget | None = None, supply: dict[str, int] | None = None) -> int:
+                  reads: dict[str, Any] | None = None) -> int:
         """`_room` for this job at one site, and for a background job no more than `_background_room`.
 
         A model with a fleet-wide cap (`concurrency.model_fleet_cap`, YuE2) gets no more than the room
         left under it, this job's own booking excluded when it is already running and re-routing. Its
         priority is the caller's (0.2.171, owner 2026-10-12: images are not the priority, so a sung song
         need not wait behind them; the cap alone bounds how many Macs sing).
+
+        `reads` is `_admission_reads`'s bundle. A caller holding `_budget_lock` must pass one; a
+        caller that is not (`_rebind`) gets it built here, where the fleet may be read.
         """
+        if reads is None:
+            reads = self._admission_reads(job, provider_id)
         modality = str(job.get("modality") or "")
         model_id = str(job.get("model_id") or "")
-        room = self._room(provider_id, modality, model_id, budget, supply)
+        room = self._room(provider_id, modality, model_id,
+                          reads["budget"], reads["supply"], reads["pending"])
         fleet_site = provider_id.startswith(fleet.PROVIDER_PREFIX)
         cap = concurrency.model_fleet_cap(model_id) if fleet_site else None
         if room > 0 and cap is not None:
@@ -1662,10 +1739,28 @@ class Worker:
                               if m == model_id and p.startswith(fleet.PROVIDER_PREFIX))
             room = min(room, cap - running + int(job.get("id") in self._running))
         if room > 0 and fleet_site and is_background(job):
-            room = min(room, self._background_room(provider_id, model_id))
+            room = min(room, self._background_room(provider_id, model_id, reads["background"]))
         return room
 
-    def _background_room(self, provider_id: str, model_id: str) -> int:
+    def _background_reads(self, provider_id: str) -> dict[str, Any]:
+        """What `_background_room` needs from the fleet and the store, read without `_budget_lock`.
+
+        `waiting_normal_shapes` is the one store query admission makes, and it stays cached for
+        the pass (`_normal_waiting`, cleared in `_loop`), so it is still asked once a pass.
+        """
+        row = next((r for r in fleet.snapshot(allow_stale=True).get("locations") or []
+                    if str(r.get("provider_id") or "") == provider_id), None) or {}
+        supply = row.get("model_supply") or {}
+        if self._normal_waiting is None:
+            self._normal_waiting = getattr(self.store, "waiting_normal_shapes", lambda: set())()
+        return {
+            "idle": {str(model): int(entry.get("available") or 0)
+                     for model, entry in supply.items() if isinstance(entry, dict)},
+            "normal_waiting": self._normal_waiting,
+        }
+
+    def _background_room(self, provider_id: str, model_id: str,
+                         reads: dict[str, Any] | None = None) -> int:
         """Macs at this site a background job may take now: idle ones no normal job is waiting for.
 
         **Only an idle Mac, never the Hub's queue.** A background job sent to a site with no free Mac
@@ -1679,24 +1774,21 @@ class Worker:
         and the Mac takes normal work next.
         ponytail: idle Macs from a snapshot up to one refresh old, less every send in `_JUST_SENT_S`
         (any lane) — it under-fills for a few seconds after a burst rather than over-fill.
+
+        `reads` is `_background_reads`'s bundle, and a caller holding `_budget_lock` must pass it:
+        the fleet row and the store query are the reads this used to do *under* that lock, which
+        is the inversion the lock order note on `_budget_lock` forbids.
         """
-        row = next((r for r in fleet.snapshot(allow_stale=True).get("locations") or []
-                    if str(r.get("provider_id") or "") == provider_id), None) or {}
-        supply = row.get("model_supply") or {}
-
-        def idle(model: str) -> int:
-            entry = supply.get(model)
-            return int(entry.get("available") or 0) if isinstance(entry, dict) else 0
-
-        if self._normal_waiting is None:
-            self._normal_waiting = getattr(self.store, "waiting_normal_shapes", lambda: set())()
-        if any(idle(model) > 0 for model, _lane in self._normal_waiting):
+        if reads is None:
+            reads = self._background_reads(provider_id)
+        idle: dict[str, int] = reads["idle"]
+        if any(idle.get(str(model), 0) > 0 for model, _lane in reads["normal_waiting"]):
             return 0
         now = time.monotonic()
         with self._budget_lock:
             sent = sum(now - t < _JUST_SENT_S for (pid, _lane), times in self._sent.items()
                        if pid == provider_id for t in times)
-        return idle(model_id) - sent
+        return idle.get(model_id, 0) - sent
 
     def _rebind(self, job: dict[str, Any]) -> bool:
         """Late bind: move a job that was never sent off a full site onto one with room.
@@ -1786,6 +1878,8 @@ class Worker:
                     book[key] -= 1
                 if book.get(key, 0) <= 0:
                     book.pop(key, None)
+            # Republished under the lock and read without it (`active`); see `_book`.
+            self._active_total = sum(self._in_flight.values())
 
     def _move(self, job: dict[str, Any], provider_id: str) -> None:
         """A re-route sent this running job to another location: its booking goes with it (F2).

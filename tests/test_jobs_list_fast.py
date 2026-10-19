@@ -184,11 +184,15 @@ class HealthUnderLoadTests(unittest.TestCase):
             release.wait(30)
             return real(**kw)
 
-        # anyio's default pool is 40 threads; 45 slow lists hold every one of them.
+        # anyio's default pool is 40 threads; 45 slow lists hold every one of them. They come from
+        # **two** client addresses, because `api._CLIENT_MAX_IN_FLIGHT` (32) now stops one client
+        # filling the shared pool on its own — that cap working, and this test is about the pool.
         with patch.object(admin.store, "list_jobs", side_effect=slow), \
-                TestClient(api.app, client=("127.0.0.1", 54321)) as client:
+                TestClient(api.app, client=("127.0.0.1", 54321)) as first, \
+                TestClient(api.app, client=("127.0.0.2", 54322)) as second:
+            clients = [first] * 23 + [second] * 22
             lists = [threading.Thread(target=client.get, args=("/admin/api/jobs?limit=200",))
-                     for _ in range(45)]
+                     for client in clients]
             try:
                 for t in lists:
                     t.start()
@@ -197,7 +201,7 @@ class HealthUnderLoadTests(unittest.TestCase):
                     time.sleep(0.05)
                 self.assertGreaterEqual(len(inside), 40, "the pool is full of slow lists")
                 answer: list = []
-                probe = threading.Thread(target=lambda: answer.append(client.get("/health")))
+                probe = threading.Thread(target=lambda: answer.append(first.get("/health")))
                 started = time.monotonic()
                 probe.start()
                 probe.join(3)

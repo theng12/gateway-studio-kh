@@ -705,6 +705,14 @@ final class GatewayController {
             // of setting it.
             "--host", EnvFile.host(), "--port", String(port),
             "--no-proxy-headers",
+            // **A bound on connections, so a pile-up cannot become the load.** On 2026-10-19 the
+            // gateway accepted connections and answered none of them — every thread was parked on
+            // a lock a slow fleet fan-out held — and the clients that kept arriving were the load
+            // that kept it stuck. uvicorn refuses past this with a `503` instead of accepting
+            // work nobody will answer. 256 is well above the fleet's own live capacity and the
+            // 40-thread pool the request work runs on, so it can only ever be a runaway client.
+            // `api._CLIENT_MAX_IN_FLIGHT` bounds one client below this; this is the process.
+            "--limit-concurrency", "256",
             // Without a bound, TERM waits for every open client request first; on 2026-10-16
             // the mini's slow open requests held an install's old backend for 11.6 min with
             // nothing serving. 3 s + the 15 s lifespan drain (`_SHUTDOWN_DRAIN_S`) stays inside

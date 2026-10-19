@@ -168,6 +168,9 @@ class QueueView(unittest.TestCase):
         worker._in_flight["studio-hub-local"] = 1
         worker._lane_in_flight["image"] = 1
         worker._per_lane[("studio-hub-local", "image")] = 1
+        # `active()` reads the total `_book`/`_release` publish beside the books, so booking the
+        # books by hand means publishing that too.
+        worker._active_total = 1
         worker.budgets["studio-hub-local"] = {
             "limit": 1, "source": "hub",
             "detail": "the Hub reports 1 free Mac for this operation",

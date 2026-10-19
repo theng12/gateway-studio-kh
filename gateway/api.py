@@ -31,6 +31,7 @@ import logging
 import os
 import re
 import signal
+import threading
 import time
 import uuid
 from contextlib import asynccontextmanager
@@ -224,6 +225,75 @@ async def _record_story_requests(request: Request, call_next):  # type: ignore[n
             bool(request.headers.get("authorization")),
         )
     return response
+
+
+# ---------------------------------------------------------------------------
+# How much of this gateway one client may hold at once. A blast-radius cap, not
+# a rate limit: it does not care how many requests arrive, only how many are in
+# flight, so a client that is *answered* is never refused and only a client that
+# is piling up work it cannot get an answer for is.
+#
+# **Why it exists.** On 2026-10-19 the gateway stopped answering anything at all:
+# every thread was parked on a lock a slow fleet fan-out held, and the clients
+# that had piled up requests kept piling them up, so the pile was the load that
+# kept the deadlock fed. A cap turns "one client can hold the whole process" into
+# "one client can hold 32 of it", and a `429` with `Retry-After` tells it so
+# rather than leaving it to time out.
+#
+# **`/health` is exempt and must stay exempt.** It is the app's readiness probe
+# and the one route that has to answer while everything else is stuck; a cap that
+# could refuse it would turn a busy gateway into an app that says "not running".
+#
+# ponytail: 32 is a flat number, not a measurement of any client. It is comfortably above the
+# fan-out a client derives from `burst_concurrency_ceiling` on a gateway left at the default pool
+# (`DEFAULT_GLOBAL` is 4), and **below** one whose owner has raised the pool past 32 — such a
+# caller would meet `CLIENT_TOO_BUSY` on work the gateway had already promised it may send. The
+# upgrade path is to raise this, or to key it on the pool (`concurrency.global_limit()`), not to
+# make it adaptive; it is one constant so that stays a one-line decision.
+_CLIENT_MAX_IN_FLIGHT = 32
+
+#: `client host -> requests in flight`. Guarded by `_CLIENT_LOCK`; the whole point
+#: is that this is the *only* state the cap needs, so the middleware never waits on
+#: anything a request handler owns.
+_CLIENT_IN_FLIGHT: dict[str, int] = {}
+_CLIENT_LOCK = threading.Lock()
+
+
+@app.middleware("http")
+async def _cap_one_client(request: Request, call_next):  # type: ignore[no-untyped-def]
+    path = request.url.path
+    if path == "/health":
+        return await call_next(request)
+    client = request.client.host if request.client else ""
+    with _CLIENT_LOCK:
+        in_flight = _CLIENT_IN_FLIGHT.get(client, 0)
+        if in_flight >= _CLIENT_MAX_IN_FLIGHT:
+            over = True
+        else:
+            _CLIENT_IN_FLIGHT[client] = in_flight + 1
+            over = False
+    if over:
+        # The same `429` + `Retry-After` shape every other refusal here uses, so a caller
+        # already handling `QUEUE_FULL` needs no new branch.
+        return JSONResponse(
+            status_code=429,
+            content={
+                "detail": (f"this client already has {in_flight} requests in flight, which is "
+                           f"this gateway's per-client limit ({_CLIENT_MAX_IN_FLIGHT}). It is "
+                           f"still answering the ones it has; retry shortly."),
+                "code": "CLIENT_TOO_BUSY",
+            },
+            headers={"Retry-After": "1"},
+        )
+    try:
+        return await call_next(request)
+    finally:
+        with _CLIENT_LOCK:
+            left = _CLIENT_IN_FLIGHT.get(client, 1) - 1
+            if left > 0:
+                _CLIENT_IN_FLIGHT[client] = left
+            else:
+                _CLIENT_IN_FLIGHT.pop(client, None)
 
 
 # ---------------------------------------------------------------------------

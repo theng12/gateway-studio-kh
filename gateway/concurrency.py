@@ -257,6 +257,24 @@ def hub_slot_reading(row: dict, operation: str) -> dict[str, Any]:
 # -- the settings file ------------------------------------------------------
 _settings_cache: dict[str, Any] = {"stamp": None, "value": {}}
 
+#: The last `live_capacity` summary, and who published it. **Read by `/health`**, which is the
+#: app's 2.5 s probe: it must not walk the fleet, take a fleet lock or sum anything, because
+#: every second it spends is a second the window can decide the gateway is not running. The
+#: fleet refresher computes the summary on its own pass and publishes it here
+#: (`remember_capacity`), so the probe reads one dict. A reader that finds nothing computes it —
+#: the boot window, before the first fan-out has landed.
+_capacity_cache: dict[str, Any] = {"value": None}
+
+
+def remember_capacity(capacity: dict[str, Any]) -> None:
+    """Publish a `live_capacity` summary for `/health` to read without doing the work."""
+    _capacity_cache["value"] = capacity
+
+
+def published_capacity() -> dict[str, Any] | None:
+    """The last published summary, or `None` before the first fan-out (see `_capacity_cache`)."""
+    return _capacity_cache["value"]
+
 
 def _path() -> Path:
     return SETTINGS_PATH if SETTINGS_PATH.exists() else LEGACY_PATH
@@ -293,6 +311,10 @@ def _read_file() -> dict[str, Any]:
 def reset_for_tests() -> None:
     _settings_cache["stamp"] = None
     _settings_cache["value"] = {}
+    # The published capacity is derived from those settings and the fleet, so it goes with them:
+    # a test that resets the pool and reads `constants.admission()` must read its own answer, not
+    # the last fan-out's.
+    _capacity_cache["value"] = None
 
 
 def _settings_lanes() -> dict[str, int]:
@@ -467,7 +489,7 @@ def retry_policy_wording() -> str:
     ).format(n=retry_policy()["max_attempts"])
 
 
-def live_capacity(*, worker: Any = None) -> dict[str, Any]:
+def live_capacity(*, worker: Any = None, rows: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     """**What the fleet can actually do right now**, per modality and in total.
 
     The owner's decision D, in his words: *"i want story to be able to run what the fleet can
@@ -489,15 +511,20 @@ def live_capacity(*, worker: Any = None) -> dict[str, Any]:
 
     `worker` is accepted for its callers; since 0.2.82 the figure no longer depends on this
     gateway's own in-flight count (`hub_budget` states the site's eligible total).
+
+    `rows` is the fleet fan-out's own rows, for the one caller that already has them
+    (`fleet._refresh`, which publishes the summary with `remember_capacity`). Passing them is
+    not an optimisation: reading the snapshot from inside a fan-out would re-enter it.
     """
     per_modality: dict[str, int] = {}
     locations: list[dict[str, Any]] = []
-    try:
-        from . import fleet as fleet_module
+    if rows is None:
+        try:
+            from . import fleet as fleet_module
 
-        rows = fleet_module.snapshot(allow_stale=True).get("locations") or []
-    except Exception:  # noqa: BLE001 - an unreadable fleet is zero capacity, not a crash
-        rows = []
+            rows = fleet_module.snapshot(allow_stale=True).get("locations") or []
+        except Exception:  # noqa: BLE001 - an unreadable fleet is zero capacity, not a crash
+            rows = []
     for row in rows:
         provider_id = str(row.get("provider_id") or "")
         reachable = row.get("reachable") is not False
