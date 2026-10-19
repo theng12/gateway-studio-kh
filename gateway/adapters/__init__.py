@@ -100,6 +100,7 @@ class GoogleBackend:
                 values=request.values,
                 base_url=base,
                 display_name=request.display_name,
+                max_output_tokens=request.max_output_tokens,
             )
         )
 

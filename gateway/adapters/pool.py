@@ -140,6 +140,7 @@ class PoolBackend(Backend):
 
     def generate(self, request: BackendRequest) -> BackendResult:
         from .. import pool_cooldowns, pools, pricing
+        from ..catalog import published_output_cap
 
         members = pools.members(request.model_id)
         routing_policy = pools.routing_policy(request.model_id)
@@ -202,6 +203,9 @@ class PoolBackend(Backend):
                 base_url=definition.base_url,
                 display_name=definition.display_name,
                 checkpoint=request.checkpoint,
+                # Each member has its own published allowance: a member that must state a
+                # `max_tokens` gets its own, not the pool's (a pool row publishes none).
+                max_output_tokens=published_output_cap(definition, model["model_id"], model),
             )
             gated = definition.kind != KIND_STUDIO_HUB  # a Hub has its own queue
             if gated:

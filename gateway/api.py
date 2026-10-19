@@ -47,7 +47,13 @@ from . import __version__
 from .build import build_id
 from .adapters import BackendError, BackendRequest, adapter_for
 from .adapters.studio_hub import SUPPORTED_STUDIO_HUB_VERSION
-from .catalog import MODALITIES, TTS_PAUSE_PARAMETERS, catalog, encode_model_id
+from .catalog import (
+    MODALITIES,
+    TTS_PAUSE_PARAMETERS,
+    catalog,
+    encode_model_id,
+    published_output_cap,
+)
 from .config import ARTIFACT_DIR, gateway_api_key, is_loopback, request_is_loopback
 from .constants import CREDIT_BALANCE, ZERO_SETTLEMENT, admission
 from .pricing import definition_chargeable, job_cost
@@ -1905,6 +1911,9 @@ def chat_completions(payload: dict[str, Any]) -> Any:
         values=registry.credentials.resolved(definition.id),
         base_url=definition.base_url,
         display_name=definition.display_name,
+        # The published allowance, never the adapter's private default: a caller that sends no
+        # `max_tokens` on this route is told the model's number by the catalogue above.
+        max_output_tokens=published_output_cap(definition, model["model_id"], model),
     )
     try:
         result = adapter_for(definition).generate(request)

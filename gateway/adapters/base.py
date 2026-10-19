@@ -262,6 +262,11 @@ class BackendRequest:
     #: Epoch time the gateway dispatched this job, set only on a resume after a restart: the
     #: fallback for how long it has already run when the upstream does not say.
     dispatch_started_at: float | None = None
+    #: The output allowance this gateway **publishes** for the model
+    #: (`catalog.published_output_cap`), so an adapter that must state a `max_tokens` can send
+    #: the number the caller was told instead of its own private default. A value in `params`
+    #: always wins: this is only the answer to "the caller asked for nothing".
+    max_output_tokens: int | None = None
 
 
 @runtime_checkable

@@ -34,6 +34,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from . import concurrency, pools
+from . import catalog
 from .adapters import BackendError, BackendRequest, adapter_for
 from .adapters import studio_hub
 from .adapters.base import requests_started
@@ -922,6 +923,24 @@ def execute_job(job: dict[str, Any], store: JobStore, *, resume: bool = False) -
     _dispatch(job, store, provider_id, model_id, modality, params, "")
 
 
+def _published_cap(definition: Any, model_id: str, modality: str) -> int | None:
+    """The model's published output allowance, for a lane that must state a `max_tokens`.
+
+    **Enrichment, never a gate.** No inventory or no model row means "this gateway has no
+    published cap", and such an adapter falls back to its own constant exactly as before.
+    The caller's own value still wins: the adapter reads `params` first.
+    """
+    inventory = getattr(registry, "models", None)
+    if inventory is None:
+        return None
+    model = next(
+        (m for d, m in inventory.enabled_models(modality)
+         if d.id == getattr(definition, "id", "") and m.get("model_id") == model_id),
+        None,
+    )
+    return catalog.published_output_cap(definition, model_id, model)
+
+
 def _dispatch(job: dict[str, Any], store: JobStore, provider_id: str, model_id: str,
               modality: str, params: dict[str, Any], resume_id: str, *, resend: bool = False) -> None:
     """Call the adapter and settle what it answers. `resume_id` polls that upstream id first.
@@ -976,6 +995,7 @@ def _dispatch(job: dict[str, Any], store: JobStore, provider_id: str, model_id: 
             on_wait=on_wait,
             upstream_job_id=resume_id,
             dispatch_started_at=(current.get("dispatch_started_at") if resume_id else None),
+            max_output_tokens=_published_cap(definition, model_id, modality),
         )
         adapter = adapter_for(definition)
         if job.get("waiting_json") or current.get("waiting_json"):
