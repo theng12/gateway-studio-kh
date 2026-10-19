@@ -121,6 +121,20 @@ DEFAULT_GLOBAL = 4
 DEFAULT_MAX_DEFERRALS = 240
 DEFAULT_DEFER_CAP_S = 300.0
 
+#: **How long a job may sit queued on a Hub location before the Gateway withdraws it** — the
+#: owner's three-hour ceiling, now the *only* copy of it.
+#:
+#: It lived as a module constant in the Studio Hub adapter (`QUEUE_WAIT_CEILING_S`), while the
+#: deferral budget beside it was editable here — so the owner could edit one number and the other
+#: silently overruled it. It is the one that ends a job: `worker._expired_in_queue` fails it
+#: `QUEUE_TIMEOUT`, and `studio_hub._poll_batch` withdraws the batch from the Hub's queue. 146
+#: `QUEUE_TIMEOUT` in the seven days to 2026-10-19 came through that constant.
+#:
+#: The default keeps the shipped behaviour until the owner edits `queue.wait_ceiling_seconds`:
+#:
+#:     {"global": 60, "queue": {"wait_ceiling_seconds": 10800}}
+DEFAULT_QUEUE_WAIT_CEILING_S = 3 * 3600.0
+
 #: What a cloud provider gets when neither its own answer nor the owner's file says
 #: anything. One, because over-scheduling is what produces 429s, and a 429 on a
 #: submitted job is a durable unknown-outcome hold rather than a clean retry.
@@ -428,17 +442,28 @@ def queue_wait_budget() -> dict[str, Any]:
 
     Read live from the same file as the pool size (`global`), so a change lands without a restart:
 
-        {"global": 60, "queue": {"max_deferrals": 24, "defer_cap_seconds": 120}}
+        {"global": 60, "queue": {"max_deferrals": 24, "defer_cap_seconds": 120,
+                                 "wait_ceiling_seconds": 10800}}
+
+    `wait_ceiling_seconds` is the third number in that family and the one that *ends* a job: past
+    it `worker._expired_in_queue` fails the job `QUEUE_TIMEOUT` and `studio_hub._poll_batch`
+    withdraws the batch from the Hub's queue. It has to be read here because the adapter and the
+    worker both judge the same wait, and a second copy of the number is how they came to disagree.
     """
     wording = _read_file().get("queue")
     entry = wording if isinstance(wording, dict) else {}
     attempts = _positive_int(entry.get("max_deferrals"))
     cap = entry.get("defer_cap_seconds")
     cap_seconds = float(cap) if isinstance(cap, (int, float)) and not isinstance(cap, bool) and cap > 0 else None
+    ceiling = entry.get("wait_ceiling_seconds")
+    ceiling_seconds = float(ceiling) if isinstance(ceiling, (int, float)) and not isinstance(ceiling, bool) and ceiling > 0 else None
     return {
         "max_deferrals": attempts if attempts is not None else DEFAULT_MAX_DEFERRALS,
         "defer_cap_seconds": cap_seconds if cap_seconds is not None else DEFAULT_DEFER_CAP_S,
-        "source": SOURCE_CURATED if (attempts is not None or cap_seconds is not None) else SOURCE_GATEWAY,
+        "wait_ceiling_seconds": (ceiling_seconds if ceiling_seconds is not None
+                                 else DEFAULT_QUEUE_WAIT_CEILING_S),
+        "source": SOURCE_CURATED if (attempts is not None or cap_seconds is not None
+                                     or ceiling_seconds is not None) else SOURCE_GATEWAY,
         "path": str(SETTINGS_PATH),
     }
 

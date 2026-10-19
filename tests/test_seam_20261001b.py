@@ -10,6 +10,7 @@
 """
 from __future__ import annotations
 
+import json
 import sys
 import time
 import unittest
@@ -25,7 +26,7 @@ from test_studio_hub_contract import (  # noqa: E402  (sets the isolated test pr
 
 import httpx  # noqa: E402
 
-from gateway import api, catalog  # noqa: E402
+from gateway import api, catalog, concurrency  # noqa: E402
 from gateway.adapters.base import BackendError  # noqa: E402
 from gateway.providers.definitions import KIND_STUDIO_HUB  # noqa: E402
 from gateway.store import JobStore  # noqa: E402
@@ -141,6 +142,66 @@ class QueueCeilingTests(unittest.TestCase):
         worker = worker_module.Worker(store)
         self.assertFalse(worker._expired_in_queue(store.get(fresh["id"])))
         self.assertFalse(worker._expired_in_queue(store.get(cloud["id"])))
+
+    def test_the_ceiling_is_the_owners_setting_not_a_private_adapter_constant(self) -> None:
+        """The one number that ends a queued job, read from the one place the owner edits it.
+
+        **Real case:** 146 jobs failed `QUEUE_TIMEOUT` in the seven days to 2026-10-19
+        (`d854c394-1d64-49a1-b296-a7bdfcba23a7`, `954add3e-cd30-4d5a-995f-7baae8355009`,
+        `d13e1523-234c-433e-82c2-1d51917db49b`, `effd967a-9e5f-4760-b169-8800c8a19108`,
+        `8cfed7ed-2734-47db-93cf-3c7d2742d46a`, `883c4a06-5e80-47e0-b06f-fccd76e5e33e`) against
+        `studio_hub.QUEUE_WAIT_CEILING_S` — a module constant in the adapter — while the editable
+        budget beside it (`concurrency.queue_wait_budget()`, read by the worker for deferrals and
+        by the API for `Retry-After`) was `queue.wait_ceiling_seconds`. The owner could edit his
+        and be overruled in silence.
+
+        Both readers are asserted against the *same* setting, because a fix in one of them is how
+        the two numbers came apart in the first place.
+        """
+        settings = _TEMP_ROOT / "queue-ceiling-settings.json"
+        settings.write_text(json.dumps({"queue": {"wait_ceiling_seconds": 900}}), encoding="utf-8")
+        store = JobStore(_TEMP_ROOT / "queue-ceiling-4.sqlite3")
+        self.addCleanup(store.close)
+        row, _ = store.submit(modality="tts", model_id="m", params={}, provider_id="studio-hub-local",
+                              idempotency_key="queue-ceiling-4")
+        with store._lock:
+            store._conn.execute("UPDATE jobs SET created_at = ? WHERE id = ?",
+                                (time.time() - 1800, row["id"]))
+            store._conn.commit()
+        with patch.object(concurrency, "SETTINGS_PATH", settings):
+            self.assertEqual(concurrency.queue_wait_budget()["wait_ceiling_seconds"], 900.0)
+            self.assertEqual(hub_module.queue_wait_ceiling_s(), 900.0,
+                             "the adapter must read the owner's ceiling, not keep its own copy")
+            worker = worker_module.Worker(store)
+            self.assertTrue(worker._expired_in_queue(store.get(row["id"])),
+                            "half an hour is past the owner's 15-minute ceiling")
+            failed = store.get(row["id"])
+            self.assertEqual((failed["state"], failed["error_code"]), ("failed", "QUEUE_TIMEOUT"))
+        self.assertNotIn("3 hours", failed["error_detail"],
+                         "the sentence must describe the ceiling that actually applied")
+
+    def test_a_ceiling_the_owner_raised_is_honoured(self) -> None:
+        """The same number, the other way: raising it must stop the Gateway ending the job early."""
+        settings = _TEMP_ROOT / "queue-ceiling-settings-raised.json"
+        settings.write_text(json.dumps({"queue": {"wait_ceiling_seconds": 86400}}), encoding="utf-8")
+        store = JobStore(_TEMP_ROOT / "queue-ceiling-5.sqlite3")
+        self.addCleanup(store.close)
+        row, _ = store.submit(modality="tts", model_id="m", params={}, provider_id="studio-hub-local",
+                              idempotency_key="queue-ceiling-5")
+        with store._lock:
+            store._conn.execute("UPDATE jobs SET created_at = ? WHERE id = ?",
+                                (time.time() - 3 * 3600 - 60, row["id"]))
+            store._conn.commit()
+        with patch.object(concurrency, "SETTINGS_PATH", settings):
+            self.assertFalse(worker_module.Worker(store)._expired_in_queue(store.get(row["id"])))
+        self.assertEqual(store.get(row["id"])["state"], "accepted")
+
+    def test_a_nonsense_ceiling_falls_back_to_the_shipped_default(self) -> None:
+        settings = _TEMP_ROOT / "queue-ceiling-settings-bad.json"
+        settings.write_text(json.dumps({"queue": {"wait_ceiling_seconds": -1}}), encoding="utf-8")
+        with patch.object(concurrency, "SETTINGS_PATH", settings):
+            self.assertEqual(concurrency.queue_wait_budget()["wait_ceiling_seconds"],
+                             concurrency.DEFAULT_QUEUE_WAIT_CEILING_S)
 
 
 class MachineLabelTests(unittest.TestCase):

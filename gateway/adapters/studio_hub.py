@@ -43,11 +43,25 @@ log = logging.getLogger(__name__)
 
 POLL_INTERVAL_S = 1.0
 
-#: The longest a batch may sit `queued` on the Hub before this gateway withdraws it (and only if
-#: the Hub confirms nothing ran). The lane deadline does not count queue time, so without this a
-#: job behind a machine that never frees up would poll for ever. ponytail: one flat number
-#: (Story's own wait is four hours); a per-lane figure if some lane's queue is legitimately longer.
-QUEUE_WAIT_CEILING_S = 3 * 3600.0
+
+def queue_wait_ceiling_s() -> float:
+    """The longest a batch may sit `queued` on the Hub before this gateway withdraws it (and only
+    if the Hub confirms nothing ran). The lane deadline does not count queue time, so without this
+    a job behind a machine that never frees up would poll for ever.
+
+    **The owner's number, read from the one place he edits it.** This was a module constant here
+    (`QUEUE_WAIT_CEILING_S = 3 * 3600.0`) with a `ponytail:` note naming the upgrade path, while
+    the editable budget lived in `concurrency.queue_wait_budget()` — which the worker and the API
+    already read for deferrals and `Retry-After`. Two copies of one ceiling meant the owner could
+    edit his and be silently overruled: 146 jobs failed `QUEUE_TIMEOUT` in the seven days to
+    2026-10-19 on this constant. One read, one number (`queue.wait_ceiling_seconds`).
+
+    ponytail: one flat number for every lane (Story's own wait is four hours); a per-lane figure
+    if some lane's queue is legitimately longer.
+    """
+    from .. import concurrency
+    return float(concurrency.queue_wait_budget()["wait_ceiling_seconds"])
+
 
 #: How long a poll may keep failing before a batch becomes an unknown-outcome hold.
 #:
@@ -766,7 +780,7 @@ def _poll_batch(
     turned a job that was merely waiting for a Mac into a forced unknown-outcome hold. While the
     item is `queued` the clock is paused and `on_wait` is told why (the Hub's own note, and when
     it will try again), so the job can say "waiting for a Mac" instead of looking merely slow.
-    `QUEUE_WAIT_CEILING_S` is the only bound on that wait, and it cancels rather than guesses.
+    `queue_wait_ceiling_s()` is the only bound on that wait, and it cancels rather than guesses.
 
     **The run clock is the job's, not this call's.** A poll that begins mid-render -- a Gateway
     restart resuming a batch -- must not start the budget from zero, or the limit would apply per
@@ -783,9 +797,12 @@ def _poll_batch(
     on that path.
     """
     limit = float(deadline_seconds) if deadline_seconds else JOB_DEADLINE_S
+    # Read once, like `limit`: the ceiling is the owner's setting (`queue_wait_ceiling_s`) and a
+    # poll loop is not the place to re-stat a settings file once a second.
+    ceiling = queue_wait_ceiling_s()
     started = tick = time.monotonic()
     ran = 0.0  # seconds this item has spent running -- the only time the lane budget counts
-    queued_for = 0.0  # seconds it has spent queued -- the only time `QUEUE_WAIT_CEILING_S` counts
+    queued_for = 0.0  # seconds it has spent queued -- the only time the queue ceiling counts
     running = False
     waiting_key: tuple[Any, ...] | None = None
     waiting_since = 0.0
@@ -810,7 +827,7 @@ def _poll_batch(
         # The ceiling is for a batch that is *still queued*: measured from `started` it also
         # withdrew (DELETE) an item that had waited 2 h 50 and then begun rendering, at the
         # three-hour mark of wall time.
-        out_of_time = ran >= limit or (not running and queued_for >= QUEUE_WAIT_CEILING_S)
+        out_of_time = ran >= limit or (not running and queued_for >= ceiling)
         if out_of_time:
             break
         # **A Mac that dies mid-poll is a named hold, not a raw `ConnectError`.** This call had no
@@ -1021,12 +1038,12 @@ def _poll_batch(
         time.sleep(POLL_INTERVAL_S)
 
     if ran < limit:
-        # Still queued after `QUEUE_WAIT_CEILING_S`. A queued item has provably not run, so it may
+        # Still queued past the ceiling. A queued item has provably not run, so it may
         # be cancelled -- and only if the Hub *says* it cancelled it from the queue is it safe to
         # let the worker try another location. A running item is never cancelled on a guess.
         if _withdrawn(base, headers, batch_id, jobs_path):
             raise BackendError(
-                f"the Hub kept this queued for {int(QUEUE_WAIT_CEILING_S)}s with no machine free; "
+                f"the Hub kept this queued for {int(ceiling)}s with no machine free; "
                 "it was withdrawn from the queue before anything ran",
                 code="LOCATION_NOT_READY",
                 retryable=True,
@@ -1043,7 +1060,7 @@ def _poll_batch(
     if ran < limit:
         # Still queued past the ceiling and the Hub did not confirm withdrawing it: unknown.
         raise BackendError(
-            f"the Hub kept this queued for {int(QUEUE_WAIT_CEILING_S)}s and did not confirm withdrawing it",
+            f"the Hub kept this queued for {int(ceiling)}s and did not confirm withdrawing it",
             code="PROVIDER_SUBMISSION_UNCERTAIN",
             retryable=True,
         )
@@ -2269,7 +2286,7 @@ def chat_queue_wait_seconds(provider_id: str, model_id: str = "") -> float:
         slots, wait = queue.get("pending_request_slots"), queue.get("pending_queue_wait_seconds")
         models = queue.get("pending_request_models")
         if (isinstance(slots, bool) or slots != 1 or isinstance(wait, bool)
-                or not isinstance(wait, (int, float)) or not 0 < wait <= QUEUE_WAIT_CEILING_S
+                or not isinstance(wait, (int, float)) or not 0 < wait <= queue_wait_ceiling_s()
                 or not isinstance(models, list) or (model_id and model_id not in models)):
             return 0.0
         return float(wait)

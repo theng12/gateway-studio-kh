@@ -275,7 +275,9 @@ class SubmitThatDoesNotAnswerTests(_Case):
 
     def test_a_location_that_never_answers_its_submit_is_moved_once_the_wait_is_spent(self) -> None:
         fleet = _Fleet(a_dies=False, a_submit=["timeout-forever"])
-        budget = {"max_deferrals": 1, "defer_cap_seconds": 0}
+        # Built from the producer's own shape, so a key added to `queue_wait_budget` cannot
+        # make this stub a stricter or looser thing than the function it stands in for.
+        budget = {**concurrency.queue_wait_budget(), "max_deferrals": 1, "defer_cap_seconds": 0}
         with patch.object(worker_module.concurrency, "queue_wait_budget", lambda: budget):
             seen = self.run_until_settled(fleet, self.job("forever-1"))
         self.assertEqual((seen[-1]["state"], seen[-1]["provider_id"]), ("succeeded", B), seen[-1].get("error_detail"))
@@ -283,7 +285,9 @@ class SubmitThatDoesNotAnswerTests(_Case):
 
     def test_with_nowhere_to_move_it_the_exhausted_wait_is_the_hold_it_always_was(self) -> None:
         self.next_site = []
-        budget = {"max_deferrals": 1, "defer_cap_seconds": 0}
+        # Built from the producer's own shape, so a key added to `queue_wait_budget` cannot
+        # make this stub a stricter or looser thing than the function it stands in for.
+        budget = {**concurrency.queue_wait_budget(), "max_deferrals": 1, "defer_cap_seconds": 0}
         with patch.object(worker_module.concurrency, "queue_wait_budget", lambda: budget):
             seen = self.run_until_settled(_Fleet(a_dies=False, a_submit=["timeout-forever"]), self.job("forever-2"))
         self.assertEqual((seen[-1]["state"], seen[-1]["error_code"]), ("failed", "SITE_CAPACITY_UNAVAILABLE"))
