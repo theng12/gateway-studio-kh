@@ -2051,7 +2051,11 @@ class Worker:
             return False
         if not fleet.is_location_provider(str(job.get("provider_id") or "")):
             return False
-        ceiling = float(studio_hub.QUEUE_WAIT_CEILING_S)
+        # **The editable ceiling, not the adapter's private constant.** This read
+        # `studio_hub.QUEUE_WAIT_CEILING_S` — a module number in the adapter — while the budget
+        # beside it was a setting the owner edits, so the owner's number could be overruled in
+        # silence. 146 jobs failed `QUEUE_TIMEOUT` in the seven days to 2026-10-19 through it.
+        ceiling = float(concurrency.queue_wait_budget()["wait_ceiling_seconds"])
         waited = time.time() - float(job.get("created_at") or time.time())
         if waited < ceiling:
             return False

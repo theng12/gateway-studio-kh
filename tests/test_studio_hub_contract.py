@@ -2048,7 +2048,7 @@ class QueueWaitTests(_HubCase):
 
     def test_a_batch_queued_past_the_ceiling_is_withdrawn_and_may_be_rerouted(self) -> None:
         hub = _Hub(states=["queued"])
-        with patch.object(hub_module, "QUEUE_WAIT_CEILING_S", 20.0):
+        with patch.object(hub_module, "queue_wait_ceiling_s", lambda: 20.0):
             with self.assertRaises(BackendError) as caught:
                 self._poll(hub, deadline=10)
         self.assertEqual(caught.exception.code, "LOCATION_NOT_READY")
@@ -2058,7 +2058,7 @@ class QueueWaitTests(_HubCase):
 
     def test_the_ceiling_counts_queued_time_only_so_a_late_starter_is_not_withdrawn(self) -> None:
         hub = _Hub(states=["queued"] * 15 + ["running"] * 10 + ["done"])
-        with patch.object(hub_module, "QUEUE_WAIT_CEILING_S", 20.0):
+        with patch.object(hub_module, "queue_wait_ceiling_s", lambda: 20.0):
             outcome = self._poll(hub, deadline=100)  # 25 s of wall time, 15 s of it queued
         self.assertEqual(outcome["item"]["state"], "done")
         self.assertEqual(hub.deletes, [], "a rendering item must never be withdrawn at the ceiling")
