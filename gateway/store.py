@@ -18,9 +18,11 @@ What we drop: leases, fencing, permits, fairness ranking, admission capacity.
 
 from __future__ import annotations
 
+import fcntl
 import json
 import logging
 import math
+import os
 import sqlite3
 import statistics
 import threading
@@ -286,12 +288,46 @@ class JobStore:
         #: opened: the worker resumes or re-sends them (or holds them) on start. See `_recover_interrupted`.
         self.interrupted: list[str] = []
         self._hold_sweep_after = ""
+        #: Held for as long as this process owns the queue, so a second opener cannot sweep
+        #: (`_claim_queue`). Released by `close()`, and by the kernel if this process dies.
+        self._owner_fd: int | None = None
         self._conn.executescript(_SCHEMA)
         self._ensure_columns()
-        self._recover_interrupted()
+        if self._claim_queue():
+            self._recover_interrupted()
         self._settle_late_successes()
         self._relabel_never_sent_pool_failures()
         self._conn.commit()
+
+    def _claim_queue(self) -> bool:
+        """Whether *this* process is the one taking the queue over, so the restart sweep may run.
+
+        **The sweep is not a property of opening the database.** It exists to close the one unsafe
+        window: a job was in flight when the process that owned it died. Running it whenever anyone
+        opens the file made *every second opener* orphan the serving process's live work under a
+        sentence about a restart that never happened — measured 2026-10-19 on the owner's gateway:
+        a test module imported without redirecting its paths, and a gateway spawn that could not
+        bind 8787, each held every `running` job as `failed / UNKNOWN_OUTCOME`, repeatedly, while
+        pid 12123 had been up since 08:15 and its job threads were still running and still answered.
+
+        The lock is an `flock` on `<db>.owner`: advisory, per open file description (so a second
+        opener in this process is excluded too), and released by the kernel the moment the owner
+        exits — which is exactly the evidence "the gateway restarted" needs. A stale lock file
+        cannot hold the queue: only the lock matters, never the file's existence.
+        """
+        try:
+            fd = os.open(f"{self.path}.owner", os.O_CREAT | os.O_RDWR, 0o644)
+        except OSError:  # noqa: BLE001 - an unopenable lock is never worse than no lock
+            log.warning("no owner lock beside %s; sweeping as the only opener", self.path)
+            return True
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            os.close(fd)
+            log.info("%s is being served by another process; leaving its jobs alone", self.path)
+            return False
+        self._owner_fd = fd
+        return True
 
     def _ensure_columns(self) -> None:
         existing = {
@@ -505,6 +541,11 @@ class JobStore:
     def close(self) -> None:
         with self._lock:
             self._conn.close()
+            if self._owner_fd is not None:
+                # Releasing the queue is what lets the *next* starter sweep: a store closed here
+                # and reopened is a restart, and its `running` jobs are the ones the sweep is for.
+                os.close(self._owner_fd)
+                self._owner_fd = None
 
     # -- write ------------------------------------------------------------
     def submit(

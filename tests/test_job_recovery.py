@@ -475,5 +475,48 @@ class JobRecoveryTests(unittest.TestCase):
             store.close()
 
 
+    def test_a_second_opener_is_not_a_restart(self) -> None:
+        """**Opening the database must not orphan the work of the process serving it.**
+
+        The sweep in `JobStore.__init__` is for one thing: a job was in flight when the process
+        that owned it died. Running it for *every* opener made the sentence false and the damage
+        real — measured on the owner's gateway 2026-10-19. `tests/test_fleet_cancel.py`,
+        `tests/test_job_caller.py` and `tests/test_queue_visibility.py` each import `gateway.api`
+        (hence `gateway.runtime`, hence this store) before redirecting `GATEWAY_*`, so they bound
+        `$HOME`'s Application Support — the live data directory — and held every `running` chat job
+        as `failed / UNKNOWN_OUTCOME`, repeatedly, while pid 12123 had been up since 08:15 and its
+        job threads were still running and still answered. A gateway spawn that cannot bind 8787
+        does the same: uvicorn imports the app before it tries the port.
+        """
+        store = self.make_store("second-opener")
+        row = self.submit(store, "second-opener")
+        self.assertTrue(store.mark_running(row["id"]))
+        self.assertTrue(store.begin_dispatch(row["id"]))
+
+        other = JobStore(store.path)  # a second gateway, a CLI, a fixture, a test module
+        try:
+            live = other.get(row["id"])
+            self.assertEqual(live["state"], "running", "the serving process's job is still running")
+            self.assertIsNone(live["recovery_state"], "nothing says its outcome is unknown")
+            self.assertIsNone(live["error_code"])
+            self.assertEqual(store.get(row["id"])["state"], "running",
+                             "and the serving process reads the same row")
+        finally:
+            other.close()
+
+        # A real restart still holds it: the owner is gone, so the next starter owns the queue.
+        store.close()
+        reopened = JobStore(store.path)
+        try:
+            recovered = reopened.get(row["id"])
+            self.assertEqual(recovered["state"], "failed")
+            self.assertEqual(recovered["error_code"], "UNKNOWN_OUTCOME")
+            self.assertEqual(recovered["recovery_state"], "unknown_outcome")
+            self.assertIn("restarted", recovered["error_detail"],
+                          "and the sentence is true here, because the owner really did go")
+        finally:
+            reopened.close()
+
+
 if __name__ == "__main__":
     unittest.main()
