@@ -996,6 +996,10 @@ class Handler(BaseHTTPRequestHandler):
             CHAT_CALLS.append({
                 "path": path,
                 "token": self.headers.get("X-Hub-Token"),
+                # The headers too: the Hub reads a caller's own answer-length expectation from
+                # one (`base.expected_output_header`), and "did the gateway forward it" is a wire
+                # fact that the body alone cannot answer.
+                "headers": dict(self.headers),
                 "body": body,
             })
             if CHAT_STATUS >= 400:

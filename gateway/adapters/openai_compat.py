@@ -21,15 +21,24 @@ from typing import Any
 import httpx
 
 from .base import (
+    CHAT_DEADLINE_CEILING_S,
     Artifact,
     BackendError,
     BackendRequest,
     BackendResult,
     caller_max_output_tokens,
+    expected_output_header,
     quota_hints,
 )
 
-CHAT_TIMEOUT = httpx.Timeout(300.0, connect=10.0, read=300.0)
+#: How long one chat call may be held open. **The Hub's ceiling, not a round number of our own.**
+#: A chat job is one HTTP request that lasts as long as the model runs, and a Hub job may
+#: legitimately run for hours: a 100-prompt scene pack is ~2,500 s of generation on the fleet's
+#: slowest measured Mac before load, prompt and safety margin. This was a flat 300 s, which cut
+#: such a job fifteen minutes in — and the Anthropic lane beside it shares the constant, so both
+#: now outwait the longest job the Hub will hold. `expected_output_header` travels with the
+#: request so the Hub can size its own deadline from the caller's expectation.
+CHAT_TIMEOUT = httpx.Timeout(CHAT_DEADLINE_CEILING_S, connect=10.0, read=CHAT_DEADLINE_CEILING_S)
 MEDIA_TIMEOUT = httpx.Timeout(600.0, connect=10.0, read=600.0)
 
 #: How many images one request may ask for. No provider here *publishes* a maximum
@@ -199,7 +208,8 @@ def _chat(request: BackendRequest) -> BackendResult:
         try:
             return httpx.post(
                 f"{_base(request)}/chat/completions",
-                headers={**_auth(request.values), "Content-Type": "application/json"},
+                headers={**_auth(request.values), "Content-Type": "application/json",
+                         **expected_output_header(request.params)},
                 json=body,
                 timeout=CHAT_TIMEOUT,
             )

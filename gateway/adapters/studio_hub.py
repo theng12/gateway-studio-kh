@@ -32,10 +32,12 @@ from urllib.parse import quote, urlsplit
 import httpx
 
 from .base import (
+    CHAT_DEADLINE_CEILING_S,
     BackendError,
     BackendRequest,
     BackendResult,
     caller_max_output_tokens,
+    expected_output_header,
     note_request_started,
 )
 
@@ -646,6 +648,16 @@ def lane_deadline_seconds(request: BackendRequest | None, machine: str | None = 
     """
     if request is None:
         return JOB_DEADLINE_S
+    # **The chat lane is bounded by the Hub's ceiling on every path**, including the two that
+    # state nothing at all. Since 2026-10-19 the Hub computes each Chat job's deadline from the
+    # job — its own prompt, its own expected answer, that Mac's measured rate — and its contract
+    # can only publish the lane's floor (1,800 s). A 100-prompt scene pack is ~2,500 s of
+    # generation on the slowest measured Mac before load and margin, so any shorter bound here
+    # cuts a job the Hub is still legitimately running and records a failure for an answer that
+    # exists. A chat request whose model is not in the cache is the same case: the lane is known
+    # from the request itself, even when the contract is not.
+    chat_floor = (CHAT_DEADLINE_CEILING_S
+                  if str(getattr(request, "modality", "") or "") == "chat" else 0.0)
     try:
         from ..providers import registry  # local import: avoids a cycle
 
@@ -661,10 +673,11 @@ def lane_deadline_seconds(request: BackendRequest | None, machine: str | None = 
                 # than failing every poll instantly on a nonsensical number.
                 if isinstance(stated, (int, float)) and not isinstance(stated, bool) and stated > 0:
                     base = float(stated)
-            return max(base, _tts_length_deadline(request, machine), _yue2_length_deadline(request))
+            return max(base, chat_floor, _tts_length_deadline(request, machine),
+                       _yue2_length_deadline(request))
     except Exception:  # noqa: BLE001 - an unreadable contract is "unstated"
-        return JOB_DEADLINE_S
-    return JOB_DEADLINE_S
+        return max(JOB_DEADLINE_S, chat_floor)
+    return max(JOB_DEADLINE_S, chat_floor)
 
 
 class HubProgress:
@@ -2363,7 +2376,11 @@ def _generate_chat(request: BackendRequest) -> BackendResult:
     the one reader that refuses those.
     """
     base = _resolve_base(request)
-    headers = {**_headers(request), "Content-Type": "application/json"}
+    # The caller's own expectation travels with the request, because the Hub cannot tell a
+    # 100-prompt scene pack from a one-line question by reading the body — and the Hub is the
+    # party that sizes the job's deadline from it (`base.expected_output_header`).
+    headers = {**_headers(request), "Content-Type": "application/json",
+               **expected_output_header(request.params)}
     # The lane's own ceiling applies to the call itself, as it does to a poll: the
     # Hub holds this request open while the model runs.
     queue_wait = chat_queue_wait_seconds(request.provider_id, request.model_id)

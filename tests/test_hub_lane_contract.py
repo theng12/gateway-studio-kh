@@ -63,6 +63,7 @@ from mock_upstream import (  # noqa: E402
 )
 
 from gateway.adapters import serves  # noqa: E402
+from gateway.adapters.base import CHAT_DEADLINE_CEILING_S  # noqa: E402
 from gateway.providers import discovery  # noqa: E402
 from gateway.providers.definitions import (  # noqa: E402
     DISCOVERY_STUDIO_HUB,
@@ -301,11 +302,13 @@ class LaneDeadlineTests(unittest.TestCase):
     that was about to succeed.
     """
 
-    def _request(self):
+    def _request(self, modality: str = "voice"):
+        """A **non-chat** lane by default, because the chat lane's answer is no longer its
+        contract's number — see `test_the_chat_lane_outwaits_the_hub_ceiling`."""
         from gateway.adapters.base import BackendRequest
 
         return BackendRequest(
-            provider_id="studio-hub-mock", model_id="mock-hub/chat-model", modality="chat",
+            provider_id="studio-hub-mock", model_id="mock-hub/chat-model", modality=modality,
             params={}, values={}, base_url="http://127.0.0.1:1",
         )
 
@@ -318,7 +321,32 @@ class LaneDeadlineTests(unittest.TestCase):
         stated = {"model_id": "mock-hub/chat-model",
                   "raw": {"lane_contract": {"deadline_seconds": 600.0}}}
         with patch.object(registry.models, "models_for", return_value=[stated]):
-            self.assertEqual(lane_deadline_seconds(self._request()), 600.0)
+            self.assertEqual(lane_deadline_seconds(self._request("voice")), 600.0)
+
+    def test_the_chat_lane_outwaits_the_hub_ceiling(self) -> None:
+        """**The chat lane's stated deadline is a floor, not the number** (owner decision
+        2026-10-19). Studio Hub now computes each Chat job's deadline from the job — its own
+        prompt, its own expected answer, that Mac's measured rate — and its contract can only
+        publish the lane's minimum. A 100-prompt scene pack is ~2,500 s of generation on the
+        fleet's slowest measured Mac before load and margin, so a call bounded by the contract's
+        1,800 s would cut a job the Hub was still legitimately running and record a failure for
+        an answer that exists. The other lanes are unchanged: their stated number is their
+        deadline.
+        """
+        from unittest.mock import patch
+
+        from gateway.adapters.base import CHAT_DEADLINE_CEILING_S
+        from gateway.adapters.studio_hub import lane_deadline_seconds
+        from gateway.providers import registry
+
+        stated = {"model_id": "mock-hub/chat-model",
+                  "raw": {"lane_contract": {"deadline_seconds": HUB_CHAT_DEADLINE_S}}}
+        with patch.object(registry.models, "models_for", return_value=[stated]):
+            self.assertEqual(lane_deadline_seconds(self._request("chat")),
+                             CHAT_DEADLINE_CEILING_S)
+            # The same model on a non-chat lane still answers with what its contract states.
+            self.assertEqual(lane_deadline_seconds(self._request("voice")),
+                             HUB_CHAT_DEADLINE_S)
 
     def test_an_unstated_or_nonsensical_deadline_falls_back(self) -> None:
         from unittest.mock import patch
@@ -334,7 +362,13 @@ class LaneDeadlineTests(unittest.TestCase):
                 registry.models, "models_for",
                 return_value=[{"model_id": "mock-hub/chat-model", "raw": raw}],
             ):
-                self.assertEqual(lane_deadline_seconds(self._request()), JOB_DEADLINE_S)
+                self.assertEqual(lane_deadline_seconds(self._request("voice")), JOB_DEADLINE_S)
+                # A **chat** request whose contract states nothing is still a chat job: the lane
+                # is known from the request itself, so the Hub's ceiling applies even when the
+                # contract cannot be read. The old answer — the flat 900 s — would abandon a
+                # job the Hub was still running.
+                self.assertEqual(lane_deadline_seconds(self._request("chat")),
+                                 CHAT_DEADLINE_CEILING_S)
         # And a job with no request at all is the same answer, never a crash.
         self.assertEqual(lane_deadline_seconds(None), JOB_DEADLINE_S)
 
@@ -359,9 +393,9 @@ class LaneDeadlineTests(unittest.TestCase):
 
         rows = [
             {"model_id": "mock-hub/chat-model",
-             "raw": {"lane_contract": {"deadline_seconds": HUB_CHAT_DEADLINE_S}}},
-            {"model_id": "mock-hub/clone-model",
              "raw": {"lane_contract": {"deadline_seconds": HUB_VOICE_DEADLINE_S}}},
+            {"model_id": "mock-hub/clone-model",
+             "raw": {"lane_contract": {"deadline_seconds": HUB_VIDEO_DEADLINE_S}}},
         ]
 
         def request(model_id: str, modality: str):
@@ -371,15 +405,20 @@ class LaneDeadlineTests(unittest.TestCase):
             )
 
         with patch.object(registry.models, "models_for", return_value=rows):
+            voice = lane_deadline_seconds(request("mock-hub/chat-model", "voice"))
+            video = lane_deadline_seconds(request("mock-hub/clone-model", "video"))
+            voice_again = lane_deadline_seconds(request("mock-hub/chat-model", "voice"))
             chat = lane_deadline_seconds(request("mock-hub/chat-model", "chat"))
-            voice = lane_deadline_seconds(request("mock-hub/clone-model", "voice"))
-            chat_again = lane_deadline_seconds(request("mock-hub/chat-model", "chat"))
 
-        self.assertEqual(chat, HUB_CHAT_DEADLINE_S)
         self.assertEqual(voice, HUB_VOICE_DEADLINE_S)
-        self.assertNotEqual(chat, voice,
+        self.assertEqual(video, HUB_VIDEO_DEADLINE_S)
+        self.assertNotEqual(voice, video,
                             "one number for every lane is the defect this guards")
-        self.assertEqual(chat_again, chat, "the first answer must not be cached")
+        self.assertEqual(voice_again, voice, "the first answer must not be cached")
+        # The chat lane reads its contract too, and then raises it to the Hub's ceiling: the
+        # stated number is a floor, and a lane that ignored it entirely would be the same bug
+        # in the other direction.
+        self.assertEqual(chat, CHAT_DEADLINE_CEILING_S)
 
 
 class VideoPublicationTests(_MockHub):
