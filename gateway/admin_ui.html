@@ -496,9 +496,21 @@
            tab." He was standing on this page after enabling a model that had not reached the
            Chat picker, and the only re-discover control in the console was on the Providers
            tab — so the page listing models gave him no way to ask for a newer list, and no hint
-           that the list it was showing could be days old. -->
-      <button class="sm" onclick="refreshModels(this)">Re-discover Models</button>
+           that the list it was showing could be days old.
+
+           **It says which providers it will touch.** The owner, 2026-10-19: *"when i click
+           re-discover models, i don't know if it runs across all the providers or the one
+           selected. i think it should just run for the one selected or let us choose... i only
+           needed magpie refresh."* So the filter decides: filtered to one provider the button
+           names it and the picker steps aside, and unfiltered the picker chooses between every
+           provider and one — never a silent whole-fleet fetch. -->
+      <span class="ctl" id="m-rediscover-scope" style="display:none">
+        <label class="check inline" for="m-rediscover">Re-discover</label>
+        <select id="m-rediscover" aria-label="Which providers to re-discover"></select>
+      </span>
+      <button class="sm" id="m-rediscover-btn" onclick="refreshModels(this)">Re-discover all providers</button>
     </div>
+    <div class="msg" id="m-rediscover-msg" role="status" aria-live="polite"></div>
 
     <div class="row controls" style="margin-bottom:12px">
       <div class="stat" id="m-count">…</div>
@@ -664,7 +676,7 @@
       </select>
       <span class="stat" id="keyless-count"></span>
       <input type="text" id="filter" placeholder="Filter providers…" style="max-width:260px">
-      <button class="sm" onclick="refreshAll(this)">Refresh All Models</button>
+      <button class="sm" onclick="refreshAll(this)">Re-discover all providers</button>
       <!-- Prices researched from each provider's own pricing page (a separate research session
            writes the JSON; the gateway only validates and stores it — nothing is fetched here). -->
       <button class="sm" id="evidence-import" onclick="document.getElementById('evidence-file').click()">Import Price Research…</button>
@@ -1221,17 +1233,93 @@ async function loadFreshness() {
 // that had not reached the Chat picker, and the console's only re-discover control was on the
 // Providers tab, so the page listing models offered no way to ask for a newer list.
 //
-// It calls the **same endpoint** the Providers tab's button does, so the two cannot disagree about
-// what refreshing means. It is a separate function only because this page must also redraw itself:
-// `refreshAll` reloads providers and status, which is everything the Providers page shows, and
-// doing only that here would re-fetch the catalogues and leave the model list unchanged.
+// **What it touches is now on the button.** It used to post `/refresh-all` unconditionally, so
+// pressing it while filtered to one provider fetched every provider's catalogue — the owner's
+// 2026-10-19 report: *"i don't know if it runs across all the providers or the one selected...
+// i only needed magpie refresh."* A scoped press now takes the **per-provider** route
+// (`POST /admin/api/providers/{id}/refresh`), the same one the Providers page row uses, so the
+// two cannot disagree about what refreshing one provider means.
+//
+// The name a provider is called by here is the same name the filter and the picker show, read
+// from the list `/models` already returned — never a second copy of it. The Providers page never
+// reads `/models`, so its own list is the fallback, and an id is the last resort rather than a
+// name invented for it.
+function providerName(id) {
+  const row = (state.modelProviders || []).find(p => p[0] === id);
+  if (row) return row[1];
+  const listed = (state.providers || []).find(p => p.id === id);
+  return listed ? listed.display_name : id;
+}
+
+// Which providers the button will touch: the filter when it names one, otherwise the picker.
+function rediscoverScope() {
+  const filter = document.getElementById('m-provider');
+  const picker = document.getElementById('m-rediscover');
+  const id = (filter && filter.value) || (picker && picker.value) || '';
+  return { id, name: id ? providerName(id) : '' };
+}
+
+// One control, one answer to "which providers?". Filtered, the filter *is* the scope and the
+// picker would be a second, contradicting one, so it is hidden and cleared. Unfiltered, the
+// picker is the only thing that says what the button will touch.
+//
+// The label is left alone while a run is in flight, or this would overwrite "Re-discovering…"
+// with the scope's name the moment the redraw that follows it begins.
+function syncRediscover() {
+  const filter = document.getElementById('m-provider');
+  const picker = document.getElementById('m-rediscover');
+  const scope = document.getElementById('m-rediscover-scope');
+  const btn = document.getElementById('m-rediscover-btn');
+  if (!filter || !picker || !btn) return;
+  const filtered = !!filter.value;
+  if (scope) scope.style.display = filtered ? 'none' : '';
+  if (filtered) picker.value = '';
+  const { id, name } = rediscoverScope();
+  if (!btn.disabled) btn.textContent = id ? `Re-discover ${name}` : 'Re-discover all providers';
+}
+
+// One sentence for a whole-fleet re-discover. A bare count cannot tell "nothing changed" from
+// "it did not answer", so the providers that failed are named, and named the way the page lists
+// them. `/refresh-all` already reports each provider's count, so this needs no second pass.
+async function rediscoverAll() {
+  const { outcomes } = await api('/refresh-all', { method: 'POST' });
+  const ids = Object.keys(outcomes || {});
+  const found = ids.reduce((n, id) => n + (outcomes[id].count || 0), 0);
+  const failed = ids.filter(id => outcomes[id].error);
+  return `${ids.length} provider${ids.length === 1 ? '' : 's'} re-discovered · `
+    + `${found} model${found === 1 ? '' : 's'} found`
+    + (failed.length
+        ? ` · failed: ${failed.map(id => `${providerName(id)} (${outcomes[id].error})`).join('; ')}`
+        : '');
+}
+
+// Say what happened where the button is, not in a dialog: the owner's question was "did that do
+// what I meant", and an alert that has to be dismissed tells him less than a line that stays.
 async function refreshModels(btn) {
+  const { id, name } = rediscoverScope();
+  const message = document.getElementById('m-rediscover-msg');
+  const say = (text, ok) => {
+    if (!message) return;
+    message.textContent = text;
+    message.className = 'msg ' + (ok ? 'ok' : 'bad');
+  };
+  if (message) { message.textContent = ''; message.className = 'msg'; }
   btn.disabled = true; btn.textContent = 'Re-discovering…';
   try {
-    await api('/refresh-all', { method: 'POST' });
+    let said, ok = true;
+    if (id) {
+      const r = await api(`/providers/${encodeURIComponent(id)}/refresh`, { method: 'POST' });
+      said = r.error
+        ? `${name}: ${r.error}`
+        : `${name}: ${r.discovered} model${r.discovered === 1 ? '' : 's'} found`;
+      ok = !r.error;
+    } else {
+      said = await rediscoverAll();
+    }
     await loadModels(); await loadFreshness(); await loadStatus(); await loadProviders();
-  } catch (e) { alert(e.message); }
-  finally { btn.disabled = false; btn.textContent = 'Re-discover Models'; }
+    say(said, ok);
+  } catch (e) { say(e.message, false); }
+  finally { btn.disabled = false; syncRediscover(); }
 }
 
 // What a model *does*, in the owner's words rather than the catalogue's. The
@@ -1288,6 +1376,9 @@ function syncModelShow() {
 
 async function loadModels() {
   syncModelShow();
+  // Before the read, not after: the scope follows the filter, and a label that only caught up
+  // once the catalogue came back would name the previous provider for the whole fetch.
+  syncRediscover();
   const query = modelQuery();
   const params = new URLSearchParams();
   Object.keys(query).forEach(k => { if (query[k]) params.set(k, query[k]); });
@@ -1300,6 +1391,9 @@ async function loadModels() {
   catch (e) { document.getElementById('m-count').textContent = 'error: ' + e.message; return; }
 
   state.modelRows = data.models;
+  // The same `[[id, name], …]` the filter and the re-discover picker are built from, kept so a
+  // re-discover can name a provider the way this page names it rather than by its id.
+  state.modelProviders = data.providers || [];
   // Which Macs each merged row stands for. The group tick addresses them by
   // provider id, and the ids are not derivable from the model id, so they are
   // read off the row the server sent rather than re-derived here. Keyed the way
@@ -1326,7 +1420,14 @@ function populateFilters(data) {
   const prov = document.getElementById('m-provider');
   prov.innerHTML = '<option value="">All providers</option>' +
     (data.providers || []).map(([id, name]) => `<option value="${esc(id)}">${esc(name)}</option>`).join('');
+  // The same list, so the two controls can never offer different providers.
+  const picker = document.getElementById('m-rediscover');
+  if (picker) {
+    picker.innerHTML = '<option value="">All providers</option>' +
+      (data.providers || []).map(([id, name]) => `<option value="${esc(id)}">${esc(name)}</option>`).join('');
+  }
   filtersPopulated = true;
+  syncRediscover();
 }
 
 // **A free lane is a trade, not just a price.** On these providers "free" and
@@ -1666,6 +1767,9 @@ document.getElementById('m-q').addEventListener('input', () => {
 });
 ['m-provider', 'm-source', 'm-lane', 'm-privacy', 'm-provider-lane', 'm-sort', 'm-show']
   .forEach(id => document.getElementById(id).addEventListener('change', loadModels));
+// Choosing a provider in the re-discover picker changes nothing this page lists, so it redraws
+// the button's label and reads nothing — the catalogue is the same either way.
+document.getElementById('m-rediscover').addEventListener('change', syncRediscover);
 document.getElementById('m-group').addEventListener('change', loadModels);
 document.getElementById('m-modality-chips').addEventListener('click', event => {
   const button = event.target.closest('button[data-modality]');
@@ -2219,8 +2323,15 @@ function providerCard(p) {
         <div class="card-badges">${badges.join(' ')}</div>
       </div>
       <div class="card-actions">
+        <!-- **On the row, not behind Configure.** Re-discovering one provider is the common
+             case — the owner's 2026-10-19 note was *"i only needed magpie refresh"* — and a
+             control you must expand a card to find is one the page appears not to have. The
+             message span travels with it, because toast() writes there and a button whose
+             only feedback is inside a collapsed body reports nothing. -->
+        <button class="sm" onclick="refreshProvider('${esc(p.id)}', this)">Re-discover</button>
         <button class="sm" onclick="toggleOpen('${esc(p.id)}')">${open ? 'Hide' : 'Configure'}</button>
         <button class="sm" onclick="toggleEnabled('${esc(p.id)}', ${!p.enabled})">${p.enabled ? 'Disable' : 'Enable'}</button>
+        <span class="msg" id="msg-${esc(p.id)}"></span>
       </div>
     </div>
     ${p.description ? `<div class="desc">${esc(p.description)}</div>` : ''}
@@ -2229,9 +2340,7 @@ function providerCard(p) {
       <div class="fields">${fields || '<div class="hint">This provider needs no credentials.</div>'}</div>
       <div class="actions">
         <button class="primary sm" onclick="saveCreds('${esc(p.id)}', this)">Save &amp; Discover Models</button>
-        <button class="sm" onclick="refreshProvider('${esc(p.id)}', this)">Re-discover</button>
         <button class="sm" onclick="clearCreds('${esc(p.id)}', this)">Clear Key</button>
-        <span class="msg" id="msg-${esc(p.id)}"></span>
       </div>
       <div class="actions" style="margin-top:16px">
         <span class="name">Models</span>
@@ -2321,8 +2430,10 @@ async function saveCreds(id, btn) {
     });
     state.models[id] = await api(`/providers/${encodeURIComponent(id)}/models`);
     const n = state.models[id].models.length;
-    toast(id, state.models[id].last_error ? 'saved, but discovery failed: ' + state.models[id].last_error : `saved · ${n} models found`, !state.models[id].last_error);
     await loadProviders(); await loadStatus();
+    // Same ordering as `refreshProvider`: the redraw above destroys the message span, so the
+    // result is written after it or it is never read.
+    toast(id, state.models[id].last_error ? 'saved, but discovery failed: ' + state.models[id].last_error : `saved · ${n} models found`, !state.models[id].last_error);
   } catch (e) { toast(id, e.message, false); }
   finally { btn.disabled = false; }
 }
@@ -2332,8 +2443,11 @@ async function refreshProvider(id, btn) {
   try {
     const r = await api(`/providers/${encodeURIComponent(id)}/refresh`, { method: 'POST' });
     state.models[id] = await api(`/providers/${encodeURIComponent(id)}/models`);
-    toast(id, r.error ? 'failed: ' + r.error : `${r.discovered} models`, !r.error);
     await loadProviders(); await loadStatus();
+    // **After the reload, never before it.** `loadProviders` redraws every card by writing
+    // `innerHTML`, which destroys the message span `toast()` writes into — so a result written
+    // first was wiped by the redraw it triggered and the button appeared to report nothing.
+    toast(id, r.error ? 'failed: ' + r.error : `${r.discovered} models found`, !r.error);
   } catch (e) { toast(id, e.message, false); }
   finally { btn.disabled = false; }
 }
@@ -2760,11 +2874,19 @@ async function importEvidence(input) {
   } catch (e) { panel.textContent = 'Import failed: ' + e.message; }
 }
 
+// The whole-fleet control, and it says so on the button — the owner could not tell this one from
+// the per-provider Re-discover beside it. `rediscoverAll` is the Models page's own summary, so
+// the two pages cannot word the same run differently.
 async function refreshAll(btn) {
-  btn.disabled = true; btn.textContent = 'Refreshing…';
-  try { await api('/refresh-all', { method: 'POST' }); await loadProviders(); await loadStatus(); }
-  catch (e) { alert(e.message); }
-  finally { btn.disabled = false; btn.textContent = 'Refresh All Models'; }
+  btn.disabled = true; btn.textContent = 'Re-discovering…';
+  try {
+    const said = await rediscoverAll();
+    await loadProviders(); await loadStatus();
+    // **After the reload**, which clears this line as part of a fresh read.
+    const message = document.getElementById('providers-msg');
+    if (message) { message.textContent = said; message.className = 'msg ok'; }
+  } catch (e) { alert(e.message); }
+  finally { btn.disabled = false; btn.textContent = 'Re-discover all providers'; }
 }
 
 // ---------------------------------------------------------------------------
