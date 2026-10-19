@@ -18,7 +18,13 @@ from typing import Any
 import httpx
 
 from ..providers.definitions import default_temperature_only, learn_default_temperature_only
-from .base import BackendError, BackendRequest, BackendResult, quota_hints
+from .base import (
+    BackendError,
+    BackendRequest,
+    BackendResult,
+    caller_max_output_tokens,
+    quota_hints,
+)
 from .openai_compat import ANTHROPIC_STOP_MAP, CHAT_TIMEOUT, _temperature_refused
 
 #: `max_tokens` is **required** by the Messages API, so a number has to be sent
@@ -32,7 +38,22 @@ from .openai_compat import ANTHROPIC_STOP_MAP, CHAT_TIMEOUT, _temperature_refuse
 #: published cap. `catalog._output_default` still publishes it as ours on an
 #: Anthropic row nothing else states a figure for (`max_output_tokens_source:
 #: "gateway"`), so even then the fallback and the row agree.
-DEFAULT_MAX_TOKENS = 4096
+#:
+#: **128,000 since 2026-10-19 (the owner): "4096 is too small. all models write more
+#: than that. the minimum is at least 128K tokens."** The number is deliberately the
+#: largest published output allowance in the fleet (Anthropic's own Haiku 5.5), so a
+#: row nothing states a figure for is not described more narrowly than any model the
+#: catalogue knows. Two consequences, both handled rather than assumed:
+#:
+#:   * A model whose real ceiling is lower answers `400 "max_tokens: 128000 > N,
+#:     which is the maximum allowed number of output tokens"`. That refusal is
+#:     definite — nothing ran, nothing was billed — so when the number was **ours**
+#:     (not the caller's) the call is re-sent once with the `N` the provider named
+#:     (`_max_tokens_too_large`). A caller's own number is never rewritten: it asked
+#:     for that figure, and the 400 says why it cannot have it.
+#:   * Nothing is invented from the refusal. The retry uses the provider's own
+#:     sentence, and the row keeps publishing the number this gateway chose.
+DEFAULT_MAX_TOKENS = 128_000
 ANTHROPIC_VERSION = "2023-06-01"
 
 
@@ -47,6 +68,47 @@ _UNSUPPORTED_KEYWORDS = frozenset({
     "exclusiveMaximum", "multipleOf", "minItems", "maxItems", "uniqueItems",
     "minProperties", "maxProperties", "patternProperties",
 })
+
+
+def _max_tokens_too_large(response: httpx.Response) -> int | None:
+    """The output ceiling the provider itself named in a `400`, or `None`.
+
+    A definite refusal — nothing ran, nothing was billed — so re-sending once with the number
+    the provider stated is safe, exactly as `_temperature_refused` re-sends without a knob the
+    model refuses. It exists because the gateway has to state a `max_tokens` on this lane, and
+    a model whose real ceiling is lower than the figure it chose (the published cap, or
+    `DEFAULT_MAX_TOKENS`) would otherwise be unusable for a caller that asked for nothing.
+
+    Two sentences are read, because two shapes are measured. Anthropic's own:
+
+        max_tokens: 128000 > 8192, which is the maximum allowed number of output tokens
+        for claude-3-5-haiku-20241022
+
+    and the OpenAI-compatible spelling a proxied lane answers with:
+
+        Invalid 'max_tokens': integer above maximum value. Expected a value <= 16384,
+        but got 128000 instead.
+
+    Anything else is `None` and the 400 stays the caller-visible failure it was: a message
+    this function cannot read is not a licence to guess a number.
+    """
+    if response.status_code != 400:
+        return None
+    text = response.text
+    if "max_tokens" not in text:
+        return None
+    patterns = (
+        r"max_tokens:\s*\d+\s*>\s*(\d+)",          # Anthropic: "128000 > 8192, which is the maximum"
+        r"value\s*<=\s*(\d+)",                      # OpenAI-compatible: "Expected a value <= 16384"
+    )
+    for pattern in patterns:
+        found = re.search(pattern, text, re.IGNORECASE)
+        if found:
+            stated = int(found.group(1))
+            # A ceiling of zero, or one that is not smaller than what was sent, is not a
+            # usable correction: it would loop or raise. The 400 stands instead.
+            return stated if stated > 0 else None
+    return None
 
 
 def _requested_schema(params: dict[str, Any]) -> dict[str, Any] | None:
@@ -204,17 +266,21 @@ class AnthropicBackend:
 
         system, messages = _split_system(_messages(request.params))
 
+        # Whether the number on the wire is the CALLER's. It decides one thing only: a 400
+        # saying the figure is above the model's own maximum may be corrected from the
+        # provider's sentence when the number was ours, and never when it was theirs.
+        asked = caller_max_output_tokens(request.params)
         body: dict[str, Any] = {
             "model": request.model_id,
             # **The caller's number, then the model's published one, then ours.** The caller
-            # always wins. Absent a caller value the allowance is the one this gateway publishes
-            # for the model (`catalog.published_output_cap` — Anthropic states 128,000 for Haiku
+            # always wins, under every spelling it may use (`base.caller_max_output_tokens`:
+            # `max_completion_tokens` is OpenAI's current name for the field and was being
+            # dropped here, which sent this adapter's private 4,096 in the caller's place).
+            # Absent a caller value the allowance is the one this gateway publishes for the
+            # model (`catalog.published_output_cap` — Anthropic states 128,000 for Haiku
             # 5.5), so a long answer is not cut at 4,096 while the catalogue promises 128,000.
             # The constant is only the last resort: no published cap, no caller value.
-            "max_tokens": request.params.get("max_output_tokens")
-            or request.params.get("max_tokens")
-            or request.max_output_tokens
-            or DEFAULT_MAX_TOKENS,
+            "max_tokens": asked or request.max_output_tokens or DEFAULT_MAX_TOKENS,
             "messages": messages or [{"role": "user", "content": ""}],
         }
         if system:
@@ -266,6 +332,19 @@ class AnthropicBackend:
             dropped.append("temperature")
             learn_default_temperature_only(request.provider_id, request.model_id)
             response = send()
+
+        # **A number of ours the model refuses is corrected from the model's own sentence.**
+        # `asked is None` is the whole guard: the figure on the wire came from the published
+        # cap or from `DEFAULT_MAX_TOKENS`, so lowering it to what the provider states gives
+        # the caller everything the model can actually produce. A caller's own number is never
+        # rewritten — it asked for that figure, and the 400 below says why it cannot have it.
+        lowered_to: int | None = None
+        if asked is None:
+            stated = _max_tokens_too_large(response)
+            if stated is not None and stated < int(body["max_tokens"]):
+                body["max_tokens"] = stated
+                lowered_to = stated
+                response = send()
 
         if response.status_code >= 400:
             status = response.status_code
@@ -339,4 +418,9 @@ class AnthropicBackend:
             # Recorded, as `openai_compat._chat` does, so nobody reads the output as if
             # the caller's temperature had been honoured.
             result_payload["params_dropped"] = dropped
+        if lowered_to is not None:
+            # A reduction is never quiet: the job records that the answer was asked for at
+            # the model's own maximum rather than the figure this gateway chose, and which
+            # number that turned out to be.
+            result_payload["max_tokens_lowered_to"] = lowered_to
         return BackendResult(text=text, payload=result_payload)

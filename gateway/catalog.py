@@ -728,8 +728,16 @@ def _output_default(definition: ProviderDefinition) -> int | None:
     Every other chat lane treats it as optional, so an absent value stays `null`
     and no number is invented. Anthropic's adapter has to send one, so the number
     it will send is **published as ours** (`max_output_tokens_source: "gateway"`)
-    instead of the row saying `null` while the request carries 4096 — the same rule
-    the TTS character limit follows.
+    instead of the row saying `null` while the request carries a figure of ours —
+    the same rule the TTS character limit follows.
+
+    The figure is `anthropic.DEFAULT_MAX_TOKENS` (**128,000** since the owner's
+    2026-10-19 decision: "4096 is too small. all models write more than that. the
+    minimum is at least 128K tokens"), so an Anthropic row nothing else states a
+    figure for is not described more narrowly than any model the catalogue knows.
+    A model that publishes its own smaller ceiling is unaffected: a published value
+    always wins over this fallback, and a `400` naming the real maximum is corrected
+    from the provider's own sentence (`anthropic._max_tokens_too_large`).
 
     One copy: the adapter imports this constant too.
     """

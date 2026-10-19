@@ -269,6 +269,44 @@ class BackendRequest:
     max_output_tokens: int | None = None
 
 
+#: The names a caller may use for "how long may the answer be". `max_output_tokens` is this
+#: gateway's own published control, `max_completion_tokens` is OpenAI's current name for the
+#: field and the one the Hub's lane contract publishes, and `max_tokens` is the legacy name
+#: OpenAI's own API still accepts. Ordered so the gateway's own control is read first when a
+#: caller somehow sends two.
+_MAX_OUTPUT_SPELLINGS = ("max_output_tokens", "max_completion_tokens", "max_tokens")
+
+
+def caller_max_output_tokens(params: Any) -> Any:
+    """The answer length the **caller** asked for, under every spelling — one chooser.
+
+    Three lanes build a chat body from the caller's `params` and each read its own subset of
+    the names above, so the same request was answered differently depending on which lane
+    served it: the OpenAI-compatible lane read two of the three and the Anthropic lane two,
+    while the Studio Hub lane read all three. A caller that used `max_completion_tokens` —
+    the spelling OpenAI's current API and the Hub's own lane contract use — had its allowance
+    silently dropped, and on Anthropic that meant the adapter's private 4,096 was sent in its
+    place. Read here, once, so a lane cannot drift again.
+
+    **Falsy is absent**, deliberately, which is the opposite of the rule for a *published*
+    limit (`catalog._stated` keeps a stated `0` because a provider saying zero is a claim).
+    A caller's `0` is not a claim about the model: it is a number no provider accepts, and
+    sending it would turn a harmless typo into a `400`. Absent and zero both mean "the caller
+    asked for nothing", which is the question this answers.
+
+    The value travels **verbatim**, exactly as each lane forwarded it before: a malformed one
+    is the provider's to refuse, and coercing it here would turn one wrong number into a
+    different wrong number that the caller never asked for.
+    """
+    if not isinstance(params, dict):
+        return None
+    for spelling in _MAX_OUTPUT_SPELLINGS:
+        value = params.get(spelling)
+        if value:
+            return value
+    return None
+
+
 @runtime_checkable
 class Backend(Protocol):
     def generate(self, request: BackendRequest) -> BackendResult: ...

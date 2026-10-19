@@ -310,6 +310,100 @@ class PublishedOutputLimitTests(unittest.TestCase):
             backend.generate(request)
         self.assertEqual(9000, bodies[1]["max_tokens"])
 
+    def test_the_last_resort_allowance_is_the_owners_128k(self) -> None:
+        """The owner's decision, 2026-10-19: *"4096 is too small. all models write more than
+        that. the minimum is at least 128K tokens."*
+
+        Pinned as a number rather than read from the constant, deliberately: the constant is
+        what this test is about, so reading it back would assert only that nobody edited the
+        file. The published row is checked beside it, because the two must agree — the row
+        says what the request will carry.
+        """
+        self.assertEqual(128_000, anthropic.DEFAULT_MAX_TOKENS)
+        row = self._discovered_row({"id": "claude-haiku-5-5"})  # the models list states nothing
+        self.assertEqual(128_000, row["max_output_tokens"])
+        self.assertEqual("gateway", row["max_output_tokens_source"])
+
+    def _sequence(self, *answers: httpx.Response):
+        """A `fake_post` that answers each call in turn, and the bodies it saw.
+
+        A **copy** per call: the adapter reuses one `body` dict and edits it between sends
+        (`max_tokens` on the correction path, `temperature` on the refusal path), so holding
+        the reference would rewrite history and make the first attempt unobservable.
+        """
+        bodies: list[dict] = []
+
+        def fake_post(url, *, headers, json, timeout):
+            bodies.append(dict(json))
+            return answers[min(len(bodies) - 1, len(answers) - 1)]
+
+        return bodies, fake_post
+
+    def test_a_number_of_ours_the_model_refuses_is_corrected_from_its_own_sentence(self) -> None:
+        """A definite `400` naming the model's real maximum is corrected, once.
+
+        The last-resort allowance is now the largest figure any model in the fleet publishes,
+        so a model whose own ceiling is lower answers `max_tokens: 128000 > 8192, which is the
+        maximum allowed number of output tokens`. Nothing ran and nothing was billed, so the
+        call is re-sent with the number the provider stated — the alternative is a model that
+        is unusable for every caller that asks for nothing, which is the state this whole
+        section exists to remove. Nothing is invented: the number comes from the refusal.
+        """
+        refusal = httpx.Response(400, json={"type": "error", "error": {
+            "type": "invalid_request_error",
+            "message": "max_tokens: 128000 > 8192, which is the maximum allowed number of "
+                       "output tokens for claude-3-5-haiku-20241022"}})
+        bodies, fake_post = self._sequence(refusal, httpx.Response(200, json={
+            "model": "claude-3-5-haiku-20241022", "stop_reason": "end_turn",
+            "content": [{"type": "text", "text": "ok"}],
+            "usage": {"input_tokens": 10, "output_tokens": 5}}))
+        with patch.object(anthropic.httpx, "post", fake_post):
+            result = anthropic.AnthropicBackend().generate(_request())
+        self.assertEqual([128_000, 8192], [body["max_tokens"] for body in bodies],
+                         "asked at ours, then re-sent at the model's own maximum")
+        self.assertEqual(8192, result.payload["max_tokens_lowered_to"],
+                         "a reduction is never quiet")
+
+    def test_a_callers_own_number_is_never_rewritten_by_the_refusal(self) -> None:
+        """The caller's figure is its own to be refused.
+
+        Quietly answering with 8,192 when the caller asked for 128,000 is the substitution
+        this repo refuses everywhere else: the caller asked for a number, and the `400` says
+        why it cannot have it. Only a figure this gateway chose may be corrected.
+        """
+        refusal = httpx.Response(400, json={"type": "error", "error": {
+            "type": "invalid_request_error",
+            "message": "max_tokens: 128000 > 8192, which is the maximum allowed number of "
+                       "output tokens for claude-3-5-haiku-20241022"}})
+        bodies, fake_post = self._sequence(refusal, httpx.Response(200, json={}))
+        with patch.object(anthropic.httpx, "post", fake_post):
+            with self.assertRaises(BackendError) as caught:
+                anthropic.AnthropicBackend().generate(_request(max_output_tokens=128_000))
+        self.assertEqual(1, len(bodies), "no second request")
+        self.assertEqual(400, caught.exception.status)
+
+    def test_an_unreadable_400_is_not_a_licence_to_guess_a_number(self) -> None:
+        """A refusal this gateway cannot read stays the failure it was."""
+        for message in ("max_tokens: something went wrong",
+                        "Invalid 'max_tokens': must be greater than 0"):
+            bodies, fake_post = self._sequence(
+                httpx.Response(400, json={"error": {"message": message}}), httpx.Response(200, json={}))
+            with patch.object(anthropic.httpx, "post", fake_post):
+                with self.assertRaises(BackendError):
+                    anthropic.AnthropicBackend().generate(_request())
+            self.assertEqual(1, len(bodies), message)
+
+    def test_the_openai_compatible_spelling_of_the_same_refusal_is_read(self) -> None:
+        """A proxied Anthropic lane answers with the other sentence for the same fact."""
+        refusal = httpx.Response(400, json={"error": {"message": (
+            "Invalid 'max_tokens': integer above maximum value. Expected a value <= 16384, "
+            "but got 128000 instead.")}})
+        bodies, fake_post = self._sequence(refusal, httpx.Response(200, json={
+            "stop_reason": "end_turn", "content": [{"type": "text", "text": "ok"}]}))
+        with patch.object(anthropic.httpx, "post", fake_post):
+            anthropic.AnthropicBackend().generate(_request())
+        self.assertEqual([128_000, 16_384], [body["max_tokens"] for body in bodies])
+
 
 if __name__ == "__main__":
     unittest.main()
