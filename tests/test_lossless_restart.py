@@ -95,7 +95,15 @@ class _Case(unittest.TestCase):
         return worker
 
     def restart(self) -> JobStore:
-        """The next start's recovery sweep, on the same database."""
+        """The next start's recovery sweep, on the same database.
+
+        The store the old process held is closed first, because that is what a restart *is*: the
+        process that owned the queue is gone, so the next starter is the one that sweeps
+        (`JobStore._claim_queue`). Leaving it open modelled two gateways on one database — the bug
+        this branch fixes — and the sweep now refuses, correctly, to touch a queue another live
+        process owns.
+        """
+        self.store.close()
         reopened = JobStore(self.path)
         self.addCleanup(reopened.close)
         return reopened

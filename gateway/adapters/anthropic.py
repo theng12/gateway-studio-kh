@@ -22,15 +22,16 @@ from .base import BackendError, BackendRequest, BackendResult, quota_hints
 from .openai_compat import ANTHROPIC_STOP_MAP, CHAT_TIMEOUT, _temperature_refused
 
 #: `max_tokens` is **required** by the Messages API, so a number has to be sent
-#: whether or not the caller supplied one. The value is **published as ours**:
-#: `catalog._chat_row` reads this constant and puts it on the Anthropic rows with
-#: `max_output_tokens_source: "gateway"`, so the row and the request cannot
-#: describe different allowances — which they did, as `null` beside a silent 4096.
+#: whether or not the caller supplied one. The caller's number wins; otherwise the
+#: request carries the allowance this gateway **publishes** for the model
+#: (`catalog.published_output_cap`, filled in where the request is built), so the
+#: row and the request cannot describe different allowances — which they did, as a
+#: published 128,000 beside a silent 4,096.
 #:
-#: ponytail: one number for every Anthropic model, ours. Ceiling — a model whose
-#: real ceiling is lower is over-described and a longer answer is truncated at
-#: 4096 with no signal. Upgrade path — the owner's `model-limits.local.json`
-#: already flows through `_limit_with_source` ahead of this fallback, per model.
+#: This constant is therefore the **last resort only**: no caller value and no
+#: published cap. `catalog._output_default` still publishes it as ours on an
+#: Anthropic row nothing else states a figure for (`max_output_tokens_source:
+#: "gateway"`), so even then the fallback and the row agree.
 DEFAULT_MAX_TOKENS = 4096
 ANTHROPIC_VERSION = "2023-06-01"
 
@@ -205,8 +206,14 @@ class AnthropicBackend:
 
         body: dict[str, Any] = {
             "model": request.model_id,
+            # **The caller's number, then the model's published one, then ours.** The caller
+            # always wins. Absent a caller value the allowance is the one this gateway publishes
+            # for the model (`catalog.published_output_cap` — Anthropic states 128,000 for Haiku
+            # 5.5), so a long answer is not cut at 4,096 while the catalogue promises 128,000.
+            # The constant is only the last resort: no published cap, no caller value.
             "max_tokens": request.params.get("max_output_tokens")
             or request.params.get("max_tokens")
+            or request.max_output_tokens
             or DEFAULT_MAX_TOKENS,
             "messages": messages or [{"role": "user", "content": ""}],
         }

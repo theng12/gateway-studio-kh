@@ -14,6 +14,16 @@ from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from _isolation import sandbox_env  # noqa: E402
+
+# **Before the first `gateway` import.** Importing the package runs `gateway/runtime.py`, which
+# opens the job store at `GATEWAY_DB`; with nothing set that is the owner's live database, and
+# `JobStore.__init__` used to hold every job his serving gateway had in flight (measured
+# 2026-10-19, from this file among others). The store now refuses to sweep while another process
+# owns the queue, but a test must not open his database at all.
+_SANDBOX = sandbox_env("gateway-fleet-cancel-")
 
 from gateway import admin, fleet  # noqa: E402
 

@@ -255,6 +255,61 @@ class PublishedOutputLimitTests(unittest.TestCase):
                                     "max_input_tokens": 1000000})
         self.assertIsNone(row["context_window_tokens"])
 
+    def test_an_omitted_max_tokens_sends_the_published_cap_not_the_private_default(self) -> None:
+        """**The request carries the number the catalogue promised the caller.**
+
+        Measured live 2026-10-19: `story_idea_campaign` — 257 kB of prompt asking for 75 ideas —
+        through `pool::writing-haiku-gemini-luna-ordered` answered `stop_reason: max_tokens` on
+        every Anthropic attempt, because the caller sent no max and the member got the adapter's
+        private 4,096, while the row above it published Haiku 5.5's own 128,000. A pool member's
+        request now carries its own published cap; the caller's number still wins, and 4,096 is
+        only the last resort when nothing at all is published.
+        """
+        from gateway.adapters.pool import PoolBackend
+        from gateway import pools
+        from gateway.providers.definitions import ProviderDefinition
+
+        definition = ProviderDefinition(
+            id="anthropic-direct", display_name="Anthropic", category="language",
+            kind=KIND_ANTHROPIC, base_url="http://mock", modalities=("chat",),
+            discovery="static",
+        )
+        model = {"model_id": "claude-haiku-5-5", "raw": {"max_completion_tokens": 128000}}
+        self.assertEqual(
+            128000, catalog.published_output_cap(definition, "claude-haiku-5-5", model),
+            "the chooser reads the provider's own figure, as the published row does",
+        )
+        self.assertEqual(
+            anthropic.DEFAULT_MAX_TOKENS,
+            catalog.published_output_cap(definition, "nothing-stated", {"raw": {}}),
+            "and falls back to the number it publishes as ours",
+        )
+
+        pools.create("writing", ["anthropic-direct::claude-haiku-5-5"])
+        backend = PoolBackend()
+        backend.attach(lambda *_: (definition, model),
+                       lambda _definition: anthropic.AnthropicBackend())
+        bodies: list[dict] = []
+
+        def fake_post(url, *, headers, json, timeout):
+            bodies.append(json)
+            return _claude("ok")
+
+        params = {"messages": [{"role": "user", "content": "75 ideas, please"}]}
+        request = BackendRequest(
+            provider_id="pool", model_id="writing", modality="chat",
+            params=params, values={}, base_url="",
+        )
+        with patch.object(anthropic.httpx, "post", fake_post):
+            backend.generate(request)
+        self.assertEqual(128000, bodies[0]["max_tokens"],
+                         "the member's published cap, not the adapter's private default")
+
+        params["max_output_tokens"] = 9000  # the caller's own number still wins
+        with patch.object(anthropic.httpx, "post", fake_post):
+            backend.generate(request)
+        self.assertEqual(9000, bodies[1]["max_tokens"])
+
 
 if __name__ == "__main__":
     unittest.main()

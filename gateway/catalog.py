@@ -733,7 +733,7 @@ def _output_default(definition: ProviderDefinition) -> int | None:
 
     One copy: the adapter imports this constant too.
     """
-    if definition.kind == KIND_ANTHROPIC:
+    if getattr(definition, "kind", None) == KIND_ANTHROPIC:
         from .adapters.anthropic import DEFAULT_MAX_TOKENS
 
         return DEFAULT_MAX_TOKENS
@@ -1244,6 +1244,80 @@ def _hub_stated_limit(raw: dict[str, Any], field: str) -> tuple[int | None, str 
     return int(value), source, kind
 
 
+def _stated(value: Any) -> int | None:
+    """The number the provider published, including a published `0`.
+
+    This deliberately does **not** filter out zero. `0` here is a claim — a
+    model that accepts no context — and collapsing it to `None` made the
+    curated file's figure publish as though the provider had stated it, which
+    is the attribution rule this whole section is about. A missing or
+    non-numeric value is the only thing that means "it did not say".
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return int(value)
+
+
+def _published_output_limit(
+    definition: ProviderDefinition, model_id: str, model: dict[str, Any]
+) -> tuple[Any, str, str | None]:
+    """The output allowance this gateway publishes for a chat model — **one chooser**.
+
+    Providers spell the same figure differently: OpenRouter uses
+    `top_provider.max_completion_tokens`, Google `outputTokenLimit`, Anthropic
+    `max_completion_tokens`. Read every spelling, then let a Hub's own sentence
+    win (it states where its number came from), then the owner's curated file
+    fill a gap, then the gateway's fallback answer. Returns the value, whose
+    number it is, and the Hub's sentence when it gave one.
+
+    **The generation path reads this too** (`published_output_cap`), because a
+    separate "what should I send?" reader disagreed with the chooser the moment
+    either gained a step: Anthropic published the model's own 128,000 while the
+    adapter sent a silent 4,096 whenever the caller asked for nothing.
+    """
+    raw = model.get("raw") or {}
+    top = raw.get("top_provider")
+    top = top if isinstance(top, dict) else {}
+    completion = _first_stated(top, ("max_completion_tokens",))
+    if completion is None:
+        completion = _first_stated(
+            raw, ("max_completion_tokens", "outputTokenLimit", "output_token_limit")
+        )
+    hub_output, hub_output_detail, hub_output_kind = _hub_stated_limit(
+        raw, "max_output_tokens")
+    if hub_output is not None:
+        completion = hub_output
+    value, source = _limit_with_source(
+        "max_output_tokens", _stated(completion), _output_default(definition),
+        definition.id, model_id,
+    )
+    # **The Hub's own token wins when the Hub supplied the value.** `_limit_with_source` knows
+    # three classes — provider, curated, gateway — and a value relayed from a Hub is none of
+    # them, so it answered `provider`: a worker's fallback published to Story Studio as a number
+    # the model stated. When the Hub names the kind, that is the honest answer and this gateway
+    # has nothing to add to it.
+    if hub_output is not None and hub_output_kind:
+        source = hub_output_kind
+    return value, source, hub_output_detail
+
+
+def published_output_cap(
+    definition: ProviderDefinition | None, model_id: str, model: dict[str, Any] | None
+) -> int | None:
+    """What to send as `max_tokens` when the caller does not ask for one.
+
+    `None` means this gateway has no number to offer, and a lane that treats the
+    field as optional keeps sending nothing rather than inventing a cap. Only a
+    lane that **must** state one (Anthropic) falls back to its own constant.
+    """
+    if definition is None or not model:
+        return None
+    value, _source, _detail = _published_output_limit(definition, model_id, model)
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        return None
+    return value
+
+
 def _chat_row(model_id: str, definition: ProviderDefinition, model: dict[str, Any]) -> dict[str, Any]:
     raw = model.get("raw") or {}
     # Providers spell the same two figures differently: OpenRouter uses
@@ -1253,13 +1327,6 @@ def _chat_row(model_id: str, definition: ProviderDefinition, model: dict[str, An
     context = _first_stated(
         raw, ("context_length", "context_window", "inputTokenLimit", "input_token_limit")
     )
-    top = raw.get("top_provider")
-    top = top if isinstance(top, dict) else {}
-    completion = _first_stated(top, ("max_completion_tokens",))
-    if completion is None:
-        completion = _first_stated(
-            raw, ("max_completion_tokens", "outputTokenLimit", "output_token_limit")
-        )
 
     # Unknown is published as `null`, never as a number or a `false`.
     #
@@ -1274,18 +1341,6 @@ def _chat_row(model_id: str, definition: ProviderDefinition, model: dict[str, An
     # out the answer" share a value. Its check is `supports_vision === true`, and
     # its own message for a missing value reads "does not publish image-input
     # support" — so `null` is what it already expects for "unstated".
-    def _stated(value: Any) -> int | None:
-        """The number the provider published, including a published `0`.
-
-        This deliberately does **not** filter out zero. `0` here is a claim — a
-        model that accepts no context — and collapsing it to `None` made the
-        curated file's figure publish as though the provider had stated it, which
-        is the attribution rule this whole section is about. A missing or
-        non-numeric value is the only thing that means "it did not say".
-        """
-        if isinstance(value, bool) or not isinstance(value, (int, float)):
-            return None
-        return int(value)
 
     # The withdrawal date, under every spelling a provider uses for it. A
     # `None` here means nobody stated one — never "this model does not retire".
@@ -1425,26 +1480,13 @@ def _chat_row(model_id: str, definition: ProviderDefinition, model: dict[str, An
         raw, "context_window_tokens")
     if hub_context is not None:
         context = hub_context
-    hub_output, hub_output_detail, hub_output_kind = _hub_stated_limit(
-        raw, "max_output_tokens")
-    if hub_output is not None:
-        completion = hub_output
     context_window, context_source = _limit_with_source(
         "context_window_tokens", _stated(context), None, definition.id, model_id
     )
-    max_output, output_source = _limit_with_source(
-        "max_output_tokens", _stated(completion), _output_default(definition),
-        definition.id, model_id,
-    )
-    # **The Hub's own token wins when the Hub supplied the value.** `_limit_with_source` knows
-    # three classes — provider, curated, gateway — and a value relayed from a Hub is none of
-    # them, so it answered `provider`: a worker's fallback published to Story Studio as a number
-    # the model stated. When the Hub names the kind, that is the honest answer and this gateway
-    # has nothing to add to it.
+    max_output, output_source, hub_output_detail = _published_output_limit(
+        definition, model_id, model)
     if hub_context is not None and hub_context_kind:
         context_source = hub_context_kind
-    if hub_output is not None and hub_output_kind:
-        output_source = hub_output_kind
     return {
         "queue_class": "direct",
         "context_window_tokens": context_window,
