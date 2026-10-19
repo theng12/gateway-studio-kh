@@ -14,6 +14,20 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.189 — 2026-10-19
+
+### A held job now ends as a known answer
+
+When the Gateway could not tell whether an attempt had been accepted, it held the job rather than guess — and some of those holds could never be settled. A pool's hold had nowhere to go: a pool names no upstream id of its own, so the Gateway closed it locally with a sentence admitting that the member which ran the attempt was never asked. A pool can now discard and reconcile at that member, named from the attempt's own record. A free member going quiet no longer makes the whole job ambiguous — only a paid send that may have been accepted still stops the walk. And an answer that arrives after a hold was closed is now adopted as the job's answer, instead of being filed beside a `failed` verdict where Story's lookup by job id never saw it. A hold closed from the provider's own record keeps its verdict: that close is a proved answer, not a wait that ended.
+
+### A Mac installing an update is left alone
+
+A Mac that answers "I am installing an update" was still offered the same job again and again — one job was sent to the same installing Mac 124 times in 80 minutes before failing with a sentence naming that one machine 124 times. A location that says it is updating now rests for fifteen minutes and takes no new work, through the same rule that honours your own pause. A Mac that is merely busy is a moment, not a state, and stays a candidate.
+
+### The queue wait ceiling is your setting
+
+How long a job may wait for a Mac to come free was a private three-hour constant inside the Studio Hub lane, while the editable budget beside it lived somewhere else — so you could edit your number and be overruled in silence. Measured: 146 jobs failed with the same "No Mac was free for 3 hours" sentence in three days, and 139 of them were never dispatched at all. There is now one number, read from the same setting you edit, and nothing changes until you edit it.
+
 ## 0.2.188 — 2026-10-19
 
 ### Your answer length is honoured wherever you ask for it
