@@ -339,7 +339,7 @@ Nothing pruned them before `gateway/retention.py`, so `data/artifacts/` grew
 unbounded.
 
 Two limits, editable via the API (`/admin/api/settings/retention`,
-`/admin/api/artifacts/prune`) — **3 days** or **8 GB**, whichever comes
+`/admin/api/artifacts/prune`) — **3 days** or **10 GB**, whichever comes
 first. A **pin** (`/admin/api/artifacts/keep`) outranks both:
 
 - **Age** is the norm: three days unfetched by Story Studio and it is pruned.
@@ -352,7 +352,7 @@ read, so the newest stay safe by construction, not luck.
 
 **Pruning moves, it does not delete.** A pruned file is moved into
 `DATA_DIR/_trash/`; existing `DATA_DIR/trash/` entries remain recognized. The first
-stage keeps the existing defaults of **3 days / 8 GiB**, plus saved overrides,
+stage keeps the existing defaults of **3 days / 10 GiB**, plus saved overrides,
 pins, a one-hour grace period, and protection for active and recovery-held inputs.
 The second stage moves entries older than **7 days**, or oldest entries as needed
 to keep both runtime trash folders together under **20 GiB**, to macOS Trash. A

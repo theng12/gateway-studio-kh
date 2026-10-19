@@ -205,7 +205,15 @@ def admission() -> dict[str, Any]:
         worker = live_worker
     except Exception:  # noqa: BLE001 - a figure is not worth failing a response over
         worker = None
-    capacity = concurrency.live_capacity(worker=worker)
+    # **The summary the fleet refresher published, not a fresh walk of the fleet.** `/health` is
+    # this record's main reader and the app's 2.5 s probe: computing it here meant every poll
+    # re-summed every location, and — before `fleet.snapshot(allow_stale=True)` stopped waiting
+    # for the fan-out — parked the probe behind a slow controller until the window decided the
+    # gateway was not running. A cold cache (the boot window, before the first fan-out) still
+    # computes it, which is the one moment there is nothing to read.
+    capacity = concurrency.published_capacity()
+    if capacity is None:
+        capacity = concurrency.live_capacity(worker=worker)
     by_modality = dict(capacity["by_modality"])
     published: dict[str, Any] = {
         **ADMISSION,

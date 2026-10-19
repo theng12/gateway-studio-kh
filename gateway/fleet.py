@@ -3570,6 +3570,20 @@ def snapshot(force: bool = False, *, allow_stale: bool = False) -> dict:
         _revalidate_in_background()
         return with_roster(last)
 
+    # **`allow_stale` never waits for the fan-out, and that is the whole of its contract.**
+    # It says "must not block" in as many words, and it did: with nothing cached it fell through
+    # to the serialised branch below and waited on `_refresh_lock` for as long as the slowest
+    # controller — 435 s in the 2026-10-19 incident — and `Worker._provider_budget`,
+    # `_model_supply`, `_background_room`, `concurrency.live_capacity` and therefore `/health`
+    # all read the fleet this way. So a fan-out that had gone slow parked admission and the
+    # health probe behind it. A caller that must not block gets what is there — the last
+    # snapshot made to agree with the roster, or an empty one on a cold cache, which every
+    # reader already handles (a site it cannot see is a site with no published capacity) — and
+    # the fan-out it needs is started behind it.
+    if not force and allow_stale:
+        _revalidate_in_background()
+        return with_roster(last) if last is not None else _empty_snapshot()
+
     # `force`, or nothing cached yet. **Serialised, and deduplicated even for
     # `force`**: `at > now` means a refresh finished *after this caller asked*,
     # so its answer is newer than the question and starting a second sweep would
@@ -3583,6 +3597,23 @@ def snapshot(force: bool = False, *, allow_stale: bool = False) -> dict:
         if cached is not None and at > now:
             return cached
         return _refresh()
+
+
+def _empty_snapshot() -> dict:
+    """`snapshot`'s shape with nothing in it, for a reader that may not wait (see `snapshot`).
+
+    Built from the same three functions the fan-out uses, so a key added there cannot go missing
+    here — a reader of an empty fleet must read "no published capacity", never a `KeyError`.
+    """
+    rows: list[dict] = []
+    return {
+        "locations": rows,
+        "machines": machines_flat(rows),
+        "running": running_flat(rows),
+        "summary": _summarise(rows),
+        "issues": [],
+        "generated_at": 0.0,
+    }
 
 
 def _refresh() -> dict:
@@ -3611,6 +3642,17 @@ def _refresh() -> dict:
         "issues": sorted(_issues(rows) + lite_issues, key=_issue_order),
         "generated_at": time.time(),
     }
+    # **The one place the fleet's live capacity is computed for `/health`.** The probe reads the
+    # summary this publishes rather than walking every location on every poll (see
+    # `concurrency._capacity_cache`); a fan-out that has just run is exactly when the number
+    # changed, and the poller runs on its own timer. Rows are passed in, never re-read: this is
+    # already inside the refresh lock.
+    try:
+        from . import concurrency  # late: it imports this module
+
+        concurrency.remember_capacity(concurrency.live_capacity(rows=rows))
+    except Exception:  # noqa: BLE001 - a figure is never a reason to fail a fan-out
+        pass
     with _cache_lock:
         # **Only if the roster has not changed since this fan-out read it.** The poller's sweep takes
         # as long as the slowest controller; one that started before an add finished after it and

@@ -50,11 +50,15 @@ class CatalogRoutesTests(unittest.TestCase):
             release.wait(30)
             return {}
 
-        # 45 slow requests to a sync route hold all 40 of anyio's worker threads.
+        # 45 slow requests to a sync route hold all 40 of anyio's worker threads. They come from
+        # **two** client addresses, because `api._CLIENT_MAX_IN_FLIGHT` (32) now stops one client
+        # holding the shared pool on its own — that cap working, and this test is about the pool.
         with patch.object(retention, "settings", side_effect=lambda: (slow(), {})[1]), \
-                TestClient(api.app, client=LOCAL) as client:
-            hogs = [threading.Thread(target=client.get, args=("/admin/api/settings/retention",))
-                    for _ in range(45)]
+                TestClient(api.app, client=LOCAL) as client, \
+                TestClient(api.app, client=("127.0.0.2", 54322)) as other:
+            clients = [client] * 23 + [other] * 22
+            hogs = [threading.Thread(target=c.get, args=("/admin/api/settings/retention",))
+                    for c in clients]
             try:
                 for t in hogs:
                     t.start()

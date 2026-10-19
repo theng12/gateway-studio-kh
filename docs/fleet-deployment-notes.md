@@ -261,7 +261,7 @@ The Trash Folder's own limits are now the owner's: `retention.json` carries
 `trash_days` and `trash_cap_bytes` (default **7 days / 20 GB**), editable beside
 the received-artifact limits in Settings, and `/admin/api/settings/retention`
 accepts them. `retention.usage()` reports the saved pair. The artifact limits
-themselves are unchanged (3 days / 8 GB by default), and the one-hour grace,
+themselves are unchanged (3 days / 10 GB by default), and the one-hour grace,
 pins, and protected in-flight inputs still apply.
 
 A Mac's Trash reading now says when it was taken. `startup_control.trash_list`
