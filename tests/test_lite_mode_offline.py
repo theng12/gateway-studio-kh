@@ -33,17 +33,29 @@ NODE_UNREACHABLE = httpx.Response(502, json={"ok": False, "code": "NODE_UNREACHA
                                              "detail": "that Mac did not answer, so its settings did not change"})
 
 
-def _row(seen_at: float | None = None) -> dict:
-    """The Shops controller as its Hub reports it: its own Mac ready, both shop iMacs switched off."""
+def _row(seen_at: float | None = None, *, never_connected: bool | None = None) -> dict:
+    """The Shops controller as its Hub reports it: its own Mac ready, both shop iMacs switched off.
+
+    `never_connected` is the Hub's own flag for a Mac that has not answered **once** since it joined
+    (`fleet_nodes.probe`); `seen_at` then stands at the join time, because that is all the roster
+    ever recorded.
+    """
     seen_at = time.time() - 6 * 3600 if seen_at is None else seen_at
     own = {"machine": "local", "reachable": True, "health": "up",
            "workstation": {"enabled": False, "state": "off"}}
     shops = [{"machine": mid, "reachable": False, "health": "unreachable"} for mid in SHOP]
+    nodes = []
+    for index, mid in enumerate(SHOP):
+        node = {"id": mid, "name": mid, "state": "unreachable", "reason": "unreachable",
+                "detail": "could not reach the node (unreachable)", "last_seen_at": seen_at,
+                "address": f"http://100.64.0.{index + 9}:47873"}
+        if never_connected is not None:
+            node["never_connected"] = never_connected
+        nodes.append(node)
     return {
         "id": "shops", "label": "Shops", "local": False, "reachable": True, "url": "http://100.64.0.9:47873",
         "machines": [own, *shops],
-        "nodes": [{"id": mid, "name": mid, "state": "unreachable", "reason": "unreachable",
-                   "detail": "could not reach the node (unreachable)", "last_seen_at": seen_at} for mid in SHOP],
+        "nodes": nodes,
         "activity": {"machines": [{"machine": "local", "state": "ready"},
                                   *({"machine": mid, "state": "offline"} for mid in SHOP)], "pulse": {}},
         "workers": [{"id": f"{mid}-{studio}", "machine": mid, "modality": studio, "online": False}
@@ -117,6 +129,40 @@ class GatewayRuleTests(_Case):
         self.assertEqual(issues[0]["action"], "Check that Mac is switched on and awake")
         self.assertEqual(fleet._summarise([row])["machines_offline"], 2)
         self.assertFalse(any(m["lite_off"] for m in self.flat(row).values()))
+
+    def test_a_lite_mode_mac_that_never_answered_is_named_not_folded_into_the_expected_off(self) -> None:
+        """The silence owed to a switched-off Lite Mode Mac must not cover a Mac that never worked.
+
+        Both read `offline`, and for a Lite Mode Mac the owner asked to hear nothing about it - so a
+        Mac that has not answered **once** since it joined (owner report 2026-10-20, the Shops office
+        iMac) went unnamed for 51 hours. The Hub already publishes `never_connected` for exactly this
+        (`fleet_nodes.probe`, and its own app draws it as "never connected since it joined"); the
+        Gateway read that field into nothing.
+        """
+        self.both_known_on()
+        row = _row(never_connected=True)
+        self.assertEqual(self.codes(row), [("warning", "machine_never_connected", SHOP[0]),
+                                           ("warning", "machine_never_connected", SHOP[1])])
+        issue = [i for i in fleet._issues([row]) if i["code"] == "machine_never_connected"][0]
+        self.assertIn("never answered since it joined", issue["message"])
+        self.assertIn("http://100.64.0.9:47873", issue["message"],
+                      "the address the controller kept is the fact that can be checked")
+        self.assertEqual(issue["action"],
+                         "Check that Mac is switched on; if it is, check its controller can reach it")
+
+    def test_a_mac_that_answered_once_and_then_went_off_is_still_the_ordinary_lite_off(self) -> None:
+        """`never_connected` is the whole distinction: a Mac that *has* worked and is now off is expected."""
+        self.both_known_on()
+        self.assertEqual(self.codes(_row(never_connected=False)), [])
+
+    def test_a_mac_that_never_answered_keeps_one_row_and_still_counts_as_offline(self) -> None:
+        """One fault, one row: the never-connected sentence stands in for `machine_offline`, and the
+        machine still folds its workers and models in as any offline Mac does."""
+        self.known(**{SHOP[0]: False, SHOP[1]: False})
+        row = _row(never_connected=True)
+        codes = [i["code"] for i in fleet._issues([row])]
+        self.assertEqual(codes, ["machine_never_connected", "machine_never_connected", "worker_offline"], codes)
+        self.assertEqual(fleet._summarise([row])["machines_offline"], 2)
 
     def test_off_for_more_than_fourteen_days_is_one_quiet_info_line(self) -> None:
         self.both_known_on()
