@@ -476,9 +476,18 @@ def _node_post(controller_id: str, machine_id: str, route: str, body: dict[str, 
         answered = {"ok": False, "code": "CONTROLLER_REFUSED", "detail": refused}
     answered.setdefault("ok", response.is_success)
     answered["machine"] = machine_id
+    # **`queued` is the controller having taken the request, not having applied it yet.** Hub
+    # 0.6.193 holds a request for a Mac it cannot dial — a Shops Mac, reached only through its own
+    # check-in — and answers `202` with `queued: true` and the command's id. That is a success for
+    # the caller: the controller owns delivery from that moment, and keeping a copy here would send
+    # the same change twice. It is named in the answer and in the audit line so a reader can tell
+    # "the Mac has it" from "the controller has it".
+    if answered.get("queued") is True:
+        answered.setdefault("detail", "held for the Mac: its controller cannot dial it and will "
+                                      "deliver it on the Mac's next check-in")
     if action:
         audit(f"{event}_result", controller=controller_id, machine=machine_id, status=response.status_code,
-              code=answered.get("code"), ok=answered.get("ok"))
+              code=answered.get("code"), ok=answered.get("ok"), queued=answered.get("queued"))
     if not response.is_success:
         raise StartupError(response.status_code if response.status_code < 500 else 502, answered)
     if action:
