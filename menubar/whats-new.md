@@ -14,6 +14,12 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.191 — 2026-10-20
+
+### An unusable answer is a failure with a reason, not a mystery
+
+When a provider answered but the answer could not be used — a CDN's HTML error page served with a 200, or an empty chat answer — the job was parked as "we cannot tell whether work is still running", which meant it could never be settled and a Retry could not be aimed at anything. The provider had answered; its bytes were on the wire, so nothing was outstanding. Those answers are now a settled failure carrying the reason, and a Retry gets a fresh answer. An empty answer from an OpenAI-compatible provider used to be reported as a success with blank text, which nothing downstream could tell apart from a real one; it is a failure now too, like the others.
+
 ## 0.2.190 — 2026-10-19
 
 ### A music lane's own file formats are accepted
