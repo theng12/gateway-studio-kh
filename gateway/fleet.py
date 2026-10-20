@@ -2823,6 +2823,13 @@ def machines_flat(rows: list[dict]) -> list[dict]:
                 # A bool or nothing, like every other field from another machine.
                 "node_never_connected": (node.get("never_connected")
                                          if isinstance(node.get("never_connected"), bool) else None),
+                # **How the controller knows the Mac is there.** `"probe"` is a dial it made;
+                # `"check-in"` is the Mac's own authenticated call home, which is the only channel
+                # a Shops Mac has — sharing a Tailscale node works one way, so its controller can
+                # never dial it. `reachable` alone cannot tell those apart, and an operator looking
+                # at a Mac that never answers a dial needs to know the controller is hearing from
+                # it at all. `None` from a Hub older than 0.6.193, never read as `check-in`.
+                "node_via": node.get("via"),
                 # The owner paused this Mac by hand on its controller (Hub 0.6.135); `None` when the
                 # Hub does not say, never read as "not paused".
                 "node_paused": node.get("paused"),
