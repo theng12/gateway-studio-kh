@@ -14,6 +14,12 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.192 — 2026-10-20
+
+### An answer that was asked to be JSON, and is not, counts as unusable
+
+When a request asks for JSON and a model's answer does not parse as JSON, that answer used to be passed back as a success. It is now treated as unusable: a pool moves on to its next model, and a single model fails with a plain reason — for example that the answer was cut off at a stated number of characters — rather than a half-finished answer being handed on. Cut-off answers are told apart from other breakage, the finish reason the model claimed is kept with the attempt, and the text is never repaired or guessed at. Requests that do not ask for JSON are unaffected.
+
 ## 0.2.191 — 2026-10-20
 
 ### An unusable answer is a failure with a reason, not a mystery
