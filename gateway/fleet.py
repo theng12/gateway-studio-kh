@@ -2818,6 +2818,11 @@ def machines_flat(rows: list[dict]) -> list[dict]:
                 "node_role": node.get("role"),
                 "node_last_seen_at": node.get("last_seen_at"),
                 "node_address": node.get("address"),
+                # The Hub's own flag for a Mac that has not answered **once** since it joined
+                # (`fleet_nodes.probe`; its own app draws it as "never connected since it joined").
+                # A bool or nothing, like every other field from another machine.
+                "node_never_connected": (node.get("never_connected")
+                                         if isinstance(node.get("never_connected"), bool) else None),
                 # The owner paused this Mac by hand on its controller (Hub 0.6.135); `None` when the
                 # Hub does not say, never read as "not paused".
                 "node_paused": node.get("paused"),
@@ -3085,6 +3090,35 @@ def _offline_action(reason: str) -> str:
     return "Check that Mac"
 
 
+def _never_connected_issue(machine: dict, machine_id: str) -> dict:
+    """One Mac that has not answered its controller **once** since it joined.
+
+    **Not the same fault as "switched off", and the two read identically.** A Mac that *was*
+    working and is now off has a `last_seen_at` past its join; one that never has may be holding an
+    address its controller cannot route to, or be on a network the controller cannot dial — and it
+    can never correct itself, because the roster address is written at join and only at join. Both
+    states are `offline`, so without this the owner is told to go and switch on a Mac that is on:
+    measured 2026-10-20, the Shops office iMac sat at "offline · never connected" for 51 hours
+    while the Hub's own app on the controller was already saying "never connected since it joined".
+
+    The address travels in the message because it is the one fact that can be checked from either
+    end, and it is what a wrong or foreign network address looks like.
+    """
+    address = str(machine.get("node_address") or "").strip()
+    seen_at = _num(machine.get("node_last_seen_at"))
+    name = machine.get("label") or machine_id
+    # A never-connected row's `last_seen_at` is the join time itself (`fleet_nodes.join` seeds it),
+    # so this reads as how long the Mac has been on the roster without ever answering.
+    when = f"{int((time.time() - seen_at) // 86400)} days ago" if seen_at else "at join"
+    return _issue(
+        "warning", "machine_never_connected", machine.get("location_id"),
+        machine.get("location"), machine_id,
+        f"{name} has never answered since it joined {when}, at "
+        f"{address or 'the address its controller kept'}.",
+        "Check that Mac is switched on; if it is, check its controller can reach it",
+    )
+
+
 #: Catalogue errors that only say a machine could not be reached: the Hub's own word, and httpx's.
 _REACH_ERRORS = frozenset({"worker_unreachable", "ConnectError", "ConnectTimeout", "ReadTimeout", "ReadError",
                            "WriteTimeout", "PoolTimeout", "TimeoutException", "NetworkError",
@@ -3234,7 +3268,21 @@ def _issues_for(row: dict) -> list[dict]:
         state = str(machine.get("state") or "").strip().lower()
         health = str(machine.get("health") or "").strip()
         unhealthy = bool(health) and health.lower() != "up"
-        if machine.get("lite_off"):
+        # **A Mac the controller has never once reached is not the Mac that is off for the night.**
+        # Both read `offline`, and for a Lite Mode Mac the "expected off" fold below would otherwise
+        # hide it for ever: measured 2026-10-20, the Shops office iMac sat at "offline · never
+        # connected" for 51 hours while the Hub's own app on its controller already said "never
+        # connected since it joined". One fault, one row: this replaces `machine_offline` (and the
+        # quiet `lite_mode_long_off` line) rather than joining them, and the machine still folds its
+        # workers and models in as any offline Mac does.
+        never_connected = machine.get("node_never_connected") is True
+        if never_connected and (machine.get("lite_off") or state == "offline") \
+                and machine_id not in rejected_nodes:
+            offline_machines.add(machine_id)
+            if machine.get("lite_off"):
+                lite_off.add(machine_id)
+            out.append(_never_connected_issue(machine, machine_id))
+        elif machine.get("lite_off"):
             # A Lite Mode Mac switched off is expected: no warning. Its studios and models are folded in as for
             # any offline Mac; only a long absence earns one quiet line.
             offline_machines.add(machine_id)
