@@ -30,6 +30,7 @@ from .base import (
     caller_max_output_tokens,
     expected_output_header,
     quota_hints,
+    require_json_answer,
     unusable_answer,
 )
 
@@ -276,6 +277,7 @@ def _chat(request: BackendRequest) -> BackendResult:
     # an empty scene pack it cannot use, and nothing later can tell that from a real answer.
     if not (text or "").strip():
         raise unusable_answer(request.provider_id, "it is empty")
+    require_json_answer(request, text, finish_reason)
     return BackendResult(text=text or "", payload=result_payload)
 
 

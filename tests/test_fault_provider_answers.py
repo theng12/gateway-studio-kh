@@ -58,7 +58,7 @@ os.environ.update(
 from gateway import concurrency  # noqa: E402
 from gateway import worker as worker_module  # noqa: E402
 from gateway.adapters.anthropic import AnthropicBackend  # noqa: E402
-from gateway.adapters.base import answer_json, unusable_answer  # noqa: E402
+from gateway.adapters.base import BackendError, BackendRequest, answer_json, unusable_answer  # noqa: E402
 from gateway.adapters.openai_compat import OpenAICompatibleBackend  # noqa: E402
 from gateway.adapters.pool import PoolBackend  # noqa: E402
 from gateway.adapters.studio_hub import StudioHubBackend  # noqa: E402
@@ -320,6 +320,99 @@ class PoolOfBadAnswersTests(_AnswerCase):
         self.assertNotEqual(job["recovery_state"], "unknown_outcome")
         self.assertEqual([provider.calls for provider in members.values()], [1, 1],
                          "each member was asked once, then the pool ended")
+
+
+def _text_answer(text: str, finish_reason: str = "stop") -> bytes:
+    return json.dumps({"choices": [{"message": {"content": text}, "finish_reason": finish_reason}]}).encode()
+
+
+JSON_OBJECT = {"response_format": {"type": "json_object"}}
+CUT_OFF_JSON = '{"ideas": [{"idea_key": "a", "title": "half a tit'  # what a "stop" answer was measured to be
+VALID_JSON = '{"ideas": [{"idea_key": "a", "title": "whole"}]}'
+
+
+class JsonAnswerTests(_AnswerCase):
+    """Asked for JSON, an answer that does not parse is unusable: a pool moves on, a model fails.
+
+    Measured 2026-10-20: six Story idea-campaign jobs `succeeded` on the first pool member with
+    `finish_reason: "stop"` and text that was cut off mid-string (or had unescaped quotes), and
+    Story rejected each one while a working member further down the pool was never tried.
+    """
+
+    def pool(self, *answers: str, params: dict[str, Any] | None = None):
+        members = {f"member-{index}": self.provider(_text_answer(text), "application/json")
+                   for index, text in enumerate(answers)}
+        registry = _Registry({name: provider.base for name, provider in members.items()}, "openai_compatible")
+        backend = PoolBackend()
+        backend.attach(lambda _modality, member: (registry.definition(member), {"model_id": "mock-model"}),
+                       lambda _definition: OpenAICompatibleBackend())
+        backend._credentials_for = lambda _provider_id: {"api_key": "fixture"}
+        request = BackendRequest(provider_id="pool", model_id="p", modality="chat", values={}, base_url="",
+                                 params={"input": [{"role": "user", "content": "hi"}],
+                                         **(JSON_OBJECT if params is None else params)})
+        with patch("gateway.pools.members", return_value=list(members)), \
+                patch("gateway.pools.routing_policy", return_value=None), \
+                patch("gateway.pool_cooldowns.until", return_value=None), \
+                patch("gateway.pool_cooldowns.note_failure"):
+            result = error = None
+            try:
+                result = backend.generate(request)
+            except BackendError as exc:
+                error = exc
+        return [m.calls for m in members.values()], result, error
+
+    def test_a_pool_moves_past_a_cut_off_answer_to_the_member_that_answers(self) -> None:
+        calls, result, error = self.pool(CUT_OFF_JSON, VALID_JSON)
+        self.assertIsNone(error)
+        self.assertEqual(result.text, VALID_JSON)
+        self.assertEqual(calls, [1, 1])
+        first, second = result.payload["pool"]["attempts"]
+        self.assertEqual((first["outcome"], second["outcome"]), ("failed", "answered"))
+        self.assertIn("cut off at", first["detail"])
+        # The provider said "stop" over a truncated answer; the log keeps that claim.
+        self.assertEqual(first["evidence"]["finish_reason"], "stop")
+        self.assertTrue(first["evidence"]["cut_off"])
+
+    def test_a_pool_whose_members_all_answer_invalid_json_fails_with_the_reason(self) -> None:
+        calls, result, error = self.pool(CUT_OFF_JSON, '{"a": "an "unescaped" quote"}')
+        self.assertIsNone(result)
+        self.assertEqual(calls, [1, 1])
+        self.assertIn("not valid JSON", str(error))
+        self.assertTrue(error.upstream_settled, "the providers answered; nothing is outstanding")
+        self.assertEqual(len(error.evidence["pool_attempts"]), 2)
+
+    def test_valid_json_is_unchanged(self) -> None:
+        for params in (JSON_OBJECT, {"response_format": {"type": "json_schema", "json_schema": {"schema": {}}}}):
+            calls, result, error = self.pool(VALID_JSON, CUT_OFF_JSON, params=params)
+            self.assertIsNone(error)
+            self.assertEqual((result.text, calls), (VALID_JSON, [1, 0]))
+
+    def test_a_request_that_did_not_ask_for_json_is_unaffected(self) -> None:
+        for params in ({}, {"response_format": {"type": "text"}}):
+            calls, result, error = self.pool(CUT_OFF_JSON, VALID_JSON, params=params)
+            self.assertIsNone(error)
+            self.assertEqual((result.text, calls), (CUT_OFF_JSON, [1, 0]))
+
+    def test_a_single_model_fails_with_a_plain_reason_on_every_chat_lane(self) -> None:
+        cases = (
+            ("oai", OpenAICompatibleBackend(), "openai_compatible", _text_answer(CUT_OFF_JSON)),
+            ("hub", StudioHubBackend(), "studio_hub", _text_answer(CUT_OFF_JSON)),
+            ("claude", AnthropicBackend(), "anthropic", json.dumps(
+                {"content": [{"type": "text", "text": CUT_OFF_JSON}], "stop_reason": "end_turn"}).encode()),
+        )
+        for name, adapter, kind, body in cases:
+            with self.subTest(name):
+                job = self.run_job(self.provider(body, "application/json"), adapter, kind=kind,
+                                   name=f"json-{name}", params={"input": [{"role": "user", "content": "hi"}],
+                                                                **JSON_OBJECT})
+                self.assert_settled_refusal(
+                    job, f"the model returned text that is not valid JSON (cut off at {len(CUT_OFF_JSON)} characters)")
+
+    def test_malformed_but_not_cut_off_says_where(self) -> None:
+        _, _, error = self.pool('{"a": "an "unescaped" quote"}')
+        self.assertIn("not valid JSON", str(error))
+        self.assertNotIn("cut off", str(error))
+        self.assertFalse(error.evidence["pool_attempts"][0]["evidence"]["cut_off"])
 
 
 class SharedRuleTests(unittest.TestCase):

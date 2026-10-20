@@ -11,7 +11,6 @@ it earns its own adapter. Two differences matter:
 
 from __future__ import annotations
 
-import json
 import re
 from typing import Any
 
@@ -25,6 +24,7 @@ from .base import (
     answer_json,
     caller_max_output_tokens,
     quota_hints,
+    require_json_answer,
     unusable_answer,
 )
 from .openai_compat import ANTHROPIC_STOP_MAP, CHAT_TIMEOUT, _temperature_refused
@@ -392,15 +392,17 @@ class AnthropicBackend:
                 }
             raise error
 
+        if not text.strip():
+            # Same rule as every other chat lane: an empty answer is a failure, not a blank success.
+            raise unusable_answer(request.provider_id, "it is empty")
+
+        answer = require_json_answer(request, text, stop)
         if schema is not None:
             # The guarantee has two documented exceptions, a refusal and a `max_tokens` cut,
             # and the keywords `_wire_schema` removed are not enforced upstream. An answer that
             # misses the schema is a failed attempt: settled (the call finished, nothing is
             # pending upstream) and retryable, so a pool moves on to its next member.
-            try:
-                problem = _schema_problem(json.loads(text), schema)
-            except ValueError:
-                problem = "the answer is not JSON"
+            problem = _schema_problem(answer, schema)
             if problem:
                 raise BackendError(
                     f"{request.provider_id}: answer does not match the requested JSON schema: "
@@ -410,10 +412,6 @@ class AnthropicBackend:
                     upstream_accepted=True,
                     upstream_settled=True,
                 )
-
-        if not text.strip():
-            # Same rule as every other chat lane: an empty answer is a failure, not a blank success.
-            raise unusable_answer(request.provider_id, "it is empty")
 
         result_payload = {
             "finish_reason": ANTHROPIC_STOP_MAP.get(str(payload.get("stop_reason")), payload.get("stop_reason")),

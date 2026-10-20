@@ -20,6 +20,7 @@ return a result or raise `BackendError`.
 
 from __future__ import annotations
 
+import json
 import math
 import threading
 from collections.abc import Callable
@@ -195,6 +196,31 @@ def unusable_answer(provider_id: str, problem: str, *, code: str = "PROVIDER_FAI
         f"{provider_id}: the provider's answer could not be used — {problem}"[:500],
         code=code, retryable=True, upstream_accepted=True, upstream_settled=True,
     )
+
+
+def require_json_answer(request: "BackendRequest", text: str, finish_reason: Any = None) -> Any:
+    """A chat answer the caller asked to be JSON must parse; returns the parsed value (else `None`).
+
+    `response_format` `json_object` / `json_schema` is a request for JSON, so text that does not
+    parse is an unusable answer like an empty one — a settled, retryable failure, which makes a
+    pool move on to its next member instead of returning it as a success. Measured 2026-10-20:
+    free `qoder/qfmodel` answers cut off mid-string (28k–90k characters) under
+    `finish_reason: "stop"`, and Story rejected every one while a working member was never tried.
+    The cut-off is told from other breakage and kept, with the provider's claimed finish reason,
+    as the attempt's evidence. Nothing is repaired here. Costs a dict lookup for any other request.
+    """
+    response_format = request.params.get("response_format")
+    if not isinstance(response_format, dict) or response_format.get("type") not in {"json_object", "json_schema"}:
+        return None
+    try:
+        return json.loads(text)
+    except ValueError as exc:
+        cut_off = "Unterminated" in str(exc) or getattr(exc, "pos", 0) >= len(text.rstrip())
+        where = (f"cut off at {len(text)} characters" if cut_off
+                 else f"{getattr(exc, 'msg', exc)} at character {getattr(exc, 'pos', '?')} of {len(text)}")
+        error = unusable_answer(request.provider_id, f"the model returned text that is not valid JSON ({where})")
+        error.evidence = {"finish_reason": finish_reason, "cut_off": cut_off, "answer_characters": len(text)}
+        raise error from None
 
 
 def answer_json(response: Any, provider_id: str) -> dict[str, Any]:
