@@ -14,6 +14,12 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.194 — 2026-10-20
+
+### A Mac the controller cannot dial is shown as the Mac it is
+
+Some Macs sit on a network the controller can never dial into — a Shops Mac reaches its controller through one-way Tailscale node sharing, so the controller's own call to it always fails while the Mac is up and calling home every minute. The Fleet page could not tell "we reached it" from "it reached us", so such a Mac read as one that had never once answered. Each machine row now says how it was heard from: the controller dialled it, or it checked in. A Mac that checks in counts as online and raises no warning, and a Lite Mode change sent to one is taken by the controller on the Mac's behalf, answered plainly as "the controller has it" rather than as "the Mac has applied it". An ordinary Mac that is switched off is unchanged.
+
 ## 0.2.193 — 2026-10-20
 
 ### A Mac that has never once answered is named, not folded into "Lite Mode, off"
