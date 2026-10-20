@@ -1018,6 +1018,9 @@ class Handler(BaseHTTPRequestHandler):
                     "studio_hub": {"elapsed_seconds": 0.1},
                 })
                 return
+            reply = f"mock hub reply from {model or 'the model'}"
+            if (body.get("response_format") or {}).get("type") in {"json_object", "json_schema"}:
+                reply = json.dumps({"reply": reply})  # a JSON request gets JSON, or the gateway refuses it
             self._json(200, {
                 "id": "chatcmpl-hub-mock",
                 "object": "chat.completion",
@@ -1026,7 +1029,7 @@ class Handler(BaseHTTPRequestHandler):
                 "choices": [{
                     "index": 0,
                     "message": {"role": "assistant",
-                                "content": f"mock hub reply from {model or 'the model'}"},
+                                "content": reply},
                     "finish_reason": "stop",
                 }],
                 "usage": {"prompt_tokens": 11, "completion_tokens": 13, "total_tokens": 24},

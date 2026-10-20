@@ -162,7 +162,7 @@ class SchemaAnswerTests(unittest.TestCase):
         self._assert_failed_attempt(_claude(json.dumps(extra)), "note is not allowed")
 
     def test_prose_that_misses_the_schema_fails(self) -> None:
-        self._assert_failed_attempt(_claude("Here are your prompts: ..."), "not JSON")
+        self._assert_failed_attempt(_claude("Here are your prompts: ..."), "not valid JSON")
 
     def test_a_cut_answer_and_a_refusal_keep_their_typed_outcomes(self) -> None:
         _, cut = _run(_claude('{"results": [', stop="max_tokens"), response_format=RESPONSE_FORMAT)
@@ -187,11 +187,12 @@ class NonSchemaRequestsAreUnchangedTests(unittest.TestCase):
     def test_plain_and_json_object_requests_send_the_same_body_as_before(self) -> None:
         for params in ({}, {"response_format": {"type": "json_object"}},
                        {"response_format": {"type": "text"}}):
-            calls, result = _run(_claude("plain words, not JSON"), **params)
+            said = '{"words": "plain"}' if params.get("response_format") == {"type": "json_object"} else "plain words, not JSON"
+            calls, result = _run(_claude(said), **params)
             self.assertEqual(calls[0], {
                 "model": "claude-haiku-5-5", "max_tokens": anthropic.DEFAULT_MAX_TOKENS,
                 "messages": [{"role": "user", "content": "hi"}], "system": "be brief"})
-            self.assertEqual(result.text, "plain words, not JSON")
+            self.assertEqual(result.text, said)
 
 
 def _row(model_id: str, capabilities) -> dict:

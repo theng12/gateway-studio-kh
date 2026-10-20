@@ -40,6 +40,7 @@ from .base import (
     caller_max_output_tokens,
     expected_output_header,
     note_request_started,
+    require_json_answer,
     unusable_answer,
 )
 
@@ -2461,6 +2462,7 @@ def _generate_chat(request: BackendRequest) -> BackendResult:
         # Hub answered, so it is a *settled* failure: `upstream_settled` keeps it
         # out of the unknown-outcome holds, which have no attempt to aim at.
         raise unusable_answer(request.provider_id, "it is empty")
+    require_json_answer(request, text, choice.get("finish_reason"))
     hub = payload.get("studio_hub") if isinstance(payload.get("studio_hub"), dict) else {}
     return BackendResult(
         text=text,
