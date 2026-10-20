@@ -36,9 +36,11 @@ from .base import (
     BackendError,
     BackendRequest,
     BackendResult,
+    answer_json,
     caller_max_output_tokens,
     expected_output_header,
     note_request_started,
+    unusable_answer,
 )
 
 log = logging.getLogger(__name__)
@@ -2443,12 +2445,10 @@ def _generate_chat(request: BackendRequest) -> BackendResult:
             upstream_settled=bool(queue_wait) and (response.status_code < 500 or bool(code)),
         )
 
-    payload = response.json() or {}
+    payload = answer_json(response, request.provider_id)
     choices = payload.get("choices") or []
     if not choices:
-        raise BackendError(
-            "the Hub returned no choices for a chat completion", code="PROVIDER_FAILED"
-        )
+        raise unusable_answer(request.provider_id, "it has no choices")
     choice = choices[0] if isinstance(choices[0], dict) else {}
     message = choice.get("message") if isinstance(choice.get("message"), dict) else {}
     text = message.get("content")
@@ -2457,12 +2457,10 @@ def _generate_chat(request: BackendRequest) -> BackendResult:
     text = text if isinstance(text, str) else ""
     if not text.strip():
         # The Hub has its own code for this (`CHAT_EMPTY_ANSWER`), so an empty
-        # answer is a failure here too rather than a successful blank job.
-        raise BackendError(
-            "the Hub returned an empty chat answer",
-            code="PROVIDER_FAILED",
-            upstream_accepted=True,
-        )
+        # answer is a failure here too rather than a successful blank job. The
+        # Hub answered, so it is a *settled* failure: `upstream_settled` keeps it
+        # out of the unknown-outcome holds, which have no attempt to aim at.
+        raise unusable_answer(request.provider_id, "it is empty")
     hub = payload.get("studio_hub") if isinstance(payload.get("studio_hub"), dict) else {}
     return BackendResult(
         text=text,

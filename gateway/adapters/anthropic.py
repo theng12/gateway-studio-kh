@@ -22,8 +22,10 @@ from .base import (
     BackendError,
     BackendRequest,
     BackendResult,
+    answer_json,
     caller_max_output_tokens,
     quota_hints,
+    unusable_answer,
 )
 from .openai_compat import ANTHROPIC_STOP_MAP, CHAT_TIMEOUT, _temperature_refused
 
@@ -363,7 +365,7 @@ class AnthropicBackend:
                 **(quota_hints(response) if status == 429 else {}),
             )
 
-        payload = response.json()
+        payload = answer_json(response, request.provider_id)
         blocks = payload.get("content") or []
         text = "".join(
             str(block.get("text", ""))
@@ -408,6 +410,10 @@ class AnthropicBackend:
                     upstream_accepted=True,
                     upstream_settled=True,
                 )
+
+        if not text.strip():
+            # Same rule as every other chat lane: an empty answer is a failure, not a blank success.
+            raise unusable_answer(request.provider_id, "it is empty")
 
         result_payload = {
             "finish_reason": ANTHROPIC_STOP_MAP.get(str(payload.get("stop_reason")), payload.get("stop_reason")),
