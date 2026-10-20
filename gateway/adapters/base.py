@@ -181,6 +181,39 @@ class BackendError(Exception):
         self.review_candidate: dict[str, Any] | None = None
 
 
+def unusable_answer(provider_id: str, problem: str, *, code: str = "PROVIDER_FAILED") -> BackendError:
+    """The provider **answered**, and what it answered cannot be used: a settled failure.
+
+    The bytes are on the wire, so nothing is outstanding upstream — the provider finished and
+    said nothing is running. Without `upstream_settled` the worker classifies this as an
+    unknown-outcome hold ("reconcile the provider request before retrying"), a hold with no
+    attempt to aim at and no way to settle: measured on a 200 whose body was an HTML error page,
+    which parked a chat job as `unknown_outcome` with `retryable: False`. `retryable` so the
+    caller's Retry gets a fresh answer instead of looping on the same one.
+    """
+    return BackendError(
+        f"{provider_id}: the provider's answer could not be used — {problem}"[:500],
+        code=code, retryable=True, upstream_accepted=True, upstream_settled=True,
+    )
+
+
+def answer_json(response: Any, provider_id: str) -> dict[str, Any]:
+    """The provider's own 200 body as a mapping. A body we cannot read is a settled failure.
+
+    `response.json()` raises `ValueError` on anything that is not JSON (a CDN's HTML error page
+    under a 200, a body cut short in flight), and an escaping `ValueError` reaches the worker as
+    "an adapter raised unexpectedly" *after* a request was sent — the exact shape it holds as an
+    unknown outcome. Reading it here keeps the classification honest.
+    """
+    try:
+        payload = response.json()
+    except ValueError:
+        raise unusable_answer(
+            provider_id, f"its body is not JSON ({response.text[:120]!r})"
+        ) from None
+    return payload if isinstance(payload, dict) else {}
+
+
 def quota_hints(response: Any) -> dict[str, Any]:
     """`retry_after` / `quota_scope` kwargs for a `BackendError`, read from a 429-ish response.
 

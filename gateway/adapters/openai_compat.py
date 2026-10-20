@@ -26,9 +26,11 @@ from .base import (
     BackendError,
     BackendRequest,
     BackendResult,
+    answer_json,
     caller_max_output_tokens,
     expected_output_header,
     quota_hints,
+    unusable_answer,
 )
 
 #: How long one chat call may be held open. **The Hub's ceiling, not a round number of our own.**
@@ -229,10 +231,10 @@ def _chat(request: BackendRequest) -> BackendResult:
         response = send()
 
     _raise_for(response, request.provider_id)
-    payload = response.json()
+    payload = answer_json(response, request.provider_id)
     choices = payload.get("choices") or []
     if not choices:
-        raise BackendError("provider returned no choices", code="PROVIDER_FAILED")
+        raise unusable_answer(request.provider_id, "it has no choices")
 
     choice = choices[0] or {}
     message = choice.get("message") or {}
@@ -269,6 +271,11 @@ def _chat(request: BackendRequest) -> BackendResult:
     }
     if dropped:
         result_payload["params_dropped"] = dropped
+    # **An empty answer is a failure, not a blank success.** The Hub lane refuses one by name
+    # (`CHAT_EMPTY_ANSWER`) for the same reason: a job that "succeeded" with no text hands Story
+    # an empty scene pack it cannot use, and nothing later can tell that from a real answer.
+    if not (text or "").strip():
+        raise unusable_answer(request.provider_id, "it is empty")
     return BackendResult(text=text or "", payload=result_payload)
 
 
@@ -348,10 +355,10 @@ def _image(request: BackendRequest) -> BackendResult:
         raise BackendError(f"network: {exc}", code="PROVIDER_UNAVAILABLE", retryable=True) from exc
 
     _raise_for(response, request.provider_id)
-    payload = response.json()
+    payload = answer_json(response, request.provider_id)
     entries = payload.get("data") or []
     if not entries:
-        raise BackendError("provider returned no image", code="IMAGE_FAILED")
+        raise unusable_answer(request.provider_id, "it carries no image", code="IMAGE_FAILED")
 
     entry = entries[0] or {}
     if entry.get("b64_json"):
@@ -365,7 +372,8 @@ def _image(request: BackendRequest) -> BackendResult:
             raise BackendError(f"artifact fetch HTTP {fetched.status_code}", code="IMAGE_FAILED")
         content = fetched.content
     else:
-        raise BackendError("provider returned neither b64_json nor url", code="IMAGE_FAILED")
+        raise unusable_answer(request.provider_id, "it carries neither b64_json nor url",
+                              code="IMAGE_FAILED")
 
     # **Every entry is kept, not just the first.** `n: 2` asks for two images, and a
     # provider may answer several even when asked for one; taking `entries[0]`
