@@ -14,6 +14,12 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.193 — 2026-10-20
+
+### A Mac that has never once answered is named, not folded into "Lite Mode, off"
+
+A Mac whose controller has never reached it even once used to be counted with the Macs that are simply switched off for the night, so the Fleet page said "Lite Mode, off" and nothing else — which reads as "expected, nothing to do", and sends you to switch on a Mac that is already on. It is its own issue now: the machine is named, the address its controller kept for it is shown, and how long it has sat on the roster without ever answering is stated. A Mac that was working and is now off is unchanged.
+
 ## 0.2.192 — 2026-10-20
 
 ### An answer that was asked to be JSON, and is not, counts as unusable
