@@ -292,8 +292,10 @@ class ArchiveTests(unittest.TestCase):
         self.addCleanup(self.store.close)
 
     def _job(self, key: str, *, age_days: float, state: str = "succeeded",
-             seconds: float = 4.0, size: int = 100) -> str:
-        row, _ = self.store.submit(modality="image", model_id="m/x", params={"prompt": "p"},
+             seconds: float = 4.0, size: int = 100, payload_bytes: int = 0) -> str:
+        row, _ = self.store.submit(modality="image", model_id="m/x",
+                                   params={"prompt": "p" * payload_bytes if payload_bytes
+                                           else "p"},
                                    idempotency_key=key, provider_id="studio-hub-a")
         stamp = time.time() - age_days * 86400
         if state == "succeeded":
@@ -339,8 +341,12 @@ class ArchiveTests(unittest.TestCase):
         self.assertIsNotNone(self.store.get(queued["id"]))
 
     def test_the_database_is_vacuumed_when_a_fifth_of_it_is_free(self) -> None:
+        # The 20 % rule is unchanged. The fixture must leave at least a fifth of the whole
+        # file reclaimable: the render tables now contribute baseline pages to every job
+        # database, so small prompt rows no longer dominate it. 60 x 100 KB of prompt text
+        # puts the deleted rows well past the threshold without touching `archive_old`.
         for n in range(60):
-            self._job(f"bulk-{n}", age_days=150)
+            self._job(f"bulk-{n}", age_days=150, payload_bytes=100_000)
         done = self.store.archive_old(days=90)
         self.assertEqual(done["archived"], 60)
         self.assertTrue(done["vacuumed"])
