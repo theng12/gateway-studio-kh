@@ -96,7 +96,8 @@ def inspect_archive(data: bytes) -> dict:
             if profile == "genstudio-store-receipt-v1":
                 if signature:
                     raise PackError("Store archives cannot contain a publisher signature.")
-                trust = "Requires original account-bound Store receipts and trusted signing-key history."
+                trust = ("Structural integrity and declared file hashes checked; publisher signature "
+                         "absent. A compatible pack you possess installs in Story Studio without an account.")
             elif profile is None and signature:
                 if len(archive.read("signature.ed25519")) != 64:
                     raise PackError("Publisher signature must contain 64 bytes.")

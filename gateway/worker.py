@@ -1398,10 +1398,19 @@ class Worker:
         self._running: dict[str, dict[str, Any]] = {}
         #: Dispatch takes no new work before this `time.time()` (a drain; `inf` on shutdown).
         self._paused_until = 0.0
+        self._render_service: Any | None = None
+
+    def attach_render_service(self, service: Any) -> None:
+        """Attach the one private render coordinator to this existing dispatch clock."""
+        if self._thread is not None or self._render_service not in (None, service):
+            raise RuntimeError("render service must be attached once before worker start")
+        self._render_service = service
 
     def start(self) -> None:
         if self._thread is not None:
             return
+        if self._render_service is not None:
+            self._render_service.recover()
         self._thread = threading.Thread(target=self._loop, name="gateway-worker", daemon=True)
         self._thread.start()
         self._resume_interrupted()
@@ -1450,6 +1459,8 @@ class Worker:
         if self._thread is not None:
             self._thread.join(timeout=5.0)
             self._thread = None
+        if self._render_service is not None:
+            self._render_service.stop()
 
     # -- drain (a restart never strands a job) -------------------------------
     def dispatch_paused(self) -> bool:
@@ -1468,6 +1479,8 @@ class Worker:
             row = self.store.get(job_id)
             if row and row.get("state") == "running" and not restart_can_follow(row):
                 left.append(job_id)
+        if self._render_service is not None:
+            left.extend("render:" + job_id for job_id in self._render_service.unsettled())
         return left
 
     def drain(self, timeout: float, pause_s: float = float("inf")) -> list[str]:
@@ -1545,7 +1558,10 @@ class Worker:
         every poll, and a probe that waits on admission is a probe that reports an outage
         while the gateway is working (see the lock order note on `_budget_lock`).
         """
-        return self._active_total
+        total = self._active_total
+        if self._render_service is not None:
+            total += self._render_service.active()
+        return total
 
     def wait_idle(self, timeout: float = 30.0) -> bool:
         """Block until nothing is in flight; `False` if it did not settle in time.
@@ -1999,6 +2015,8 @@ class Worker:
                 due = []
 
             try:
+                if self._render_service is not None and not self.dispatch_paused():
+                    self._render_service.dispatch_pass()
                 for job in due:
                     if self._stop.is_set():
                         return
@@ -2104,6 +2122,7 @@ class Worker:
         alone is what let a dead dispatcher read as healthy.
         """
         thread = self._thread
+        render = self._render_service
         return {
             "worker_alive": bool(thread is not None and thread.is_alive()),
             "last_pass_at": self.last_pass_at,
@@ -2111,4 +2130,6 @@ class Worker:
             "in_flight": self.active(),
             "dispatch_paused": self.dispatch_paused(),
             "hold_sweep": dict(self.hold_sweep),
+            "render_in_flight": render.active() if render is not None else 0,
+            "render_unsettled": render.unsettled() if render is not None else [],
         }

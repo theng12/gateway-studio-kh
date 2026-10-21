@@ -14,6 +14,22 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.195 — 2026-10-21
+
+### A final render can be made by the fleet
+
+Story Studio can now hand a final render to this Gateway and have a registered Mac in the fleet make it, instead of the machine that holds the timeline doing all the work. The render packet is a closed, validated format that describes the work but never carries authority to run anything; the inputs are uploaded in committed chunks into a durable asset store beside the Gateway's own data, so a dropped connection resumes from the last accepted chunk instead of starting again. A job is named by the caller's own idempotency key, its state can be read and its cancel requested by that key or by the job id, and the finished file is served with byte ranges and an entity tag, so a download can resume and a file that changed is never mistaken for the expected one. This is a private, non-chargeable lane: it asks for the Gateway's API key and a Story instance id, and it is offered only through registered Hub relays.
+
+### An interrupted render picks up its own trail, and a cancel stays cancelled
+
+The render record is durable across restarts. A job caught between launch and render is reconciled from what the Hub reports rather than guessed at, and an outcome that cannot be established stays visibly unsettled instead of being reported as finished. A cancel is recorded as a request until the Hub confirms it, a cancelled job never later turns into a success, and a cancellation that arrives before acceptance is answered plainly as such, with proof that the work never launched.
+
+### Preserved archives are kept exactly as they are
+
+The Content Packs page now has an archive bank. Choose one or more `.sspack` files and the Gateway keeps their exact bytes, lists each with its size and integrity, and hands the same file back on demand. Preserving an archive adds nothing to the shelf, installs nothing and publishes nothing: it is the offline copy, and possession of the file is enough to install it on a machine that has never seen the shelf. Files up to 50 MiB each are accepted, matching the installer's own limit.
+
+This entry describes a candidate: it is **unqualified and unreleased**, and nothing here has been gated, built, installed, released or proven with a live render.
+
 ## 0.2.194 — 2026-10-20
 
 ### A Mac the controller cannot dial is shown as the Mac it is

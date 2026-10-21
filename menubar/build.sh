@@ -17,7 +17,28 @@ APP_NAME="GatewayKH"
 APP="$BUILD/gateway-kh.app"
 
 INSTALL=1
-[ "${1:-}" = "--no-install" ] && INSTALL=0
+RENDER_AUTHORITY="descriptor-only"
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --no-install)
+      INSTALL=0
+      shift
+      ;;
+    --render-authority)
+      [ "$#" -ge 2 ] || { echo "ERROR: --render-authority requires a value" >&2; exit 2; }
+      RENDER_AUTHORITY="$2"
+      shift 2
+      ;;
+    *)
+      echo "ERROR: unsupported build argument: $1" >&2
+      exit 2
+      ;;
+  esac
+done
+case "$RENDER_AUTHORITY" in
+  tool-only|descriptor-only|sealed-candidate) ;;
+  *) echo "ERROR: unsupported render authority mode: $RENDER_AUTHORITY" >&2; exit 2 ;;
+esac
 
 # Preserve replaced build/install files; the owner's archive is never cleaned.
 TRASH_BUILD="$ROOT/_trash/build/$(date -u +%Y%m%d%H%M%S)-$$"
@@ -173,6 +194,190 @@ cp "$ROOT/requirements.txt" "$APP/Contents/Resources/gateway/"
 cp "$ROOT/requirements.lock" "$APP/Contents/Resources/gateway/"
 # Shipped read-only defaults. User data lives in Application Support.
 [ -f "$ROOT/data/voices.json" ] && cp "$ROOT/data/voices.json" "$APP/Contents/Resources/gateway/data/"
+
+# Authority is an explicit build choice. The normal build ignores even a populated source tree;
+# selected states require an exact closed set and preserve the source bytes in the app bundle.
+if [ "$RENDER_AUTHORITY" != "tool-only" ]; then
+  AUTHORITY_SOURCE="$ROOT/data/final-render"
+  [ -d "$AUTHORITY_SOURCE" ] && [ ! -L "$AUTHORITY_SOURCE" ] || {
+    echo "ERROR: selected render authority source is unavailable" >&2
+    exit 1
+  }
+  case "$RENDER_AUTHORITY" in
+    descriptor-only) AUTHORITY_COUNT=3 ;;
+    sealed-candidate) AUTHORITY_COUNT=3 ;;
+  esac
+  ACTUAL_AUTHORITY_COUNT="$(find "$AUTHORITY_SOURCE" -mindepth 1 -maxdepth 1 -print | wc -l | tr -d '[:space:]')"
+  [ "$ACTUAL_AUTHORITY_COUNT" = "$AUTHORITY_COUNT" ] || {
+    echo "ERROR: $RENDER_AUTHORITY requires exactly $AUTHORITY_COUNT authority files" >&2
+    exit 1
+  }
+  for NAME in profile.json tools.json compiler.json; do
+    SOURCE_FILE="$AUTHORITY_SOURCE/$NAME"
+    [ -f "$SOURCE_FILE" ] && [ ! -L "$SOURCE_FILE" ] || {
+      echo "ERROR: unsafe or missing render authority file: $NAME" >&2
+      exit 1
+    }
+    SOURCE_SIZE="$(wc -c < "$SOURCE_FILE" | tr -d '[:space:]')"
+    SOURCE_MODE="$(stat -f '%Lp' "$SOURCE_FILE")"
+    [ "$SOURCE_SIZE" -ge 2 ] && [ "$SOURCE_SIZE" -le 1048576 ] \
+      && [ "$SOURCE_MODE" = "644" ] || {
+        echo "ERROR: invalid render authority file: $NAME" >&2
+        exit 1
+      }
+  done
+
+  PROFILE_SHA256="$(shasum -a 256 "$AUTHORITY_SOURCE/profile.json" | cut -d ' ' -f1)"
+  TOOLS_SHA256="$(shasum -a 256 "$AUTHORITY_SOURCE/tools.json" | cut -d ' ' -f1)"
+  COMPILER_SHA256="$(shasum -a 256 "$AUTHORITY_SOURCE/compiler.json" | cut -d ' ' -f1)"
+
+  # Use only the pure strict JSON validator. Importing gateway.runtime here would
+  # create stores/workers during a build and turn data validation into application startup.
+  PYTHONPATH="$ROOT" "$RUNTIME_PYTHON" - \
+    "$AUTHORITY_SOURCE" \
+    "$PROFILE_SHA256" "$TOOLS_SHA256" "$COMPILER_SHA256" <<'PY'
+import hashlib
+from pathlib import Path
+import sys
+
+from gateway.render_hash_v1 import decode_render_json
+
+
+def invalid(reason):
+    raise ValueError("invalid render authority: " + reason)
+
+
+def exact(value, keys, name):
+    if type(value) is not dict or set(value) != set(keys):
+        invalid(name + " has missing or unknown fields")
+    return value
+
+
+def digest(value, name):
+    if (type(value) is not str or len(value) != 64
+            or any(character not in "0123456789abcdef" for character in value)):
+        invalid(name + " is not lowercase SHA-256")
+    return value
+
+
+def positive(value, name):
+    if type(value) is not int or not 1 <= value <= 9_007_199_254_740_991:
+        invalid(name + " must be a positive safe integer")
+
+
+root = Path(sys.argv[1])
+raw = {name: (root / name).read_bytes() for name in (
+    "profile.json", "tools.json", "compiler.json"
+)}
+expected = {
+    "profile.json": sys.argv[2],
+    "tools.json": sys.argv[3],
+    "compiler.json": sys.argv[4],
+}
+for name, payload in raw.items():
+    if hashlib.sha256(payload).hexdigest() != expected[name]:
+        invalid(name + " changed before validation")
+tools = exact(decode_render_json(raw["tools.json"]), (
+    "format", "platform", "ffmpeg_sha256", "ffmpeg_size_bytes",
+    "ffprobe_sha256", "ffprobe_size_bytes", "architecture_evidence_sha256",
+    "minimum_os_evidence_sha256", "linked_libraries_evidence_sha256",
+    "build_configuration_evidence_sha256", "capability_inventory_evidence_sha256",
+), "tools")
+if tools["format"] != "studio.render.tools.v1" or tools["platform"] != "macos-arm64":
+    invalid("tools fixed fields")
+for key in (
+    "ffmpeg_sha256", "ffprobe_sha256", "architecture_evidence_sha256",
+    "minimum_os_evidence_sha256", "linked_libraries_evidence_sha256",
+    "build_configuration_evidence_sha256", "capability_inventory_evidence_sha256",
+):
+    digest(tools[key], "tools." + key)
+positive(tools["ffmpeg_size_bytes"], "tools.ffmpeg_size_bytes")
+positive(tools["ffprobe_size_bytes"], "tools.ffprobe_size_bytes")
+
+compiler = exact(decode_render_json(raw["compiler.json"]), (
+    "format", "implementation", "python_runtime_sha256", "render_hash_sha256",
+    "render_contract_sha256", "final_render_compiler_sha256",
+), "compiler")
+if (compiler["format"] != "studio.render.compiler.v1"
+        or compiler["implementation"] != "hub-final-render-v1"):
+    invalid("compiler fixed fields")
+for key in (
+    "python_runtime_sha256", "render_hash_sha256", "render_contract_sha256",
+    "final_render_compiler_sha256",
+):
+    digest(compiler[key], "compiler." + key)
+
+profile = exact(decode_render_json(raw["profile.json"]), (
+    "format", "implementation", "recipe_namespace", "compiler_artifact_sha256",
+    "tools_artifact_sha256", "combination_set", "tier_policy", "output_policy",
+    "execution_bounds", "hardware_qualification_record_sha256",
+    "fidelity_record_sha256", "production_eligible",
+), "profile")
+fixed_profile = {
+    "format": "studio.render.profile.v1",
+    "implementation": "story-classic-no-font-v1",
+    "recipe_namespace": "studio.render.final.v1",
+    "combination_set": "retained-classic-no-font-candidate-v1",
+    "tier_policy": "story-final-chain-v1",
+    "output_policy": "story-final-output-v1",
+}
+if any(profile[key] != value for key, value in fixed_profile.items()):
+    invalid("profile fixed fields")
+if profile["production_eligible"] is not False:
+    invalid("profile production_eligible")
+for key in ("hardware_qualification_record_sha256", "fidelity_record_sha256"):
+    if profile[key] is not None:
+        digest(profile[key], "profile." + key)
+if (profile["tools_artifact_sha256"] != hashlib.sha256(raw["tools.json"]).hexdigest()
+        or profile["compiler_artifact_sha256"]
+        != hashlib.sha256(raw["compiler.json"]).hexdigest()):
+    invalid("descriptor dependency digests")
+bounds = exact(profile["execution_bounds"], (
+    "canvas_pairs", "working_fps", "max_duration_sec", "max_operations",
+    "max_assets", "max_asset_bytes", "max_total_input_bytes", "max_pixel_frames",
+    "scratch_reserve_bytes", "output_limit_bytes", "process_tree_rss_limit_bytes",
+    "cumulative_wall_seconds",
+), "profile.execution_bounds")
+if (type(bounds["canvas_pairs"]) is not list or not bounds["canvas_pairs"]
+        or type(bounds["working_fps"]) is not list or not bounds["working_fps"]):
+    invalid("profile execution arrays")
+for pair in bounds["canvas_pairs"]:
+    pair = exact(pair, ("width", "height"), "profile.execution_bounds.canvas")
+    positive(pair["width"], "canvas.width")
+    positive(pair["height"], "canvas.height")
+for rate in bounds["working_fps"]:
+    positive(rate, "working_fps")
+for key in set(bounds) - {"canvas_pairs", "working_fps", "max_duration_sec"}:
+    positive(bounds[key], "profile.execution_bounds." + key)
+if (type(bounds["max_duration_sec"]) not in (int, float)
+        or isinstance(bounds["max_duration_sec"], bool)
+        or bounds["max_duration_sec"] <= 0):
+    invalid("profile max_duration_sec")
+
+PY
+
+  AUTHORITY_DESTINATION="$APP/Contents/Resources/gateway/data/final-render"
+  mkdir "$AUTHORITY_DESTINATION"
+  for NAME in profile.json tools.json compiler.json; do
+    case "$NAME" in
+      profile.json) EXPECTED_SHA256="$PROFILE_SHA256" ;;
+      tools.json) EXPECTED_SHA256="$TOOLS_SHA256" ;;
+      compiler.json) EXPECTED_SHA256="$COMPILER_SHA256" ;;
+    esac
+    cp "$AUTHORITY_SOURCE/$NAME" "$AUTHORITY_DESTINATION/$NAME"
+    [ "$(shasum -a 256 "$AUTHORITY_SOURCE/$NAME" | cut -d ' ' -f1)" \
+      = "$EXPECTED_SHA256" ] \
+      && [ "$(shasum -a 256 "$AUTHORITY_DESTINATION/$NAME" | cut -d ' ' -f1)" \
+      = "$EXPECTED_SHA256" ] || {
+        echo "ERROR: render authority file changed while staging: $NAME" >&2
+        exit 1
+      }
+  done
+  # Only the three descriptors are staged. There is no qualification vector: the Gateway
+  # runtime never reads one (capabilities come from the Hub-published candidate, profile
+  # facts from the descriptors), and requiring a fabricated one would block the accepted
+  # descriptor-only default. The exact 3-name directory is the runtime's tamper property.
+fi
 
 echo "==> stamping the build"
 # One identity, written in two places the app and the gateway each read, so

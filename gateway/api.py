@@ -26,6 +26,7 @@ work and reports on it, so a long local job never blocks a Story Studio poll.
 from __future__ import annotations
 
 
+import hmac
 import json
 import logging
 import os
@@ -63,7 +64,11 @@ from . import fleet
 from . import retention
 from .notifier import notifier
 from .activity import is_story_path, record
-from .runtime import store, worker
+from .runtime import render_service, store, worker
+from .render_service import (
+    _UUID, AuthenticatedPrivateRender, PrivateRenderUnavailable, RenderServiceError,
+)
+from .render_hash_v1 import decode_render_json
 from .store import BACKGROUND, HOLD_CLOSED, NORMAL, PRIORITIES, TERMINAL_STATES, artifacts_of
 from .worker import cancel_upstream
 from .voices import story_row, tts_output_container, voice_registry, voices_for_model
@@ -325,6 +330,11 @@ async def _gateway_error_handler(_: Request, exc: GatewayError) -> JSONResponse:
     return JSONResponse(status_code=exc.status, content=body, headers=exc.headers or None)
 
 
+@app.exception_handler(RenderServiceError)
+async def _render_service_error_handler(_: Request, exc: RenderServiceError) -> JSONResponse:
+    return JSONResponse(status_code=exc.status, content={"error": {"code": exc.code}})
+
+
 # ---------------------------------------------------------------------------
 # Auth. Scopes are deliberately ignored: this is a single-owner gateway, not a
 # multi-tenant API, and Story Studio only uses scopes for user-facing hints.
@@ -348,6 +358,30 @@ def require_auth(request: Request, authorization: str | None = Header(default=No
         )
     if configured and token != configured:
         raise GatewayError(403, "Invalid API key.", "FORBIDDEN")
+
+
+def require_private_render(
+    authorization: str | None = Header(default=None),
+    x_story_instance: str | None = Header(default=None),
+) -> AuthenticatedPrivateRender:
+    """The Gateway API key, checked like `require_content_auth` (no loopback exemption, constant
+    time), plus the caller's Story instance. Owner-approved 2026-10-16: one key for renders too."""
+    configured = gateway_api_key()
+    if not configured:
+        raise PrivateRenderUnavailable()
+    if not authorization or not authorization.lower().startswith("bearer "):
+        raise RenderServiceError("UNAUTHORIZED", 401)
+    token = authorization[7:].strip()
+    if not token or x_story_instance is None or _UUID.fullmatch(x_story_instance) is None:
+        raise RenderServiceError("UNAUTHORIZED", 401)
+    if not hmac.compare_digest(token.encode("utf-8"), configured.encode("utf-8")):
+        raise RenderServiceError("FORBIDDEN", 403)
+    installation = store.render_installation()
+    return AuthenticatedPrivateRender(
+        owner_scope=installation["owner_scope"],
+        gateway_instance_id=installation["gateway_instance_id"],
+        story_instance_id=x_story_instance,
+    )
 
 
 async def require_auth_async(request: Request, authorization: str | None = Header(default=None)) -> None:
@@ -1460,6 +1494,148 @@ def _pop_priority(params: Any) -> str:
     raise GatewayError(
         400, f"priority must be one of {', '.join(PRIORITIES)}; got {value!r}. Omit it for normal work.",
         "INVALID_PARAMS")
+
+
+# ---------------------------------------------------------------------------
+# Private final-render transport. Its bearer has no loopback or ordinary-key path.
+# ---------------------------------------------------------------------------
+async def _bounded_render_json(request: Request) -> bytes:
+    body = bytearray()
+    async for piece in request.stream():
+        if len(body) + len(piece) > 1024 * 1024:
+            raise RenderServiceError("RENDER_REQUEST_INVALID", 413)
+        body.extend(piece)
+    if not body:
+        raise RenderServiceError("RENDER_REQUEST_INVALID", 422)
+    return bytes(body)
+
+
+@app.get("/v1/final-renders/capabilities")
+def final_render_capabilities(
+    principal: AuthenticatedPrivateRender = Depends(require_private_render),
+) -> dict[str, Any]:
+    return render_service.capabilities(principal)
+
+
+@app.get("/v1/final-renders/blobs/{sha256}/status")
+def final_render_blob_status(
+    sha256: str, size_bytes: int = Query(..., ge=1),
+    principal: AuthenticatedPrivateRender = Depends(require_private_render),
+) -> dict[str, Any]:
+    return render_service.blob_status(principal, sha256, size_bytes)
+
+
+@app.put("/v1/final-renders/blobs/{sha256}")
+async def final_render_put_blob(
+    sha256: str, request: Request,
+    size_bytes: int = Query(..., ge=1), offset: int = Query(..., ge=0),
+    content_length: int | None = Header(default=None, alias="Content-Length"),
+    content_range: str | None = Header(default=None, alias="Content-Range"),
+    principal: AuthenticatedPrivateRender = Depends(require_private_render),
+) -> dict[str, Any]:
+    if content_length is None:
+        raise RenderServiceError("BLOB_RANGE_INVALID", 411)
+    if content_range != f"bytes {offset}-{offset + content_length - 1}/{size_bytes}":
+        raise RenderServiceError("BLOB_RANGE_INVALID", 422)
+    return await render_service.put_blob(
+        principal, sha256, size_bytes, offset, content_length, request.stream()
+    )
+
+
+@app.post("/v1/final-renders", status_code=202)
+async def create_final_render(
+    request: Request, idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+    principal: AuthenticatedPrivateRender = Depends(require_private_render),
+) -> dict[str, Any]:
+    if not idempotency_key:
+        raise RenderServiceError("IDEMPOTENCY_KEY_REQUIRED", 422)
+    return render_service.accept(principal, idempotency_key, await _bounded_render_json(request))
+
+
+@app.get("/v1/final-renders/by-idempotency-key/{key}")
+def final_render_by_key(
+    key: str, principal: AuthenticatedPrivateRender = Depends(require_private_render),
+) -> dict[str, Any]:
+    row = render_service.by_key(principal, key)
+    if row is None:
+        raise RenderServiceError("RENDER_NOT_FOUND", 404)
+    return row
+
+
+@app.post("/v1/final-renders/by-idempotency-key/{key}/cancel")
+async def cancel_final_render_by_key(
+    key: str, request: Request,
+    principal: AuthenticatedPrivateRender = Depends(require_private_render),
+) -> dict[str, Any]:
+    try:
+        body = decode_render_json(await _bounded_render_json(request))
+    except ValueError:
+        raise RenderServiceError("CANCEL_REQUEST_INVALID", 422) from None
+    if (type(body) is not dict or set(body) != {"expected_request_sha256"}
+            or type(body["expected_request_sha256"]) is not str
+            or re.fullmatch(r"[0-9a-f]{64}", body["expected_request_sha256"]) is None):
+        raise RenderServiceError("CANCEL_REQUEST_INVALID", 422)
+    return render_service.request_cancel_by_key(
+        principal, key, body["expected_request_sha256"]
+    )
+
+
+@app.get("/v1/final-renders/{gateway_job_id}")
+def final_render_status(
+    gateway_job_id: str,
+    principal: AuthenticatedPrivateRender = Depends(require_private_render),
+) -> dict[str, Any]:
+    return render_service.status(principal, gateway_job_id)
+
+
+@app.post("/v1/final-renders/{gateway_job_id}/cancel")
+def cancel_final_render(
+    gateway_job_id: str,
+    principal: AuthenticatedPrivateRender = Depends(require_private_render),
+) -> dict[str, Any]:
+    return render_service.request_cancel(principal, gateway_job_id)
+
+
+@app.get("/v1/final-renders/{gateway_job_id}/output")
+def final_render_output(
+    gateway_job_id: str, range_header: str | None = Header(default=None, alias="Range"),
+    if_match: str | None = Header(default=None, alias="If-Match"),
+    principal: AuthenticatedPrivateRender = Depends(require_private_render),
+) -> StreamingResponse:
+    lease = render_service.open_output(
+        principal, gateway_job_id, range_header, if_match
+    )
+
+    def chunks():
+        with lease:
+            yield from lease.chunks()
+
+    headers = {
+        "Accept-Ranges": "bytes", "ETag": '"' + lease.sha256 + '"',
+        "Content-Length": str(lease.length),
+    }
+    if lease.status == 206:
+        headers["Content-Range"] = (
+            f"bytes {lease.offset}-{lease.offset + lease.length - 1}/{lease.total}"
+        )
+    return StreamingResponse(chunks(), status_code=lease.status, media_type="video/mp4",
+                             headers=headers)
+
+
+@app.post("/v1/final-renders/{gateway_job_id}/ack")
+async def acknowledge_final_render(
+    gateway_job_id: str, request: Request,
+    principal: AuthenticatedPrivateRender = Depends(require_private_render),
+) -> dict[str, Any]:
+    try:
+        body = decode_render_json(await _bounded_render_json(request))
+    except ValueError:
+        raise RenderServiceError("OUTPUT_RECEIPT_INVALID", 422) from None
+    if type(body) is not dict or set(body) != {"expected_receipt_digest"}:
+        raise RenderServiceError("OUTPUT_RECEIPT_INVALID", 422)
+    return render_service.acknowledge_output(
+        principal, gateway_job_id, body["expected_receipt_digest"]
+    )
 
 
 #: A job group as Story sends it: `<project-slug>/<episode-id | project>` (INTERFACES-0144, D6).

@@ -32,8 +32,10 @@ function element(value = '') {
     hidden: false,
     readOnly: false,
     dataset: {},
+    attrs: {},
     style: {},
     select() {},
+    setAttribute(name, value) { this.attrs[name] = String(value); },
   };
 }
 
@@ -255,6 +257,209 @@ test('once set up, the only view is the packs and the one add action', async () 
   assert.equal(h.node('packs-panel-shelved').hidden, false);
   assert.equal(h.node('packs-panel-setup').hidden, true);
   assert.match(h.node('packs-intro').textContent, /available to Story Studio/);
+});
+
+test('the archive bank is outside the shelf panels that setup toggles', () => {
+  const span = (marker) => {
+    const at = source.indexOf(marker);
+    assert.ok(at > 0, `${marker} must exist`);
+    const open = source.lastIndexOf('<div', at);
+    const tags = /<div\b|<\/div>/g;
+    tags.lastIndex = open;
+    let depth = 0;
+    let match;
+    while ((match = tags.exec(source))) {
+      depth += match[0] === '</div>' ? -1 : 1;
+      if (depth === 0) return [open, tags.lastIndex];
+    }
+    throw new Error(`unclosed panel: ${marker}`);
+  };
+  const bank = source.indexOf('id="archive-bank-section"');
+  assert.ok(bank > 0, 'the archive bank section must exist');
+  for (const marker of ['id="packs-panel-setup"', 'id="packs-panel-shelved"']) {
+    const [start, end] = span(marker);
+    assert.ok(bank < start || bank > end, `archive bank must not be hidden inside ${marker}`);
+  }
+});
+
+test('the archive bank stays available with no shelf configured', async () => {
+  const h = harness(async pathName => pathName === '/content-shelf'
+    ? {...READY_SHELF, configured: false, available: true, releases: []}
+    : {archives: []});
+  await h.context.loadContentShelf();
+
+  assert.equal(h.node('packs-panel-setup').hidden, false);
+  assert.equal(h.node('archive-bank-section').hidden, false);
+  assert.equal(h.node('archive-preserve-add').disabled, false);
+});
+
+test('preserving an archive posts only to the archive bank and never sets up or publishes the shelf', async () => {
+  const calls = [];
+  const h = harness(async (pathName, options) => {
+    calls.push([pathName, (options && options.method) || 'GET']);
+    if (pathName === '/content-library') return {archives: []};
+    if (pathName === '/content-library/import') {
+      return {archive_sha256: 'a'.repeat(64), bytes: 1024, title: 'Portable Pack'};
+    }
+    return {};
+  });
+  const input = h.node('archive-preserve-files');
+  input.files = [{name: 'portable.sspack', size: 1024}];
+  const button = element();
+  button.textContent = 'Preserve Archives';
+
+  await h.context.preservePackArchives(button);
+
+  assert.deepEqual(calls.filter(([, method]) => method === 'POST'),
+    [['/content-library/import', 'POST']]);
+  assert.equal(calls.some(([pathName]) => /setup|import-and-publish/.test(pathName)), false);
+  assert.equal(button.disabled, false);
+  assert.equal(input.value, '');
+  assert.match(h.node('archive-preserve-message').textContent, /1 archive preserved/);
+  assert.match(h.node('archive-preserve-message').textContent, /Nothing was added to the shelf or published/);
+});
+
+test('a pack over the archive ceiling is refused before it is posted', async () => {
+  const calls = [];
+  const h = harness(async (pathName, options) => {
+    calls.push([pathName, (options && options.method) || 'GET']);
+    return pathName === '/content-library' ? {archives: []} : {};
+  });
+  const input = h.node('archive-preserve-files');
+  input.files = [{name: 'large.sspack', size: 50 * 1024 * 1024 + 1}];
+  const button = element();
+
+  await h.context.preservePackArchives(button);
+
+  assert.equal(calls.some(([pathName, method]) => pathName === '/content-library/import' && method === 'POST'), false);
+  assert.equal(button.disabled, false);
+  assert.match(h.node('archive-preserve-message').textContent, /larger than 50 MiB/);
+});
+
+test('an archive the bank refuses is reported and the control comes back', async () => {
+  const h = harness(async pathName => {
+    if (pathName === '/content-library') return {archives: []};
+    if (pathName === '/content-library/import') throw new Error('Pack archive must be nonempty and at most 50 MiB.');
+    return {};
+  });
+  const input = h.node('archive-preserve-files');
+  input.files = [{name: 'broken.sspack', size: 10}];
+  const button = element();
+
+  await h.context.preservePackArchives(button);
+
+  assert.equal(button.disabled, false);
+  assert.match(h.node('archive-preserve-message').textContent, /Not preserved/);
+  assert.match(h.node('archive-preserve-message').textContent, /nonempty and at most 50 MiB/);
+});
+
+test('the archive bank refreshes from the existing inventory without reading the shelf', async () => {
+  const calls = [];
+  const digest = 'c'.repeat(64);
+  const h = harness(async pathName => {
+    calls.push(pathName);
+    return {archives: [
+      {
+        archive_sha256: digest,
+        pack_id: 'com.fixture.pack',
+        version: '1.2.3',
+        bytes: 2048,
+        title: '<img src=x onerror=alert(1)>',
+        integrity: 'verified',
+      },
+      {archive_sha256: '../escape', title: 'bad row'},
+    ]};
+  });
+
+  await h.context.loadPreservedArchives();
+
+  const html = h.node('archive-bank-list').innerHTML;
+  assert.deepEqual(calls, ['/content-library']);
+  assert.match(html, /&lt;img src=x onerror=alert\(1\)&gt;/);
+  assert.doesNotMatch(html, /<img src=x onerror=alert/);
+  assert.match(html, new RegExp(`data-archive-digest="${digest}"`));
+  assert.match(html, /2\.0 KiB/);
+  assert.match(html, /Verified/);
+  assert.match(html, /Archive copy/);
+  assert.doesNotMatch(html, /Not installed/);
+  assert.doesNotMatch(html, /\.\.\/escape/);
+});
+
+test('an archive downloads by its exact digest through the authenticated blob door', async () => {
+  const digest = 'd'.repeat(64);
+  const blobCalls = [];
+  const saved = [];
+  const revoked = [];
+  const h = harness(async () => ({}), {
+    apiBlob: async pathName => {
+      blobCalls.push(pathName);
+      return {size: 1024};
+    },
+    downloadBlob: (url, filename) => saved.push([url, filename]),
+    URL: {
+      createObjectURL: () => 'blob:exact-archive',
+      revokeObjectURL: url => revoked.push(url),
+    },
+    setTimeout: callback => callback(),
+  });
+  const button = element();
+  button.textContent = 'Download .sspack';
+
+  await h.context.downloadPreservedArchive(button, digest);
+
+  assert.deepEqual(blobCalls, [`/content-library/${digest}/archive`]);
+  assert.deepEqual(saved, [['blob:exact-archive', `${digest}.sspack`]]);
+  assert.deepEqual(revoked, ['blob:exact-archive']);
+  assert.equal(button.disabled, false);
+  assert.equal(button.textContent, 'Download .sspack');
+  assert.match(h.node('archive-preserve-message').textContent, /Downloaded/);
+});
+
+test('a failed archive download is reported and the control comes back', async () => {
+  const h = harness(async () => ({}), {
+    apiBlob: async () => { throw new Error('HTTP 410'); },
+  });
+  const digest = 'e'.repeat(64);
+  const button = element();
+  button.textContent = 'Download .sspack';
+
+  await h.context.downloadPreservedArchive(button, digest);
+
+  assert.equal(button.disabled, false);
+  assert.equal(button.textContent, 'Download .sspack');
+  assert.match(h.node('archive-preserve-message').textContent, /Could not download/);
+  assert.match(h.node('archive-preserve-message').textContent, /HTTP 410/);
+});
+
+test('a preserved archive stays reported when the bank list cannot refresh', async () => {
+  const h = harness(async pathName => {
+    if (pathName === '/content-library/import') {
+      return {archive_sha256: 'a'.repeat(64), bytes: 1024, title: 'Portable Pack'};
+    }
+    throw new Error('HTTP 500');
+  });
+  const input = h.node('archive-preserve-files');
+  input.files = [{name: 'portable.sspack', size: 1024}];
+  const button = element();
+
+  await h.context.preservePackArchives(button);
+
+  const message = h.node('archive-preserve-message').textContent;
+  assert.match(message, /1 archive preserved/);
+  assert.match(message, /Cannot read preserved archives/);
+  assert.match(message, /HTTP 500/);
+  assert.equal(button.disabled, false);
+});
+
+test('a failed archive bank refresh is not drawn as an empty bank', async () => {
+  const h = harness(async () => { throw new Error('HTTP 500'); });
+
+  await h.context.loadPreservedArchives();
+
+  assert.match(h.node('archive-bank-list').innerHTML, /unavailable/i);
+  assert.doesNotMatch(h.node('archive-bank-list').innerHTML, /No preserved archives/);
+  assert.match(h.node('archive-preserve-message').textContent, /Cannot read preserved archives/);
+  assert.match(h.node('archive-preserve-message').textContent, /HTTP 500/);
 });
 
 test('the full console script remains valid JavaScript', () => {

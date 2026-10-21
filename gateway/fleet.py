@@ -1540,7 +1540,7 @@ def _trim_worker(row: object) -> dict | None:
         return None
     capacity = row.get("available_capacity")
     capacity = capacity if isinstance(capacity, dict) else {}
-    return {
+    result = {
         "id": row.get("service_id"),
         "studio": row.get("studio_type"),
         "modality": _studio_modality(row.get("studio_type"), row.get("modality")),
@@ -1559,6 +1559,17 @@ def _trim_worker(row: object) -> dict | None:
         "models": _worker_models(row),
         "supported_operations": _worker_operations(row),
     }
+    if "video.final_render" in result["supported_operations"]:
+        for key in (
+            "operation", "physical_machine_id", "hardware_class", "profile_digest",
+            "tools_digest", "compiler_digest", "qualification_digest", "selected_tier",
+            "exact_encoder", "font_support", "bounds", "profile_execution_bounds",
+            "production_eligible", "production_enabled", "qualification_candidates",
+            "encode",
+        ):
+            result[key] = row.get(key)
+        result["available_capacity"] = dict(capacity)
+    return result
 
 
 def _workers_from_nodes(nodes: object) -> list[dict]:
@@ -4053,6 +4064,269 @@ def usable_location_ids() -> set[str]:
         }
     except Exception:  # noqa: BLE001 - a routing hint must never break the catalogue
         return set()
+
+
+_RENDER_DIGEST_FIELDS = (
+    "profile_digest", "tools_digest", "compiler_digest", "qualification_digest",
+)
+_RENDER_BOUND_FIELDS = (
+    "max_rss_bytes", "max_wall_seconds", "min_available_memory_bytes", "output_limit_bytes",
+)
+
+#: The Hub's compiler-derived encode fact (`components/hub/backend/render_encode.py`).
+#: The Gateway never compiles or invents a combination: it validates the closed document
+#: at the fleet boundary and republishes only what every eligible machine advertises.
+RENDER_ENCODE_FORMAT = "studio.render.encode-authority.v1"
+_RENDER_ENCODE_KEYS = frozenset(("format", "entries"))
+_RENDER_ENCODE_ENTRY_KEYS = frozenset((
+    "container", "requested_codec", "requested_effort", "crf",
+    "quality_cpu_preset", "bitrate_kbps",
+))
+_RENDER_ENCODE_ENTRY_ORDER = (
+    "container", "requested_codec", "requested_effort", "crf",
+    "quality_cpu_preset", "bitrate_kbps",
+)
+_RENDER_ENCODE_VALUES = {
+    "container": frozenset(("mp4", "mov", "webm")),
+    "requested_codec": frozenset(("h264", "h265")),
+    "requested_effort": frozenset(("ultrafast", "medium", "slow", "hardware")),
+    "quality_cpu_preset": frozenset(("medium", "slow", "ultrafast")),
+}
+#: The Hub's uncapped grid is 3 x 2 x 4 x 5 = 120 entries; a larger document is not its answer.
+_RENDER_ENCODE_MAX_ENTRIES = 120
+
+
+def render_encode_document(value: object) -> bool:
+    """The closed encode fact is absent-able, `None`, or an exact compiler-derived document."""
+    if value is None:
+        return True
+    if not isinstance(value, dict) or set(value) != _RENDER_ENCODE_KEYS:
+        return False
+    if value.get("format") != RENDER_ENCODE_FORMAT:
+        return False
+    entries = value.get("entries")
+    if not isinstance(entries, list) or len(entries) > _RENDER_ENCODE_MAX_ENTRIES:
+        return False
+    for entry in entries:
+        if not isinstance(entry, dict) or set(entry) != _RENDER_ENCODE_ENTRY_KEYS:
+            return False
+        if any(not isinstance(entry.get(name), str)
+               or entry[name] not in allowed
+               for name, allowed in _RENDER_ENCODE_VALUES.items()):
+            return False
+        # Contract bounds, not today's grid: a non-negative safe integer CRF and a
+        # positive safe integer cap are what the Hub may publish; the exact five quality
+        # pairs are the compiler's business, not this validator's.
+        crf = entry.get("crf")
+        if type(crf) is not int or not 0 <= crf <= 2 ** 53 - 1:
+            return False
+        bitrate = entry.get("bitrate_kbps")
+        if bitrate is not None and (
+                type(bitrate) is not int or not 1 <= bitrate <= 2 ** 53 - 1):
+            return False
+    return True
+
+
+def render_encode_intersection(candidates: object) -> dict | None:
+    """The encode combinations every eligible candidate advertises, or `None` when unknown.
+
+    Each machine's document is derived by the Hub from its own pinned compiler. The
+    Gateway only intersects the entry sets; a candidate without a document (an older
+    Hub), an explicit `None`, or a malformed document makes the answer unknown rather
+    than guessed. An empty intersection is still an answer: nothing can be rendered
+    remotely with an encode every machine agrees on, so a caller falls back locally.
+    """
+    if not isinstance(candidates, list) or not candidates:
+        return None
+    shared: dict[tuple, dict] | None = None
+    for candidate in candidates:
+        capability = candidate.get("capability") if isinstance(candidate, dict) else None
+        document = capability.get("encode") if isinstance(capability, dict) else None
+        if not render_encode_document(document) or document is None:
+            return None
+        current: dict[tuple, dict] = {}
+        for entry in document["entries"]:
+            current.setdefault(tuple(entry[name] for name in _RENDER_ENCODE_ENTRY_ORDER), entry)
+        if shared is None:
+            shared = current
+        else:
+            shared = {key: entry for key, entry in shared.items() if key in current}
+    return {"format": RENDER_ENCODE_FORMAT, "entries": list((shared or {}).values())}
+
+
+def _render_candidate_shape(value: object, *, qualification: bool) -> dict | None:
+    if not isinstance(value, dict):
+        return None
+    required = {
+        "vector_id", "hardware_class", *_RENDER_DIGEST_FIELDS, "selected_tier", "exact_encoder",
+        "font_support", "bounds", "profile_execution_bounds", "production_eligible",
+        "qualification_only", "available_capacity",
+    } if qualification else {
+        "hardware_class", *_RENDER_DIGEST_FIELDS, "selected_tier", "exact_encoder",
+        "font_support", "bounds", "profile_execution_bounds", "production_eligible",
+        "production_enabled", "available_capacity",
+    }
+    if ((qualification and set(value) not in (required, required | {"encode"}))
+            or (not qualification and any(key not in value for key in required))):
+        return None
+    if "encode" in value and not render_encode_document(value["encode"]):
+        return None
+    if any(not isinstance(value.get(key), str) or len(value[key]) != 64
+           or any(char not in "0123456789abcdef" for char in value[key])
+           for key in _RENDER_DIGEST_FIELDS):
+        return None
+    if not all(isinstance(value.get(key), str) and value[key] for key in
+               ("hardware_class", "selected_tier", "exact_encoder")):
+        return None
+    if type(value.get("font_support")) is not bool:
+        return None
+    bounds = value.get("bounds")
+    if not isinstance(bounds, dict) or set(bounds) != set(_RENDER_BOUND_FIELDS):
+        return None
+    if any(type(bounds[key]) is not int or bounds[key] <= 0 for key in _RENDER_BOUND_FIELDS):
+        return None
+    if not isinstance(value.get("profile_execution_bounds"), dict):
+        return None
+    capacity = value.get("available_capacity")
+    if (not isinstance(capacity, dict) or set(capacity) != {"slots", "slots_total"}
+            or any(type(capacity[key]) is not int or capacity[key] < 0 for key in capacity)):
+        return None
+    if qualification:
+        if (value.get("production_eligible") is not False
+                or value.get("qualification_only") is not True
+                or not isinstance(value.get("vector_id"), str) or not value["vector_id"]
+                or capacity["slots_total"] != 1
+                or capacity["slots"] not in (0, 1)):
+            return None
+    elif (type(value.get("production_eligible")) is not bool
+          or type(value.get("production_enabled")) is not bool):
+        return None
+    return value
+
+
+def render_candidates(required_profile_digest: str | None, *,
+                      qualification: bool = False) -> list[dict]:
+    """Qualified physical final-render candidates, independent of model catalogue rows.
+
+    Production workers always count; with `qualification`, a worker that is not yet production
+    may also offer its first published qualification candidate (the Hub's operator intent)."""
+    if (not isinstance(required_profile_digest, str)
+            or len(required_profile_digest) != 64
+            or any(char not in "0123456789abcdef" for char in required_profile_digest)):
+        return []
+    view = snapshot(allow_stale=True)
+    generated_at = view.get("generated_at") if isinstance(view, dict) else None
+    now = time.time()
+    if (type(generated_at) not in (int, float) or isinstance(generated_at, bool)
+            or not math.isfinite(generated_at) or generated_at > now
+            or now - generated_at > _MEMBERS_STALE_AFTER_S):
+        return []
+    rows = view.get("locations") or []
+    configured = {str(row.get("id") or "") for row in roster()}
+    candidates: list[dict] = []
+    for location in rows:
+        if (not isinstance(location, dict) or location.get("local") is not False
+                or str(location.get("id") or "") not in configured
+                or location.get("reachable") is not True or location.get("ready") is not True
+                or location.get("drained") is not False or location.get("paused_at") is not None
+                or not location.get("site_id") or not location.get("controller_id")
+                or "paused_at" not in location or "members_stale_seconds" not in location
+                or location.get("members_from") is not None
+                or location.get("members_stale_seconds") is not None):
+            continue
+        machines = {str(item.get("physical_machine_id") or item.get("machine")
+                        or item.get("id") or ""): item
+                    for item in (location.get("machines") or []) if isinstance(item, dict)}
+        nodes = {str(item.get("id") or ""): item for item in (location.get("nodes") or [])
+                 if isinstance(item, dict)}
+        for worker in location.get("workers") or []:
+            if (not isinstance(worker, dict)
+                    or "video.final_render" not in (worker.get("supported_operations") or [])
+                    or worker.get("online") is not True or worker.get("ready") is not True
+                    or worker.get("busy") is not False or worker.get("drained") is not False
+                    or worker.get("maintenance") is not False
+                    or worker.get("quarantined") is not False):
+                continue
+            raw: object = worker
+            qualifying = False
+            if not (worker.get("production_enabled") is True
+                    and worker.get("production_eligible") is True):
+                match = next((item for item in (worker.get("qualification_candidates") or [])
+                              if isinstance(item, dict)), None) if qualification else None
+                if match is None:
+                    continue
+                raw, qualifying = match, True
+            capability = _render_candidate_shape(raw, qualification=qualifying)
+            if capability is None or capability["profile_digest"] != required_profile_digest:
+                continue
+            if not any(chip in capability["hardware_class"].upper()
+                       for chip in ("M4", "M2", "M1")):
+                continue
+            machine_id = str(worker.get("physical_machine_id") or worker.get("machine") or "")
+            machine = machines.get(machine_id, {})
+            node = nodes.get(machine_id, {})
+            available_gb = machine.get("available_gb")
+            disk_free_gb = machine.get("disk_free_gb")
+            if (not machine_id or machine_id == str(location.get("controller_id") or "")
+                    or machine.get("reachable") is not True
+                    or type(available_gb) not in (int, float)
+                    or isinstance(available_gb, bool) or not math.isfinite(available_gb)
+                    or available_gb <= 0
+                    or ("memory_pressure" in machine
+                        and machine.get("memory_pressure") != "normal")
+                    or type(disk_free_gb) not in (int, float)
+                    or isinstance(disk_free_gb, bool) or not math.isfinite(disk_free_gb)
+                    or disk_free_gb <= 0 or machine.get("current_job") is not None
+                    or "current_job" not in machine
+                    or not isinstance(node, dict) or node.get("state") != "reachable"
+                    or node.get("paused") is not False or "current_job" not in node
+                    or node.get("current_job") is not None
+                    or node.get("on_previous_token") is not False):
+                continue
+            available_memory = max(0, int((available_gb - 0.005) * 1_000_000_000))
+            if available_memory < capability["bounds"]["min_available_memory_bytes"]:
+                continue
+            slots = capability["available_capacity"]["slots"]
+            label = machine.get("label")
+            chip = machine.get("chip")
+            memory_gb = machine.get("memory_gb")
+            if (slots <= 0 or type(label) is not str or not label
+                    or type(chip) is not str or not chip
+                    or type(memory_gb) not in (int, float)
+                    or not math.isfinite(memory_gb) or memory_gb <= 0):
+                continue
+            candidates.append({
+                "site_id": str(location["site_id"]),
+                "roster_controller_id": str(location["id"]),
+                "hub_controller_id": str(location["controller_id"]),
+                "target_hub_controller_id": machine_id,
+                "node_id": machine_id,
+                "hardware_class": capability["hardware_class"],
+                "profile_digest": capability["profile_digest"],
+                "qualification_vector_id": capability.get("vector_id"),
+                "available_slots": slots,
+                "available_memory_source": {
+                    "field": "available_gb", "unit_bytes": 1_000_000_000,
+                    "decimal_places": 2, "conservative_bytes": available_memory,
+                },
+                "priority_rank": (
+                    _machine_priority_order(machine, nodes.get(machine_id) or {}).index("video")
+                    if "video" in _machine_priority_order(
+                        machine, nodes.get(machine_id) or {}
+                    ) else _UNLISTED_PRIORITY
+                ),
+                "selected_machine": {
+                    "id": machine_id, "label": label, "chip": chip,
+                    "memory_gb": memory_gb,
+                    "hardware_class": capability["hardware_class"],
+                },
+                "capability": capability,
+            })
+    def order(item: dict) -> tuple[int, float, str, str]:
+        hardware = item["hardware_class"].upper()
+        rank = 0 if "M4" in hardware else 1 if "M2" in hardware else 2 if "M1" in hardware else 3
+        return rank, item["priority_rank"], item["site_id"], item["node_id"]
+    return sorted(candidates, key=order)
 
 
 #: The Hub's operation names for this gateway's modalities, read from the Hub's own

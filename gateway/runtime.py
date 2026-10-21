@@ -14,11 +14,20 @@ interpreter, and every read-modify-write already holds the store's lock.
 
 from __future__ import annotations
 
+import hashlib
+import json
+import math
+import os
+import stat
 import time
 
 from .catalog import catalog
-from .config import DB_PATH
+from . import fleet as fleet_module
+from .config import BUNDLED_DATA_DIR, DATA_DIR, DB_PATH, gateway_api_key
 from .providers import registry
+from .render_assets import RenderAssetStore
+from .render_hash_v1 import decode_render_json
+from .render_service import FinalRenderService, RegisteredHubRenderClient, RenderDestination
 from .store import JobStore
 from .worker import Worker
 
@@ -29,9 +38,187 @@ STARTED_AT = time.time()
 store = JobStore(DB_PATH)
 worker = Worker(store)
 
+
+def _digest(value: object) -> bool:
+    return (type(value) is str and len(value) == 64
+            and all(char in "0123456789abcdef" for char in value))
+
+
+def _positive_integer(value: object) -> bool:
+    return type(value) is int and 1 <= value <= 9_007_199_254_740_991
+
+
+def _valid_bounds(value: object) -> bool:
+    keys = {
+        "canvas_pairs", "working_fps", "max_duration_sec", "max_operations",
+        "max_assets", "max_asset_bytes", "max_total_input_bytes", "max_pixel_frames",
+        "scratch_reserve_bytes", "output_limit_bytes", "process_tree_rss_limit_bytes",
+        "cumulative_wall_seconds",
+    }
+    if type(value) is not dict or set(value) != keys:
+        return False
+    pairs = value["canvas_pairs"]
+    fps = value["working_fps"]
+    duration = value["max_duration_sec"]
+    integers = keys - {"canvas_pairs", "working_fps", "max_duration_sec"}
+    return (
+        type(pairs) is list and bool(pairs)
+        and all(type(pair) is dict and set(pair) == {"width", "height"}
+                and _positive_integer(pair["width"]) and _positive_integer(pair["height"])
+                for pair in pairs)
+        and type(fps) is list and bool(fps) and all(_positive_integer(item) for item in fps)
+        and type(duration) in (int, float) and math.isfinite(duration) and duration > 0
+        and all(_positive_integer(value[key]) for key in integers)
+    )
+
+
+_AUTHORITY_DESCRIPTOR_NAMES = frozenset(("profile.json", "tools.json", "compiler.json"))
+def _bundled_render_descriptors() -> tuple[bytes | None, dict]:
+    root = BUNDLED_DATA_DIR / "final-render"
+    values: dict[str, bytes] = {}
+    def identity(info: os.stat_result) -> tuple[int, ...]:
+        return (info.st_dev, info.st_ino, info.st_mode, info.st_uid, info.st_nlink,
+                info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+    def read(path) -> bytes:
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+        try:
+            before = os.fstat(descriptor)
+            if not stat.S_ISREG(before.st_mode) or not 2 <= before.st_size <= 1024 * 1024:
+                raise OSError("invalid bundled render descriptor")
+            raw = bytearray()
+            while len(raw) <= 1024 * 1024:
+                piece = os.read(descriptor, min(4096, 1024 * 1024 + 1 - len(raw)))
+                if not piece:
+                    break
+                raw.extend(piece)
+            after = os.fstat(descriptor)
+            visible = os.stat(path, follow_symlinks=False)
+            if len(raw) != before.st_size or identity(before) != identity(after) \
+                    or identity(after) != identity(visible):
+                raise OSError("unstable bundled render descriptor")
+            return bytes(raw)
+        finally:
+            os.close(descriptor)
+    try:
+        root_info = root.lstat()
+        if not stat.S_ISDIR(root_info.st_mode) or stat.S_ISLNK(root_info.st_mode):
+            return None, {}
+        if frozenset(os.listdir(root)) != _AUTHORITY_DESCRIPTOR_NAMES:
+            return None, {}
+        for name in ("profile", "tools", "compiler"):
+            path = root / (name + ".json")
+            descriptor = read(path)
+            if type(decode_render_json(descriptor)) is not dict:
+                return None, {}
+            values[name] = descriptor
+        profile = decode_render_json(values["profile"])
+        tools = decode_render_json(values["tools"])
+        compiler = decode_render_json(values["compiler"])
+        if (set(profile) != {
+                "format", "implementation", "recipe_namespace", "compiler_artifact_sha256",
+                "tools_artifact_sha256", "combination_set", "tier_policy", "output_policy",
+                "execution_bounds", "hardware_qualification_record_sha256",
+                "fidelity_record_sha256", "production_eligible"}
+                or profile.get("format") != "studio.render.profile.v1"
+                or type(profile.get("production_eligible")) is not bool
+                or profile.get("implementation") != "story-classic-no-font-v1"
+                or profile.get("recipe_namespace") != "studio.render.final.v1"
+                or profile.get("combination_set") != "retained-classic-no-font-candidate-v1"
+                or profile.get("tier_policy") != "story-final-chain-v1"
+                or profile.get("output_policy") != "story-final-output-v1"
+                or not _valid_bounds(profile.get("execution_bounds"))
+                or any(value is not None and not _digest(value) for value in (
+                    profile.get("hardware_qualification_record_sha256"),
+                    profile.get("fidelity_record_sha256"),
+                ))
+                or set(tools) != {
+                    "format", "platform", "ffmpeg_sha256", "ffmpeg_size_bytes",
+                    "ffprobe_sha256", "ffprobe_size_bytes", "architecture_evidence_sha256",
+                    "minimum_os_evidence_sha256", "linked_libraries_evidence_sha256",
+                    "build_configuration_evidence_sha256",
+                    "capability_inventory_evidence_sha256"}
+                or tools.get("format") != "studio.render.tools.v1"
+                or type(tools.get("platform")) is not str or not tools["platform"]
+                or any(not _digest(tools.get(key)) for key in (
+                    "ffmpeg_sha256", "ffprobe_sha256", "architecture_evidence_sha256",
+                    "minimum_os_evidence_sha256", "linked_libraries_evidence_sha256",
+                    "build_configuration_evidence_sha256",
+                    "capability_inventory_evidence_sha256",
+                ))
+                or not _positive_integer(tools.get("ffmpeg_size_bytes"))
+                or not _positive_integer(tools.get("ffprobe_size_bytes"))
+                or set(compiler) != {
+                    "format", "implementation", "python_runtime_sha256",
+                    "render_hash_sha256", "render_contract_sha256",
+                    "final_render_compiler_sha256"}
+                or compiler.get("format") != "studio.render.compiler.v1"):
+            return None, {}
+        if (type(compiler.get("implementation")) is not str
+                or not compiler["implementation"]
+                or any(not _digest(compiler.get(key)) for key in (
+                    "python_runtime_sha256", "render_hash_sha256",
+                    "render_contract_sha256", "final_render_compiler_sha256",
+                ))):
+            return None, {}
+        if (profile.get("tools_artifact_sha256") != hashlib.sha256(values["tools"]).hexdigest()
+                or profile.get("compiler_artifact_sha256")
+                != hashlib.sha256(values["compiler"]).hexdigest()):
+            return None, {}
+        facts = {
+            "tools": {"descriptor_utf8": values["tools"].decode("utf-8"),
+                      "digest": hashlib.sha256(values["tools"]).hexdigest()},
+            "compiler": {"descriptor_utf8": values["compiler"].decode("utf-8"),
+                         "digest": hashlib.sha256(values["compiler"]).hexdigest()},
+        }
+        return values["profile"], facts
+    except (OSError, UnicodeError, ValueError, TypeError):
+        return None, {}
+
+
+_render_profile, _render_profile_facts = _bundled_render_descriptors()
+_render_profile_value = decode_render_json(_render_profile) if _render_profile else {}
+_render_bounds = _render_profile_value.get("execution_bounds") or {}
+render_assets = RenderAssetStore(
+    DATA_DIR / "render-assets",
+    max_chunk_bytes=8 * 1024 * 1024,
+    max_asset_bytes=int(_render_bounds.get("max_asset_bytes") or 1),
+    reserve_bytes=int(_render_bounds.get("scratch_reserve_bytes") or 0),
+    measure_free_bytes=lambda: os.statvfs(DATA_DIR).f_bavail * os.statvfs(DATA_DIR).f_frsize,
+)
+
+
+def _render_destination(packet: dict) -> RenderDestination:
+    """Production capacity first; only without any does a qualification candidate take it."""
+    digest = packet["recipe"]["profile_digest"]
+    candidates = (fleet_module.render_candidates(digest)
+                  or fleet_module.render_candidates(digest, qualification=True))
+    if not candidates:
+        from .render_service import RenderServiceError
+        raise RenderServiceError("RENDER_DESTINATION_UNAVAILABLE", 503)
+    row = candidates[0]
+    return RenderDestination(
+        site_id=row["site_id"], roster_controller_id=row["roster_controller_id"],
+        hub_controller_id=row["hub_controller_id"], node_id=row["node_id"],
+        target_hub_controller_id=row["target_hub_controller_id"],
+        capability_snapshot_sha256=hashlib.sha256(
+            json.dumps(row["capability"], sort_keys=True, separators=(",", ":"),
+                       ensure_ascii=True, allow_nan=False).encode("ascii")
+        ).hexdigest(), qualification_vector_id=row.get("qualification_vector_id"),
+        capability_snapshot=row["capability"],
+        selected_machine=row["selected_machine"],
+    )
+
+
+render_service = FinalRenderService(
+    store, render_assets, destination_selector=_render_destination,
+    hub_client=RegisteredHubRenderClient(), key_configured=lambda: bool(gateway_api_key()),
+    profile_descriptor=_render_profile, profile_facts=_render_profile_facts,
+)
+worker.attach_render_service(render_service)
+
 # The catalogue publishes a `measured` block per row, read from settled jobs, so it
 # needs the store — and it cannot import it without a cycle (this module imports the
 # catalogue). Attached explicitly, after both exist.
 catalog.attach_store(store)
 
-__all__ = ["STARTED_AT", "catalog", "registry", "store", "worker"]
+__all__ = ["STARTED_AT", "catalog", "registry", "render_assets", "render_service", "store", "worker"]

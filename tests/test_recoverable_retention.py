@@ -22,12 +22,15 @@ class RecoverableRetentionTests(unittest.TestCase):
         self.artifacts = self.root / 'artifacts'
         self.trash = self.root / '_trash'
         self.legacy = self.root / 'trash'
+        self.render_trash = self.root / 'render-assets' / '_trash'
         self.recycled = self.root / 'macos-trash'
         self.artifacts.mkdir(parents=True)
         self.recycled.mkdir()
         self.now = 1791342000.0
         for name, value in [('ARTIFACT_DIR', self.artifacts), ('TRASH_DIR', self.trash),
-                            ('LEGACY_TRASH_DIR', self.legacy), ('SETTINGS_PATH', self.root/'retention.json'),
+                            ('LEGACY_TRASH_DIR', self.legacy),
+                            ('RENDER_TRASH_DIR', self.render_trash),
+                            ('SETTINGS_PATH', self.root/'retention.json'),
                             ('KEPT_PATH', self.root/'kept.json')]:
             p = patch.object(retention, name, value, create=True)
             p.start(); self.addCleanup(p.stop)
@@ -56,6 +59,34 @@ class RecoverableRetentionTests(unittest.TestCase):
         self.assertFalse(moved.exists()); self.assertEqual(result['recycled_files'],1)
         self.assertEqual(result['freed_bytes'],0)
         self.assertEqual(next(self.recycled.iterdir()).read_bytes(),b'x'*4096)
+
+    def test_render_asset_trash_buckets_age_by_mtime_and_keep_store_metadata(self):
+        retired = self.render_trash / ('retired-' + 'a'*32 + '-' + 'b'*12)
+        (retired / 'published').mkdir(parents=True)
+        blob = retired / 'published' / ('a'*32 + '.blob'); blob.write_bytes(b'y'*2048)
+        abandoned = self.render_trash / ('c'*32 + '-abandoned-' + 'd'*12)
+        (abandoned / 'chunks').mkdir(parents=True)
+        chunk = abandoned / 'chunks' / 'x.bin'; chunk.write_bytes(b'z'*1024)
+        staging = self.render_trash / ('e'*32 + '-staging-' + 'f'*12)
+        (staging / 'chunks').mkdir(parents=True)
+        (staging / 'chunks' / 'y.bin').write_bytes(b'w'*512)
+        history = self.render_trash / 'metadata-history' / 'keep'
+        history.mkdir(parents=True)
+        record = history / 'record.json'; record.write_bytes(b'{}')
+        old = self.now - 8*86400
+        for folder in (retired, abandoned, staging, self.render_trash / 'metadata-history'):
+            os.utime(folder, (old, old))
+        result = retention._transfer_trash(self.now)
+        self.assertEqual(result['recycled_files'], 3)
+        self.assertGreater(result['recycled_bytes'], 0)
+        self.assertFalse(blob.exists())
+        self.assertFalse(chunk.exists())
+        self.assertFalse((staging / 'chunks' / 'y.bin').exists())
+        self.assertFalse(retired.exists())
+        self.assertFalse(abandoned.exists())
+        # The store's audit evidence is not trash and survives untouched.
+        self.assertTrue(record.exists())
+        self.assertTrue((self.render_trash / 'metadata-history').is_dir())
 
     def test_combined_cap_oldest_retirement_first_and_new_overflow_same_pass(self):
         legacy=self.legacy/retention._day(self.now-2*86400)/'legacy.bin'

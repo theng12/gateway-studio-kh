@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import threading
 import time
@@ -37,6 +38,15 @@ GB = 1024**3
 #: Runtime trash is separate from the developer project's owner-managed _trash.
 TRASH_DIR = Path(str(DATA_DIR)) / "_trash"
 LEGACY_TRASH_DIR = Path(str(DATA_DIR)) / "trash"
+#: The render-asset store retires into its own trash. Its buckets are named for what
+#: they hold (a retired asset or a swept upload), not for a date, so they age by their
+#: own mtime -- the same shape as `_trash/logs`. The store's `metadata-history` is
+#: evidence, not trash, and is never enumerated here.
+RENDER_TRASH_DIR = Path(str(DATA_DIR)) / "render-assets" / "_trash"
+_RENDER_TRASH_BUCKET = re.compile(
+    r"(?:retired-[0-9a-f]{32}-[0-9a-f]{12}"
+    r"|[0-9a-f]{32}-(?:staging|abandoned)-[0-9a-f]{12})\Z"
+)
 #: Defaults for the runtime-trash policy; the owner's `retention.json` may change both.
 TRASH_DAYS = 7.0
 TRASH_CAP_BYTES = 20 * GB
@@ -299,8 +309,44 @@ def _trash_files() -> list[tuple[str, float, int, Path]]:
                     out.append(("logs", info.st_mtime, _physical(info), path))
             except OSError:
                 continue
+    if RENDER_TRASH_DIR.is_dir() and not RENDER_TRASH_DIR.is_symlink():
+        for folder in RENDER_TRASH_DIR.iterdir():
+            try:
+                if (_RENDER_TRASH_BUCKET.fullmatch(folder.name) is None
+                        or folder.is_symlink() or not folder.is_dir()
+                        or not _safe_path(folder, RENDER_TRASH_DIR)):
+                    continue
+                retired = folder.stat().st_mtime
+                for path in folder.rglob("*"):
+                    if _safe_path(path, RENDER_TRASH_DIR) and path.is_file():
+                        out.append((folder.name, retired, _physical(path.stat()), path))
+            except OSError:
+                continue
     out.sort(key=lambda entry: (entry[1], str(entry[3])))
     return out
+
+
+def _drop_empty_render_buckets() -> None:
+    """Remove only empty, recognized render-trash buckets; never a file, never anything else.
+
+    A bucket's files are recycled individually, so its layout directories (`published/`,
+    `chunks/`, ...) are left behind empty and the bucket itself is no longer empty. Those
+    empty directories are dropped bottom-up first, exactly as `_drop_empty_dirs` does for the
+    runtime trash roots, and then the bucket is removed only if it is truly empty.
+
+    `rmdir` refuses a non-empty directory by construction, so a bucket still holding a file
+    (for example a failed native transfer) stays. Unknown or malformed names are skipped, so
+    the store's `metadata-history` and any bucket the store did not create are preserved.
+    """
+    try:
+        for folder in RENDER_TRASH_DIR.iterdir():
+            if (_RENDER_TRASH_BUCKET.fullmatch(folder.name) is not None
+                    and folder.is_dir() and not folder.is_symlink()):
+                _drop_empty_dirs(folder)
+                if not any(folder.iterdir()):
+                    folder.rmdir()
+    except OSError:
+        return
 
 
 def _drop_empty_dirs(root: Path) -> None:
@@ -352,7 +398,12 @@ def _transfer_trash(moment: float, *, cap: int | None = None) -> dict:
             aged = moment - retired > limits["trash_days"] * 86400
             if not aged and total <= limit:
                 continue
-            root = TRASH_DIR if path.is_relative_to(TRASH_DIR) else LEGACY_TRASH_DIR
+            if path.is_relative_to(RENDER_TRASH_DIR):
+                root = RENDER_TRASH_DIR
+            elif path.is_relative_to(TRASH_DIR):
+                root = TRASH_DIR
+            else:
+                root = LEGACY_TRASH_DIR
             if not _safe_path(path, root):
                 continue
             try:
@@ -368,6 +419,7 @@ def _transfer_trash(moment: float, *, cap: int | None = None) -> dict:
             total -= size
         _drop_empty_dirs(TRASH_DIR)
         _drop_empty_dirs(LEGACY_TRASH_DIR)
+        _drop_empty_render_buckets()
         # Legacy purge fields remain as compatibility aliases; no file is purged,
         # and neither native Trash transfer nor retirement claims freed bytes.
         result = {"recycled_files": files, "recycled_bytes": moved,

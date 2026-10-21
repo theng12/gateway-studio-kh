@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import shutil
@@ -15,7 +16,12 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+
 BUILD_SCRIPT = ROOT / "menubar" / "build.sh"
+ARTIFACT_ROOT = ROOT / "_trash" / "tests" / "gateway-task6-packaging"
+ARTIFACT_ROOT.mkdir(parents=True, exist_ok=True)
+RUN_ROOT = Path(tempfile.mkdtemp(prefix="run-", dir=ARTIFACT_ROOT))
 PY_VERSION = "3.11.16"
 PY_TAG = "20260901"
 PY_ARCH = "aarch64"
@@ -26,14 +32,64 @@ def _write_executable(path: Path, body: str) -> None:
     path.chmod(0o755)
 
 
+def _canonical(value: object) -> bytes:
+    return json.dumps(
+        value, sort_keys=True, separators=(",", ":"), ensure_ascii=True, allow_nan=False
+    ).encode("ascii")
+
+
+def _authority_files() -> dict[str, bytes]:
+    tools = {
+        "format": "studio.render.tools.v1", "platform": "macos-arm64",
+        "ffmpeg_sha256": "1" * 64, "ffmpeg_size_bytes": 10,
+        "ffprobe_sha256": "2" * 64, "ffprobe_size_bytes": 11,
+        "architecture_evidence_sha256": "3" * 64,
+        "minimum_os_evidence_sha256": "4" * 64,
+        "linked_libraries_evidence_sha256": "5" * 64,
+        "build_configuration_evidence_sha256": "6" * 64,
+        "capability_inventory_evidence_sha256": "7" * 64,
+    }
+    tools_raw = _canonical(tools)
+    compiler_raw = _canonical({
+        "format": "studio.render.compiler.v1", "implementation": "hub-final-render-v1",
+        "python_runtime_sha256": "8" * 64, "render_hash_sha256": "9" * 64,
+        "render_contract_sha256": "a" * 64,
+        "final_render_compiler_sha256": "b" * 64,
+    })
+    execution_bounds = {
+        "canvas_pairs": [{"width": 1920, "height": 1080}], "working_fps": [24],
+        "max_duration_sec": 60, "max_operations": 32, "max_assets": 32,
+        "max_asset_bytes": 32 * 1024 * 1024,
+        "max_total_input_bytes": 64 * 1024 * 1024,
+        "max_pixel_frames": 1920 * 1080 * 24 * 60,
+        "scratch_reserve_bytes": 1, "output_limit_bytes": 32 * 1024 * 1024,
+        "process_tree_rss_limit_bytes": 1, "cumulative_wall_seconds": 60,
+    }
+    profile_raw = _canonical({
+        "format": "studio.render.profile.v1",
+        "implementation": "story-classic-no-font-v1",
+        "recipe_namespace": "studio.render.final.v1",
+        "compiler_artifact_sha256": hashlib.sha256(compiler_raw).hexdigest(),
+        "tools_artifact_sha256": hashlib.sha256(tools_raw).hexdigest(),
+        "combination_set": "retained-classic-no-font-candidate-v1",
+        "tier_policy": "story-final-chain-v1", "output_policy": "story-final-output-v1",
+        "execution_bounds": execution_bounds,
+        "hardware_qualification_record_sha256": None,
+        "fidelity_record_sha256": None, "production_eligible": False,
+    })
+    return {
+        "profile.json": profile_raw, "tools.json": tools_raw,
+        "compiler.json": compiler_raw,
+    }
+
+
 class _BuildFixture:
     def __init__(self) -> None:
-        self._tmp = tempfile.TemporaryDirectory(prefix="gateway-task6-build-")
-        self.root = Path(self._tmp.name)
+        self.root = Path(tempfile.mkdtemp(prefix="build-", dir=RUN_ROOT))
         self.menubar = self.root / "menubar"
         self.menubar.mkdir()
         (self.root / "data").mkdir()
-        (self.root / "gateway").mkdir()
+        shutil.copytree(ROOT / "gateway", self.root / "gateway")
         self.bin = self.root / "fake-bin"
         self.bin.mkdir()
         self.asset = self.root / "python-asset.tar.gz"
@@ -44,7 +100,6 @@ class _BuildFixture:
         shutil.copy2(ROOT / "menubar" / "make_icon.py", self.menubar / "make_icon.py")
         (self.menubar / "main.swift").write_text("import Cocoa\n", encoding="utf-8")
         (self.menubar / "whats-new.md").write_text("fixture\n", encoding="utf-8")
-        (self.root / "gateway" / "__init__.py").write_text("", encoding="utf-8")
         shutil.copy2(ROOT / "requirements.txt", self.root / "requirements.txt")
         lock = ROOT / "requirements.lock"
         if lock.exists():
@@ -71,6 +126,26 @@ fi
 if [ "${1:-}" = "-c" ]; then
   echo "${TASK6_RUNTIME_MACHINE:-arm64}"
   exit 0
+fi
+if [ "${1:-}" = "-" ]; then
+  if [ "${TASK6_SWAP_AUTHORITY_FOR_VALIDATION:-0}" = "1" ]; then
+    source="$2"
+    evidence="$TASK6_VALIDATION_SWAP_EVIDENCE"
+    mkdir -p "$evidence"
+    for name in profile.json tools.json compiler.json; do
+      cp "$source/$name" "$evidence/$name"
+      cp "$TASK6_VALID_AUTHORITY_SOURCE/$name" "$source/$name"
+    done
+    set +e
+    "$TASK6_VALIDATOR_PYTHON" "$@"
+    status=$?
+    set -e
+    for name in profile.json tools.json compiler.json; do
+      cp "$evidence/$name" "$source/$name"
+    done
+    exit "$status"
+  fi
+  exec "$TASK6_VALIDATOR_PYTHON" "$@"
 fi
 if [ "${TASK6_FAIL_ICON:-0}" = "1" ]; then
   echo "fixture icon generation failed" >&2
@@ -126,7 +201,7 @@ fi
         return self
 
     def __exit__(self, *_: object) -> None:
-        self._tmp.cleanup()
+        pass
 
     def environment(self) -> dict[str, str]:
         return {
@@ -135,14 +210,23 @@ fi
             "TASK6_ASSET_SOURCE": str(self.asset),
             "TASK6_PIP_COUNT": str(self.pip_count),
             "TASK6_CODESIGN_LOG": str(self.codesign_log),
+            "TASK6_VALIDATOR_PYTHON": sys.executable,
             "GATEWAY_PYTHON_URL": "https://fixture.invalid/python.tar.gz",
         }
 
-    def run(self, **overrides: str) -> subprocess.CompletedProcess[str]:
+    def write_authority(self, names: tuple[str, ...]) -> dict[str, bytes]:
+        payloads = _authority_files()
+        root = self.root / "data/final-render"
+        root.mkdir(parents=True, exist_ok=True)
+        for name in names:
+            (root / name).write_bytes(payloads[name])
+        return payloads
+
+    def run(self, *arguments: str, **overrides: str) -> subprocess.CompletedProcess[str]:
         env = self.environment()
         env.update(overrides)
         return subprocess.run(
-            ["sh", str(self.menubar / "build.sh"), "--no-install"],
+            ["sh", str(self.menubar / "build.sh"), "--no-install", *arguments],
             cwd=self.root,
             env=env,
             text=True,
@@ -157,8 +241,8 @@ class Task6Packaging(unittest.TestCase):
         self.assertEqual(payload.get("voices"), [])
 
     def test_fresh_profile_has_no_ghost_voice_and_import_resolves_its_clip(self) -> None:
-        with tempfile.TemporaryDirectory(prefix="gateway-task6-profile-") as name:
-            base = Path(name)
+        base = Path(tempfile.mkdtemp(prefix="profile-", dir=RUN_ROOT))
+        with self.subTest(retained=base):
             fixture = base / "fixture"
             fixture.mkdir()
             (fixture / "Morgan.wav").write_bytes(b"fixture audio bytes")
@@ -242,6 +326,10 @@ print(f"fresh=0 imported={voice.display_name} clip={clip}")
 
     def test_runtime_cache_changes_for_lock_and_python_asset(self) -> None:
         with _BuildFixture() as fixture:
+            # The default is descriptor-only, so a build that is meant to succeed needs a
+            # truthful selected source; the fixture writes the same three descriptors the
+            # default now requires.
+            fixture.write_authority(tuple(_authority_files()))
             first = fixture.run()
             self.assertEqual(first.returncode, 0, first.stdout + first.stderr)
             self.assertEqual(fixture.pip_count.read_text().strip(), "1")
@@ -272,6 +360,7 @@ print(f"fresh=0 imported={voice.display_name} clip={clip}")
 
     def test_bundle_contains_empty_catalogue_lock_and_verified_signature(self) -> None:
         with _BuildFixture() as fixture:
+            fixture.write_authority(tuple(_authority_files()))
             result = fixture.run()
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             app = fixture.root / "menubar" / "build" / "gateway-kh.app"
@@ -285,8 +374,147 @@ print(f"fresh=0 imported={voice.display_name} clip={clip}")
             self.assertRegex(result.stdout, r"archive sha256:[0-9a-f]{64}")
             self.assertIn("verified", fixture.codesign_log.read_text(encoding="utf-8"))
 
+    def test_default_build_stages_descriptor_only_when_authority_source_exists(self) -> None:
+        with _BuildFixture() as fixture:
+            names = ("profile.json", "tools.json", "compiler.json")
+            payloads = fixture.write_authority(names)
+            result = fixture.run()
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            bundled = (fixture.root / "menubar/build/gateway-kh.app/Contents/Resources"
+                       / "gateway/data/final-render")
+            self.assertTrue(bundled.is_dir())
+            self.assertEqual(sorted(path.name for path in bundled.iterdir()), sorted(names))
+            for name in names:
+                self.assertEqual((bundled / name).read_bytes(), payloads[name])
+
+    def test_tool_only_build_ignores_the_authority_source(self) -> None:
+        with _BuildFixture() as fixture:
+            fixture.write_authority(("profile.json", "tools.json", "compiler.json"))
+            result = fixture.run("--render-authority", "tool-only")
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            bundled = (fixture.root / "menubar/build/gateway-kh.app/Contents/Resources"
+                       / "gateway/data/final-render")
+            self.assertFalse(bundled.exists())
+
+    def test_descriptor_only_build_stages_exact_three_bytes(self) -> None:
+        with _BuildFixture() as fixture:
+            names = ("profile.json", "tools.json", "compiler.json")
+            payloads = fixture.write_authority(names)
+            result = fixture.run("--render-authority", "descriptor-only")
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            bundled = (fixture.root / "menubar/build/gateway-kh.app/Contents/Resources"
+                       / "gateway/data/final-render")
+            self.assertTrue(bundled.is_dir())
+            self.assertEqual(sorted(path.name for path in bundled.iterdir()), sorted(names))
+            for name in names:
+                self.assertEqual((bundled / name).read_bytes(), payloads[name])
+
+    def test_sealed_candidate_build_stages_exact_three_descriptors(self) -> None:
+        # There is no qualification vector: the Gateway runtime reads only the three
+        # descriptors, and its exact-set check must keep seeing exactly those three names.
+        with _BuildFixture() as fixture:
+            names = tuple(_authority_files())
+            payloads = fixture.write_authority(names)
+            result = fixture.run("--render-authority", "sealed-candidate")
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            bundled = (fixture.root / "menubar/build/gateway-kh.app/Contents/Resources"
+                       / "gateway/data/final-render")
+            self.assertTrue(bundled.is_dir())
+            staged = ("profile.json", "tools.json", "compiler.json")
+            self.assertEqual(sorted(path.name for path in bundled.iterdir()), sorted(staged))
+            self.assertFalse((bundled / "qualification-vector.json").exists())
+            for name in staged:
+                self.assertEqual((bundled / name).read_bytes(), payloads[name])
+
+    def test_closed_authority_selector_rejects_unknown_value_without_build_claim(self) -> None:
+        with _BuildFixture() as fixture:
+            result = fixture.run("--render-authority", "other")
+            self.assertNotEqual(result.returncode, 0)
+            self.assertNotIn("Built:", result.stdout + result.stderr)
+
+    def test_selected_authority_state_rejects_partial_extra_and_cross_digest_inputs(self) -> None:
+        cases = (
+            ("descriptor-only", ("profile.json",)),
+            ("descriptor-only", ("profile.json", "tools.json")),
+            ("sealed-candidate", ("profile.json", "tools.json")),
+        )
+        for mode, names in cases:
+            with self.subTest(mode=mode, names=names), _BuildFixture() as fixture:
+                fixture.write_authority(names)
+                result = fixture.run("--render-authority", mode)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertNotIn("Built:", result.stdout + result.stderr)
+
+        for mode in ("descriptor-only", "sealed-candidate"):
+            with self.subTest(mode=mode, extra="qualification-vector.json"), _BuildFixture() as fixture:
+                fixture.write_authority(("profile.json", "tools.json", "compiler.json"))
+                (fixture.root / "data/final-render/qualification-vector.json").write_bytes(b"{}")
+                result = fixture.run("--render-authority", mode)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertNotIn("Built:", result.stdout + result.stderr)
+
+        with _BuildFixture() as fixture:
+            payloads = fixture.write_authority(("profile.json", "tools.json", "compiler.json"))
+            profile = json.loads(payloads["profile.json"])
+            profile["tools_artifact_sha256"] = "f" * 64
+            (fixture.root / "data/final-render/profile.json").write_bytes(_canonical(profile))
+            result = fixture.run("--render-authority", "sealed-candidate")
+            self.assertNotEqual(result.returncode, 0)
+            self.assertNotIn("Built:", result.stdout + result.stderr)
+
+    def test_descriptor_only_build_rejects_malformed_duplicate_and_open_schema(self) -> None:
+        profile_cases = {}
+        payloads = _authority_files()
+        profile_cases["duplicate-key"] = (
+            b'{"format":"studio.render.profile.v1",' + payloads["profile.json"][1:]
+        )
+        profile_cases["malformed-trailing-json"] = payloads["profile.json"] + b"{"
+        opened = json.loads(payloads["profile.json"])
+        opened["unexpected"] = None
+        profile_cases["open-schema"] = _canonical(opened)
+
+        for label, malformed in profile_cases.items():
+            with self.subTest(label=label), _BuildFixture() as fixture:
+                fixture.write_authority(("profile.json", "tools.json", "compiler.json"))
+                source = fixture.root / "data/final-render/profile.json"
+                source.write_bytes(malformed)
+                result = fixture.run("--render-authority", "descriptor-only")
+                output = result.stdout + result.stderr
+                self.assertNotEqual(result.returncode, 0, output)
+                self.assertNotIn("Built:", output)
+                self.assertEqual(source.read_bytes(), malformed)
+
+    def test_selected_build_binds_validated_bytes_to_the_copied_originals(self) -> None:
+        with _BuildFixture() as fixture:
+            payloads = fixture.write_authority(("profile.json", "tools.json", "compiler.json"))
+            profile = json.loads(payloads["profile.json"])
+            profile["tools_artifact_sha256"] = "f" * 64
+            invalid = _canonical(profile)
+            source = fixture.root / "data/final-render/profile.json"
+            source.write_bytes(invalid)
+
+            valid_root = fixture.root / "validator-swap-valid"
+            valid_root.mkdir()
+            for name, payload in payloads.items():
+                (valid_root / name).write_bytes(payload)
+            evidence = fixture.root / "validator-swap-evidence"
+            result = fixture.run(
+                "--render-authority", "sealed-candidate",
+                TASK6_SWAP_AUTHORITY_FOR_VALIDATION="1",
+                TASK6_VALID_AUTHORITY_SOURCE=str(valid_root),
+                TASK6_VALIDATION_SWAP_EVIDENCE=str(evidence),
+            )
+            output = result.stdout + result.stderr
+            self.assertEqual(source.read_bytes(), invalid)
+            self.assertEqual((evidence / "profile.json").read_bytes(), invalid)
+            self.assertNotEqual(result.returncode, 0, output)
+            self.assertNotIn("Built:", output)
+
     def test_icon_failure_cannot_claim_a_built_bundle(self) -> None:
         with _BuildFixture() as fixture:
+            # Without the selected source the build stops earlier and this would pass
+            # vacuously; the fixture must reach the icon stage the test is about.
+            fixture.write_authority(tuple(_authority_files()))
             result = fixture.run(TASK6_FAIL_ICON="1")
             output = result.stdout + result.stderr
             self.assertNotEqual(result.returncode, 0, output)
@@ -295,6 +523,7 @@ print(f"fresh=0 imported={voice.display_name} clip={clip}")
 
     def test_signing_failure_cannot_claim_a_built_bundle(self) -> None:
         with _BuildFixture() as fixture:
+            fixture.write_authority(tuple(_authority_files()))
             result = fixture.run(TASK6_FAIL_CODESIGN="1")
             output = result.stdout + result.stderr
             self.assertNotEqual(result.returncode, 0, output)

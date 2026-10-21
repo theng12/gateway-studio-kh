@@ -19,6 +19,7 @@ What we drop: leases, fencing, permits, fairness ranking, admission capacity.
 from __future__ import annotations
 
 import fcntl
+import hashlib
 import json
 import logging
 import math
@@ -28,6 +29,7 @@ import statistics
 import threading
 import time
 import uuid
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -58,6 +60,18 @@ RECOVERY_RETRYABLE = "retryable"
 CANCEL_REQUESTED = "requested"
 CANCEL_CONFIRMED = "confirmed"
 _INPUT_PARAM_KEYS = ("_upload_path", "_reference_path")
+
+
+class RenderJournalConflict(ValueError):
+    """A render journal identity or state transition conflicts with durable state."""
+
+
+class RenderJournalNotFound(RenderJournalConflict):
+    """A render journal writer was given an unknown Gateway journal id."""
+
+
+class RenderJournalCancelled(RenderJournalConflict):
+    """Cancellation was recorded before the first send marker could win."""
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS jobs (
@@ -129,6 +143,118 @@ CREATE TABLE IF NOT EXISTS review_candidate_locators (
     pcm_sha256      TEXT NOT NULL,
     created_at      REAL NOT NULL,
     schema_version  INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS render_journal (
+    journal_id TEXT PRIMARY KEY,
+    story_uuid TEXT NOT NULL,
+    intent_id TEXT NOT NULL,
+    attempt_no INTEGER NOT NULL,
+    gateway_attempt_key TEXT NOT NULL,
+    owner_scope TEXT NOT NULL,
+    inbound_story_body_sha256 TEXT NOT NULL,
+    outbound_hub_body_sha256 TEXT NOT NULL,
+    packet_sha256 TEXT NOT NULL,
+    destination_site TEXT NOT NULL,
+    destination_controller TEXT NOT NULL,
+    destination_node TEXT NOT NULL,
+    dispatch_key TEXT NOT NULL,
+    dispatch_fence TEXT NOT NULL,
+    state TEXT NOT NULL CHECK (state IN ('prepared', 'send_may_start', 'send_unknown', 'accepted')),
+    send_may_start_at REAL,
+    hub_job_id TEXT,
+    cancel_requested_at REAL,
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL,
+    UNIQUE(owner_scope, gateway_attempt_key),
+    UNIQUE(owner_scope, dispatch_key),
+    UNIQUE(owner_scope, story_uuid, intent_id, attempt_no)
+);
+CREATE TABLE IF NOT EXISTS render_installation (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    owner_scope TEXT NOT NULL,
+    gateway_instance_id TEXT NOT NULL,
+    created_at REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS render_staging (
+    id TEXT PRIMARY KEY,
+    gateway_instance_id TEXT NOT NULL,
+    story_instance_id TEXT NOT NULL,
+    owner_scope TEXT NOT NULL,
+    story_uuid TEXT NOT NULL,
+    intent_id TEXT NOT NULL,
+    attempt_no INTEGER NOT NULL,
+    gateway_attempt_key TEXT NOT NULL,
+    inbound_story_body BLOB NOT NULL,
+    inbound_story_body_sha256 TEXT NOT NULL,
+    packet_sha256 TEXT NOT NULL,
+    destination_site TEXT NOT NULL,
+    destination_controller TEXT NOT NULL,
+    destination_hub_controller TEXT NOT NULL,
+    destination_node TEXT NOT NULL,
+    selected_machine BLOB NOT NULL,
+    capability_snapshot BLOB NOT NULL,
+    capability_snapshot_sha256 TEXT NOT NULL,
+    state TEXT NOT NULL,
+    outbound_hub_body BLOB,
+    outbound_hub_body_sha256 TEXT,
+    dispatch_key TEXT,
+    dispatch_fence TEXT,
+    hub_job_id TEXT,
+    cancel_state TEXT,
+    cancel_body BLOB,
+    cancel_body_sha256 TEXT,
+    cancel_key TEXT,
+    cancel_outcome TEXT,
+    terminal_fence_receipt TEXT,
+    terminal_first_cancel_at REAL,
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL,
+    UNIQUE(owner_scope, gateway_attempt_key),
+    UNIQUE(owner_scope, story_uuid, intent_id, attempt_no)
+);
+CREATE TABLE IF NOT EXISTS render_staging_assets (
+    render_id TEXT NOT NULL,
+    logical_id TEXT NOT NULL,
+    gateway_asset_handle TEXT NOT NULL,
+    sha256 TEXT NOT NULL,
+    size_bytes INTEGER NOT NULL,
+    confirmed_hub_offset INTEGER NOT NULL DEFAULT 0,
+    hub_asset_handle TEXT,
+    pending_offset INTEGER,
+    pending_length INTEGER,
+    pending_sha256 TEXT,
+    PRIMARY KEY(render_id, logical_id),
+    FOREIGN KEY(render_id) REFERENCES render_staging(id)
+);
+CREATE TABLE IF NOT EXISTS render_delivery (
+    render_id TEXT PRIMARY KEY,
+    revision INTEGER NOT NULL DEFAULT 0,
+    remote_state TEXT,
+    remote_attempt_id TEXT,
+    remote_descriptor_json TEXT,
+    output_upload_id TEXT,
+    output_asset_handle TEXT,
+    winner_fence TEXT,
+    receipt_digest TEXT,
+    gateway_receipt BLOB,
+    gateway_receipt_digest TEXT,
+    ack_body BLOB,
+    ack_body_sha256 TEXT,
+    ack_key TEXT,
+    ack_outcome TEXT,
+    story_ack_digest TEXT,
+    stopped_evidence_digest TEXT,
+    updated_at REAL NOT NULL,
+    FOREIGN KEY(render_id) REFERENCES render_staging(id)
+);
+CREATE TABLE IF NOT EXISTS render_cancel_fences (
+    owner_scope TEXT NOT NULL,
+    dispatch_key TEXT NOT NULL,
+    expected_request_sha256 TEXT NOT NULL,
+    fence_receipt TEXT NOT NULL,
+    first_cancel_at REAL NOT NULL,
+    gateway_job_id TEXT,
+    PRIMARY KEY(owner_scope, dispatch_key)
 );
 """
 REVIEW_LOCATOR_FIELDS = ("provider_id", "batch_id", "item_index", "receipt_sha256", "pcm_bytes",
@@ -206,12 +332,106 @@ _ADDED_COLUMNS: tuple[tuple[str, str], ...] = (
     ("dismissed_at", "REAL"),
 )
 
+_RENDER_STAGING_ADDED_COLUMNS: tuple[tuple[str, str], ...] = (
+    ("terminal_fence_receipt", "TEXT"),
+    ("terminal_first_cancel_at", "REAL"),
+)
+_RENDER_DELIVERY_ADDED_COLUMNS: tuple[tuple[str, str], ...] = (
+    ("stopped_evidence_digest", "TEXT"),
+)
+
 #: Settled failures the owner may remove from the list: never a needs-recovery hold, never one
 #: already removed, never anything that is not `failed`.
 _DISMISSABLE = (
     "state = 'failed' AND COALESCE(recovery_state, '') != 'unknown_outcome'"
     " AND (dismissed_at IS NULL OR dismissed_at < updated_at)"
 )
+
+_RENDER_IMMUTABLE_FIELDS = (
+    "journal_id",
+    "story_uuid",
+    "intent_id",
+    "attempt_no",
+    "gateway_attempt_key",
+    "owner_scope",
+    "inbound_story_body_sha256",
+    "outbound_hub_body_sha256",
+    "packet_sha256",
+    "destination_site",
+    "destination_controller",
+    "destination_node",
+    "dispatch_key",
+    "dispatch_fence",
+)
+_RENDER_TEXT_FIELDS = (
+    "story_uuid",
+    "intent_id",
+    "gateway_attempt_key",
+    "owner_scope",
+    "destination_site",
+    "destination_controller",
+    "destination_node",
+    "dispatch_key",
+    "dispatch_fence",
+)
+
+
+def _render_text(name: str, value: Any) -> str:
+    if (not isinstance(value, str) or not value or len(value) > 256
+            or not value.isascii() or not all(" " <= char <= "~" for char in value)):
+        raise ValueError(f"{name} must be 1-256 printable ASCII characters")
+    return value
+
+
+def _render_uuid(value: Any) -> str:
+    if not isinstance(value, str):
+        raise ValueError("journal_id must be a canonical lowercase UUID")
+    try:
+        canonical = str(uuid.UUID(value))
+    except (ValueError, AttributeError) as exc:
+        raise ValueError("journal_id must be a canonical lowercase UUID") from exc
+    if canonical != value:
+        raise ValueError("journal_id must be a canonical lowercase UUID")
+    return value
+
+
+def _render_digest(name: str, value: Any) -> str:
+    if (not isinstance(value, str) or len(value) != 64
+            or any(char not in "0123456789abcdef" for char in value)):
+        raise ValueError(f"{name} must be a lowercase SHA-256 value")
+    return value
+
+
+def _render_attempt(value: Any) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= 2**63 - 1:
+        raise ValueError("attempt_no must be an integer from 1 through 2^63-1")
+    return value
+
+
+def _render_now() -> float:
+    now = time.time()
+    if isinstance(now, bool) or not isinstance(now, (int, float)) or not math.isfinite(now):
+        raise ValueError("render journal timestamp must be finite numeric seconds")
+    return float(now)
+
+
+def _render_values(values: dict[str, Any]) -> dict[str, Any]:
+    checked = dict(values)
+    if "journal_id" in checked:
+        checked["journal_id"] = _render_uuid(checked["journal_id"])
+    if "attempt_no" in checked:
+        checked["attempt_no"] = _render_attempt(checked["attempt_no"])
+    for field in _RENDER_TEXT_FIELDS:
+        if field in checked:
+            checked[field] = _render_text(field, checked[field])
+    for field in (
+        "inbound_story_body_sha256",
+        "outbound_hub_body_sha256",
+        "packet_sha256",
+    ):
+        if field in checked:
+            checked[field] = _render_digest(field, checked[field])
+    return checked
 
 
 def _loads_list(value: Any) -> list[Any]:
@@ -297,6 +517,11 @@ class JobStore:
         #: (`_claim_queue`). Released by `close()`, and by the kernel if this process dies.
         self._owner_fd: int | None = None
         self._conn.executescript(_SCHEMA)
+        # The private-render identity: minted once, never regenerated (no-op once the row exists).
+        self._conn.execute(
+            "INSERT OR IGNORE INTO render_installation VALUES (1, ?, ?, ?)",
+            (str(uuid.uuid4()), str(uuid.uuid4()), time.time()),
+        )
         self._ensure_columns()
         if self._claim_queue():
             self._recover_interrupted()
@@ -342,6 +567,17 @@ class JobStore:
         for name, sql_type in _ADDED_COLUMNS:
             if name not in existing:
                 self._conn.execute(f"ALTER TABLE jobs ADD COLUMN {name} {sql_type}")
+        for table, columns in (
+            ("render_staging", _RENDER_STAGING_ADDED_COLUMNS),
+            ("render_delivery", _RENDER_DELIVERY_ADDED_COLUMNS),
+        ):
+            existing = {
+                row["name"]
+                for row in self._conn.execute(f"PRAGMA table_info({table})").fetchall()
+            }
+            for name, sql_type in columns:
+                if name not in existing:
+                    self._conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {sql_type}")
 
     @staticmethod
     def _row_dict(row: sqlite3.Row | None) -> dict[str, Any] | None:
@@ -554,6 +790,1188 @@ class JobStore:
                 # and reopened is a restart, and its `running` jobs are the ones the sweep is for.
                 os.close(self._owner_fd)
                 self._owner_fd = None
+
+    # -- render journal ---------------------------------------------------
+    def render_installation(self) -> dict[str, Any]:
+        with self._lock:
+            return dict(self._conn.execute(
+                "SELECT owner_scope, gateway_instance_id, created_at FROM render_installation"
+            ).fetchone())
+
+    @contextmanager
+    def _render_write(self):
+        """Serialize this connection and make every render mutation an explicit transaction."""
+        with self._lock:
+            try:
+                self._conn.execute("BEGIN IMMEDIATE")
+                yield
+                self._conn.commit()
+            except BaseException:
+                self._conn.rollback()
+                raise
+
+    @staticmethod
+    def _render_row(row: sqlite3.Row | None) -> dict[str, Any] | None:
+        return dict(row) if row is not None else None
+
+    @staticmethod
+    def _render_matches(row: sqlite3.Row | dict[str, Any], values: dict[str, Any]) -> bool:
+        return all(row[field] == value for field, value in values.items())
+
+    def create_render_journal(
+        self,
+        *,
+        journal_id: str,
+        story_uuid: str,
+        intent_id: str,
+        attempt_no: int,
+        gateway_attempt_key: str,
+        owner_scope: str,
+        inbound_story_body_sha256: str,
+        outbound_hub_body_sha256: str,
+        packet_sha256: str,
+        destination_site: str,
+        destination_controller: str,
+        destination_node: str,
+        dispatch_key: str,
+        dispatch_fence: str,
+    ) -> dict[str, Any]:
+        values = _render_values({
+            "journal_id": journal_id,
+            "story_uuid": story_uuid,
+            "intent_id": intent_id,
+            "attempt_no": attempt_no,
+            "gateway_attempt_key": gateway_attempt_key,
+            "owner_scope": owner_scope,
+            "inbound_story_body_sha256": inbound_story_body_sha256,
+            "outbound_hub_body_sha256": outbound_hub_body_sha256,
+            "packet_sha256": packet_sha256,
+            "destination_site": destination_site,
+            "destination_controller": destination_controller,
+            "destination_node": destination_node,
+            "dispatch_key": dispatch_key,
+            "dispatch_fence": dispatch_fence,
+        })
+        now = _render_now()
+        try:
+            with self._render_write():
+                self._conn.execute(
+                    """
+                    INSERT INTO render_journal (
+                        journal_id, story_uuid, intent_id, attempt_no, gateway_attempt_key,
+                        owner_scope, inbound_story_body_sha256, outbound_hub_body_sha256,
+                        packet_sha256, destination_site, destination_controller, destination_node,
+                        dispatch_key, dispatch_fence, state, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'prepared', ?, ?)
+                    """,
+                    (*(values[field] for field in _RENDER_IMMUTABLE_FIELDS), now, now),
+                )
+                row = self._conn.execute(
+                    "SELECT * FROM render_journal WHERE journal_id = ?", (values["journal_id"],)
+                ).fetchone()
+        except sqlite3.IntegrityError as exc:
+            with self._lock:
+                rows = self._conn.execute(
+                    """
+                    SELECT * FROM render_journal
+                     WHERE journal_id = ?
+                        OR (owner_scope = ? AND gateway_attempt_key = ?)
+                        OR (owner_scope = ? AND dispatch_key = ?)
+                        OR (owner_scope = ? AND story_uuid = ? AND intent_id = ? AND attempt_no = ?)
+                    """,
+                    (
+                        values["journal_id"],
+                        values["owner_scope"], values["gateway_attempt_key"],
+                        values["owner_scope"], values["dispatch_key"],
+                        values["owner_scope"], values["story_uuid"], values["intent_id"],
+                        values["attempt_no"],
+                    ),
+                ).fetchall()
+            if len(rows) == 1 and self._render_matches(rows[0], values):
+                return self._render_row(rows[0])  # type: ignore[return-value]
+            raise RenderJournalConflict("render journal identity conflicts with durable state") from exc
+        return self._render_row(row)  # type: ignore[return-value]
+
+    def get_render_journal(self, journal_id: str) -> dict[str, Any] | None:
+        journal_id = _render_uuid(journal_id)
+        with self._lock:
+            return self._render_row(self._conn.execute(
+                "SELECT * FROM render_journal WHERE journal_id = ?", (journal_id,)
+            ).fetchone())
+
+    def get_render_journal_by_attempt_key(
+        self, *, owner_scope: str, gateway_attempt_key: str
+    ) -> dict[str, Any] | None:
+        owner_scope = _render_text("owner_scope", owner_scope)
+        gateway_attempt_key = _render_text("gateway_attempt_key", gateway_attempt_key)
+        with self._lock:
+            return self._render_row(self._conn.execute(
+                """SELECT * FROM render_journal
+                    WHERE owner_scope = ? AND gateway_attempt_key = ?""",
+                (owner_scope, gateway_attempt_key),
+            ).fetchone())
+
+    def replay_render_journal(
+        self,
+        *,
+        gateway_attempt_key: str,
+        owner_scope: str,
+        story_uuid: str,
+        intent_id: str,
+        attempt_no: int,
+        inbound_story_body_sha256: str,
+        outbound_hub_body_sha256: str,
+        packet_sha256: str,
+        destination_site: str,
+        destination_controller: str,
+        destination_node: str,
+        dispatch_key: str,
+        dispatch_fence: str,
+    ) -> dict[str, Any] | None:
+        values = _render_values({
+            "gateway_attempt_key": gateway_attempt_key,
+            "owner_scope": owner_scope,
+            "story_uuid": story_uuid,
+            "intent_id": intent_id,
+            "attempt_no": attempt_no,
+            "inbound_story_body_sha256": inbound_story_body_sha256,
+            "outbound_hub_body_sha256": outbound_hub_body_sha256,
+            "packet_sha256": packet_sha256,
+            "destination_site": destination_site,
+            "destination_controller": destination_controller,
+            "destination_node": destination_node,
+            "dispatch_key": dispatch_key,
+            "dispatch_fence": dispatch_fence,
+        })
+        with self._lock:
+            row = self._conn.execute(
+                """SELECT * FROM render_journal
+                    WHERE owner_scope = ? AND gateway_attempt_key = ?""",
+                (values["owner_scope"], values["gateway_attempt_key"]),
+            ).fetchone()
+        if row is None:
+            return None
+        if not self._render_matches(row, values):
+            raise RenderJournalConflict("render journal replay changed immutable fields")
+        return self._render_row(row)
+
+    def mark_render_send_may_start(self, journal_id: str) -> dict[str, Any]:
+        journal_id = _render_uuid(journal_id)
+        now = _render_now()
+        with self._render_write():
+            changed = self._conn.execute(
+                """
+                UPDATE render_journal
+                   SET state = 'send_may_start', send_may_start_at = ?, updated_at = ?
+                 WHERE journal_id = ? AND state = 'prepared' AND cancel_requested_at IS NULL
+                """,
+                (now, now, journal_id),
+            ).rowcount
+            row = self._conn.execute(
+                "SELECT * FROM render_journal WHERE journal_id = ?", (journal_id,)
+            ).fetchone()
+            if row is None:
+                raise RenderJournalNotFound("render journal not found")
+            if changed != 1:
+                if row["state"] == "send_may_start":
+                    changed = 0
+                elif row["state"] == "prepared" and row["cancel_requested_at"] is not None:
+                    raise RenderJournalCancelled("render journal was cancelled before send")
+                else:
+                    raise RenderJournalConflict("render journal cannot start another send")
+            result = self._render_row(row)
+        result["newly_recorded"] = changed == 1  # type: ignore[index]
+        return result  # type: ignore[return-value]
+
+    def mark_render_send_unknown(self, journal_id: str) -> dict[str, Any]:
+        journal_id = _render_uuid(journal_id)
+        now = _render_now()
+        with self._render_write():
+            changed = self._conn.execute(
+                """UPDATE render_journal SET state = 'send_unknown', updated_at = ?
+                    WHERE journal_id = ? AND state = 'send_may_start'""",
+                (now, journal_id),
+            ).rowcount
+            row = self._conn.execute(
+                "SELECT * FROM render_journal WHERE journal_id = ?", (journal_id,)
+            ).fetchone()
+            if row is None:
+                raise RenderJournalNotFound("render journal not found")
+            if changed != 1 and row["state"] != "send_unknown":
+                raise RenderJournalConflict("render journal cannot record an unknown send")
+            result = self._render_row(row)
+        return result  # type: ignore[return-value]
+
+    def record_render_acceptance(self, journal_id: str, hub_job_id: str) -> dict[str, Any]:
+        journal_id = _render_uuid(journal_id)
+        hub_job_id = _render_text("hub_job_id", hub_job_id)
+        now = _render_now()
+        with self._render_write():
+            changed = self._conn.execute(
+                """
+                UPDATE render_journal
+                   SET state = 'accepted', hub_job_id = ?, updated_at = ?
+                 WHERE journal_id = ? AND state IN ('send_may_start', 'send_unknown')
+                   AND hub_job_id IS NULL
+                """,
+                (hub_job_id, now, journal_id),
+            ).rowcount
+            row = self._conn.execute(
+                "SELECT * FROM render_journal WHERE journal_id = ?", (journal_id,)
+            ).fetchone()
+            if row is None:
+                raise RenderJournalNotFound("render journal not found")
+            if changed != 1 and not (row["state"] == "accepted" and row["hub_job_id"] == hub_job_id):
+                raise RenderJournalConflict("render journal acceptance conflicts with durable state")
+            result = self._render_row(row)
+        return result  # type: ignore[return-value]
+
+    def request_render_cancel(self, journal_id: str) -> dict[str, Any]:
+        journal_id = _render_uuid(journal_id)
+        now = _render_now()
+        with self._render_write():
+            changed = self._conn.execute(
+                """
+                UPDATE render_journal SET cancel_requested_at = ?, updated_at = ?
+                 WHERE journal_id = ? AND cancel_requested_at IS NULL
+                   AND state IN ('prepared', 'send_may_start', 'send_unknown', 'accepted')
+                """,
+                (now, now, journal_id),
+            ).rowcount
+            row = self._conn.execute(
+                "SELECT * FROM render_journal WHERE journal_id = ?", (journal_id,)
+            ).fetchone()
+            if row is None:
+                raise RenderJournalNotFound("render journal not found")
+            if changed != 1 and row["cancel_requested_at"] is None:
+                raise RenderJournalConflict("render journal cannot record cancellation")
+            result = self._render_row(row)
+        return result  # type: ignore[return-value]
+
+    # -- private final-render vertical slice ------------------------------
+    def _render_staging_row(self, row: sqlite3.Row | None) -> dict[str, Any] | None:
+        if row is None:
+            return None
+        result = dict(row)
+        assets = self._conn.execute(
+            "SELECT * FROM render_staging_assets WHERE render_id = ? ORDER BY logical_id",
+            (row["id"],),
+        ).fetchall()
+        result["assets"] = [dict(asset) for asset in assets]
+        result["idempotent_replay"] = False
+        return result
+
+    def get_render_staging(self, render_id: str) -> dict[str, Any] | None:
+        render_id = _render_uuid(render_id)
+        with self._lock:
+            return self._render_staging_row(self._conn.execute(
+                "SELECT * FROM render_staging WHERE id = ?", (render_id,)
+            ).fetchone())
+
+    def get_render_staging_by_attempt_key(
+        self, *, owner_scope: str, gateway_attempt_key: str
+    ) -> dict[str, Any] | None:
+        owner_scope = _render_text("owner_scope", owner_scope)
+        gateway_attempt_key = _render_text("gateway_attempt_key", gateway_attempt_key)
+        with self._lock:
+            return self._render_staging_row(self._conn.execute(
+                "SELECT * FROM render_staging WHERE owner_scope = ? AND gateway_attempt_key = ?",
+                (owner_scope, gateway_attempt_key),
+            ).fetchone())
+
+    def create_render_staging(
+        self,
+        *,
+        render_id: str,
+        gateway_instance_id: str,
+        story_instance_id: str,
+        owner_scope: str,
+        story_uuid: str,
+        intent_id: str,
+        attempt_no: int,
+        gateway_attempt_key: str,
+        inbound_story_body: bytes,
+        inbound_story_body_sha256: str,
+        packet_sha256: str,
+        destination_site: str,
+        destination_controller: str,
+        destination_hub_controller: str,
+        destination_node: str,
+        selected_machine: bytes,
+        capability_snapshot: bytes,
+        capability_snapshot_sha256: str,
+        assets: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        render_id = _render_uuid(render_id)
+        attempt_no = _render_attempt(attempt_no)
+        text = {
+            name: _render_text(name, value)
+            for name, value in {
+                "gateway_instance_id": gateway_instance_id,
+                "story_instance_id": story_instance_id,
+                "owner_scope": owner_scope,
+                "story_uuid": story_uuid,
+                "intent_id": intent_id,
+                "gateway_attempt_key": gateway_attempt_key,
+                "destination_site": destination_site,
+                "destination_controller": destination_controller,
+                "destination_hub_controller": destination_hub_controller,
+                "destination_node": destination_node,
+            }.items()
+        }
+        digests = {
+            name: _render_digest(name, value)
+            for name, value in {
+                "inbound_story_body_sha256": inbound_story_body_sha256,
+                "packet_sha256": packet_sha256,
+                "capability_snapshot_sha256": capability_snapshot_sha256,
+            }.items()
+        }
+        if type(inbound_story_body) is not bytes or not inbound_story_body or len(inbound_story_body) > 1024 * 1024:
+            raise ValueError("inbound_story_body must be 1..1048576 bytes")
+        if hashlib.sha256(inbound_story_body).hexdigest() != digests["inbound_story_body_sha256"]:
+            raise ValueError("inbound_story_body digest mismatch")
+        if (type(capability_snapshot) is not bytes or not capability_snapshot
+                or len(capability_snapshot) > 1024 * 1024
+                or hashlib.sha256(capability_snapshot).hexdigest()
+                    != digests["capability_snapshot_sha256"]):
+            raise ValueError("capability snapshot is invalid")
+        if type(selected_machine) is not bytes or not selected_machine \
+                or len(selected_machine) > 4096:
+            raise ValueError("selected machine snapshot is invalid")
+        if type(assets) is not list or not assets:
+            raise ValueError("assets must be a non-empty ordered list")
+        checked_assets = []
+        previous = ""
+        for asset in assets:
+            if type(asset) is not dict or set(asset) != {
+                "logical_id", "gateway_asset_handle", "sha256", "size_bytes"
+            }:
+                raise ValueError("render staging asset shape is invalid")
+            logical_id = _render_text("logical_id", asset["logical_id"])
+            handle = _render_text("gateway_asset_handle", asset["gateway_asset_handle"])
+            sha256 = _render_digest("sha256", asset["sha256"])
+            size = _render_attempt(asset["size_bytes"])
+            if logical_id <= previous or len(handle) != 32 or any(c not in "0123456789abcdef" for c in handle):
+                raise ValueError("render staging assets must be ordered with valid handles")
+            previous = logical_id
+            checked_assets.append((logical_id, handle, sha256, size))
+        now = _render_now()
+        with self._render_write():
+            existing = self._conn.execute(
+                "SELECT * FROM render_staging WHERE owner_scope = ? AND gateway_attempt_key = ?",
+                (text["owner_scope"], text["gateway_attempt_key"]),
+            ).fetchone()
+            if existing is not None:
+                if (existing["inbound_story_body_sha256"] != digests["inbound_story_body_sha256"]
+                        or bytes(existing["inbound_story_body"]) != inbound_story_body
+                        or existing["story_instance_id"] != text["story_instance_id"]
+                        or existing["gateway_instance_id"] != text["gateway_instance_id"]):
+                    raise RenderJournalConflict("render attempt key changed immutable identity")
+                result = self._render_staging_row(existing)
+                result["idempotent_replay"] = True  # type: ignore[index]
+                return result  # type: ignore[return-value]
+            fence = self._conn.execute(
+                "SELECT * FROM render_cancel_fences WHERE owner_scope = ? AND dispatch_key = ?",
+                (text["owner_scope"], text["gateway_attempt_key"]),
+            ).fetchone()
+            if fence is not None:
+                if fence["expected_request_sha256"] != digests["inbound_story_body_sha256"]:
+                    raise RenderJournalConflict("cancel fence request identity conflicts")
+                raise RenderJournalCancelled("render attempt was cancelled before acceptance")
+            self._conn.execute(
+                """INSERT INTO render_staging (
+                    id, gateway_instance_id, story_instance_id, owner_scope, story_uuid, intent_id, attempt_no,
+                    gateway_attempt_key, inbound_story_body, inbound_story_body_sha256,
+                    packet_sha256, destination_site, destination_controller,
+                    destination_hub_controller, destination_node, selected_machine,
+                    capability_snapshot,
+                    capability_snapshot_sha256,
+                    state, created_at, updated_at
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'staging',?,?)""",
+                (
+                    render_id, text["gateway_instance_id"], text["story_instance_id"], text["owner_scope"],
+                    text["story_uuid"], text["intent_id"], attempt_no,
+                    text["gateway_attempt_key"], inbound_story_body,
+                    digests["inbound_story_body_sha256"], digests["packet_sha256"],
+                    text["destination_site"], text["destination_controller"],
+                    text["destination_hub_controller"], text["destination_node"],
+                    selected_machine, capability_snapshot,
+                    digests["capability_snapshot_sha256"], now, now,
+                ),
+            )
+            self._conn.executemany(
+                """INSERT INTO render_staging_assets (
+                    render_id, logical_id, gateway_asset_handle, sha256, size_bytes
+                ) VALUES (?,?,?,?,?)""",
+                [(render_id, *asset) for asset in checked_assets],
+            )
+            self._conn.execute(
+                "INSERT INTO render_delivery (render_id, updated_at) VALUES (?,?)",
+                (render_id, now),
+            )
+            return self._render_staging_row(self._conn.execute(
+                "SELECT * FROM render_staging WHERE id = ?", (render_id,)
+            ).fetchone())  # type: ignore[return-value]
+
+    def render_due(
+        self, limit: int = 8, *, after: tuple[float, str] | None = None,
+    ) -> list[dict[str, Any]]:
+        if type(limit) is not int or not 1 <= limit <= 64:
+            raise ValueError("render due limit must be 1..64")
+        if (after is not None and (
+                type(after) is not tuple or len(after) != 2
+                or type(after[0]) not in (int, float) or not math.isfinite(after[0])
+                or type(after[1]) is not str)):
+            raise ValueError("render due cursor is invalid")
+        with self._lock:
+            cursor_sql = ""
+            params: tuple[Any, ...] = ()
+            if after is not None:
+                cursor_sql = "AND (s.created_at > ? OR (s.created_at = ? AND s.id > ?))"
+                params = (after[0], after[0], after[1])
+            rows = self._conn.execute(
+                f"""SELECT s.* FROM render_staging AS s
+                   LEFT JOIN render_delivery AS d ON d.render_id = s.id
+                   WHERE s.state IN ('staging','hub_prepared','send_may_start','send_unknown',
+                                     'accepted','output_ready')
+                     AND COALESCE(s.cancel_state, '') NOT IN ('cancelled','acknowledged')
+                     AND NOT (s.state = 'output_ready' AND d.ack_outcome IS NOT NULL)
+                     AND NOT (COALESCE(d.remote_state, '') IN ('failed','cancelled')
+                              AND COALESCE(s.cancel_state, '') != 'requested')
+                     {cursor_sql}
+                   ORDER BY s.created_at, s.id LIMIT ?""", (*params, limit),
+            ).fetchall()
+            return [self._render_staging_row(row) for row in rows]  # type: ignore[misc]
+
+    def terminal_render_asset_handles(self) -> dict[str, dict[str, Any]]:
+        """Asset handles whose every durable reference is terminal, with their identity.
+
+        Inputs come from `render_staging_assets`; outputs from
+        `render_delivery.output_asset_handle`. Handles are content-deduped across rows, so a
+        handle is returned only when EVERY row referencing it is terminal — one live row
+        excludes it, and so does disagreement about the handle's identity. Unreferenced
+        handles are not returned here; `referenced_render_asset_handles` lets the sweep tell
+        an orphan from a handle a live row still points at.
+
+        Each value carries `settled_at` (latest `render_staging.updated_at` /
+        `render_delivery.updated_at`, the time the grace runs from) plus the identity the
+        store re-checks before moving anything: `owner_scope`, and whichever of `sha256`,
+        `size_bytes` (inputs) and `upload_id` (outputs) the row recorded. `None` means the
+        reference does not state that field.
+
+        Terminal means Story acked the output (`acknowledged`), the render was cancelled
+        (`cancel_state='cancelled'`), or the Hub reported `failed`/`cancelled` for an
+        accepted row. An `output_ready` row is NOT terminal: Story has not acked it.
+        """
+        with self._lock:
+            rows = self._conn.execute(
+                """SELECT a.gateway_asset_handle AS handle,
+                          s.owner_scope AS owner_scope,
+                          a.sha256 AS sha256, a.size_bytes AS size_bytes,
+                          NULL AS upload_id,
+                          s.state AS state, s.cancel_state AS cancel_state,
+                          s.updated_at AS staging_at,
+                          d.remote_state AS remote_state,
+                          d.updated_at AS delivery_at
+                   FROM render_staging_assets a
+                   JOIN render_staging s ON s.id = a.render_id
+                   LEFT JOIN render_delivery d ON d.render_id = s.id
+                   UNION ALL
+                   SELECT d.output_asset_handle AS handle,
+                          s.owner_scope AS owner_scope,
+                          NULL AS sha256, NULL AS size_bytes,
+                          d.output_upload_id AS upload_id,
+                          s.state AS state, s.cancel_state AS cancel_state,
+                          s.updated_at AS staging_at,
+                          d.remote_state AS remote_state,
+                          d.updated_at AS delivery_at
+                   FROM render_delivery d
+                   JOIN render_staging s ON s.id = d.render_id
+                   WHERE d.output_asset_handle IS NOT NULL"""
+            ).fetchall()
+        identity: dict[str, dict[str, Any]] = {}
+        every_terminal: dict[str, bool] = {}
+        conflicted: set[str] = set()
+        settled_at: dict[str, float] = {}
+        for row in rows:
+            handle = row["handle"]
+            terminal = (
+                row["state"] == "acknowledged"
+                or row["cancel_state"] == "cancelled"
+                or (row["state"] == "accepted"
+                    and row["remote_state"] in ("failed", "cancelled"))
+            )
+            every_terminal[handle] = every_terminal.get(handle, True) and terminal
+            known = identity.setdefault(
+                handle, {"owner_scope": None, "sha256": None,
+                         "size_bytes": None, "upload_id": None}
+            )
+            for field in ("owner_scope", "sha256", "size_bytes", "upload_id"):
+                value = row[field]
+                if value is None:
+                    continue
+                if known[field] is None:
+                    known[field] = value
+                elif known[field] != value:
+                    conflicted.add(handle)
+            stamps = [stamp for stamp in (row["staging_at"], row["delivery_at"])
+                      if stamp is not None]
+            settled_at[handle] = max(
+                settled_at.get(handle, 0.0), *(stamps or [0.0])
+            )
+        return {
+            handle: {**identity[handle], "settled_at": settled_at[handle]}
+            for handle, terminal in every_terminal.items()
+            if terminal and handle not in conflicted
+        }
+
+    def referenced_render_asset_handles(self) -> set[str]:
+        """Every handle a durable render row still points at, terminal or not."""
+        with self._lock:
+            rows = self._conn.execute(
+                """SELECT gateway_asset_handle AS handle FROM render_staging_assets
+                   UNION
+                   SELECT output_asset_handle AS handle FROM render_delivery
+                   WHERE output_asset_handle IS NOT NULL"""
+            ).fetchall()
+        return {row["handle"] for row in rows}
+
+    def acknowledged_render_outputs(self) -> list[dict[str, Any]]:
+        """Acked outputs, so the sweep can release a `render-job:<id>` protection a crash left."""
+        with self._lock:
+            rows = self._conn.execute(
+                """SELECT s.id AS id, s.owner_scope AS owner_scope,
+                          d.output_asset_handle AS output_asset_handle
+                   FROM render_staging s
+                   JOIN render_delivery d ON d.render_id = s.id
+                   WHERE s.state = 'acknowledged'
+                     AND d.output_asset_handle IS NOT NULL"""
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def record_render_asset_pending(
+        self, render_id: str, logical_id: str, *, offset: int, length: int, sha256: str
+    ) -> dict[str, Any]:
+        render_id = _render_uuid(render_id)
+        logical_id = _render_text("logical_id", logical_id)
+        if type(offset) is not int or not 0 <= offset <= 9_007_199_254_740_991:
+            raise ValueError("offset must be a non-negative safe integer")
+        length = _render_attempt(length)
+        sha256 = _render_digest("sha256", sha256)
+        with self._render_write():
+            row = self._conn.execute(
+                "SELECT * FROM render_staging_assets WHERE render_id = ? AND logical_id = ?",
+                (render_id, logical_id),
+            ).fetchone()
+            if row is None:
+                raise RenderJournalNotFound("render staging asset not found")
+            pending = (row["pending_offset"], row["pending_length"], row["pending_sha256"])
+            wanted = (offset, length, sha256)
+            if row["pending_offset"] is not None and pending != wanted:
+                raise RenderJournalConflict("render asset pending range changed")
+            if offset != row["confirmed_hub_offset"] or length > row["size_bytes"] - offset:
+                raise RenderJournalConflict("render asset pending range is not contiguous")
+            self._conn.execute(
+                """UPDATE render_staging_assets SET pending_offset=?, pending_length=?, pending_sha256=?
+                   WHERE render_id=? AND logical_id=?""", (*wanted, render_id, logical_id),
+            )
+            return dict(self._conn.execute(
+                "SELECT * FROM render_staging_assets WHERE render_id=? AND logical_id=?",
+                (render_id, logical_id),
+            ).fetchone())
+
+    def confirm_render_asset_range(
+        self, render_id: str, logical_id: str, *, offset: int, length: int,
+        sha256: str, hub_asset_handle: str | None = None,
+    ) -> dict[str, Any]:
+        render_id = _render_uuid(render_id)
+        logical_id = _render_text("logical_id", logical_id)
+        if type(offset) is not int or not 0 <= offset <= 9_007_199_254_740_991:
+            raise ValueError("offset must be a non-negative safe integer")
+        length = _render_attempt(length)
+        sha256 = _render_digest("sha256", sha256)
+        if hub_asset_handle is not None:
+            hub_asset_handle = _render_text("hub_asset_handle", hub_asset_handle)
+            if len(hub_asset_handle) != 32 or any(c not in "0123456789abcdef" for c in hub_asset_handle):
+                raise ValueError("hub_asset_handle is invalid")
+        with self._render_write():
+            row = self._conn.execute(
+                "SELECT * FROM render_staging_assets WHERE render_id=? AND logical_id=?",
+                (render_id, logical_id),
+            ).fetchone()
+            if row is None:
+                raise RenderJournalNotFound("render staging asset not found")
+            if (row["pending_offset"], row["pending_length"], row["pending_sha256"]) != (offset, length, sha256):
+                raise RenderJournalConflict("render asset confirmation changed pending identity")
+            confirmed = offset + length
+            if confirmed > row["size_bytes"]:
+                raise RenderJournalConflict("render asset confirmation exceeds declared size")
+            if confirmed == row["size_bytes"] and hub_asset_handle is None:
+                raise RenderJournalConflict("complete Hub asset requires its scoped handle")
+            self._conn.execute(
+                """UPDATE render_staging_assets
+                   SET confirmed_hub_offset=?, hub_asset_handle=COALESCE(?,hub_asset_handle),
+                       pending_offset=NULL,pending_length=NULL,pending_sha256=NULL
+                   WHERE render_id=? AND logical_id=?""",
+                (confirmed, hub_asset_handle, render_id, logical_id),
+            )
+            return dict(self._conn.execute(
+                "SELECT * FROM render_staging_assets WHERE render_id=? AND logical_id=?",
+                (render_id, logical_id),
+            ).fetchone())
+
+    def adopt_render_asset_publication(
+        self, render_id: str, logical_id: str, *, sha256: str,
+        size_bytes: int, hub_asset_handle: str,
+    ) -> dict[str, Any]:
+        """Adopt exact Hub publication evidence without inventing a sent range."""
+        render_id = _render_uuid(render_id)
+        logical_id = _render_text("logical_id", logical_id)
+        sha256 = _render_digest("sha256", sha256)
+        size_bytes = _render_attempt(size_bytes)
+        hub_asset_handle = _render_text("hub_asset_handle", hub_asset_handle)
+        if (len(hub_asset_handle) != 32
+                or any(char not in "0123456789abcdef" for char in hub_asset_handle)):
+            raise ValueError("hub_asset_handle is invalid")
+        with self._render_write():
+            row = self._conn.execute(
+                "SELECT * FROM render_staging_assets WHERE render_id=? AND logical_id=?",
+                (render_id, logical_id),
+            ).fetchone()
+            if (row is None or row["sha256"] != sha256 or row["size_bytes"] != size_bytes):
+                raise RenderJournalConflict("published Hub asset identity changed")
+            if (row["hub_asset_handle"] is not None
+                    and row["hub_asset_handle"] != hub_asset_handle):
+                raise RenderJournalConflict("published Hub asset handle changed")
+            self._conn.execute(
+                """UPDATE render_staging_assets
+                   SET confirmed_hub_offset=?,hub_asset_handle=?,pending_offset=NULL,
+                       pending_length=NULL,pending_sha256=NULL
+                   WHERE render_id=? AND logical_id=?""",
+                (size_bytes, hub_asset_handle, render_id, logical_id),
+            )
+            return dict(self._conn.execute(
+                "SELECT * FROM render_staging_assets WHERE render_id=? AND logical_id=?",
+                (render_id, logical_id),
+            ).fetchone())
+
+    def prepare_render_dispatch(
+        self, render_id: str, *, outbound_hub_body: bytes, outbound_hub_body_sha256: str,
+        dispatch_key: str, dispatch_fence: str,
+    ) -> dict[str, Any]:
+        render_id = _render_uuid(render_id)
+        outbound_hub_body_sha256 = _render_digest(
+            "outbound_hub_body_sha256", outbound_hub_body_sha256
+        )
+        dispatch_key = _render_text("dispatch_key", dispatch_key)
+        dispatch_fence = _render_text("dispatch_fence", dispatch_fence)
+        if type(outbound_hub_body) is not bytes or not outbound_hub_body or len(outbound_hub_body) > 1024 * 1024:
+            raise ValueError("outbound Hub body must be 1..1048576 bytes")
+        if hashlib.sha256(outbound_hub_body).hexdigest() != outbound_hub_body_sha256:
+            raise ValueError("outbound Hub body digest mismatch")
+        now = _render_now()
+        with self._render_write():
+            row = self._conn.execute("SELECT * FROM render_staging WHERE id=?", (render_id,)).fetchone()
+            if row is None:
+                raise RenderJournalNotFound("render staging not found")
+            if row["cancel_state"] is not None:
+                raise RenderJournalCancelled("render staging was cancelled before dispatch")
+            existing = row["outbound_hub_body_sha256"] is not None
+            if existing:
+                if (row["outbound_hub_body_sha256"], bytes(row["outbound_hub_body"]),
+                        row["dispatch_key"], row["dispatch_fence"]) != (
+                            outbound_hub_body_sha256, outbound_hub_body, dispatch_key, dispatch_fence):
+                    raise RenderJournalConflict("render dispatch body changed")
+                return self._render_staging_row(row)  # type: ignore[return-value]
+            incomplete = self._conn.execute(
+                """SELECT 1 FROM render_staging_assets WHERE render_id=?
+                   AND (confirmed_hub_offset != size_bytes OR hub_asset_handle IS NULL) LIMIT 1""",
+                (render_id,),
+            ).fetchone()
+            if incomplete is not None:
+                raise RenderJournalConflict("render assets are not fully staged")
+            self._conn.execute(
+                """UPDATE render_staging SET outbound_hub_body=?,outbound_hub_body_sha256=?,
+                   dispatch_key=?,dispatch_fence=?,state='hub_prepared',updated_at=? WHERE id=?""",
+                (outbound_hub_body, outbound_hub_body_sha256, dispatch_key, dispatch_fence, now, render_id),
+            )
+            self._conn.execute(
+                """INSERT INTO render_journal (
+                    journal_id,story_uuid,intent_id,attempt_no,gateway_attempt_key,owner_scope,
+                    inbound_story_body_sha256,outbound_hub_body_sha256,packet_sha256,
+                    destination_site,destination_controller,destination_node,dispatch_key,
+                    dispatch_fence,state,created_at,updated_at
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,'prepared',?,?)""",
+                (render_id,row["story_uuid"],row["intent_id"],row["attempt_no"],
+                 row["gateway_attempt_key"],row["owner_scope"],row["inbound_story_body_sha256"],
+                 outbound_hub_body_sha256,row["packet_sha256"],row["destination_site"],
+                 row["destination_controller"],row["destination_node"],dispatch_key,
+                 dispatch_fence,now,now),
+            )
+            return self._render_staging_row(self._conn.execute(
+                "SELECT * FROM render_staging WHERE id=?", (render_id,)
+            ).fetchone())  # type: ignore[return-value]
+
+    def mark_render_dispatch_started(self, render_id: str) -> dict[str, Any]:
+        render_id = _render_uuid(render_id)
+        now = _render_now()
+        with self._render_write():
+            row = self._conn.execute("SELECT * FROM render_staging WHERE id=?", (render_id,)).fetchone()
+            if row is None:
+                raise RenderJournalNotFound("render staging not found")
+            if row["cancel_state"] is not None:
+                raise RenderJournalCancelled("render staging was cancelled before send")
+            if row["state"] == "hub_prepared":
+                self._conn.execute(
+                    "UPDATE render_staging SET state='send_may_start',updated_at=? WHERE id=?",
+                    (now, render_id),
+                )
+                self._conn.execute(
+                    """UPDATE render_journal SET state='send_may_start',send_may_start_at=?,updated_at=?
+                       WHERE journal_id=? AND state='prepared'""", (now, now, render_id),
+                )
+            elif row["state"] != "send_may_start":
+                raise RenderJournalConflict("render dispatch cannot start another send")
+            return self._render_staging_row(self._conn.execute(
+                "SELECT * FROM render_staging WHERE id=?", (render_id,)
+            ).fetchone())  # type: ignore[return-value]
+
+    def mark_render_dispatch_unknown(self, render_id: str) -> dict[str, Any]:
+        render_id = _render_uuid(render_id)
+        now = _render_now()
+        with self._render_write():
+            changed = self._conn.execute(
+                "UPDATE render_staging SET state='send_unknown',updated_at=? WHERE id=? AND state='send_may_start'",
+                (now, render_id),
+            ).rowcount
+            row = self._conn.execute("SELECT * FROM render_staging WHERE id=?", (render_id,)).fetchone()
+            if row is None:
+                raise RenderJournalNotFound("render staging not found")
+            if changed != 1 and row["state"] != "send_unknown":
+                raise RenderJournalConflict("render dispatch cannot become unknown")
+            self._conn.execute(
+                "UPDATE render_journal SET state='send_unknown',updated_at=? WHERE journal_id=? AND state='send_may_start'",
+                (now, render_id),
+            )
+            return self._render_staging_row(row)  # type: ignore[return-value]
+
+    def record_render_hub_acceptance(self, render_id: str, hub_job_id: str) -> dict[str, Any]:
+        render_id = _render_uuid(render_id)
+        hub_job_id = _render_text("hub_job_id", hub_job_id)
+        now = _render_now()
+        with self._render_write():
+            changed = self._conn.execute(
+                """UPDATE render_staging SET state='accepted',hub_job_id=?,updated_at=?
+                   WHERE id=? AND state IN ('send_may_start','send_unknown') AND hub_job_id IS NULL""",
+                (hub_job_id, now, render_id),
+            ).rowcount
+            row = self._conn.execute("SELECT * FROM render_staging WHERE id=?", (render_id,)).fetchone()
+            if row is None:
+                raise RenderJournalNotFound("render staging not found")
+            if changed != 1 and not (row["state"] == "accepted" and row["hub_job_id"] == hub_job_id):
+                raise RenderJournalConflict("Hub acceptance conflicts with durable render state")
+            self._conn.execute(
+                """UPDATE render_journal SET state='accepted',hub_job_id=?,updated_at=?
+                   WHERE journal_id=? AND state IN ('send_may_start','send_unknown')""",
+                (hub_job_id, now, render_id),
+            )
+            return self._render_staging_row(self._conn.execute(
+                "SELECT * FROM render_staging WHERE id=?", (render_id,)
+            ).fetchone())  # type: ignore[return-value]
+
+    def request_render_cancel_by_key(
+        self, *, owner_scope: str, dispatch_key: str, expected_request_sha256: str
+    ) -> dict[str, Any]:
+        owner_scope = _render_text("owner_scope", owner_scope)
+        dispatch_key = _render_text("dispatch_key", dispatch_key)
+        expected_request_sha256 = _render_digest(
+            "expected_request_sha256", expected_request_sha256
+        )
+        now = _render_now()
+        with self._render_write():
+            job = self._conn.execute(
+                """SELECT * FROM render_staging
+                   WHERE owner_scope=? AND gateway_attempt_key=?""",
+                (owner_scope, dispatch_key),
+            ).fetchone()
+            if job is not None:
+                if job["inbound_story_body_sha256"] != expected_request_sha256:
+                    raise RenderJournalConflict("cancel request hash conflicts with render")
+                request_digest = (
+                    job["outbound_hub_body_sha256"] or job["inbound_story_body_sha256"]
+                )
+                cancel_key = job["dispatch_key"] or job["gateway_attempt_key"]
+                first = job["cancel_state"] is None
+                if first:
+                    body = json.dumps(
+                        {"expected_request_sha256": request_digest},
+                        sort_keys=True, separators=(",", ":"),
+                    ).encode("ascii")
+                    self._conn.execute(
+                        """UPDATE render_staging SET cancel_state='requested',cancel_body=?,
+                           cancel_body_sha256=?,cancel_key=?,updated_at=? WHERE id=?""",
+                        (body, hashlib.sha256(body).hexdigest(), cancel_key, now, job["id"]),
+                    )
+                return {
+                    "state": "cancel_requested", "gateway_job_id": job["id"],
+                    "owner_scope": owner_scope, "dispatch_key": cancel_key,
+                    "expected_request_sha256": expected_request_sha256,
+                }
+            existing = self._conn.execute(
+                "SELECT * FROM render_cancel_fences WHERE owner_scope=? AND dispatch_key=?",
+                (owner_scope, dispatch_key),
+            ).fetchone()
+            if existing is not None:
+                if existing["expected_request_sha256"] != expected_request_sha256:
+                    raise RenderJournalConflict("cancel fence request hash conflicts")
+                return dict(existing) | {"state": "cancelled_before_acceptance"}
+            receipt = uuid.uuid4().hex
+            self._conn.execute(
+                """INSERT INTO render_cancel_fences (
+                    owner_scope,dispatch_key,expected_request_sha256,fence_receipt,first_cancel_at
+                ) VALUES (?,?,?,?,?)""",
+                (owner_scope, dispatch_key, expected_request_sha256, receipt, now),
+            )
+            return {
+                "state": "cancelled_before_acceptance", "owner_scope": owner_scope,
+                "dispatch_key": dispatch_key,
+                "expected_request_sha256": expected_request_sha256,
+                "fence_receipt": receipt, "first_cancel_at": now,
+                "gateway_job_id": None,
+            }
+
+    def update_render_delivery(
+        self, render_id: str, *, expected_revision: int, remote_state: str,
+        remote_attempt_id: str | None = None,
+        remote_descriptor: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        render_id = _render_uuid(render_id)
+        if type(expected_revision) is not int or expected_revision < 0:
+            raise ValueError("expected_revision must be non-negative")
+        remote_state = _render_text("remote_state", remote_state)
+        if remote_attempt_id is not None:
+            remote_attempt_id = _render_text("remote_attempt_id", remote_attempt_id)
+        descriptor = None if remote_descriptor is None else json.dumps(
+            remote_descriptor, sort_keys=True, separators=(",", ":"), allow_nan=False
+        )
+        now = _render_now()
+        with self._render_write():
+            changed = self._conn.execute(
+                """UPDATE render_delivery SET revision=revision+1,remote_state=?,
+                   remote_attempt_id=COALESCE(remote_attempt_id,?),remote_descriptor_json=?,
+                   updated_at=? WHERE render_id=? AND revision=?
+                   AND (remote_attempt_id IS NULL OR remote_attempt_id IS ?)""",
+                (remote_state, remote_attempt_id, descriptor, now, render_id,
+                 expected_revision, remote_attempt_id),
+            ).rowcount
+            if changed != 1:
+                raise RenderJournalConflict("render delivery revision changed")
+            return dict(self._conn.execute(
+                "SELECT * FROM render_delivery WHERE render_id=?", (render_id,)
+            ).fetchone())
+
+    def mark_render_cancel_send_started(self, render_id: str) -> dict[str, Any]:
+        render_id = _render_uuid(render_id)
+        now = _render_now()
+        with self._render_write():
+            changed = self._conn.execute(
+                """UPDATE render_staging SET cancel_outcome='send_unknown',updated_at=?
+                   WHERE id=? AND cancel_state='requested' AND cancel_body IS NOT NULL
+                     AND cancel_outcome IS NULL""",
+                (now, render_id),
+            ).rowcount
+            row = self._conn.execute(
+                "SELECT * FROM render_staging WHERE id=?", (render_id,)
+            ).fetchone()
+            if changed != 1 and not (row is not None and row["cancel_state"] == "requested"
+                                     and row["cancel_outcome"] == "send_unknown"):
+                raise RenderJournalConflict("render cancel send already has an outcome")
+            return self._render_staging_row(row)  # type: ignore[return-value]
+
+    def settle_render_cancel(
+        self, render_id: str, *, outcome: str, hub_job_id: str | None = None,
+        remote_attempt_id: str | None = None,
+        stopped_evidence_digest: str | None = None,
+        fence_receipt: str | None = None, first_cancel_at: float | None = None,
+    ) -> dict[str, Any]:
+        render_id = _render_uuid(render_id)
+        outcome = _render_text("cancel outcome", outcome)
+        if outcome not in ("accepted", "stopped"):
+            raise ValueError("render cancel outcome is unsupported")
+        launched = any(value is not None for value in (
+            hub_job_id, remote_attempt_id, stopped_evidence_digest,
+        ))
+        never_launched = fence_receipt is not None or first_cancel_at is not None
+        if launched:
+            hub_job_id = _render_uuid(hub_job_id)
+            remote_attempt_id = _render_text("remote_attempt_id", remote_attempt_id)
+            stopped_evidence_digest = _render_digest(
+                "stopped_evidence_digest", stopped_evidence_digest
+            )
+        if never_launched:
+            fence_receipt = _render_text("fence_receipt", fence_receipt)
+            if (len(fence_receipt) != 32
+                    or any(char not in "0123456789abcdef" for char in fence_receipt)
+                    or type(first_cancel_at) not in (int, float)
+                    or isinstance(first_cancel_at, bool)
+                    or not math.isfinite(first_cancel_at) or first_cancel_at < 0):
+                raise ValueError("never-launched render evidence is invalid")
+        if outcome != "stopped" and (launched or never_launched):
+            raise ValueError("pending cancellation cannot carry terminal evidence")
+        if outcome == "stopped" and launched == never_launched:
+            raise ValueError("stopped cancellation requires one proof kind")
+        now = _render_now()
+        with self._render_write():
+            job = self._conn.execute(
+                "SELECT * FROM render_staging WHERE id=?", (render_id,)
+            ).fetchone()
+            delivery = self._conn.execute(
+                "SELECT * FROM render_delivery WHERE render_id=?", (render_id,)
+            ).fetchone()
+            if job is None or delivery is None:
+                raise RenderJournalNotFound("render staging not found")
+            if launched:
+                if (job["hub_job_id"] != hub_job_id
+                        or delivery["remote_attempt_id"] != remote_attempt_id
+                        or delivery["stopped_evidence_digest"] not in (
+                            None, stopped_evidence_digest
+                        )):
+                    raise RenderJournalConflict("render stopped evidence changed")
+                self._conn.execute(
+                    """UPDATE render_delivery
+                       SET remote_state='cancelled',stopped_evidence_digest=?,updated_at=?
+                       WHERE render_id=?""",
+                    (stopped_evidence_digest, now, render_id),
+                )
+            elif never_launched:
+                if (job["hub_job_id"] is not None
+                        or job["terminal_fence_receipt"] not in (None, fence_receipt)
+                        or job["terminal_first_cancel_at"] not in (None, first_cancel_at)):
+                    raise RenderJournalConflict("render no-launch evidence changed")
+                self._conn.execute(
+                    """UPDATE render_staging
+                       SET terminal_fence_receipt=?,terminal_first_cancel_at=?
+                       WHERE id=?""",
+                    (fence_receipt, first_cancel_at, render_id),
+                )
+            changed = self._conn.execute(
+                """UPDATE render_staging SET cancel_outcome=?,cancel_state=?,updated_at=?
+                   WHERE id=? AND cancel_outcome IN ('send_unknown','accepted')""",
+                (outcome, "cancelled" if outcome == "stopped" else "requested", now, render_id),
+            ).rowcount
+            row = self._conn.execute(
+                "SELECT * FROM render_staging WHERE id=?", (render_id,)
+            ).fetchone()
+            if changed != 1 and not (row is not None and row["cancel_outcome"] == outcome):
+                raise RenderJournalConflict("render cancel outcome changed")
+            return self._render_staging_row(self._conn.execute(
+                "SELECT * FROM render_staging WHERE id=?", (render_id,)
+            ).fetchone())  # type: ignore[return-value]
+
+    def clear_render_cancel_terminal(
+        self, render_id: str, *, remote_state: str,
+        remote_descriptor: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Clear a pending cancel whose render already reached a terminal Hub state.
+
+        The Hub leaves an already `failed` or `output_ready` job unchanged when a cancel
+        arrives, so that pending cancel can never become `cancelled` and would be polled
+        forever. Record the observed terminal remote state and drop the pending cancel: the
+        row stops being due (for `failed`, by the render_due remote-state exclusion) or
+        proceeds through the normal output path (for `output_ready`, whose receipt is kept
+        so the import step still has its descriptor). No launch-stop evidence exists, so
+        this is deliberately not a `stopped` settlement.
+        """
+        render_id = _render_uuid(render_id)
+        remote_state = _render_text("remote_state", remote_state)
+        if remote_state not in ("failed", "output_ready"):
+            raise ValueError("render terminal cancel state is unsupported")
+        descriptor = None if remote_descriptor is None else json.dumps(
+            remote_descriptor, sort_keys=True, separators=(",", ":"), allow_nan=False
+        )
+        now = _render_now()
+        with self._render_write():
+            job = self._conn.execute(
+                "SELECT * FROM render_staging WHERE id=?", (render_id,)
+            ).fetchone()
+            if job is None:
+                raise RenderJournalNotFound("render staging not found")
+            if job["cancel_state"] != "requested":
+                raise RenderJournalConflict("render has no pending cancel to clear")
+            changed = self._conn.execute(
+                """UPDATE render_delivery SET revision=revision+1,remote_state=?,
+                   remote_descriptor_json=COALESCE(?,remote_descriptor_json),updated_at=?
+                   WHERE render_id=?""",
+                (remote_state, descriptor, now, render_id),
+            ).rowcount
+            if changed != 1:
+                raise RenderJournalNotFound("render delivery not found")
+            # cancel_outcome returns to NULL so a later explicit cancel is a clean first
+            # request; the terminal state is carried by remote_state, not this marker.
+            self._conn.execute(
+                """UPDATE render_staging SET cancel_state=NULL,cancel_outcome=NULL,updated_at=?
+                   WHERE id=? AND cancel_state='requested'""",
+                (now, render_id),
+            )
+            return self._render_staging_row(self._conn.execute(
+                "SELECT * FROM render_staging WHERE id=?", (render_id,)
+            ).fetchone())  # type: ignore[return-value]
+
+    def publish_render_winner(
+        self, render_id: str, *, expected_revision: int, winner_fence: str,
+        output_upload_id: str, output_asset_handle: str, receipt_digest: str,
+        gateway_receipt: bytes, gateway_receipt_digest: str,
+    ) -> dict[str, Any]:
+        render_id = _render_uuid(render_id)
+        winner_fence = _render_text("winner_fence", winner_fence)
+        output_upload_id = _render_text("output_upload_id", output_upload_id)
+        output_asset_handle = _render_text("output_asset_handle", output_asset_handle)
+        receipt_digest = _render_digest("receipt_digest", receipt_digest)
+        gateway_receipt_digest = _render_digest(
+            "gateway_receipt_digest", gateway_receipt_digest
+        )
+        if (type(gateway_receipt) is not bytes or not gateway_receipt
+                or len(gateway_receipt) > 1024 * 1024
+                or hashlib.sha256(gateway_receipt).hexdigest() != gateway_receipt_digest):
+            raise ValueError("Gateway receipt is invalid")
+        now = _render_now()
+        with self._render_write():
+            job = self._conn.execute("SELECT * FROM render_staging WHERE id=?", (render_id,)).fetchone()
+            if job is None:
+                raise RenderJournalNotFound("render staging not found")
+            if job["cancel_state"] is not None:
+                raise RenderJournalCancelled("cancelled render cannot publish output")
+            changed = self._conn.execute(
+                """UPDATE render_delivery SET revision=revision+1,winner_fence=?,output_upload_id=?,
+                   output_asset_handle=?,receipt_digest=?,gateway_receipt=?,
+                   gateway_receipt_digest=?,updated_at=?
+                   WHERE render_id=? AND revision=? AND output_asset_handle IS NULL""",
+                (winner_fence, output_upload_id, output_asset_handle, receipt_digest,
+                 gateway_receipt, gateway_receipt_digest, now, render_id, expected_revision),
+            ).rowcount
+            delivery = self._conn.execute(
+                "SELECT * FROM render_delivery WHERE render_id=?", (render_id,)
+            ).fetchone()
+            if changed != 1:
+                if not (delivery is not None
+                        and delivery["gateway_receipt"] is not None
+                        and delivery["winner_fence"] == winner_fence
+                        and delivery["output_asset_handle"] == output_asset_handle
+                        and delivery["receipt_digest"] == receipt_digest
+                        and bytes(delivery["gateway_receipt"]) == gateway_receipt
+                        and delivery["gateway_receipt_digest"] == gateway_receipt_digest):
+                    raise RenderJournalConflict("render output winner changed")
+            self._conn.execute(
+                "UPDATE render_staging SET state='output_ready',updated_at=? WHERE id=?",
+                (now, render_id),
+            )
+            return dict(delivery)
+
+    def bind_render_output_upload(
+        self, render_id: str, *, expected_revision: int, output_upload_id: str
+    ) -> dict[str, Any]:
+        render_id = _render_uuid(render_id)
+        output_upload_id = _render_text("output_upload_id", output_upload_id)
+        if type(expected_revision) is not int or expected_revision < 0:
+            raise ValueError("expected_revision must be non-negative")
+        now = _render_now()
+        with self._render_write():
+            changed = self._conn.execute(
+                """UPDATE render_delivery SET output_upload_id=?,updated_at=?
+                   WHERE render_id=? AND revision=? AND output_upload_id IS NULL""",
+                (output_upload_id, now, render_id, expected_revision),
+            ).rowcount
+            row = self._conn.execute(
+                "SELECT * FROM render_delivery WHERE render_id=?", (render_id,)
+            ).fetchone()
+            if changed != 1 and not (row is not None and row["revision"] == expected_revision
+                                     and row["output_upload_id"] == output_upload_id):
+                raise RenderJournalConflict("render output upload changed")
+            return dict(row)
+
+    def prepare_render_ack(
+        self, render_id: str, *, receipt_digest: str, attempt_id: str, ack_key: str
+    ) -> dict[str, Any]:
+        render_id = _render_uuid(render_id)
+        receipt_digest = _render_digest("receipt_digest", receipt_digest)
+        attempt_id = _render_text("attempt_id", attempt_id)
+        ack_key = _render_text("ack_key", ack_key)
+        body = json.dumps(
+            {"attempt_id": attempt_id, "receipt_digest": receipt_digest},
+            sort_keys=True, separators=(",", ":"),
+        ).encode("ascii")
+        now = _render_now()
+        with self._render_write():
+            row = self._conn.execute(
+                "SELECT * FROM render_delivery WHERE render_id=?", (render_id,)
+            ).fetchone()
+            if row is None or row["output_asset_handle"] is None:
+                raise RenderJournalConflict("render output is not durably published")
+            if row["remote_attempt_id"] != attempt_id:
+                raise RenderJournalConflict("render acknowledgement attempt changed")
+            if row["receipt_digest"] != receipt_digest:
+                raise RenderJournalConflict("render acknowledgement receipt changed")
+            if row["ack_body"] is None:
+                self._conn.execute(
+                    """UPDATE render_delivery SET ack_body=?,ack_body_sha256=?,ack_key=?,updated_at=?
+                       WHERE render_id=?""",
+                    (body, hashlib.sha256(body).hexdigest(), ack_key, now, render_id),
+                )
+            elif (bytes(row["ack_body"]), row["ack_key"]) != (body, ack_key):
+                raise RenderJournalConflict("render acknowledgement identity changed")
+            return dict(self._conn.execute(
+                "SELECT * FROM render_delivery WHERE render_id=?", (render_id,)
+            ).fetchone())
+
+    def settle_render_ack(self, render_id: str, *, ack_outcome: str) -> dict[str, Any]:
+        render_id = _render_uuid(render_id)
+        ack_outcome = _render_text("ack_outcome", ack_outcome)
+        now = _render_now()
+        with self._render_write():
+            changed = self._conn.execute(
+                """UPDATE render_delivery SET ack_outcome=?,updated_at=?
+                   WHERE render_id=? AND ack_body IS NOT NULL
+                     AND (ack_outcome IS NULL OR ack_outcome=?)""",
+                (ack_outcome, now, render_id, ack_outcome),
+            ).rowcount
+            if changed != 1:
+                raise RenderJournalConflict("render acknowledgement outcome changed")
+            return dict(self._conn.execute(
+                "SELECT * FROM render_delivery WHERE render_id=?", (render_id,)
+            ).fetchone())
+
+    def acknowledge_render_story(self, render_id: str, *, receipt_digest: str) -> dict[str, Any]:
+        render_id = _render_uuid(render_id)
+        receipt_digest = _render_digest("receipt_digest", receipt_digest)
+        now = _render_now()
+        with self._render_write():
+            row = self._conn.execute(
+                "SELECT * FROM render_delivery WHERE render_id=?", (render_id,)
+            ).fetchone()
+            if row is None or row["gateway_receipt_digest"] != receipt_digest:
+                raise RenderJournalConflict("Story acknowledgement receipt changed")
+            if row["story_ack_digest"] not in (None, receipt_digest):
+                raise RenderJournalConflict("Story acknowledgement identity changed")
+            self._conn.execute(
+                "UPDATE render_delivery SET story_ack_digest=?,updated_at=? WHERE render_id=?",
+                (receipt_digest, now, render_id),
+            )
+            self._conn.execute(
+                "UPDATE render_staging SET state='acknowledged',updated_at=? WHERE id=?",
+                (now, render_id),
+            )
+            return dict(self._conn.execute(
+                "SELECT * FROM render_delivery WHERE render_id=?", (render_id,)
+            ).fetchone())
+
+    def get_render_delivery(self, render_id: str) -> dict[str, Any] | None:
+        render_id = _render_uuid(render_id)
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM render_delivery WHERE render_id=?", (render_id,)
+            ).fetchone()
+            return dict(row) if row is not None else None
 
     # -- write ------------------------------------------------------------
     def submit(

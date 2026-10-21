@@ -54,6 +54,18 @@ class ContentLibrary(unittest.TestCase):
         self.assertFalse(row["installable"])
         self.assertEqual(row["item_kinds"], ["topic-pack"])
 
+    def test_store_profile_trust_describes_portable_possession(self):
+        row = content_packs.inspect_archive(archive())
+        self.assertEqual(row["delivery_profile"], "genstudio-store-receipt-v1")
+        self.assertEqual(row["integrity"], "verified")
+        self.assertEqual(row["ownership"], "unverified")
+        self.assertFalse(row["installable"])
+        self.assertEqual(
+            row["trust_requirement"],
+            "Structural integrity and declared file hashes checked; publisher signature "
+            "absent. A compatible pack you possess installs in Story Studio without an account.",
+        )
+
     def test_bad_hash_and_incompatible_format_refused(self):
         for mutate in (lambda m: m["files"][0].update(sha256="0" * 64),
                        lambda m: m.update(pack_format=2),
