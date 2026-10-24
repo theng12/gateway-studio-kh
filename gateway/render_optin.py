@@ -279,6 +279,11 @@ def workers(view: dict[str, Any], *, networks: list | None = None) -> list[dict[
     """
     switched_on = enabled_keys()
     nets = local_networks() if networks is None else networks
+    # The owner's own network names (Fleet → Networks: A, B, C …) are the truth about where a Mac is.
+    # The address guess below cannot tell sites apart when every Mac is reached over Tailscale
+    # (owner, 2026-10-24: 11xx–14xx were switched on because all showed "same network").
+    from . import model_share
+    owner_networks = model_share.networks()
     rows: list[dict[str, Any]] = []
     for location in (view.get("locations") if isinstance(view, dict) else None) or []:
         if not isinstance(location, dict) or location.get("local") is not False:
@@ -326,6 +331,7 @@ def workers(view: dict[str, Any], *, networks: list | None = None) -> list[dict[
                 "idle_state": idle,
                 "network": klass,
                 "network_source": source,
+                "owner_network": model_share.network_of(controller, machine_id, owner_networks) or None,
                 "address": address,
                 "authority": ACCEPTED if accepting else "production" if production else "none",
                 "opted_in": opted_in,
@@ -338,7 +344,7 @@ def workers(view: dict[str, Any], *, networks: list | None = None) -> list[dict[
                               and claim != "invalid" and idle != "offline"),
                 "note": _note(opted_in, accepting, production, claim == "invalid"),
             })
-    rows.sort(key=lambda row: (network_rank(row["network"]), str(row["machine"]).lower(),
+    rows.sort(key=lambda row: (row["owner_network"] or "~", network_rank(row["network"]), str(row["machine"]).lower(),
                                row["controller_id"], row["machine_id"]))
     return rows
 

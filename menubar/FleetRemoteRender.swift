@@ -19,6 +19,7 @@ struct FleetRenderWorker: Equatable {
     let memoryGB: Double?
     let idleState: String
     let network: String
+    let ownerNetwork: String?
     let address: String?
     let authority: String
     let optedIn: Bool
@@ -37,6 +38,7 @@ struct FleetRenderWorker: Equatable {
         memoryGB = (row["memory_gb"] as? NSNumber)?.doubleValue
         idleState = row["idle_state"] as? String ?? "not_ready"
         network = row["network"] as? String ?? "unknown"
+        ownerNetwork = (row["owner_network"] as? String).flatMap { $0.isEmpty ? nil : $0 }
         address = row["address"] as? String
         authority = row["authority"] as? String ?? "none"
         optedIn = row["opted_in"] as? Bool ?? false
@@ -49,6 +51,8 @@ struct FleetRenderWorker: Equatable {
     var alreadyQualified: Bool { authority == "production" }
 
     var networkText: String {
+        // The owner's own name (Fleet → Networks) wins: it is where the Mac really is.
+        if let ownerNetwork { return "Network \(ownerNetwork)" }
         switch network {
         case "same_network": return "Same network"
         case "other_lan": return "Another local network"

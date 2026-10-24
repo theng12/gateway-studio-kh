@@ -369,6 +369,21 @@ class EligibilityTests(Case):
 
 
 class ListingTests(Case):
+    def test_the_owners_network_names_label_and_group_the_macs(self) -> None:
+        """Owner, 2026-10-24: every Mac is reached over Tailscale, so the address guess called them all the
+        same network and the wrong sites were switched on. The names set in Fleet → Networks decide."""
+        from gateway import model_share
+        macs = {"far": {"address": "http://100.100.1.1:1", "label": "Far", "worker": worker("far")},
+                "near": {"address": "http://100.100.1.2:1", "label": "Near", "worker": worker("near")},
+                "unnamed": {"address": "http://100.100.1.3:1", "label": "Unnamed", "worker": worker("unnamed")}}
+        model_share.networks_path().write_text(json.dumps(
+            {"locations": {"roster-a": "C"}, "machines": {"roster-a/far": "A"}}), encoding="utf-8")
+        with Fleet(location(macs)):
+            rows = render_optin.workers(fleet.snapshot())
+        self.assertEqual({row["machine_id"]: row["owner_network"] for row in rows},
+                         {"far": "A", "near": "C", "unnamed": "C"})
+        self.assertEqual([row["owner_network"] for row in rows], ["A", "C", "C"], "grouped by network")
+
     def test_workers_are_listed_with_machine_idle_state_and_network_same_network_first(self) -> None:
         macs = {
             "zeta-far": {"address": "http://192.168.9.1:1", "label": "Zeta", "chip": "Apple M2",
