@@ -14,6 +14,27 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.197 — 2026-10-24
+
+### A voice can clone from its audio alone
+For a language the transcriber cannot understand, such as Khmer. When you **Add Voices**, untick
+**Transcribe the clips**: those voices are never transcribed and are sent to the model as audio only,
+so VoxCPM2 copies the voice without reading back wrong words. Change it for any voice later with
+**More → Language and Transcript…**. Turn **Include reference transcript** off for audio only, or on
+and type exactly what the clip says. Models that need a transcript (Qwen3 Base, Breeze) refuse an
+audio-only voice and say so in **More → Reference…**.
+
+### Label each voice's language
+The same **Language and Transcript…** dialog sets a voice's language (km for Khmer, en for English, or
+a short name). Story Studio shows it beside the voice and finds the voice by it.
+
+### Remove provider voices you no longer use
+Select any number of ElevenLabs or Fish voices and choose **More → Remove Voice…**. They leave this
+list and Story Studio; nothing is deleted at the provider, and **More → Restore Removed Voice…** brings
+any of them back. A voice narrated with in the last 30 days asks once more and names who used it.
+
+---
+
 ## 0.2.196 — 2026-10-24
 
 ### One image choice for the whole fleet

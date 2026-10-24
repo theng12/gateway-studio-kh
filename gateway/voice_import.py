@@ -175,6 +175,8 @@ def write_voice_files(entry: dict) -> None:
                 # Whether this voice can clone at all: no segments, no reference.
                 "has_transcript": bool(transcript),
                 "segment_count": len(segments or []),
+                # Off: the clip clones from its audio alone (`transcript_included`).
+                "include_reference_transcript": transcript_included(entry),
                 # Permission to clone and distribute, granted per voice and never
                 # assumed. `license` exists only once it has been granted.
                 "permission_acknowledged": bool(entry.get("permission_acknowledged")),
@@ -250,6 +252,63 @@ def set_permission(
 
     _write_catalog(payload)
     return {"changed": changed, "acknowledged": bool(acknowledged)}
+
+
+def transcript_included(entry: dict) -> bool:
+    """Whether this voice's words travel with its clip. Absent means yes (every older voice).
+
+    Off is the owner's choice for a recording the transcriber cannot understand (Khmer,
+    2026-10-24): its Whisper text is wrong, and a model like VoxCPM2 conditions on whatever
+    words it is given. Off means audio only — no transcript, no segments, no transcription.
+    """
+    return entry.get("include_reference_transcript") is not False
+
+
+def reference_words(entry: dict) -> tuple[str, list]:
+    """The (transcript, segments) a clone may use: both empty when the owner turned them off."""
+    if not transcript_included(entry):
+        return "", []
+    return str(entry.get("reference_transcript") or "").strip(), list(entry.get("reference_segments") or [])
+
+
+#: A language label: a code like `km` or `en`, or a short name. Story shows it and searches on it;
+#: the fleet share route caps it at 40 characters.
+LANGUAGE_RE = re.compile(r"[A-Za-z][A-Za-z0-9 _()-]{0,39}")
+
+
+def update_voice(voice_id: str, *, language: str | None = None, include: bool | None = None,
+                 transcript: str | None = None) -> dict:
+    """Change a voice's language label and/or its reference transcript. `None` leaves a field alone.
+
+    Transcript on needs words to send: the text given here, a transcript already saved, or
+    timed segments — on with none of those would be off while saying otherwise. Off keeps
+    whatever is saved, so turning it back on restores it. An empty language clears the label.
+    """
+    wanted = catalogue_id(voice_id)
+    label = None if language is None else str(language).strip()
+    if label and not LANGUAGE_RE.fullmatch(label):
+        raise ValueError("A language is a code like km or en, or a short name, up to 40 letters.")
+    text = None if transcript is None else str(transcript).strip()
+    payload = _read_catalog()
+    for entry in payload.get("voices") or []:
+        if str(entry.get("id")) != wanted:
+            continue
+        if include:
+            words = text if text is not None else str(entry.get("reference_transcript") or "").strip()
+            if not words and not entry.get("reference_segments"):
+                raise ValueError("Type the words spoken in the clip to include a transcript.")
+        if include is not None:
+            entry["include_reference_transcript"] = bool(include)
+        if include and text is not None:
+            entry["reference_transcript"] = text
+        if label is not None:
+            entry["language"] = label
+        write_voice_files(entry)
+        _write_catalog(payload)
+        return {"id": wanted, "language": str(entry.get("language") or ""),
+                "include_reference_transcript": transcript_included(entry),
+                "reference_transcript": str(entry.get("reference_transcript") or "")}
+    raise KeyError(voice_id)
 
 
 def shareable() -> list[dict]:
@@ -387,7 +446,7 @@ def shared_readiness(entry: dict) -> dict:
         problems.append(
             f"its clip is {clip.stat().st_size // 1_000_000} MB, over the 25 MB limit"
         )
-    if not entry.get("reference_segments"):
+    if transcript_included(entry) and not entry.get("reference_segments"):
         # Not fatal for the push, and fatal for the clone: without aligned
         # timestamps Qwen3 Base refuses the reference.
         problems.append("it has no aligned segments, so it could be installed but not cloned from")
@@ -445,8 +504,8 @@ def push_fields(entry: dict) -> dict:
         "license": str(entry.get("license") or DEFAULT_LICENSE),
         "notes": str(entry.get("description") or ""),
         "source_url": "",
-        "transcript": str(entry.get("reference_transcript") or ""),
-        "transcript_segments": json.dumps(shared_segments(entry)),
+        "transcript": reference_words(entry)[0],
+        "transcript_segments": json.dumps(shared_segments(entry) if transcript_included(entry) else []),
         "permission_acknowledged": bool(entry.get("permission_acknowledged")),
         "filename": clip.name or "reference.wav",
         # Sent separately as the file part; kept here so a caller has one place to
@@ -969,21 +1028,23 @@ def migrate_references() -> dict:
     return {"migrated": migrated, "failed": failed}
 
 
-def import_folder(folder: Path, resolutions: dict | None = None) -> dict:
+def import_folder(folder: Path, resolutions: dict | None = None, *, transcript: bool = True) -> dict:
     """Every voice in a folder (`discover`), imported by `import_found`."""
-    return import_found(*discover(folder), resolutions)
+    return import_found(*discover(folder), resolutions, transcript=transcript)
 
 
-def import_paths(paths: list[Path], resolutions: dict | None = None) -> dict:
+def import_paths(paths: list[Path], resolutions: dict | None = None, *, transcript: bool = True) -> dict:
     """The files and folders the owner picked one by one, imported by `import_found`."""
-    return import_found(*discover_paths(paths), resolutions)
+    return import_found(*discover_paths(paths), resolutions, transcript=transcript)
 
 
 #: What the owner may answer for a clip whose name is taken (`resolutions[source]`).
 KEEP_BOTH, SKIP, REPLACE = "keep_both", "skip", "replace:"
 
 
-def import_found(found: list[dict], skipped: list[dict], resolutions: dict | None = None) -> dict:
+def import_found(
+    found: list[dict], skipped: list[dict], resolutions: dict | None = None, *, transcript: bool = True
+) -> dict:
     """Copy each discovered clip into the library and the catalogue — or say why not.
 
     **The clip's bytes are the identity**, and nothing already here is changed by accident:
@@ -1120,6 +1181,8 @@ def import_found(found: list[dict], skipped: list[dict], resolutions: dict | Non
             # What tells two same-named voices apart in the list.
             "duration_seconds": voice_audio.seconds(target),
             "imported_at": time.time(),
+            # `transcript=False`: audio only, for a language the transcriber cannot understand.
+            "include_reference_transcript": bool(transcript),
         })
         if original is not None:
             entry["original_path"] = str(original)
@@ -1443,6 +1506,8 @@ def start_annotation(model: str = "", *, force: bool = False) -> dict:
     pending = [
         v for v in voices()
         if (force or not v.get("reference_segments")) and v.get("reference_path")
+        # Audio-only voices are never transcribed: the owner turned the words off.
+        and transcript_included(v)
     ]
     if not pending:
         return {**annotation_state(), "total": 0, "done": 0,

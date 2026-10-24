@@ -2169,6 +2169,7 @@ def voice_reference(voice_id: str) -> dict[str, Any]:
     the answer says so rather than guessing a window, because a plausible default
     is exactly what this codebase keeps auditing out.
     """
+    from .adapters.studio_hub import segments_text
     from .fleet import publish_id
     from .providers.definitions import KIND_STUDIO_HUB
     from .voices import (
@@ -2188,8 +2189,12 @@ def voice_reference(voice_id: str) -> dict[str, Any]:
         return _error(404, f"no voice {voice_id!r}")
 
     raw = voice.raw or {}
-    segments = [s for s in (raw.get("reference_segments") or []) if isinstance(s, dict)]
-    transcript = str(raw.get("reference_transcript") or "").strip()
+    # What a clone is actually given: nothing, when the owner turned the words off.
+    included = raw.get("include_reference_transcript") is not False
+    saved_segments = [s for s in (raw.get("reference_segments") or []) if isinstance(s, dict)]
+    segments = saved_segments if included else []
+    saved_transcript = str(raw.get("reference_transcript") or "").strip()
+    transcript = saved_transcript if included else ""
     duration = raw.get("duration_seconds")
     path = str(raw.get("reference_path") or "")
 
@@ -2260,7 +2265,9 @@ def voice_reference(voice_id: str) -> dict[str, Any]:
         else:
             verdict = "used whole"
 
-        if not segments and support is not False:
+        if not included and support is not False:
+            warning = warning or "audio only: the transcript is turned off for this voice"
+        elif not segments and support is not False:
             warning = warning or ("no aligned segments: a clip longer than this "
                                   "model's window cannot be cut to match its transcript")
         # The id Story Studio would ask with: locations publish under the maker,
@@ -2281,6 +2288,7 @@ def voice_reference(voice_id: str) -> dict[str, Any]:
     return {
         "voice_id": voice.id,
         "display_name": voice.display_name,
+        "language": voice.language,
         "clip": {
             "present": True,
             "duration_seconds": duration,
@@ -2288,6 +2296,9 @@ def voice_reference(voice_id: str) -> dict[str, Any]:
             "segments": len(segments),
             "has_transcript": bool(transcript),
             "path": path,
+            "include_reference_transcript": included,
+            # The words the owner can edit: their own text, else what the transcriber heard.
+            "transcript_text": saved_transcript or segments_text(saved_segments),
         },
         "models": models,
     }
@@ -2335,14 +2346,17 @@ def add_voices(payload: dict[str, Any]) -> Any:
 
     folder = str(payload.get("folder") or "").strip()
     files = [str(f).strip() for f in payload.get("files") or [] if str(f).strip()]
+    # False: the clips are audio only and never transcribed (a language Whisper cannot read).
+    transcript = payload.get("include_reference_transcript") is not False
     resolutions = payload.get("resolutions") or {}
     if not isinstance(resolutions, dict):
         return _error(422, "resolutions must be {source: 'keep_both' | 'skip' | 'replace:<voice id>'}")
     if files:
         # Picked one by one: a clip each, or a folder read the same way as `folder`.
-        result = voice_import.import_paths([Path(f).expanduser() for f in files], resolutions)
+        result = voice_import.import_paths([Path(f).expanduser() for f in files], resolutions,
+                                           transcript=transcript)
     elif folder:
-        result = voice_import.import_folder(Path(folder).expanduser(), resolutions)
+        result = voice_import.import_folder(Path(folder).expanduser(), resolutions, transcript=transcript)
     else:
         return _error(400, "Pick audio files, or a folder, to add voices from.")
     if not result["imported"] and not result["skipped"] and not result["conflicts"]:
@@ -2355,6 +2369,33 @@ def add_voices(payload: dict[str, Any]) -> Any:
             force=bool(payload.get("force")),
         )
     return result
+
+
+@router.post("/api/voices/settings", dependencies=[Depends(require_admin)])
+def set_voice_settings(payload: dict[str, Any]) -> Any:
+    """A local voice's language label and reference transcript.
+
+    `{voice_id, language?, include?, transcript?}`; an absent field is left alone.
+    Transcript off is for a recording the transcriber cannot understand: its words are
+    never sent and it is never transcribed again. On needs words — the `transcript` typed
+    here, one already saved, or timed segments.
+    """
+    from . import voice_import
+
+    voice_id = str(payload.get("voice_id") or "").strip()
+    include = payload.get("include")
+    transcript = payload.get("transcript")
+    language = payload.get("language")
+    if (not voice_id or (include is not None and not isinstance(include, bool))
+            or (transcript is not None and not isinstance(transcript, str))
+            or (language is not None and not isinstance(language, str))):
+        return _error(422, "expected {'voice_id': str, 'language'?: str, 'include'?: bool, 'transcript'?: str}")
+    try:
+        return voice_import.update_voice(voice_id, language=language, include=include, transcript=transcript)
+    except KeyError:
+        return _error(404, f"no voice {voice_id!r} on this Mac")
+    except ValueError as exc:
+        return _error(422, str(exc))
 
 
 @router.get("/api/voices/add/status", dependencies=[Depends(require_admin)])
@@ -2543,16 +2584,58 @@ def voice_preview(voice_id: str) -> Any:
 
 @router.get("/api/voices/removed", dependencies=[Depends(require_admin)])
 def removed_voices() -> dict[str, Any]:
-    """This Mac's voices that were removed and can be restored (`voice-backups/`)."""
+    """Removed voices that can be restored: this Mac's (`voice-backups/`) and provider voices."""
     from . import voice_import
 
-    return {"voices": voice_import.removed()}
+    return {"voices": voice_import.removed(), "provider_voices": voice_registry().hidden_voices()}
+
+
+def _remove_provider_voices(voice_ids: list[str], confirm_in_use: bool) -> Any:
+    """Take provider voices off this Gateway (hidden, so Restore brings them back).
+
+    Nothing is deleted at the provider. Recently used voices are refused (409) unless
+    confirmed, as for this Mac's own, and the refusal names them.
+    """
+    from .voices import SOURCE_LOCAL, resolve
+
+    found = []
+    for voice_id in voice_ids:
+        voice = resolve(voice_id)
+        if voice is None or voice.source == SOURCE_LOCAL:
+            return _error(404, f"no provider voice {voice_id!r}")
+        found.append(voice)
+    used = {v.id: _voice_use(v.provider_voice_id) for v in found}
+    busy = [{"id": v.id, "display_name": v.display_name, "used_by": used[v.id]} for v in found if used[v.id]]
+    if busy and not confirm_in_use:
+        names = ", ".join(f"\u201c{b['display_name']}\u201d" for b in busy)
+        return _error(409, f"{names} narrated in the last {VOICE_IN_USE_DAYS} days; confirm to remove anyway.",
+                      code="VOICE_IN_USE")
+    # Hidden rather than forgotten, saved ones too, so Restore can always bring a voice back.
+    for voice in found:
+        voice_registry().hide(voice)
+    return {"removed": [v.id for v in found], "in_use": busy}
+
+
+@router.post("/api/voices/remove", dependencies=[Depends(require_admin)])
+def remove_provider_voices(payload: dict[str, Any]) -> Any:
+    """`{items: [voice_id, ...], confirm_in_use?: bool}` — several provider voices at once."""
+    items = payload.get("items")
+    if not isinstance(items, list) or not items or not all(isinstance(i, str) for i in items):
+        return _error(422, "expected {'items': [voice_id, ...], 'confirm_in_use'?: bool}")
+    return _remove_provider_voices(items, bool(payload.get("confirm_in_use")))
 
 
 @router.post("/api/voices/restore", dependencies=[Depends(require_admin)])
 def restore_voice(payload: dict[str, Any]) -> Any:
     from . import voice_import
 
+    if payload.get("voice_id"):
+        voice_id = str(payload["voice_id"])
+        if not voice_registry().unhide(voice_id):
+            return _error(404, f"{voice_id!r} is not a removed provider voice")
+        from .voices import resolve
+        voice = resolve(voice_id)
+        return {"id": voice_id, "display_name": voice.display_name if voice else voice_id}
     try:
         return voice_import.restore(str(payload.get("backup") or ""))
     except (ValueError, OSError) as exc:
@@ -2597,9 +2680,7 @@ def forget_voice(voice_id: str, confirm_in_use: bool = False) -> Any:
     raw = voice_import.catalogue_id(voice_id)
     mine = next((v for v in voice_import.voices() if str(v.get("id")) == raw), None)
     if mine is None:
-        if not voice_registry().remove_custom(voice_id):
-            return _error(404, "that voice is discovered from the provider, not added here")
-        return {"removed": voice_id}
+        return _remove_provider_voices([voice_id], confirm_in_use)
     if not confirm_in_use and _voice_use(raw):
         return _error(409, (
             f"\u201c{mine.get('display_name')}\u201d was used for narration in the last "

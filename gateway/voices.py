@@ -423,6 +423,8 @@ def _local_voices() -> list[Voice]:
                     "reference_path": entry.get("reference_path"),
                     "reference_transcript": entry.get("reference_transcript"),
                     "reference_segments": entry.get("reference_segments"),
+                    # False: the owner chose audio only; the adapter sends no words.
+                    "include_reference_transcript": entry.get("include_reference_transcript") is not False,
                     # Whether the owner has granted permission to clone and
                     # distribute this voice. False until he says so, per voice.
                     "permission_acknowledged": bool(entry.get("permission_acknowledged")),
@@ -560,7 +562,9 @@ def _elevenlabs_library(
 class VoiceRegistry:
     def __init__(self, path: Any = None) -> None:
         self.path = path or STATE_PATH
-        self._data: dict[str, Any] = {"enabled": {}, "discovered": {}, "custom": {}}
+        # `hidden`: provider voices the owner removed from this Gateway ({provider: {voice: info}}).
+        # They stay in the provider's account; Restore brings them back.
+        self._data: dict[str, Any] = {"enabled": {}, "discovered": {}, "custom": {}, "hidden": {}}
         self._load()
 
     def _load(self) -> None:
@@ -571,7 +575,7 @@ class VoiceRegistry:
         except (json.JSONDecodeError, OSError):
             return
         if isinstance(parsed, dict):
-            for key in ("enabled", "discovered", "custom"):
+            for key in ("enabled", "discovered", "custom", "hidden"):
                 if isinstance(parsed.get(key), dict):
                     self._data[key] = parsed[key]
 
@@ -658,7 +662,9 @@ class VoiceRegistry:
             merged[voice.id] = voice
         for voice in self._custom(provider_id):
             merged[voice.id] = voice
-        return list(merged.values())
+        # A removed voice is gone from every list and from `find`, so it cannot be used either.
+        hidden = self._data["hidden"].get(provider_id) or {}
+        return [v for v in merged.values() if v.provider_voice_id not in hidden]
 
     def _custom(self, provider_id: str) -> list[Voice]:
         out: list[Voice] = []
@@ -782,6 +788,27 @@ class VoiceRegistry:
             owned=True,
             raw=raw or {},
         )
+
+    def hide(self, voice: Voice) -> None:
+        """Remove a provider voice from this Gateway. Nothing changes at the provider."""
+        bucket = self._data["hidden"].setdefault(voice.provider_id, {})
+        bucket[voice.provider_voice_id] = {"display_name": voice.display_name, "hidden_at": time.time()}
+        self._save()
+
+    def hidden_voices(self) -> list[dict[str, Any]]:
+        return sorted(
+            ({"id": make_id(provider_id, voice_id), "provider_id": provider_id,
+              "display_name": str(info.get("display_name") or voice_id), "removed_at": info.get("hidden_at")}
+             for provider_id, bucket in self._data["hidden"].items()
+             for voice_id, info in (bucket or {}).items() if isinstance(info, dict)),
+            key=lambda row: (row["provider_id"], row["display_name"].lower()))
+
+    def unhide(self, voice_id: str) -> bool:
+        provider_id, provider_voice_id = split_id(voice_id)
+        found = (self._data["hidden"].get(provider_id) or {}).pop(provider_voice_id, None) is not None
+        if found:
+            self._save()
+        return found
 
     def remove_custom(self, voice_id: str) -> bool:
         provider_id, provider_voice_id = split_id(voice_id)

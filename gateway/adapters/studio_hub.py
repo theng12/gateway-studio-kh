@@ -1657,15 +1657,18 @@ def _reference_for(request: BackendRequest) -> dict[str, Any] | None:
     path = str(raw.get("reference_path") or "")
     if not path:
         return None
-    segments = raw.get("reference_segments") or []
+    # Off is the owner's choice for a language the transcriber cannot read: audio only, so
+    # VoxCPM2 clones from the clip alone and a model that needs words refuses on its own.
+    included = raw.get("include_reference_transcript") is not False
+    segments = (raw.get("reference_segments") or []) if included else []
     return {
         "path": path,
         # A voice imported from a loose clip has no saved transcript, only the timestamped
         # segments its annotation produced. Breeze TTS 2 refuses a reference without its words
         # (the Hub derives them from segments only when it cuts a window, and Breeze publishes
         # no window), so the words come from the segments rather than the voice failing.
-        "transcript": str(raw.get("reference_transcript") or "").strip()
-        or segments_text(segments),
+        "transcript": (str(raw.get("reference_transcript") or "").strip()
+                       or segments_text(segments)) if included else "",
         "segments": segments,
         "name": voice.display_name,
         # Sent so the Hub's staged copy carries the same facts this gateway knows.

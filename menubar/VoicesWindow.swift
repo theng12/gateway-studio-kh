@@ -235,6 +235,7 @@ final class VoicesSection: NSObject, AppSection, NSTableViewDataSource, NSTableV
         // Three different things can happen to a recording — used whole, cut to a shorter aligned window,
         // or refused — and from the outside they look the same. This is where the app says which, per model.
         add("Reference…", #selector(checkReference))
+        add("Language and Transcript…", #selector(editTranscript))
         add("Stop Preview", #selector(stopPreview))
         return more
     }
@@ -296,9 +297,17 @@ final class VoicesSection: NSObject, AppSection, NSTableViewDataSource, NSTableV
         panel.prompt = "Add Voices"
         panel.message =
             "Pick one or more audio files — each becomes a voice — or a folder of them."
+        // Off for a language the transcriber cannot understand (Khmer): those clips clone from
+        // their audio alone, and wrong words would make VoxCPM2 read them.
+        let transcribe = NSButton(checkboxWithTitle: "Transcribe the clips (turn off for Khmer and other "
+                                  + "languages the transcriber cannot understand)", target: nil, action: nil)
+        transcribe.state = .on
+        panel.accessoryView = transcribe
+        panel.isAccessoryViewDisclosed = true
         guard panel.runModal() == .OK, !panel.urls.isEmpty else { return }
 
-        var body: [String: Any] = ["annotate": true]
+        var body: [String: Any] = ["annotate": true,
+                                   "include_reference_transcript": transcribe.state == .on]
         if panel.urls.count == 1, panel.urls[0].hasDirectoryPath {
             body["folder"] = panel.urls[0].path
         } else {
@@ -792,12 +801,57 @@ final class VoicesSection: NSObject, AppSection, NSTableViewDataSource, NSTableV
 
     @objc private func removeSelected() {
         let chosen = selectedRows()
-        guard chosen.count == 1 else {
-            summaryLabel.textColor = Health.warn.text
-            summaryLabel.stringValue = "Select one voice to remove."
+        if chosen.count == 1 { confirmRemove(chosen[0]); return }
+        // Several at once: provider voices only (the old ElevenLabs list, 2026-10-24). This Mac's
+        // own voices go one at a time, because each one's clip moves to the backups.
+        guard chosen.count > 1,
+              !chosen.contains(where: { ($0["provider_id"] as? String) == Self.localProviderId }) else {
+            report(chosen.isEmpty ? "Select the voices to remove."
+                                  : "Remove this Mac's own voices one at a time.", ok: false)
             return
         }
-        confirmRemove(chosen[0])
+        let ids = chosen.compactMap { $0["id"] as? String }
+        let names = chosen.compactMap { $0["display_name"] as? String }
+        let alert = NSAlert()
+        alert.messageText = "Remove these \(ids.count) voices from this Gateway?"
+        alert.informativeText = names.prefix(12).joined(separator: ", ")
+            + (names.count > 12 ? ", and \(names.count - 12) more" : "")
+            + "\n\nThey leave this list and Story Studio. Nothing is deleted at the provider, and "
+            + "More → Restore Removed Voice… brings any of them back."
+        alert.addButton(withTitle: "Remove")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        removeProviderVoices(ids, confirmed: false)
+    }
+
+    private func removeProviderVoices(_ ids: [String], confirmed: Bool) {
+        GatewayAPI.post("/admin/api/voices/remove", body: ["items": ids, "confirm_in_use": confirmed]) {
+            [weak self] result in
+            guard let self else { return }
+            if !confirmed, case .failure(let error) = result,
+               case GatewayAPIError.refused(409, let detail)? = error as? GatewayAPIError {
+                // Some were narrated lately: say which, and ask once more.
+                let again = NSAlert()
+                again.alertStyle = .warning
+                again.messageText = "Some of these voices were used for narration lately"
+                again.informativeText = detail
+                    + "\n\nA Story Studio channel still set to one of them will fail its next narration."
+                again.addButton(withTitle: "Remove Anyway")
+                again.addButton(withTitle: "Cancel")
+                guard again.runModal() == .alertFirstButtonReturn else { return }
+                self.removeProviderVoices(ids, confirmed: true)
+                return
+            }
+            self.reload {
+                switch result {
+                case .failure(let error):
+                    self.report("Could not remove them — \(error.localizedDescription)", ok: false)
+                case .success:
+                    self.report("Removed \(ids.count) voices. More → Restore Removed Voice… brings any back.",
+                                ok: true)
+                }
+            }
+        }
     }
 
     /// The row's context menu acts on the row that was right-clicked, not the selection.
@@ -874,8 +928,10 @@ final class VoicesSection: NSObject, AppSection, NSTableViewDataSource, NSTableV
     @objc private func restoreRemoved() {
         GatewayAPI.get("/admin/api/voices/removed") { [weak self] result in
             guard let self else { return }
-            let removed = (try? result.get())?["voices"] as? [[String: Any]] ?? []
-            guard !removed.isEmpty else {
+            let payload = (try? result.get()) ?? [:]
+            let removed = payload["voices"] as? [[String: Any]] ?? []
+            let providerVoices = payload["provider_voices"] as? [[String: Any]] ?? []
+            guard !removed.isEmpty || !providerVoices.isEmpty else {
                 self.summaryLabel.textColor = .secondaryLabelColor
                 self.summaryLabel.stringValue = "No removed voices to restore."
                 return
@@ -888,7 +944,12 @@ final class VoicesSection: NSObject, AppSection, NSTableViewDataSource, NSTableV
                 } ?? "?"
                 picker.addItem(withTitle: "\(voice["display_name"] as? String ?? "?") — "
                                + "\(Self.clipLabel(voice["duration_seconds"], voice["imported_at"])) — removed \(when)")
-                picker.lastItem?.representedObject = voice["backup"]
+                picker.lastItem?.representedObject = ["backup": voice["backup"] ?? ""]
+            }
+            for voice in providerVoices {
+                picker.addItem(withTitle: "\(voice["display_name"] as? String ?? "?") — "
+                               + "\(voice["provider_id"] as? String ?? "provider")")
+                picker.lastItem?.representedObject = ["voice_id": voice["id"] ?? ""]
             }
             let alert = NSAlert()
             alert.messageText = "Restore a removed voice"
@@ -897,8 +958,8 @@ final class VoicesSection: NSObject, AppSection, NSTableViewDataSource, NSTableV
             alert.addButton(withTitle: "Restore")
             alert.addButton(withTitle: "Cancel")
             guard alert.runModal() == .alertFirstButtonReturn,
-                  let backup = picker.selectedItem?.representedObject as? String else { return }
-            GatewayAPI.post("/admin/api/voices/restore", body: ["backup": backup]) { [weak self] result in
+                  let body = picker.selectedItem?.representedObject as? [String: Any] else { return }
+            GatewayAPI.post("/admin/api/voices/restore", body: body) { [weak self] result in
                 guard let self else { return }
                 self.reload {
                     switch result {
@@ -996,6 +1057,89 @@ final class VoicesSection: NSObject, AppSection, NSTableViewDataSource, NSTableV
             case .success(let payload):
                 self.showReference(payload)
             }
+        }
+    }
+
+    /// A voice's language label, and whether its reference transcript is sent or it clones
+    /// from the audio alone.
+    ///
+    /// Transcript off is for a recording the transcriber cannot understand (Khmer): wrong words
+    /// make VoxCPM2 read them. On sends exactly the words in the box, so they must be what the
+    /// clip says. The language is what Story Studio shows beside the voice and searches on.
+    @objc private func editTranscript() {
+        let rows = selectedRows().filter { ($0["provider_id"] as? String) == Self.localProviderId }
+        guard rows.count == 1, let voiceId = rows[0]["id"] as? String else {
+            report("Pick exactly one of this Mac's own voices.", ok: false)
+            return
+        }
+        GatewayAPI.get("/admin/api/voices/\(Self.pathComponent(voiceId))/reference") { [weak self] result in
+            guard let self else { return }
+            switch result {
+            case .failure(let error):
+                self.report("Could not read it — \(error.localizedDescription)", ok: false)
+            case .success(let payload):
+                self.askTranscript(voiceId, payload)
+            }
+        }
+    }
+
+    private func askTranscript(_ voiceId: String, _ payload: [String: Any]) {
+        let clip = payload["clip"] as? [String: Any] ?? [:]
+        // A code (km, en) keeps the Language column short; any short name is accepted too.
+        let language = NSComboBox(frame: NSRect(x: 0, y: 0, width: 200, height: 26))
+        language.addItems(withObjectValues: ["km", "en", "th", "vi", "zh", "ja", "ko", "fr", "es", "de"])
+        language.placeholderString = "km for Khmer, en for English"
+        language.stringValue = payload["language"] as? String ?? ""
+        let languageRow = NSStackView(views: [NSTextField(labelWithString: "Language"), language])
+        languageRow.spacing = 8
+        let include = NSButton(checkboxWithTitle: "Include reference transcript", target: nil, action: nil)
+        include.state = ((clip["include_reference_transcript"] as? Bool) ?? true) ? .on : .off
+        let text = NSTextView(frame: NSRect(x: 0, y: 0, width: 460, height: 140))
+        text.isRichText = false
+        text.font = TextRole.body.font
+        text.string = clip["transcript_text"] as? String ?? ""
+        text.isVerticallyResizable = true
+        text.textContainer?.widthTracksTextView = true
+        let scroll = NSScrollView(frame: NSRect(x: 0, y: 0, width: 460, height: 140))
+        scroll.hasVerticalScroller = true
+        scroll.borderType = .bezelBorder
+        scroll.documentView = text
+        let stack = NSStackView(views: [languageRow, include, scroll])
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 8
+        stack.frame = NSRect(x: 0, y: 0, width: 460, height: 210)
+
+        let alert = NSAlert()
+        alert.messageText = "Language and transcript — \((payload["display_name"] as? String) ?? "this voice")"
+        alert.informativeText = "Off: the voice clones from its audio alone and is never transcribed — "
+            + "use this for Khmer or any language the transcriber cannot understand. "
+            + "On: the words below are sent with the clip, so they must be exactly what it says. "
+            + "Models that need a transcript refuse an audio-only voice."
+        alert.accessoryView = stack
+        alert.addButton(withTitle: "Save")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+
+        let on = include.state == .on
+        let words = text.string.trimmingCharacters(in: .whitespacesAndNewlines)
+        if on && words.isEmpty {
+            report("Type the words spoken in the clip, or turn the transcript off.", ok: false)
+            return
+        }
+        var body: [String: Any] = ["voice_id": voiceId, "include": on,
+                                   "language": language.stringValue.trimmingCharacters(in: .whitespaces)]
+        if on { body["transcript"] = words }
+        GatewayAPI.post("/admin/api/voices/settings", body: body) { [weak self] result in
+            guard let self else { return }
+            switch result {
+            case .failure(let error):
+                self.report("Could not save it — \(error.localizedDescription)", ok: false)
+            case .success:
+                self.report(on ? "Saved. The transcript is included with this voice."
+                               : "Saved. This voice clones from its audio alone.", ok: true)
+            }
+            self.reload()
         }
     }
 
