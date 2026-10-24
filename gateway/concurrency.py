@@ -981,6 +981,25 @@ def save_settings(payload: dict[str, Any]) -> dict[str, Any]:
                 )
             current["retry"] = {"max_attempts": attempts}
 
+    if "queue" in payload:
+        # Only the wait ceiling is editable from the page; the other queue numbers are kept as written.
+        stated = payload["queue"]
+        if not isinstance(stated, dict) or set(stated) != {"wait_ceiling_seconds"}:
+            raise SettingsRefused("queue takes only wait_ceiling_seconds")
+        entry = dict(current.get("queue") or {}) if isinstance(current.get("queue"), dict) else {}
+        value = stated["wait_ceiling_seconds"]
+        if value in (None, 0):
+            entry.pop("wait_ceiling_seconds", None)
+        elif (isinstance(value, bool) or not isinstance(value, (int, float))
+              or not 60 <= value <= 7 * 86400):
+            raise SettingsRefused("the queue wait limit must be between 1 minute and 7 days, in seconds")
+        else:
+            entry["wait_ceiling_seconds"] = int(value)
+        if entry:
+            current["queue"] = entry
+        else:
+            current.pop("queue", None)
+
     if "global" in payload:
         value = payload["global"]
         if value in (None, "", 0):

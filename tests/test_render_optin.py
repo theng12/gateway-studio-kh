@@ -27,7 +27,7 @@ from _isolation import sandbox_env  # noqa: E402
 
 _SANDBOX = sandbox_env("gateway-render-optin-")
 
-from gateway import api, config, fleet, render_optin, startup_control  # noqa: E402
+from gateway import admin_session, api, config, fleet, render_optin, startup_control  # noqa: E402
 
 PROFILE = "a" * 64
 NOW = 1_700_000_000.0
@@ -533,29 +533,39 @@ class AdminAuthTests(Case):
         self.phone = TestClient(api.app, client=("100.64.0.9", 50000))
         self.mac = TestClient(api.app, client=("127.0.0.1", 50001))
 
-    def test_nobody_without_the_admin_key_can_read_or_change_it(self) -> None:
+    def test_reading_needs_the_admin_key_and_switching_needs_the_owner(self) -> None:
         with patch.object(render_optin, "listing", return_value={"workers": []}) as listing, \
                 patch.object(render_optin, "set_optin", return_value={"ok": True}) as switch:
-            for call in (lambda c, h: c.get(self.LISTING, headers=h),
-                         lambda c, h: c.post(self.SWITCH, json={"enabled": True}, headers=h)):
-                self.assertEqual(call(self.phone, {}).status_code, 401)
-                self.assertEqual(call(self.phone, {"Authorization": "Bearer wrong"}).status_code, 403)
-                self.assertEqual(call(self.mac, {}).status_code, 401)        # off loopback binding: key needed
-                self.assertEqual(call(self.phone, {"Authorization": "Basic optin-key"}).status_code, 401)
+            read = lambda c, h: c.get(self.LISTING, headers=h)  # noqa: E731
+            self.assertEqual(read(self.phone, {}).status_code, 401)
+            self.assertEqual(read(self.phone, {"Authorization": "Bearer wrong"}).status_code, 403)
+            self.assertEqual(read(self.mac, {}).status_code, 401)        # off loopback binding: key needed
             listing.assert_not_called()
+            self.assertEqual(read(self.phone, self.KEY).status_code, 200)
+            post = lambda c, h: c.post(self.SWITCH, json={"enabled": True}, headers=h)  # noqa: E731
+            # The gateway key is not enough from another machine: Story holds it too.
+            for headers in ({}, {"Authorization": "Bearer wrong"}, self.KEY):
+                self.assertEqual(post(self.phone, headers).status_code, 403)
+            self.assertEqual(post(self.mac, {}).status_code, 403)       # the app on this Mac sends its key
             switch.assert_not_called()
-            self.assertEqual(self.phone.get(self.LISTING, headers=self.KEY).status_code, 200)
-            self.assertEqual(self.phone.post(self.SWITCH, json={"enabled": True}, headers=self.KEY).status_code, 200)
-            switch.assert_called_once_with("roster-a", "mac", True)
+            self.assertEqual(post(self.mac, self.KEY).status_code, 200)
+            with patch.object(admin_session, "valid_session", return_value=True), \
+                    patch.object(admin_session, "same_origin", return_value=True):
+                self.assertEqual(post(self.phone, {}).status_code, 200, "the owner's signed-in browser may")
+            with patch.object(admin_session, "valid_session", return_value=True), \
+                    patch.object(admin_session, "same_origin", return_value=False):
+                self.assertEqual(post(self.phone, {}).status_code, 403, "never cross-site")
+            self.assertEqual(switch.call_count, 2)
+            switch.assert_called_with("roster-a", "mac", True)
 
     def test_the_switch_takes_exactly_one_boolean_and_relays_a_refusal_unchanged(self) -> None:
         with patch.object(render_optin, "set_optin") as switch:
             for body in ({}, {"enabled": True, "extra": 1}, {"opt_in": True}):
-                self.assertEqual(self.phone.post(self.SWITCH, json=body, headers=self.KEY).status_code, 400)
+                self.assertEqual(self.mac.post(self.SWITCH, json=body, headers=self.KEY).status_code, 400)
             switch.assert_not_called()
         refusal = startup_control.StartupError(409, {"ok": False, "code": "NODE_REFUSED", "detail": "old"})
         with patch.object(render_optin, "set_optin", side_effect=refusal):
-            response = self.phone.post(self.SWITCH, json={"enabled": True}, headers=self.KEY)
+            response = self.mac.post(self.SWITCH, json={"enabled": True}, headers=self.KEY)
         self.assertEqual((response.status_code, response.json()["code"]), (409, "NODE_REFUSED"))
 
 

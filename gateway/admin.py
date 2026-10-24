@@ -112,6 +112,22 @@ def require_local_app(
         raise AdminError(403, "Set the browser password in the Gateway app on its own Mac.")
 
 
+def require_owner(request: Request, authorization: str | None = Header(default=None)) -> None:
+    """The owner: the Gateway app on this Mac, or a browser signed in with the owner's password.
+
+    Never the bare gateway key from another machine, which Story Studio also holds, so a Story client
+    can never flip an owner-only switch (remote final rendering). The signed-in browser is what lets the
+    owner change it once the Gateway runs on a Mac they do not sit at (owner, 2026-10-24).
+    """
+    if request_is_loopback(request):
+        return require_local_app(request, authorization)
+    if admin_session.valid_session(request.cookies.get(admin_session.COOKIE)):
+        if request.method not in ("GET", "HEAD", "OPTIONS") and not admin_session.same_origin(request):
+            raise AdminError(403, "Cross-site request refused.")
+        return
+    raise AdminError(403, "Only the owner can change this: use the Gateway app, or sign in to the Gateway in a browser.")
+
+
 def require_owner_console(request: Request) -> None:
     """The owner's own Gateway app window and nothing else: not the key, a browser session or loopback alone.
 
@@ -1462,6 +1478,30 @@ def set_concurrency(payload: dict[str, Any]) -> Any:
         return concurrency.save_settings(payload)
     except concurrency.SettingsRefused as exc:
         return _error(422, exc.message, "SETTINGS_REFUSED")
+
+
+@router.get("/api/settings/model-limits", dependencies=[Depends(require_admin)])
+def get_model_limits() -> dict[str, Any]:
+    """The owner's curated model limits: they fill gaps a provider leaves, and never override it."""
+    from . import limits
+
+    return {"models": limits.entries(), "path": str(limits.LIMITS_PATH)}
+
+
+@router.put("/api/settings/model-limits", dependencies=[Depends(require_admin)])
+def set_model_limits(payload: dict[str, Any]) -> Any:
+    """Set one model's curated limits: `{"model": key, "limits": {field: n | null}}`; no fields removes it."""
+    from . import limits
+
+    if not isinstance(payload, dict) or set(payload) - {"model", "limits"} or "model" not in payload:
+        return _error(400, "send model and limits", "BAD_MODEL_LIMITS")
+    fields = payload.get("limits")
+    if fields is not None and not isinstance(fields, dict):
+        return _error(400, "limits must be an object", "BAD_MODEL_LIMITS")
+    try:
+        return {"models": limits.set_entry(str(payload["model"]), fields), "path": str(limits.LIMITS_PATH)}
+    except ValueError as exc:
+        return _error(422, str(exc), "BAD_MODEL_LIMITS")
 
 
 @router.get("/api/backup", dependencies=[Depends(require_admin)])
@@ -3736,8 +3776,8 @@ def fleet_remote_rendering() -> Any:
 
 @router.post(
     "/api/fleet/controllers/{controller_id}/machines/{machine_id}/render-optin",
-    # Owner's switch: the app on this Mac only, never the bearer key Story also holds.
-    dependencies=[Depends(require_local_app)],
+    # Owner's switch: the app on its Mac or the owner's signed-in browser, never the key Story also holds.
+    dependencies=[Depends(require_owner)],
 )
 def fleet_machine_render_optin(controller_id: str, machine_id: str, payload: dict[str, Any]) -> Any:
     """Allow (or stop allowing) remote final rendering, untested, on one Mac. Body `{"enabled": true|false}`.

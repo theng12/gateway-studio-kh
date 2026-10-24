@@ -606,6 +606,10 @@
     </p>
     <div id="concurrency-msg" class="msg" role="alert" aria-live="polite"></div>
     <div id="concurrency"></div>
+    <h3 style="margin:24px 0 6px">Model limits you know</h3>
+    <p class="hint" style="margin:0 0 8px">For models whose provider publishes no context window or output allowance. These fill the gap only: a number the provider states always wins. Leave a box blank for "not known".</p>
+    <div id="model-limits-msg" class="msg" role="alert" aria-live="polite"></div>
+    <div id="model-limits"></div>
     </div><!-- /provider-pane-capacity -->
 
     <div class="pane" id="provider-pane-queue" style="display:none">
@@ -1966,7 +1970,44 @@ function concurrencyMessage(text, failed=false) {
   node.className = failed ? 'msg bad' : 'msg';
 }
 
+const MODEL_LIMIT_FIELDS = [
+  ['context_window_tokens', 'Context window (tokens)'], ['max_output_tokens', 'Max output (tokens)'],
+  ['max_prompt_characters', 'Max prompt (characters)'], ['maximum_input_characters', 'Max input (characters)'],
+];
+async function loadModelLimits() {
+  try { renderModelLimits(await api('/settings/model-limits')); }
+  catch (e) { const m = document.getElementById('model-limits-msg'); if (m) m.textContent = e.message || 'could not read model limits'; }
+}
+function renderModelLimits(data) {
+  const target = document.getElementById('model-limits');
+  if (!target) return;
+  const models = data.models || {};
+  const cell = (key, field, value) => `<td><input type="number" min="1" step="1" style="max-width:120px" data-ml-model="${esc(key)}" data-ml-field="${field}" value="${value == null ? '' : esc(value)}"></td>`;
+  const rows = Object.keys(models).sort().map(key => `<tr><td>${esc(key)}</td>${MODEL_LIMIT_FIELDS.map(([f]) => cell(key, f, models[key][f])).join('')}
+      <td><button class="sm" type="button" onclick="saveModelLimit('${esc(key)}')">Save</button>
+          <button class="sm" type="button" onclick="saveModelLimit('${esc(key)}', true)">Remove</button></td></tr>`).join('');
+  target.innerHTML = `<table class="grid"><thead><tr><th>Model</th>${MODEL_LIMIT_FIELDS.map(([, l]) => `<th>${l}</th>`).join('')}<th></th></tr></thead>
+    <tbody>${rows || '<tr><td colspan="6" class="muted">None yet.</td></tr>'}
+    <tr><td><input type="text" id="ml-new-model" placeholder="provider::model" style="width:100%"></td>${MODEL_LIMIT_FIELDS.map(([f]) => cell('__new__', f, null)).join('')}
+      <td><button class="sm" type="button" onclick="saveModelLimit('__new__')">Add</button></td></tr></tbody></table>
+    <div class="hint" style="margin-top:6px">${esc(data.path || '')}</div>`;
+}
+async function saveModelLimit(key, remove) {
+  const model = key === '__new__' ? (document.getElementById('ml-new-model')?.value || '').trim() : key;
+  const limits = {};
+  if (!remove) document.querySelectorAll(`[data-ml-model="${CSS.escape(key)}"]`).forEach(box => {
+    const v = String(box.value || '').trim(); limits[box.dataset.mlField] = v === '' ? null : Number(v);
+  });
+  const msg = document.getElementById('model-limits-msg');
+  try {
+    renderModelLimits(await api('/settings/model-limits', { method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model, limits: remove ? null : limits }) }));
+    if (msg) msg.textContent = remove ? 'Removed.' : 'Saved. The catalogue uses it on its next refresh.';
+  } catch (e) { if (msg) msg.textContent = e.message || 'could not save'; }
+}
+
 async function loadConcurrency() {
+  loadModelLimits();
   const target = document.getElementById('concurrency');
   if (!target) return;
   try {
@@ -2037,6 +2078,10 @@ function renderConcurrency(data) {
         <td class="muted">${esc(p.detail || '')}</td>
       </tr>`;
   }).join('');
+  const queue = data.queue || {};
+  const queueHours = queue.wait_ceiling_seconds ? Math.round(queue.wait_ceiling_seconds / 360) / 10 : '';
+  // What is written down, as opposed to the default: only a curated number shows in the box.
+  const queueStated = queue.source === 'curated' ? queueHours : null;
   target.innerHTML = `
     <div style="padding:12px;margin-bottom:16px;border:1px solid var(--line);border-radius:8px">
       <label for="conc-global"><b>Jobs running at once</b></label>
@@ -2046,6 +2091,14 @@ function renderConcurrency(data) {
              placeholder="${esc(pool.limit)}">
       <div class="hint" style="margin-top:6px">${esc(pool.detail || '')}</div>
       ${pool.fleet_share_detail ? `<div class="hint" style="margin-top:4px">${esc(pool.fleet_share_detail)}</div>` : ''}
+    </div>
+    <div style="padding:12px;margin-bottom:16px;border:1px solid var(--line);border-radius:8px">
+      <label for="conc-queue-hours"><b>Longest a job waits for a free Mac</b></label>
+      <input type="number" min="0.1" max="168" step="0.5" id="conc-queue-hours"
+             style="max-width:110px;margin-left:12px"
+             value="${queueStated == null ? '' : esc(queueStated)}"
+             placeholder="${esc(queueHours)}"> hours
+      <div class="hint" style="margin-top:6px">In force: ${esc(queueHours)} h (${esc(queue.source || 'gateway')}). A job still waiting after this fails as a queue timeout and Story can retry it. Blank returns to the built-in default.</div>
     </div>
     <h3 style="margin:16px 0 6px">Lanes</h3>
     <p class="hint" style="margin:0 0 8px">How much of the pool one kind of work may hold. A blank box means no cap: a fleet lane (tts, image, music, transcription) then follows the fleet automatically, and any other lane may use the whole pool. A number is a ceiling.</p>
@@ -2092,6 +2145,11 @@ function concurrencyPayload() {
   if (pool) {
     const value = String(pool.value == null ? '' : pool.value).trim();
     body.global = value === '' ? null : Number(value);
+  }
+  const wait = document.getElementById('conc-queue-hours');
+  if (wait) {
+    const value = String(wait.value == null ? '' : wait.value).trim();
+    body.queue = { wait_ceiling_seconds: value === '' ? null : Math.round(Number(value) * 3600) };
   }
   const lanes = {};
   const laneBoxes = document.querySelectorAll('[id^="conc-l-"]');

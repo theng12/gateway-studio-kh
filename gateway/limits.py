@@ -127,3 +127,55 @@ def gap(field: str, published: Any, provider_id: str, model_id: str) -> Any:
     if isinstance(curated, (int, float)) and not isinstance(curated, bool):
         return int(curated)
     return None
+
+
+def entries() -> dict[str, dict[str, Any]]:
+    """Every curated entry as written (model key -> fields), for the console's table."""
+    return {key: dict(value) for key, value in _read().items()}
+
+
+def set_entry(model_key: str, fields: dict[str, Any] | None) -> dict[str, dict[str, Any]]:
+    """Write one model's curated limits (`None` or no fields removes it), keeping the rest and `_comment`.
+
+    Values must be positive whole numbers; only the known fields are accepted. Written atomically
+    to the user's file (never the legacy bundled one), which the catalogue re-reads on change.
+    """
+    import tempfile
+
+    key = str(model_key or "").strip()
+    if not key or len(key) > 300:
+        raise ValueError("name the model, e.g. anthropic-direct::claude-haiku-5-5")
+    clean: dict[str, int] = {}
+    for field, value in (fields or {}).items():
+        if field not in _KNOWN_FIELDS:
+            raise ValueError(f"{field} is not a model limit this file can hold")
+        if value is None:
+            continue
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or int(value) != value or value <= 0:
+            raise ValueError(f"{field} must be a positive whole number")
+        clean[field] = int(value)
+    path = LIMITS_PATH
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        raw = {}
+    except (OSError, ValueError) as exc:
+        raise ValueError(f"{path.name} is unreadable, so nothing was changed: {exc}") from exc
+    if not isinstance(raw, dict):
+        raise ValueError(f"{path.name} is unreadable, so nothing was changed")
+    models = dict(raw.get("models") or {}) if isinstance(raw.get("models"), dict) else {}
+    if clean:
+        models[key] = clean
+    else:
+        models.pop(key, None)
+    raw["models"] = dict(sorted(models.items()))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, name = tempfile.mkstemp(prefix=f".{path.name}-", dir=path.parent)
+    with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+        json.dump(raw, handle, indent=2)
+        handle.write("\n")
+        handle.flush()
+        os.fsync(handle.fileno())
+    Path(name).replace(path)
+    return entries()
+
