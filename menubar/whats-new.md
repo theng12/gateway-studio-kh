@@ -28,6 +28,12 @@ audio-only voice and say so in **More → Reference…**.
 The same **Language and Transcript…** dialog sets a voice's language (km for Khmer, en for English, or
 a short name). Story Studio shows it beside the voice and finds the voice by it.
 
+### A voice job in a language its model cannot speak is refused at once
+Each voice model publishes the languages it speaks (Breeze: English and Chinese; VoxCPM2: about
+thirty, Khmer included). A job whose script is written in another language — Khmer text sent to
+Breeze — is now refused before anything runs, and the message names the models here that can speak
+it. A model that lists no languages is never refused.
+
 ### Remove provider voices you no longer use
 Select any number of ElevenLabs or Fish voices and choose **More → Remove Voice…**. They leave this
 list and Story Studio; nothing is deleted at the provider, and **More → Restore Removed Voice…** brings

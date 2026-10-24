@@ -1479,6 +1479,8 @@ def _submit(
             f'Model "{compound_id}" is not available on this gateway.',
             "MODEL_NOT_FOUND",
         )
+    if modality == "tts":
+        _refuse_an_unspoken_language(compound_id, model, params)
     # An idempotency key identifies one request, and a request has a modality.
     # The replay lookup matched on the key alone, so posting to
     # `/v1/images/generations` with a key already used on `/v1/chat/responses`
@@ -1505,6 +1507,34 @@ def _submit(
         job_group=job_group,
         priority=priority,
     )
+
+
+def _refuse_an_unspoken_language(compound_id: str, model: dict[str, Any], params: Any) -> None:
+    """A voice job in a language its model does not publish is refused before it is queued.
+
+    Owner, 2026-10-24: Khmer scripts sent to Breeze (English/Chinese only) babbled and failed
+    their quality check four times each — fleet time spent on audio that could never pass.
+    The model's own `languages` decide; a model that lists none is never refused here.
+    """
+    from . import language_guard
+    from .catalog import _language_codes
+
+    params = params if isinstance(params, dict) else {}
+    text = str(params.get("text") or params.get("input") or "")
+    raw = model.get("raw") or {}
+    published = _language_codes(raw.get("languages"))
+    if not published:
+        return
+    needed = language_guard.needed_codes(text, params.get("language"))
+    speakers = [
+        str(row.get("display_name") or row.get("id"))
+        for row in catalog.rows("tts")
+        if needed and needed & {language_guard.base_code(c) for c in row.get("supported_languages") or []}
+    ][:6]
+    reason = language_guard.refusal(text, params.get("language"), published,
+                                    str(model.get("display_name") or compound_id), speakers)
+    if reason:
+        raise GatewayError(422, reason, "LANGUAGE_UNSUPPORTED")
 
 
 def _pop_priority(params: Any) -> str:
@@ -2937,6 +2967,12 @@ def tts_quote(payload: dict[str, Any]) -> dict[str, Any]:
     limit, limit_source = _tts_characters(str(model.get("model_id") or ""), model, definition)
     if not isinstance(limit, int) or limit <= 0:
         limit, limit_source = _TTS_CHARACTERS_DEFAULT, "gateway"
+    # The quote says in advance what submitting would refuse: a language this model cannot speak.
+    try:
+        _refuse_an_unspoken_language(model_id, model, payload)
+        language_notice = None
+    except GatewayError as refused:
+        language_notice = refused.detail
     return {
         "model_id": model_id,
         "model_name": model["display_name"],
@@ -2971,8 +3007,8 @@ def tts_quote(payload: dict[str, Any]) -> dict[str, Any]:
         # catalogue row's own rule: `false` on the owner's Macs or a free lane.
         "chargeable": definition_chargeable(
             definition, "tts", str(model.get("model_id") or ""), model.get("raw")),
-        "generation_enabled": True,
-        "notice": None,
+        "generation_enabled": language_notice is None,
+        "notice": language_notice,
     }
 
 
