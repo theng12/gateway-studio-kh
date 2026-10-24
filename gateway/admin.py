@@ -46,7 +46,7 @@ from . import pricing
 from .pricing import row_price
 from . import qualification
 from . import release_publisher, release_rollout
-from . import admin_session, model_share, startup_control
+from . import admin_session, model_share, render_optin, startup_control
 from .config import is_loopback, request_is_loopback
 from .hub import hub_status
 from .providers import definitions, registry
@@ -3668,6 +3668,38 @@ def fleet_machine_workstation(controller_id: str, machine_id: str, payload: dict
     """
     try:
         return startup_control.set_node_workstation(controller_id, machine_id, payload)
+    except startup_control.StartupError as error:
+        return JSONResponse(status_code=error.status, content=error.body)
+
+
+@router.get("/api/fleet/remote-rendering", dependencies=[Depends(require_admin)])
+def fleet_remote_rendering() -> Any:
+    """The Remote final rendering page: every Mac publishing `video.final_render`, same network first.
+
+    Each row: machine, chip, memory, `idle_state` (`idle`/`busy`/`offline`/`not_ready`), `network`
+    (`same_network`/`other_lan`/`tailscale`/`unknown`, from the address the fleet already published),
+    the owner's switch (`opted_in`, default off) and the Hub's own word (`hub_accepting`). Also the newest
+    routed renders with `unqualified: true` on those sent to an owner-accepted Mac.
+    """
+    return render_optin.listing(store)
+
+
+@router.post(
+    "/api/fleet/controllers/{controller_id}/machines/{machine_id}/render-optin",
+    # Owner's switch: the app on this Mac only, never the bearer key Story also holds.
+    dependencies=[Depends(require_local_app)],
+)
+def fleet_machine_render_optin(controller_id: str, machine_id: str, payload: dict[str, Any]) -> Any:
+    """Allow (or stop allowing) remote final rendering, untested, on one Mac. Body `{"enabled": true|false}`.
+
+    Switching on is relayed through the Mac's controller first and only kept if the Hub took it; switching
+    off takes effect here at once and is then relayed. Answers `{"ok", "opted_in", "relayed", ...}`, or the
+    controller's refusal (`HUB_TOO_OLD`, `RENDER_AUTHORITY_UNSUPPORTED`, `NODE_UNREACHABLE`, `NOT_A_RENDER_MAC`).
+    """
+    if set(payload) != {"enabled"}:
+        return _error(400, "provide only enabled", "BAD_RENDER_OPTIN")
+    try:
+        return render_optin.set_optin(controller_id, machine_id, payload.get("enabled"))
     except startup_control.StartupError as error:
         return JSONResponse(status_code=error.status, content=error.body)
 

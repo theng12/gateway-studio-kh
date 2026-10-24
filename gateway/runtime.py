@@ -23,7 +23,9 @@ import time
 
 from .catalog import catalog
 from . import fleet as fleet_module
+from . import render_optin
 from .config import BUNDLED_DATA_DIR, DATA_DIR, DB_PATH, gateway_api_key
+from .os_metadata import is_os_metadata
 from .providers import registry
 from .render_assets import RenderAssetStore
 from .render_hash_v1 import decode_render_json
@@ -103,7 +105,7 @@ def _bundled_render_descriptors() -> tuple[bytes | None, dict]:
         root_info = root.lstat()
         if not stat.S_ISDIR(root_info.st_mode) or stat.S_ISLNK(root_info.st_mode):
             return None, {}
-        if frozenset(os.listdir(root)) != _AUTHORITY_DESCRIPTOR_NAMES:
+        if frozenset(name for name in os.listdir(root) if not is_os_metadata(name)) != _AUTHORITY_DESCRIPTOR_NAMES:
             return None, {}
         for name in ("profile", "tools", "compiler"):
             path = root / (name + ".json")
@@ -188,7 +190,8 @@ render_assets = RenderAssetStore(
 
 
 def _render_destination(packet: dict) -> RenderDestination:
-    """Production capacity first; only without any does a qualification candidate take it."""
+    """Production capacity first, then Macs the owner accepted unqualified (same network first - the
+    candidate order already says so); only without either does a qualification candidate take it."""
     digest = packet["recipe"]["profile_digest"]
     candidates = (fleet_module.render_candidates(digest)
                   or fleet_module.render_candidates(digest, qualification=True))
@@ -206,6 +209,7 @@ def _render_destination(packet: dict) -> RenderDestination:
         ).hexdigest(), qualification_vector_id=row.get("qualification_vector_id"),
         capability_snapshot=row["capability"],
         selected_machine=row["selected_machine"],
+        accepted_unqualified=row.get("authority") == render_optin.ACCEPTED,
     )
 
 

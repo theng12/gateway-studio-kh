@@ -30,6 +30,8 @@ import stat
 import tempfile
 from pathlib import Path
 
+from .os_metadata import is_os_metadata
+
 #: The gateway package's parent: `Contents/Resources/gateway` in the bundle, or
 #: the repository root in a checkout. Bundled, read-only defaults hang off this.
 ROOT = Path(__file__).resolve().parent.parent
@@ -126,7 +128,7 @@ def migrate_legacy_data() -> dict[str, object]:
     legacy_artifacts = LEGACY_DATA_DIR / "artifacts"
     if legacy_artifacts.is_dir():
         for item in legacy_artifacts.iterdir():
-            if item.is_file():
+            if not is_os_metadata(item.name) and item.is_file():
                 shutil.copy2(item, ARTIFACT_DIR / item.name)
         migrated.append("artifacts/")
 

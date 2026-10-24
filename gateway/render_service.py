@@ -16,7 +16,7 @@ from urllib.parse import quote
 
 import httpx
 
-from . import fleet
+from . import fleet, render_optin
 from .render_assets import (
     AssetConflictError,
     AssetNotFoundError,
@@ -115,6 +115,9 @@ class RenderDestination:
     capability_snapshot: dict[str, Any] | None = None
     selected_machine: dict[str, Any] | None = None
     target_hub_controller_id: str | None = None
+    #: The owner accepted this Mac unqualified (`render_optin`): its snapshot is a production-shaped Hub
+    #: row carrying the Hub's own `accepted_unqualified` evidence. Anything else must carry none.
+    accepted_unqualified: bool = False
 
     def __post_init__(self) -> None:
         for value in (self.site_id, self.roster_controller_id,
@@ -542,6 +545,11 @@ class FinalRenderService:
                     destination.qualification_vector_id is not None
                     or destination.capability_snapshot.get("production_eligible") is not True
                     or destination.capability_snapshot.get("production_enabled") is not True
+                    # The Hub's own unqualified evidence and the Gateway's choice must agree exactly: a
+                    # row that carries it is only ever routed on the owner's say-so, and a destination
+                    # that claims it must carry it.
+                    or render_optin.unqualified_claim(destination.capability_snapshot)
+                    != ("accepted" if destination.accepted_unqualified else "none")
                 )
                 or destination.capability_snapshot.get("profile_execution_bounds")
                     != (self.profile or {}).get("execution_bounds")
@@ -698,6 +706,7 @@ class FinalRenderService:
             capability,
             decode_render_json(bytes(row["selected_machine"])),
             row["destination_hub_controller"],
+            render_optin.authority_of(capability) == render_optin.ACCEPTED,
         )
 
     def _hub_job(self, row: dict[str, Any], answer: Any) -> dict[str, Any]:

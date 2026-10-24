@@ -1068,6 +1068,17 @@ class JobStore:
                 "SELECT * FROM render_staging WHERE id = ?", (render_id,)
             ).fetchone())
 
+    def recent_render_routes(self, limit: int = 20) -> list[dict[str, Any]]:
+        """The newest routed final renders, newest first: only what the admin page names (no request bytes)."""
+        if type(limit) is not int or not 1 <= limit <= 100:
+            raise ValueError("render route limit must be 1..100")
+        with self._lock:
+            return [dict(row) for row in self._conn.execute(
+                """SELECT id, state, created_at, destination_controller, destination_node,
+                          selected_machine, capability_snapshot
+                   FROM render_staging ORDER BY created_at DESC, id DESC LIMIT ?""", (limit,),
+            ).fetchall()]
+
     def get_render_staging_by_attempt_key(
         self, *, owner_scope: str, gateway_attempt_key: str
     ) -> dict[str, Any] | None:

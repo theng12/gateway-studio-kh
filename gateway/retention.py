@@ -22,6 +22,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .config import ARTIFACT_DIR, DATA_DIR, write_secret
+from .os_metadata import is_os_metadata
 
 SETTINGS_PATH = Path(str(DATA_DIR)) / "retention.json"
 
@@ -209,7 +210,7 @@ def _safe_path(path: Path, root: Path) -> bool:
     """Only lexical descendants with no symlink component or resolved escape."""
     try:
         relative = path.relative_to(root)
-        if root.is_symlink() or ".." in relative.parts:
+        if root.is_symlink() or ".." in relative.parts or any(is_os_metadata(part) for part in relative.parts):
             return False
         cursor = root
         for part in relative.parts:

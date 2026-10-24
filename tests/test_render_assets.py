@@ -451,6 +451,89 @@ class RenderAssetStoreTest(unittest.TestCase):
         self.assertEqual((init["owner_token"], init["upload_id"]), (owner_token("owner"), begun["upload_id"]))
         self.assertNotIn("owner", init.values())
 
+    METADATA_NAMES = (".DS_Store", "._x", ".localized", "Icon\r", ".Spotlight-V100", ".fseventsd", ".Trashes", ".TemporaryItems")
+
+    def litter(self, *directories: Path) -> None:
+        for directory in directories:
+            for name in self.METADATA_NAMES:
+                (directory / name).write_bytes(b"finder")
+
+    def litter_every_store_directory(self, upload_id: str | None = None) -> list[Path]:
+        directories = [self.root] + [self.root / name for name in ("index", "uploads", "assets", "published", "_trash")]
+        if upload_id is not None:
+            upload = self.upload_dir(upload_id)
+            directories += [upload] + [upload / name for name in ("ranges", "chunks", "assembly", "protections", "changes")]
+        self.litter(*directories)
+        return directories
+
+    def test_os_metadata_names_are_one_shared_set(self) -> None:
+        from gateway.os_metadata import is_os_metadata
+
+        for name in self.METADATA_NAMES + ("._", "._anything.json"):
+            self.assertTrue(is_os_metadata(name), name)
+        for name in ("format.json", "unknown.txt", "DS_Store", ".DS_Store.json", "x._y", "Icon", ".hidden"):
+            self.assertFalse(is_os_metadata(name), name)
+
+    def test_finder_metadata_never_blocks_open_scans_or_sweeps_and_is_never_touched(self) -> None:
+        data = b"s" * (70 * KiB)
+        asset, upload_id = self._published_upload("owner", data)
+        self.store.close()
+        directories = self.litter_every_store_directory(upload_id)
+        self.store = self.open_store()  # the root scan that crash-looped the Gateway on 2026-10-24
+        self.assertEqual(self.store.describe("owner", asset["asset_handle"])["sha256"], digest(data))
+        self.assertEqual(self.store.begin_upload("owner", digest(data), len(data))["upload_id"], upload_id)
+        self.assertEqual(self.store.active_protection("owner"), [])
+        swept = self.store.sweep_staging(grace_seconds=0)
+        # Only the real chunk and assembly copies were moved and counted, never the Finder files.
+        self.assertEqual((swept["uploads"], swept["files"], swept["bytes"]), (1, 4, 2 * len(data)))
+        self.assertTrue(all((directory / name).exists() for directory in directories for name in self.METADATA_NAMES))
+        retired = self.store.sweep_published({}, grace_seconds=0)
+        self.assertEqual(retired["assets"], 1)
+        # The Finder files in the directories that stay behind are still exactly where they were.
+        for directory in (self.root, self.root / "index", self.root / "uploads", self.root / "assets", self.root / "published"):
+            for name in self.METADATA_NAMES:
+                self.assertEqual((directory / name).read_bytes(), b"finder", (directory, name))
+
+    def test_finder_metadata_in_an_empty_root_still_initializes_a_fresh_store(self) -> None:
+        root = self.sandbox / "fresh-store"
+        root.mkdir()
+        self.litter(root)
+        store = self.open_store(root)
+        self.assertEqual(read_json(root / "format.json")["format"], "render-asset-fd-v1")
+        data = b"fresh"
+        begun = store.begin_upload("owner", digest(data), len(data))
+        self.assertEqual(begun["committed_offset"], 0)
+        self.assertTrue((root / ".DS_Store").exists())
+
+    def test_a_genuinely_unknown_entry_is_still_refused_even_beside_finder_metadata(self) -> None:
+        data = b"s" * (70 * KiB)
+        asset, upload_id = self._published_upload("owner", data)
+        self.litter_every_store_directory(upload_id)
+        upload = self.upload_dir(upload_id)
+        begin = lambda: self.store.begin_upload("owner", digest(data), len(data))
+        cases = (
+            ("upload directory", upload / "unknown-file", begin, AssetRecoveryRequiredError, "render asset directory has an unexpected entry"),
+            ("change evidence", upload / "changes" / "unknown-change", begin, AssetRecoveryRequiredError, "upload has unknown change evidence"),
+            ("protection evidence", upload / "protections" / "unknown-protection", lambda: self.store.active_protection("owner"), AssetRecoveryRequiredError, "upload has unknown protection evidence"),
+            ("upload directory name", self.root / "uploads" / "unknown-upload", lambda: self.store.active_protection("owner"), AssetRecoveryRequiredError, "unexpected upload directory"),
+            ("asset evidence", self.root / "assets" / "unknown-asset", lambda: self.store.sweep_published({}, grace_seconds=0, protected={asset["asset_handle"]}), AssetRecoveryRequiredError, "store has unknown asset evidence"),
+        )
+        for index, (label, stray, action, error, message) in enumerate(cases):
+            with self.subTest(label):
+                stray.write_bytes(b"not metadata")
+                with self.assertRaisesRegex(error, message):
+                    action()
+                self.assertEqual(stray.read_bytes(), b"not metadata")
+                stray.rename(self._trash_bucket / f"stray-{index}")
+        # A root with a real unknown entry is still "another format", Finder files or not.
+        self.store.close()
+        (self.root / "unknown.txt").write_bytes(b"not metadata")
+        with self.assertRaisesRegex(AssetValidationError, "existing render asset root has another format"):
+            self.open_store()
+        (self.root / "unknown.txt").rename(self._trash_bucket / "stray-root")
+        self.store = self.open_store()
+        self.assertEqual(self.store.describe("owner", asset["asset_handle"])["sha256"], digest(data))
+
     def test_constructor_and_identity_fields_reject_bool_zero_and_untrusted_syntax(self) -> None:
         for overrides in (
             {"max_chunk_bytes": 0}, {"max_chunk_bytes": True}, {"max_asset_bytes": 0},

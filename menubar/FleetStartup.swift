@@ -159,6 +159,8 @@ extension FleetStartup {
                 // Studio Hub's Trash Folder on this Mac, or on every Mac (FleetTrash.swift).
                 menu.addItem(ClosureMenuItem("Trash…") { FleetTrash.show(machine, done: done) })
                 menu.addItem(ClosureMenuItem("Trash on All Macs…") { FleetTrash.showAll(done: done) })
+                // Which Macs may render final videos for Story Studio, untested (FleetRemoteRender.swift).
+                menu.addItem(ClosureMenuItem("Remote Final Rendering…") { FleetRemoteRender.show(done: done) })
             }
             FleetModelInstall.menuItems(for: machine, done: done).forEach(menu.addItem)
             if !actions.isEmpty {

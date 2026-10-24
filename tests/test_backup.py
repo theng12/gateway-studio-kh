@@ -55,6 +55,9 @@ class BackupTests(unittest.TestCase):
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(f"original {name}\n".encode() + os.urandom(64))
         (data / "voice-library/.DS_Store").write_bytes(b"junk")
+        (data / "voice-library/voice-a/._reference.wav").write_bytes(b"appledouble")
+        (data / "voice-library/.Spotlight-V100").mkdir()
+        (data / "voice-library/.Spotlight-V100/store.db").write_bytes(b"index")
         staging = data / "content-library/.import-half/archive.sspack"  # an import in progress
         staging.parent.mkdir(parents=True)
         staging.write_bytes(b"half written")
@@ -114,6 +117,7 @@ class BackupTests(unittest.TestCase):
             names = tar.getnames()
             manifest = json.loads(tar.extractfile("manifest.json").read())  # type: ignore[union-attr]
         self.assertNotIn("gateway/data/voice-library/.DS_Store", names)
+        self.assertFalse([n for n in names if "/._" in n or ".Spotlight-V100" in n])
         self.assertFalse([n for n in names if ".import-" in n])
         self.assertIn("gateway/data/content-library/" + "a" * 64 + "/archive.sspack", names)
         self.assertEqual({e["path"] for e in manifest["files"]}, set(self.files))

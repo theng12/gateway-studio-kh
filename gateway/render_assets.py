@@ -18,6 +18,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Iterator
 
+from .os_metadata import is_os_metadata
+
 _SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 _ID = re.compile(r"[0-9a-f]{32}\Z")
 _OFFSET_NAME = re.compile(r"[0-9a-f]{16}\.json\Z")
@@ -362,9 +364,16 @@ def _identity(info: os.stat_result) -> tuple[int, int]:
     return info.st_dev, info.st_ino
 
 
+@contextmanager
+def _scan_entries(descriptor: int) -> Iterator[Iterator[os.DirEntry]]:
+    # Filter before validation, emptiness checks, recovery and retirement accounting.
+    with os.scandir(descriptor) as iterator:
+        yield (entry for entry in iterator if not is_os_metadata(entry.name))
+
+
 def _known_entries(parent_fd: int, allowed: set[str], *, initializing: bool = False) -> set[str]:
     entries = set()
-    with os.scandir(parent_fd) as iterator:
+    with _scan_entries(parent_fd) as iterator:
         for entry in iterator:
             if entry.name not in allowed:
                 if initializing:
@@ -900,7 +909,7 @@ class RenderAssetStore:
             os.fsync(archive_fd)
 
     def _recover_changes(self, dirs: _UploadDirs) -> None:
-        with os.scandir(dirs.changes) as iterator:
+        with _scan_entries(dirs.changes) as iterator:
             for entry in iterator:
                 if re.fullmatch(r"candidate-[0-9a-f]{32}\.json", entry.name):
                     continue
@@ -912,14 +921,14 @@ class RenderAssetStore:
                     self._complete_change(dirs, entry.name, marker, archive_fd)
                 finally:
                     os.close(archive_fd)
-        with os.scandir(dirs.changes) as iterator:
+        with _scan_entries(dirs.changes) as iterator:
             if next(iterator, None) is not None:
                 raise AssetRecoveryRequiredError("upload has unresolved change evidence")
 
     @staticmethod
     def _upload_is_pristine(dirs: _UploadDirs) -> bool:
         for descriptor in (dirs.ranges, dirs.chunks, dirs.assembly, dirs.protections, dirs.changes):
-            with os.scandir(descriptor) as iterator:
+            with _scan_entries(descriptor) as iterator:
                 if next(iterator, None) is not None:
                     return False
         return True
@@ -958,7 +967,7 @@ class RenderAssetStore:
 
     def _find_init_candidate(self, owner: str, sha256: str, size: int) -> dict[str, Any] | None:
         found = None
-        with os.scandir(self._index_fd) as iterator:
+        with _scan_entries(self._index_fd) as iterator:
             for entry in iterator:
                 if not entry.name.startswith("candidate-") or not entry.name.endswith(".json"):
                     continue
@@ -1053,7 +1062,7 @@ class RenderAssetStore:
                 raise AssetConflictError("content digest was declared with a different total")
             dirs = self._open_owned_upload(owner, init["upload_id"])
             try:
-                with os.scandir(dirs.changes) as changes:
+                with _scan_entries(dirs.changes) as changes:
                     if next(changes, None) is not None:
                         raise AssetRecoveryRequiredError(
                             "render blob has unresolved durable evidence"
@@ -1544,7 +1553,7 @@ class RenderAssetStore:
         owner = _owner_token(owner_scope)
         result = []
         with self._exclusive():
-            with os.scandir(self._uploads_fd) as uploads:
+            with _scan_entries(self._uploads_fd) as uploads:
                 for entry in uploads:
                     if not _ID.fullmatch(entry.name):
                         raise AssetRecoveryRequiredError("unexpected upload directory")
@@ -1555,7 +1564,7 @@ class RenderAssetStore:
                     try:
                         self._recover_changes(dirs)
                         head = self._validated_head(dirs)
-                        with os.scandir(dirs.protections) as protections:
+                        with _scan_entries(dirs.protections) as protections:
                             for leaf in protections:
                                 if re.fullmatch(r"[0-9a-f]{64}\.json", leaf.name) is None:
                                     raise AssetRecoveryRequiredError("upload has unknown protection evidence")
@@ -1608,7 +1617,7 @@ class RenderAssetStore:
         now = time.time()
         uploads = files = moved_bytes = 0
         with self._exclusive():
-            with os.scandir(self._uploads_fd) as entries:
+            with _scan_entries(self._uploads_fd) as entries:
                 names = [entry.name for entry in entries]
             for name in names:
                 if not _ID.fullmatch(name):
@@ -1666,7 +1675,7 @@ class RenderAssetStore:
             return (0, 0)
         names = {}
         for source in (dirs.chunks, dirs.assembly):
-            with os.scandir(source) as entries:
+            with _scan_entries(source) as entries:
                 names[source] = [entry.name for entry in entries]
         if not any(names.values()):
             return (0, 0)
@@ -1732,11 +1741,11 @@ class RenderAssetStore:
 
     @staticmethod
     def _entry_is_empty(descriptor: int) -> bool:
-        with os.scandir(descriptor) as entries:
+        with _scan_entries(descriptor) as entries:
             return next(entries, None) is None
 
     def _has_live_protection(self, dirs: _UploadDirs, head: dict[str, Any]) -> bool:
-        with os.scandir(dirs.protections) as protections:
+        with _scan_entries(dirs.protections) as protections:
             for leaf in protections:
                 if re.fullmatch(r"[0-9a-f]{64}\.json", leaf.name) is None:
                     raise AssetRecoveryRequiredError("upload has unknown protection evidence")
@@ -1799,7 +1808,7 @@ class RenderAssetStore:
             # A published asset no row references any more (a crash between publication
             # and the delivery record) would otherwise leak forever. Age it from its own
             # record, and never touch a handle any row still points at.
-            with os.scandir(self._assets_fd) as entries:
+            with _scan_entries(self._assets_fd) as entries:
                 names = [entry.name for entry in entries]
             for name in names:
                 if re.fullmatch(r"candidate-[0-9a-f]{32}\.json", name) is not None:
@@ -1919,7 +1928,7 @@ class RenderAssetStore:
     @staticmethod
     def _tree_size(descriptor: int) -> tuple[int, int]:
         files = size = 0
-        with os.scandir(descriptor) as entries:
+        with _scan_entries(descriptor) as entries:
             for entry in entries:
                 info = entry.stat(follow_symlinks=False)
                 if stat.S_ISDIR(info.st_mode):

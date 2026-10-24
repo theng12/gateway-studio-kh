@@ -52,6 +52,7 @@ from pathlib import Path
 from typing import Any
 
 from . import __version__, config
+from .os_metadata import is_os_metadata
 
 def notify(event: str, text: str) -> None:
     """Tell the owner on Telegram (`gateway.notifier`), when that module is there; never raises."""
@@ -126,7 +127,9 @@ def _files() -> tuple[list[tuple[str, Path]], list[str]]:
                 rel = item.relative_to(path)
                 if rel.parts[0].startswith(".import-"):  # a Content Pack import still being staged
                     continue
-                if item.is_file() and not item.is_symlink() and item.name != ".DS_Store":
+                if any(is_os_metadata(part) for part in rel.parts):  # Finder's files are not data
+                    continue
+                if item.is_file() and not item.is_symlink():
                     found.append((f"{role}/{rel.as_posix()}", item))
         else:
             missing.append(role)

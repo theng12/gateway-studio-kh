@@ -14,6 +14,7 @@ import io
 import json
 import os
 import sys
+import subprocess
 import threading
 import time
 import unittest
@@ -45,6 +46,7 @@ os.environ.update({
 })
 
 from gateway import fleet  # noqa: E402
+from gateway import render_optin  # noqa: E402
 from gateway import runtime  # noqa: E402
 from gateway.render_assets import RenderAssetStore  # noqa: E402
 from gateway.render_hash_v1 import render_hash  # noqa: E402
@@ -269,6 +271,38 @@ class BundledAuthorityTests(unittest.TestCase):
         with patch.object(runtime, "BUNDLED_DATA_DIR", self.root / "data"):
             return runtime._bundled_render_descriptors()
 
+    def test_runtime_startup_and_restart_ignore_finder_metadata_in_all_data_folders(self) -> None:
+        data = self.root / "runtime-data"
+        directories = [data / name for name in
+                       ("", "artifacts", "content-library", "voice-library", "_trash", "render-assets")]
+        for directory in directories:
+            directory.mkdir(parents=True, exist_ok=True)
+            for name in (".DS_Store", "._x"):
+                (directory / name).write_bytes(b"finder")
+        env = dict(os.environ)
+        env.update({
+            "GATEWAY_APP_SUPPORT": str(self.root), "GATEWAY_DATA": str(data),
+            "GATEWAY_ARTIFACTS": str(data / "artifacts"), "GATEWAY_DB": str(data / "jobs.sqlite3"),
+            "GATEWAY_CREDENTIALS": str(data / "credentials.json"),
+            "GATEWAY_MODEL_CACHE": str(data / "models.json"),
+            "GATEWAY_ENV_FILE": str(self.root / ".env"), "GATEWAY_FLEET": str(data / "fleet.json"),
+            "GATEWAY_POOLS": str(data / "pools.json"), "GATEWAY_VOICES": str(data / "voices.json"),
+            "GATEWAY_VOICES_OUT": str(data / "voices.json"),
+            "GATEWAY_VOICE_LIBRARY": str(data / "voice-library"),
+            "STUDIOHUB_READY_FILE": str(self.root / "no-hub.json"), "GATEWAY_NO_MIGRATE": "1",
+        })
+        # Production singleton construction is the startup boundary that failed in the incident.
+        # No API lifespan: dispatch, discovery, pruning and provider/network work never start.
+        code = ("from gateway import runtime; "
+                "assert runtime.render_assets.root.is_dir(); "
+                "runtime.render_assets.close(); runtime.store.close()")
+        for _restart in range(2):
+            result = subprocess.run([sys.executable, "-c", code], cwd=ROOT, env=env,
+                                    capture_output=True, text=True, timeout=30)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertTrue(all((directory / name).read_bytes() == b"finder"
+                            for directory in directories for name in (".DS_Store", "._x")))
+
     def test_absent_bundle_is_tool_only_and_complete_three_is_descriptor_only(self) -> None:
         self.assertEqual(self.load(), (None, {}))
         _, authority = self.write_authority()
@@ -288,6 +322,17 @@ class BundledAuthorityTests(unittest.TestCase):
     def test_bundled_qualification_vector_is_no_longer_authority(self) -> None:
         # Qualification is a Hub operator intent now; a sealed vector file is a foreign entry.
         self.write_authority(stray_vector=True)
+        self.assertEqual(self.load(), (None, {}))
+
+    def test_finder_metadata_beside_the_bundled_authority_does_not_hide_it(self) -> None:
+        bundled, authority = self.write_authority()
+        baseline = self.load()
+        self.assertEqual(baseline[0], authority["profile_raw"])
+        for name in (".DS_Store", "._profile.json", ".localized", "Icon\r"):
+            (bundled / name).write_bytes(b"finder")
+        self.assertEqual(self.load(), baseline)
+        # A real stray entry is still a foreign entry, Finder files or not.
+        (bundled / "qualification-vector.json").write_bytes(b"{}")
         self.assertEqual(self.load(), (None, {}))
 
     def test_partial_or_cross_digest_mismatched_bundle_is_fully_unavailable(self) -> None:
@@ -348,6 +393,28 @@ class BundledAuthorityTests(unittest.TestCase):
             with self.assertRaises(RenderServiceError) as caught:
                 runtime._render_destination(render_packet)
         self.assertEqual(caught.exception.code, "RENDER_DESTINATION_UNAVAILABLE")
+
+    def test_destination_marks_only_owner_accepted_unqualified_rows(self) -> None:
+        digest = hashlib.sha256(PROFILE_RAW).hexdigest()
+        render_packet = packet([], profile_digest=digest)
+        base = {
+            "site_id": "site-a", "roster_controller_id": "roster-a",
+            "hub_controller_id": "hub-a", "node_id": "node-m4-a",
+            "target_hub_controller_id": "node-m4-a", "qualification_vector_id": None,
+            "capability": CAPABILITY_SNAPSHOT,
+            "selected_machine": {
+                "id": "node-m4-a", "label": "M4 fixture", "chip": "Apple M4",
+                "memory_gb": 16, "hardware_class": "apple-m4-16gb",
+            },
+        }
+        with patch.object(runtime.fleet_module, "render_candidates", side_effect=[[base]]):
+            self.assertFalse(runtime._render_destination(render_packet).accepted_unqualified)
+        with patch.object(runtime.fleet_module, "render_candidates",
+                          side_effect=[[{**base, "authority": render_optin.ACCEPTED}]]) as selected:
+            destination = runtime._render_destination(render_packet)
+        # Still one production-tier call: opted-in Macs ride in it, ordered after qualified ones.
+        self.assertEqual(selected.call_args_list, [call(digest)])
+        self.assertTrue(destination.accepted_unqualified)
 
 
 class FakeHub:
@@ -790,6 +857,52 @@ class AcceptanceTests(RenderServiceCase):
                 "RENDER_DESTINATION_UNAVAILABLE", self.service.accept, principal(),
                 f"qualification-shape-{index:02d}", raw,
             )
+
+    def test_accepted_unqualified_accept_needs_the_flag_and_the_hubs_own_evidence(self) -> None:
+        raw = self.request()
+        evidence = {"provenance": render_optin.PROVENANCE, "accepted_by": "gateway-admin",
+                    "accepted_at": 1_700_000_000}
+        unqualified = {**CAPABILITY_SNAPSHOT, render_optin.OPT_IN_KEY: evidence}
+
+        def select(value: dict[str, object], flagged: bool) -> None:
+            self.destination = RenderDestination(
+                site_id="site-a", roster_controller_id="roster-controller-a",
+                hub_controller_id="hub-controller-a", node_id="node-m4-a",
+                capability_snapshot_sha256=hashlib.sha256(canonical(value)).hexdigest(),
+                capability_snapshot=value, accepted_unqualified=flagged,
+                selected_machine={
+                    "id": "node-m4-a", "label": "M4 fixture", "chip": "Apple M4",
+                    "memory_gb": 16, "hardware_class": "apple-m4-16gb",
+                },
+            )
+
+        # A qualified row, unflagged, is accepted exactly as before.
+        select(CAPABILITY_SNAPSHOT, False)
+        self.assertEqual(self.service.accept(principal(), "qualified-ok", raw)["state"], "staging")
+        select(unqualified, True)
+        created = self.service.accept(principal(), "unqualified-ok", self.request(attempt_no=2))
+        self.assertEqual(created["state"], "staging")
+        # The routed rows say what they were routed on; the qualified one is not labelled.
+        self.assertEqual(
+            sorted((job["authority"], job["unqualified"]) for job in render_optin.recent_jobs(self.store)),
+            [("accepted_unqualified", True), ("production", False)])
+        self.assertTrue(self.service._destination(self.store.get_render_staging(created["id"]))
+                        .accepted_unqualified)
+
+        refused = (
+            (unqualified, False),                                    # a row with evidence, not chosen as such
+            (CAPABILITY_SNAPSHOT, True),                             # chosen as unqualified, no Hub evidence
+            ({**unqualified, render_optin.OPT_IN_KEY: {"provenance": "production"}}, True),
+            ({**unqualified, render_optin.OPT_IN_KEY: "accepted_unqualified"}, True),
+            ({**unqualified, render_optin.OPT_IN_KEY: {}}, False),   # present but not the evidence
+            ({**unqualified, "production_eligible": False}, True),   # not production-shaped
+            ({**unqualified, "bounds": {"output_limit_bytes": 0}}, True),   # every other check still holds
+        )
+        for index, (value, flagged) in enumerate(refused):
+            select(value, flagged)
+            with self.subTest(index=index):
+                self.assert_code("RENDER_DESTINATION_UNAVAILABLE", self.service.accept,
+                                 principal(), f"unqualified-refused-{index:02d}", raw)
 
     def test_accept_persists_exact_bytes_identity_assets_and_destination_before_any_hub_call(self) -> None:
         raw = self.request()

@@ -332,6 +332,38 @@ def _send_workstation(controller_id: str, machine_id: str, body: dict[str, Any],
     )
 
 
+#: The setting this relay carries, as Studio Hub names it (`render_authority.accept_unqualified`).
+RENDER_AUTHORITY_TOO_OLD = ("This controller's Studio Hub cannot accept remote final rendering yet. "
+                            "Update it first (Fleet > Release); no render is sent to it until then.")
+
+
+def set_node_render_authority(controller_id: str, machine_id: str, accept_unqualified: object, *,
+                              client: httpx.Client | None = None) -> dict[str, Any]:
+    """Tell one Mac's Studio Hub to accept (or stop accepting) final renders without a qualification record.
+
+    Owner decision 2026-10-23, "Remote final rendering". The same controller relay as every other action
+    here: `POST {controller}/api/hub/fleet/nodes/{machine}/render-authority`, body
+    `{"accept_unqualified": bool, "requested_by": "gateway-admin"}`, the controller relays it to the Mac
+    and the Mac's own Hub validates and persists it. The Gateway never writes a file on the Mac.
+    A controller without the route answers `HUB_TOO_OLD`; a Mac whose own Hub is older answers
+    `RENDER_AUTHORITY_UNSUPPORTED` (409); a Mac the controller can only reach at its next check-in answers
+    `202 queued`, which is success. None is retried: the Gateway keeps no pending copy, because a switch that is
+    on here and not confirmed there simply leaves the Mac unused (`render_optin.accepts_unqualified`).
+    """
+    if not isinstance(accept_unqualified, bool):
+        raise StartupError(400, {"ok": False, "code": "VALUE_REQUIRED",
+                                 "detail": "accept_unqualified must be true or false"})
+    if not _MACHINE_ID.fullmatch(machine_id or ""):
+        raise StartupError(400, {"ok": False, "code": "BAD_MACHINE", "detail": "machine id is not valid"})
+    return _node_post(
+        controller_id, machine_id, "render-authority",
+        {"accept_unqualified": accept_unqualified, "requested_by": "gateway-admin"},
+        event="render_authority", too_old=RENDER_AUTHORITY_TOO_OLD,
+        refused="The controller refused this gateway's credential for changing remote rendering.",
+        audit_fields={"accept_unqualified": accept_unqualified}, client=client,
+    )
+
+
 # --- Lite Mode changes waiting for an offline Mac (owner request 2026-10-04) ---------------------------
 #
 # One entry per Mac (`controller/machine`) in `lite_mode_pending.json`: `settings` (merged field by field),

@@ -36,6 +36,7 @@ from typing import Any
 import httpx
 
 from . import voice_audio
+from .os_metadata import is_os_metadata
 from .config import DATA_DIR, VOICES_PATH, WRITABLE_VOICES_PATH, write_secret
 from .hub import hub_base_url, hub_probe, local_hub_headers
 
@@ -592,7 +593,7 @@ def _audio_in(directory: Path) -> Path | None:
             return candidate
     others = sorted(
         p for p in directory.iterdir()
-        if p.is_file() and p.suffix.lower() in AUDIO_EXTENSIONS
+        if not is_os_metadata(p.name) and p.is_file() and p.suffix.lower() in AUDIO_EXTENSIONS
     )
     return others[0] if len(others) == 1 else None
 
@@ -660,6 +661,8 @@ def discover_paths(paths: list[Path]) -> tuple[list[dict], list[dict]]:
     found: list[dict] = []
     skipped: list[dict] = []
     for path in paths:
+        if is_os_metadata(path.name):
+            continue
         if path.is_dir():
             more, missed = discover(path)
             found += more
@@ -674,6 +677,8 @@ def discover_paths(paths: list[Path]) -> tuple[list[dict], list[dict]]:
 
 def _discover_entry(entry: Path, found: list[dict], skipped: list[dict]) -> None:
     """One picked thing — a voice folder or a loose clip — into `found`, or `skipped` with a reason."""
+    if is_os_metadata(entry.name):
+        return
     if entry.is_dir():
         audio = _audio_in(entry)
         if audio is None:

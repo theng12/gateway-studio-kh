@@ -42,6 +42,7 @@ from urllib.parse import urlsplit
 
 import httpx
 
+from . import render_optin
 from .config import DATA_DIR
 from .hub import hub_base_url, hub_token
 
@@ -1568,6 +1569,10 @@ def _trim_worker(row: object) -> dict | None:
             "encode",
         ):
             result[key] = row.get(key)
+        # The Hub's own evidence that it accepts unqualified work (owner opt-in). Carried only when the
+        # Hub sent it, so a 0.6.195 row (and the capability snapshot made from it) is exactly what it was.
+        if render_optin.OPT_IN_KEY in row:
+            result[render_optin.OPT_IN_KEY] = row[render_optin.OPT_IN_KEY]
         result["available_capacity"] = dict(capacity)
     return result
 
@@ -4223,6 +4228,8 @@ def render_candidates(required_profile_digest: str | None, *,
         return []
     rows = view.get("locations") or []
     configured = {str(row.get("id") or "") for row in roster()}
+    opted_in = render_optin.enabled_keys()
+    networks: list | None = None
     candidates: list[dict] = []
     for location in rows:
         if (not isinstance(location, dict) or location.get("local") is not False
@@ -4249,8 +4256,17 @@ def render_candidates(required_profile_digest: str | None, *,
                 continue
             raw: object = worker
             qualifying = False
-            if not (worker.get("production_enabled") is True
-                    and worker.get("production_eligible") is True):
+            machine_id = str(worker.get("physical_machine_id") or worker.get("machine") or "")
+            production_shaped = (worker.get("production_enabled") is True
+                                 and worker.get("production_eligible") is True)
+            claim = render_optin.unqualified_claim(worker)
+            # A Hub that accepts unqualified work publishes a production-shaped row plus its evidence.
+            # That row is only ever used on the owner's say-so here; a claim that is not the Hub's
+            # evidence cannot be told from a qualified row, so it is not used at all.
+            unqualified = claim == "accepted" and production_shaped
+            if claim == "invalid" or (unqualified and f"{location['id']}/{machine_id}" not in opted_in):
+                continue
+            if not production_shaped:
                 match = next((item for item in (worker.get("qualification_candidates") or [])
                               if isinstance(item, dict)), None) if qualification else None
                 if match is None:
@@ -4262,7 +4278,6 @@ def render_candidates(required_profile_digest: str | None, *,
             if not any(chip in capability["hardware_class"].upper()
                        for chip in ("M4", "M2", "M1")):
                 continue
-            machine_id = str(worker.get("physical_machine_id") or worker.get("machine") or "")
             machine = machines.get(machine_id, {})
             node = nodes.get(machine_id, {})
             available_gb = machine.get("available_gb")
@@ -4295,6 +4310,8 @@ def render_candidates(required_profile_digest: str | None, *,
                     or type(memory_gb) not in (int, float)
                     or not math.isfinite(memory_gb) or memory_gb <= 0):
                 continue
+            if unqualified and networks is None:
+                networks = render_optin.local_networks()
             candidates.append({
                 "site_id": str(location["site_id"]),
                 "roster_controller_id": str(location["id"]),
@@ -4321,11 +4338,18 @@ def render_candidates(required_profile_digest: str | None, *,
                     "hardware_class": capability["hardware_class"],
                 },
                 "capability": capability,
+                # Only an owner-accepted unqualified Mac carries these; every other row is as it was.
+                **({"authority": render_optin.ACCEPTED,
+                    "network": render_optin.classify_machine(machine, node.get("address"), networks)[0]}
+                   if unqualified else {}),
             })
-    def order(item: dict) -> tuple[int, float, str, str]:
+    def order(item: dict) -> tuple[int, int, float, str, str]:
         hardware = item["hardware_class"].upper()
         rank = 0 if "M4" in hardware else 1 if "M2" in hardware else 2 if "M1" in hardware else 3
-        return rank, item["priority_rank"], item["site_id"], item["node_id"]
+        # Qualified (and one-use qualification) Macs keep their order; an unqualified Mac comes after
+        # them, the ones on this Mac's own network ahead of the rest.
+        tier = (1 + render_optin.network_rank(item["network"]) if item.get("authority") else 0)
+        return tier, rank, item["priority_rank"], item["site_id"], item["node_id"]
     return sorted(candidates, key=order)
 
 

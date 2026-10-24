@@ -51,6 +51,34 @@ class RecoverableRetentionTests(unittest.TestCase):
         self.assertTrue(retention._move_to_trash(path,moment))
         return next(self.trash.rglob(name))
 
+    def test_os_metadata_is_never_counted_or_retired_as_artifact_or_trash_data(self):
+        directories = (self.artifacts, self.trash / '2026-10-01',
+                       self.trash / 'logs', self.render_trash / 'retired-a')
+        for directory in directories:
+            directory.mkdir(parents=True, exist_ok=True)
+            for name in ('.DS_Store', '._x', 'Icon\r'):
+                (directory / name).write_bytes(b'finder')
+        real = self.artifact('real.bin', size=17)
+        self.assertEqual([entry[0] for entry in retention._files()], [real])
+        self.assertEqual(retention._trash_files(), [])
+        self.assertTrue(all((directory / '.DS_Store').is_file() for directory in directories))
+
+    def test_legacy_artifact_migration_ignores_finder_metadata(self):
+        from gateway import config
+        source = self.root / 'legacy'
+        target = self.root / 'migrated'
+        (source / 'artifacts').mkdir(parents=True)
+        (target / 'artifacts').mkdir(parents=True)
+        for name in ('.DS_Store', '._x', 'real.bin'):
+            (source / 'artifacts' / name).write_bytes(b'original')
+        with patch.object(config, 'LEGACY_DATA_DIR', source), \
+                patch.object(config, 'DATA_DIR', target), \
+                patch.object(config, 'ARTIFACT_DIR', target / 'artifacts'), \
+                patch.dict(os.environ, {'GATEWAY_NO_MIGRATE': '0'}):
+            config.migrate_legacy_data()
+        self.assertEqual([p.name for p in (target / 'artifacts').iterdir()], ['real.bin'])
+        self.assertTrue((source / 'artifacts/.DS_Store').is_file())
+
     def test_retirement_age_and_exact_seven_day_boundary(self):
         moved=self.retire('ancient.bin',self.now)
         retention.prune(now=self.now+7*86400,store=Store())

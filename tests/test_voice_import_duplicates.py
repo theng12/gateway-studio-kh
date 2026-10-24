@@ -77,6 +77,17 @@ class DuplicateHandlingTests(unittest.TestCase):
         self.assertEqual([v["display_name"] for v in voice_import.import_paths([self.picked / "more"])["imported"]],
                          ["Vincent"])
 
+    def test_finder_metadata_is_neither_a_reference_nor_a_skipped_voice(self) -> None:
+        folder = self.picked / "voice"
+        clip = _clip(folder / "sample.wav", 1.0)
+        for name in (".DS_Store", "._sample.wav", "Icon\r"):
+            (folder / name).write_bytes(b"finder")
+        self.assertEqual(voice_import._audio_in(folder), clip)
+        found, skipped = voice_import.discover_paths([folder / name for name in
+                                                    (".DS_Store", "._sample.wav", "Icon\r")])
+        self.assertEqual((found, skipped), ([], []))
+        self.assertTrue(all((folder / name).exists() for name in (".DS_Store", "._sample.wav", "Icon\r")))
+
     def test_the_same_recording_is_skipped_and_left_alone(self) -> None:
         clip = _clip(self.picked / "Chris.wav", 1.0)
         voice_import.import_paths([clip])
