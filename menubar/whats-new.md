@@ -14,6 +14,32 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.196 — 2026-10-24
+
+### One image choice for the whole fleet
+A new kind of pool in **Providers → Pools**: an image pool, published to Story Studio as one entry
+(e.g. "Standard image (fleet)"). Pick a model for each RAM size — 16 GB Macs Qwen Image 2.1 turbo,
+8 GB Macs Z-Image to start — and every free Mac takes work with its own model. Under **Each Mac** you
+can leave a Mac on **Auto (by RAM)** or pin it to a model of your choice; the Mac's Studio Hub keeps
+that choice and refuses pool work for any other model. Jobs that name a model by itself are untouched.
+Story is told which model made each image.
+
+### Remote final rendering, switched on per Mac
+**Fleet → Remote rendering** lists each Mac (same-network Macs first) with a switch. Only you can
+flip it: the Gateway app on its own Mac, or your signed-in browser — never the key Story holds. A
+Mac only takes renders while it is idle and switched on; a refused or failed remote render falls
+back to rendering on the Story Mac and says why.
+
+### Two settings that lived only in files now have controls
+**Providers → Capacity** gains "Longest a job waits for a free Mac" (the queue wait limit, in hours)
+and "Model limits you know" (context window and output allowance for models whose provider does
+not publish them — these fill gaps and never override a provider's own number).
+
+### Finder can no longer stop the Gateway
+A `.DS_Store` or other macOS hidden file in a Gateway data folder (made whenever a folder is opened
+in Finder) used to make the Gateway refuse to start after a restart. These files are now ignored in
+every folder check; a genuinely unknown file is still refused, as before.
+
 ## 0.2.195 — 2026-10-21
 
 ### A final render can be made by the fleet
