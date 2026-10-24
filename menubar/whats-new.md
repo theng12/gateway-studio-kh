@@ -14,6 +14,16 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.198 — 2026-10-25
+
+### Remote final renders resume their upload
+A final render sent to another Mac failed with "blob response state is invalid" the moment
+Story asked how far an upload had got: the Gateway answered "incomplete", a word Story does not
+use. It now answers "uploading" with the same position, so the upload carries on from where it
+stopped.
+
+---
+
 ## 0.2.197 — 2026-10-24
 
 ### A voice can clone from its audio alone

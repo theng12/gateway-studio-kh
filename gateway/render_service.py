@@ -923,7 +923,8 @@ class FinalRenderService:
 
     @staticmethod
     def _blob_public(sha256: str, size_bytes: int, status: dict[str, Any]) -> dict[str, Any]:
-        state = "uploading" if status.get("state") == "open" else status.get("state")
+        # The asset store says "incomplete"; Story's wire contract is missing | uploading | complete.
+        state = "uploading" if status.get("state") in {"open", "incomplete"} else status.get("state")
         result = {
             "format": "studio.render.gateway-blob.v1", "sha256": sha256,
             "size_bytes": size_bytes, "state": state, "offset": status.get("offset", 0),

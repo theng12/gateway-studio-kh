@@ -2253,6 +2253,25 @@ class RenderAssetStoreTest(unittest.TestCase):
                 self.store.finish_upload("owner", begun["upload_id"])
         self.assertEqual(self.store.upload_status("owner", begun["upload_id"])["committed_offset"], len(data))
 
+    def test_public_blob_status_speaks_the_story_wire_states(self) -> None:
+        # WI0005, 2026-10-25: the store's "incomplete" reached Story verbatim, and Story accepts only
+        # missing | uploading | complete, so every status read of a part-uploaded blob was refused.
+        from gateway.render_service import FinalRenderService
+        data = b"x" * (40 * KiB)
+        sha = digest(data)
+        public = lambda: FinalRenderService._blob_public(sha, len(data), self.store.blob_status("owner", sha, len(data)))
+        self.assertEqual(public()["state"], "missing")
+        begun = self.store.begin_upload("owner", sha, len(data))
+        self.store.append_chunk("owner", begun["upload_id"], 0, io.BytesIO(data[:KiB]), KiB)
+        self.assertEqual(self.store.blob_status("owner", sha, len(data))["state"], "incomplete")
+        partial = public()
+        self.assertEqual((partial["state"], partial["offset"], partial["upload_id"]), ("uploading", KiB, begun["upload_id"]))
+        self.assertNotIn("asset_handle", partial)
+        self.store.append_chunk("owner", begun["upload_id"], KiB, io.BytesIO(data[KiB:]), len(data) - KiB)
+        finished = self.store.finish_upload("owner", begun["upload_id"])
+        done = public()
+        self.assertEqual((done["state"], done["asset_handle"]), ("complete", finished["asset_handle"]))
+
 
 if __name__ == "__main__":
     unittest.main()
