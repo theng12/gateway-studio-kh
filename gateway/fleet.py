@@ -4862,6 +4862,27 @@ def _speed_samples(model_id: str) -> list:
 #: Unified-memory sizes Apple ships; a Mac reports its total in GB or GiB (16 GiB = 17.18 GB).
 _MEMORY_CLASSES = (8, 16, 18, 24, 32, 36, 48, 64, 96, 128, 192, 256, 512)
 
+#: RAM tiers a pool member may be assigned to. A Mac's tier is the shipped memory
+#: size it reports (see `mac_class`), rounded down to one of these. Tier boundaries
+#: live here and nowhere else; routing and the Pools page both read this.
+RAM_TIERS = (8, 16, 24, 32, 48, 64)
+
+
+def machine_tier(memory_gb: object) -> int | None:
+    """The RAM tier (in GB) a Mac belongs to, from its published `memory_gb`.
+
+    Returns None when the Hub did not state a usable memory size. Never inferred
+    from names or labels.
+    """
+    try:
+        gb = float(memory_gb)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+    if not (gb > 0):
+        return None
+    candidates = [t for t in RAM_TIERS if t <= gb + 0.5]
+    return max(candidates) if candidates else None
+
 
 def mac_class(chip: object, memory_gb: object) -> str:
     """"M4 · 16 GB": the chip family without "Apple", and the shipped memory size."""
@@ -5037,6 +5058,77 @@ def route(
     return chosen["definition"], note
 
 
+def pool_member_model(member: str) -> str:
+    """The Hub's own model id behind an image-pool member (`studio-hub::X` or `X` -> `X`)."""
+    member = str(member or "").strip()
+    return member.split("::", 1)[1] if member.startswith(f"{FLEET_PROVIDER_ID}::") else member
+
+
+def assigned_macs(row: dict, member: str, modality: str = "image") -> set[str]:
+    """The Macs at this site assigned this pool member AND able to run it now.
+
+    The assignment is the Hub's `assigned_image_model` per Mac, set from the Gateway (Auto by RAM, or
+    the owner's pick: `image_assignment`). The Hub enforces it too, for work sent `routing: assigned`.
+    """
+    model = pool_member_model(member)
+    assigned = {str(m.get("machine") or "") for m in row.get("machines") or []
+                if isinstance(m, dict) and m.get("machine") and m.get("assigned_image_model") == model}
+    return assigned & set(_eligible_macs(row, model, modality))
+
+
+def pool_candidates(
+    members: list[str], modality: str, *, only_location: str | None = None,
+    exclude_locations: set[str] | None = None,
+) -> list[dict]:
+    """Every (location, member) that can take an image-pool job now, each tagged `_member`.
+
+    A location qualifies for a member only when one of its Macs is assigned that member and can run
+    it; a member nobody is assigned to sits out, so no job is sent where the Hub would refuse it.
+    """
+    rows = {str(r.get("id")): r for r in snapshot(allow_stale=True).get("locations") or []}
+    found: list[dict] = []
+    for member in dict.fromkeys(pool_member_model(m) for m in members or [] if str(m).strip()):
+        for candidate in routing_candidates(member, modality, only_location=only_location,
+                                            exclude_locations=exclude_locations):
+            if assigned_macs(rows.get(str(candidate.get("location_id"))) or {}, member, modality):
+                found.append({**candidate, "_member": member})
+    return found
+
+
+def route_pool(
+    members: list[str],
+    modality: str,
+    *,
+    routing_key: str = "",
+    only_location: str | None = None,
+    exclude_locations: set[str] | None = None,
+    load: Callable[[str], tuple[int, int, int]] | None = None,
+) -> tuple[Any, str | None, str | None]:
+    """Route an image-pool job to the best location with a free Mac assigned one of its members.
+
+    Returns `(definition, member model id, note)`, or `(None, None, reason)`.
+    """
+    from .providers import registry
+
+    candidates = pool_candidates(members, modality, only_location=only_location,
+                                 exclude_locations=exclude_locations)
+    if load is not None and candidates:
+        candidates = apply_load(candidates, load)
+    if not candidates:
+        if only_location is not None:
+            return None, None, f"the location that owns this voice ({only_location}) has no Mac assigned a pool model"
+        if exclude_locations:
+            return None, None, "every location with a Mac assigned a pool model refused it"
+        return None, None, "no Mac is assigned a pool model it can run right now"
+    chosen = min(candidates, key=lambda c: rank_candidate(c, routing_key or "pool"))
+    for definition, model in registry.models.enabled_models(modality):
+        if definition.id == chosen["provider_id"] and model["model_id"] == chosen["_member"]:
+            note = (f"{chosen['label']}: {chosen['queue']} queued / {chosen['slots']} eligible"
+                    f" of {len(candidates)} candidate{'s' if len(candidates) != 1 else ''}")
+            return definition, chosen["_member"], note
+    return None, None, "resolved location has no enabled member"
+
+
 def hub_version_for(provider_id: str) -> str:
     """The Hub build behind a provider id, from the warm snapshot, or `""`.
 
@@ -5186,6 +5278,14 @@ def start_refresher(interval: float = 15.0) -> None:
 
                     release_publisher.catch_up(value.get("locations") or [])
                 except Exception:  # noqa: BLE001 - catch-up must not kill the poller
+                    pass
+                # Each Mac's image-pool model (Auto by RAM, or the owner's pin) is sent where its Hub
+                # reports a different one: a new Mac, one that was offline, or a mapping just changed.
+                try:
+                    from . import image_assignment
+
+                    image_assignment.sync()
+                except Exception:  # noqa: BLE001 - one unreachable Mac must not kill the poller
                     pass
                 # A Lite Mode change saved while its Mac was offline is sent once the Mac is back.
                 try:

@@ -2704,6 +2704,7 @@ function selectProviderTab(key) {
 // tried, and a member that ran out of quota says when it is back.
 let poolList = [];          // the pools the gateway has, with member health
 let poolModels = [];        // every enabled chat model that can be a member
+let poolImageModels = [];   // every enabled fleet image model that can be a tier member
 let poolEdit = null;        // { isNew, name, display, members: [id], query } while the editor is open
 let poolResultRows = [];    // the picker rows on screen, so a button needs only an index
 const POOL_RESULT_CAP = 60;
@@ -2803,27 +2804,33 @@ async function ensurePoolModels() {
   try {
     const data = await api('/models?modality=chat&status=enabled&provider_lane=on&limit=2000');
     poolModels = (data.models || [])
-      // A merged Studio Hub row is one model on several Macs, not a provider's own id.
       .filter(r => r.provider_id !== 'pool' && !(Array.isArray(r.locations) && r.locations.length))
       .sort((a, b) => (a.provider_name || '').localeCompare(b.provider_name || '')
         || (a.display_name || '').localeCompare(b.display_name || ''));
   } catch (e) {
     poolModels = [];
-    const msg = document.getElementById('pool-msg');
-    if (msg) msg.innerHTML = `<div class="msg bad">Could not read the model list: ${esc(e.message)}</div>`;
+  }
+  try {
+    const data = await api('/models?modality=image&status=enabled&provider_lane=on&limit=2000');
+    poolImageModels = (data.models || [])
+      .filter(r => r.provider_id !== 'pool')
+      .sort((a, b) => (a.provider_name || '').localeCompare(b.provider_name || '')
+        || (a.display_name || '').localeCompare(b.display_name || ''));
+  } catch (e) {
+    poolImageModels = [];
   }
   renderPoolEditorBody();
 }
 
 function newPool() {
-  poolEdit = { isNew: true, name: '', display: '', members: [], query: '' };
+  poolEdit = { isNew: true, name: '', display: '', modality: 'chat', members: [], tier_models: {}, query: '' };
   openPoolEditor();
 }
 
 function editPool(name) {
   const pool = poolList.find(p => p.name === name);
   if (!pool) return;
-  poolEdit = { isNew: false, name: pool.name, display: pool.display_name, members: pool.members.slice(), query: '' };
+  poolEdit = { isNew: false, name: pool.name, display: pool.display_name, modality: pool.modality || 'chat', members: pool.members.slice(), tier_models: pool.tier_models || {}, query: '' };
   openPoolEditor();
 }
 
@@ -2842,6 +2849,11 @@ function openPoolEditor() {
         <label style="flex:0 0 280px">Shown as<br>
           <input type="text" id="pool-display" placeholder="Free, every lane" value="${esc(e.display)}"
                  style="width:100%;font-family:inherit;font-size:13px"></label>
+        <label style="flex:0 0 160px">Modality<br>
+          <select id="pool-modality" ${e.isNew ? '' : 'disabled'} onchange="if(poolEdit){poolEdit.modality=this.value;renderPoolEditorBody();}">
+            <option value="chat" ${e.modality==='chat'?'selected':''}>Chat</option>
+            <option value="image" ${e.modality==='image'?'selected':''}>Image (fleet)</option>
+          </select></label>
       </div>
       <div id="pool-edit-body"></div>
       <div id="pool-msg"></div>
@@ -2863,6 +2875,52 @@ function closePoolEditor() {
   renderPoolList();
 }
 
+// Per-Mac image model for the image pool (owner, 2026-10-24): Auto by RAM, or a pin.
+async function loadImageAssignments() {
+  const box = document.getElementById('pool-macs');
+  if (!box) return;
+  try {
+    const data = await api('/image-assignments');
+    drawImageAssignments(data.machines || []);
+  } catch (err) {
+    box.textContent = 'Could not load the Macs: ' + (err.message || err);
+  }
+}
+function drawImageAssignments(machines) {
+  const box = document.getElementById('pool-macs');
+  if (!box) return;
+  if (!machines.length) { box.textContent = 'No Macs reported by any controller yet.'; return; }
+  const nameOf = id => { const r = poolImageModels.find(m => poolModelId(m) === id || poolModelId(m).endsWith('::' + id)); return r ? r.display_name : id; };
+  box.innerHTML = `<table class="grid" style="width:100%"><thead><tr><th>Mac</th><th>RAM</th><th>Image model</th><th>Status</th></tr></thead><tbody>` +
+    machines.map(m => {
+      const auto = m.mode === 'auto';
+      const autoLabel = auto ? (m.model ? `Auto — ${esc(nameOf(m.model))}` : `Auto — none (${esc(m.reason || '')})`) : 'Auto (by RAM)';
+      const opts = poolImageModels.map(r => {
+        const id = poolModelId(r), raw = id.includes('::') ? id.split('::').slice(1).join('::') : id;
+        return `<option value="${esc(raw)}" ${!auto && raw === m.model ? 'selected' : ''}>${esc(r.display_name)}</option>`;
+      }).join('');
+      const status = !m.hub_supports ? '<span class="badge warn">Hub too old — update Studio Hub</span>'
+        : !m.model ? '<span class="badge">sits out</span>'
+        : !m.installed ? '<span class="badge warn">model not installed — sits out</span>'
+        : m.in_sync ? '<span class="badge ok">active</span>' : '<span class="badge">sending…</span>';
+      return `<tr><td>${esc(m.label)}<div class="muted" style="font-size:11px">${esc(m.controller)}</div></td>
+        <td>${m.memory_gb != null ? esc(String(Math.round(m.memory_gb))) + ' GB' : '?'}</td>
+        <td><select onchange="setImageAssignment('${esc(m.controller_id)}','${esc(m.machine)}', this.value)">
+          <option value="" ${auto ? 'selected' : ''}>${autoLabel}</option>${opts}</select></td>
+        <td>${status}</td></tr>`;
+    }).join('') + '</tbody></table>';
+}
+async function setImageAssignment(controllerId, machine, value) {
+  try {
+    const data = await api(`/image-assignments/${encodeURIComponent(controllerId)}/${encodeURIComponent(machine)}`, {
+      method: 'PUT', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ model: value || null }) });
+    drawImageAssignments(data.machines || []);
+  } catch (err) {
+    alert('Could not save this Mac\'s image model: ' + (err.message || err));
+    loadImageAssignments();
+  }
+}
+
 // Members (ordered) above the picker. Redrawn on every change; the search box is drawn once
 // so typing never loses focus -- only the results under it are redrawn per keystroke.
 function renderPoolEditorBody() {
@@ -2870,6 +2928,22 @@ function renderPoolEditorBody() {
   if (!body || !poolEdit) return;
   const e = poolEdit;
   const existing = e.isNew ? null : poolList.find(p => p.name === e.name);
+  if (e.modality === 'image') {
+    const tiers = [8,16,24,32,48,64];
+    body.innerHTML = `<div class="pm-label">Model per RAM tier</div>` +
+      tiers.map(t => {
+        const sel = (e.tier_models || {})[t] || (e.tier_models || {})[String(t)] || '';
+        const opts = poolImageModels.map(r => `<option value="${esc(poolModelId(r))}" ${poolModelId(r)===sel?'selected':''}>${esc(r.display_name)} — ${esc(r.provider_name)}</option>`).join('');
+        return `<div class="row" style="gap:8px;margin:6px 0"><label style="flex:0 0 80px">${t} GB<br>
+          <select data-tier="${t}" onchange="if(poolEdit){poolEdit.tier_models=poolEdit.tier_models||{};poolEdit.tier_models['${t}']=this.value;}" style="width:100%">
+            <option value="">— none —</option>${opts}</select></label></div>`;
+      }).join('') +
+      `<div class="pm-label" style="margin-top:14px">Each Mac</div>
+       <div class="muted" style="font-size:12px;margin-bottom:6px">Auto uses the model for the Mac's RAM above; pick a model to override it for that Mac only. Only pool jobs follow this — a job that names its model still runs on any Mac that has it.</div>
+       <div id="pool-macs">Loading Macs…</div>`;
+    loadImageAssignments();
+    return;
+  }
   const detailOf = id => existing && existing.members_detail.find(m => m.id === id);
   const modelOf = id => poolModels.find(r => poolModelId(r) === id);
   if (!body.querySelector('#pool-q')) {
@@ -2967,9 +3041,16 @@ async function savePool(btn) {
   if (!e.members.length) return say('A pool needs at least one member. Pick a model below.');
   const label = btn.textContent;
   btn.disabled = true; btn.textContent = 'Saving…'; say('');
+  const modality = document.getElementById('pool-modality') ? document.getElementById('pool-modality').value : (e.modality || 'chat');
+  let tier_models = null;
+  if (modality === 'image') {
+    tier_models = {};
+    document.querySelectorAll('[data-tier]').forEach(sel => { if (sel.value) tier_models[sel.dataset.tier] = sel.value; });
+    e.members = Object.values(tier_models);
+  }
   try {
-    if (e.isNew) await api('/pools', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ name, members: e.members, display_name: display }) });
-    else await api(`/pools/${encodeURIComponent(name)}`, { method: 'PATCH', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ members: e.members, display_name: display }) });
+    if (e.isNew) await api('/pools', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ name, members: e.members, display_name: display, modality, tier_models }) });
+    else await api(`/pools/${encodeURIComponent(name)}`, { method: 'PATCH', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ members: e.members, display_name: display, modality, tier_models }) });
     closePoolEditor();
     await loadPools();
   } catch (err) { say(err.message); btn.disabled = false; btn.textContent = label; }

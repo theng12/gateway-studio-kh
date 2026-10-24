@@ -372,6 +372,25 @@ def scarcest_first(jobs: list[dict[str, Any]],
         return jobs
 
 
+def _pool_members_for(job: dict | None, modality: str) -> list[str] | None:
+    """The members an image-pool job may move between, or None when it must not move across members.
+
+    None for a non-pool job, and for one already accepted upstream, held or past queueing: its result
+    belongs to the member that ran it. An image pool whose models are gone sits out (`[]`).
+    """
+    if not job or modality != "image":
+        return None
+    try:
+        pool_id = (json.loads(job.get("params") or "{}") or {}).get("_pool_id")
+    except (TypeError, ValueError):
+        return None
+    if not pool_id or str(job.get("upstream_job_id") or "").strip() or job.get("state") not in ("accepted", "queued"):
+        return None
+    from . import image_assignment, pools
+    pool = pools.get(pool_id)
+    return image_assignment.pool_models(pool) if pool else []
+
+
 def _next_machine(store: JobStore, job_id: str, model_id: str, modality: str,
                   provider_id: str, *, code: str, detail: str) -> str | None:
     """Record this attempt and name the next machine to try, or `None`.
@@ -418,6 +437,20 @@ def _next_machine(store: JobStore, job_id: str, model_id: str, modality: str,
     tried = {_location(entry.get("location")) for entry in attempts}
     tried.add(_location(provider_id))
     tried.discard("")
+
+    # An image-pool job may move to any location with a free Mac assigned one of its members, but only
+    # while nothing was accepted upstream (held, batch and unknown-outcome jobs stay where they are).
+    pool_members = _pool_members_for(store.get(job_id) if hasattr(store, "get") else None, modality)
+    if pool_members is not None:
+        chosen, member, _note = fleet.route_pool(pool_members, modality, exclude_locations=tried, load=room)
+        if chosen is None or not store.record_route(job_id, chosen.id, model_id=member):
+            return None
+        if room is not None and room(chosen.id, claim=True)[0] <= 0:
+            store.defer(job_id, delay_s=0, unsent=True,
+                        reason="waiting for room: every location with a Mac assigned a pool model is full")
+            return QUEUED_IN_GATEWAY
+        return chosen.id
+
     if sum(entry.get("code") not in _UNCOUNTED_ATTEMPT_CODES for entry in attempts) >= int(policy["max_attempts"]):
         # The ceiling the owner named. The failure path builds the sentence from this log.
         return None
@@ -1880,6 +1913,24 @@ class Worker:
             tried = {str(fleet.controller_id_from(provider_id))}
             for value in getattr(self.store, "attempted_locations", lambda _id: [])(job["id"]):
                 tried.add(str(fleet.controller_id_from(str(value)) or value))
+            pool_members = _pool_members_for(job, modality)
+            if pool_members is not None:
+                candidates = fleet.apply_load(
+                    fleet.pool_candidates(pool_members, modality, exclude_locations=tried),
+                    lambda pid: self._site_room(job, pid))
+                ready = [c for c in candidates if c["room"] > 0]
+                if not ready:
+                    self._nowhere.add((model_id, modality))
+                    return False
+                best = min(ready, key=lambda c: fleet.rank_candidate(c, str(job["id"])))
+                if best["provider_id"] == provider_id or not rebind(
+                        job["id"], from_provider=provider_id, to_provider=best["provider_id"],
+                        model_id=best["_member"]):
+                    return False
+                self._rebind_backoff.pop(job["id"], None)
+                job["provider_id"] = best["provider_id"]
+                job["model_id"] = best["_member"]
+                return True
             if fleet.speed_ranked(model_id):
                 # Qwen (owner 2026-10-09): stay in line for a fast Mac unless a site with room would
                 # finish it sooner. This site is ranked too, with our jobs already waiting for it.

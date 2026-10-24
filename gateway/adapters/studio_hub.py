@@ -1901,6 +1901,10 @@ def _generate_image_or_voice(request: BackendRequest) -> BackendResult:
         "clientRequestId": str(request.params.get("_client_request_id") or request.params.get("_job_id") or ""),
         "label": "gateway-kh",
     }
+    if request.modality == "image" and request.params.get("_pool_id"):
+        # Image-pool work runs only on a Mac assigned this model (`image_assignment`); the Hub
+        # enforces it. A job that names its model keeps the Hub's ordinary placement.
+        body["routing"] = "assigned"
 
     with httpx.Client(timeout=httpx.Timeout(60.0, connect=10.0)) as client:
         if request.modality == "tts":

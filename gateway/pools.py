@@ -46,6 +46,9 @@ from .providers.definitions import (
 #: The provider id every pool is published under.
 POOL_PROVIDER_ID = "pool"
 ROUTING_STRICT_ORDER = "strict_order"
+ROUTING_FIRST_FREE = "first_free"
+MODALITY_CHAT = "chat"
+MODALITY_IMAGE = "image"
 
 POOLS_PATH = Path(os.environ.get("GATEWAY_POOLS") or (DATA_DIR / "pools.json"))
 
@@ -82,35 +85,47 @@ def _load() -> list[dict[str, Any]]:
             if not isinstance(item, dict):
                 continue
             name = str(item.get("name") or "").strip()
+            modality = str(item.get("modality") or "chat").strip().lower()
+            if modality not in ("chat", "image"):
+                modality = "chat"
+            tier_models = item.get("tier_models")
+            if not isinstance(tier_models, dict):
+                tier_models = None
+            if tier_models is not None:
+                tier_models = {
+                    str(k).strip(): str(v).strip()
+                    for k, v in tier_models.items()
+                    if str(k).strip() and isinstance(v, str) and str(v).strip()
+                } or None
             members = [
                 str(m).strip()
                 for m in (item.get("members") or [])
                 if isinstance(m, str) and str(m).strip()
             ]
+            if modality == "image" and tier_models:
+                members = list(dict.fromkeys(tier_models.values()))
             if not name or not members:
-                # A pool with no members is not a pool. Dropped rather than
-                # published as a row that resolves to nothing and fails on use.
                 continue
             try:
                 routing_policy = _clean_routing_policy(item.get("routing_policy"))
             except ValueError:
-                # A hand-edited unknown policy must not silently become the
-                # default free-first policy and change which paid model runs.
                 invalid_routing_policies.append(
                     (name, str(item.get("routing_policy") or "").strip())
                 )
                 continue
-            pools.append(
-                {
-                    "name": name,
-                    "display_name": str(item.get("display_name") or "").strip() or name,
-                    "description": str(item.get("description") or "").strip(),
-                    "members": list(dict.fromkeys(members)),
-                    "created_at": item.get("created_at"),
-                    "updated_at": item.get("updated_at"),
-                    **({"routing_policy": routing_policy} if routing_policy else {}),
-                }
-            )
+            pool = {
+                "name": name,
+                "display_name": str(item.get("display_name") or "").strip() or name,
+                "description": str(item.get("description") or "").strip(),
+                "members": list(dict.fromkeys(members)),
+                "modality": modality,
+                "created_at": item.get("created_at"),
+                "updated_at": item.get("updated_at"),
+                **({"routing_policy": routing_policy} if routing_policy else {}),
+            }
+            if tier_models:
+                pool["tier_models"] = tier_models
+            pools.append(pool)
     pools.sort(key=lambda p: p["name"])
     _cache = {
         "key": key,
@@ -166,10 +181,11 @@ def routing_policy(name: str) -> str | None:
 def definition() -> ProviderDefinition | None:
     """The synthetic provider pools are published under.
 
-    `None` when there are no pools, so an empty namespace never appears in the
-    console or the picker as a provider with nothing in it.
+    Chat pools only. Image pools publish under the Studio Hub maker namespace
+    through the catalogue (alias layer), so they stay free fleet. `None` when
+    there are no chat pools.
     """
-    current = _load()
+    current = [p for p in _load() if modality_of(p) == "chat"]
     if not current:
         return None
     return ProviderDefinition(
@@ -192,10 +208,6 @@ def definition() -> ProviderDefinition | None:
             }
             for pool in current
         ),
-        # No credential to supply, and nothing to discover: the members are this
-        # gateway's own ids. Available the moment it is written, because a pool
-        # the owner just made and cannot pick is the control-that-does-nothing
-        # failure this codebase keeps paying for.
         credential_fields=(),
         default_enabled=True,
         auto_enable_discovered=True,
@@ -233,8 +245,9 @@ def _with_health(pool: dict[str, Any]) -> dict[str, Any]:
     out = dict(pool)
     cooling = pool_cooldowns.active()
     rows: list[dict[str, Any]] = []
+    _mod = "image" if modality_of(pool) == "image" else "chat"
     for member in pool["members"]:
-        definition, model = catalog.resolve("chat", member)
+        definition, model = catalog.resolve(_mod, member)
         rows.append(
             {
                 "id": member,
@@ -296,7 +309,16 @@ def create(
     display_name: str = "",
     description: str = "",
     routing_policy: str | None = None,
+    modality: str = "chat",
+    tier_models: dict[str, str] | None = None,
 ) -> dict[str, Any]:
+    modality = str(modality or "chat").strip().lower()
+    if modality not in ("chat", "image"):
+        modality = "chat"
+    if modality == "image":
+        if not isinstance(tier_models, dict) or not tier_models:
+            raise ValueError("an image pool needs a RAM-tier to model mapping")
+        members = list(dict.fromkeys(str(v).strip() for v in tier_models.values() if str(v).strip()))
     cleaned = _clean(name, members)
     policy = _clean_routing_policy(routing_policy)
     now = time.time()
@@ -305,10 +327,16 @@ def create(
         "display_name": (display_name or "").strip() or cleaned["name"],
         "description": (description or "").strip(),
         "members": cleaned["members"],
+        "modality": modality,
         "created_at": now,
         "updated_at": now,
         **({"routing_policy": policy} if policy else {}),
     }
+    if modality == "image" and tier_models:
+        pool["tier_models"] = {
+            str(k).strip(): str(v).strip() for k, v in tier_models.items()
+            if str(k).strip() and str(v).strip()
+        }
     _save([p for p in _load() if p["name"] != pool["name"]] + [pool])
     return pool
 
@@ -320,11 +348,23 @@ def update(
     display_name: str | None = None,
     description: str | None = None,
     routing_policy: str | None = None,
+    modality: str | None = None,
+    tier_models: dict[str, str] | None = None,
 ) -> dict[str, Any] | None:
     existing = get(name)
     if existing is None:
         return None
-    if members is not None:
+    if modality is not None:
+        existing["modality"] = str(modality or "chat").strip().lower()
+        if existing["modality"] not in ("chat", "image"):
+            existing["modality"] = "chat"
+    if tier_models is not None:
+        existing["tier_models"] = {
+            str(k).strip(): str(v).strip() for k, v in tier_models.items()
+            if str(k).strip() and str(v).strip()
+        }
+        existing["members"] = list(dict.fromkeys(existing["tier_models"].values()))
+    elif members is not None:
         existing["members"] = _clean(name, members)["members"]
     if display_name is not None:
         existing["display_name"] = display_name.strip() or existing["name"]
@@ -386,3 +426,47 @@ def _clean_routing_policy(value: Any) -> str | None:
     if policy != ROUTING_STRICT_ORDER:
         raise ValueError(f"unknown pool routing policy '{policy}'")
     return policy
+
+
+def modality_of(pool: dict[str, Any] | None) -> str:
+    if not isinstance(pool, dict):
+        return "chat"
+    value = str(pool.get("modality") or "chat").strip().lower()
+    return value if value in ("chat", "image") else "chat"
+
+
+def image_pools() -> list[dict[str, Any]]:
+    return [p for p in _load() if modality_of(p) == "image"]
+
+
+def is_image_pool_name(compound_or_name: str) -> bool:
+    text = str(compound_or_name or "").strip()
+    if text.startswith(f"{POOL_PROVIDER_ID}::"):
+        text = text.split("::", 1)[1]
+    # image pools publish under studio-hub::, so accept that too
+    if text.startswith("studio-hub::"):
+        text = text.split("::", 1)[1]
+    for pool in image_pools():
+        if pool["name"] == text:
+            return True
+    return False
+
+
+def image_pool_name(compound_or_name: str) -> str | None:
+    text = str(compound_or_name or "").strip()
+    if text.startswith(f"{POOL_PROVIDER_ID}::") or text.startswith("studio-hub::"):
+        text = text.split("::", 1)[1]
+    for pool in image_pools():
+        if pool["name"] == text:
+            return pool["name"]
+    return None
+
+
+def tier_models_of(pool: dict[str, Any] | None) -> dict[str, str]:
+    if not isinstance(pool, dict):
+        return {}
+    value = pool.get("tier_models")
+    if not isinstance(value, dict):
+        return {}
+    return {str(k).strip(): str(v).strip() for k, v in value.items()
+            if str(k).strip() and isinstance(v, str) and str(v).strip()}

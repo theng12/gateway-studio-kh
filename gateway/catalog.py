@@ -31,6 +31,7 @@ import time
 from datetime import datetime, timezone
 from typing import Any
 
+from . import image_assignment
 from . import limits
 from . import pools
 from . import voices
@@ -1988,6 +1989,104 @@ class Catalog:
                 _merge_capabilities(existing, row, modality)
             rows[modality] = list(merged.values())
 
+        # Image pools: synthesize one combined row per image pool (alias layer).
+        try:
+            image_rows_by_id = {r["id"]: r for r in rows["image"]}
+            for pool in pools.image_pools():
+                alias = f"studio-hub::{pool['name']}"
+                display = pool.get("display_name") or pool["name"]
+                # Every model a Mac may be assigned for this pool (per-RAM tier, plus the owner's pins).
+                member_ids = image_assignment.pool_models(pool)
+                if not member_ids:
+                    continue
+                member_rows = []
+                for member in member_ids:
+                    row_id = f"studio-hub::{member}"
+                    if row_id in image_rows_by_id:
+                        member_rows.append((member, image_rows_by_id[row_id]))
+                if not member_rows:
+                    continue
+                first_row = member_rows[0][1]
+                # intersection of aspect ratios
+                ratio_sets = [set(r.get("aspect_ratios") or []) for _, r in member_rows]
+                common_ratios = set.intersection(*ratio_sets) if ratio_sets else set()
+                # preserve first member order
+                ordered_common = [r for r in (first_row.get("aspect_ratios") or []) if r in common_ratios]
+                # output options intersection by (ratio,width,height)
+                option_map = {}
+                for member, r in member_rows:
+                    opts = r.get("output_options") or []
+                    keys = set()
+                    for o in opts:
+                        keys.add((o.get("aspect_ratio"), o.get("width"), o.get("height")))
+                    option_map[member] = keys
+                common_option_keys = set.intersection(*[v for v in option_map.values()]) if option_map else set()
+                # build options from first member matching common keys
+                new_options = []
+                for o in (first_row.get("output_options") or []):
+                    if (o.get("aspect_ratio"), o.get("width"), o.get("height")) in common_option_keys:
+                        new_options.append(dict(o))
+                default_ratio = first_row.get("default_aspect_ratio")
+                if default_ratio not in common_ratios:
+                    default_ratio = ordered_common[0] if ordered_common else first_row.get("default_aspect_ratio")
+                supports_seed = all(bool(r.get("supports_seed")) for _, r in member_rows)
+                supports_refs = all(bool(r.get("supports_reference_images")) for _, r in member_rows)
+                if supports_refs:
+                    min_refs = max((r.get("min_reference_images") or 0) for _, r in member_rows)
+                    max_refs = min((r.get("max_reference_images") or 0) for _, r in member_rows)
+                else:
+                    min_refs, max_refs = 0, 0
+                # operations intersection
+                op_sets = [set(r.get("operations") or []) for _, r in member_rows]
+                common_ops = set.intersection(*op_sets) if op_sets else set()
+                if not common_ops:
+                    common_ops = {"text-to-image"}
+                # max_prompt_characters min
+                mpc = None
+                mpc_source = None
+                for _, r in member_rows:
+                    val = r.get("max_prompt_characters")
+                    if isinstance(val, (int, float)) and not isinstance(val, bool):
+                        if mpc is None or val < mpc:
+                            mpc = val
+                            mpc_source = r.get("max_prompt_characters_source")
+                if mpc is None:
+                    mpc = first_row.get("max_prompt_characters")
+                    mpc_source = first_row.get("max_prompt_characters_source")
+                locked = not any(not r.get("locked") for _, r in member_rows)
+                lock_reason = None
+                if locked:
+                    lock_reason = "No Mac offering this model is reachable — every Studio Hub location that offers it is offline or not taking customer work."
+                row = dict(first_row)
+                row["id"] = alias
+                row["display_name"] = display
+                row["customer_handle"] = alias
+                row["public_model_id"] = alias
+                row["legacy_ids"] = [alias]
+                row["pool_members"] = [{"id": m, "display_name": image_rows_by_id.get(f"studio-hub::{m}", {}).get("display_name", m)} for m in member_ids]
+                row["aspect_ratios"] = ordered_common
+                row["default_aspect_ratio"] = default_ratio
+                row["output_options"] = new_options
+                row["supports_seed"] = supports_seed
+                row["supports_reference_images"] = supports_refs
+                row["supports_image_to_image"] = supports_refs
+                row["min_reference_images"] = min_refs
+                row["max_reference_images"] = max_refs
+                row["operations"] = sorted(common_ops)
+                row["max_prompt_characters"] = mpc
+                row["max_prompt_characters_source"] = mpc_source
+                row["chargeable"] = False
+                row["locked"] = locked
+                row["lock_reason"] = lock_reason
+                row["availability"] = "unavailable" if locked else "available"
+                row["available"] = not locked
+                row["activation_blockers"] = [lock_reason] if lock_reason else []
+                # price fields already zero/local from first row
+                row["pool_id"] = pool["name"]
+                rows["image"].append(row)
+        except Exception:
+            pass
+
         # A pool can cost money only if a member that can answer can.
         chat_by_id = {r["id"]: r for r in rows["chat"]}
         for row in rows["chat"]:
@@ -2220,8 +2319,21 @@ class Catalog:
         A submit passes one key per job, so equal ranks are spread rather than stacked.
         """
         from . import fleet
+        from . import pools
 
         provider_id, model_id = decode_model_id(compound)
+        pool_name = pools.image_pool_name(compound)
+        if pool_name is not None and modality == "image":
+            chosen_def, chosen_member, _note = fleet.route_pool(
+                image_assignment.pool_models(pools.get(pool_name)), modality,
+                routing_key=job_key or compound, only_location=only_location,
+            )
+            if chosen_def is None:
+                return None, None
+            for definition, model in registry.models.enabled_models(modality):
+                if definition.id == chosen_def.id and model["model_id"] == chosen_member:
+                    return definition, model
+            return None, None
         if fleet.is_paused_provider(provider_id):
             # A legacy `studio-hub-<site>::…` id names one location; while the owner has it paused
             # it routes like the fleet id instead of running there.
@@ -2257,8 +2369,14 @@ class Catalog:
         a catalogue problem instead of a network one.
         """
         from . import fleet
+        from . import pools
 
         provider_id, model_id = decode_model_id(compound)
+        if pools.image_pool_name(compound) is not None and modality == "image":
+            pool = pools.get(pools.image_pool_name(compound))
+            members = image_assignment.pool_models(pool) if pool else []
+            return ("no Mac is assigned one of this pool's models and free to run it: " +
+                    ", ".join(members)) if members else "this image pool names no model for any Mac"
         if fleet.is_paused_provider(provider_id):
             provider_id = fleet.FLEET_PROVIDER_ID
         if provider_id != fleet.FLEET_PROVIDER_ID:

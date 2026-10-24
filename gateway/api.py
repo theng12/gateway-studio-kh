@@ -931,6 +931,19 @@ def _cancel_upstream(job: dict[str, Any]) -> dict[str, Any] | None:
     return cancel_upstream(job, store)
 
 
+def _served_model_fields(job: dict[str, Any]) -> dict[str, Any]:
+    try:
+        params = json.loads(job.get("params") or "{}")
+    except (TypeError, ValueError):
+        params = {}
+    if not isinstance(params, dict) or not params.get("_pool_id"):
+        return {}
+    return {
+        "served_model_id": job.get("model_id"),
+        "served_model_name": job.get("model_id"),
+    }
+
+
 def _job_envelope(job: dict[str, Any], *, native: bool = False) -> dict[str, Any]:
     """The job as Story Studio reads it.
 
@@ -952,6 +965,7 @@ def _job_envelope(job: dict[str, Any], *, native: bool = False) -> dict[str, Any
         "id": job["id"],
         "state": job["state"],
         "model_id": catalog_encode(job),
+        **_served_model_fields(job),
         "priority": job.get("priority") or NORMAL,
         "failure_code": None,
         "failure_class": None,
@@ -1214,6 +1228,13 @@ def catalog_encode(job: dict[str, Any]) -> str:
 
     provider_id = job.get("provider_id") or ""
     model_id = job.get("model_id") or ""
+    try:
+        params = json.loads(job.get("params") or "{}")
+    except (TypeError, ValueError):
+        params = {}
+    pool_id = params.get("_pool_id") if isinstance(params, dict) else None
+    if pool_id:
+        return encode_model_id("studio-hub", str(pool_id))
     if not provider_id:
         return model_id
     return encode_model_id(fleet.publish_id(str(provider_id)), model_id)
@@ -1431,6 +1452,13 @@ def _submit(
             return already, False
     _refuse_when_the_queue_is_full(priority == BACKGROUND)
     _refuse_when_the_disk_is_low()
+    from . import pools as _pools
+
+    pool_name = _pools.image_pool_name(compound_id) if modality == "image" else None
+    if pool_name is not None:
+        params = dict(params or {})
+        params["_pool_id"] = pool_name
+
     definition, model = catalog.resolve(
         modality, compound_id, only_location=_pinned_location(params),
         job_key=uuid.uuid4().hex,

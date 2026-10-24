@@ -2746,21 +2746,20 @@ class JobStore:
                 self._conn.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()
             )
 
-    def record_route(self, job_id: str, provider_id: str) -> bool:
-        """Point a queued job at a different location after a site refusal.
+    def record_route(self, job_id: str, provider_id: str, model_id: str | None = None) -> bool:
+        """Point a queued job at a different location (and, optionally, member model) after a site refusal.
 
-        The model is unchanged; only the controller that will run it moved. The
-        published model id is location-independent (`fleet.publish_id` collapses
-        every site to the maker), so nothing the caller sees changes — only the row
-        that records which site actually took the work.
+        The model is unchanged unless ``model_id`` is given (image pool re-route across members).
         """
-        # The old attempt's batch id goes with it: it names work at the *previous* location, and left
-        # in place it would be resumed, cancelled or reconciled against this one.
-        self._update(job_id, provider_id=provider_id, upstream_job_id=None)
+        fields: dict[str, Any] = {"provider_id": provider_id, "upstream_job_id": None}
+        if model_id is not None:
+            fields["model_id"] = model_id
+        self._update(job_id, **fields)
         return True
 
-    def rebind_unsent(self, job_id: str, *, from_provider: str, to_provider: str) -> bool:
-        """Move a still-`accepted` job to another location, **only if nothing was ever sent**.
+    def rebind_unsent(self, job_id: str, *, from_provider: str, to_provider: str,
+                      model_id: str | None = None) -> bool:
+        """Move a still-`accepted` job to another location (and member model), **only if nothing was ever sent**.
 
         The late bind: the location chosen at submit turned out to be full while another has
         room. One conditional UPDATE, so the guard and the write cannot be separated by a
@@ -2769,14 +2768,20 @@ class JobStore:
         re-sending work that may already be running is duplicate paid work. `True` only when
         the row moved.
         """
-        with self._lock:
-            result = self._conn.execute(
-                """UPDATE jobs SET provider_id = ?, updated_at = ?
+        if model_id is None:
+            sql = """UPDATE jobs SET provider_id = ?, updated_at = ?
                    WHERE id = ? AND provider_id = ? AND state = 'accepted'
                      AND dispatch_started_at IS NULL
-                     AND COALESCE(upstream_job_id, '') = ''""",
-                (to_provider, time.time(), job_id, from_provider),
-            )
+                     AND COALESCE(upstream_job_id, '') = ''"""
+            params = (to_provider, time.time(), job_id, from_provider)
+        else:
+            sql = """UPDATE jobs SET provider_id = ?, model_id = ?, updated_at = ?
+                   WHERE id = ? AND provider_id = ? AND state = 'accepted'
+                     AND dispatch_started_at IS NULL
+                     AND COALESCE(upstream_job_id, '') = ''"""
+            params = (to_provider, model_id, time.time(), job_id, from_provider)
+        with self._lock:
+            result = self._conn.execute(sql, params)
             self._conn.commit()
             return result.rowcount == 1
 

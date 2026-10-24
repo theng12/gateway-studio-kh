@@ -222,6 +222,26 @@ def set_node_pause(controller_id: str, machine_id: str, paused: object, *,
     )
 
 
+def set_node_image_model(controller_id: str, machine_id: str, model: str | None, *,
+                         client: httpx.Client | None = None) -> dict[str, Any]:
+    """Tell a Mac's controller which image-pool model that Mac serves (`None` clears it), owner 2026-10-24.
+
+    Sent by `image_assignment.sync`; the controller keeps it in its machine flags, refuses pool work
+    for other models on that Mac, and reports it on the Mac's row.
+    """
+    if not _MACHINE_ID.fullmatch(machine_id or ""):
+        raise StartupError(400, {"ok": False, "code": "BAD_MACHINE", "detail": "machine id is not valid"})
+    if model is not None and (not isinstance(model, str) or not model.strip()):
+        raise StartupError(400, {"ok": False, "code": "VALUE_REQUIRED", "detail": "model must be a model id or null"})
+    return _node_post(
+        controller_id, machine_id, "assigned-image-model", {"model": model}, event="image_model",
+        too_old="This controller's Studio Hub cannot take a per-Mac image model yet. Update Studio Hub first "
+                "(Fleet > Release).",
+        refused="The controller refused this gateway's credential for setting a Mac's image model.",
+        audit_fields={"model": model}, client=client,
+    )
+
+
 #: What a workstation-mode change may carry; the Hub checks each value's range (`BAD_SETTING`).
 WORKSTATION_SETTINGS = ("enabled", "idle_only", "idle_minutes", "step_aside", "resume_after_minutes",
                         "start_free_gb", "quiet_hours", "hide_menu_bar_icon")

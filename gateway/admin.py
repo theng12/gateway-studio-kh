@@ -502,14 +502,60 @@ def create_pool(body: dict[str, Any]) -> Any:
             display_name=str(body.get("display_name") or ""),
             description=str(body.get("description") or ""),
             routing_policy=str(body.get("routing_policy") or ""),
+            modality=str(body.get("modality") or "chat"),
+            tier_models=body.get("tier_models") if isinstance(body.get("tier_models"), dict) else None,
         )
     except ValueError as exc:
         raise AdminError(422, str(exc)) from exc
+    if pool.get("modality") == "image":
+        _sync_image_models_soon()
     return {
         "created": pool["name"],
         "pool": pools.describe(pool["name"]),
         "restart_required": False,
     }
+
+
+def _sync_image_models_soon() -> None:
+    """Send the per-Mac image models now, off the request thread (the refresher retries anyway)."""
+    import threading
+    from . import image_assignment
+
+    threading.Thread(target=lambda: _quietly(image_assignment.sync), name="image-assignment-sync",
+                     daemon=True).start()
+
+
+def _quietly(work: Any) -> None:
+    try:
+        work()
+    except Exception:  # noqa: BLE001 - the next fleet refresh sends it again
+        pass
+
+
+@router.get("/api/image-assignments", dependencies=[Depends(require_admin)])
+def image_assignments() -> Any:
+    """Every Mac's image-pool model: Auto (by RAM) or pinned, and whether its Hub has it yet."""
+    from . import image_assignment
+
+    try:
+        return {"machines": image_assignment.view()}
+    except RuntimeError as exc:
+        raise AdminError(409, str(exc)) from exc
+
+
+@router.put("/api/image-assignments/{controller_id}/{machine_id}", dependencies=[Depends(require_admin)])
+def set_image_assignment(controller_id: str, machine_id: str, body: dict[str, Any]) -> Any:
+    """Pin one Mac to an image model (`{"model": "<id>"}`), or return it to Auto (`{"model": null}`)."""
+    from . import image_assignment
+
+    if "model" not in body or not (body["model"] is None or (isinstance(body["model"], str) and body["model"].strip())):
+        raise AdminError(400, "send model: a model id, or null for Auto")
+    try:
+        image_assignment.set_override(controller_id, machine_id, body["model"])
+    except RuntimeError as exc:
+        raise AdminError(409, str(exc)) from exc
+    _sync_image_models_soon()
+    return {"machines": image_assignment.view()}
 
 
 @router.patch("/api/pools/{name}", dependencies=[Depends(require_admin)])
@@ -523,11 +569,15 @@ def update_pool(name: str, body: dict[str, Any]) -> Any:
             display_name=str(body["display_name"]) if "display_name" in body else None,
             description=str(body["description"]) if "description" in body else None,
             routing_policy=str(body["routing_policy"]) if "routing_policy" in body else None,
+            modality=str(body["modality"]) if "modality" in body else None,
+            tier_models=body.get("tier_models") if "tier_models" in body else None,
         )
     except ValueError as exc:
         raise AdminError(422, str(exc)) from exc
     if pool is None:
         raise AdminError(404, f"no pool named '{name}'")
+    if pool.get("modality") == "image":
+        _sync_image_models_soon()
     return {
         "updated": pool["name"],
         "pool": pools.describe(pool["name"]),
