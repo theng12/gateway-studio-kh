@@ -869,6 +869,7 @@ class VoiceReferenceMetadataTests(_HubCase):
             "segments": [{"start": 0.0, "end": 1.0, "text": "hello there"}],
             "language": "en",
             "source_id": "voice-abc123",
+            "name": "Yim Mengly",
         }
 
     def _staged_payload(self, clip: Path, **overrides: Any) -> dict[str, Any]:
@@ -936,6 +937,8 @@ class VoiceReferenceMetadataTests(_HubCase):
             ("language", b"en"),
             ("sha256", digest.encode()),
             ("source_asset_id", b"voice-abc123"),
+            # So the Hub's job rows can say which voice spoke (owner, 2026-10-24).
+            ("display_name", b"Yim Mengly"),
             ("ttl_seconds", str(int(hub_module._STAGED_TTL_S)).encode()),
             ("transcript_segments", b"hello there"),
         ):

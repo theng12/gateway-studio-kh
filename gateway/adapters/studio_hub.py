@@ -1779,6 +1779,9 @@ def _stage_voice_reference(
         # the reference a voice is cloned from.
         "sha256": digest,
         "source_asset_id": str(reference.get("source_id") or voice_id)[:500],
+        # A label for the Hub's job rows ("which voice spoke this"); a Hub older than 0.6.197
+        # ignores the field. Not part of the staged asset's identity.
+        "display_name": str(reference.get("name") or "")[:200],
         # Outlives the placement cache by `_REUSE_HEADROOM_S`: an asset reused just before
         # the cache lets go still has to be readable when a busy Hub finally dispatches
         # the job (the adapter's queue ceiling is 3 h).
