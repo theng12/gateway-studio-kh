@@ -39,6 +39,12 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
+from tests._isolation import sandbox_env  # noqa: E402
+
+# Importing gateway.* here freezes DATA_DIR; without this it binds the owner's real
+# data folder at ~/Library/Application Support/gateway-kh/data.
+_SANDBOX = sandbox_env()
+
 from gateway import concurrency  # noqa: E402
 from gateway import constants  # noqa: E402
 from gateway import worker as worker_module  # noqa: E402

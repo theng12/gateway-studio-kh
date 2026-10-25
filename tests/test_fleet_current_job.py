@@ -12,6 +12,12 @@ Run with::
 """
 import unittest
 
+from tests._isolation import sandbox_env  # noqa: E402
+
+# Importing gateway.* here freezes DATA_DIR; without this it binds the owner's real
+# data folder at ~/Library/Application Support/gateway-kh/data.
+_SANDBOX = sandbox_env()
+
 from gateway import fleet
 
 

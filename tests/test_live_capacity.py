@@ -24,6 +24,11 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
+from tests._isolation import sandbox_env  # noqa: E402
+
+# Importing gateway.api builds stores under DATA_DIR; without this they bind the owner's real data.
+_SANDBOX = sandbox_env()
+
 from gateway import concurrency  # noqa: E402
 from gateway import constants  # noqa: E402
 
