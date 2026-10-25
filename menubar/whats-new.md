@@ -14,6 +14,20 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.202 — 2026-10-25
+
+### Remote final renders accept real episode sizes
+A final video sent to another of your Macs used to be refused unless it fitted a narrow size and
+frame-rate window, so almost every real episode fell back to rendering on this Mac. The limits are
+now ranges: any canvas up to 4K (3840 on the long edge), and 24, 25, 30 or 60 frames per second,
+bounded by the total work a render may take. Remote rendering stays off until it has been compared
+with a local render of the same episode.
+
+### A shared sound effects library
+The Gateway can search Openverse for sound effects, preferring CC0 sounds that need no credit, and
+keeps the ones you use in one shared library with each clip's licence and credit link. When the free
+search allowance runs out, search answers from the library instead.
+
 ## 0.2.201 — 2026-10-25
 
 ### Backups can carry the fleet roster
