@@ -392,11 +392,22 @@ class FinalRenderService:
         manifest = packet.get("manifest") or []
         canvas = recipe.get("canvas") or {}
         duration = recipe.get("target_duration_sec")
+        width, height = canvas.get("width"), canvas.get("height")
+        canvas_allowed = False
+        if type(bounds) is dict:
+            if "bounds_version" in bounds:
+                limits = bounds.get("canvas_range") or {}
+                canvas_allowed = (
+                    type(bounds["bounds_version"]) is int and bounds["bounds_version"] == 2
+                    and type(width) is int and type(height) is int
+                    and width > 0 and height > 0 and width % 2 == height % 2 == 0
+                    and max(width, height) <= limits.get("max_edge", 0)
+                    and width * height <= limits.get("max_pixels", 0)
+                )
+            else:
+                canvas_allowed = {"width": width, "height": height} in bounds.get("canvas_pairs", [])
         if (type(bounds) is not dict
-                or [canvas.get("width"), canvas.get("height")] not in [
-                    [item.get("width"), item.get("height")]
-                    for item in bounds.get("canvas_pairs", []) if type(item) is dict
-                ]
+                or not canvas_allowed
                 or canvas.get("working_fps") not in bounds.get("working_fps", [])
                 or type(duration) not in (int, float)
                 or duration > bounds.get("max_duration_sec", 0)
@@ -407,7 +418,7 @@ class FinalRenderService:
                 or sum(item["size_bytes"] for item in manifest)
                     > bounds.get("max_total_input_bytes", 0)
                 or canvas.get("width", 0) * canvas.get("height", 0)
-                    * canvas.get("working_fps", 0) * duration
+                    * math.ceil(canvas.get("working_fps", 0) * duration)
                     > bounds.get("max_pixel_frames", 0)):
             raise RenderServiceError("RENDER_PROFILE_MISMATCH", 409)
 

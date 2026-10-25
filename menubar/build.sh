@@ -332,22 +332,36 @@ if (profile["tools_artifact_sha256"] != hashlib.sha256(raw["tools.json"]).hexdig
         or profile["compiler_artifact_sha256"]
         != hashlib.sha256(raw["compiler.json"]).hexdigest()):
     invalid("descriptor dependency digests")
-bounds = exact(profile["execution_bounds"], (
+bound_keys = {
     "canvas_pairs", "working_fps", "max_duration_sec", "max_operations",
     "max_assets", "max_asset_bytes", "max_total_input_bytes", "max_pixel_frames",
     "scratch_reserve_bytes", "output_limit_bytes", "process_tree_rss_limit_bytes",
     "cumulative_wall_seconds",
-), "profile.execution_bounds")
-if (type(bounds["canvas_pairs"]) is not list or not bounds["canvas_pairs"]
-        or type(bounds["working_fps"]) is not list or not bounds["working_fps"]):
-    invalid("profile execution arrays")
-for pair in bounds["canvas_pairs"]:
-    pair = exact(pair, ("width", "height"), "profile.execution_bounds.canvas")
-    positive(pair["width"], "canvas.width")
-    positive(pair["height"], "canvas.height")
+}
+bounds = profile["execution_bounds"]
+if type(bounds) is dict and "bounds_version" in bounds:
+    bounds = exact(bounds, bound_keys - {"canvas_pairs"} | {"bounds_version", "canvas_range"},
+                   "profile.execution_bounds")
+    if type(bounds["bounds_version"]) is not int or bounds["bounds_version"] != 2:
+        invalid("profile execution bounds version")
+    canvas = exact(bounds["canvas_range"], ("max_edge", "max_pixels"), "canvas_range")
+    for key in canvas:
+        positive(canvas[key], "canvas_range." + key)
+    if canvas["max_edge"] < 2 or canvas["max_edge"] % 2 or canvas["max_pixels"] < 4:
+        invalid("profile canvas range")
+else:
+    bounds = exact(bounds, bound_keys, "profile.execution_bounds")
+    if type(bounds["canvas_pairs"]) is not list or not bounds["canvas_pairs"]:
+        invalid("profile execution canvas pairs")
+    for pair in bounds["canvas_pairs"]:
+        pair = exact(pair, ("width", "height"), "profile.execution_bounds.canvas")
+        positive(pair["width"], "canvas.width")
+        positive(pair["height"], "canvas.height")
+if type(bounds["working_fps"]) is not list or not bounds["working_fps"]:
+    invalid("profile execution fps")
 for rate in bounds["working_fps"]:
     positive(rate, "working_fps")
-for key in set(bounds) - {"canvas_pairs", "working_fps", "max_duration_sec"}:
+for key in bound_keys - {"canvas_pairs", "working_fps", "max_duration_sec"}:
     positive(bounds[key], "profile.execution_bounds." + key)
 if (type(bounds["max_duration_sec"]) not in (int, float)
         or isinstance(bounds["max_duration_sec"], bool)
