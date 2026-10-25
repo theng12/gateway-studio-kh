@@ -19,10 +19,12 @@ licence field is empty, malformed, or anything outside `cc0` / `by` is
 different values, or a future adapter that lies about the licence would
 slip through.
 
-**ponytail:** one adapter (Openverse), a fixed `kind` vocabulary
-(`openverse`), no plugin loading. Upgrade path: add `FreesoundSource`,
-`PixabaySource` here, register them in `SOURCES`, and the rest of the
-service picks them up.
+**ponytail:** one adapter (Openverse), no plugin loading. Each source is one entry
+in `SOUND_SOURCE_DEFINITIONS` (what it is, which fields it needs, where a key comes
+from) plus one class in `_ADAPTERS` (how to talk to it); the two are checked against
+each other at import. Upgrade path: add `FreesoundSource`, `PixabaySource` and their
+declarations, and the library, the routes, the quota reader and the SFX tab all pick
+them up — none of them names a source.
 """
 from __future__ import annotations
 
@@ -42,7 +44,7 @@ from urllib.parse import urlencode
 import httpx
 
 from . import config
-from .providers.credentials import CredentialStore
+from .providers.credentials import CredentialStore, mask
 
 log = logging.getLogger("gateway.sound_sources")
 
@@ -168,18 +170,111 @@ class QuotaState:
 
 
 # ---------------------------------------------------------------------------
+# Source declarations
+#
+# **A sound source is not a model provider, and must never become one.** It
+# contributes no catalogue rows, so it has no entry in `providers/definitions.py`
+# — adding one there broke `test_e2e`'s "every provider has a working adapter",
+# which is that gate doing its job. But the owner asked for sound sources to be
+# *managed* like providers: *"make it a 'provider' but have it in a new tab called
+# SFX or something. This way we can manage them easier."* So the declaration below
+# has the same shape as a `ProviderDefinition` — the adapter it selects, the fields
+# the console draws, where a key comes from — in the module that owns the lane.
+#
+# Adding a second source is one entry here plus one adapter class in `_ADAPTERS`.
+# The two are asserted against each other at import, so a declaration with no
+# adapter cannot be listed, and an adapter nothing declares cannot be reached.
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class SoundSourceField:
+    """One credential field, drawn by the console and stored by the shared store.
+
+    Same shape as `providers.definitions.CredentialField`, deliberately: the SFX
+    tab renders these the way the Providers tab renders a provider's fields.
+    """
+    key: str
+    label: str
+    env_var: str = ""
+    secret: bool = True
+    placeholder: str = ""
+    help_text: str = ""
+
+
+@dataclass(frozen=True)
+class SoundSourceDefinition:
+    """What a sound source is, where its key comes from, and what it is for."""
+
+    id: str
+    display_name: str
+    #: Adapter key — must exist in `_ADAPTERS`.
+    kind: str
+    #: What the source contributes, in the console's words (`sfx`, `music`, …).
+    category: str
+    description: str = ""
+    #: Where a human browses the source's own catalogue.
+    docs_url: str = ""
+    #: Where a key is obtained. Shown as a link on the card, because "how do I get
+    #: one" is the question a key field raises and the anonymous quota is the
+    #: reason to bother.
+    register_url: str = ""
+    credential_fields: tuple[SoundSourceField, ...] = ()
+    #: The field that raises the quota — what the adapter actually sends. Named
+    #: here rather than hardcoded in the adapter, so "which field matters" has one
+    #: answer and the card can mark it.
+    token_field: str = ""
+    #: The key this source's entry is stored under in `CredentialStore`.
+    #:
+    #: Empty means "the source's own id". Openverse names the id it has always
+    #: used (`openverse-sound`) because that is what the adapter has read since
+    #: the lane was built: renaming it would hide a credential the owner already
+    #: has, which is the one thing a store migration must never do.
+    credential_id: str = ""
+    notes: str = ""
+
+    @property
+    def store_id(self) -> str:
+        return self.credential_id or self.id
+
+
+# ---------------------------------------------------------------------------
 # Adapter interface
 # ---------------------------------------------------------------------------
 
 class SoundSource:
     """Base class. A subclass implements `search` and `download_bytes`."""
 
-    id: str = ""
-    display_name: str = ""
+    #: The kind this class serves. Asserted against `SOUND_SOURCE_DEFINITIONS`.
+    kind: str = ""
 
-    def __init__(self, credential_store: CredentialStore) -> None:
+    def __init__(self, definition: SoundSourceDefinition, credential_store: CredentialStore) -> None:
+        self.definition = definition
+        # Kept as attributes as well as on the definition: adapters and callers
+        # have read `src.id` / `src.display_name` since the lane was added.
+        self.id = definition.id
+        self.display_name = definition.display_name
         self.credentials = credential_store
         self.quota = QuotaState()
+
+    # -- credentials -----------------------------------------------------
+    def field_value(self, key: str) -> str:
+        """Resolve one credential field: stored value first, then `.env`.
+
+        The same two-step chain a provider's credentials use (`CredentialStore`),
+        so a key dropped into `.env` works here without ever opening the console.
+        """
+        stored = self.credentials.stored(self.definition.store_id).get(key)
+        if stored:
+            return str(stored)
+        field = next((f for f in self.definition.credential_fields if f.key == key), None)
+        if field is None or not field.env_var:
+            return ""
+        return str(config.get(field.env_var, "") or "")
+
+    def token(self) -> str | None:
+        """The credential that raises the quota, or None when there is none."""
+        key = self.definition.token_field
+        return (self.field_value(key) or None) if key else None
 
     # -- subclass contract ---------------------------------------------------
     def is_configured(self) -> bool:
@@ -187,8 +282,8 @@ class SoundSource:
         raise NotImplementedError
 
     def registered(self) -> bool:
-        """True when the owner supplied credentials that raise the quota."""
-        return False
+        """True when the owner supplied the credential that raises the quota."""
+        return bool(self.token())
 
     def search(self, *, query: str, min_sec: float | None, max_sec: float | None,
                category: str | None, page_size: int) -> list[SoundSearchResult]:
@@ -251,11 +346,10 @@ def _bucket_for(min_sec: float | None, max_sec: float | None) -> str | None:
 
 
 class OpenverseSource(SoundSource):
-    id = "openverse"
-    display_name = "Openverse"
+    kind = "openverse"
 
-    def __init__(self, credential_store: CredentialStore) -> None:
-        super().__init__(credential_store)
+    def __init__(self, definition: SoundSourceDefinition, credential_store: CredentialStore) -> None:
+        super().__init__(definition, credential_store)
         # In-memory search cache. Same query → no quota cost. A TTL keeps a
         # stale upstream listing from outliving the clip it points at.
         self._cache: dict[str, tuple[float, list[SoundSearchResult]]] = {}
@@ -269,14 +363,15 @@ class OpenverseSource(SoundSource):
 
     # -- credentials -----------------------------------------------------
     def _token(self) -> str | None:
-        """Client-credentials access token, if the owner registered one.
-        Stored directly in the credential store under 'openverse-sound' to avoid
-        registering it as a model provider definition.
-        """
-        return self.credentials.stored("openverse-sound").get("access_token") or None
+        """The registered-client token, resolved through the definition.
 
-    def registered(self) -> bool:
-        return bool(self._token())
+        Read from the shared credential store on every call rather than cached, so
+        saving a key in the SFX tab raises the quota of the very next search with
+        no restart. The value and which field carries it both come from the
+        definition (`token_field` / `store_id`), so this adapter cannot disagree
+        with the tab about either.
+        """
+        return self.token()
 
     def is_configured(self) -> bool:
         # Openverse is usable anonymously — the free tier is the default.
@@ -502,35 +597,174 @@ class SoundSourceError(Exception):
 # Registry
 # ---------------------------------------------------------------------------
 
-_SOURCES: dict[str, type[SoundSource]] = {"openverse": OpenverseSource}
+#: Every sound source this gateway knows, in the order the SFX tab lists them.
+SOUND_SOURCE_DEFINITIONS: tuple[SoundSourceDefinition, ...] = (
+    SoundSourceDefinition(
+        id="openverse",
+        display_name="Openverse",
+        kind="openverse",
+        category="sfx",
+        description=(
+            "Free, commercial-safe audio for cues and beds. Every result is checked "
+            "for a licence a monetised video may carry: CC0 first, CC BY when nothing "
+            "CC0 fits."
+        ),
+        docs_url="https://docs.openverse.org/",
+        # The API root the adapter already talks to, which is also where an app is
+        # registered for a token. Derived from the same base as the requests, so a
+        # test pointed at a mock upstream is never shown a link to the real one.
+        register_url=f"{_OPENVERSE_BASE}/",
+        token_field="access_token",
+        # The store key this lane has always used. See `credential_id`.
+        credential_id="openverse-sound",
+        credential_fields=(
+            SoundSourceField(
+                key="access_token",
+                label="Access token",
+                env_var="OPENVERSE_ACCESS_TOKEN",
+                placeholder="paste the token your Openverse app issues",
+                help_text=(
+                    "This is the one the gateway sends. Search works without it on the "
+                    "anonymous quota; a token is what raises it."
+                ),
+            ),
+            SoundSourceField(
+                key="client_id",
+                label="Client ID",
+                env_var="OPENVERSE_CLIENT_ID",
+                secret=False,
+                help_text="Recorded here so the app registration is in one place. Not sent.",
+            ),
+            SoundSourceField(
+                key="client_secret",
+                label="Client secret",
+                env_var="OPENVERSE_CLIENT_SECRET",
+                help_text="Recorded here so the app registration is in one place. Not sent.",
+            ),
+        ),
+        # ponytail: the client id and secret are stored but never exchanged for a
+        # token here — the gateway sends `access_token` and nothing else. Ceiling:
+        # a token that expires must be pasted again. Upgrade path: a token request
+        # against the source's own client-credentials endpoint, at which point
+        # these two fields start doing the work and the access token becomes the
+        # cache. Deliberately not wired blind: no source's token endpoint has been
+        # verified from here, and a guessed URL that fails at save time is worse
+        # than a field that says it is a record.
+        notes="Anonymous search works; a registered token raises the rate limit.",
+    ),
+)
+
+#: Definitions by source id.
+SOUND_SOURCES_BY_ID: dict[str, SoundSourceDefinition] = {
+    d.id: d for d in SOUND_SOURCE_DEFINITIONS
+}
+
+#: Adapter class per `kind`. Asserted against the declarations below, so a
+#: declaration with no adapter can never be listed to the owner and an adapter
+#: nothing declares can never be reached.
+_ADAPTERS: dict[str, type[SoundSource]] = {
+    OpenverseSource.kind: OpenverseSource,
+}
+
+for _definition in SOUND_SOURCE_DEFINITIONS:
+    if _definition.kind not in _ADAPTERS:
+        raise RuntimeError(
+            f"sound source '{_definition.id}' declares kind '{_definition.kind}', "
+            f"which has no adapter"
+        )
+if {cls.kind for cls in _ADAPTERS.values()} != {d.kind for d in SOUND_SOURCE_DEFINITIONS}:
+    raise RuntimeError("an adapter is registered for a kind no sound source declares")
+
 _INSTANCES: dict[str, SoundSource] = {}
 _INSTANCES_LOCK = threading.Lock()
 
 
+def definitions() -> tuple[SoundSourceDefinition, ...]:
+    """Every sound source, declared. The one list the console and routes read."""
+    return SOUND_SOURCE_DEFINITIONS
+
+
+def definition(source_id: str) -> SoundSourceDefinition | None:
+    return SOUND_SOURCES_BY_ID.get(source_id)
+
+
 def source_for(source_id: str, credential_store: CredentialStore) -> SoundSource | None:
     """Return the live adapter for `source_id`, constructing it once."""
-    cls = _SOURCES.get(source_id)
-    if cls is None:
+    declared = SOUND_SOURCES_BY_ID.get(source_id)
+    if declared is None:
         return None
+    cls = _ADAPTERS[declared.kind]
     with _INSTANCES_LOCK:
         instance = _INSTANCES.get(source_id)
         if instance is None:
-            instance = cls(credential_store)
+            instance = cls(declared, credential_store)
             _INSTANCES[source_id] = instance
         return instance
 
 
 def all_sources(credential_store: CredentialStore) -> list[SoundSource]:
     out: list[SoundSource] = []
-    for name in _SOURCES:
-        src = source_for(name, credential_store)
+    for declared in SOUND_SOURCE_DEFINITIONS:
+        src = source_for(declared.id, credential_store)
         if src is not None:
             out.append(src)
     return out
 
 
 def list_source_ids() -> list[str]:
-    return sorted(_SOURCES.keys())
+    return sorted(SOUND_SOURCES_BY_ID.keys())
+
+
+def describe(source: SoundSource) -> dict[str, Any]:
+    """One source, as the SFX tab draws it. **Secrets are masked, never echoed.**
+
+    The same projection `CredentialStore.describe` makes for a provider, because
+    the owner asked for these to be managed the same way: what is configured, from
+    where, and never the value itself. `mask()` shows enough to tell two keys
+    apart and not enough to use one.
+    """
+    declared = source.definition
+    stored = source.credentials.stored(declared.store_id)
+    fields: list[dict[str, Any]] = []
+    for entry in declared.credential_fields:
+        resolved = source.field_value(entry.key)
+        fields.append({
+            "key": entry.key,
+            "label": entry.label,
+            "env_var": entry.env_var,
+            "secret": entry.secret,
+            "placeholder": entry.placeholder,
+            "help_text": entry.help_text,
+            "source": ("stored" if stored.get(entry.key)
+                       else ("env" if resolved else "none")),
+            "present": bool(resolved),
+            "masked": mask(resolved) if entry.secret else resolved,
+            # Which field the adapter actually sends. Marked rather than implied:
+            # three fields and only one of them raises the quota.
+            "used": entry.key == declared.token_field,
+        })
+    return {
+        "id": declared.id,
+        "display_name": declared.display_name,
+        "kind": declared.kind,
+        "category": declared.category,
+        "description": declared.description,
+        "docs_url": declared.docs_url,
+        "register_url": declared.register_url,
+        "notes": declared.notes,
+        "credential_fields": fields,
+        # Two questions, never one: `configured` is "it can be used at all",
+        # `registered` is "the owner gave it a key". Anonymous Openverse is
+        # configured and not registered, and rendering that as one badge would say
+        # the lane is unconfigured while it is answering searches.
+        "configured": source.is_configured(),
+        "registered": source.registered(),
+        "quota": source.quota.to_dict(),
+    }
+
+
+def describe_all(credential_store: CredentialStore) -> list[dict[str, Any]]:
+    return [describe(src) for src in all_sources(credential_store)]
 
 
 # ---------------------------------------------------------------------------

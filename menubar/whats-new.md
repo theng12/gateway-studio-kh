@@ -14,6 +14,22 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.203 — 2026-10-26
+
+### SFX: a sound source with a key you can save
+Providers has a new **SFX** tab. Openverse — where Smart Sound's cues and beds come from — is listed
+there the way a provider is: whether a key is set, its live search quota, a link to register an app,
+and **Save** / **Clear Key**. You no longer have to edit a settings file to raise its rate limit, and
+search works without a key at all on the anonymous quota.
+
+### The provider list is grouped by what each one serves
+Providers now files its cards under headings — **Text & chat**, **Image**, **Video**, **Voice &
+TTS**, **Transcription**, **Music** — worked out from what each provider can actually run, so the
+image cards sit together and the chat cards sit together. Each card still shows every lane it
+serves. Nothing about routing, enabling or discovery changed: it is the same models and the same
+providers, drawn under headings. The filter box also matches a lane, so typing `transcription` finds
+every provider that can transcribe, whichever heading it is filed under.
+
 ## 0.2.202 — 2026-10-25
 
 ### Remote final renders accept real episode sizes

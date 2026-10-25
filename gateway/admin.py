@@ -651,11 +651,37 @@ def list_providers(scope: str | None = None) -> dict[str, Any]:
         # omitted: "nobody has checked" must not render as "safe".
         described["data_use"] = (definition.data_use if definition else "unverified")
         described["free_tier"] = bool(definition.free_tier) if definition else False
+        # **What it serves, as a heading the page can group by.** Derived from the
+        # definition's own `modalities` — the first lane it serves — so this is not a
+        # second list of vendors to keep in step, and it is display only: nothing in
+        # dispatch, enablement or discovery reads it.
+        #
+        # **Filed by the lanes it can *serve*, not the ones it declares.** Kie.ai
+        # declares chat and nothing on the gateway can run it (`unserved_modalities`
+        # above says so), and a card grouped under "Text & chat" would be grouped by
+        # a lane that will never answer. A provider that serves nothing at all falls
+        # back to what it declares, so a kind with no adapter is still filed where the
+        # owner expects it rather than under "Other".
+        declared_modalities = definition.modalities if definition else ()
+        served_modalities = (
+            [m for m in declared_modalities if serves(definition, m)] if definition else []
+        )
+        described["service_group"] = definitions.service_group(
+            served_modalities or declared_modalities
+        )
+        described["service_group_label"] = definitions.service_group_label(
+            described["service_group"]
+        )
         items.append(described)
     # Configured and enabled first: the list is long and the useful rows matter.
     items.sort(key=lambda p: (not p["enabled"], not p["configured"], p["display_name"].lower()))
+    # The headings, in a fixed order over the scope-filtered rows — so a group's
+    # members are the cards the page actually holds, and a provider in no group would
+    # be invisible, which is worse than unsorted.
+    groups = definitions.group_by_service(items)
     return {
         "providers": items,
+        "service_groups": [dict(group) for group in groups],
         # An entry in `providers.local.json` that was not loaded. The file is
         # hand-written, so a skip is otherwise indistinguishable from "my file did
         # not load": the provider is simply not in the list, and nothing says why.
@@ -4234,6 +4260,16 @@ def story_instance_update(instance: str) -> Any:
 
 # ---------------------------------------------------------------------------
 # Sound Library Admin
+#
+# **A sound source is not a model provider** — it contributes no catalogue rows,
+# so it has no entry in `providers/definitions.py` (adding one broke `test_e2e`'s
+# "every provider has a working adapter"). It is, however, a credential scope the
+# owner manages like one, so it gets its own small set of routes reading the one
+# place the sources are declared (`sound_sources.SOUND_SOURCE_DEFINITIONS`).
+#
+# These routes answer exactly what the provider routes answer for a provider, and
+# are protected the same way: `require_admin` — loopback, or the gateway key, or a
+# signed-in browser session whose write must also name this origin (`same_origin`).
 # ---------------------------------------------------------------------------
 @router.get("/api/sounds/quota", dependencies=[Depends(require_admin)])
 def sound_quota_status() -> dict[str, Any]:
@@ -4243,9 +4279,69 @@ def sound_quota_status() -> dict[str, Any]:
     return {
         "quota": quota_status(registry.credentials),
         "guide": (
-            "To increase Openverse rate limits, register an app at "
-            "https://api.openverse.org/v1/oauth2/token/ (or the Openverse developer portal), "
-            "obtain your client ID and secret, and save them in the Gateway's Providers settings "
-            "under 'Openverse (Sound)' as the Access Token (client credentials flow)."
+            "Openverse answers on the anonymous quota with no key at all. A key raises that "
+            "limit: register an app, then save the access token it issues on the SFX tab, on "
+            "this Providers page. Nothing has to be edited by hand."
         ),
     }
+
+
+@router.get("/api/sounds/sources", dependencies=[Depends(require_admin)])
+def sound_sources_list() -> dict[str, Any]:
+    """Every sound source, as the SFX tab draws it: key state, quota and links.
+
+    The same card data a provider gets, from the sources' own declaration. Keys are
+    masked here and never returned in the clear, so this response can be read over a
+    phone without ever carrying a secret.
+    """
+    from .sound_sources import describe_all
+    from .providers.registry import registry
+    return {"sources": describe_all(registry.credentials)}
+
+
+@router.post("/api/sounds/sources/{source_id}/credentials",
+             dependencies=[Depends(require_admin)])
+def sound_source_set_credentials(source_id: str, payload: dict[str, Any]) -> Any:
+    """Save a sound source's credentials. A secret is never echoed back.
+
+    Stored in the same `CredentialStore` as every provider key, under the source's
+    own id, and refused the same way: an unknown source is 404, a body that is not
+    `{'values': {...}}` is 422, and a field the source does not declare is 422 —
+    refused rather than dropped, because "saved" and "saved nothing" must not be
+    the same answer.
+    """
+    from .sound_sources import definition as source_definition, describe, source_for
+    from .providers.registry import registry
+
+    declared = source_definition(source_id)
+    if declared is None:
+        return _error(404, f"unknown sound source '{source_id}'")
+    values = payload.get("values")
+    if not isinstance(values, dict):
+        return _error(422, "expected {'values': {field: value}}")
+    # Every value must be a string: `str(None)` would store the word "None" as a
+    # token and the next search would send `Bearer None`.
+    for key, value in values.items():
+        if not isinstance(value, str):
+            return _error(422, f"'{key}' must be a string")
+    allowed = {f.key for f in declared.credential_fields}
+    try:
+        registry.credentials.set_values_for(declared.store_id, values, allowed)
+    except ValueError as exc:
+        # The message names the fields, never a value.
+        return _error(422, str(exc))
+    return {"source": describe(source_for(source_id, registry.credentials))}
+
+
+@router.delete("/api/sounds/sources/{source_id}/credentials",
+               dependencies=[Depends(require_admin)])
+def sound_source_clear_credentials(source_id: str) -> Any:
+    """Clear a sound source's stored credentials; anonymous access is unaffected."""
+    from .sound_sources import definition as source_definition, describe, source_for
+    from .providers.registry import registry
+
+    declared = source_definition(source_id)
+    if declared is None:
+        return _error(404, f"unknown sound source '{source_id}'")
+    registry.credentials.clear(declared.store_id)
+    return {"source": describe(source_for(source_id, registry.credentials))}

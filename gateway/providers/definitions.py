@@ -1102,3 +1102,97 @@ def providers_for_modality(
     """
     source = ALL_PROVIDER_DEFINITIONS if definitions is None else tuple(definitions)
     return tuple(p for p in source if modality in p.modalities)
+
+
+# ---------------------------------------------------------------------------
+# Grouping the console's provider list
+#
+# The owner, 2026-10-25: *"make sure all the providers are organised properly
+# too."* Nineteen cloud cards in one column, ordered by nothing in particular,
+# meant the answer to "which of these speaks?" was found by reading every card.
+#
+# **Derived from `modalities`, never a second list of providers.** A provider is
+# filed under the *first* lane it serves in `MODALITIES` order — the lane it is
+# bought for — and every lane it serves is still drawn as a badge on its card, so
+# grouping hides nothing and duplicating the vendor list is not expressible. The
+# lane order and the group order are the same list, so a modality added to
+# `MODALITIES` gets a group without anyone editing this.
+#
+# **Display only.** Nothing here is read by dispatch, enablement, discovery or
+# routing: `registry.definitions()` remains the single source of truth for what
+# exists, and this only decides which heading a card is drawn under.
+# ---------------------------------------------------------------------------
+
+#: What each lane is *called* on the page. A label, not an order and not a list of
+#: providers — an unlabelled modality falls back to its own name, so a new one is
+#: never left out of the console for want of a nicer word here.
+_SERVICE_GROUP_LABELS: dict[str, str] = {
+    "chat": "Text & chat",
+    "image": "Image",
+    "video": "Video",
+    "tts": "Voice & TTS",
+    "transcription": "Transcription",
+    "music": "Music",
+    "embeddings": "Embeddings",
+    "vision": "Vision",
+}
+
+#: The heading a definition with no modality at all is filed under, and the key
+#: `service_group` returns for it. Every defined provider serves something today;
+#: a hand-written `providers.local.json` entry can declare none, and such a
+#: provider must still be on the page rather than dropped from every group.
+UNGROUPED_KEY = "other"
+
+
+def service_group_keys() -> tuple[str, ...]:
+    """Every group key, in the order the console draws the headings."""
+    from ..catalog import MODALITIES  # local: catalog imports this module
+
+    return tuple(MODALITIES)
+
+
+def service_group_label(key: str) -> str:
+    return _SERVICE_GROUP_LABELS.get(key, key.replace("_", " ").title())
+
+
+def service_group(modalities: Iterable[str] | None) -> str:
+    """The group key a provider's card is filed under — its first lane.
+
+    Pass the lanes it **can serve**, not only the ones it declares, where the caller
+    knows the difference: Kie.ai declares chat and has no adapter for it, and filing
+    it under "Text & chat" would group a card by a lane the gateway will never run.
+
+    First in `MODALITIES` order rather than in the order the definition happens to
+    list them: two providers serving the same set must land under one heading, or the
+    same capability is filed two ways depending on how someone typed a tuple.
+    """
+    served = set(modalities or ())
+    for key in service_group_keys():
+        if key in served:
+            return key
+    return UNGROUPED_KEY
+
+
+def group_by_service(rows: Iterable[dict[str, Any]]) -> tuple[dict[str, Any], ...]:
+    """Group described providers by the key each one already carries.
+
+    `rows` are `/admin/api/providers` entries — the same dicts the page draws — so
+    the key a provider is filed under is decided **once**, by whoever knew its
+    definition, and this only orders the headings. Returns
+    `({key, label, ids}, …)`, in `MODALITIES` order with the ungrouped heading last;
+    groups with no members are omitted, and every row lands in exactly one group
+    (asserted in `tests/test_sfx_providers.py`).
+    """
+    buckets: dict[str, dict[str, Any]] = {
+        key: {"key": key, "label": service_group_label(key), "ids": []}
+        for key in (*service_group_keys(), UNGROUPED_KEY)
+    }
+    for row in rows:
+        key = row.get("service_group") or UNGROUPED_KEY
+        bucket = buckets.get(key)
+        if bucket is None:
+            # A key nothing declared: keep the row visible under its own heading
+            # rather than dropping it out of the page entirely.
+            bucket = buckets[key] = {"key": key, "label": service_group_label(key), "ids": []}
+        bucket["ids"].append(row["id"])
+    return tuple(bucket for bucket in buckets.values() if bucket["ids"])
