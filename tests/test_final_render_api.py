@@ -170,6 +170,30 @@ class RequestTests(unittest.TestCase):
             ("accept", (PRINCIPAL, "gateway-attempt-001", raw), {})
         ])
 
+    def test_a_refused_create_names_its_cause_in_the_log_without_the_key(self) -> None:
+        # WI0005/7 (2026-10-25): Story files any refusal as an unknown outcome, so the log must say why.
+        import contextlib, io
+        from gateway.render_service import RenderServiceError
+
+        def refuse(principal, key, raw_body):
+            try:
+                raise KeyError("packet.recipe")
+            except KeyError as cause:
+                raise RenderServiceError("RENDER_REQUEST_INVALID", 422) from cause
+        self.service.accept = refuse
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            response = self.client.post(
+                "/v1/final-renders", content=b"{}",
+                headers={"Idempotency-Key": "gateway-attempt-secret-tail", "Content-Type": "application/json"},
+            )
+        self.assertEqual(response.status_code, 422)
+        line = out.getvalue()
+        self.assertIn("[final-render] create refused: RenderServiceError code=RENDER_REQUEST_INVALID status=422", line)
+        self.assertIn("cause=KeyError", line)
+        self.assertIn("key=gateway-", line)
+        self.assertNotIn("secret-tail", line)
+
     def test_submit_requires_idempotency_key_before_calling_service(self) -> None:
         response = self.client.post(
             "/v1/final-renders", content=b"{}", headers={"Content-Type": "application/json"}

@@ -1600,6 +1600,15 @@ async def final_render_put_blob(
     )
 
 
+def _note_final_render_refusal(step: str, key: str, exc: BaseException) -> None:
+    """One log line per refused or failed final-render call: Story files any of them as an unknown
+    outcome, so without this line the cause is invisible (WI0005/7, 2026-10-25). No body, no key."""
+    cause = exc.__cause__
+    detail = f" cause={type(cause).__name__}: {str(cause)[:200]}" if cause is not None else ""
+    print(f"[final-render] {step} refused: {type(exc).__name__} code={getattr(exc, 'code', None)} "
+          f"status={getattr(exc, 'status', 500)} key={key[:8]}{detail}", flush=True)
+
+
 @app.post("/v1/final-renders", status_code=202)
 async def create_final_render(
     request: Request, idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
@@ -1607,14 +1616,22 @@ async def create_final_render(
 ) -> dict[str, Any]:
     if not idempotency_key:
         raise RenderServiceError("IDEMPOTENCY_KEY_REQUIRED", 422)
-    return render_service.accept(principal, idempotency_key, await _bounded_render_json(request))
+    try:
+        return render_service.accept(principal, idempotency_key, await _bounded_render_json(request))
+    except Exception as exc:
+        _note_final_render_refusal("create", idempotency_key, exc)
+        raise
 
 
 @app.get("/v1/final-renders/by-idempotency-key/{key}")
 def final_render_by_key(
     key: str, principal: AuthenticatedPrivateRender = Depends(require_private_render),
 ) -> dict[str, Any]:
-    row = render_service.by_key(principal, key)
+    try:
+        row = render_service.by_key(principal, key)
+    except Exception as exc:
+        _note_final_render_refusal("lookup", key, exc)
+        raise
     if row is None:
         raise RenderServiceError("RENDER_NOT_FOUND", 404)
     return row

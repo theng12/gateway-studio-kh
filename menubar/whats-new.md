@@ -14,6 +14,15 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.199 — 2026-10-25
+
+### A refused remote render says why in the log
+When Story Studio asks the Gateway to start a final render on another Mac and the Gateway turns
+it down, the Gateway log now records the reason (one line, no request contents and no key).
+Story only sees "unknown outcome", so this line is how the cause is found.
+
+---
+
 ## 0.2.198 — 2026-10-25
 
 ### Remote final renders resume their upload
