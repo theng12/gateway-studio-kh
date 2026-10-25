@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import time
+from collections.abc import Iterable
 from pathlib import Path
 from typing import Any, Callable
 
@@ -162,6 +163,43 @@ class CredentialStore:
         # the owner explicitly turned it off before.
         if "enabled" not in entry and self.is_configured(provider_id):
             entry["enabled"] = definition.default_enabled
+        self._save()
+
+    def set_values_for(
+        self, scope_id: str, values: dict[str, str], allowed_fields: Iterable[str]
+    ) -> None:
+        """Store credential values for an id that is **not** a model provider.
+
+        A sound source is a credential *scope* — it can hold a key — but it
+        contributes no catalogue rows, so it deliberately has no
+        `ProviderDefinition`, and `set_values` (which resolves the allowed fields
+        from one) cannot store for it. The caller passes the keys **its own
+        declaration** lists, so the check is the same one `set_values` makes; only
+        where the list comes from differs.
+
+        Two differences from `set_values`, both deliberate:
+
+        * an unknown key is **refused**, not dropped. `set_values` silently ignores
+          one, which makes a typo answer "saved" while storing nothing; this door is
+          new, so it can be strict from the start.
+        * no `enabled` flag is written. A source is used or not by whether it has a
+          credential — there is nothing to switch off, and an `enabled: false` entry
+          here would make `is_enabled` answer about something that has no toggle.
+        """
+        allowed = {str(key) for key in allowed_fields}
+        unknown = sorted(key for key in values if key not in allowed)
+        if unknown:
+            raise ValueError("unknown field(s): " + ", ".join(unknown))
+
+        entry = self._data["providers"].setdefault(scope_id, {})
+        current = dict(entry.get("values") or {})
+        for key, value in values.items():
+            if value == "":
+                current.pop(key, None)
+            else:
+                current[key] = value
+        entry["values"] = current
+        entry["updated_at"] = time.time()
         self._save()
 
     def set_enabled(self, provider_id: str, enabled: bool) -> None:

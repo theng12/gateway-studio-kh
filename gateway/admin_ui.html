@@ -262,6 +262,14 @@
   .badge.bad { color: var(--bad-text); border-color: color-mix(in srgb, var(--bad) 35%, transparent); background: color-mix(in srgb, var(--bad) 14%, transparent); }
   .badge.info { color: var(--info-text); border-color: color-mix(in srgb, var(--info) 35%, transparent); background: color-mix(in srgb, var(--info) 14%, transparent); }
   .desc { color: var(--dim); font-size: 12px; padding: 0 var(--s16) var(--s12); }
+  /* The heading over a group of provider cards on the Providers tab: what they serve, and how
+     many are under it. A rule above it, because a heading that floats between two cards reads as
+     part of the card below it. */
+  .group-head {
+    display: flex; align-items: baseline; gap: var(--s8); margin: var(--s16) 0 var(--s8);
+    padding-bottom: var(--s4); border-bottom: 1px solid var(--line);
+  }
+  .group-head:first-child { margin-top: 0; }
   .body { border-top: 1px solid var(--line); padding: var(--s12) var(--s16); background: var(--panel2); }
   .fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(260px, 100%), 1fr)); gap: var(--s12); }
   label { display: block; font-size: 12px; color: var(--dim); margin-bottom: var(--s4); }
@@ -700,6 +708,33 @@
     <div id="providers-msg" class="msg" role="alert" aria-live="polite"></div>
     <div id="providers"></div>
     </div><!-- /provider-pane-list -->
+
+    <div class="pane" id="provider-pane-sfx" style="display:none">
+    <!-- SFX — sound sources, which are not model providers.
+         The owner, 2026-10-25: *"make it a 'provider' but have it in a new tab called SFX or
+         something. This way we can manage them easier."* A sound source contributes no model to
+         the catalogue, so it is deliberately absent from the Providers tab next door and must
+         stay absent (a source in that list fails the gateway's own "every provider has a working
+         adapter" gate). But it holds a key exactly like a provider, and until this tab existed
+         the only way to give Openverse a token was to edit a settings file by hand.
+
+         Same card shape as a provider, deliberately: name, what it is, key state, Save and Clear.
+         Two things differ because the thing differs — a source is usable **anonymously**, so "no
+         key" is not "unusable", and its quota is read from the upstream's own response headers,
+         so an empty quota line means "nothing has been searched yet", never zero. -->
+    <div class="row" style="justify-content:space-between;align-items:flex-start;margin-bottom:var(--s8)">
+      <h2 style="margin:0">Sound sources</h2>
+      <button class="sm" type="button" onclick="loadSfxSources()">Refresh</button>
+    </div>
+    <p class="hint" style="margin:0 0 12px;max-width:760px">
+      Where cue and bed audio comes from for Smart Sound. Each source is searched live, and a clip
+      is only kept if its licence allows a monetised video — <b>CC0 first, CC BY when nothing CC0
+      fits</b>. A source works with no key at all on its anonymous quota; a key raises that quota
+      and is stored in the same place as every provider's.
+    </p>
+    <div id="sfx-msg" class="msg" role="status" aria-live="polite"></div>
+    <div id="sfx-sources"><div class="empty">Reading sound sources…</div></div>
+    </div><!-- /provider-pane-sfx -->
   </section>
   <!-- CREATE -->
   <section id="view-create" style="display:none">
@@ -794,6 +829,9 @@
 const state = {
   view: 'models',
   providers: [],
+  // What each provider is filed under on the Providers page, as the gateway derives it from the
+  // providers' own modalities. Empty until the first read, and an empty list draws one flat list.
+  providerGroups: [],
   open: {},
   models: {},
   modelRows: [],
@@ -972,6 +1010,9 @@ function setView(view) {
   // the section is behind a tab, so the link selects the tab. Scrolling is not needed and
   // would land on the wrong pane.
   if ((location.hash || '').startsWith('#queue')) selectProviderTab('queue');
+  // `#sfx` is the same trick for the sound sources pane: the quota route's guide points the owner
+  // at it, and a link that landed on the Providers list would leave him hunting for the tab.
+  else if ((location.hash || '').startsWith('#sfx')) selectProviderTab('sfx');
   // **Apply the tab, do not just draw its button.** The strip said "Providers" while the HTML's
   // first pane (Concurrency) was the one on screen: `renderProviderTabs` only paints buttons, and
   // nothing showed the pane `providerTab` names until a tab was clicked. A tab the owner picked in
@@ -2396,9 +2437,12 @@ async function loadProviders() {
   // `scope` is decided by the gateway from the provider's kind, so a second Hub
   // is classified correctly the moment it is added.
   try {
-    const { providers, scopes, skipped_custom_providers } = await api('/providers?scope=cloud');
+    const { providers, scopes, skipped_custom_providers, service_groups } = await api('/providers?scope=cloud');
     const drafts = captureProviderDrafts();
     state.providers = providers;
+    // The headings, from the gateway. It derives them from each provider's own `modalities`, so
+    // this page holds no list of vendors and no opinion about what a provider is for.
+    state.providerGroups = service_groups || [];
     const note = document.getElementById('local-note');
     if (note) {
       note.textContent = scopes && scopes.local
@@ -2441,7 +2485,14 @@ function renderProviders(drafts = captureProviderDrafts()) {
   const list = state.providers.filter(p => {
     if (keyFilter === 'set' && !p.configured) return false;
     if (keyFilter === 'missing' && p.configured) return false;
-    return !filter || p.display_name.toLowerCase().includes(filter) || p.id.includes(filter) || p.category.includes(filter);
+    // The lanes it serves are part of what you can search by: the headings answer "what is this
+    // for" for the common cases, but a multi-lane provider is filed under one of them, and
+    // "who does transcription" must still be answerable on a page grouped by *first* lane.
+    // The name shown for a lane is the definition's own word (`tts`), so `tts` and `TTS` both find
+    // the voice lanes.
+    return !filter || p.display_name.toLowerCase().includes(filter) || p.id.includes(filter)
+      || p.category.includes(filter)
+      || (p.modalities || []).some(m => String(m).toLowerCase().includes(filter));
   });
   const counter = document.getElementById('keyless-count');
   if (counter) {
@@ -2457,8 +2508,41 @@ function renderProviders(drafts = captureProviderDrafts()) {
     restoreProviderDrafts(drafts);
     return;
   }
-  root.innerHTML = list.map(providerCard).join('');
+  root.innerHTML = providerGroupsHtml(list);
   restoreProviderDrafts(drafts);
+}
+
+// **Grouped by what they serve.** The owner, 2026-10-25: *"make sure all the providers are
+// organised properly too."* Nineteen cards in one column, ordered by nothing the eye can see,
+// made "which of these speaks?" a matter of reading every card.
+//
+// The groups, their order and their labels all come from the gateway, built from each provider's
+// own `modalities` — this page keeps no vendor list. Every row in `list` is drawn under exactly
+// one heading; a row the grouping did not name is drawn under "Other" rather than dropped,
+// because a provider under no heading is one the owner cannot reach at all. The count beside each
+// heading is the number of cards actually under it, so a filtered page never claims more.
+function providerGroupsHtml(list) {
+  const groups = state.providerGroups || [];
+  // No grouping (an older response, or a harness driving one function): one flat list, exactly
+  // as this page drew before. Never a page with nothing on it.
+  if (!groups.length) return list.map(providerCard).join('');
+  const byId = new Map(list.map(p => [p.id, p]));
+  const drawn = new Set();
+  const sections = [];
+  for (const group of groups) {
+    const members = (group.ids || []).map(id => byId.get(id)).filter(Boolean);
+    if (!members.length) continue;
+    for (const p of members) drawn.add(p.id);
+    sections.push(providerGroupHtml(group.label, members));
+  }
+  const rest = list.filter(p => !drawn.has(p.id));
+  if (rest.length) sections.push(providerGroupHtml('Other', rest));
+  return sections.join('');
+}
+
+function providerGroupHtml(label, members) {
+  return `<h3 class="group-head">${esc(label)}<span class="stat">${members.length}</span></h3>`
+    + members.map(providerCard).join('');
 }
 
 // "Rate limits (from pricing research)": the tiers an imported research file recorded for this
@@ -2720,6 +2804,11 @@ async function removeModel(id, modelId) {
 // written out a second time.
 const PROVIDER_TABS = [
   { key: 'list', title: 'Providers', hint: 'Keys, locations and the models each offers' },
+  // SFX sits beside Providers because it is the same kind of subject — a place a key is held —
+  // and the owner asked for it in its own tab for exactly that reason. A sound source is not in
+  // the Providers list itself: it offers no model, and a source that appeared there would fail
+  // the gateway's own "every provider has a working adapter" gate.
+  { key: 'sfx', title: 'SFX', hint: 'Where cue and bed audio comes from, and its key' },
   { key: 'capacity', title: 'Concurrency', hint: 'How much work runs at once, per lane' },
   { key: 'queue', title: 'Queue', hint: 'What is waiting, and what is holding each lane' },
   { key: 'measured', title: 'Measured', hint: 'What each model has actually carried' },
@@ -2750,6 +2839,10 @@ function selectProviderTab(key) {
   }
   renderProviderTabs();
   loadPools();
+  // The SFX pane reads live key state and live quota, so it loads when it is the pane in front
+  // of the operator. `loadSfxSources` is called only from here, so a source's quota is never
+  // re-read behind a page nobody is looking at.
+  if (key === 'sfx') loadSfxSources();
 }
 
 // ---------------------------------------------------------------------------
@@ -3181,6 +3274,159 @@ async function refreshAll(btn) {
 }
 
 // ---------------------------------------------------------------------------
+// SFX — sound sources, managed like providers without being mixed in with them.
+//
+// The gateway declares its sound sources in one place (`sound_sources.py`) and this pane draws
+// whatever it is told, so a second source (Freesound, Pixabay) appears here with no change to
+// this file. Three things it must not get wrong:
+//
+//   1. **A secret is never echoed.** The server masks it and the field renders empty with the
+//      masked value as its placeholder, exactly as a provider key does. Nothing here re-displays
+//      a value the operator typed: after a save the card is redrawn from the server's answer.
+//   2. **An untouched field is not sent, so saving cannot clear it.** The provider form posts every
+//      input including empty secret ones, and an empty value means "clear this field" — so a Save
+//      after loading the page quietly deletes a key nobody touched. This pane sends only what was
+//      typed; clearing is what Clear Key is for.
+//   3. **No reading is not zero.** The quota comes from the source's own response headers, so
+//      before any search there is nothing to show, and it says that rather than printing 0.
+let sfxSources = [];
+
+function sfxToast(id, text, ok = true) {
+  const el = document.getElementById('sfx-msg-' + id);
+  if (el) { el.textContent = text; el.className = 'msg ' + (ok ? 'ok' : 'bad'); }
+}
+
+function sfxQuota(source) {
+  const quota = source.quota || {};
+  const scopes = Object.entries(quota.scopes || {});
+  if (!scopes.length) {
+    return `<div class="hint" style="margin-top:10px">Quota — <b>not read yet</b>. It comes from the
+      source's own response headers, so it appears after a search; nothing here is a guess.</div>`;
+  }
+  const when = quota.last_seen_at
+    ? new Date(quota.last_seen_at * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+    : '';
+  const rows = scopes.map(([scope, s]) => {
+    const left = s.available == null || s.available === '' ? null : Number(s.available);
+    return `<li><b>${esc(String(scope).replace(/_/g, ' '))}</b>: ` +
+      `${left === null || Number.isNaN(left) ? 'remaining unknown' : `${left.toLocaleString('en-US')} left`}` +
+      `${s.limit ? ` of ${esc(String(s.limit))}` : ''}</li>`;
+  }).join('');
+  return `<div class="hint" style="margin-top:10px"><b>Quota</b>${
+    quota.exhausted ? ' — <span class="badge bad">exhausted</span>' : ''}${
+    when ? ` (last read ${esc(when)})` : ''}<ul style="margin:4px 0 0 16px">${rows}</ul></div>`;
+}
+
+function sfxCard(source) {
+  const badges = [`<span class="badge">${esc(source.category || 'sfx')}</span>`];
+  badges.push(source.registered
+    ? '<span class="badge ok">key set</span>'
+    : '<span class="badge">anonymous quota</span>');
+  if (source.configured === false) badges.push('<span class="badge bad">cannot be used</span>');
+  const fields = (source.credential_fields || []).map(f => `
+    <div>
+      <label for="sfx-${esc(source.id)}-${esc(f.key)}">${esc(f.label)}${
+        f.used ? '' : ' <span style="opacity:.6">(recorded here)</span>'}</label>
+      ${f.secret ? '<span class="secret">' : ''}<input id="sfx-${esc(source.id)}-${esc(f.key)}" type="${f.secret ? 'password' : 'text'}"
+             data-sfx="${esc(source.id)}" data-field="${esc(f.key)}" autocomplete="off"
+             placeholder="${esc(f.source === 'env' ? 'from .env (' + f.env_var + ')' : (f.masked || f.placeholder || ''))}"
+             value="${f.secret ? '' : esc(f.masked)}">${f.secret ? '<button type="button" class="eye" title="Show" aria-label="Show" onclick="toggleSecret(this)"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg></button></span>' : ''}
+      <div class="hint">${f.present ? `configured (${esc(f.source)})` : 'not set'}${
+        f.env_var ? ` · .env var <code>${esc(f.env_var)}</code>` : ''}${
+        f.help_text ? ' · ' + esc(f.help_text) : ''}</div>
+    </div>`).join('');
+  // Only https links are drawn, the same guard the rate-limit research uses: a value from the
+  // server is a value, not a permission to build a `javascript:` href out of it.
+  const links = [
+    ['Register an app', source.register_url],
+    ['Source documentation', source.docs_url],
+  ].filter(([, url]) => /^https:\/\//.test(String(url || '')))
+   .map(([label, url]) => `<a href="${esc(url)}" target="_blank" rel="noopener">${esc(label)}</a>`)
+   .join(' · ');
+  return `
+  <div class="card">
+    <div class="card-head">
+      <div class="card-main">
+        <div class="name">${esc(source.display_name)}</div>
+        <div class="cat">${esc(source.id)} · ${esc(source.kind)}</div>
+        <div class="card-badges">${badges.join(' ')}</div>
+      </div>
+      <div class="card-actions">
+        <button class="sm" onclick="clearSfxCreds('${esc(source.id)}', this)">Clear Key</button>
+        <span class="msg" id="sfx-msg-${esc(source.id)}"></span>
+      </div>
+    </div>
+    ${source.description ? `<div class="desc">${esc(source.description)}</div>` : ''}
+    <div class="body">
+      <div class="fields">${fields || '<div class="hint">This source needs no key.</div>'}</div>
+      <div class="actions">
+        <button class="primary sm" onclick="saveSfxCreds('${esc(source.id)}', this)">Save</button>
+        ${source.notes ? `<span class="hint" style="margin:0">${esc(source.notes)}</span>` : ''}
+      </div>
+      ${sfxQuota(source)}
+      ${links ? `<div class="hint" style="margin-top:10px">${links}</div>` : ''}
+    </div>
+  </div>`;
+}
+
+function renderSfxSources() {
+  const root = document.getElementById('sfx-sources');
+  if (!root) return;
+  root.innerHTML = sfxSources.length
+    ? sfxSources.map(sfxCard).join('')
+    : '<div class="empty">This gateway has no sound sources.</div>';
+}
+
+async function loadSfxSources() {
+  const root = document.getElementById('sfx-sources');
+  const message = document.getElementById('sfx-msg');
+  if (message) { message.textContent = ''; message.className = 'msg'; }
+  try {
+    const data = await api('/sounds/sources');
+    sfxSources = data.sources || [];
+    renderSfxSources();
+  } catch (e) {
+    if (root) root.innerHTML = `<div class="empty">Could not read sound sources: ${esc(e.message)}</div>`;
+  }
+}
+
+async function saveSfxCreds(id, btn) {
+  // Only what was typed — see 2 above. An untouched box is left out of the body entirely.
+  const values = {};
+  document.querySelectorAll(`#sfx-sources input[data-sfx="${id}"][data-field]`).forEach(input => {
+    if (input.value !== '') values[input.dataset.field] = input.value;
+  });
+  if (!Object.keys(values).length) { sfxToast(id, 'nothing to save — the boxes are empty'); return; }
+  btn.disabled = true;
+  try {
+    const r = await api(`/sounds/sources/${encodeURIComponent(id)}/credentials`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ values })
+    });
+    sfxSources = sfxSources.map(s => (s.id === id ? r.source : s));
+    // Redraw first, then speak: the redraw replaces every card, including the span a message
+    // written beforehand would have gone into.
+    renderSfxSources();
+    sfxToast(id, r.source.registered
+      ? 'saved — searches now use the access token'
+      : 'saved — searches still use the anonymous quota');
+  } catch (e) { sfxToast(id, e.message, false); }
+  finally { btn.disabled = false; }
+}
+
+async function clearSfxCreds(id, btn) {
+  if (!confirm('Clear the stored key for this sound source? Search keeps working on the anonymous quota.')) return;
+  btn.disabled = true;
+  try {
+    await api(`/sounds/sources/${encodeURIComponent(id)}/credentials`, { method: 'DELETE' });
+    const data = await api('/sounds/sources');
+    sfxSources = data.sources || [];
+    renderSfxSources();
+    sfxToast(id, 'cleared — back to the anonymous quota');
+  } catch (e) { sfxToast(id, e.message, false); }
+  finally { btn.disabled = false; }
+}
+
+// ---------------------------------------------------------------------------
 // Adding a provider without editing a file.
 //
 // The file `providers.local.json` and its loader are old; this is the half that was missing. Two
@@ -3290,6 +3536,8 @@ function viewFromHash() {
   // section is actually visible, rather than being a second page with its own copy
   // of the concurrency numbers.
   if (hash.startsWith('queue')) return 'providers';
+  // The SFX pane is a section of the Providers page too — a key in the same place as the others.
+  if (hash.startsWith('sfx')) return 'providers';
   if (hash.startsWith('create')) return 'create';
   if (hash.startsWith('packs')) return 'packs';
   if (hash.startsWith('fleet')) return 'fleet';

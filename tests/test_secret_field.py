@@ -49,7 +49,13 @@ class SecretsUseTheControl(unittest.TestCase):
         html = (ROOT / "gateway" / "admin_ui.html").read_text()
         inputs = re.findall(r"<input[^>]*type=\"(?:password|\$\{f\.secret \? 'password')[^>]*>", html)
         self.assertGreaterEqual(len(inputs), 2)
-        self.assertEqual(html.count('onclick="toggleSecret(this)"'), 2)
+        # **One eye per secret input, not a fixed number.** The count was pinned at 2 and the SFX
+        # tab's token field made it 3 — a number that has to be edited whenever a secret is added
+        # reports the addition, not a missing eye. What the rule actually says is that no password
+        # input is left without its control: a mask you cannot look through is a field you cannot
+        # check before saving.
+        self.assertEqual(html.count('onclick="toggleSecret(this)"'), len(inputs),
+                         "every secret input needs its eye")
         self.assertIn("function toggleSecret(button)", html)
 
 
