@@ -127,6 +127,7 @@ final class JobsSection: NSObject, AppSection, NSTableViewDataSource, NSTableVie
         ("time", "When", 70),
         ("modality", "Type", 104),
         ("provider", "Provider", 130),
+        ("node", "Node", 130),
         ("model", "Model", 180),
         ("state", "State", 130),
         ("outputs", "Outputs", 66),
@@ -207,7 +208,7 @@ final class JobsSection: NSObject, AppSection, NSTableViewDataSource, NSTableVie
         tableCard.heightAnchor.constraint(greaterThanOrEqualToConstant: 112).isActive = true
         tableCard.onLayout = { [weak self] in
             guard let self else { return }
-            PageKit.fitColumns(of: self.table, in: self.tableScroll, flex: ["provider": (1, 130), "model": (1.4, 180), "state": (0.5, 130)])
+            PageKit.fitColumns(of: self.table, in: self.tableScroll, flex: ["provider": (1, 130), "model": (1.4, 180), "state": (0.5, 130), "node": (0.8, 130)])
         }
         PageKit.addFull(tableCard, to: root)
 
@@ -518,6 +519,16 @@ final class JobsSection: NSObject, AppSection, NSTableViewDataSource, NSTableVie
             // so a provider removed from the registry still names the job.
             field.stringValue = string(job["provider_name"]) ?? string(job["provider_id"]) ?? "?"
             field.textColor = .secondaryLabelColor
+        case "node":
+            // Which Mac actually ran the job, as reported by the Hub. None means an older Hub,
+            // a job not yet dispatched, or a non-Hub lane.
+            let node = string(job["executed_by"])
+            if let node, !node.isEmpty {
+                field.stringValue = node
+            } else {
+                field.stringValue = "—"
+                field.textColor = .tertiaryLabelColor
+            }
         case "model":
             field.stringValue = string(job["model_name"]) ?? string(job["model_id"]) ?? "?"
         case "state":
@@ -648,6 +659,12 @@ final class JobsSection: NSObject, AppSection, NSTableViewDataSource, NSTableVie
         // caller called itself something" must not look alike here either.
         if let caller = string(job["caller"]), !caller.isEmpty {
             detailStack.addArrangedSubview(PageKit.help("Requested by \(caller)"))
+        }
+        // **Which Mac actually ran the job.** The site controller routes the work,
+        // but the Hub picks a node. This shows the node, or nothing if the Hub
+        // did not report it (older Hub, not yet dispatched, or a non-Hub lane).
+        if let node = string(job["executed_by"]), !node.isEmpty {
+            detailStack.addArrangedSubview(PageKit.help("Executed by \(node)"))
         }
         // The project run this job takes turns with (`<project>/<episode>`); omitted when none was sent.
         if let group = string(job["job_group"]), !group.isEmpty {

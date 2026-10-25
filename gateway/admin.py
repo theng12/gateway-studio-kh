@@ -2877,6 +2877,24 @@ def list_jobs(
             if created and updated and job["state"] in TERMINAL
             else None
         )
+        # **Which Mac actually ran the job.** The Hub reports this on each item as `machine`;
+        # the Gateway stores it at `result_json.payload.hub_machine` on success and on failure
+        # evidence. `None` is honest: an older Hub, a job that never dispatched, or a non-Hub
+        # lane has nothing to say. Never infer from `provider_id` or `provider_name` — those
+        # name the site controller, not the node that did the work.
+        executed_by: str | None = None
+        result_raw = job.get("result_json")
+        if isinstance(result_raw, str):
+            try:
+                result_obj = json.loads(result_raw)
+                if isinstance(result_obj, dict):
+                    payload = result_obj.get("payload")
+                    if isinstance(payload, dict):
+                        candidate = payload.get("hub_machine")
+                        if isinstance(candidate, str) and candidate:
+                            executed_by = candidate
+            except (json.JSONDecodeError, TypeError):
+                pass
         rows.append(
             {
                 "id": job["id"],
@@ -2890,6 +2908,10 @@ def list_jobs(
                 "created_at": created,
                 "updated_at": updated,
                 "duration_s": duration,
+                # **Which Mac ran this job.** The site controller (`provider_name`) routes the
+                # work; the Hub picks a node and reports it as `machine`. `None` means the Hub
+                # did not say (older Hub, not dispatched yet, or a non-Hub lane).
+                "executed_by": executed_by,
                 # **Who asked.** Stored on every job and, until this line, published
                 # by nothing — the store had it and the surface the Jobs window
                 # reads did not, which is the same defect as a control wired to

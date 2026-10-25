@@ -14,6 +14,14 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.200 — 2026-10-25
+
+### Jobs shows which Mac did the work
+The Jobs list has a new **Node** column, and a job's details say **Executed by**: the Mac the Studio
+Hub actually ran the job on. The Provider column still names the site that routed it, which is why
+a 16 GB node's work used to look like it ran on the controller. A dash means the Hub did not say
+(an older Hub, a job not yet sent, or work that never went through a Hub).
+
 ## 0.2.199 — 2026-10-25
 
 ### A refused remote render says why in the log

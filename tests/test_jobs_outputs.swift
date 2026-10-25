@@ -334,7 +334,7 @@ struct JobsOutputsCheck {
 
         // The "Needs recovery" pill says what to do.
         func pillTip(row: Int) -> String? {
-            descendants(table.view(atColumn: 4, row: row, makeIfNecessary: true)!).compactMap { $0 as? Badge }.first?.toolTip
+            descendants(table.view(atColumn: table.column(withIdentifier: NSUserInterfaceItemIdentifier("state")), row: row, makeIfNecessary: true)!).compactMap { $0 as? Badge }.first?.toolTip
         }
         assert(pillTip(row: 3) == "Select the job to recover or close it.", "pill tooltip missing")
         assert(pillTip(row: 0) == nil, "only a Needs recovery pill carries the tooltip")
