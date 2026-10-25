@@ -4230,3 +4230,22 @@ def story_instance_update(instance: str) -> Any:
     """"Update now": the Mac installs on its next check-in (at most 30 minutes away), after draining."""
     from . import story_releases
     return _story_call(lambda: {"instance": story_releases.request_update(instance)})
+
+
+# ---------------------------------------------------------------------------
+# Sound Library Admin
+# ---------------------------------------------------------------------------
+@router.get("/api/sounds/quota", dependencies=[Depends(require_admin)])
+def sound_quota_status() -> dict[str, Any]:
+    """Return live quota status and configuration guide for sound sources."""
+    from .sound_library import quota_status
+    from .providers.registry import registry
+    return {
+        "quota": quota_status(registry.credentials),
+        "guide": (
+            "To increase Openverse rate limits, register an app at "
+            "https://api.openverse.org/v1/oauth2/token/ (or the Openverse developer portal), "
+            "obtain your client ID and secret, and save them in the Gateway's Providers settings "
+            "under 'Openverse (Sound)' as the Access Token (client credentials flow)."
+        ),
+    }

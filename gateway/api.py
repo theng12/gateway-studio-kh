@@ -3549,6 +3549,99 @@ def content_commerce_unavailable(_: str = Depends(require_content_authority)) ->
 
 
 # ---------------------------------------------------------------------------
+# Sound Library (Openverse)
+# ---------------------------------------------------------------------------
+from .sound_library import list_clips, search_library, download_into_library, quota_status
+from .providers.registry import registry as _registry
+
+@app.get("/v1/sounds/search", dependencies=[Depends(require_auth)])
+def sounds_search(
+    q: str = "",
+    kind: str | None = None,
+    min_sec: float | None = None,
+    max_sec: float | None = None,
+) -> dict[str, Any]:
+    """Search upstream sources for commercial-safe audio clips."""
+    from .sound_sources import all_sources
+    sources = all_sources(_registry.credentials)
+    results: list[dict[str, Any]] = []
+    exhausted = False
+    for src in sources:
+        if not src.is_configured():
+            continue
+        try:
+            hits = src.search(query=q, min_sec=min_sec, max_sec=max_sec, category=None, page_size=10)
+            for h in hits:
+                results.append({
+                    "source": h.source,
+                    "source_id": h.source_id,
+                    "title": h.title,
+                    "author": h.author,
+                    "licence": h.licence,
+                    "duration_ms": h.duration_ms,
+                    "attribution": h.attribution,
+                })
+        except Exception as exc:
+            log.warning("Sound search failed for %s: %s", src.id, exc)
+        if src.quota.exhausted:
+            exhausted = True
+    # Deduplicate by source_id + source
+    seen = set()
+    unique = []
+    for r in results:
+        key = (r["source"], r["source_id"])
+        if key not in seen:
+            seen.add(key)
+            unique.append(r)
+    # Sort CC0 first
+    unique.sort(key=lambda x: (0 if x["licence"] == "cc0" else 1, x["title"].casefold()))
+
+    library_only = False
+    if exhausted and not unique:
+        # Fall back to local library when upstream quota is exhausted
+        from .sound_library import search_library
+        lib_hits = search_library(q, kind=kind)
+        for clip in lib_hits:
+            unique.append({
+                "source": "library",
+                "source_id": clip.get("sha256", ""),
+                "title": clip.get("title", ""),
+                "author": clip.get("author"),
+                "licence": clip.get("licence"),
+                "duration_ms": int(clip.get("duration_seconds", 0) * 1000) if clip.get("duration_seconds") else None,
+                "attribution": clip.get("attribution"),
+            })
+        library_only = True
+
+    return {"results": unique, "quota_exhausted": exhausted, "library_only": library_only}
+
+@app.post("/v1/sounds/library", dependencies=[Depends(require_auth)])
+def sounds_add_to_library(payload: dict[str, Any]) -> dict[str, Any]:
+    """Download a clip into the shared library."""
+    source = payload.get("source")
+    source_id = payload.get("source_id")
+    if not source or not source_id:
+        raise GatewayError(400, "source and source_id required.")
+    try:
+        meta = download_into_library(str(source), str(source_id), _registry.credentials)
+        return meta
+    except Exception as exc:
+        status = getattr(exc, "status", 500)
+        code = getattr(exc, "code", None)
+        raise GatewayError(status, str(exc), code)
+
+@app.get("/v1/sounds/library", dependencies=[Depends(require_auth)])
+def sounds_list_library() -> dict[str, Any]:
+    """List clips already in the shared library."""
+    return {"clips": list_clips()}
+
+@app.get("/v1/sounds/quota", dependencies=[Depends(require_auth)])
+def sounds_quota() -> dict[str, Any]:
+    """Report live quota status for all sound sources."""
+    return quota_status(_registry.credentials)
+
+
+# ---------------------------------------------------------------------------
 # Admin UI
 # ---------------------------------------------------------------------------
 from .admin import AdminError  # noqa: E402 - mounted after app setup
