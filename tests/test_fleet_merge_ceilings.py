@@ -19,6 +19,12 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
+from tests._isolation import sandbox_env  # noqa: E402
+
+# Importing gateway.* here freezes DATA_DIR; without this it binds the owner's real
+# data folder at ~/Library/Application Support/gateway-kh/data.
+_SANDBOX = sandbox_env()
+
 from gateway import catalog  # noqa: E402
 
 

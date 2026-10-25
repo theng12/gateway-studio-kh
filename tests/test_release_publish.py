@@ -25,6 +25,12 @@ sys.path.insert(0, str(ROOT))
 
 import httpx  # noqa: E402
 
+from tests._isolation import sandbox_env  # noqa: E402
+
+# Importing gateway.* here freezes DATA_DIR; without this it binds the owner's real
+# data folder at ~/Library/Application Support/gateway-kh/data.
+_SANDBOX = sandbox_env()
+
 from gateway import fleet, release_publisher as rp  # noqa: E402
 
 

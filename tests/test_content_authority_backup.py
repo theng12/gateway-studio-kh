@@ -20,6 +20,12 @@ import unittest
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
+from tests._isolation import sandbox_env  # noqa: E402
+
+# scripts.backup_content_authority imports gateway.config, freezing DATA_DIR;
+# isolate before that import binds the owner's real data folder.
+_SANDBOX = sandbox_env()
+
 from scripts.backup_content_authority import BackupError, backup  # noqa: E402
 
 
