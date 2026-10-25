@@ -8,6 +8,7 @@ final class BackupPanel: NSObject {
     private var lastLabel: NSTextField!
     private var statusLabel: NSTextField!
     private var nightlyCheck: NSButton!
+    private var fleetCheck: NSButton!
     private var timeField: NSTextField!
     private var keepField: NSTextField!
     private var backUpButton: NSButton!
@@ -36,6 +37,7 @@ final class BackupPanel: NSObject {
             stack.spacing = 2
             placeRows.append(stack)
         }
+        fleetCheck = NSButton(checkboxWithTitle: "Include fleet roster (fleet.json)", target: self, action: #selector(saveSettings))
         nightlyCheck = NSButton(checkboxWithTitle: "Back up every night at", target: self, action: #selector(saveSettings))
         timeField = NSTextField(string: "")
         timeField.placeholderString = "03:00"
@@ -51,11 +53,15 @@ final class BackupPanel: NSObject {
         return [
             PageKit.help(
                 "One file with what cannot be recreated: the two signing keys, the API keys (.env and "
-                + "credentials), the fleet roster, the voices library and the Content Packs (the released "
+                + "credentials), the voices library and the Content Packs (the released "
                 + "packs the shelf serves). Jobs, generated files and caches are left out. The file is not encrypted — only you can read it on this Mac, so keep "
                 + "copies somewhere private."
             ),
-            PageKit.formRow("Contents", contentsLabel),
+            PageKit.formRow("Contents", [
+                contentsLabel, fleetCheck,
+                PageKit.label("Select when moving the Gateway to carry its saved location IDs, names and addresses.",
+                              .caption, colour: .secondaryLabelColor, wrapping: true),
+            ] as [NSView]),
             PageKit.formRow("Save to", placeRows),
             PageKit.formRow("Schedule", [
                 PageKit.row([nightlyCheck, timeField]),
@@ -105,13 +111,15 @@ final class BackupPanel: NSObject {
     private func show(_ payload: [String: Any]) {
         let settings = payload["settings"] as? [String: Any] ?? [:]
         let chosen = settings["destinations"] as? [String: Bool] ?? [:]
+        fleetCheck.state = (settings["include_fleet"] as? Bool ?? false) ? .on : .off
         nightlyCheck.state = (settings["nightly"] as? Bool ?? false) ? .on : .off
         if timeField.currentEditor() == nil { timeField.stringValue = settings["time"] as? String ?? "03:00" }
         if keepField.currentEditor() == nil { keepField.stringValue = "\(settings["keep"] as? Int ?? 5)" }
 
         if let included = payload["included"] as? [String: Any] {
             let files = included["files"] as? Int ?? 0
-            var text = "\(files) files, \(Self.size(included["bytes"])) — signing keys, API keys, fleet roster, voices, Content Packs"
+            var text = "\(files) files, \(Self.size(included["bytes"])) — signing keys, API keys, voices, Content Packs"
+            if fleetCheck.state == .off { text += " — fleet roster left out" }
             let missing = included["missing"] as? [String] ?? []
             let others = missing.filter { $0 != Self.hubVoices }
             if !others.isEmpty { text += "\nNot on this Mac (skipped): " + others.joined(separator: ", ") }
@@ -168,7 +176,7 @@ final class BackupPanel: NSObject {
     @objc private func saveSettings() {
         var destinations: [String: Bool] = [:]
         for (kind, check) in placeChecks { destinations[kind] = check.state == .on }
-        var body: [String: Any] = ["nightly": nightlyCheck.state == .on, "destinations": destinations]
+        var body: [String: Any] = ["nightly": nightlyCheck.state == .on, "include_fleet": fleetCheck.state == .on, "destinations": destinations]
         let time = timeField.stringValue.trimmingCharacters(in: .whitespaces)
         if !time.isEmpty { body["time"] = time }
         if let keep = Int(keepField.stringValue.trimmingCharacters(in: .whitespaces)) { body["keep"] = keep }
@@ -223,9 +231,12 @@ final class BackupPanel: NSObject {
                 return
             }
             let files = info["files"] as? Int ?? 0
+            let roster = (info["include_fleet"] as? Bool ?? false)
+                ? "The fleet roster is included and will be restored. "
+                : "The fleet roster is absent; this Mac’s roster will be left alone. "
             guard PageKit.confirm(
                 "Restore the backup made \(info["created_at"] as? String ?? "?") on \(info["host"] as? String ?? "?")?",
-                "\(files) files (\(Self.size(info["bytes"]))): signing keys, API keys, fleet roster, voices and Content Packs. "
+                "\(files) files (\(Self.size(info["bytes"]))). " + roster
                     + "Every current file it replaces is moved to ~/Developer/_trash first; files that are not in "
                     + "the backup are left alone. Restart the gateway and Studio Hub afterwards.",
                 ok: "Restore"

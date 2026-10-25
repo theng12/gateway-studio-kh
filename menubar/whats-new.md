@@ -14,6 +14,14 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.201 — 2026-10-25
+
+### Backups can carry the fleet roster
+Settings → Backup has a new tick box, **Include fleet roster (fleet.json)**: the list of Studio Hub
+locations this Gateway sends work to. It is off by default, so a backup restored on another Mac does
+not quietly point that Mac at your locations. Tick it when you are moving the Gateway to a new Mac.
+A backup without the roster leaves the restoring Mac's own roster untouched.
+
 ## 0.2.200 — 2026-10-25
 
 ### Jobs shows which Mac did the work

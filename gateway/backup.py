@@ -9,7 +9,7 @@
   identity alone would look like a recovery point and not be one (~160 MB today);
 * the API keys: `.env` (the key Story Studio presents) and `credentials.json` (provider keys and
   the controllers' fleet tokens);
-* the fleet roster `fleet.json` (controller ids, labels, addresses);
+* the fleet roster `fleet.json` (controller ids, labels, addresses) when that option is on;
 * the voices library: the Gateway's catalogue `voices.json` + `voice-library/` (reference clips,
   transcripts) and this Mac's Studio Hub voices (`StudioHub Standalone/voice/voices/`).
 
@@ -81,6 +81,7 @@ FORMAT = 1
 META = ("manifest.json", "SHA256SUMS")
 DEFAULTS: dict[str, Any] = {
     "nightly": False,
+    "include_fleet": False,
     "time": "03:00",
     "keep": 5,
     "destinations": {"icloud": True, "ssd": True, "local": True},
@@ -115,11 +116,14 @@ def sources() -> list[tuple[str, Path]]:
     ]
 
 
-def _files() -> tuple[list[tuple[str, Path]], list[str]]:
+def _files(chosen: dict[str, Any] | None = None) -> tuple[list[tuple[str, Path]], list[str]]:
     """Every file to back up, and the sources that are absent on this Mac."""
+    chosen = settings() if chosen is None else chosen
     found: list[tuple[str, Path]] = []
     missing: list[str] = []
     for role, path in sources():
+        if role == "gateway/data/fleet.json" and not chosen["include_fleet"]:
+            continue
         if path.is_file() and not path.is_symlink():
             found.append((role, path))
         elif path.is_dir() and not path.is_symlink():
@@ -179,6 +183,7 @@ def settings() -> dict[str, Any]:
     raw = _read_json(_settings_path())
     out = json.loads(json.dumps(DEFAULTS))
     out["nightly"] = bool(raw.get("nightly", out["nightly"]))
+    out["include_fleet"] = raw.get("include_fleet") is True
     try:
         out["time"] = _clean_time(raw.get("time", out["time"]))
     except BackupError:
@@ -196,6 +201,10 @@ def settings() -> dict[str, Any]:
 def save_settings(payload: dict[str, Any]) -> dict[str, Any]:
     """Store what was sent; omitted values keep what is there."""
     current = settings()
+    if "include_fleet" in payload:
+        if not isinstance(payload["include_fleet"], bool):
+            raise BackupError("Include fleet roster must be true or false.")
+        current["include_fleet"] = payload["include_fleet"]
     if "nightly" in payload:
         current["nightly"] = bool(payload["nightly"])
     if "time" in payload:
@@ -256,16 +265,16 @@ def _add(tar: tarfile.TarFile, name: str, data: bytes, mtime: float) -> None:
     tar.addfile(info, io.BytesIO(data))
 
 
-def write_archive(target: Path) -> dict[str, Any]:
+def write_archive(target: Path, chosen: dict[str, Any] | None = None) -> dict[str, Any]:
     """Write one archive at `target` (created 0600, never over an existing file)."""
     fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     with os.fdopen(fd, "wb") as raw:
-        return pack(raw)
+        return pack(raw, chosen)
 
 
-def pack(raw: Any) -> dict[str, Any]:
+def pack(raw: Any, chosen: dict[str, Any] | None = None) -> dict[str, Any]:
     """Write the archive into an open binary file; returns its manifest."""
-    files, missing = _files()
+    files, missing = _files(chosen)
     entries = []
     with tarfile.open(fileobj=raw, mode="w:gz", compresslevel=3) as tar:
         for name, path in files:
@@ -321,6 +330,7 @@ def inspect(path: Path) -> dict[str, Any]:
         "files": len(listed),
         "bytes": sum(int(e.get("bytes") or 0) for e in manifest["files"]),
         "missing": manifest.get("missing") or [],
+        "include_fleet": "gateway/data/fleet.json" in listed,
     }
 
 
@@ -400,7 +410,7 @@ def run(reason: str = "manual") -> dict[str, Any]:
         work = Path(tempfile.mkdtemp(prefix="kh-backup-"))  # 0700, per-user
         archive = work / name
         try:
-            manifest = write_archive(archive)
+            manifest = write_archive(archive, chosen)
             inspect(archive)
             size = archive.stat().st_size
             for dest in destinations(chosen):
@@ -501,7 +511,7 @@ def _size(path: Path) -> int:
 
 def status() -> dict[str, Any]:
     chosen, state = settings(), _state()
-    files, missing = _files()
+    files, missing = _files(chosen)
     rows = []
     for dest in destinations(chosen):
         record = state["destinations"].get(dest["id"], {})

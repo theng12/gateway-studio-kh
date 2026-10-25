@@ -101,6 +101,7 @@ class BackupTests(unittest.TestCase):
     # ------------------------------------------------------------------ make
 
     def test_backup_lands_in_every_place_owner_only_with_manifest(self) -> None:
+        backup.save_settings({"include_fleet": True})
         result = backup.run()
         self.assertTrue(result["ok"], result)
         self.assertEqual(result["files"], len(self.files))
@@ -140,9 +141,71 @@ class BackupTests(unittest.TestCase):
             with self.assertRaises(backup.BackupError):
                 backup.run()
 
-    # ------------------------------------------------------------------ restore
+    def test_fleet_is_explicit_opt_in_through_settings_api(self) -> None:
+        self.assertFalse(admin.get_backup()["settings"]["include_fleet"])
+        status = admin.set_backup({"include_fleet": True})
+        self.assertTrue(status["settings"]["include_fleet"])
+        self.assertEqual(status["included"]["files"], len(self.files))
+        self.assertTrue(admin.set_backup({"nightly": True})["settings"]["include_fleet"])
+        self.assertFalse(admin.set_backup({"include_fleet": False})["settings"]["include_fleet"])
+        for value in ("false", 1, None):
+            self.assertEqual(admin.set_backup({"include_fleet": value}).status_code, 422)
+
+    def test_default_backup_omits_roster_and_restore_leaves_destination_roster(self) -> None:
+        result = admin.run_backup()["result"]
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["files"], len(self.files) - 1)
+        self.assertNotIn("gateway/data/fleet.json", result["missing"])
+        archive = self._archives()[0]
+        self.assertFalse(admin.inspect_backup({"path": str(archive)})["include_fleet"])
+        with tarfile.open(archive) as tar:
+            self.assertNotIn("gateway/data/fleet.json", tar.getnames())
+        roster = self.files["gateway/data/fleet.json"]
+        roster.write_bytes(b"destination roster")
+        backup.save_settings({"include_fleet": True})  # restore follows archive, not today's setting
+        admin.restore_backup({"path": str(archive)})
+        self.assertEqual(roster.read_bytes(), b"destination roster")
+
+    def test_selected_roster_restores_even_when_current_setting_is_off(self) -> None:
+        backup.save_settings({"include_fleet": True})
+        backup.run()
+        archive = self._archives()[0]
+        self.assertTrue(backup.inspect(archive)["include_fleet"])
+        roster = self.files["gateway/data/fleet.json"]
+        original = roster.read_bytes()
+        roster.write_bytes(b"replacement roster")
+        backup.save_settings({"include_fleet": False})
+        backup.restore(archive)
+        self.assertEqual(roster.read_bytes(), original)
+
+    def test_an_archive_with_no_new_manifest_field_still_restores(self) -> None:
+        # An archive written before the roster option existed has no extra manifest key, and reading
+        # it must not depend on one: the roster it does hold comes back.
+        backup.save_settings({"include_fleet": True})
+        raw = io.BytesIO()
+        manifest = backup.pack(raw)
+        self.assertNotIn("controller_credentials", manifest)
+        archive = self.root / "older.tar.gz"
+        with tarfile.open(fileobj=io.BytesIO(raw.getvalue())) as src, tarfile.open(archive, "w:gz") as dst:
+            for member in src:
+                dst.addfile(member, src.extractfile(member))
+        roster = self.files["gateway/data/fleet.json"]
+        original = roster.read_bytes()
+        roster.write_bytes(b"changed")
+        backup.restore(archive)
+        self.assertEqual(roster.read_bytes(), original)
+
+    def test_native_checkbox_and_restore_summary_are_wired(self) -> None:
+        panel = (Path(__file__).resolve().parents[1] / "menubar/BackupPanel.swift").read_text()
+        self.assertIn('checkboxWithTitle: "Include fleet roster (fleet.json)"', panel)
+        self.assertIn('"include_fleet": fleetCheck.state == .on', panel)
+        self.assertIn('fleetCheck.state = (settings["include_fleet"] as? Bool ?? false)', panel)
+        self.assertIn('info["include_fleet"]', panel)
+        self.assertNotIn("controller_credentials", panel)
+        self.assertNotIn("credentials are excluded", panel)
 
     def test_restore_puts_files_back_and_moves_replaced_ones_to_trash(self) -> None:
+        backup.save_settings({"include_fleet": True})
         backup.run()
         archive = next(p for p in self._archives() if p.parent.name == "_backups")
         originals = {name: path.read_bytes() for name, path in self.files.items()}
