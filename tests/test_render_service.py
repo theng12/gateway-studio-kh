@@ -84,8 +84,9 @@ PROFILE_RAW = canonical({
     "tier_policy": "story-final-chain-v1",
     "output_policy": "story-final-output-v1",
     "execution_bounds": {
-        "canvas_pairs": [{"width": 1920, "height": 1080}],
-        "working_fps": [24],
+        "bounds_version": 2,
+        "canvas_range": {"max_edge": 3840, "max_pixels": 8294400},
+        "working_fps": [24, 25, 30, 60],
         "max_duration_sec": 60,
         "max_operations": 32,
         "max_assets": 32,
@@ -678,6 +679,66 @@ class RenderServiceCase(unittest.TestCase):
 
 
 class AcceptanceTests(RenderServiceCase):
+    def test_v2_bounds_accept_requested_fps_and_canvas_ranges(self) -> None:
+        self.service.profile = json.loads((ROOT / "data/final-render/profile.json").read_bytes())
+        for fps in (24, 25, 30, 60):
+            for width, height in ((1280, 720), (1920, 1080), (2560, 1440),
+                                  (3840, 2160), (1080, 1920), (2160, 3840),
+                                  (2048, 2048), (1672, 942), (2, 2)):
+                with self.subTest(fps=fps, width=width, height=height):
+                    value = packet([])
+                    value["recipe"]["canvas"] = {"width": width, "height": height,
+                                                  "working_fps": fps}
+                    value["recipe"]["target_duration_sec"] = 10800
+                    self.service._require_packet_bounds(value)
+
+    def test_v2_bounds_refuse_unsupported_fps_and_invalid_canvases(self) -> None:
+        for fps, width, height in ((5, 1920, 1080), (50, 1920, 1080),
+                                   (24, 1919, 1080), (24, 1920, 1079),
+                                   (24, 3842, 2160), (24, 2160, 3842),
+                                   (24, 3840, 3840), (24, 0, 1080),
+                                   (24, -2, 1080), (24, True, 1080)):
+            with self.subTest(fps=fps, width=width, height=height):
+                value = packet([])
+                value["recipe"]["canvas"] = {"width": width, "height": height,
+                                              "working_fps": fps}
+                self.assert_code("RENDER_PROFILE_MISMATCH",
+                                 self.service._require_packet_bounds, value)
+
+    def test_frame_work_budget_rounds_up_before_multiplying_pixels(self) -> None:
+        value = packet([])
+        value["recipe"]["target_duration_sec"] = 1.001
+        pixels = 1920 * 1080
+        bounds = self.service.profile["execution_bounds"]
+        for budget, accepted in ((25 * pixels, True), (25 * pixels - 1, False)):
+            with self.subTest(budget=budget):
+                bounds["max_pixel_frames"] = budget
+                if accepted:
+                    self.service._require_packet_bounds(value)
+                else:
+                    self.assert_code("RENDER_PROFILE_MISMATCH",
+                                     self.service._require_packet_bounds, value)
+
+    def test_each_packet_resource_fence_still_refuses_excess(self) -> None:
+        bounds = self.service.profile["execution_bounds"]
+        cases = (
+            ("max_duration_sec", lambda p: p["recipe"].update(target_duration_sec=61)),
+            ("max_operations", lambda p: p["recipe"].update(operations=[{}] * 33)),
+            ("max_assets", lambda p: p.update(manifest=[{"size_bytes": 1}] * 33)),
+            ("max_asset_bytes", lambda p: p.update(manifest=[{"size_bytes": bounds["max_asset_bytes"] + 1}])),
+            ("max_total_input_bytes", lambda p: p.update(manifest=[{"size_bytes": bounds["max_asset_bytes"]}] * 3)),
+        )
+        for limit, mutate in cases:
+            with self.subTest(limit=limit):
+                value = packet([])
+                mutate(value)
+                self.assert_code("RENDER_PROFILE_MISMATCH",
+                                 self.service._require_packet_bounds, value)
+
+    def test_unknown_bounds_version_fails_closed(self) -> None:
+        self.service.profile["execution_bounds"]["bounds_version"] = 3
+        self.assert_code("RENDER_PROFILE_MISMATCH", self.service._require_packet_bounds, packet([]))
+
     def test_capabilities_count_production_and_qualification_candidates(self) -> None:
         rows = [{"available_slots": 1}, {"available_slots": 0}, {"available_slots": 1}]
         with patch.object(fleet, "render_candidates", return_value=rows) as candidates:

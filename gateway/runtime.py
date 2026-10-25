@@ -57,18 +57,32 @@ def _valid_bounds(value: object) -> bool:
         "scratch_reserve_bytes", "output_limit_bytes", "process_tree_rss_limit_bytes",
         "cumulative_wall_seconds",
     }
-    if type(value) is not dict or set(value) != keys:
+    if type(value) is not dict:
         return False
-    pairs = value["canvas_pairs"]
+    if "bounds_version" in value:
+        if (set(value) != keys - {"canvas_pairs"} | {"bounds_version", "canvas_range"}
+                or type(value["bounds_version"]) is not int or value["bounds_version"] != 2):
+            return False
+        canvas = value["canvas_range"]
+        if (type(canvas) is not dict or set(canvas) != {"max_edge", "max_pixels"}
+                or not all(_positive_integer(item) for item in canvas.values())
+                or canvas["max_edge"] % 2 or canvas["max_edge"] < 2
+                or canvas["max_pixels"] < 4):
+            return False
+    else:
+        if set(value) != keys:
+            return False
+        pairs = value["canvas_pairs"]
+        if (type(pairs) is not list or not pairs
+                or not all(type(pair) is dict and set(pair) == {"width", "height"}
+                           and _positive_integer(pair["width"])
+                           and _positive_integer(pair["height"]) for pair in pairs)):
+            return False
     fps = value["working_fps"]
     duration = value["max_duration_sec"]
     integers = keys - {"canvas_pairs", "working_fps", "max_duration_sec"}
     return (
-        type(pairs) is list and bool(pairs)
-        and all(type(pair) is dict and set(pair) == {"width", "height"}
-                and _positive_integer(pair["width"]) and _positive_integer(pair["height"])
-                for pair in pairs)
-        and type(fps) is list and bool(fps) and all(_positive_integer(item) for item in fps)
+        type(fps) is list and bool(fps) and all(_positive_integer(item) for item in fps)
         and type(duration) in (int, float) and math.isfinite(duration) and duration > 0
         and all(_positive_integer(value[key]) for key in integers)
     )

@@ -57,7 +57,9 @@ def _authority_files() -> dict[str, bytes]:
         "final_render_compiler_sha256": "b" * 64,
     })
     execution_bounds = {
-        "canvas_pairs": [{"width": 1920, "height": 1080}], "working_fps": [24],
+        "bounds_version": 2,
+        "canvas_range": {"max_edge": 3840, "max_pixels": 8294400},
+        "working_fps": [24, 25, 30, 60],
         "max_duration_sec": 60, "max_operations": 32, "max_assets": 32,
         "max_asset_bytes": 32 * 1024 * 1024,
         "max_total_input_bytes": 64 * 1024 * 1024,
@@ -236,6 +238,54 @@ fi
 
 
 class Task6Packaging(unittest.TestCase):
+    def test_packaged_descriptors_match_the_hub_bytes(self) -> None:
+        configured = os.environ.get("STUDIOHUB_RENDER_PROFILE")
+        peer = (Path(configured) if configured else
+                ROOT.parents[1] / "studio-hub-kh" / ROOT.name
+                / "packaging/render-authority/PROFILE.json")
+        if not peer.is_file():
+            self.skipTest("Set STUDIOHUB_RENDER_PROFILE to the Hub's packaged PROFILE.json")
+        self.assertEqual((ROOT / "data/final-render/profile.json").read_bytes(), peer.read_bytes())
+
+    def test_packaged_profile_preserves_all_other_resource_fences(self) -> None:
+        profile = json.loads((ROOT / "data/final-render/profile.json").read_bytes())
+        self.assertIs(profile["production_eligible"], False)
+        self.assertEqual(profile["execution_bounds"], {
+            "bounds_version": 2,
+            "canvas_range": {"max_edge": 3840, "max_pixels": 8294400},
+            "working_fps": [24, 25, 30, 60],
+            "max_duration_sec": 10800, "max_operations": 8, "max_assets": 4,
+            "max_asset_bytes": 8589934592, "max_total_input_bytes": 17179869184,
+            "max_pixel_frames": 5374771200000, "scratch_reserve_bytes": 17179869184,
+            "output_limit_bytes": 8589934592, "process_tree_rss_limit_bytes": 10737418240,
+            "cumulative_wall_seconds": 14400,
+        })
+
+    def test_build_and_runtime_reject_malformed_v2_bounds(self) -> None:
+        mutations = (
+            lambda b: b.update(bounds_version=3),
+            lambda b: b.update(bounds_version=True),
+            lambda b: b.update(bounds_version=2.0),
+            lambda b: b.pop("bounds_version"),
+            lambda b: b.update(canvas_pairs=[]),
+            lambda b: b["canvas_range"].update(extra=1),
+            lambda b: b["canvas_range"].pop("max_edge"),
+            lambda b: b.update(canvas_range=[]),
+            lambda b: b["canvas_range"].update(max_edge=3841),
+            lambda b: b["canvas_range"].update(max_edge=True),
+            lambda b: b["canvas_range"].update(max_pixels=0),
+            lambda b: b["canvas_range"].update(max_pixels=8294400.0),
+        )
+        for mutate in mutations:
+            with self.subTest(mutate=mutate), _BuildFixture() as fixture:
+                payloads = fixture.write_authority(("profile.json", "tools.json", "compiler.json"))
+                profile = json.loads(payloads["profile.json"])
+                mutate(profile["execution_bounds"])
+                (fixture.root / "data/final-render/profile.json").write_bytes(_canonical(profile))
+                result = fixture.run("--render-authority", "descriptor-only")
+                self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertNotIn("Built:", result.stdout + result.stderr)
+
     def test_shipped_catalogue_is_an_empty_default(self) -> None:
         payload = json.loads((ROOT / "data" / "voices.json").read_text(encoding="utf-8"))
         self.assertEqual(payload.get("voices"), [])
