@@ -606,17 +606,41 @@ Moved to [docs/audit-batch-4-2026-09-20.md](docs/audit-batch-4-2026-09-20.md).
 ## Verification
 
 ```bash
-.venv/bin/python tests/test_e2e.py              # 570 checks, isolated mock upstream
-.venv/bin/python tests/test_fleet_standalone.py # ~50 checks (54 sites; the suite prints its own total), real Hub(s) as locations
-.venv/bin/python tests/test_ui.py               # 130 checks + 5 Hub-dependent skips, drives the real app
+.venv/bin/python scripts/run_gate.py --evidence <fresh dir>   # the release gate: every tests/test_*.py
+.venv/bin/python scripts/test_run_gate.py                     # the gate runner's own self-test
 ```
 
-**These three are the release gate, not the whole suite.** Every other
-`tests/test_*.py` is a focused suite that runs in a second or two against its own
-temp profile, and one of them went red for three days because it was not in this
-list: run them all before a release (`for f in tests/test_*.py; do .venv/bin/python
-"$f"; done`, skipping `test_e2e.py`, `test_ui.py` and `test_fleet_standalone.py`
-for the quick pass).
+**`scripts/run_gate.py` is the release gate, and it is tracked here.** The per-release
+`run-gate.sh` copies under `_orchestra/` were untracked and drifted: 0.2.203's copy ran every
+file through `python -m unittest`, so the script-style suites (`test_e2e.py`, `test_ui.py`,
+`test_fleet_standalone.py` — a `main()` and no TestCase) printed `Ran 0 tests` and **counted as
+passes**. The runner:
+
+- runs **one file per process** (`_NetworkDisabled` leaks when one process imports them all),
+  each with a fresh profile it makes itself (`GATEWAY_APP_SUPPORT`, `GATEWAY_DATA`,
+  `STUDIOHUB_READY_FILE`, `GATEWAY_NO_MIGRATE=1`), so even a suite that forgets `sandbox_env()`
+  cannot read his real Application Support;
+- runs unittest-style files through `-m unittest` and the script-style files named in
+  `SCRIPT_STYLE` as scripts. **`Ran 0 tests` is a FAILURE, never a pass**, and a new
+  script-style file fails loudly with "collected no tests" instead of passing silently;
+- **runs files in parallel — the owner's decision, 2026-10-26: "yes. in parallel."** Default
+  `min(3, cores/2)` workers; `GATEWAY_GATE_WORKERS` or `--workers N` overrides it, `1` is serial.
+  Every file keeps its own process, temp profile and log either way;
+- runs a short list **alone** (`SERIAL`): the native/offscreen AppKit suites
+  (`test_create_layout.py`, `test_fleet_action_banner_layout.py`, `test_fleet_banner.py`,
+  `test_fleet_layout.py`, `test_jobs_outputs.py`, `test_secret_field.py`,
+  `test_task5_native.py`, `test_whats_new_page.py`), `test_window_size.py`, and the suites that
+  assert a real wall-clock ceiling (`test_catalog_fast.py`, `test_jobs_list_fast.py`,
+  `test_lossless_restart.py`). A busy Mac already turned a timing test red on 2026-10-24;
+- skips `test_ui.py` (it drives the installed app and takes over his windows) and
+  `test_fleet_standalone.py` (`GATEWAY_ALLOW_LIVE_GENERATION=1` plus the real Hub as a
+  location), printing the reason for each;
+- writes per-file logs, exit codes and `summary.json` into `--evidence`, which it **refuses to
+  reuse**, and exits non-zero on any failure. The suites print their own totals — quote those,
+  never a hard-coded check count.
+
+The console/JS suites (`node --test tests/<file>.js`) and the native single-element checks
+(`tests/check_native.py`) keep their own commands; they are not part of this gate.
 
 `test_e2e.py` is isolated (`GATEWAY_DATA`/`GATEWAY_APP_SUPPORT` to a temp dir,
 `GATEWAY_NO_MIGRATE=1`, random port, own key), cannot touch the live config;
