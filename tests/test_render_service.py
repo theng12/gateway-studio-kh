@@ -679,6 +679,32 @@ class RenderServiceCase(unittest.TestCase):
 
 
 class AcceptanceTests(RenderServiceCase):
+    def test_display_labels_are_optional_and_bounded(self) -> None:
+        """Story's channel and episode: display only, optional, and refused when not a label.
+
+        A label the Hub would refuse must never leave the Gateway, so the same rule is applied
+        here; a request that sends none is accepted exactly as before.
+        """
+        self.assertEqual(
+            self.service.accept(principal(), "display-valid-one-label",
+                                self.request(display={"episode": "EP013"}))["state"],
+            "staging")
+        self.assertEqual(
+            self.service.accept(
+                principal(), "display-valid-both",
+                self.request(attempt_no=2, display={
+                    "channel": "Khmer History", "episode": "EP012 ការធ្លាក់ចុះ"}))["state"],
+            "staging")
+        for index, bad in enumerate((
+            {}, [], "channel", {"channel": ""}, {"channel": "a\x00b"},
+            {"channel": "x" * 257}, {"channel": 7},
+            {"channel": "EP014", "host": "node-m4-01"},
+        )):
+            with self.subTest(bad=bad):
+                self.assert_code(
+                    "RENDER_REQUEST_INVALID", self.service.accept, principal(),
+                    f"display-bad-{index:02d}", self.request(attempt_no=10 + index, display=bad))
+
     def test_v2_bounds_accept_requested_fps_and_canvas_ranges(self) -> None:
         self.service.profile = json.loads((ROOT / "data/final-render/profile.json").read_bytes())
         for fps in (24, 25, 30, 60):
@@ -1082,6 +1108,25 @@ class AcceptanceTests(RenderServiceCase):
         self.assertEqual(self.hub.calls, [])
 
 class DispatchLifecycleTests(RenderServiceCase):
+    def test_display_labels_ride_to_the_hub_body_and_change_no_identity(self) -> None:
+        plain = self.service.accept(principal(), "display-absent", self.request())
+        prepared_plain = self._stage_inputs_and_prepare(plain["id"])
+        bodies = json.loads(bytes(prepared_plain["outbound_hub_body"]))
+        self.assertNotIn("display", bodies)
+        self.assertEqual(hashlib.sha256(bytes(prepared_plain["outbound_hub_body"])).hexdigest(),
+                         prepared_plain["outbound_hub_body_sha256"])
+        labels = {"channel": "Khmer History", "episode": "EP012 ការធ្លាក់ចុះ"}
+        named = self.service.accept(principal(), "display-present",
+                                    self.request(attempt_no=2, display=labels))
+        prepared = self._stage_inputs_and_prepare(named["id"])
+        outbound = json.loads(bytes(prepared["outbound_hub_body"]))
+        self.assertEqual(outbound["display"], labels)
+        # Display is display: the dispatch identity the Hub dedupes on is untouched, and the
+        # stored body digest is still over exactly the bytes that will be sent.
+        self.assertEqual(outbound["dispatch"]["dispatch_key"], prepared["dispatch_key"])
+        self.assertEqual(hashlib.sha256(bytes(prepared["outbound_hub_body"])).hexdigest(),
+                         prepared["outbound_hub_body_sha256"])
+
     def _row(self, job_id: str) -> dict[str, object]:
         return self.store.get_render_staging(job_id)
 

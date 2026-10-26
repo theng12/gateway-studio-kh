@@ -42,6 +42,11 @@ log = logging.getLogger(__name__)
 _SWEEP_INTERVAL_S = 3600.0
 _UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\Z")
 _REQUEST_KEYS = frozenset(("format", "story_uuid", "intent_id", "attempt_no", "packet", "assets"))
+#: Story Studio's optional channel/episode labels, which merely ride along to the Hub's Render tab.
+#: **Display only**: no routing, dispatch, hashing, idempotency or acceptance decision reads them,
+#: and the Gateway's own idempotency identity stays `inbound_story_body` bytes, as before.
+_DISPLAY_KEYS = frozenset(("channel", "episode"))
+_DISPLAY_MAX_CHARACTERS = 256
 _REMOTE_STATES = frozenset((
     "accepted", "launch_pending", "rendering", "cancel_requested", "uncertain",
     "stopped", "cancelled", "failed", "output_ready",
@@ -172,6 +177,25 @@ def _text(value: Any, code: str, *, pattern: re.Pattern[str] | None = None) -> s
         raise RenderServiceError(code)
     if pattern is not None and pattern.fullmatch(value) is None:
         raise RenderServiceError(code)
+    return value
+
+
+def _display(value: Any) -> dict[str, str]:
+    """The optional display-only labels: which channel and episode a render belongs to.
+
+    Story Studio sends them so the Hub's Render tab can name a render instead of printing its job
+    id; nothing in this service decides anything with them. Both keys are optional, a label is
+    bounded and free of NUL, and non-ASCII is admitted because a channel or episode name is the
+    customer's own words — the same rule the Hub applies (`render_jobs._display`), so this never
+    forwards a label the Hub would refuse. Nothing beyond that rule is enforced: a display label
+    must never be the reason a render is refused.
+    """
+    if type(value) is not dict or not value or not set(value) <= _DISPLAY_KEYS:
+        raise RenderServiceError("RENDER_REQUEST_INVALID", 422)
+    for label in value.values():
+        if (type(label) is not str or not label or len(label) > _DISPLAY_MAX_CHARACTERS
+                or "\x00" in label):
+            raise RenderServiceError("RENDER_REQUEST_INVALID", 422)
     return value
 
 
@@ -485,10 +509,13 @@ class FinalRenderService:
         self._require_profile()
         try:
             request = decode_render_json(raw_body)
-            if type(request) is not dict or frozenset(request) != _REQUEST_KEYS:
+            if (type(request) is not dict
+                    or frozenset(request) - {"display"} != _REQUEST_KEYS):
                 raise ValueError
             if request["format"] != "studio.render.gateway-request.v1":
                 raise ValueError
+            if "display" in request:
+                _display(request["display"])
             story_uuid = _text(request["story_uuid"], "RENDER_REQUEST_INVALID", pattern=_UUID)
             intent_id = _text(request["intent_id"], "RENDER_REQUEST_INVALID", pattern=_KEY)
             if type(request["attempt_no"]) is not int or not 1 <= request["attempt_no"] <= 2**31 - 1:
@@ -1238,6 +1265,10 @@ class FinalRenderService:
                     "dispatch_key": dispatch_key, "dispatch_fence": fence,
                 },
                 "packet": request["packet"], "assets": handles,
+                # Carried through only when Story sent it: the Hub's Render tab names the
+                # channel and episode with it and nothing else reads it. A Story Studio that
+                # sends no display produces exactly the body it produced before.
+                **({"display": request["display"]} if "display" in request else {}),
             })
             self.store.prepare_render_dispatch(
                 row["id"], outbound_hub_body=body,
