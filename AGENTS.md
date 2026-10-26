@@ -38,7 +38,8 @@ apply here and to delegated workers.
   (`require_local_app`). Never set a password in the owner's real state; tests use a temp profile.
   The app injects `__GATEWAY_IN_APP__`, which hides the browser page menu inside its window.
 - The real-Hub fleet suite requires explicit `GATEWAY_ALLOW_LIVE_GENERATION=1`;
-  do not include it in offline smoke testing. Keep GitHub Actions disabled.
+  do not include it in offline smoke testing. Keep GitHub Actions disabled: the owner runs
+  development locally and will not use GitHub-hosted compute (Hub `AGENTS.md` line 10).
 
 
 One API in front of every local Studio Hub location and 18 cloud providers, so
@@ -227,6 +228,10 @@ traps in the poll: **202 means still working, and a failure arrives as HTTP
 200** with `status: "failed"` — so branch on the JSON `status`, never on the
 HTTP code, or a failed generation reads as a success. The first frame is
 `image: {url}`, not the `image_url` string the Python SDK accepts.
+
+**Text-to-video lanes stay listed** (owner, 2026-10-26). Story Studio generates
+image-to-video only today, but the owner keeps the gateway's text-to-video lanes as a
+possible next feature — do not "fix" a video lane by removing its text-to-video mode.
 
 **Lyria music is Gemini's `:generateContent`, not a `:predict`, and the audio is
 inline base64.** It lives at `candidates[0].content.parts[N].inlineData` — and
@@ -459,16 +464,15 @@ row whose `accepted_unqualified` is present but is not that evidence is excluded
   needed no configuration. The owner moved it to 8787 on 2026-09-21 (8000 is the
   most contested dev port and is also Story's own default, which kept "is this
   pointed at the right thing?" ambiguous). A fresh install now defaults to 8787.
-- **The older GenStudio KH API used 8000 too.** As of 2026-09-18 it is
-  **stopped and disabled**: `launchctl bootout` plus `launchctl disable
-  gui/$(id -u)/com.genstudiokh.local-api`, so it does not return at login. Its
-  LaunchAgent had `KeepAlive: true`, so a plain `kill` brings it back — stopping
-  it needs the disable, not a signal. To restore: `launchctl enable
-  gui/$(id -u)/com.genstudiokh.local-api` then `launchctl bootstrap
-  gui/$(id -u)` with
-  `~/Library/LaunchAgents/com.genstudiokh.local-api.plist`.
-- **Curated limits**: `data/model-limits.local.json` fills gaps for lanes with
-  none (24 chat rows across six providers). It **fills gaps only** — a
+- **The older GenStudio KH API used 8000 too.** It is **stopped and disabled**
+  (`launchctl bootout` plus `launchctl disable
+  gui/$(id -u)/com.genstudiokh.local-api`), and its LaunchAgent plist has since
+  been **removed** — there is nothing to restore, and it must not be re-added.
+  The gateway on 8787 replaced it.
+- **Curated limits**: `DATA_DIR/model-limits.local.json`
+  (`~/Library/Application Support/gateway-kh/data/`) fills gaps for lanes with
+  none (24 chat rows across six providers); the repo `data/model-limits.local.json`
+  is a legacy fallback (`gateway/limits.py`). It **fills gaps only** — a
   provider's published value always wins.
 ## Locations are providers — but not separate products
 
@@ -632,7 +636,8 @@ new isolated suite must do the same, and any test that reaches a *location* must
 point it at the mock — which serves `/api/hub/shared-voices` (multipart, recording
 the payload and `X-Hub-Token`) so the fan-out is exercised without touching his
 machine. `test_fleet_standalone.py` deliberately uses his real Hub, which is why it
-is the suite to run knowingly.
+is the suite to run knowingly: it is the owner-sanctioned live gate, and it must
+never run without `GATEWAY_ALLOW_LIVE_GENERATION=1` and the Hub reachable.
 
 **Two of its checks were failing for a Hub-side worker restart, and it was
 transient — check before reporting it as a defect.** "a transcription ran on the
@@ -661,8 +666,9 @@ is stopped — an environment state, not a defect.
 Verifying a change without touching his session: the isolated suites above, plus a
 direct `curl` against the configured port.
 
-Always rebuild before claiming it works: `./menubar/build.sh`, installs to
-`/Applications/gateway-kh.app`. **"It builds" is not "it works."**
+Always rebuild when the claim is about the app bundle: `./menubar/build.sh` builds
+and installs to `/Applications/gateway-kh.app`. Use `--no-install` unless
+installing at a quiet point. **"It builds" is not "it works."**
 
 **Restarting the app is not the same as restarting the gateway, and a stale one
 survives a rebuild.** The gateway outlives the app, so the app **adopts** whatever
@@ -728,8 +734,7 @@ Moved to [docs/giving-the-app-away.md](docs/giving-the-app-away.md).
   itself is **his** to sort out: never delete or tidy anything *inside* it. The one
   thing that is not a file is a Git branch or remote ref — record its name and SHA in
   a note under `_trash/` before deleting it, and never rewrite published history.
-  `_trash/` is outside Git and nothing in it is read by the app, tests or build; see
-  `_trash/README.md` for what is in it.
+  `_trash/` is outside Git and nothing in it is read by the app, tests or build.
 - **Every change is merged, committed, pushed, and built into a DMG — and the previous DMG moves
   to `_trash/dist/` automatically.** The owner's rule, 2026-09-26, and it is **the whole cycle every
   time**, not only for something you would call a release: a fix, a doc, a test, a one-line constant.
@@ -811,9 +816,10 @@ Moved to [docs/giving-the-app-away.md](docs/giving-the-app-away.md).
   gateway. **When the Hub serves `text_guidance`, that table and its staleness
   both disappear.**
 - **When you read a fact out of the Hub's own source, read the copy in the
-  *installed bundle* and check its version against the Hub answering.**
-  `~/Applications/Studio Hub.app/Contents/Resources/voice/app/backend/catalog.py`
-  serves. `~/Projects/studiohub-standalone` is a development checkout and can be
+  *installed bundle* whose `/api/health` answers, and check its version against
+  that answer.**
+  `/Applications/Studio Hub.app/Contents/Resources/voice/app/backend/catalog.py`
+  serves. `/build/Developer/studio-hub-kh` is a development checkout and can be
   **ahead of it** — 0.6.31 while the running Hub reported 0.6.29 — so a
   number read there is a claim until the bundle agrees. The file you can find is
   not automatically the running one, and the Hub auto-updates (0.6.18 → 0.6.23
