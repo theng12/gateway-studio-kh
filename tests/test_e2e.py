@@ -1418,9 +1418,9 @@ uvicorn.run("gateway.api:app", host="127.0.0.1", port=int(sys.argv[2]), log_leve
 
             # **Video modes are read, then labelled.** The id heuristic alone
             # published every model as image-to-video, so fal's own
-            # `category: "text-to-video"` endpoints (`veo3.1`, `ltx-video`,
-            # `gemini-omni-flash`) were offered an image control they cannot
-            # honour — and a model that states nothing got a definite mode anyway.
+            # `category: "text-to-video"` endpoints were offered an image
+            # control they cannot honour — and a model that states nothing got
+            # a definite mode anyway.
             from gateway.catalog import _video_row as _video_row_for
             from gateway.providers.definitions import PROVIDERS_BY_ID as _P_video
             _stated = _video_row_for(

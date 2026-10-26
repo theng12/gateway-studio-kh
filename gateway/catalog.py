@@ -669,10 +669,9 @@ def _video_row(model_id: str, definition: ProviderDefinition, model: dict[str, A
         }
     # **Read what the provider states, then our own adapter's knowledge, and
     # label which it was.** The id heuristic alone was the defect: fal's
-    # `category` — which discovery stores — was never read, so `veo3.1`,
-    # `ltx-video` and `gemini-omni-flash` (all `category: "text-to-video"`)
-    # published image-to-video only, and a text-only endpoint was offered an
-    # image control it cannot honour.
+    # `category` — which discovery stores — was never read, so a row published
+    # as `category: "text-to-video"` came out as image-to-video only, and a
+    # text-only endpoint was offered an image control it cannot honour.
     stated_modes = _video_modes_stated(raw_id, raw)
     if stated_modes:
         modes, modes_source = stated_modes, "provider"
