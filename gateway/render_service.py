@@ -56,6 +56,20 @@ _STAGING_STATES = frozenset((
     "output_ready", "acknowledged",
 ))
 _CANCEL_STATES = frozenset(("requested", "cancelled"))
+#: The Hub's own name for the machine that ran a render. Every Studio Hub builds its render
+#: executor with its broker's self-label (`machine="local"` in components/hub/standalone.py), and
+#: a controller relays the executing node's answer body verbatim, so the machine that answers a
+#: poll for `.../fleet/nodes/<node>/final-renders` **is** the node the Gateway addressed. `None`
+#: is the Hub's answer before it claims the job; the node's id is accepted for a Hub that labels
+#: itself by its fleet node. Any other name is a different machine and stays refused.
+_HUB_SELF_LABEL = "local"
+#: Consecutive status answers this Gateway cannot accept before the render is reported `failed`
+#: to Story rather than polled for ever. At the 0.4 s dispatch clock this is about 12 s: long
+#: enough to outlast a transient Hub 5xx, short enough that Story's `remote_wait` cannot hang on
+#: an answer that will never become acceptable.
+_HUB_STATUS_REJECTION_LIMIT = 30
+#: How much of an unacceptable answer is quoted in the log: the Hub's words, never the whole body.
+_ANSWER_EXCERPT_CHARACTERS = 240
 _HUB_JOB_KEYS = frozenset((
     "id", "owner_scope", "dispatch_key", "accepted_request_sha256", "purpose", "state",
     "machine", "dispatch_generation", "attempt_id", "cancel_requested_at",
@@ -199,6 +213,29 @@ def _display(value: Any) -> dict[str, str]:
     return value
 
 
+def _answer_excerpt(answer: Any) -> str:
+    """What the destination answered, bounded — the Hub's own words, never a credential.
+
+    A refusal keeps the HTTP status the Hub answered with, plus whatever body the caller asked the
+    client to keep (`status(..., error_body=True)`); a decoded answer is quoted from its body.
+    """
+    if answer is None:
+        return "no answer body (the relay's reply could not be read)"
+    if type(answer) is dict and answer.get("accepted") is False:
+        said = "the Hub answered HTTP " + str(answer.get("http_status"))
+        detail = answer.get("detail")
+        if type(detail) is str and detail.strip():
+            return said + ": " + detail.strip()[:_ANSWER_EXCERPT_CHARACTERS]
+        return said
+    try:
+        body = json.dumps(answer, sort_keys=True, ensure_ascii=True, default=str)
+    except (TypeError, ValueError):
+        body = repr(answer)
+    if len(body) > _ANSWER_EXCERPT_CHARACTERS:
+        body = body[:_ANSWER_EXCERPT_CHARACTERS] + "..."
+    return "body " + body
+
+
 def _owned(principal: AuthenticatedPrivateRender, row: dict[str, Any] | None) -> dict[str, Any]:
     if row is None or row.get("owner_scope") != principal.owner_scope:
         raise RenderServiceError("RENDER_NOT_FOUND", 404)
@@ -240,8 +277,19 @@ class RegisteredHubRenderClient:
             body.extend(piece)
         return bytes(body)
 
+    @staticmethod
+    def _excerpt(response: httpx.Response) -> str:
+        """The first `_ANSWER_EXCERPT_CHARACTERS` of a refusal body; never an error of its own."""
+        body = bytearray()
+        for piece in response.iter_bytes():
+            body.extend(piece)
+            if len(body) >= _ANSWER_EXCERPT_CHARACTERS:
+                break
+        return bytes(body[:_ANSWER_EXCERPT_CHARACTERS]).decode("utf-8", "replace")
+
     def json(self, destination: RenderDestination, method: str, suffix: str, *,
-             body: bytes | None = None, headers: dict[str, str] | None = None) -> dict[str, Any]:
+             body: bytes | None = None, headers: dict[str, str] | None = None,
+             error_body: bool = False) -> dict[str, Any]:
         base, auth = self._origin(destination)
         request_headers = dict(auth)
         request_headers.update(headers or {})
@@ -249,7 +297,15 @@ class RegisteredHubRenderClient:
             with client.stream(method, base + self._path(destination, suffix),
                                content=body, headers=request_headers) as response:
                 if response.status_code >= 400:
-                    return {"accepted": False, "http_status": response.status_code}
+                    answer: dict[str, Any] = {
+                        "accepted": False, "http_status": response.status_code,
+                    }
+                    if error_body:
+                        # The Hub's own words about why it refused, bounded. Its shape is opt-in
+                        # because callers elsewhere compare `{"accepted": False, "http_status"}`
+                        # exactly; a render that cannot be polled is the case that needs a reason.
+                        answer["detail"] = self._excerpt(response)
+                    return answer
                 raw = self._bounded(response, _MAX_JSON, "HUB_RESPONSE_UNKNOWN")
         try:
             decoded = decode_render_json(raw)
@@ -288,8 +344,10 @@ class RegisteredHubRenderClient:
     def by_key(self, destination: RenderDestination, key: str) -> dict[str, Any]:
         return self.json(destination, "GET", "/by-idempotency-key/" + quote(key, safe=""))
 
-    def status(self, destination: RenderDestination, hub_job_id: str) -> dict[str, Any]:
-        return self.json(destination, "GET", "/" + quote(hub_job_id, safe=""))
+    def status(self, destination: RenderDestination, hub_job_id: str, *,
+               error_body: bool = False) -> dict[str, Any]:
+        return self.json(destination, "GET", "/" + quote(hub_job_id, safe=""),
+                         error_body=error_body)
 
     def cancel_by_key(self, destination: RenderDestination, key: str, body: bytes) -> dict[str, Any]:
         return self.json(destination, "POST", "/by-idempotency-key/"
@@ -365,6 +423,10 @@ class FinalRenderService:
         self._dispatch_cursor: tuple[float, str] | None = None
         self._last_sweep = 0.0
         self._sweep_thread: threading.Thread | None = None
+        #: `render id -> consecutive answers this Gateway could not accept`. In memory on purpose:
+        #: a restart re-asks the destination, and a process whose answers stayed unacceptable
+        #: reaches the bound again in seconds.
+        self._status_rejections: dict[str, int] = {}
 
     def _fresh_send_allowed(self, row: dict[str, Any]) -> bool:
         """New Hub I/O needs the API key still configured and this very installation."""
@@ -770,7 +832,9 @@ class FinalRenderService:
                     != row.get("outbound_hub_body_sha256")
                 or answer.get("purpose") != expected_purpose
                 or answer.get("state") not in _REMOTE_STATES
-                or answer.get("machine") not in (None, row["destination_node"])
+                or answer.get("machine") not in (
+                    None, row["destination_node"], _HUB_SELF_LABEL
+                )
                 or answer.get("dispatch_generation") is not None
                     and (type(answer["dispatch_generation"]) is not int
                          or answer["dispatch_generation"] <= 0)
@@ -1020,6 +1084,44 @@ class FinalRenderService:
                 row["id"], expected_revision=delivery["revision"],
                 remote_state=answer["state"], remote_attempt_id=answer["attempt_id"],
             )
+
+    def _status_answer_refused(
+        self, row: dict[str, Any], delivery: dict[str, Any], answer: Any,
+        error: RenderServiceError,
+    ) -> None:
+        """Log an answer the Gateway cannot accept, and end the render after a bounded run of them.
+
+        Raising out of the monitor thread is what made this expensive: the dispatch clock restarts
+        the step on the next pass, so one unacceptable answer became 1,992 tracebacks while the row
+        stayed `accepted` for ever and Story waited. The Hub's own words go to the log every time;
+        a run that never becomes acceptable settles `failed`, which is the delivery state Story
+        already reads as a remote refusal and falls back locally from.
+        """
+        count = self._status_rejections.get(row["id"], 0) + 1
+        self._status_rejections[row["id"]] = count
+        log.warning(
+            "render %s: cannot accept the destination's answer for Hub job %s (%s; %s); "
+            "answer %d of %d before the render is reported failed",
+            row["id"], row.get("hub_job_id"), error.code, _answer_excerpt(answer), count,
+            _HUB_STATUS_REJECTION_LIMIT,
+        )
+        if count < _HUB_STATUS_REJECTION_LIMIT:
+            return
+        if delivery.get("output_asset_handle") is not None:
+            # An imported output is not un-settled by a later answer: nothing here is allowed to
+            # replace the receipt that was already proved.
+            return
+        try:
+            self.store.update_render_delivery(
+                row["id"], expected_revision=delivery["revision"], remote_state="failed",
+            )
+        except RenderJournalConflict:
+            return
+        self._status_rejections.pop(row["id"], None)
+        log.warning(
+            "render %s: the destination never answered acceptably, so it is reported failed; "
+            "Story falls back to a local render", row["id"],
+        )
 
     def _one_step(self, row: dict[str, Any]) -> None:
         destination = self._destination(row)
@@ -1328,11 +1430,26 @@ class FinalRenderService:
             return
         if row["state"] == "accepted":
             delivery = self.store.get_render_delivery(row["id"]) or {"revision": 0}
-            if delivery.get("remote_state") == "output_ready" \
-                    and delivery.get("output_asset_handle") is None:
-                self._import_output(row, delivery, destination)
+            answer: Any = None
+            try:
+                if delivery.get("remote_state") == "output_ready" \
+                        and delivery.get("output_asset_handle") is None:
+                    self._import_output(row, delivery, destination)
+                    return
+                answer = self.hub.status(destination, row["hub_job_id"], error_body=True)
+                answer = self._hub_job(row, answer)
+            except RenderServiceError as exc:
+                self._status_answer_refused(row, delivery, answer, exc)
                 return
-            answer = self._hub_job(row, self.hub.status(destination, row["hub_job_id"]))
+            except Exception as exc:  # noqa: BLE001 - retried on the next pass, never fatal
+                # No acceptable answer arrived (the Mac is unreachable, the relay timed out, or a
+                # local step failed): an unknown outcome is retried and is never counted as a
+                # refusal. This used to raise out of the monitor thread and log a traceback on
+                # every dispatch pass.
+                log.warning("render %s: the status step failed (%s); retrying",
+                            row["id"], type(exc).__name__)
+                return
+            self._status_rejections.pop(row["id"], None)
             remote = answer["state"]
             self.store.update_render_delivery(
                 row["id"], expected_revision=delivery["revision"], remote_state=remote,

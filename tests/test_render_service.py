@@ -51,6 +51,8 @@ from gateway import runtime  # noqa: E402
 from gateway.render_assets import RenderAssetStore  # noqa: E402
 from gateway.render_hash_v1 import render_hash  # noqa: E402
 from gateway.render_service import (  # noqa: E402
+    _HUB_STATUS_REJECTION_LIMIT,
+    _answer_excerpt,
     AuthenticatedPrivateRender,
     FinalRenderService,
     RegisteredHubRenderClient,
@@ -559,6 +561,65 @@ class RegisteredHubWireTests(unittest.TestCase):
         self.assertEqual((payload, headers["content-range"]), (b"x", "bytes 0-0/1"))
         self.assertEqual(actual_results, wire_results)
         self.assertEqual(responses, [])
+
+    def test_a_refused_status_keeps_the_hubs_own_words_bounded_and_opt_in(self) -> None:
+        """A refused poll must be explainable; every other caller keeps the exact old shape."""
+        bodies: list[bytes] = []
+        statuses: list[int] = []
+
+        class Response:
+            def __init__(self, status: int, body: bytes):
+                self.status_code = status
+                self.body = body
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return None
+
+            def iter_bytes(self):
+                yield self.body
+
+        class Client:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return None
+
+            def stream(self, _method, _url, *, content=None, headers=None):
+                return Response(statuses.pop(0), bodies.pop(0))
+
+        destination = RenderDestination(
+            "site-a", "roster-controller-a", "parent-controller-a", "node-m4-a"
+        )
+        job_id = "66666666-6666-4666-8666-666666666666"
+        statuses[:] = [404, 404, 503]
+        bodies[:] = [
+            b'{"detail":"no such render job"}',
+            b'{"detail":"no such render job"}',
+            b"x" * (240 * 4),
+        ]
+        with patch.object(fleet, "roster", return_value=[{
+                    "id": "roster-controller-a", "url": "https://relay.invalid/",
+                }]), patch.object(fleet, "_token_for", return_value="fake-hub-token"), \
+                patch("gateway.render_service.httpx.Client", return_value=Client()):
+            client = RegisteredHubRenderClient()
+            explained = client.status(destination, job_id, error_body=True)
+            plain = client.status(destination, job_id)
+            oversized = client.status(destination, job_id, error_body=True)
+        self.assertEqual(explained, {
+            "accepted": False, "http_status": 404,
+            "detail": '{"detail":"no such render job"}',
+        })
+        # The shape other callers compare exactly (`blob_status`, the submit replay) is untouched.
+        self.assertEqual(plain, {"accepted": False, "http_status": 404})
+        self.assertEqual(len(oversized["detail"]), 240)
+        self.assertEqual(
+            _answer_excerpt(explained),
+            'the Hub answered HTTP 404: {"detail":"no such render job"}',
+        )
 
 
 class RenderServiceCase(unittest.TestCase):
@@ -2067,7 +2128,132 @@ class DispatchLifecycleTests(RenderServiceCase):
             ),
         )
 
-    def test_before_acceptance_cancel_remains_a_distinct_never_launched_proof(self) -> None:
+    def _accepted_at_the_hub(self, key: str) -> tuple[str, str]:
+        accepted = self.service.accept(principal(), key, self.request())
+        prepared = self._stage_inputs_and_prepare(accepted["id"])
+        hub_id = "66666666-6666-4666-8666-666666666666"
+        self.hub.answers["submit"] = [self._hub_job(prepared, job_id=hub_id)]
+        self.service._one_step(prepared)
+        self.assertEqual(self._row(accepted["id"])["state"], "accepted")
+        return accepted["id"], hub_id
+
+    def test_the_hubs_own_machine_label_names_the_destination_it_was_sent_to(self) -> None:
+        """`machine` is the Hub's broker self-label, not the node id the Gateway addressed.
+
+        Every Studio Hub builds its render executor with `machine="local"` and a controller relays
+        the executing node's answer verbatim (`components/hub/standalone.py`,
+        `render_jobs.claim_launch`), so a live proof's first status answer carried `local` and
+        this check refused it — `HUB_RESPONSE_UNKNOWN`, 1,992 monitor tracebacks, a row that
+        never left `accepted`. `None` is the answer before the Hub claims the job; the node id is
+        kept for a Hub that labels itself by its fleet node. Any other machine is still foreign.
+        """
+        accepted = self.service.accept(principal(), "gateway-hub-self-label", self.request())
+        prepared = self._stage_inputs_and_prepare(accepted["id"])
+        answer = self._hub_job(prepared)
+        for machine in (None, "local", "node-m4-a"):
+            with self.subTest(machine=machine):
+                self.assertEqual(
+                    self.service._hub_job(prepared, {**answer, "machine": machine}),
+                    {**answer, "machine": machine},
+                )
+        for machine in ("node-m4-b", "LOCAL", "another-mac", ""):
+            with self.subTest(machine=machine):
+                self.assert_code(
+                    "HUB_RESPONSE_UNKNOWN", self.service._hub_job, prepared,
+                    {**answer, "machine": machine},
+                )
+        # The exact live path: submit, then the first status poll after the Hub claims the job,
+        # which reports the machine that ran it by its broker label.
+        hub_id = "66666666-6666-4666-8666-666666666666"
+        self.hub.answers["submit"] = [self._hub_job(prepared, job_id=hub_id)]
+        self.service._one_step(prepared)
+        job_id = accepted["id"]
+        claimed = {
+            **self._hub_job(
+                self._row(job_id), job_id=hub_id, state="launch_pending",
+                attempt_id="abcdefabcdefabcdefabcdefabcdefab",
+            ),
+            "machine": "local",
+        }
+        self.hub.answers["status"] = [claimed]
+        self.service._one_step(self._row(job_id))
+        delivery = self.store.get_render_delivery(job_id)
+        self.assertEqual(delivery["remote_state"], "launch_pending")
+        self.assertEqual(delivery["remote_attempt_id"], "abcdefabcdefabcdefabcdefabcdefab")
+
+    def test_an_unacceptable_status_answer_is_logged_and_ends_the_render(self) -> None:
+        """A status answer that cannot be accepted must not crash-loop the monitor.
+
+        It used to raise out of the monitor thread, which the dispatch clock restarted on every
+        pass: 1,992 tracebacks in one proof run while the row stayed `accepted` for ever. The
+        Hub's own words are logged (its HTTP status, or a bounded body excerpt), and a run of
+        answers that never becomes acceptable settles the render `failed` — the delivery state
+        Story already reads as a remote refusal and falls back locally from.
+        """
+        job_id, hub_id = self._accepted_at_the_hub("gateway-status-refused")
+        limit = _HUB_STATUS_REJECTION_LIMIT
+        with self.assertLogs("gateway.render_service", level="WARNING") as captured:
+            self.hub.answers["status"] = [{
+                "accepted": False, "http_status": 404,
+                "detail": '{"detail":"no such render job"}',
+            }]
+            self.service._one_step(self._row(job_id))
+            self.assertIn('the Hub answered HTTP 404: {"detail":"no such render job"}',
+                          captured.output[-1])
+            self.assertIn("answer 1 of %d" % limit, captured.output[-1])
+            # An answer whose body is the problem is quoted, bounded, in the Hub's own words.
+            self.hub.answers["status"] = [{"state": "rendering"}]
+            self.service._one_step(self._row(job_id))
+            self.assertIn('body {"state": "rendering"}', captured.output[-1])
+            self.assertIsNone(self.store.get_render_delivery(job_id)["remote_state"])
+            for _ in range(2, limit - 1):
+                self.hub.answers["status"] = [{"accepted": False, "http_status": 503}]
+                self.service._one_step(self._row(job_id))
+            self.assertIn("the Hub answered HTTP 503", captured.output[-1])
+            self.assertIsNone(self.store.get_render_delivery(job_id)["remote_state"])
+            self.hub.answers["status"] = [{"accepted": False, "http_status": 404}]
+            self.service._one_step(self._row(job_id))
+            self.assertEqual(
+                self.store.get_render_delivery(job_id)["remote_state"], "failed",
+            )
+            self.assertIn("Story falls back to a local render", captured.output[-1])
+        self.assertEqual(self.store.get_render_staging(job_id)["hub_job_id"], hub_id)
+        self.assertEqual([item["id"] for item in self.store.render_due(limit=64)], [])
+        public = self.service.status(principal(), job_id)
+        self.assertEqual((public["state"], public["remote_state"]), ("accepted", "failed"))
+
+    def test_an_accepted_status_answer_resets_the_rejection_count(self) -> None:
+        job_id, hub_id = self._accepted_at_the_hub("gateway-status-reset")
+        limit = _HUB_STATUS_REJECTION_LIMIT
+        with self.assertLogs("gateway.render_service", level="WARNING"):
+            for _ in range(limit - 1):
+                self.hub.answers["status"] = [{"accepted": False, "http_status": 404}]
+                self.service._one_step(self._row(job_id))
+            self.hub.answers["status"] = [self._hub_job(
+                self._row(job_id), job_id=hub_id, state="rendering",
+                attempt_id="abcdefabcdefabcdefabcdefabcdefab",
+            )]
+            self.service._one_step(self._row(job_id))
+            self.assertEqual(
+                self.store.get_render_delivery(job_id)["remote_state"], "rendering",
+            )
+            for _ in range(limit - 1):
+                self.hub.answers["status"] = [{"accepted": False, "http_status": 404}]
+                self.service._one_step(self._row(job_id))
+        self.assertEqual(self.store.get_render_delivery(job_id)["remote_state"], "rendering")
+        self.assertEqual([item["id"] for item in self.store.render_due(limit=64)], [job_id])
+
+    def test_a_transport_failure_is_retried_and_never_counts_as_a_refusal(self) -> None:
+        job_id, _hub_id = self._accepted_at_the_hub("gateway-status-transport")
+        with self.assertLogs("gateway.render_service", level="WARNING") as captured:
+            for _ in range(_HUB_STATUS_REJECTION_LIMIT * 2):
+                self.hub.answers["status"] = [TimeoutError("fake unreachable Mac")]
+                self.service._one_step(self._row(job_id))
+        self.assertIn("the status step failed (TimeoutError)", captured.output[-1])
+        self.assertIsNone(self.store.get_render_delivery(job_id)["remote_state"])
+        self.assertEqual([item["id"] for item in self.store.render_due(limit=64)], [job_id])
+
+
         raw = self.request(intent_id="never-launched-proof")
         digest = hashlib.sha256(raw).hexdigest()
         public = self.service.request_cancel_by_key(
