@@ -155,5 +155,151 @@ class NoInventedWorkerCountIsPublishedTest(unittest.TestCase):
         self.assertNotIn('"available_workers": 1', source)
 
 
+class ReferenceCapabilityMergesAsAUnionTest(unittest.TestCase):
+    """Reference capability across locations: the **union**, with the limits of the sites that have it.
+
+    Owner, 2026-10-26, overruling the plan's intersection-of-everyone: one location whose Macs are
+    all below the edit floor must not hide the feature from the whole fleet, and routing already
+    keeps a non-capable location from receiving reference work
+    (`fleet.routing_candidates(require_capability="edit")`). The numbers published must still hold on
+    every location that can take the job, so they are the least permissive of those.
+    """
+
+    CAPABLE = {"supports_reference_images": True, "min_reference_images": 1,
+               "max_reference_images": 2, "reference_image_max_dimension": 1024,
+               "operations": ["text-to-image", "image-to-image"]}
+    INCAPABLE = {"supports_reference_images": False, "min_reference_images": 0,
+                 "max_reference_images": 0, "reference_image_max_dimension": None,
+                 "operations": ["text-to-image"]}
+    UNSTATED = {"supports_reference_images": None, "min_reference_images": None,
+                "max_reference_images": None, "reference_image_max_dimension": None,
+                "operations": ["text-to-image"]}
+
+    def merge(self, *rows: dict) -> dict:
+        merged = dict(rows[0])
+        for row in rows[1:]:
+            catalog._merge_capabilities(merged, dict(row), "image")
+        return merged
+
+    def test_one_capable_location_publishes_the_feature_with_its_own_limits(self) -> None:
+        merged = self.merge(self.INCAPABLE, self.CAPABLE)
+        self.assertIs(merged["supports_reference_images"], True,
+                      "a site that cannot do it must not hide it from the fleet")
+        self.assertEqual((merged["min_reference_images"], merged["max_reference_images"],
+                          merged["reference_image_max_dimension"]), (1, 2, 1024))
+        self.assertEqual(merged["operations"], ["text-to-image", "image-to-image"])
+
+    def test_the_order_of_locations_does_not_decide_the_answer(self) -> None:
+        self.assertEqual(self.merge(self.INCAPABLE, self.CAPABLE)["max_reference_images"], 2)
+        self.assertEqual(self.merge(self.CAPABLE, self.INCAPABLE)["max_reference_images"], 2,
+                         "first-location-wins is the defect this merge replaced")
+        self.assertIs(self.merge(self.CAPABLE, self.INCAPABLE)["supports_reference_images"], True)
+
+    def test_two_capable_locations_publish_the_stricter_limits(self) -> None:
+        second = {"supports_reference_images": True, "min_reference_images": 2,
+                  "max_reference_images": 3, "reference_image_max_dimension": 768}
+        merged = self.merge(self.CAPABLE, second)
+        self.assertIs(merged["supports_reference_images"], True)
+        self.assertEqual(merged["min_reference_images"], 2, "the highest minimum any site needs")
+        self.assertEqual(merged["max_reference_images"], 2, "the smallest maximum any site takes")
+        self.assertEqual(merged["reference_image_max_dimension"], 768,
+                         "the smallest ceiling, so every routed location honours it")
+
+    def test_a_third_location_is_still_measured_against_the_advertisers_only(self) -> None:
+        second = {"supports_reference_images": True, "min_reference_images": 1,
+                  "max_reference_images": 4, "reference_image_max_dimension": 2048}
+        merged = self.merge(self.CAPABLE, second, self.INCAPABLE, self.UNSTATED)
+        self.assertIs(merged["supports_reference_images"], True)
+        self.assertEqual((merged["min_reference_images"], merged["max_reference_images"],
+                          merged["reference_image_max_dimension"]), (1, 2, 1024),
+                         "a non-advertising location's 0 is not a ceiling")
+
+    def test_capable_plus_unstated_keeps_the_stated_limits(self) -> None:
+        merged = self.merge(self.CAPABLE, self.UNSTATED)
+        self.assertIs(merged["supports_reference_images"], True)
+        self.assertEqual(merged["max_reference_images"], 2)
+
+    def test_nowhere_capable_publishes_a_definite_no(self) -> None:
+        merged = self.merge(self.INCAPABLE, self.INCAPABLE)
+        self.assertIs(merged["supports_reference_images"], False)
+        self.assertEqual((merged["min_reference_images"], merged["max_reference_images"],
+                          merged["reference_image_max_dimension"]), (0, 0, None))
+
+    def test_nobody_stating_anything_publishes_unstated(self) -> None:
+        merged = self.merge(self.UNSTATED, self.UNSTATED)
+        self.assertIsNone(merged["supports_reference_images"])
+        self.assertIsNone(merged["max_reference_images"],
+                          "unstated is not a definite no, and not a number either")
+
+    def test_a_definite_no_beside_an_unstated_site_is_a_no(self) -> None:
+        merged = self.merge(self.UNSTATED, self.INCAPABLE)
+        self.assertIs(merged["supports_reference_images"], False)
+
+    def test_the_capability_is_not_in_the_min_wins_ceiling_table(self) -> None:
+        source = (ROOT / "gateway" / "catalog.py").read_text(encoding="utf-8")
+        self.assertNotIn('("max_reference_images", "max_reference_images_source"', source,
+                         "a min-wins ceiling would publish 0 whenever any site is incapable")
+
+
+class APoolAliasPublishesWhatEveryMemberSupportsTest(unittest.TestCase):
+    """A pool alias is a menu of models: what it states must hold for the member that answers.
+
+    The location merge above takes the union because a reference job is routed to a location that
+    has the capability; a pool routes across *models*, and the caller does not choose which, so one
+    member without references takes the whole alias down to none.
+    """
+
+    def alias(self, *members: dict) -> dict:
+        from types import SimpleNamespace
+        from unittest.mock import patch
+
+        from gateway import fleet as fleet_module
+
+        rows = {f"m{index}": dict(row) for index, row in enumerate(members)}
+        definitions = [SimpleNamespace(id=f"studio-hub-{model_id}", kind="studio_hub")
+                       for model_id in rows]
+        models = [{"model_id": model_id, "modality": "image", "raw": {}} for model_id in rows]
+        with (
+            patch.object(catalog.Catalog, "_current_signature", return_value=()),
+            patch.object(catalog.Catalog, "_story_row",
+                         lambda _self, modality, definition, model, **_: dict(rows[model["model_id"]])),
+            patch.object(catalog.registry.models, "enabled_models",
+                         lambda modality: list(zip(definitions, models))
+                         if modality == "image" else []),
+            patch.object(catalog.registry.models, "cached", lambda provider_id: {}),
+            patch.object(fleet_module, "usable_location_ids", lambda: set()),
+            patch.object(catalog.pools, "image_pools",
+                         lambda: [{"name": "pool", "display_name": "Pool"}]),
+            patch.object(catalog.image_assignment, "pool_models", lambda pool: list(rows)),
+        ):
+            built = catalog.Catalog()
+        return next(row for row in built.rows("image") if row["id"] == "studio-hub::pool")
+
+    def _member(self, index: int, **changes) -> dict:
+        row = {"id": f"studio-hub::m{index}", "display_name": f"m{index}", "legacy_ids": [],
+               "aspect_ratios": ["1:1"],
+               "default_aspect_ratio": "1:1", "output_options": [], "supports_seed": True,
+               "operations": ["text-to-image"], "max_prompt_characters": 4000,
+               "max_prompt_characters_source": "provider", "locked": False, "chargeable": False,
+               **ReferenceCapabilityMergesAsAUnionTest.CAPABLE}
+        row.update(changes)
+        return row
+
+    def test_the_alias_takes_the_stricter_reference_limits_of_its_members(self) -> None:
+        alias = self.alias(self._member(0),
+                           self._member(1, max_reference_images=3,
+                                        reference_image_max_dimension=1536))
+        self.assertIs(alias["supports_reference_images"], True)
+        self.assertEqual((alias["min_reference_images"], alias["max_reference_images"],
+                          alias["reference_image_max_dimension"]), (1, 2, 1024))
+
+    def test_a_member_without_references_takes_the_alias_down_to_none(self) -> None:
+        alias = self.alias(self._member(0),
+                           self._member(1, **ReferenceCapabilityMergesAsAUnionTest.INCAPABLE))
+        self.assertIs(alias["supports_reference_images"], False)
+        self.assertIsNone(alias["reference_image_max_dimension"],
+                          "no member may be offered a reference ceiling the alias cannot honour")
+
+
 if __name__ == "__main__":
     unittest.main()

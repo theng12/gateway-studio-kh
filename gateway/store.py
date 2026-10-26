@@ -59,7 +59,11 @@ HUB_RESENDABLE_MODALITIES = frozenset({"image", "tts", "music", "video"})
 RECOVERY_RETRYABLE = "retryable"
 CANCEL_REQUESTED = "requested"
 CANCEL_CONFIRMED = "confirmed"
-_INPUT_PARAM_KEYS = ("_upload_path", "_reference_path")
+#: Request params that hold a staged input file. `_reference_paths` is the image lane's **list** —
+#: several reference images ride one job — so `input_paths_of` expands list values as well as
+#: strings; a key read as a bare string would protect the first reference and let the retention
+#: sweep delete the rest.
+_INPUT_PARAM_KEYS = ("_upload_path", "_reference_path", "_reference_paths")
 
 
 class RenderJournalConflict(ValueError):
@@ -494,11 +498,15 @@ def input_paths_of(job: dict[str, Any]) -> set[str]:
             return set()
     if not isinstance(params, dict):
         return set()
-    return {
-        str(params[key])
-        for key in _INPUT_PARAM_KEYS
-        if isinstance(params.get(key), str) and params[key]
-    }
+    paths: set[str] = set()
+    for key in _INPUT_PARAM_KEYS:
+        value = params.get(key)
+        if isinstance(value, str) and value:
+            paths.add(value)
+        elif isinstance(value, list):
+            # A job may carry several staged inputs under one key (the image lane's references).
+            paths.update(str(item) for item in value if isinstance(item, str) and item)
+    return paths
 
 
 class JobStore:

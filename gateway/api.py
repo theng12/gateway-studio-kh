@@ -1459,9 +1459,14 @@ def _submit(
         params = dict(params or {})
         params["_pool_id"] = pool_name
 
+    # **A job's own parameters decide what the location must be able to do.** Reference-guided
+    # images may only run where the worker advertises `edit`; every other modality and every
+    # prompt-only image job states no requirement, so an old or non-reference location still
+    # takes it. Read once, so the route and the refusal sentence can never disagree.
+    capability = fleet.required_capability(modality, params)
     definition, model = catalog.resolve(
         modality, compound_id, only_location=_pinned_location(params),
-        job_key=uuid.uuid4().hex,
+        job_key=uuid.uuid4().hex, require_capability=capability,
     )
     if definition is None or model is None:
         # **An offered model with no live site is not a missing model.** The fleet
@@ -1470,7 +1475,8 @@ def _submit(
         # 503 says so. The 404 below is kept for the ids that really are not in the
         # catalogue, so the two can never read the same.
         why = catalog.why_no_route(
-            modality, compound_id, only_location=_pinned_location(params)
+            modality, compound_id, only_location=_pinned_location(params),
+            require_capability=capability,
         )
         if why is not None:
             raise GatewayError(503, why, "SITE_CAPACITY_UNAVAILABLE")
@@ -1481,6 +1487,8 @@ def _submit(
         )
     if modality == "tts":
         _refuse_an_unspoken_language(compound_id, model, params)
+    if capability is not None:
+        _refuse_references_this_lane_cannot_take(definition, model, params)
     # An idempotency key identifies one request, and a request has a modality.
     # The replay lookup matched on the key alone, so posting to
     # `/v1/images/generations` with a key already used on `/v1/chat/responses`
@@ -2739,7 +2747,21 @@ def create_image(
     key = _require_idempotency_key(idempotency_key)
     _validate_output_format("image", payload)
     model_id = str(payload.get("model_id") or payload.get("model") or "")
-    job, created = _submit("image", model_id, payload, key, caller=caller)
+    reference_ids = _image_reference_ids(payload)
+    # **A replay is answered before the uploads are looked at.** The job already exists and has its
+    # own staged copies, so a caller whose 202 was lost gets its job back even after the 15-minute
+    # upload window closed — and if the references it now names are a different set, that is a
+    # different render and a 409 rather than the earlier job's image.
+    already = store.find_by_idempotency_key(key) if reference_ids is not None else None
+    if already is not None and already["modality"] == "image":
+        _refuse_changed_references(already, reference_ids)
+        return _replay_marked(_job_envelope(already), False)
+    params = _stage_image_references(payload)
+    job, created = _submit("image", model_id, params, key, caller=caller)
+    if not created:
+        # Two concurrent submissions can both pass the check above; the store settles which one
+        # made the job, and its reference set is still the one this key now means.
+        _refuse_changed_references(job, reference_ids or [])
     if created:
         response.status_code = 202
         response.headers["Location"] = f"/v1/images/{job['id']}"
@@ -2825,6 +2847,231 @@ def cancel_image_job(job_id: str) -> dict[str, Any]:
     store.cancel(job_id)
     _cancel_upstream(job)
     return _job_envelope(store.get(job_id))
+
+
+@app.post("/v1/images/source-images", dependencies=[Depends(require_auth)])
+async def upload_image_source_image(
+    file: UploadFile | None = File(default=None),
+    upload: UploadFile | None = File(default=None),
+) -> dict[str, Any]:
+    """Hold one reference image a reference-guided generation will name.
+
+    Story Studio's "Reference to Image" flow uploads here first and then submits with the returned
+    ids as ``reference_asset_ids`` — the same two-step shape as image-to-video, and this is the one
+    address Story knows, so the bytes are held between the calls (``gateway/image_assets.py``).
+
+    **The answer is Story's field names, not the video route's.** It reads ``id``, ``media_type``,
+    ``byte_size``, ``width``, ``height`` and ``expires_at``; the video route answers ``bytes`` and
+    ``expires_in_seconds``, and an image client handed those throws.
+
+    **The body is read as an image here, not at the worker.** A body that is not a readable image of
+    the type it claims would fail mid-render on a Mac that has already taken the job; the upload door
+    is the cheapest place to refuse it, and it is the only place that can name the caller's file.
+    """
+    from . import image_assets
+
+    chosen = upload or file
+    if chosen is None:
+        raise GatewayError(
+            400, "Upload a reference image (multipart field 'upload').", "INVALID_PARAMS"
+        )
+    content = await chosen.read()
+    _refuse_when_the_disk_is_low(len(content))
+    if not content:
+        raise GatewayError(400, "The reference image is empty.", "INVALID_PARAMS")
+    if len(content) > image_assets.MAX_SOURCE_IMAGE_BYTES:
+        raise GatewayError(
+            413,
+            f"That image is {len(content) / (1024 * 1024):.1f} MB; the limit is "
+            f"{image_assets.MAX_SOURCE_IMAGE_BYTES // (1024 * 1024)} MB per image.",
+            "PAYLOAD_TOO_LARGE",
+        )
+    media_type = (chosen.content_type or "").split(";")[0].strip().lower()
+    if media_type not in image_assets.ACCEPTED_MEDIA_TYPES:
+        raise GatewayError(
+            400,
+            f"Unsupported reference image type {media_type or 'unknown'!r}; "
+            f"use one of {', '.join(image_assets.ACCEPTED_MEDIA_TYPES)}.",
+            "INVALID_PARAMS",
+        )
+    size = image_assets.dimensions(content, media_type)
+    if size is None:
+        raise GatewayError(
+            400,
+            f"That file is not a readable {media_type} image; its header does not state a size. "
+            "Upload an intact PNG, JPEG or WebP.",
+            "INVALID_PARAMS",
+        )
+    held = image_assets.store(content, chosen.filename or "reference.png", media_type)
+    return {"id": held["id"], "media_type": held["media_type"],
+            "byte_size": held["byte_size"], "width": size[0], "height": size[1],
+            "expires_at": held["expires_at"]}
+
+
+def _image_reference_ids(payload: dict[str, Any]) -> list[str] | None:
+    """The uploaded reference assets a generation names, in order.
+
+    `None` means the request names none at all — an ordinary text-to-image job. **An empty list is
+    not the same thing**: the caller asked for a reference render with nothing in it, and a model
+    that needs at least one must refuse that rather than quietly render from the prompt alone.
+
+    Read here rather than at dispatch because the id is the whole request: it decides the route (a
+    reference job may only run where `edit` is advertised) and the replay (a key replayed with
+    different references is a different render). A list the caller got wrong is refused before
+    anything is staged, so it cannot become "some of your references were used".
+    """
+    raw = payload.get("reference_asset_ids") if isinstance(payload, dict) else None
+    if raw is None:
+        return None
+    if not isinstance(raw, list) or not all(isinstance(item, str) and item.strip() for item in raw):
+        raise GatewayError(
+            400,
+            "reference_asset_ids must be a list of the ids POST /v1/images/source-images returned.",
+            "INVALID_PARAMS",
+        )
+    return [str(item).strip() for item in raw]
+
+
+def _stage_image_references(payload: dict[str, Any]) -> dict[str, Any]:
+    """Keep every reference image with the job, the way a transcription's audio is staged.
+
+    The upload lives 15 minutes in process memory, but the adapter reads the bytes at *dispatch*: a
+    job that waited longer in the queue, or outlived a restart, would have lost them. Written beside
+    the other staged inputs at submit, so the job carries its own copies — all of them, in order —
+    and the retention sweep knows to keep them while the job is queued or held (``_reference_paths``
+    is one of ``store._INPUT_PARAM_KEYS``).
+
+    A reference that is gone is a refusal, never a shorter list: sending one image fewer would be a
+    render of different characters under the same request, which is the failure this feature exists
+    to make impossible.
+    """
+    from . import image_assets
+
+    asset_ids = _image_reference_ids(payload)
+    if asset_ids is None:
+        return payload
+    directory = ARTIFACT_DIR / "uploads"
+    directory.mkdir(parents=True, exist_ok=True)
+    paths: list[str] = []
+    types: list[str] = []
+    digests: list[str] = []
+    expired: list[str] = []
+    for asset_id in asset_ids:
+        asset = image_assets.get(asset_id)
+        if asset is None:
+            expired.append(asset_id)
+            continue
+        staged = directory / f"image-ref-{asset['digest']}"
+        staged.write_bytes(asset["content"])
+        paths.append(str(staged))
+        types.append(asset["media_type"])
+        digests.append(asset["digest"])
+    if expired:
+        raise GatewayError(
+            400,
+            f"Reference image {', '.join(expired)} is no longer held — the upload window is "
+            f"{image_assets.TTL_S // 60} minutes. Upload it again and retry.",
+            "REFERENCE_ASSET_EXPIRED",
+        )
+    return {**payload, "_reference_paths": paths, "_reference_types": types,
+            "_reference_digests": digests}
+
+
+def _job_reference_digests(job: dict[str, Any]) -> list[str]:
+    """The reference digests the job was made with, from its stored params."""
+    params = job.get("params")
+    if not isinstance(params, dict):
+        try:
+            params = json.loads(params or "{}")
+        except (TypeError, ValueError):
+            return []
+    digests = params.get("_reference_digests") if isinstance(params, dict) else None
+    return [str(item) for item in digests] if isinstance(digests, list) else []
+
+
+def _refuse_changed_references(job: dict[str, Any], digests: list[str]) -> None:
+    """Refuse a replay whose reference set is not the one that job was made with.
+
+    A key identifies one request. Handing back the earlier job for a request carrying different
+    characters would answer with an image of the wrong people — silently, because the envelope looks
+    exactly like a success.
+    """
+    stored = _job_reference_digests(job)
+    if stored == list(digests):
+        return
+    raise GatewayError(
+        409,
+        f"That Idempotency-Key was already used for an image request naming "
+        f"{len(stored)} reference image{'s' if len(stored) != 1 else ''}, and this request names "
+        f"{len(digests)} whose content differs. A key identifies one request — use a new one for "
+        "this render.",
+        "IDEMPOTENCY_KEY_REUSED",
+    )
+
+
+def _refuse_references_this_lane_cannot_take(
+    definition: Any, model: dict[str, Any], params: dict[str, Any]
+) -> None:
+    """Refuse references a model cannot take, and a count its lane does not.
+
+    Two checks, both read from the model's own statement:
+
+      * **The lane must take references at all.** Routing keeps a reference job off a location that
+        does not advertise `edit`, but a legacy site-scoped id (`studio-hub-<site>::…`) and a cloud
+        id resolve *without* routing — the caller named the lane. Without this line that path would
+        hand `_reference_paths` to an adapter that never reads them and answer with a text-to-image
+        render that looks like success.
+      * **The count must be inside the window the lane states.** The figures are the ones the
+        catalogue publishes as `min_reference_images` / `max_reference_images`, so what is enforced
+        and what Story was shown are one value, and the message names them.
+
+    A lane that states no limits is not refused here: the worker is then the only authority, and a
+    gateway number would be one Story was never told about.
+    """
+    from .providers.definitions import (
+        KIND_STUDIO_HUB, image_reference_limits, image_reference_state,
+    )
+
+    raw = (model or {}).get("raw") or {}
+    states = image_reference_state(str(getattr(definition, "kind", "")),
+                                   str((model or {}).get("model_id") or ""), raw)
+    if states is not True:
+        raise GatewayError(
+            400,
+            "This model does not take reference images. Pick a model whose catalogue row "
+            "publishes supports_reference_images: true, or send the request without "
+            "reference_asset_ids.",
+            "INVALID_PARAMS",
+        )
+    if getattr(definition, "kind", None) != KIND_STUDIO_HUB:
+        # The model takes references; this gateway cannot carry them to *this* lane. The Studio
+        # Hub adapter is the only one that reads the staged reference bytes today, so a cloud
+        # endpoint that wants a reference URL of its own would be handed nothing — the silent
+        # text-to-image render this whole guard exists to prevent. Whose limit it is, said plainly.
+        raise GatewayError(
+            400,
+            "This model takes reference images, but this gateway cannot send them to that "
+            "provider's lane yet. Pick the Studio Hub model, or send the request without "
+            "reference_asset_ids.",
+            "INVALID_PARAMS",
+        )
+    limits = image_reference_limits(raw)
+    count = len(params.get("_reference_digests") or [])
+    maximum, minimum = limits["max"], limits["min"]
+    if isinstance(maximum, int) and count > maximum:
+        raise GatewayError(
+            400,
+            f"This model takes at most {maximum} reference image{'s' if maximum != 1 else ''}; "
+            f"this request names {count}.",
+            "INVALID_PARAMS",
+        )
+    if isinstance(minimum, int) and count < minimum:
+        raise GatewayError(
+            400,
+            f"This model needs at least {minimum} reference image{'s' if minimum != 1 else ''}; "
+            f"this request names {count}.",
+            "INVALID_PARAMS",
+        )
 
 
 # ---------------------------------------------------------------------------

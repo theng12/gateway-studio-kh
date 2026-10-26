@@ -272,15 +272,78 @@ class SeamRouteTests(_Case):
         self.assertIn(staged["_reference_path"], api.store.protected_input_paths(),
                       "the retention sweep must not delete a queued job's source image")
 
-    def test_no_image_model_is_published_as_taking_reference_images(self) -> None:
+    def test_a_model_whose_lane_publishes_references_is_published_with_them(self) -> None:
+        """**Inverted 2026-10-26.** This used to assert the opposite: every reference-capable image
+        model was published as taking none, because the gateway served neither half of the feature
+        (no upload route, no adapter reading `reference_asset_ids`). Both halves exist now — this is
+        the publication half — so a lane whose worker advertises `edit` and states its own limits is
+        described by them, and the three answers are a fact the Hub states rather than a gateway
+        ceiling."""
         from gateway.catalog import _image_row
         from gateway.providers.definitions import PROVIDERS_BY_ID
 
-        row = _image_row("fal-ai/flux/dev/image-to-image", PROVIDERS_BY_ID["fal-ai"],
-                         {"model_id": "fal-ai/flux/dev/image-to-image",
-                          "raw": {"category": "image-to-image"}})
-        self.assertIsNot(row["supports_reference_images"], True)
+        row = _image_row("AITRADER/FLUX2-klein-4B-mlx-4bit", PROVIDERS_BY_ID["studio-hub-local"],
+                         {"model_id": "AITRADER/FLUX2-klein-4B-mlx-4bit",
+                          "raw": {"capabilities": ["txt2img", "edit"],
+                                  "lane_contract": {"references": {
+                                      "min": 1, "max": 2, "max_dimension": 1024}}}})
+        self.assertIs(row["supports_reference_images"], True)
+        self.assertEqual(row["operations"], ["text-to-image", "image-to-image"])
+        self.assertEqual((row["min_reference_images"], row["max_reference_images"],
+                          row["reference_image_max_dimension"]), (1, 2, 1024))
+
+    def test_an_old_hub_advertising_the_lane_but_stating_no_limits_publishes_no_numbers(self) -> None:
+        """A Hub that advertises `edit` without the `references` block states no figures, and the
+        gateway invents none — `None` (unstated), never the removed `1, 4` / `2048` literals."""
+        from gateway.catalog import _image_row
+        from gateway.providers.definitions import PROVIDERS_BY_ID
+
+        row = _image_row("AITRADER/FLUX2-klein-4B-mlx-4bit", PROVIDERS_BY_ID["studio-hub-local"],
+                         {"model_id": "AITRADER/FLUX2-klein-4B-mlx-4bit",
+                          "raw": {"capabilities": ["txt2img", "edit"]}})
+        self.assertIs(row["supports_reference_images"], True)
+        self.assertIsNone(row["min_reference_images"])
+        self.assertIsNone(row["max_reference_images"])
+        self.assertIsNone(row["reference_image_max_dimension"])
+
+    def test_a_lane_that_states_text_only_is_still_published_as_taking_none(self) -> None:
+        from gateway.catalog import _image_row
+        from gateway.providers.definitions import PROVIDERS_BY_ID
+
+        row = _image_row("AITRADER/FLUX2-klein-4B-mlx-4bit", PROVIDERS_BY_ID["studio-hub-local"],
+                         {"model_id": "AITRADER/FLUX2-klein-4B-mlx-4bit",
+                          "raw": {"capabilities": ["txt2img"]}})
+        self.assertIs(row["supports_reference_images"], False)
         self.assertEqual(row["operations"], ["text-to-image"])
+        self.assertEqual((row["min_reference_images"], row["max_reference_images"],
+                          row["reference_image_max_dimension"]), (0, 0, None))
+
+    def test_every_uploaded_reference_is_kept_with_the_job(self) -> None:
+        """Two references, one job: the second must be protected from the retention sweep too.
+
+        `input_paths_of` used to read a single string per key, so a list of staged inputs protected
+        only what a string could hold — nothing — and the sweep was free to delete a queued job's
+        characters. `_reference_paths` is one key holding all of them, in order.
+        """
+        from gateway import image_assets
+        import struct
+
+        def _png(width: int) -> bytes:
+            return (b"\x89PNG\r\n\x1a\n" + struct.pack(">I", 13) + b"IHDR"
+                    + struct.pack(">II", width, width) + b"\x08\x02\x00\x00\x00" + b"body")
+
+        ids = [image_assets.store(_png(width), f"{width}.png", "image/png")["id"]
+               for width in (640, 800)]
+        staged = api._stage_image_references({"reference_asset_ids": ids, "prompt": "two of them"})
+        self.assertEqual(len(staged["_reference_paths"]), 2)
+        self.assertEqual(staged["_reference_digests"], ids)
+        self.assertTrue(all(Path(path).exists() for path in staged["_reference_paths"]))
+        row, _ = api.store.submit(modality="image", model_id="m", params=staged,
+                                  idempotency_key=f"refs-{time.time()}")
+        protected = api.store.protected_input_paths()
+        for path in staged["_reference_paths"]:
+            self.assertIn(path, protected,
+                          "the retention sweep must not delete a queued job's reference images")
 
 
 class VoicePreviewTests(_Case):

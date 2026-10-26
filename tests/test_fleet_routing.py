@@ -1317,5 +1317,65 @@ class TheFleetReadPublishesTheAdmissionBudgetTest(unittest.TestCase):
         self.assertIn("did not state free slots", lane["detail"])
 
 
+class ReferenceJobRoutingTests(unittest.TestCase):
+    """"Reference to Image" may only be routed to a location whose worker advertises `edit`.
+
+    The capability is the worker's own statement — its edit lane, its weights and its memory — so the
+    gateway's question is "can this site do it at all", never a guess from a model name or a RAM
+    figure. A site that cannot is skipped rather than sent work its own broker will refuse; when no
+    site can, the refusal says so instead of "try again later", which would be true for ever.
+    """
+
+    def _route_with(self, capabilities: dict[str, list[str] | None]):
+        locations = [_location(location) for location in capabilities]
+        definitions = [_definition(location) for location in capabilities]
+
+        def enabled(modality_name: str):
+            return [(definition, {"model_id": MODEL, "modality": MODALITY, "enabled": True,
+                                  "raw": {"capabilities": capabilities[location]}})
+                    for definition, location in zip(definitions, capabilities)]
+
+        with patch.object(fleet, "snapshot", lambda allow_stale=False: {"locations": locations}), \
+                patch.object(registry.models, "enabled_models", enabled):
+            return fleet.routing_candidates(MODEL, MODALITY, require_capability="edit")
+
+    def test_a_location_without_the_edit_capability_is_not_a_candidate(self) -> None:
+        found = self._route_with({"a": ["txt2img"], "b": ["txt2img", "edit"]})
+        self.assertEqual([candidate["location_id"] for candidate in found], ["b"])
+
+    def test_a_row_that_states_no_capabilities_is_not_a_candidate_either(self) -> None:
+        found = self._route_with({"a": None, "b": ["txt2img", "edit"]})
+        self.assertEqual([candidate["location_id"] for candidate in found], ["b"])
+
+    def test_with_no_capable_location_there_is_no_route_and_the_reason_names_it(self) -> None:
+        with patch.object(fleet, "snapshot", lambda allow_stale=False: {"locations": [_location("a")]}), \
+                patch.object(registry.models, "enabled_models",
+                             lambda modality: [(_definition("a"),
+                                                {"model_id": MODEL, "modality": MODALITY,
+                                                 "enabled": True, "raw": {"capabilities": ["txt2img"]}})]):
+            self.assertEqual(fleet.routing_candidates(MODEL, MODALITY, require_capability="edit"), [])
+            chosen, note = fleet.route(MODEL, MODALITY, require_capability="edit")
+        self.assertIsNone(chosen)
+        self.assertIn("no location can run", note)
+
+    def test_the_503_sentence_names_the_missing_capability(self) -> None:
+        from gateway import catalog
+
+        with patch.object(fleet, "snapshot", lambda allow_stale=False: {"locations": [_location("a")]}), \
+                patch.object(registry.models, "enabled_models",
+                             lambda modality: [(_definition("a"),
+                                                {"model_id": MODEL, "modality": MODALITY,
+                                                 "enabled": True, "raw": {"capabilities": ["txt2img"]}})]):
+            sentence = catalog.catalog.why_no_route(
+                "image", f"{fleet.FLEET_PROVIDER_ID}::{MODEL}", require_capability="edit")
+        self.assertIsNotNone(sentence)
+        self.assertIn("'edit' capability", sentence,
+                      "a caller told to retry a permanent condition retries for ever")
+
+    def test_a_capable_location_still_takes_a_prompt_only_job(self) -> None:
+        found = self._route_with({"a": ["txt2img"], "b": ["txt2img", "edit"]})
+        self.assertEqual(len(found), 1, "the filter is the request's, not a permanent one")
+
+
 if __name__ == "__main__":
     unittest.main()

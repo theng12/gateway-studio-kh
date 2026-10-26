@@ -478,6 +478,62 @@ def _video_reference(request: BackendRequest) -> list[dict[str, Any]] | None:
     return [{"b64": base64.b64encode(asset["content"]).decode("ascii"),
              "mime": asset["media_type"]}]
 
+
+def _image_reference(request: BackendRequest) -> list[dict[str, Any]] | None:
+    """The uploaded reference images, as the Hub's `reference_images` item entries, in order.
+
+    "Reference to Image": Story Studio uploads each character/reference image to this gateway and
+    submits the ids; `create_image` stages every one of them beside the transcription uploads, so
+    the bytes are here at dispatch time. The Hub's broker resolves `reference_images[]` entries
+    itself and takes its edit door when they are present; inline base64 is the only one of its
+    accepted shapes that works across the two systems (the Hub has never seen this gateway's asset
+    ids, and a URL would make the Hub fetch back from the gateway).
+
+    An entry that has aged out is a caller problem and named as one — with its position, so a
+    three-reference job twice the size of an ordinary one is not sent with one image missing.
+
+    `None` means the request names no references at all, which is an ordinary text-to-image job.
+    """
+    paths = request.params.get("_reference_paths")
+    if not isinstance(paths, list) or not paths:
+        return None
+    types = request.params.get("_reference_types")
+    types = types if isinstance(types, list) else []
+    entries: list[dict[str, Any]] = []
+    missing: list[str] = []
+    for index, path in enumerate(paths):
+        staged = Path(str(path))
+        if not staged.exists():
+            missing.append(f"{index + 1} of {len(paths)}")
+            continue
+        media_type = str(types[index]) if index < len(types) and types[index] else "image/png"
+        entries.append({"b64": base64.b64encode(staged.read_bytes()).decode("ascii"),
+                        "mime": media_type})
+    if missing:
+        raise BackendError(
+            f"reference image {', '.join(missing)} for this image job is no longer held; "
+            "upload the references again and retry",
+            code="INVALID_PARAMS",
+            upstream_accepted=False,
+        )
+    return entries
+
+
+def _reference_count(item: dict[str, Any], terminal: dict[str, Any]) -> int | None:
+    """How many references the Hub says the worker actually attached — `None` when it did not say.
+
+    Read from the worker's `terminal_result` first and the item beside it second, because the Hub
+    states it wherever it files the worker's job summary. `None` is "unstated", which is a different
+    fact from zero and must not be read as one.
+    """
+    for source in (terminal, item):
+        if not isinstance(source, dict):
+            continue
+        value = source.get("reference_count")
+        if type(value) is int and value >= 0:
+            return value
+    return None
+
 #: What the Hub's Music item accepts. Which engine takes which field differs (the
 #: vocal engines take `lyrics`, `vocal_language`, `instrumental`; Stable Audio 3 is
 #: instrumental only and takes the rest). The gateway forwards whichever of these
@@ -1882,6 +1938,14 @@ def _generate_image_or_voice(request: BackendRequest) -> BackendResult:
                 # a prompt-only job: measured 2026-09-26, the first chain job generated
                 # text-to-video from a request that had uploaded a source image.
                 item["params"]["reference_images"] = reference
+        elif request.modality == "image":
+            # The same rule, the same reason, for "Reference to Image": the broker builds an item
+            # from `prompt`, `seed` and `params` alone and pops `reference_images` off the *body*,
+            # so a reference beside `params` is dropped without a word and the worker renders the
+            # prompt with no characters in it. One loss here is a wrong picture, not an error.
+            reference = _image_reference(request)
+            if reference is not None:
+                item["params"]["reference_images"] = reference
     else:
         item["text"] = str(request.params.get("text") or "")
         for key in ("speed", "voice_id", "language", "temperature", "seed", "output_format",
@@ -2021,6 +2085,33 @@ def _collect_batch(
     polled its batch to `done` and a hold **adopted** later (see `adopt_batch`) come through here,
     so an adopted result is exactly a normal one and there is no second implementation to drift.
     """
+    terminal = (outcome.get("item") or {}).get("terminal_result") or {}
+    item = outcome.get("item") or {}
+    # **The anti-silent-drop proof, asked before the wrong picture is downloaded.** A reference-guided
+    # image must come back as one: the Hub states how many references the worker actually attached,
+    # and a job that sent three and applied two finished on a picture of the wrong people with an
+    # envelope identical to a success. Unstated is also refused here — a Hub that advertises `edit`
+    # and cannot say what it applied has not shown that the references were used. This is the last
+    # of the three independent refusals that exist so no single regression can turn a reference
+    # render into a text-to-image one (Story's preflight, the gateway's asset resolution, and this).
+    sent_references = request.params.get("_reference_digests")
+    sent_count = len(sent_references) if isinstance(sent_references, list) else 0
+    applied_count = _reference_count(item, terminal)
+    if sent_count:
+        if applied_count is None:
+            raise BackendError(
+                f"the Hub finished this reference-guided image without stating how many of the "
+                f"{sent_count} reference images it applied; the result cannot be shown to be the "
+                "one that was asked for",
+                code="PROVIDER_RESULT_INVALID", upstream_accepted=True, upstream_settled=True,
+            )
+        if applied_count != sent_count:
+            raise BackendError(
+                f"{sent_count} reference images were sent and the Hub applied {applied_count}; "
+                "that is a different render from the one asked for, not a successful image",
+                code="PROVIDER_RESULT_INVALID", upstream_accepted=True, upstream_settled=True,
+            )
+
     artifact = _fetch_artifact(
         client, _artifact_url(base, batch_id, 0, request.modality), headers,
         httpx.Timeout(600.0, connect=10.0),
@@ -2033,7 +2124,6 @@ def _collect_batch(
             retryable=artifact.status_code >= 500,
         )
 
-    terminal = (outcome.get("item") or {}).get("terminal_result") or {}
     _verify_digest(artifact, terminal.get("sha256"))
     media_type = artifact.headers.get("content-type", "").split(";")[0].strip()
     if not media_type:
@@ -2050,6 +2140,10 @@ def _collect_batch(
         "resolved_seed": terminal.get("resolved_seed"),
         "sha256": terminal.get("sha256"),
         "bytes": terminal.get("bytes"),
+        # How many reference images the Hub says the worker applied — `None` on every job that sent
+        # none, and on a Hub that does not state it. Kept on the job record so a customer asking
+        # "was this rendered from my characters" has the answer beside the artifact.
+        "reference_count": applied_count,
         # **The Hub's own runtime for this item, and the reason image and voice jobs had
         # no timing at all.** `terminal_result` has carried `runtime_s` the whole time —
         # the sibling `machine_id`, `bytes`, `sha256` and `resolved_seed` above are read

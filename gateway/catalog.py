@@ -48,6 +48,7 @@ from .providers.definitions import (
     KIND_XAI,
     ProviderDefinition,
     default_temperature_only,
+    image_reference_limits,
     image_reference_state,
 )
 
@@ -398,16 +399,16 @@ def _image_row(model_id: str, definition: ProviderDefinition, model: dict[str, A
     # does not take, and a fal `text-to-image` endpoint advertised an
     # image-to-image operation it does not serve. The contradiction was the tell.
     reference_state = image_reference_state(definition.kind, model_id, raw)
-    # ponytail: a model that says it *takes* a reference is still published as not taking one,
-    # because this gateway serves neither half of the feature Story would then use: there is no
-    # `POST /v1/images/source-images` to upload to, and no image adapter reads `reference_asset_ids`.
-    # Offering it turned into a hard 404 at the upload. Upgrade path -- build both, then delete
-    # this line (`image_reference_state` already reads the model's own statement).
-    if reference_state is True:
-        reference_state = False
+    # **The figures are the lane's, not this file's.** They used to be the literal `1, 4` beside a
+    # `2048` pixel ceiling: four guesses, published for every reference-capable model, and only one
+    # of them (the prompt cap) had ever been measured. The worker states what its edit lane takes,
+    # in the same lane contract the ratios and resolutions come from, so that is what is published —
+    # and a lane that states none publishes `None` (unstated), never a gateway number.
+    references = image_reference_limits(raw)
     if reference_state is True:
         operations = ["text-to-image", "image-to-image"]
-        minimum_references, maximum_references = 1, 4
+        minimum_references = references["min"]
+        maximum_references = references["max"]
     else:
         # Every image adapter here can send a *prompt*, so text-to-image stands
         # whatever else is unstated; image-to-image is claimed only when the model
@@ -436,10 +437,12 @@ def _image_row(model_id: str, definition: ProviderDefinition, model: dict[str, A
         "supports_seed": True,
         "min_reference_images": minimum_references,
         "max_reference_images": maximum_references,
-        # ponytail: one maximum dimension for every reference image, ours. Ceiling
-        # — no provider here publishes one, and a model with a tighter bound is
-        # over-described. Upgrade path — read it from the model's own schema.
-        "reference_image_max_dimension": 2048 if reference_state is True else None,
+        # The lane's own pixel ceiling for one reference, published so Story can fit a portrait to
+        # it before uploading. `None` when the lane states none — an unstated ceiling is not 2048,
+        # which is what this said before it was read from the contract.
+        "reference_image_max_dimension": (
+            references["max_dimension"] if reference_state is True else None
+        ),
         # ponytail: flat prompt cap and cloud ratio list for every image model that states
         # neither. Ceiling — the previous GenStudio published 4,000 on some models and
         # 4,800 on others, and its ratio lists varied; a flat 4,000 is deliberately the
@@ -1773,6 +1776,9 @@ def _merge_capabilities(existing: dict[str, Any], row: dict[str, Any], modality:
       * **speed range** — the **intersection** (`max` of the minimums, `min` of the
         maximums, and `supports_speed` only if every site has it), for the same
         reason: a caller picks one speed and may land anywhere.
+      * **`supports_reference_images`** — the **union**, and its limits the **intersection of the
+        locations that advertise it**. See `_merge_reference_capability` for why this is the one
+        capability that goes the opposite way to `supports_voice_cloning`'s.
 
     **And every other published ceiling takes the minimum, for every modality.** This
     function used to `return` immediately for anything that was not TTS, so a merged row kept
@@ -1806,6 +1812,8 @@ def _merge_capabilities(existing: dict[str, Any], row: dict[str, Any], modality:
             (existing.get("provider_submit_concurrency") or 0)
             + (row.get("provider_submit_concurrency") or 0)
         ) or None
+    if modality == "image":
+        _merge_reference_capability(existing, row)
     if modality != "tts":
         return
     if row.get("supports_voice_cloning"):
@@ -1817,6 +1825,69 @@ def _merge_capabilities(existing: dict[str, Any], row: dict[str, Any], modality:
         incoming = row.get(key)
         if isinstance(current, (int, float)) and isinstance(incoming, (int, float)):
             existing[key] = pick(current, incoming)
+
+
+def _merge_reference_capability(existing: dict[str, Any], row: dict[str, Any]) -> None:
+    """Reference capability and its limits across the locations offering one image model.
+
+    **The capability is the union; the limits are the intersection of the sites that have it**
+    (owner, 2026-10-26, replacing the plan's intersection-of-everyone).
+
+    Reference support is a fact about *which Macs* hold the weights and the memory, and the fleet is
+    uneven: one location whose Macs are all below the edit floor must not hide the feature from every
+    other site. The defect that decision guards against — publishing a capability a site cannot
+    serve — is handled where it belongs, at routing: `fleet.routing_candidates` skips a location whose
+    worker does not advertise `edit`, so a non-capable location never receives reference work.
+
+    The numbers therefore may only be constrained by locations that can receive the work. `min` is
+    the **largest** of theirs and `max` / `max_dimension` the **smallest**, so every location an
+    edit job can reach honours what is published. A location that does not advertise contributes
+    nothing — its own rows say `0` references, and taking that as a ceiling would be the same
+    fleet-wide suppression in a different spelling.
+
+    These two ceilings are deliberately **not** in `_MERGED_CEILINGS`: that table takes the smallest
+    value from *every* location, which is the right rule for a caller who may land anywhere and the
+    wrong one for a capability that routes.
+    """
+    current = existing.get("supports_reference_images")
+    incoming = row.get("supports_reference_images")
+    # Taken before either is overwritten: a location that does not advertise must contribute
+    # nothing to the limits below, and its own rows say `0` references.
+    advertising = [candidate for candidate, state in ((existing, current), (row, incoming))
+                   if state is True]
+    if current is True or incoming is True:
+        state: bool | None = True
+    elif current is False or incoming is False:
+        state = False
+    else:
+        state = None  # nobody stated it: unstated is not "no"
+    existing["supports_reference_images"] = state
+    existing["supports_image_to_image"] = state
+    # **`operations` follows the merged capability, not the first location's.** Otherwise a fleet
+    # whose first-iterated site cannot edit would publish `supports_reference_images: true` beside
+    # an operation list that omits image-to-image — the same self-contradiction that gave the
+    # original suppression away.
+    if state is True:
+        existing["operations"] = ["text-to-image", "image-to-image"]
+    elif state is False:
+        existing["operations"] = ["text-to-image"]
+    if state is not True:
+        existing["min_reference_images"] = 0 if state is False else None
+        existing["max_reference_images"] = 0 if state is False else None
+        existing["reference_image_max_dimension"] = None
+        return
+
+    def bound(key: str, pick: Any) -> int | None:
+        stated = [
+            candidate.get(key)
+            for candidate in advertising
+            if isinstance(candidate.get(key), int) and not isinstance(candidate.get(key), bool)
+        ]
+        return pick(stated) if stated else None
+
+    existing["min_reference_images"] = bound("min_reference_images", max)
+    existing["max_reference_images"] = bound("max_reference_images", min)
+    existing["reference_image_max_dimension"] = bound("reference_image_max_dimension", min)
 
 
 #: One stated upper bound, and the two keys that say where it came from.
@@ -2030,12 +2101,21 @@ class Catalog:
                 if default_ratio not in common_ratios:
                     default_ratio = ordered_common[0] if ordered_common else first_row.get("default_aspect_ratio")
                 supports_seed = all(bool(r.get("supports_seed")) for _, r in member_rows)
+                # **A pool alias is a menu of models, so what it publishes must hold for every
+                # member** — the member that answers is chosen at routing, not by the caller. That
+                # is the opposite of a location merge above (`_merge_reference_capability`), where
+                # the capability is a union because the reference job is routed to a location that
+                # has it; here any member may take the job, so one that takes no references takes
+                # the whole alias down to none.
                 supports_refs = all(bool(r.get("supports_reference_images")) for _, r in member_rows)
                 if supports_refs:
                     min_refs = max((r.get("min_reference_images") or 0) for _, r in member_rows)
                     max_refs = min((r.get("max_reference_images") or 0) for _, r in member_rows)
+                    dimensions = [r.get("reference_image_max_dimension") for _, r in member_rows
+                                  if isinstance(r.get("reference_image_max_dimension"), int)]
+                    max_dimension = min(dimensions) if dimensions else None
                 else:
-                    min_refs, max_refs = 0, 0
+                    min_refs, max_refs, max_dimension = 0, 0, None
                 # operations intersection
                 op_sets = [set(r.get("operations") or []) for _, r in member_rows]
                 common_ops = set.intersection(*op_sets) if op_sets else set()
@@ -2072,6 +2152,7 @@ class Catalog:
                 row["supports_image_to_image"] = supports_refs
                 row["min_reference_images"] = min_refs
                 row["max_reference_images"] = max_refs
+                row["reference_image_max_dimension"] = max_dimension
                 row["operations"] = sorted(common_ops)
                 row["max_prompt_characters"] = mpc
                 row["max_prompt_characters_source"] = mpc_source
@@ -2301,6 +2382,7 @@ class Catalog:
         *,
         only_location: str | None = None,
         job_key: str | None = None,
+        require_capability: str | None = None,
     ) -> tuple[ProviderDefinition | None, dict | None]:
         """Resolve a namespaced model id against currently enabled models.
 
@@ -2317,6 +2399,11 @@ class Catalog:
         every job of a model, so a burst of equal-rank jobs all drew the same location
         (measured: 20 same-second music jobs, all bound to one site, this Mac given none).
         A submit passes one key per job, so equal ranks are spread rather than stacked.
+
+        `require_capability` is a token the chosen location's worker must advertise (`edit` for a
+        reference-guided image). It is the request's own requirement rather than a preference, so a
+        location that does not advertise it is not a candidate at all — see
+        `fleet.routing_candidates`. `None` asks nothing extra and resolves exactly as before.
         """
         from . import fleet
         from . import pools
@@ -2327,6 +2414,7 @@ class Catalog:
             chosen_def, chosen_member, _note = fleet.route_pool(
                 image_assignment.pool_models(pools.get(pool_name)), modality,
                 routing_key=job_key or compound, only_location=only_location,
+                require_capability=require_capability,
             )
             if chosen_def is None:
                 return None, None
@@ -2340,7 +2428,8 @@ class Catalog:
             provider_id = fleet.FLEET_PROVIDER_ID
         if provider_id == fleet.FLEET_PROVIDER_ID:
             chosen, _note = fleet.route(
-                model_id, modality, routing_key=job_key or compound, only_location=only_location
+                model_id, modality, routing_key=job_key or compound, only_location=only_location,
+                require_capability=require_capability,
             )
             if chosen is None:
                 return None, None
@@ -2357,7 +2446,8 @@ class Catalog:
         return None, None
 
     def why_no_route(
-        self, modality: str, compound: str, *, only_location: str | None = None
+        self, modality: str, compound: str, *, only_location: str | None = None,
+        require_capability: str | None = None,
     ) -> str | None:
         """Why an **offered** fleet model has no route this moment.
 
@@ -2367,6 +2457,11 @@ class Catalog:
         sat in the picker and every location offering it was simply offline:
         measured live with both controllers down, which sends the reader looking for
         a catalogue problem instead of a network one.
+
+        `require_capability` is the request's own demand (`edit` for a reference-guided image), and
+        it is named in the sentence rather than left as "no free slot": when every location offering
+        the model simply cannot do this kind of work, a caller told to retry later would retry for
+        ever.
         """
         from . import fleet
         from . import pools
@@ -2382,6 +2477,7 @@ class Catalog:
         if provider_id != fleet.FLEET_PROVIDER_ID:
             return None
         offered: list[str] = []
+        incapable = 0
         for definition, model in registry.models.enabled_models(modality):
             if model["model_id"] != model_id:
                 continue
@@ -2391,6 +2487,8 @@ class Catalog:
             if only_location is not None and location_id != only_location:
                 continue
             offered.append(location_id)
+            if require_capability and not fleet.advertises(model, require_capability):
+                incapable += 1
         if not offered:
             return None
         rows = {
@@ -2408,9 +2506,17 @@ class Catalog:
                 paused += 1
             elif not fleet._takes_customer_jobs(row):  # noqa: SLF001 - one rule, one place
                 cannot += 1
-        if not (offline or cannot or full or paused):
+        if incapable == len(offered) and not (offline or cannot or full or paused):
+            return (
+                f"No location offering this model can run this request right now — none of the "
+                f"{len(offered)} location{'' if len(offered) == 1 else 's'} offering it reports the "
+                f"{require_capability!r} capability it needs."
+            )
+        if not (offline or cannot or full or paused or incapable):
             return "No location offering this model has a free slot right now."
         reasons: list[str] = []
+        if incapable:
+            reasons.append(f"{incapable} that cannot run this request")
         if offline:
             reasons.append(f"{offline} location{'' if offline == 1 else 's'} offline")
         if cannot:

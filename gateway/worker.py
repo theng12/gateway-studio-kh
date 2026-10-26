@@ -372,6 +372,18 @@ def scarcest_first(jobs: list[dict[str, Any]],
         return jobs
 
 
+def _job_params(job: dict | None) -> dict:
+    """A job row's `params` as an object — they are stored as JSON."""
+    raw = (job or {}).get("params")
+    if isinstance(raw, dict):
+        return raw
+    try:
+        parsed = json.loads(raw or "{}")
+    except (TypeError, ValueError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
 def _pool_members_for(job: dict | None, modality: str) -> list[str] | None:
     """The members an image-pool job may move between, or None when it must not move across members.
 
@@ -380,10 +392,7 @@ def _pool_members_for(job: dict | None, modality: str) -> list[str] | None:
     """
     if not job or modality != "image":
         return None
-    try:
-        pool_id = (json.loads(job.get("params") or "{}") or {}).get("_pool_id")
-    except (TypeError, ValueError):
-        return None
+    pool_id = _job_params(job).get("_pool_id")
     if not pool_id or str(job.get("upstream_job_id") or "").strip() or job.get("state") not in ("accepted", "queued"):
         return None
     from . import image_assignment, pools
@@ -440,9 +449,14 @@ def _next_machine(store: JobStore, job_id: str, model_id: str, modality: str,
 
     # An image-pool job may move to any location with a free Mac assigned one of its members, but only
     # while nothing was accepted upstream (held, batch and unknown-outcome jobs stay where they are).
-    pool_members = _pool_members_for(store.get(job_id) if hasattr(store, "get") else None, modality)
+    job = store.get(job_id) if hasattr(store, "get") else None
+    pool_members = _pool_members_for(job, modality)
+    # **A re-route obeys the same capability rule as the submit** — a reference job is not sent to a
+    # location whose worker never advertised `edit`, however many attempts it has left.
+    require_capability = fleet.required_capability(modality, _job_params(job))
     if pool_members is not None:
-        chosen, member, _note = fleet.route_pool(pool_members, modality, exclude_locations=tried, load=room)
+        chosen, member, _note = fleet.route_pool(pool_members, modality, exclude_locations=tried,
+                                                 load=room, require_capability=require_capability)
         if chosen is None or not store.record_route(job_id, chosen.id, model_id=member):
             return None
         if room is not None and room(chosen.id, claim=True)[0] <= 0:
@@ -456,9 +470,11 @@ def _next_machine(store: JobStore, job_id: str, model_id: str, modality: str,
         return None
     room = _ROOM_HOOKS.get(job_id)
     if room is None:
-        chosen, _note = fleet.route(model_id, modality, exclude_locations=tried)
+        chosen, _note = fleet.route(model_id, modality, exclude_locations=tried,
+                                    require_capability=require_capability)
     else:
-        chosen, _note = fleet.route(model_id, modality, exclude_locations=tried, load=room)
+        chosen, _note = fleet.route(model_id, modality, exclude_locations=tried, load=room,
+                                    require_capability=require_capability)
     if chosen is None or _location(chosen.id) in tried:
         return None
     record_route = getattr(store, "record_route", None)
@@ -1914,9 +1930,13 @@ class Worker:
             for value in getattr(self.store, "attempted_locations", lambda _id: [])(job["id"]):
                 tried.add(str(fleet.controller_id_from(str(value)) or value))
             pool_members = _pool_members_for(job, modality)
+            # A rebind is routing too: a reference job stays off a location whose worker never
+            # advertised `edit`, however much room that location has.
+            capability = fleet.required_capability(modality, _job_params(job))
             if pool_members is not None:
                 candidates = fleet.apply_load(
-                    fleet.pool_candidates(pool_members, modality, exclude_locations=tried),
+                    fleet.pool_candidates(pool_members, modality, exclude_locations=tried,
+                                          require_capability=capability),
                     lambda pid: self._site_room(job, pid))
                 ready = [c for c in candidates if c["room"] > 0]
                 if not ready:
@@ -1938,7 +1958,8 @@ class Worker:
                 here = "" if _takes_no_new_work(provider_id) else str(fleet.controller_id_from(provider_id))
                 ahead = self._ahead.get((provider_id, model_id), 0)
                 pool = fleet.apply_load(
-                    fleet.routing_candidates(model_id, modality, exclude_locations=tried - {here}),
+                    fleet.routing_candidates(model_id, modality, exclude_locations=tried - {here},
+                                             require_capability=capability),
                     lambda pid: self._site_room(job, pid))
                 best = min(pool, default=None, key=lambda c: fleet.rank_candidate(
                     c, str(job["id"]), ahead if c["provider_id"] == provider_id else 0))
@@ -1951,7 +1972,8 @@ class Worker:
                 return True
             candidates = [
                 c for c in fleet.apply_load(
-                    fleet.routing_candidates(model_id, modality, exclude_locations=tried),
+                    fleet.routing_candidates(model_id, modality, exclude_locations=tried,
+                                             require_capability=capability),
                     lambda pid: self._site_room(job, pid))
                 if c["room"] > 0
             ]

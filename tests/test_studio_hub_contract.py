@@ -2732,5 +2732,88 @@ class ReviewCandidateAudioTests(unittest.TestCase):
         self.assertEqual((answer.status, sent), (503, []))
 
 
+class ImageReferenceDispatchTests(_HubCase):
+    """"Reference to Image": the references reach the Hub, and a dropped one fails the item.
+
+    The Hub's broker builds an item from exactly `prompt`, `seed` and `params`, then pops
+    `reference_images` off the *body* — so a reference beside `params` is dropped without a word and
+    the worker renders a prompt with no characters in it (the 2026-09-26 video regression, in its
+    image spelling). The Hub states `reference_count` back precisely so this side can tell a
+    reference render from a text-to-image one that looks identical in the envelope.
+    """
+
+    def staged(self, count: int = 2) -> dict:
+        directory = _TEMP_ROOT / f"refs-{time.time_ns()}"
+        directory.mkdir(parents=True, exist_ok=True)
+        paths = []
+        for index in range(count):
+            path = directory / f"reference{index}.png"
+            path.write_bytes(PNG_BYTES + bytes([index]))
+            paths.append(str(path))
+        return {"_reference_paths": paths, "_reference_types": ["image/png"] * count,
+                "_reference_digests": [f"digest{index}" for index in range(count)]}
+
+    def test_the_references_ride_inside_params_as_base64_entries_in_order(self) -> None:
+        hub = _Hub(artifact=PNG_BYTES, artifact_media_type="image/png",
+                   item={"reference_count": 2})
+        params = {"prompt": "two characters at a night market", **self.staged(2)}
+        result = self.generate_then_deliver(hub, self.request(modality="image", params=params))
+        item = hub.payloads[0]["items"][0]
+        self.assertNotIn("reference_images", item,
+                         "an item-level key is dropped by the broker without a word")
+        references = item["params"]["reference_images"]
+        self.assertEqual(len(references), 2)
+        self.assertEqual([entry["mime"] for entry in references], ["image/png", "image/png"])
+        self.assertEqual(base64.b64decode(references[0]["b64"]), PNG_BYTES + b"\x00")
+        self.assertEqual(base64.b64decode(references[1]["b64"]), PNG_BYTES + b"\x01",
+                         "order is the caller's; the worker conditions on them in sequence")
+        self.assertEqual(result.payload["reference_count"], 2)
+
+    def test_a_prompt_only_image_job_carries_no_reference_key(self) -> None:
+        hub = _Hub(artifact=PNG_BYTES, artifact_media_type="image/png")
+        result = self.generate_then_deliver(
+            hub, self.request(modality="image", params={"prompt": "a cat"}))
+        self.assertNotIn("reference_images", hub.payloads[0]["items"][0]["params"])
+        self.assertIsNone(result.payload["reference_count"])
+
+    def test_a_reference_count_mismatch_fails_the_item_and_names_both_numbers(self) -> None:
+        hub = _Hub(artifact=PNG_BYTES, artifact_media_type="image/png",
+                   item={"reference_count": 1})
+        with self.assertRaises(BackendError) as caught:
+            self.generate(hub, self.request(
+                modality="image", params={"prompt": "two of them", **self.staged(2)}))
+        self.assertEqual(caught.exception.code, "PROVIDER_RESULT_INVALID")
+        self.assertIn("2 reference images were sent", str(caught.exception))
+        self.assertIn("applied 1", str(caught.exception))
+
+    def test_a_hub_that_states_no_count_does_not_prove_the_references_were_used(self) -> None:
+        hub = _Hub(artifact=PNG_BYTES, artifact_media_type="image/png")
+        with self.assertRaises(BackendError) as caught:
+            self.generate(hub, self.request(
+                modality="image", params={"prompt": "two of them", **self.staged(2)}))
+        self.assertEqual(caught.exception.code, "PROVIDER_RESULT_INVALID")
+        self.assertIn("without stating how many", str(caught.exception))
+
+    def test_a_mismatched_count_fails_before_the_artifact_is_downloaded(self) -> None:
+        hub = _Hub(artifact=PNG_BYTES, artifact_media_type="image/png",
+                   item={"reference_count": 1})
+        with self.assertRaises(BackendError):
+            self.generate(hub, self.request(
+                modality="image", params={"prompt": "two of them", **self.staged(2)}))
+        self.assertFalse([call for call in hub.calls if call[1].endswith("/artifact")],
+                         "a wrong render is refused, not downloaded and served")
+
+    def test_a_staged_reference_that_is_gone_is_refused_before_anything_is_sent(self) -> None:
+        hub = _Hub(artifact=PNG_BYTES, artifact_media_type="image/png",
+                   item={"reference_count": 1})
+        params = self.staged(1)
+        Path(params["_reference_paths"][0]).unlink()
+        with self.assertRaises(BackendError) as caught:
+            self.generate(hub, self.request(modality="image", params={"prompt": "x", **params}))
+        self.assertEqual(caught.exception.code, "INVALID_PARAMS")
+        self.assertIn("no longer held", str(caught.exception))
+        self.assertEqual(hub.payloads, [], "nothing was submitted with a missing reference")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -4704,9 +4704,48 @@ def _weighted_tiebreak(routing_key: str, location_id: str, compatible_slots: int
     return -math.log(unit) / max(compatible_slots, 1)
 
 
+#: The capability token a location's worker advertises when it can render from reference images.
+#: The Hub publishes it in its own catalogue (`capabilities: ["txt2img", "edit"]`) and only on a Mac
+#: whose worker has the edit lane, the weights and the memory — so the gateway reads it rather than
+#: deciding either of those itself.
+EDIT_CAPABILITY = "edit"
+
+
+def advertises(model: dict, capability: str) -> bool:
+    """Whether one location's discovered model row advertises a capability token.
+
+    Read from the Hub's own statement, never derived from an engine name or a model id. A row that
+    states no capabilities states nothing, which is not the same as stating that it cannot — but for
+    routing the two answers coincide: work may only go where the token is actually advertised.
+    """
+    capabilities = (model.get("raw") or {}).get("capabilities")
+    if not isinstance(capabilities, list):
+        return False
+    wanted = str(capability or "").strip().lower()
+    return bool(wanted) and any(str(item).strip().lower() == wanted for item in capabilities)
+
+
+def required_capability(modality: str, params: Any) -> str | None:
+    """The capability a job's **own parameters** demand of the location that runs it.
+
+    `None` — "any location offering the model" — for every job that asks for nothing special. A
+    reference-guided image is the one exception today: `create_image` stages its uploads under
+    `_reference_digests`, so a job carrying that key (even empty, which asks for a reference render
+    with nothing in it) can only be served by a Mac whose worker advertises `edit`.
+
+    Derived from the request rather than passed by each caller, because there are two routing
+    moments (the submit and the worker's re-route after a refusal) and a rule that only one of them
+    remembers is how a reconsidered job ends up somewhere that cannot run it.
+    """
+    if modality != "image" or not isinstance(params, dict):
+        return None
+    return EDIT_CAPABILITY if "_reference_digests" in params else None
+
+
 def routing_candidates(
     model_id: str, modality: str, *, only_location: str | None = None,
     exclude_locations: set[str] | None = None,
+    require_capability: str | None = None,
 ) -> list[dict]:
     """Every location that can run this model right now, with its pressure.
 
@@ -4722,6 +4761,10 @@ def routing_candidates(
     of the same model enabled on another site, never tried. The candidate set is
     therefore read from `enabled_models`, not re-derived; asking "can this be
     offered?" in two places is how the two answers came apart.
+
+    `require_capability` narrows that set further to the locations whose worker advertises a token
+    (`edit` for a reference-guided image). It is a requirement, so a location without it is not a
+    candidate — "may this site do this at all" — and its absence leaves the set exactly as it was.
     """
     from .providers import registry
 
@@ -4746,6 +4789,14 @@ def routing_candidates(
         if exclude_locations and location_id in exclude_locations:
             # Tried already and refused this model; the worker is looking for the
             # next site, not the same one again.
+            continue
+        if require_capability and not advertises(model, require_capability):
+            # **Capability, not memory, is the gateway's question.** The Hub already decided per
+            # Mac whether the weights are there and the RAM is enough, and a Mac that cannot do the
+            # work does not advertise it — so a location whose row lacks the token is skipped rather
+            # than offered work its own broker will refuse. One site that cannot therefore does not
+            # take the feature down for the others; the catalogue publishes the union and this line
+            # is what makes that honest.
             continue
         row = rows.get(location_id) or {}
         if not row.get("reachable"):
@@ -5029,6 +5080,7 @@ def route(
     only_location: str | None = None,
     exclude_locations: set[str] | None = None,
     load: Callable[[str], tuple[int, int, int]] | None = None,
+    require_capability: str | None = None,
 ) -> tuple[ProviderDefinition | None, str]:
     """Choose the location that should run this model. Never raises.
 
@@ -5036,10 +5088,12 @@ def route(
     or `(None, reason)` when nothing can take it. `exclude_locations` is how the
     worker asks for the **next** site after one refused the model at submit. `load` (a re-route)
     ranks by the worker's live books (`apply_load`); a full lane is still returned, last, so the
-    caller can tell "every lane is full" from "nowhere".
+    caller can tell "every lane is full" from "nowhere". `require_capability` drops every location
+    whose worker does not advertise the token — see `routing_candidates`.
     """
     candidates = routing_candidates(
-        model_id, modality, only_location=only_location, exclude_locations=exclude_locations
+        model_id, modality, only_location=only_location, exclude_locations=exclude_locations,
+        require_capability=require_capability,
     )
     if load is not None and candidates:
         candidates = apply_load(candidates, load)
@@ -5078,18 +5132,21 @@ def assigned_macs(row: dict, member: str, modality: str = "image") -> set[str]:
 
 def pool_candidates(
     members: list[str], modality: str, *, only_location: str | None = None,
-    exclude_locations: set[str] | None = None,
+    exclude_locations: set[str] | None = None, require_capability: str | None = None,
 ) -> list[dict]:
     """Every (location, member) that can take an image-pool job now, each tagged `_member`.
 
     A location qualifies for a member only when one of its Macs is assigned that member and can run
     it; a member nobody is assigned to sits out, so no job is sent where the Hub would refuse it.
+    `require_capability` asks the same question of each member's row, so a reference job routed
+    through a pool skips a site whose worker cannot run it either.
     """
     rows = {str(r.get("id")): r for r in snapshot(allow_stale=True).get("locations") or []}
     found: list[dict] = []
     for member in dict.fromkeys(pool_member_model(m) for m in members or [] if str(m).strip()):
         for candidate in routing_candidates(member, modality, only_location=only_location,
-                                            exclude_locations=exclude_locations):
+                                            exclude_locations=exclude_locations,
+                                            require_capability=require_capability):
             if assigned_macs(rows.get(str(candidate.get("location_id"))) or {}, member, modality):
                 found.append({**candidate, "_member": member})
     return found
@@ -5103,6 +5160,7 @@ def route_pool(
     only_location: str | None = None,
     exclude_locations: set[str] | None = None,
     load: Callable[[str], tuple[int, int, int]] | None = None,
+    require_capability: str | None = None,
 ) -> tuple[Any, str | None, str | None]:
     """Route an image-pool job to the best location with a free Mac assigned one of its members.
 
@@ -5111,7 +5169,8 @@ def route_pool(
     from .providers import registry
 
     candidates = pool_candidates(members, modality, only_location=only_location,
-                                 exclude_locations=exclude_locations)
+                                 exclude_locations=exclude_locations,
+                                 require_capability=require_capability)
     if load is not None and candidates:
         candidates = apply_load(candidates, load)
     if not candidates:

@@ -351,6 +351,30 @@ def image_reference_state(kind: str, model_id: str, raw: dict[str, Any]) -> bool
     return None
 
 
+def image_reference_limits(raw: dict[str, Any]) -> dict[str, int | None]:
+    """How many reference images a lane states it takes, and how large: `min`, `max`, `max_dimension`.
+
+    Read from `lane_contract.references`, the block the worker publishes about its own edit lane —
+    never from a constant here. `None` means the lane **stated nothing**, which is a different
+    answer from zero: the gateway publishes the silence (Story then offers no reference control)
+    rather than a number the worker never agreed to. In particular the old `1, 4` and `2048`
+    literals are gone: 4 references and 2048 px were this file's guesses, and the measured lane
+    takes 2 at 1024.
+
+    `counts_against_prompt`, `field` and `media_types` are the lane's own business (the Hub builds
+    the multipart), so only the three figures the catalogue has to publish are returned.
+    """
+    contract = raw.get("lane_contract") if isinstance(raw, dict) else None
+    references = contract.get("references") if isinstance(contract, dict) else None
+    references = references if isinstance(references, dict) else {}
+
+    def stated(key: str) -> int | None:
+        value = references.get(key)
+        return value if type(value) is int and value > 0 else None
+
+    return {key: stated(key) for key in ("min", "max", "max_dimension")}
+
+
 def transcription_can_serve(model_id: str) -> bool:
     """Whether this transcription model can answer with the SRT we must return.
 

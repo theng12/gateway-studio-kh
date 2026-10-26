@@ -182,5 +182,57 @@ class JobsWindowPollTests(unittest.TestCase):
         self.assertEqual(source.count("self.readFinished(startedAt: startedAt)"), 2)
 
 
+class ReferenceLimitsComeFromTheLaneTests(unittest.TestCase):
+    """The published reference figures are the lane's own statement, not this repo's literals.
+
+    `_image_row` used to publish `1, 4` references and a `2048` pixel ceiling for every
+    reference-capable model: four numbers nobody had measured, one of which (max 4) the shipped
+    Klein lane does not take and another (2048) it has never run. The worker now states the
+    contract and the gateway relays it; a lane that states nothing publishes `None`.
+    """
+
+    def _row(self, **references):
+        from gateway.catalog import _image_row
+        from gateway.providers.definitions import PROVIDERS_BY_ID
+
+        raw: dict = {"capabilities": ["txt2img", "edit"]}
+        if references:
+            raw["lane_contract"] = {"references": references}
+        return _image_row("AITRADER/FLUX2-klein-4B-mlx-4bit", PROVIDERS_BY_ID["studio-hub-local"],
+                          {"model_id": "AITRADER/FLUX2-klein-4B-mlx-4bit", "raw": raw})
+
+    def test_every_figure_is_the_one_the_lane_stated(self) -> None:
+        row = self._row(min=1, max=2, max_dimension=1024)
+        self.assertEqual((row["min_reference_images"], row["max_reference_images"],
+                          row["reference_image_max_dimension"]), (1, 2, 1024))
+        self.assertEqual(row["operations"], ["text-to-image", "image-to-image"])
+
+    def test_a_stated_maximum_is_not_overruled_by_the_old_four(self) -> None:
+        row = self._row(min=1, max=3, max_dimension=1536)
+        self.assertEqual((row["max_reference_images"], row["reference_image_max_dimension"]),
+                         (3, 1536),
+                         "nothing here may cap, raise or re-round the lane's measured numbers")
+
+    def test_a_lane_that_states_no_limits_publishes_none(self) -> None:
+        row = self._row()
+        self.assertIsNone(row["min_reference_images"])
+        self.assertIsNone(row["max_reference_images"])
+        self.assertIsNone(row["reference_image_max_dimension"],
+                          "unstated is not 2048; a number Story was never told is not a ceiling")
+
+    def test_a_non_positive_or_malformed_statement_is_unstated(self) -> None:
+        row = self._row(min=0, max="2", max_dimension=True)
+        self.assertIsNone(row["min_reference_images"])
+        self.assertIsNone(row["max_reference_images"])
+        self.assertIsNone(row["reference_image_max_dimension"])
+
+    def test_a_reference_row_adds_no_charge_beside_the_local_zero(self) -> None:
+        """A local lane renders for free; a reference render must not invent a price beside it."""
+        row = self._row(min=1, max=2, max_dimension=1024)
+        for option in row["output_options"]:
+            self.assertEqual(option["credits_per_image"], 0)
+            self.assertEqual(option["reference_generation_credits"], 0)
+
+
 if __name__ == "__main__":
     unittest.main()
