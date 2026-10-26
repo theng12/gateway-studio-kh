@@ -26,7 +26,7 @@ from typing import Any
 
 import httpx
 
-from .base import BackendError, BackendRequest, BackendResult
+from .base import BackendError, BackendRequest, BackendResult, staged_data_uri
 
 SUBMIT_TIMEOUT = httpx.Timeout(120.0, connect=10.0)
 POLL_TIMEOUT = httpx.Timeout(30.0, connect=10.0)
@@ -245,14 +245,48 @@ def _speech(request: BackendRequest) -> BackendResult:
 # ---------------------------------------------------------------------------
 # Video
 # ---------------------------------------------------------------------------
-def _video(request: BackendRequest) -> BackendResult:
-    body: dict[str, Any] = {
-        "model": request.model_id,
-        "prompt": str(request.params.get("prompt") or ""),
-    }
-    for key in ("duration", "resolution", "first_frame_image", "prompt_optimizer"):
+def _video_body(request: BackendRequest) -> dict[str, Any]:
+    """The `/v2/video_generation` body, in the shape that endpoint declares.
+
+    **MiniMax's v2 video API has no `first_frame_image` field.** It takes a `content` array of
+    typed items, and the picture rides as `{"type": "image_url", "image_url": {"url": …},
+    "role": "first_frame"}` — `last_frame` and `reference_image` are the other roles. This adapter
+    used to forward `first_frame_image`, which v2 does not read: the request was accepted with the
+    prompt alone and came back a text-to-video clip, with nothing saying the scene image had been
+    dropped. `image_url.url` takes a public HTTPS URL *or* a base64 data URI, so the Gateway's
+    staged copy travels inline (`data:image/png;base64,…`) — there is no address here a provider
+    could fetch. At most one `first_frame` and one `last_frame` per request.
+
+    `ratio` is required for a **text-to-video** request on this route and must not be `adaptive`.
+    It is sent only when the caller names one: a canvas nobody chose is not ours to invent.
+    """
+    content: list[dict[str, Any]] = []
+    prompt = str(request.params.get("prompt") or "")
+    if prompt:
+        content.append({"type": "text", "text": prompt})
+    image = staged_data_uri(request, "_reference_path", "_reference_type")
+    if image is None and request.params.get("reference_asset_url"):
+        image = str(request.params["reference_asset_url"])
+    if image:
+        content.append({"type": "image_url", "image_url": {"url": image},
+                        "role": "first_frame"})
+    end_image = staged_data_uri(request, "_end_reference_path", "_end_reference_type")
+    if end_image:
+        content.append({"type": "image_url", "image_url": {"url": end_image},
+                        "role": "last_frame"})
+
+    body: dict[str, Any] = {"model": request.model_id, "content": content}
+    for key in ("duration", "resolution"):
         if request.params.get(key) is not None:
             body[key] = request.params[key]
+    ratio = request.params.get("aspect_ratio")
+    if ratio:
+        body["ratio"] = ratio
+    return body
+
+
+def _video(request: BackendRequest) -> BackendResult:
+    body = _video_body(request)
 
     base = _base(request)
     headers = _headers(request)

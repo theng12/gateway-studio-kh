@@ -20,11 +20,13 @@ return a result or raise `BackendError`.
 
 from __future__ import annotations
 
+import base64
 import json
 import math
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
 import httpx
@@ -335,6 +337,66 @@ class BackendRequest:
 #: OpenAI's own API still accepts. Ordered so the gateway's own control is read first when a
 #: caller somehow sends two.
 _MAX_OUTPUT_SPELLINGS = ("max_output_tokens", "max_completion_tokens", "max_tokens")
+
+
+#: How an adapter says "the picture this job was given is not here any more". One sentence, used by
+#: every lane that reads a staged upload, so the caller is told what to do rather than which
+#: adapter noticed.
+STAGED_INPUT_GONE = (
+    "the source image for this video job is no longer held; upload it again and retry"
+)
+
+
+def staged_bytes(request: "BackendRequest", path_key: str, type_key: str) -> tuple[bytes, str] | None:
+    """One staged upload this job carries, or `None` when the request names none.
+
+    `api._stage_video_reference` copies the caller's upload beside the job at submit, because the
+    upload itself is held for 15 minutes and an adapter reads at *dispatch* — a job that queued
+    past the window, or outlived a restart, still has its picture.
+
+    **A staged file that has gone is a named refusal**, never a request that quietly loses its
+    image: a video generated without the scene image is a video of something else, and nothing
+    downstream can tell it apart from the one that was asked for.
+    """
+    path = str(request.params.get(path_key) or "")
+    if not path:
+        return None
+    staged = Path(path)
+    if not staged.exists():
+        raise BackendError(STAGED_INPUT_GONE, code="INVALID_PARAMS", upstream_accepted=False)
+    media_type = str(request.params.get(type_key) or "image/png")
+    return staged.read_bytes(), media_type
+
+
+def staged_data_uri(request: "BackendRequest", path_key: str, type_key: str) -> str | None:
+    """`staged_bytes` in the `data:` URI form every provider here accepts for an inline image."""
+    staged = staged_bytes(request, path_key, type_key)
+    if staged is None:
+        return None
+    content, media_type = staged
+    return f"data:{media_type};base64,{base64.b64encode(content).decode('ascii')}"
+
+
+def staged_data_uris(request: "BackendRequest", paths_key: str, types_key: str) -> list[str]:
+    """Every staged reference image, in the order the caller named them.
+
+    A list that is partly gone is a refusal, not a shorter list: sending one reference fewer is a
+    render of different characters under the same request.
+    """
+    paths = request.params.get(paths_key)
+    if not isinstance(paths, list) or not paths:
+        return []
+    types = request.params.get(types_key)
+    types = types if isinstance(types, list) else []
+    uris: list[str] = []
+    for index, path in enumerate(paths):
+        staged = Path(str(path))
+        if not staged.exists():
+            raise BackendError(STAGED_INPUT_GONE, code="INVALID_PARAMS", upstream_accepted=False)
+        media_type = str(types[index]) if index < len(types) and types[index] else "image/png"
+        uris.append(f"data:{media_type};base64,"
+                    f"{base64.b64encode(staged.read_bytes()).decode('ascii')}")
+    return uris
 
 
 def caller_max_output_tokens(params: Any) -> Any:

@@ -3124,23 +3124,95 @@ async def upload_video_source_image(
 
 
 def _stage_video_reference(payload: dict[str, Any]) -> dict[str, Any]:
-    """Keep the source image with the job, the way a transcription's audio is staged.
+    """Keep every source image with the job, the way a transcription's audio is staged.
 
     The upload lives 15 minutes in process memory, but the adapter reads it at *dispatch*: a video
     job that waited longer in the queue, or outlived a restart, failed with "upload it again".
     Written beside the other staged inputs at submit, so the job carries its own bytes (and the
     retention sweep knows not to delete them while it is queued or held).
+
+    **Every input the caller named is copied, and none may be missing.** A reference that has aged
+    out is a refusal, never a shorter list and never a request that quietly loses its picture: a
+    video generated without the scene image is a video of something else, and Story Studio cannot
+    tell it apart from the one it asked for.
+
+    Three shapes, because three request shapes exist: `reference_asset_id` (a first frame),
+    `end_image_asset_id` (a final frame, for the models whose endpoint declares one) and
+    `reference_asset_ids` (reference-to-video). The keys are the ones `store._INPUT_PARAM_KEYS`
+    protects and the adapters read.
     """
     from . import video_assets
 
-    asset = video_assets.get(str(payload.get("reference_asset_id") or "").strip())
-    if asset is None:
-        return payload  # nothing uploaded, or gone already: the worker names it, as before
     directory = ARTIFACT_DIR / "uploads"
-    directory.mkdir(parents=True, exist_ok=True)
-    staged = directory / f"video-ref-{payload['reference_asset_id']}"
-    staged.write_bytes(asset["content"])
-    return {**payload, "_reference_path": str(staged), "_reference_type": asset["media_type"]}
+    staged = dict(payload)
+
+    def copy(asset_id: Any, prefix: str) -> tuple[str, str]:
+        value = str(asset_id or "").strip()
+        asset = video_assets.get(value)
+        if asset is None:
+            raise GatewayError(
+                400,
+                f"Source image {value} is no longer held — the upload window is "
+                f"{video_assets.TTL_S // 60} minutes. Upload it again and retry.",
+                "REFERENCE_ASSET_EXPIRED",
+            )
+        directory.mkdir(parents=True, exist_ok=True)
+        target = directory / f"{prefix}-{value}"
+        target.write_bytes(asset["content"])
+        return str(target), str(asset["media_type"])
+
+    if str(payload.get("reference_asset_id") or "").strip():
+        staged["_reference_path"], staged["_reference_type"] = copy(
+            payload["reference_asset_id"], "video-ref"
+        )
+    if str(payload.get("end_image_asset_id") or "").strip():
+        staged["_end_reference_path"], staged["_end_reference_type"] = copy(
+            payload["end_image_asset_id"], "video-end-ref"
+        )
+    references = payload.get("reference_asset_ids")
+    if references is not None:
+        if not isinstance(references, list) or not all(
+            isinstance(item, str) and item.strip() for item in references
+        ):
+            raise GatewayError(
+                400,
+                "reference_asset_ids must be a list of the ids POST /v1/videos/source-images "
+                "returned.",
+                "INVALID_PARAMS",
+            )
+        pairs = [copy(asset_id, "video-ref") for asset_id in references]
+        staged["_reference_paths"] = [path for path, _ in pairs]
+        staged["_reference_types"] = [media_type for _, media_type in pairs]
+    return staged
+
+
+#: Every field that changes what is bought. An idempotency key identifies one request, so a replay
+#: carrying a different scene image, duration or canvas is a different video — and answering it
+#: with the earlier job's clip is indistinguishable from a success.
+_VIDEO_REQUEST_FIELDS: tuple[str, ...] = (
+    "model_id", "model", "mode", "operation", "prompt", "duration_seconds", "resolution",
+    "aspect_ratio", "audio", "reference_asset_id", "end_image_asset_id", "reference_asset_ids",
+)
+
+
+def _refuse_changed_video_request(job: dict[str, Any], payload: dict[str, Any]) -> None:
+    """Refuse a replay whose request is not the one that job was made with."""
+    stored = job.get("params")
+    if not isinstance(stored, dict):
+        try:
+            stored = json.loads(stored or "{}")
+        except (TypeError, ValueError):
+            return
+    if not isinstance(stored, dict):
+        return
+    for field in _VIDEO_REQUEST_FIELDS:
+        if stored.get(field) != payload.get(field):
+            raise GatewayError(
+                409,
+                f"That Idempotency-Key was already used for a different video request ({field} "
+                "changed). A key identifies one request; use a new one for a different video.",
+                "IDEMPOTENCY_KEY_REUSED",
+            )
 
 
 @app.post("/v1/videos/generations", dependencies=[Depends(require_auth)])
@@ -3152,6 +3224,13 @@ def create_video(
 ) -> dict[str, Any]:
     key = _require_idempotency_key(idempotency_key)
     model_id = str(payload.get("model_id") or payload.get("model") or "")
+    # **A replay is answered before the uploads are looked at.** The job already exists and carries
+    # its own staged copies, so a caller whose 202 was lost gets its job back even after the
+    # 15-minute upload window closed — unless it is now naming a different request.
+    already = store.find_by_idempotency_key(key)
+    if already is not None and already["modality"] == "video":
+        _refuse_changed_video_request(already, payload)
+        return _replay_marked(_job_envelope(already), False)
     job, created = _submit("video", model_id, _stage_video_reference(payload), key, caller=caller)
     if created:
         response.status_code = 202

@@ -25,7 +25,7 @@ from typing import Any
 
 import httpx
 
-from .base import BackendError, BackendRequest, BackendResult
+from .base import BackendError, BackendRequest, BackendResult, staged_data_uri
 from .openai_compat import OpenAICompatibleBackend
 
 SUBMIT_TIMEOUT = httpx.Timeout(60.0, connect=10.0)
@@ -123,13 +123,22 @@ def _video_body(request: BackendRequest) -> dict[str, Any]:
     `prompt` is required for text-to-video and optional for image-to-video, where
     the first frame comes from `image` — an **object**, not the `image_url` string
     the Python SDK accepts.
+
+    **The Gateway's staged scene image goes here as a data URI.** Story Studio uploads the exact
+    scene image and submits its id; `api._stage_video_reference` copies the bytes beside the job,
+    and xAI documents `image.url` as taking a public HTTPS URL *or* a base64 data URI. Without
+    this line the request carried no picture at all and xAI answered a text-to-video clip that
+    looked like a success.
     """
     body: dict[str, Any] = {"model": request.model_id}
     prompt = str(request.params.get("prompt") or "")
     if prompt:
         body["prompt"] = prompt
-    if request.params.get("reference_asset_url"):
-        body["image"] = {"url": str(request.params["reference_asset_url"])}
+    image = staged_data_uri(request, "_reference_path", "_reference_type")
+    if image is None and request.params.get("reference_asset_url"):
+        image = str(request.params["reference_asset_url"])
+    if image:
+        body["image"] = {"url": image}
     seconds = request.params.get("duration_seconds")
     if isinstance(seconds, (int, float)):
         body["duration"] = max(1, min(15, int(seconds)))  # documented range 1-15

@@ -62,8 +62,9 @@ CANCEL_CONFIRMED = "confirmed"
 #: Request params that hold a staged input file. `_reference_paths` is the image lane's **list** —
 #: several reference images ride one job — so `input_paths_of` expands list values as well as
 #: strings; a key read as a bare string would protect the first reference and let the retention
-#: sweep delete the rest.
-_INPUT_PARAM_KEYS = ("_upload_path", "_reference_path", "_reference_paths")
+#: sweep delete the rest. `_end_reference_path` is a video job's final frame, staged beside its
+#: first frame for the models whose endpoint declares one.
+_INPUT_PARAM_KEYS = ("_upload_path", "_reference_path", "_reference_paths", "_end_reference_path")
 
 
 class RenderJournalConflict(ValueError):

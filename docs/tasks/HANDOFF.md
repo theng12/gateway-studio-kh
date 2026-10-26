@@ -1,5 +1,39 @@
 > **Release gate — 2026-10-26 (tracked runner).** `scripts/run_gate.py` is now the Gateway release gate — tracked in the repo, not copied per release — and the owner's **"yes. in parallel"** (2026-10-26) is in force. It replaces `_orchestra/gateway-*/run-gate.sh`, whose 0.2.203 copy ran every file through `python -m unittest` and so counted `test_e2e.py`, `test_ui.py` and `test_fleet_standalone.py` (a `main()`, no TestCase) as passes at `Ran 0 tests`. One file per process (the `_NetworkDisabled` leak requires it), each with a fresh profile the runner makes itself (`GATEWAY_APP_SUPPORT`, `GATEWAY_DATA`, `STUDIOHUB_READY_FILE`, `GATEWAY_NO_MIGRATE=1`; only the two roots are pinned — pinning the derived paths shadowed `test_e2e.py`'s own and made it discover 0 voices). **`Ran 0 tests` is a FAILURE.** Script-style files are named in `SCRIPT_STYLE`; everything else runs under `-m unittest`. `test_ui.py` and `test_fleet_standalone.py` are skipped by name with the reason printed. Files run in parallel (`min(3, cores/2)`; `GATEWAY_GATE_WORKERS` or `--workers N`, `1` = serial) except the serial list: the nine native/offscreen AppKit suites, `test_window_size.py`, and the wall-clock-ceiling suites (`test_catalog_fast.py`, `test_jobs_list_fast.py`, `test_lossless_restart.py`). Per-file logs, exit codes and `summary.json` go to `--evidence`, which it refuses to reuse; any failure exits non-zero. `scripts/test_run_gate.py` pins zero-tests-is-a-failure, the SKIP lines, the evidence refusal and the serial list (5 tests, 1.2 s). **Proof on This Mac, 2026-10-26, alongside the Story 1.4.360 release gate:** serial `580.3 s` and two parallel runs `424.5 s` / `406.7 s`, each **153 files run, 153 passed, 0 failed, 2 skipped, 2211 unittest tests in 152 files, `All 586 end-to-end checks passed`, exit 0** — identical counts in all three. Evidence: `_trash/gateway-gate-20261026/`.
 
+> **Unreleased branch `feat/video-lanes-20261026` — 2026-10-26. Video lanes: the model's own
+> capability record, and the picture that now reaches the provider.** New
+> `gateway/video_capabilities.py` holds one `VideoCapability` per model and is the only place a
+> video option is typed: modes, aspect ratios, resolutions, `duration_seconds {min,max,step,default?}`,
+> the audio switch field, start/end/reference-image fields, the reference-image limit, and a
+> `source` (`provider` = read from the endpoint's own OpenAPI schema, `curated` = from the
+> provider's docs on `source_date`) with `source_url`. `catalog._video_row` builds a cloud row from
+> it — the flat `["16:9","9:16","1:1"]` / 5 s+10 s @ `"720p"` row for every cloud video model is
+> **gone** — and a model with no record publishes its provider-stated mode and **no variants**, so
+> Story's `selectLiveImageToVideoModel` (which needs one) cannot offer a canvas nobody published.
+> The record is also the request mapping: `adapters/fal.py` names no model and sends each field
+> only where the record declares it; an unpublished duration/ratio/resolution is refused naming
+> the accepted set, never clamped. First records: **Wan 3.0** (T2V/I2V/R2V, 2–30 s,
+> 480p/720p/1080p, six ratios, `start_image_url`/`end_image_url`/`reference_image_urls`, `audio`)
+> and **Seedance 2.5** (T2V/I2V/R2V, 4–30 s, seven ratios, `image_url`/`end_image_url`/
+> `image_urls`, `generate_audio`, `duration` as a *string* enum) — both via fal, both **disabled**
+> (nothing was enabled, contacted or spent). **Source image actually reaches the provider:**
+> `api._stage_video_reference` now also stages `end_image_asset_id` and `reference_asset_ids`, and
+> refuses an expired asset by name instead of letting the job become a text-to-video request with
+> no picture; fal sends a `data:` URI in the endpoint's declared field, xAI `image: {url}`,
+> MiniMax v2 a `content[]` item with `role: "first_frame"` (its v2 route never read
+> `first_frame_image`), and Kie uploads to its `file-base64-upload` route and uses
+> `downloadUrl` in `image_urls` (its inputs take URLs, not base64). `POST /v1/videos/generations`
+> answers a replay of an Idempotency-Key before it looks at uploads, and refuses a replay whose
+> request changed. `tests/test_video_capabilities.py` is new — 24 decision-logic tests (the
+> published ladders, the four adapters' image fields, the refusals, staging, expired assets, and
+> the text-to-video / reference-to-video gates) over fake provider responses only.
+> **Adding the next model is one record** —
+> the recipe is in `AGENTS.md` ("A video model describes itself"). Story still needs, for T2V and
+> reference-to-video: a request body carrying `mode` (`text-to-video` | `image-to-video` |
+> `reference-to-video`), `reference_asset_ids[]`, `end_image_asset_id`, and only the options the
+> row publishes; and a picker that reads `duration_seconds {min,max,step}` instead of enumerating
+> variants.
+
 > **0.2.203 — 2026-10-26.** The **SFX tab** (Providers page) manages sound sources like providers: Openverse's access token, client id and secret **save and clear** through `POST|DELETE /admin/api/sounds/sources/{id}/credentials`, in the same `CredentialStore` under the key the lane has always read (`openverse-sound`, deliberately unchanged so a stored token keeps working). `CredentialStore.set_values_for` is the one store write that does not resolve a `ProviderDefinition`; it takes the field list from the caller's own declaration and **refuses** an unknown key instead of dropping it. **A sound source is still not a model provider** — no row in `providers/definitions.py`, no catalogue rows, and `test_e2e`'s "every provider has a working adapter" stays green. Sources are declared once in `sound_sources.SOUND_SOURCE_DEFINITIONS` with one class per `kind` in `_ADAPTERS` (checked against each other at import) and projected by `describe_all`, which masks with the same `mask()` the provider console uses; secrets are asserted absent from every response and every captured log line. Anonymous is not unconfigured: `configured` and `registered` are two facts, and the quota line reads "not read yet" until a search has read the upstream's headers. The provider list is **grouped by what it serves**: `definitions.service_group()` files each provider under its first *served* lane in `MODALITIES` order (`serves()`, not the declared list — Kie declares chat and cannot run it, so it is filed under Image), `group_by_service()` orders the headings off the same rows, and `/admin/api/providers` publishes `service_group`, `service_group_label` and `service_groups`. Display only: dispatch, enablement and discovery read nothing new. Tests: `tests/test_sfx_providers.py` (19), `tests/test_sfx_view.js` (13); `tests/test_secret_field.py`'s eye count is now derived from the password inputs instead of pinned at 2.
 
 > **0.2.202 — 2026-10-25.** Render envelope v2 (44505e2): bounds_version 2, canvas_range {max_edge 3840, max_pixels 8294400}, working_fps [24,25,30,60], max_pixel_frames 5374771200000; profile sha256 ad3f1c9d47d5f594…. `data/final-render` is git-excluded: a release must copy the new profile.json/compiler.json/tools.json/voices.json into the installed checkout. Smart Sound library (111de91): `/v1/sounds/{search,library,quota}`, Openverse adapter not a model provider (key read straight from the credential store under `openverse-sound`). Tests: 19 files now `sandbox_env()` before importing gateway (aa7be0a, 36e217e) so no test binds the owner's real Application Support data. Gate 152/152 per file (`PYTHONPATH=.:tests`). Remote render stays off until a real 1080p30 remote-vs-local proof.

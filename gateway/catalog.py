@@ -34,6 +34,7 @@ from typing import Any
 from . import image_assignment
 from . import limits
 from . import pools
+from . import video_capabilities
 from . import voices
 from .constants import PRICE_VERSION, zero_pricing
 from .pricing import chargeable, row_price
@@ -157,12 +158,14 @@ def _geometry(ratio: str) -> dict[str, int]:
 #: `video-to-video`, and the short forms are matched as whole hyphen-separated
 #: tokens.
 _VIDEO_MODE_PHRASES: tuple[tuple[str, str], ...] = (
+    ("reference-to-video", "reference-to-video"),
     ("text-to-video", "text-to-video"),
     ("image-to-video", "image-to-video"),
     ("video-to-video", "video-to-video"),
     ("extend-video", "video-to-video"),
     ("t2v", "text-to-video"),
     ("i2v", "image-to-video"),
+    ("r2v", "reference-to-video"),
 )
 
 
@@ -585,21 +588,19 @@ def _video_row(model_id: str, definition: ProviderDefinition, model: dict[str, A
     # Story Studio accepts a video variant ONLY when all six fields are present
     # and valid, so a partially-described variant is worse than none.
     #
-    # ponytail: one flat variant list for every video model. Ceiling — no
-    # provider here publishes durations or resolutions (fal and Kie give only a
-    # `category` and an `endpoint_id`), and the previous GenStudio's contract had
-    # them per model: Grok 4-15s at 480/720p, MiniMax 5-15s at 480p, HappyHorse
-    # 4-15s at 720/1080p. Offering 10s@720p to a model that tops out at 5s@480p
-    # fails at the provider, and it is only harmless today because the single
-    # enabled video model (Gemini Omni, 4-10s@720p) happens to accept both.
-    # Upgrade path — a curated per-model variant table, or read it from the
-    # provider once one publishes it.
+    # **A cloud model's options come from `video_capabilities`**, one record per
+    # model, and nowhere else. Before that table the row was one flat guess —
+    # 5 s and 10 s at "720p" in `["16:9","9:16","1:1"]` for every cloud video
+    # model — which Wan 3.0 (2–30 s, 480p/720p/1080p, six ratios) and Seedance
+    # 2.5 (4–30 s, seven ratios) both refuse. A model with no record publishes its
+    # mode and no variants, which is how "we could not work it out" stays distinct
+    # from "the answer is none".
     #
-    # `modes` and `generates_audio` are NOT part of that simplification, and
-    # leaving them flat was a defect of the same kind as `supports_vision: false`:
+    # `modes` and `generates_audio` are read from the record the same way, and a
+    # model with no record keeps what its provider stated:
     #
-    #   * every video model was advertised as image-to-video only, while the
-    #     curated list contains text-to-video endpoints whose own ids say so
+    #   * every video model used to be advertised as image-to-video only, while
+    #     the curated list contains text-to-video endpoints whose own ids say so
     #     (`happyhorse-1-1/text-to-video`, `kling/v3-turbo-text-to-video`). A
     #     model that only takes text was offered a control it cannot honour, and
     #     one that takes text was not offered the control it needs;
@@ -670,12 +671,17 @@ def _video_row(model_id: str, definition: ProviderDefinition, model: dict[str, A
             # control only where one is published rather than on every video model alike.
             **({"controls": controls} if controls else {}),
         }
-    # **Read what the provider states, then our own adapter's knowledge, and
+    # **Read what the provider states, then the model's own published record, and
     # label which it was.** The id heuristic alone was the defect: fal's
     # `category` — which discovery stores — was never read, so `veo3.1`,
     # `ltx-video` and `gemini-omni-flash` (all `category: "text-to-video"`)
     # published image-to-video only, and a text-only endpoint was offered an
     # image control it cannot honour.
+    record = video_capabilities.for_model(
+        definition.id, str(model.get("model_id") or model_id)
+    )
+    if record is not None:
+        return _capability_video_row(record, raw)
     stated_modes = _video_modes_stated(raw_id, raw)
     if stated_modes:
         modes, modes_source = stated_modes, "provider"
@@ -683,6 +689,12 @@ def _video_row(model_id: str, definition: ProviderDefinition, model: dict[str, A
         fallback = list(_VIDEO_MODES_BY_KIND.get(definition.kind, ()))
         modes, modes_source = fallback, ("gateway" if fallback else None)
     stated_audio = raw.get("generates_audio") if isinstance(raw, dict) else None
+    # **A model nobody here has described publishes its mode and nothing else.**
+    # The flat row this replaced offered every cloud video model 5 s and 10 s at
+    # "720p" in `["16:9","9:16","1:1"]`, which most of them refuse — a canvas the
+    # caller was told was the model's own. No variants means Story Studio's
+    # `selectLiveImageToVideoModel` cannot select it, which is exactly right: a
+    # model we cannot describe is not offered, rather than offered with a guess.
     return {
         "modes": modes,
         # Whose answer that list is, in the same discipline every other
@@ -690,21 +702,65 @@ def _video_row(model_id: str, definition: ProviderDefinition, model: dict[str, A
         # so, `gateway` when it is our adapter's capability, `null` when nobody
         # stated one and the list is therefore empty.
         "modes_source": modes_source,
-        "aspect_ratios": ["16:9", "9:16", "1:1"],
+        "aspect_ratios": [],
         "generates_audio": stated_audio if isinstance(stated_audio, bool) else None,
-        "variants": [
-            {
-                "operation": mode,
-                "duration_seconds": seconds,
-                "resolution": "720p",
-                "credits_per_video": 0,
-                "minimum_credits": 0,
-                "price_version": PRICE_VERSION,
-            }
-            for mode in modes
-            for seconds in (5, 10)
-        ],
+        "variants": [],
     }
+
+
+def _capability_video_row(record: "video_capabilities.VideoCapability",
+                          raw: dict[str, Any]) -> dict[str, Any]:
+    """One cloud video row from the model's own record — every option, or none.
+
+    The variants are enumerated from the record's own range (`duration_min` × step × resolution),
+    because that is the contract Story Studio reads today; `duration_seconds: {min, max, step}` rides
+    alongside it so a caller can render a slider instead of a 29-item list. Both come from the same
+    record, so neither can describe a different model.
+    """
+    durations = record.durations()
+    variants = [
+        {
+            "operation": mode,
+            "duration_seconds": seconds,
+            "resolution": resolution,
+            "credits_per_video": 0,
+            "minimum_credits": 0,
+            "price_version": PRICE_VERSION,
+        }
+        for mode in record.modes
+        for seconds in durations
+        for resolution in record.resolutions
+    ]
+    stated_audio = raw.get("generates_audio") if isinstance(raw, dict) else None
+    row: dict[str, Any] = {
+        "modes": list(record.modes),
+        "modes_source": record.source,
+        "aspect_ratios": list(record.aspect_ratios),
+        "resolutions": list(record.resolutions),
+        "duration_seconds": record.duration_record(),
+        # The record is an answer; a provider's own discovery row is another. The record wins
+        # because it is the endpoint's schema, and `None` still means nobody stated one.
+        "generates_audio": (
+            record.generates_audio if record.generates_audio is not None
+            else (stated_audio if isinstance(stated_audio, bool) else None)
+        ),
+        "variants": variants,
+        # Which request shapes this model takes, so a caller offers only those. `False` here is a
+        # statement from the endpoint's schema (it declares no such field), never a default.
+        "supports_start_frame": bool(record.start_frame_field),
+        "supports_end_frame": bool(record.end_frame_field),
+        "supports_reference_images": bool(record.reference_field),
+        "max_reference_images": record.max_reference_images or None,
+        "reference_image_kinds": list(record.reference_kinds),
+        # Whose answer every option above is, and when it was read. A curated record and a
+        # provider-published one are different claims and must not read the same.
+        "capability_source": record.source,
+        "capability_as_of": record.source_date or None,
+    }
+    controls = video_capabilities.audio_switch(record)
+    if controls:
+        row["controls"] = controls
+    return row
 
 
 #: Where a published limit came from. The values are deliberately dull, and
@@ -2309,6 +2365,14 @@ class Catalog:
             None if is_location else registry.models.cached(definition.id).get("fetched_at"),
             definition.id, model["model_id"],
         ))
+        if modality == "video":
+            # **What the price is per.** Every cloud video endpoint here bills by the second, and
+            # `price_usd`'s own key says which unit the provider stated. Published separately so a
+            # caller multiplying it by a duration does not have to guess, and absent when nobody
+            # stated a price — never "free".
+            usd = row.get("price_usd")
+            if isinstance(usd, dict) and usd:
+                row["price_basis"] = next(iter(usd))
         # **Free or paid, truthfully, on every row** — the Models page's Free/Paid as a bool, so a
         # model on the owner's Macs (`price_source: local`) says `false`. `zero_pricing` above only
         # publishes the shape. Story decides reference images and paid replacement by capability

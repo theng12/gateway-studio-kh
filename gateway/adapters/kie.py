@@ -18,13 +18,15 @@ not supported"*, because `V6` is not an api-model name there.
 
 from __future__ import annotations
 
+import base64
 import json
 import time
+import uuid
 from typing import Any
 
 import httpx
 
-from .base import Artifact, BackendError, BackendRequest, BackendResult
+from .base import Artifact, BackendError, BackendRequest, BackendResult, staged_bytes
 
 POLL_INTERVAL_S = 2.0
 JOB_DEADLINE_S = 900.0
@@ -117,6 +119,21 @@ def _input_for(request: BackendRequest) -> dict[str, Any]:
     payload: dict[str, Any] = {}
     if request.params.get("prompt") is not None:
         payload["prompt"] = str(request.params["prompt"])
+    if request.modality == "video":
+        # **Kie's video inputs are its own names and types.** The catalogue's `duration_seconds`
+        # is `duration` here, and the picture is `image_urls` — an array of URLs Kie can fetch,
+        # which `_reference_url` produces by uploading the Gateway's staged copy. Sending
+        # `duration_seconds` or `reference_asset_url` unchanged reaches no field the worker reads,
+        # so the job looks accepted and renders from the prompt alone.
+        if request.params.get("duration_seconds") is not None:
+            try:
+                payload["duration"] = int(request.params["duration_seconds"])
+            except (TypeError, ValueError):
+                payload["duration"] = request.params["duration_seconds"]
+        for key in ("aspect_ratio", "resolution", "seed", "negative_prompt"):
+            if request.params.get(key) is not None:
+                payload[key] = request.params[key]
+        return payload
     for key in (
         "aspect_ratio",
         "resolution",
@@ -129,6 +146,63 @@ def _input_for(request: BackendRequest) -> dict[str, Any]:
         if request.params.get(key) is not None:
             payload[key] = request.params[key]
     return payload
+
+
+#: Where Kie takes an uploaded file for its generation inputs. A **different host** from the task
+#: API (`api.kie.ai`), and the one documented route that turns bytes into a URL its workers can
+#: fetch: `POST {…}/api/file-base64-upload` → `data.downloadUrl`, which is what `image_urls` wants.
+#: Uploads are free and the files are deleted after 24 h.
+_KIE_UPLOAD_URL = "https://kieai.redpandaai.co/api/file-base64-upload"
+
+
+def _reference_url(request: BackendRequest) -> str | None:
+    """The Gateway's staged scene image as a URL Kie's worker can fetch, or `None`.
+
+    **Kie's video inputs take URLs, not base64**, so the bytes have to be handed to Kie first —
+    there is no inline form and no path from this Mac that a public worker could reach. The upload
+    is the documented route; the returned `downloadUrl` is what `image_urls` accepts.
+
+    A staged file that has gone is a named refusal, never a prompt-only request: Kie would answer
+    a text-to-video clip and nothing would say the scene image was dropped.
+    """
+    staged = staged_bytes(request, "_reference_path", "_reference_type")
+    if staged is None and request.params.get("reference_asset_url"):
+        return str(request.params["reference_asset_url"])
+    if staged is None:
+        return None
+    content, media_type = staged
+    try:
+        response = httpx.post(
+            _KIE_UPLOAD_URL,
+            headers={
+                "Authorization": f"Bearer {request.values.get('api_key', '')}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "base64Data": f"data:{media_type};base64,"
+                              f"{base64.b64encode(content).decode('ascii')}",
+                "uploadPath": "story-studio/video-references",
+                "fileName": f"scene-{uuid.uuid4().hex}.png",
+            },
+            timeout=SUBMIT_TIMEOUT,
+        )
+    except httpx.HTTPError as exc:
+        raise BackendError(
+            f"kie reference upload failed: {exc}", code="PROVIDER_UNAVAILABLE", retryable=True
+        ) from exc
+    # **An error can arrive as HTTP 200** — Kie states this, so the body's `code` decides.
+    payload = response.json() if response.content else {}
+    if response.status_code >= 400 or not isinstance(payload, dict) or str(
+        payload.get("code") or "") not in {"200", ""}:
+        raise BackendError(
+            f"kie reference upload HTTP {response.status_code}: {response.text[:200]}",
+            code="PROVIDER_FAILED",
+        )
+    url = str((payload.get("data") or {}).get("downloadUrl") or "")
+    if not url:
+        raise BackendError("kie returned no downloadUrl for the reference image",
+                           code="PROVIDER_FAILED")
+    return url
 
 
 def _urls_from_result_json(raw: Any) -> list[str]:
@@ -194,6 +268,10 @@ class KieBackend:
         # live on 2026-09-20, which is how this line came to be written.
         api_model = MUSIC_API_MODEL if request.modality == "music" else request.model_id
         body = {"model": api_model, "input": _input_for(request)}
+        if request.modality == "video":
+            reference = _reference_url(request)
+            if reference:
+                body["input"]["image_urls"] = [reference]
 
         with httpx.Client(timeout=SUBMIT_TIMEOUT) as client:
             try:
