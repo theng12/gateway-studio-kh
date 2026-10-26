@@ -454,6 +454,9 @@ def _next_machine(store: JobStore, job_id: str, model_id: str, modality: str,
     # **A re-route obeys the same capability rule as the submit** — a reference job is not sent to a
     # location whose worker never advertised `edit`, however many attempts it has left.
     require_capability = fleet.required_capability(modality, _job_params(job))
+    # Looked up before either branch: the pool branch reads it too, and reading it after the assignment
+    # below made `room` a local the pool branch used unbound (UnboundLocalError on every pool re-route).
+    room = _ROOM_HOOKS.get(job_id)
     if pool_members is not None:
         chosen, member, _note = fleet.route_pool(pool_members, modality, exclude_locations=tried,
                                                  load=room, require_capability=require_capability)
@@ -468,7 +471,6 @@ def _next_machine(store: JobStore, job_id: str, model_id: str, modality: str,
     if sum(entry.get("code") not in _UNCOUNTED_ATTEMPT_CODES for entry in attempts) >= int(policy["max_attempts"]):
         # The ceiling the owner named. The failure path builds the sentence from this log.
         return None
-    room = _ROOM_HOOKS.get(job_id)
     if room is None:
         chosen, _note = fleet.route(model_id, modality, exclude_locations=tried,
                                     require_capability=require_capability)

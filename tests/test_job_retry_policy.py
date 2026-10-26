@@ -89,6 +89,56 @@ class _Site:
         self.label = site_id
 
 
+class _PoolStore(_Store):
+    def record_route(self, job_id: str, provider_id: str, *, model_id: str | None = None) -> bool:
+        self.routes.append(provider_id)
+        return True
+
+    def defer(self, job_id: str, *, delay_s: float, reason: str, new_round: bool = False,
+              unsent: bool = False) -> bool:
+        self.deferred.append({"delay_s": delay_s, "reason": reason, "unsent": unsent})
+        return True
+
+
+class PoolRerouteTest(unittest.TestCase):
+    """An image-pool re-route reads the job's room hook; it used to read it before assigning it."""
+
+    def setUp(self) -> None:
+        concurrency.reset_for_tests()
+        self.addCleanup(concurrency.reset_for_tests)
+        self.addCleanup(worker_module._ROOM_HOOKS.clear)
+
+    def _next(self, store, room=None):
+        if room is not None:
+            worker_module._ROOM_HOOKS[store.job["id"]] = room
+        seen: dict[str, Any] = {}
+
+        def route_pool(members, modality, *, exclude_locations=None, load=None, **kwargs):
+            seen["load"] = load
+            return _Site("b"), members[0], ""
+
+        with patch.object(worker_module, "_pool_members_for", lambda job, modality: ["pool-model"]), \
+                patch.object(worker_module.fleet, "route_pool", route_pool):
+            answer = worker_module._next_machine(store, store.job["id"], "pool-model", "image",
+                                                 "studio-hub-a", code="PROVIDER_FAILED", detail="x")
+        return answer, seen
+
+    def test_pool_reroute_without_a_room_hook_moves_the_job(self) -> None:
+        store = _PoolStore({"id": "pool-1"})
+        answer, seen = self._next(store)
+        self.assertEqual(answer, "studio-hub-b")
+        self.assertIsNone(seen["load"])
+        self.assertEqual(store.routes, ["studio-hub-b"])
+
+    def test_pool_reroute_with_every_lane_full_queues_in_gateway(self) -> None:
+        store = _PoolStore({"id": "pool-2"})
+        room = lambda pid, claim=False: (0, 0, 0)
+        answer, seen = self._next(store, room)
+        self.assertEqual(answer, worker_module.QUEUED_IN_GATEWAY)
+        self.assertIs(seen["load"], room)
+        self.assertTrue(store.deferred and store.deferred[0]["unsent"])
+
+
 class ThreeMachinesTest(unittest.TestCase):
     """The policy table, driven through the real decision function."""
 
