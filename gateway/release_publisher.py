@@ -58,9 +58,10 @@ _SIGNER = Path(__file__).with_name("content_signing.mjs")
 _OUTPUT_LIMIT = 64 * 1024
 _SIGN_TIMEOUT = 30.0
 #: A full push is one JSON body with the image in base64, generated in chunks here
-#: (the controller still buffers it); a delta push's POST can take ~20 s of hashing on
-#: the controller's side, so the read timeout is generous.
-_PUSH_TIMEOUT = httpx.Timeout(600.0, connect=15.0)
+#: (the controller still buffers it); a full push can take 30+ minutes over WAN or
+#: Tailscale, so 3600.0 s gives slow sites or large images room. A delta push's POST
+#: can take ~20 s of hashing on the controller's side.
+_PUSH_TIMEOUT = httpx.Timeout(3600.0, connect=30.0)
 #: Everything after the manifest POST answers from memory or a small write; a step that
 #: hangs is a dead controller, and 600 s of waiting on it is what a 550 s failed pilot
 #: looked like. The idempotent steps get a short read timeout plus `_retry`.
@@ -68,7 +69,7 @@ _STEP_TIMEOUT = httpx.Timeout(120.0, connect=15.0)
 #: A transport error mid-push does not say whether the controller stored the release
 #: (the reply can be lost after the store, or the Hub can restart to install it). Poll its
 #: own record this long before calling the push failed.
-_RECOVER_SECONDS = 60.0
+_RECOVER_SECONDS = 300.0
 _RECOVER_INTERVAL = 5.0
 #: Transport errors worth repeating on an idempotent request (a stale keep-alive
 #: connection is "Server disconnected without sending a response"). Not read timeouts.

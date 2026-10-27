@@ -367,6 +367,11 @@ class ReleasePublish(unittest.TestCase):
         self.assertEqual(hashlib.sha256(raw).hexdigest(), identity["fingerprint"])
         self.assertEqual(base64.b64decode(identity["public_key_base64"]), raw)
 
+    def test_full_push_timeout_and_recovery_bounds(self) -> None:
+        # A full push of ~1.9 GB base64 over WAN/Tailscale takes 30+ minutes; timeout must allow it.
+        self.assertGreaterEqual(rp._PUSH_TIMEOUT.read, 3600.0)
+        self.assertGreaterEqual(rp._RECOVER_SECONDS, 300.0)
+
 
 if __name__ == "__main__":
     unittest.main()

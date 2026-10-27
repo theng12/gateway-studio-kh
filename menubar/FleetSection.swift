@@ -732,6 +732,61 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
 
     // MARK: Release publishing
 
+    struct PublishReleaseSheetForm {
+        let view: NSView
+        let versionField: NSTextField
+        let buildField: NSTextField
+        let allAtOnce: NSButton
+        let forceFull: NSButton
+        let forceFullHint: NSTextField
+
+        init(version: String, build: String, filename: String) {
+            versionField = NSTextField(string: version)
+            versionField.placeholderString = "0.6.50"
+            versionField.widthAnchor.constraint(equalToConstant: 220).isActive = true
+
+            buildField = NSTextField(string: build)
+            buildField.placeholderString = "abc1234"
+            buildField.widthAnchor.constraint(equalToConstant: 220).isActive = true
+
+            let hint = PageKit.help(
+                "Read from \(filename) — check both. They are signed and "
+                + "cannot be corrected without another push."
+            )
+            hint.preferredMaxLayoutWidth = 320
+            hint.widthAnchor.constraint(equalToConstant: 320).isActive = true
+
+            allAtOnce = NSButton(
+                checkboxWithTitle: "All at once (emergency): every controller now",
+                target: nil, action: nil
+            )
+
+            forceFull = NSButton(
+                checkboxWithTitle: "Send the whole app (not just the changed files)",
+                target: nil, action: nil
+            )
+            forceFull.state = .off
+
+            forceFullHint = PageKit.help("Use when a Mac is too far behind for a files-only update.")
+            forceFullHint.preferredMaxLayoutWidth = 320
+            forceFullHint.widthAnchor.constraint(equalToConstant: 320).isActive = true
+
+            let stack = NSStackView(views: [
+                PageKit.formRow("Version", versionField),
+                PageKit.formRow("Build", buildField),
+                hint,
+                allAtOnce,
+                forceFull,
+                forceFullHint,
+            ])
+            stack.orientation = .vertical
+            stack.alignment = .leading
+            stack.spacing = DS.Space.m
+            stack.frame = NSRect(x: 0, y: 0, width: 340, height: 240)
+            self.view = stack
+        }
+    }
+
     /// Pick a `.dmg`, name its version and build, then sign and push it.
     ///
     /// The version and build are **asked for**, not taken from the filename: they
@@ -754,33 +809,7 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
         guard panel.runModal() == .OK, let url = panel.url else { return }
 
         let guessed = parseReleaseName(url.lastPathComponent)
-        let versionField = NSTextField(string: guessed.version)
-        versionField.placeholderString = "0.6.50"
-        versionField.widthAnchor.constraint(equalToConstant: 220).isActive = true
-        let buildField = NSTextField(string: guessed.build)
-        buildField.placeholderString = "abc1234"
-        buildField.widthAnchor.constraint(equalToConstant: 220).isActive = true
-
-        let hint = PageKit.help(
-            "Read from \(url.lastPathComponent) — check both. They are signed and "
-            + "cannot be corrected without another push."
-        )
-        // `PageKit.help` wraps at the page's 620pt; this card is deliberately small.
-        hint.preferredMaxLayoutWidth = 320
-        hint.widthAnchor.constraint(equalToConstant: 320).isActive = true
-        // The emergency path: every controller at once instead of one at a time.
-        let allAtOnce = NSButton(checkboxWithTitle: "All at once (emergency): every controller now",
-                                 target: nil, action: nil)
-        let form = NSStackView(views: [
-            PageKit.formRow("Version", versionField),
-            PageKit.formRow("Build", buildField),
-            hint,
-            allAtOnce,
-        ])
-        form.orientation = .vertical
-        form.alignment = .leading
-        form.spacing = DS.Space.m
-        form.frame = NSRect(x: 0, y: 0, width: 340, height: 180)
+        let sheet = PublishReleaseSheetForm(version: guessed.version, build: guessed.build, filename: url.lastPathComponent)
 
         let alert = NSAlert()
         alert.messageText = "Publish \(url.lastPathComponent)?"
@@ -788,14 +817,14 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
             "This gateway signs the DMG and rolls it out one location at a time: this Mac's Studio Hub, "
             + "then each controller in turn, waiting for each to come back on the new version. Each "
             + "group's Macs then update themselves one by one, after finishing their current work."
-        alert.accessoryView = form
+        alert.accessoryView = sheet.view
         alert.addButton(withTitle: "Publish")
         alert.addButton(withTitle: "Cancel")
-        alert.window.initialFirstResponder = versionField
+        alert.window.initialFirstResponder = sheet.versionField
         guard alert.runModal() == .alertFirstButtonReturn else { return }
 
-        let version = versionField.stringValue.trimmingCharacters(in: .whitespaces)
-        let build = buildField.stringValue.trimmingCharacters(in: .whitespaces)
+        let version = sheet.versionField.stringValue.trimmingCharacters(in: .whitespaces)
+        let build = sheet.buildField.stringValue.trimmingCharacters(in: .whitespaces)
         guard !version.isEmpty, !build.isEmpty else {
             report(
                 .error,
@@ -824,14 +853,16 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
             guard confirm.runModal() == .alertFirstButtonReturn else { return }
             publishRelease(
                 path: url.path, version: version, build: build,
-                filename: url.lastPathComponent, allowDowngrade: true, allAtOnce: allAtOnce.state == .on
+                filename: url.lastPathComponent, allowDowngrade: true,
+                allAtOnce: sheet.allAtOnce.state == .on,
+                forceFull: sheet.forceFull.state == .on
             )
             return
         }
 
         publishRelease(
             path: url.path, version: version, build: build, filename: url.lastPathComponent,
-            allAtOnce: allAtOnce.state == .on
+            allAtOnce: sheet.allAtOnce.state == .on, forceFull: sheet.forceFull.state == .on
         )
     }
 
@@ -898,7 +929,7 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
 
     private func publishRelease(
         path: String, version: String, build: String, filename: String,
-        allowDowngrade: Bool = false, allAtOnce: Bool = false
+        allowDowngrade: Bool = false, allAtOnce: Bool = false, forceFull: Bool = false
     ) {
         publishing = true
         locationsTab.setPublishing(
@@ -918,6 +949,7 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
         // Only sent when the owner chose to override the newer-version guard.
         if allowDowngrade { body["allow_downgrade"] = true }
         if allAtOnce { body["mode"] = "all_at_once" }
+        if forceFull { body["force_full"] = true }
         GatewayAPI.post(
             "/admin/api/release/publish",
             body: body,
