@@ -14,6 +14,60 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.204 — 2026-10-27
+
+### Reference to Image: your characters and a prompt, on the edit lane
+Story Studio can now send a few reference images and a prompt to the FLUX.2 Klein edit lane the
+fleet already holds, and get back a scene image that keeps those characters. The Gateway has a new
+reference store behind `POST /v1/images/source-images`: it answers Story's own field names, refuses
+a body it cannot decode instead of holding it, and lets a stored reference expire after fifteen
+minutes. Idempotency covers the references too, so the same key with the same images replays and the
+same key with different images is refused; an unknown or expired reference is a clear error, never a
+silent text-to-image render. The catalogue no longer hides the capability: a lane that publishes
+`edit` is offered it, and across locations the capability is the union of the sites that run it
+while the limits are their intersection. A run with no capable lane refuses with one sentence naming
+the missing capability instead of "try again later".
+
+### A remote final render names the Mac that ran it
+Every remote final render to a joined fleet Mac used to fail at its first status poll. The Hub
+reports the machine that ran the render by its broker's own label, `local`, and the Gateway treated
+any name other than the destination Mac's id as a foreign machine. The answering Hub is the
+destination, because a Mac only ever answers about its own job, so `local` is now accepted
+alongside the empty answer and the Mac's own id; any other name is still refused. The poll no longer
+crashes the monitor either: a status answer it cannot accept is logged with the Hub's HTTP status
+and a short excerpt of the body, an accepted answer resets the count, and thirty rejected answers
+in a row settle the row as a remote refusal, which Story already falls back from to a local render.
+A transport failure is not a refusal and keeps being retried.
+
+### A video lane publishes the model's own options, and the picture gets there
+Cloud video models no longer answer with the same flat row every time. Each model's own capability
+record now carries the modes, aspect ratios, resolutions and duration range it really accepts, the
+switch that turns audio on, and where a first frame, an end frame and reference images go. Two first
+records ship in this release; both are disabled, so nothing runs and nothing is spent until you turn
+them on: **Wan 3.0** (text-to-video, image-to-video and reference-to-video; 2 to 30 seconds;
+480p, 720p or 1080p; six aspect ratios; audio) and **Seedance 2.5** (text-to-video, image-to-video
+and reference-to-video; 4 to 30 seconds; seven aspect ratios; its own audio switch and a duration
+list). A model nobody has written a record for now publishes its provider's stated mode and no
+variants, so Story cannot offer a canvas the provider never published. An unpublished duration,
+ratio or resolution is refused with the accepted set named, never quietly clamped.
+
+The scene image Story uploads now actually arrives at the provider. The Gateway stages the end
+frame and the reference images as well as the first frame, and refuses an expired reference by name
+instead of letting a job become a text-to-video request with no picture. The four cloud video
+adapters send the image in each endpoint's own declared field. Text-to-video stays accepted for the
+models that publish it; an image-to-video request with no image, a mode the model does not publish
+and a reference-to-video request with no reference are each named in the refusal.
+
+### Studio Library packs can be retired, un-retired and removed
+A published pack has three more actions. **Retire** hides it from the catalogue and blocks new
+installs while existing installs keep working, and retiring the newest version asks for a second
+confirmation. **Un-retire** puts it back on the shelf. **Remove** moves the archive and its sidecars
+into the Gateway's Trash with a manifest entry saying what was moved, when, from where and its
+sha256, and drops it from the active records; a pack that has not been retired is refused, so there
+is no hard delete. The content-authority backup understands both states, so a retired pack is not
+reported missing and a removed pack is recorded as being in the Trash. A one-off migration script
+records the September 21 Wars archive as removed without moving or rewriting anything.
+
 ## 0.2.203 — 2026-10-26
 
 ### SFX: a sound source with a key you can save
