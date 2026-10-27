@@ -1496,6 +1496,22 @@ def _chat_row(model_id: str, definition: ProviderDefinition, model: dict[str, An
         definition, model_id, model)
     if hub_context is not None and hub_context_kind:
         context_source = hub_context_kind
+
+    # The Hub states vision support per model, read from its published flag, never the name.
+    hub_vision = raw.get("supports_vision")
+    if hub_vision is True or (hub_vision is None and "vision" in (raw.get("capabilities") or [])):
+        supports_vision = True
+        if inputs is None:
+            inputs = ["text", "image"]
+        elif "image" not in inputs:
+            inputs = list(inputs) + ["image"]
+    elif hub_vision is False:
+        supports_vision = False
+        if inputs and "image" in inputs:
+            inputs = [x for x in inputs if x != "image"]
+    else:
+        supports_vision = ("image" in inputs) if inputs else None
+
     return {
         "queue_class": "direct",
         "context_window_tokens": context_window,
@@ -1540,7 +1556,7 @@ def _chat_row(model_id: str, definition: ProviderDefinition, model: dict[str, An
         "lane_contract": dict(lane_contract) or None,
         "controls": controls,
         "input_modalities": inputs,
-        "supports_vision": ("image" in inputs) if inputs else None,
+        "supports_vision": supports_vision,
         # **The precision this model is published at, where its own maker states one**
         # (C5/M14). Carried from the manifest the Hub read, with the sentence that says where the
         # value came from — a bare "4-bit" a reader cannot check is the same defect as a token
