@@ -1096,6 +1096,55 @@ function setShelfKindFilter(kind) {
   shelfKindFilter = kind;
   renderShelfReleases((shelfState.data && shelfState.data.releases) || []);
 }
+// Retire hides a pack from customers and blocks new installs; a Mac that already has it keeps it.
+// Remove (retired packs only) moves the files to the Gateway trash; nothing is deleted.
+function shelfRowActions(row) {
+  const id = esc(row.release_id || '');
+  if (!row.release_id) return '';
+  if (row.retired) {
+    return `<button class="sm" data-pack-action="unretire" data-release-id="${id}" onclick="unretirePack('${id}')">Un-retire</button> ` +
+           `<button class="sm" data-pack-action="remove" data-release-id="${id}" onclick="removePack('${id}')">Remove…</button>`;
+  }
+  return `<button class="sm" data-pack-action="retire" data-release-id="${id}" onclick="retirePack('${id}')">Retire…</button>`;
+}
+function shelfRelease(releaseId) {
+  return ((shelfState.data && shelfState.data.releases) || []).find(row => row.release_id === releaseId);
+}
+async function shelfPackAction(path, body, done) {
+  try {
+    await api(path, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)});
+    await loadContentShelf();
+    shelfMessage(done);
+  } catch (error) {
+    shelfMessage(`${error.message}`, true);
+  }
+}
+async function retirePack(releaseId) {
+  const row = shelfRelease(releaseId);
+  if (!row) return;
+  const name = `${row.title || row.pack_id} v${row.version}`;
+  const newest = !!row.current;
+  const text = newest
+    ? `Retire ${name}?\n\nThis is the newest version. Customers will stop seeing it in Studio Library and cannot install it new. Macs that already installed it keep working. You can un-retire it later.`
+    : `Retire ${name}?\n\nIt will be hidden and cannot be installed new. Macs that already installed it keep working. You can un-retire it later.`;
+  if (!confirm(text)) return;
+  await shelfPackAction('/content-shelf/retire', {release_id: releaseId, confirm_latest: newest},
+    `${name} is retired. Nothing was deleted.`);
+}
+async function unretirePack(releaseId) {
+  const row = shelfRelease(releaseId);
+  if (!row) return;
+  await shelfPackAction('/content-shelf/unretire', {release_id: releaseId},
+    `${row.title || row.pack_id} v${row.version} is back on the shelf.`);
+}
+async function removePack(releaseId) {
+  const row = shelfRelease(releaseId);
+  if (!row || !row.retired) return;
+  const name = `${row.title || row.pack_id} v${row.version}`;
+  if (!confirm(`Remove ${name}?\n\nIts file moves to the Gateway trash and it leaves the shelf. Macs that already installed it keep working. The Gateway keeps a record of where it went.`)) return;
+  await shelfPackAction('/content-shelf/remove', {release_id: releaseId, confirm: true},
+    `${name} was moved to the Gateway trash.`);
+}
 function renderShelfReleases(releases) {
   const target = shelfNode('releases');
   if (!target) return;
@@ -1115,7 +1164,8 @@ function renderShelfReleases(releases) {
           <td><span class="pill">${esc(shelfKindLabel(row.kind))}</span></td>
           <td class="title">${esc(row.title || row.pack_id || 'Untitled pack')}</td>
           <td class="muted">v${esc(row.version || '?')}</td>
-          <td class="muted">${row.current ? 'Current release' : 'Previous release'} · ${row.available ? 'Available' : 'Unavailable'} · Not installed here</td>
+          <td class="muted">${row.retired ? 'Retired — hidden from customers' : (row.current ? 'Current release' : 'Previous release')} · ${row.available ? 'Available' : 'Unavailable'} · Not installed here</td>
+          <td>${shelfRowActions(row)}</td>
         </tr>`).join('')}</tbody></table></div>
     </section>`;
   }).join('');

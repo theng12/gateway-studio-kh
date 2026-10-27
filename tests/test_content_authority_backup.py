@@ -130,6 +130,84 @@ class AuthorityBackupTest(unittest.TestCase):
                 self.assertTrue((stamped[0] / name).is_file())
             self.assertNotIn("fixture-only", completed.stdout)
 
+    def test_backup_passes_with_retired_and_removed_packs_present(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="gateway-authority-backup-") as temporary:
+            root = Path(temporary)
+            source = root / "data" / "content-delivery"
+            source.mkdir(parents=True, exist_ok=True)
+            os.chmod(source, 0o700)
+
+            active_digest = hashlib.sha256(b"active-content").hexdigest()
+            retired_digest = hashlib.sha256(b"retired-content").hexdigest()
+            removed_digest = hashlib.sha256(b"removed-content").hexdigest()
+
+            # Active archive on disk
+            active_file = root / "data" / "content-library" / active_digest / "archive.sspack"
+            active_file.parent.mkdir(parents=True, exist_ok=True)
+            active_file.write_bytes(b"active-content")
+
+            # Retired archive on disk (retired packs keep their files on disk)
+            retired_file = root / "data" / "content-library" / retired_digest / "archive.sspack"
+            retired_file.parent.mkdir(parents=True, exist_ok=True)
+            retired_file.write_bytes(b"retired-content")
+
+            # Removed archive is NOT in content-library; it is recorded in trash
+            trash_archive = root / "data" / "_trash" / "content-library" / removed_digest / "archive.sspack"
+            trash_archive.parent.mkdir(parents=True, exist_ok=True)
+            trash_archive.write_bytes(b"removed-content")
+
+            state = {
+                "schema_version": 1,
+                "authority": {},
+                "releases": [
+                    {
+                        "release_id": "gateway.private.release.active",
+                        "pack_id": "com.storystudio.pack.topic.active",
+                        "version": "1.0.0",
+                        "archive_sha256": active_digest,
+                        "bytes": len(b"active-content"),
+                        "retired": False,
+                    },
+                    {
+                        "release_id": "gateway.private.release.retired",
+                        "pack_id": "com.storystudio.pack.topic.retired",
+                        "version": "1.0.0",
+                        "archive_sha256": retired_digest,
+                        "bytes": len(b"retired-content"),
+                        "retired": True,
+                        "retired_at": "2026-10-27T00:00:00Z",
+                    },
+                ],
+                "removed": [
+                    {
+                        "what": "com.storystudio.pack.topic.removed@1.0.0",
+                        "when": "2026-09-22T00:00:00Z",
+                        "from_where": f"content-library/{removed_digest}",
+                        "sha256": removed_digest,
+                        "archive_sha256": removed_digest,
+                        "pack_id": "com.storystudio.pack.topic.removed",
+                        "version": "1.0.0",
+                        "trash_path": str(trash_archive),
+                    }
+                ]
+            }
+            (source / "authority.json").write_text(json.dumps(state))
+            (source / "signing-key.pem").write_text("{{PRIVATE_KEY_fixture}}\n")
+            (source / "initialized").write_text("gateway-private-content-authority-v1\n")
+            for name in NAMES:
+                os.chmod(source / name, 0o600)
+
+            destination = root / "backup"
+            copied = backup(source, destination, root / "data")
+
+            # Both active and retired archives are copied and verified
+            self.assertIn(f"archives/{active_digest}.sspack", copied)
+            self.assertIn(f"archives/{retired_digest}.sspack", copied)
+            # Removed archive was not in content-library and did NOT fail the backup
+            self.assertNotIn(f"archives/{removed_digest}.sspack", copied)
+            self.assertEqual((destination / "archives" / f"{active_digest}.sspack").read_bytes(), b"active-content")
+            self.assertEqual((destination / "archives" / f"{retired_digest}.sspack").read_bytes(), b"retired-content")
+
 
 if __name__ == "__main__":
     unittest.main()

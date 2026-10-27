@@ -474,3 +474,87 @@ test('table row hover follows the appearance instead of a fixed dark literal', (
   assert.doesNotMatch(rule[1], /#[0-9a-fA-F]{3,8}\b/, 'hover must not use a fixed hex colour');
   assert.match(rule[1], /color-mix\(|var\(--/, 'hover must use a theme token');
 });
+
+test('shelved releases render Retire / Un-retire / Remove actions and retired status', async () => {
+  const shelf = {
+    ...READY_SHELF,
+    releases: [
+      {
+        release_id: 'release.active',
+        pack_id: 'com.fixture.active',
+        version: '1.0.0',
+        archive_sha256: 'a'.repeat(64),
+        bytes: 1200,
+        title: 'Active Pack',
+        kind: 'topic-pack',
+        current: true,
+        available: true,
+        retired: false,
+        published_at: '2026-09-21T00:00:00Z',
+      },
+      {
+        release_id: 'release.retired',
+        pack_id: 'com.fixture.retired',
+        version: '1.0.0',
+        archive_sha256: 'b'.repeat(64),
+        bytes: 1400,
+        title: 'Retired Pack',
+        kind: 'topic-pack',
+        current: false,
+        available: true,
+        retired: true,
+        retired_at: '2026-10-27T00:00:00Z',
+        published_at: '2026-09-21T00:00:00Z',
+      },
+    ],
+  };
+
+  const calls = [];
+  const confirmations = [];
+  const h = harness(async (pathName, options) => {
+    calls.push([pathName, options?.method || 'GET', options?.body ? JSON.parse(options.body) : null]);
+    return shelf;
+  }, {
+    confirm: (message) => {
+      confirmations.push(message);
+      return true;
+    },
+  });
+
+  await h.context.loadContentShelf();
+  const html = h.node('shelf-releases').innerHTML;
+
+  // Active pack has Retire button
+  assert.match(html, /data-pack-action="retire"/);
+  assert.match(html, /data-release-id="release\.active"/);
+  assert.match(html, /Retire…<\/button>/);
+
+  // Retired pack has Retired text and Un-retire + Remove buttons
+  assert.match(html, /Retired — hidden from customers/);
+  assert.match(html, /data-pack-action="unretire"/);
+  assert.match(html, /data-release-id="release\.retired"/);
+  assert.match(html, /data-pack-action="remove"/);
+  assert.match(html, /Remove…<\/button>/);
+
+  // Test clicking retire on active pack (newest version prompts with explanation)
+  await h.context.retirePack('release.active');
+  assert.equal(confirmations.length, 1);
+  assert.match(confirmations[0], /Retire Active Pack v1\.0\.0\?/);
+  assert.match(confirmations[0], /This is the newest version/);
+  assert.match(confirmations[0], /Customers will stop seeing it in Studio Library/);
+  const retireCall = calls.find(([p]) => p === '/content-shelf/retire');
+  assert.deepEqual(retireCall[2], {release_id: 'release.active', confirm_latest: true});
+
+  // Test clicking unretire on retired pack
+  await h.context.unretirePack('release.retired');
+  const unretireCall = calls.find(([p]) => p === '/content-shelf/unretire');
+  assert.deepEqual(unretireCall[2], {release_id: 'release.retired'});
+
+  // Test clicking remove on retired pack
+  await h.context.removePack('release.retired');
+  assert.equal(confirmations.length, 2);
+  assert.match(confirmations[1], /Remove Retired Pack v1\.0\.0\?/);
+  assert.match(confirmations[1], /Its file moves to the Gateway trash/);
+  const removeCall = calls.find(([p]) => p === '/content-shelf/remove');
+  assert.deepEqual(removeCall[2], {release_id: 'release.retired', confirm: true});
+});
