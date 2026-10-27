@@ -75,6 +75,14 @@ Settings → Backup now includes the ten local configuration and limits files: `
 `retention.json`. Moving the Gateway to another Mac or restoring a backup preserves all configured
 settings without having to re-enter pools, model limits or retention rules by hand.
 
+### A release can be published as the whole image
+Publishing a Studio Hub release to your controllers can now be forced to send the whole disk image
+instead of only the changed files. That matters for a controller on an older Hub: Hub 0.6.201
+advertises the changed-files capability but refuses a delta larger than half the image, and 0.6.203
+is 50.44%, so it refuses the stage and then asks for a disk image a files-only release never had.
+The publish answer, the catch-up after it and `scripts/hub_rollout.py --full` all carry the choice,
+so a controller that was offline during the publish is sent the same shape when it comes back.
+
 ## 0.2.203 — 2026-10-26
 
 ### SFX: a sound source with a key you can save

@@ -735,6 +735,7 @@ def _publish(
     controller_ids: list[str] | None = None,
     auto: bool = False,
     rollout: bool = False,
+    force_full: bool = False,
 ) -> dict[str, Any]:
     """Sign one artifact and offer it to every configured controller (or only `controller_ids`).
 
@@ -750,6 +751,12 @@ def _publish(
     read-only once, streamed from, and always detached); any other controller — or one
     without the routes — gets the whole image, streamed. Controllers are pushed
     concurrently and each keeps its own outcome: one failing does not stop the rest.
+
+    **`force_full` sends the whole image to every controller, delta capability or not.** A
+    controller on an older Hub can advertise `delta` and still refuse the stage: Hub 0.6.201
+    refuses a 0.6.201→0.6.203 delta that is 50.44% of the image (its `MAX_DELTA_FRACTION` is
+    0.5), and the old app then asks for a disk image the files-only release never had, which
+    404s. The full push is the one path that works for it, so the choice must be the owner's.
 
     A controller holding a **newer** version than this artifact is refused
     (`RELEASE_DOWNGRADE`) unless `allow_downgrade` is set: the Hub's updater has no
@@ -811,7 +818,7 @@ def _publish(
         def one(row: tuple[str, Any, str], probe: tuple[dict[str, Any] | None, bool]) -> dict[str, Any]:
             cid, label, url = row
             held, capable = probe
-            planned = "delta" if capable and manifest and delta_descriptor else "full"
+            planned = "full" if force_full or not (capable and manifest and delta_descriptor) else "delta"
             held_version = str((held or {}).get("version") or "").strip()
             try:
                 if held is not None and not allow_downgrade and is_downgrade(target, held_version):
@@ -857,7 +864,9 @@ def _publish(
             results[row[0]] = outcome
         lap("push")
 
-    shown = delta_descriptor or descriptor
+    # `force_full` means every controller holds the plain descriptor, so the release record must
+    # say that too; a delta descriptor here would name a signature nobody stored.
+    shown = descriptor if force_full else (delta_descriptor or descriptor)
     released = {
         key: shown[key]
         for key in ("version", "build", "filename", "bytes", "sha256", "signature",
@@ -873,7 +882,8 @@ def _publish(
                 released.get("version"), released.get("build"), released.get("sha256")):
             state = {"locations": {}}
         state.update(updated_at=int(time.time()), fingerprint=fingerprint,
-                     artifact_path=str(path.resolve()), release=released, timings=timings)
+                     artifact_path=str(path.resolve()), release=released,
+                     force_full=bool(force_full), timings=timings)
         state.setdefault("locations", {}).update(results)
         _write_state(state)
         return state
@@ -893,6 +903,9 @@ def _publish(
         # (`catch_up`); `release.sha256`/`bytes` say whether it is still the same file.
         "artifact_path": str(path.resolve()),
         "release": released,
+        # A controller that missed this publish is sent it later (`catch_up`), and it must be sent
+        # the same shape: a delta the controllers refused would be refused again.
+        "force_full": bool(force_full),
         "locations": results,
         "timings": timings,
     }
@@ -1047,6 +1060,7 @@ def catch_up(rows: list[dict[str, Any]], *, wait: bool = False) -> str | None:
                     outcome = _publish(
                         artifact_path=path, version=version, build=str(release.get("build") or ""),
                         filename=release.get("filename"), controller_ids=[cid], auto=True,
+                        force_full=bool(state.get("force_full")),
                     )["locations"][cid]
                 except Exception as exc:  # noqa: BLE001 - recorded and backed off, never raised
                     outcome = {"ok": False, "status": None, "code": "RELEASE_PUSH_FAILED", "release": None,

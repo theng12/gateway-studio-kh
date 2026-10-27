@@ -11,6 +11,7 @@ fingerprint) are exercised across two languages.
 from __future__ import annotations
 
 import base64
+import contextlib
 import hashlib
 import json
 from pathlib import Path
@@ -32,19 +33,20 @@ from tests._isolation import sandbox_env  # noqa: E402
 _SANDBOX = sandbox_env()
 
 from gateway import fleet, release_publisher as rp  # noqa: E402
+from tests.test_release_delta import build_app  # noqa: E402
 
 
 class MockController:
     """A controller stand-in, started as its own process."""
 
     def __init__(self, state: Path, fleet_token: str = "fleet-tok",
-                 hub_token: str = "hub-token") -> None:
+                 hub_token: str = "hub-token", delta: bool = False) -> None:
         self.process = subprocess.Popen(
             [
                 "node", str(ROOT / "tests/mock_controller_release.mjs"),
                 "--state", str(state), "--port", "0",
                 "--fleet-token", fleet_token, "--hub-token", hub_token,
-            ],
+            ] + (["--delta"] if delta else []),
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
         )
         line = self.process.stdout.readline()
@@ -98,13 +100,71 @@ class ReleasePublish(unittest.TestCase):
         self.controller.close()
         self.tmp.cleanup()
 
-    def _publish(self) -> dict:
+    def _publish(self, **kwargs) -> dict:
         location = [{"id": "ctrl-1", "label": "Blue Room", "url": self.controller.base}]
         with patch.object(fleet, "_read", return_value=location), \
              patch.object(fleet, "_token_for", return_value=self.controller.fleet_token):
             return rp.publish(
-                artifact_path=self.dmg, version="0.6.50", build="abc1234"
+                artifact_path=self.dmg, version="0.6.50", build="abc1234", **kwargs
             )
+
+    def _delta_controller(self) -> "MockController":
+        """A controller that advertises the delta capability (Hub 0.6.115+)."""
+        self.controller.close()
+        self.controller = MockController(self.root / "controller-delta", delta=True)
+        self.addCleanup(self.controller.close)
+        return self.controller
+
+    def _publish_against_mount(self, mount: Path, **kwargs) -> dict:
+        # The DMG is a fake file here, so the mounted app tree is injected; the mock controller
+        # still verifies the signature, the artifact length and the artifact hash for real.
+        with patch.object(rp, "_mounted", lambda _dmg: contextlib.nullcontext(mount)):
+            return self._publish(**kwargs)
+
+    def test_force_full_sends_the_whole_image_to_a_delta_capable_controller(self) -> None:
+        """The 0.6.201 refusal: it advertises delta, but a delta is refused, so the owner forces full.
+
+        Measured 2026-10-27: Hub 0.6.201 refuses the 0.6.201→0.6.203 stage (713,165,943 B is
+        50.44% of the 1,413,754,368 B image, over `MAX_DELTA_FRACTION` 0.5) and the old app then
+        asks for a disk image a files-only release never had. With `force_full`, the controller
+        must receive `artifact_base64`, store the plain descriptor and serve the image.
+        """
+        self._delta_controller()
+        identity = rp.identity()
+        self.controller.trust(identity["public_key_hex"])
+        self.app_root = build_app(self.root / "mounted", {"Contents/Info.plist": b"<plist/>"})
+        state = self._publish_against_mount(self.app_root, force_full=True)
+
+        outcome = state["locations"]["ctrl-1"]
+        self.assertTrue(outcome["ok"], outcome["detail"])
+        self.assertEqual(outcome["mode"], "full", outcome)
+        self.assertEqual(outcome["blobs_sent"], 0)
+
+        held = rp.read_release(self.controller.base, self.controller.fleet_token)
+        self.assertIsNotNone(held)
+        # The plain descriptor: a delta descriptor would carry `files_sha256`.
+        self.assertNotIn("files_sha256", held)
+        self.assertEqual(held["signature"], outcome["release"]["signature"])
+        # A full push stored the bytes, so the controller serves them.
+        served = httpx.get(f"{self.controller.base}/api/hub/release/artifact",
+                           headers={"X-Hub-Token": self.controller.fleet_token}, timeout=20)
+        self.assertEqual(served.status_code, 200)
+        self.assertEqual(served.content, self.artifact)
+
+    def test_a_normal_publish_to_the_same_controller_sends_only_blobs(self) -> None:
+        self._delta_controller()
+        identity = rp.identity()
+        self.controller.trust(identity["public_key_hex"])
+        self.app_root = build_app(self.root / "mounted", {"Contents/Info.plist": b"<plist/>"})
+        state = self._publish_against_mount(self.app_root)
+
+        outcome = state["locations"]["ctrl-1"]
+        self.assertTrue(outcome["ok"], outcome["detail"])
+        self.assertEqual(outcome["mode"], "delta", outcome)
+        self.assertGreater(outcome["blobs_sent"], 0)
+        held = rp.read_release(self.controller.base, self.controller.fleet_token)
+        self.assertIsNotNone(held)
+        self.assertIn("files_sha256", held)
 
     def test_a_release_is_pushed_and_read_back(self) -> None:
         identity = rp.identity()

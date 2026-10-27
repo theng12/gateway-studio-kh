@@ -39,7 +39,7 @@
 //
 // CLI:
 //   node tests/mock_controller_release.mjs --state <dir> [--port 0]
-//        [--fleet-token <token>] [--hub-token <token>]
+//        [--fleet-token <token>] [--hub-token <token>] [--delta]
 //
 // On startup it loads or generates <state>/controller-key.pem (PKCS8 PEM, 0600),
 // binds 127.0.0.1 (never all interfaces: the tokens are the only door), and
@@ -52,9 +52,12 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSy
 import { createServer } from 'node:http'
 import { resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { gunzipSync } from 'node:zlib'
 
 const SCHEMA = 'studiohub.app-release.v1'
 const SCHEMA_VERSION = 1
+//: The delta capability marker Hub 0.6.115+ answers on GET /api/hub/release.
+const MANIFEST_SCHEMA = 'studiohub.file-manifest.v1'
 
 // Step 1 required fields. Every one is a non-empty string, `build` included: the
 // gateway builds the descriptor in Python with `build: str` (a stamp such as
@@ -254,6 +257,7 @@ export async function startController({
   port = 0,
   fleetToken = 'fleet-token',
   hubToken = 'hub-token',
+  delta = false,
 } = {}) {
   if (typeof stateDir !== 'string' || stateDir.length === 0) throw new Error('stateDir is required')
   const state = resolve(stateDir)
@@ -270,6 +274,11 @@ export async function startController({
   // nothing and stores nothing, even when it reuses an on-disk key.
   let trusted = loadTrust(state)
   let storedRelease = null
+  // Delta state (only ever used when `delta` is on): blobs this controller holds, the digests the
+  // last manifest described, and the descriptor that manifest carried.
+  const deltaBlobs = new Map()
+  let pendingDescriptor = null
+  let pendingManifest = null
 
   async function handleTrust(req, res) {
     const body = await parseJsonBody(req, res)
@@ -312,8 +321,40 @@ export async function startController({
   async function handlePush(req, res) {
     const body = await parseJsonBody(req, res)
     if (body === undefined) return
-    const descriptor = body.descriptor
+    const storedDescriptor = verifyDescriptor(body.descriptor)
 
+    // The delta push carries `file_manifest` and no artifact: answer the digests this controller
+    // does not hold, then let the gateway PUT only those. A full push carries `artifact_base64`.
+    if (isPlainObject(body.file_manifest)) {
+      handleDeltaManifest(body.file_manifest, storedDescriptor, res)
+      return
+    }
+
+    // Step 5 -- artifact: decode, then length, then hash.
+    const artifact = decodeBase64Strict(body.artifact_base64)
+    if (!artifact) {
+      throw new RequestError(400, 'artifact_base64 is not valid standard base64 with padding')
+    }
+    if (storedDescriptor.bytes !== artifact.length) {
+      throw new RequestError(400, `artifact length ${artifact.length} does not match descriptor.bytes ${JSON.stringify(storedDescriptor.bytes)}`)
+    }
+    const artifactHash = sha256hex(artifact)
+    if (artifactHash !== storedDescriptor.sha256.toLowerCase()) {
+      throw new RequestError(400, `artifact sha256 ${artifactHash} does not match descriptor.sha256 ${storedDescriptor.sha256}`)
+    }
+
+    // Store the gateway's descriptor verbatim, then bind it with the
+    // controller's own identity. controller_signature covers controller_key_id
+    // and the gateway signature (only controller_signature is removed).
+    storedRelease = { descriptor: storedDescriptor, artifact }
+    // The POST body IS the stored descriptor (the addendum's contract); the
+    // `{"release": ...}` envelope belongs to GET, which can also say null.
+    sendJson(res, 200, storedDescriptor)
+  }
+
+  // Steps 1-4 of a push: shape, trust, key identity, signature. Both the full and the delta push
+  // refuse in this order, and the returned descriptor is the one the controller countersigns.
+  function verifyDescriptor(descriptor) {
     // Step 1 -- shape. Detail names the field so the gateway can report it.
     if (!isPlainObject(descriptor)) throw new RequestError(400, 'descriptor must be an object')
     if (descriptor.schema !== SCHEMA) {
@@ -364,41 +405,80 @@ export async function startController({
     if (!signatureValid) {
       throw new RequestError(400, `descriptor.signature does not verify over the canonical descriptor for publisher_key_id ${descriptor.publisher_key_id}`)
     }
-
-    // Step 5 -- artifact: decode, then length, then hash.
-    const artifact = decodeBase64Strict(body.artifact_base64)
-    if (!artifact) {
-      throw new RequestError(400, 'artifact_base64 is not valid standard base64 with padding')
-    }
-    if (descriptor.bytes !== artifact.length) {
-      throw new RequestError(400, `artifact length ${artifact.length} does not match descriptor.bytes ${JSON.stringify(descriptor.bytes)}`)
-    }
-    const artifactHash = sha256hex(artifact)
-    if (artifactHash !== descriptor.sha256.toLowerCase()) {
-      throw new RequestError(400, `artifact sha256 ${artifactHash} does not match descriptor.sha256 ${descriptor.sha256}`)
-    }
-
-    // Store the gateway's descriptor verbatim, then bind it with the
-    // controller's own identity. controller_signature covers controller_key_id
-    // and the gateway signature (only controller_signature is removed).
     const storedDescriptor = { ...descriptor, controller_key_id: controller.fingerprint }
     storedDescriptor.controller_signature = sign(
       null,
       Buffer.from(canonicalJson(storedDescriptor), 'utf8'),
       controller.privateKey,
     ).toString('base64')
-    storedRelease = { descriptor: storedDescriptor, artifact }
-    // The POST body IS the stored descriptor (the addendum's contract); the
-    // `{"release": ...}` envelope belongs to GET, which can also say null.
-    sendJson(res, 200, storedDescriptor)
+    return storedDescriptor
+  }
+
+  // The delta half: the manifest describes files by gzip TSV groups, so the digests are inside
+  // those groups, exactly as the real Hub reads them. Answer the ones this controller lacks.
+  function digestsFromManifest(fileManifest) {
+    const groups = isPlainObject(fileManifest) ? fileManifest.groups : undefined
+    if (!isPlainObject(groups) || Object.keys(groups).length === 0) {
+      throw new RequestError(400, 'file_manifest.groups must be a non-empty object')
+    }
+    const digests = new Set()
+    for (const [name, encoded] of Object.entries(groups)) {
+      if (typeof encoded !== 'string') {
+        throw new RequestError(400, `file_manifest.groups.${name} must be base64 text`)
+      }
+      let text
+      try {
+        text = gunzipSync(Buffer.from(encoded, 'base64')).toString('utf8')
+      } catch {
+        throw new RequestError(400, `file_manifest.groups.${name} is not gzip base64`)
+      }
+      for (const line of text.split('\n')) {
+        const parts = line.split('\t')
+        if (parts.length >= 4 && parts[0] === 'f' && /^[0-9a-f]{64}$/.test(parts[3])) digests.add(parts[3])
+      }
+    }
+    if (digests.size === 0) throw new RequestError(400, 'file_manifest groups describe no files')
+    return [...digests]
+  }
+
+  function missingBlobs() {
+    return (pendingManifest || []).filter((digest) => !deltaBlobs.has(digest))
+  }
+
+  function handleDeltaManifest(fileManifest, storedDescriptor, res) {
+    pendingDescriptor = storedDescriptor
+    pendingManifest = digestsFromManifest(fileManifest)
+    if (missingBlobs().length === 0) storedRelease = { descriptor: storedDescriptor }
+    sendJson(res, 200, { need: missingBlobs() })
+  }
+
+  async function handlePutBlob(req, res, digest) {
+    const body = await readBody(req)
+    const actual = sha256hex(body)
+    if (actual !== digest) {
+      throw new RequestError(400, `blob ${digest} hashes to ${actual}`)
+    }
+    deltaBlobs.set(digest, body)
+    if (pendingDescriptor && missingBlobs().length === 0) {
+      // Only the descriptor is stored: the bytes are the controller's own blobs, and the full
+      // `/api/hub/release/artifact` route is the thing a *full* push creates.
+      storedRelease = { descriptor: pendingDescriptor }
+    }
+    sendJson(res, 200, { stored: digest })
+  }
+
+  function handleNeed(req, res) {
+    sendJson(res, 200, { need: missingBlobs() })
   }
 
   function handleGetRelease(req, res) {
     // Never a stub: null until something is stored, the stored descriptor after.
     // `trusted_publisher` mirrors Hub 0.6.51: null when nothing is trusted, the
     // installed fingerprint otherwise (with the stored release's publisher_id).
+    // `delta` is the capability marker: present only when this mock was started with `delta`.
     sendJson(res, 200, {
       release: storedRelease ? storedRelease.descriptor : null,
+      ...(delta ? { delta: { schema: MANIFEST_SCHEMA } } : {}),
       trusted_publisher: trusted.fingerprint
         ? {
             publisher_id: storedRelease?.descriptor?.publisher_id ?? null,
@@ -487,6 +567,13 @@ export async function startController({
     if (pathname === '/api/hub/release') {
       return { scope: 'fleet', methods: ['GET', 'POST'], handler: method === 'POST' ? handlePush : handleGetRelease }
     }
+    if (pathname === '/api/hub/release/need') {
+      return { scope: 'fleet', methods: ['GET'], handler: handleNeed }
+    }
+    const blob = pathname.match(/^\/api\/hub\/release\/blob\/([0-9a-f]{64})$/)
+    if (blob) {
+      return { scope: 'fleet', methods: ['PUT'], handler: (req, res) => handlePutBlob(req, res, blob[1]) }
+    }
     return null
   }
 
@@ -563,7 +650,7 @@ export async function startController({
 }
 
 function parseArgs(argv) {
-  const options = { stateDir: null, port: 0, fleetToken: 'fleet-token', hubToken: 'hub-token' }
+  const options = { stateDir: null, port: 0, fleetToken: 'fleet-token', hubToken: 'hub-token', delta: false }
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index]
     const value = () => {
@@ -578,6 +665,7 @@ function parseArgs(argv) {
       options.port = port
     } else if (arg === '--fleet-token') options.fleetToken = value()
     else if (arg === '--hub-token') options.hubToken = value()
+    else if (arg === '--delta') options.delta = true
     else throw new Error(`unknown argument: ${arg}`)
   }
   if (!options.stateDir) throw new Error('usage: mock_controller_release.mjs --state <dir> [--port 0] [--fleet-token <token>] [--hub-token <token>]')

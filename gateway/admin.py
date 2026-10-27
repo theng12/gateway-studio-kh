@@ -4287,6 +4287,12 @@ def release_publish(payload: dict[str, Any]) -> Any:
     (`{"rollout": …}`) and the pushes run in the background. `"mode": "all_at_once"`
     is the emergency path: every controller now, in parallel, answered when done (it
     stops a running rollout first). Naming `controller_ids` pushes to exactly those, now.
+
+    **`"force_full": true` sends the whole image even to a controller that advertises
+    `delta`.** A controller on an older Hub can take the capability and still refuse the
+    stage — Hub 0.6.201 refuses a delta that is more than half the image
+    (`MAX_DELTA_FRACTION` 0.5; the 0.6.201→0.6.203 delta is 50.44%) and then asks for a
+    disk image a files-only release never had. The full push is the path that works.
     """
     artifact = str(payload.get("artifact_path") or "").strip()
     if not artifact:
@@ -4300,7 +4306,8 @@ def release_publish(payload: dict[str, Any]) -> Any:
             return {"rollout": release_rollout.start(
                 artifact_path=artifact, version=str(payload.get("version") or ""),
                 build=str(payload.get("build") or ""), filename=str(filename) if filename else None,
-                allow_downgrade=bool(payload.get("allow_downgrade")))}
+                allow_downgrade=bool(payload.get("allow_downgrade")),
+                force_full=bool(payload.get("force_full")))}
         if mode == "all_at_once":
             release_rollout.stop("replaced by an all-at-once publish")
         return release_publisher.publish(
@@ -4309,6 +4316,7 @@ def release_publish(payload: dict[str, Any]) -> Any:
             build=str(payload.get("build") or ""),
             filename=str(filename) if filename else None,
             allow_downgrade=bool(payload.get("allow_downgrade")),
+            force_full=bool(payload.get("force_full")),
             controller_ids=([str(c) for c in payload["controller_ids"]]
                             if isinstance(payload.get("controller_ids"), list) else None),
         )

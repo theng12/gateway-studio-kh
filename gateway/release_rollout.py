@@ -91,7 +91,7 @@ def plan() -> list[tuple[str, str]]:
 
 
 def start(*, artifact_path: str | Path, version: str, build: str, filename: str | None = None,
-          allow_downgrade: bool = False) -> dict[str, Any]:
+          allow_downgrade: bool = False, force_full: bool = False) -> dict[str, Any]:
     """Begin a paced rollout in the background and answer at once with its state."""
     from .release_publisher import ReleaseError
 
@@ -112,7 +112,8 @@ def start(*, artifact_path: str | Path, version: str, build: str, filename: str 
         state = {
             "mode": "paced", "state": "running", "version": version.strip(), "build": build.strip(),
             "artifact_path": str(path.resolve()), "filename": filename or path.name,
-            "allow_downgrade": bool(allow_downgrade), "started_at": time.time(), "finished_at": None,
+            "allow_downgrade": bool(allow_downgrade), "force_full": bool(force_full),
+            "started_at": time.time(), "finished_at": None,
             "reason": None, "order": [cid for cid, _ in order],
             "steps": {cid: {"label": label, "state": "waiting"} for cid, label in order},
         }
@@ -193,7 +194,7 @@ def _push(state: dict[str, Any], cid: str) -> dict[str, Any]:
         result = release_publisher.publish(
             artifact_path=state["artifact_path"], version=state["version"], build=state["build"],
             filename=state.get("filename"), allow_downgrade=bool(state.get("allow_downgrade")),
-            controller_ids=[cid], rollout=True)
+            force_full=bool(state.get("force_full")), controller_ids=[cid], rollout=True)
         return (result.get("locations") or {}).get(cid) or {"ok": False, "detail": "no answer for it"}
     except Exception as exc:  # noqa: BLE001 - recorded on the step, retried like a refusal
         return {"ok": False, "code": getattr(exc, "code", "RELEASE_PUSH_FAILED"),
