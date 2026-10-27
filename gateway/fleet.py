@@ -2059,6 +2059,10 @@ def _summarise(rows: list[dict]) -> dict:
         "models_available": models_available,
         "workers_total": workers_total,
         "workers_ready": workers_ready,
+        # **How the fleet is wired, in one line** ("3 Macs on slow Ethernet"). Counted from the same
+        # machine rows the table draws, so the headline cannot disagree with it; a Mac whose Hub
+        # does not publish its link is counted as `unmeasured`, never as fine.
+        "connections": _connection_summary(flat),
         # Error + warning only: info issues are statements of fact (a downloading
         # model, a hidden probe) and must not make the fleet look wrong.
         "issues": sum(
@@ -2279,6 +2283,112 @@ def machine_disk(machine: dict) -> dict | None:
         "last_sweep": raw.get("last_sweep", raw.get("last_sweep_at")),
         "warnings": clean,
     }
+
+
+def machine_connection(machine: dict) -> dict | None:
+    """One Mac's network link, normalised from the block its Hub publishes. `None` when it said nothing.
+
+    The owner, 2026-10-28: a Mac linked at 100 Mb/s (or 10) through a failing cable answers every
+    other field in this file — it is `reachable`, `ready`, and takes work — so nothing could show
+    that its link, not the Mac, was the reason its jobs crawled. Mac 1301 was measured at
+    `100baseTX` and had been `10baseT` before that on the same old cable.
+
+    **Only the Hub's own reading is published.** The interface is the one its kernel says carries
+    the default route, the kind is the hardware port its OS names for that device and the speed is
+    the media that port states it negotiated (`components/hub/backend/network_link.py`). The
+    Gateway reads those; it never infers a speed from an address, a name or a model, and a Mac whose
+    Hub is older than the block (0.6.206) reports `None` here — unknown, which is not "fine".
+
+    `slow` is the one verdict it adds, because it is the reason the field exists: an Ethernet link
+    under 1 Gb/s, or at half duplex, is a cable or a port to look at. Wi-Fi is not called slow — a
+    Mac on Wi-Fi is a different fact and the page says so instead.
+    """
+    raw = machine.get("connection")
+    if not isinstance(raw, dict) or not raw:
+        return None
+    status = str(raw.get("status") or "").strip().lower()
+    kind = str(raw.get("kind") or "").strip().lower() or None
+    reason = str(raw.get("reason") or "").strip() or None
+    # A block that claims a measurement but names no interface and no kind is not one: the two
+    # facts that make it a reading are absent, so it is treated as unreadable rather than drawn
+    # as a link of unknown type.
+    if status == "measured" and not (raw.get("interface") or kind):
+        status = "unmeasured"
+    speed = _num(raw.get("speed_mbps"))
+    duplex = str(raw.get("duplex") or "").strip().lower() or None
+    wifi = raw.get("wifi") if isinstance(raw.get("wifi"), dict) else {}
+    wifi_up = wifi.get("up") if isinstance(wifi.get("up"), bool) else None
+    wifi_rate = _num(wifi.get("rate_mbps"))
+    # A reading the Hub could not make is unmeasured **with its reason**, never a link of 0 Mb/s.
+    if status != "measured":
+        return {"status": "unmeasured", "reason": reason or "Its Hub could not read the link.",
+                "interface": None, "kind": None, "speed_mbps": None, "duplex": None,
+                "media": None, "link_up": None, "wifi_up": None, "wifi_rate_mbps": None,
+                "slow": False, "text": "—"}
+    slow = kind == "ethernet" and (
+        (speed is not None and speed < 1000) or duplex == "half")
+    return {
+        "status": "measured",
+        "reason": reason,
+        "interface": str(raw.get("interface") or "").strip() or None,
+        "kind": kind,
+        "speed_mbps": None if speed is None else int(speed),
+        "duplex": duplex,
+        "media": str(raw.get("media") or "").strip() or None,
+        "link_up": raw.get("link_up") if isinstance(raw.get("link_up"), bool) else None,
+        # Whether the Mac's Wi-Fi is *also* up beside its primary link, which is worth knowing:
+        # an Ethernet Mac that has silently fallen back to Wi-Fi looks identical otherwise.
+        "wifi_up": wifi_up,
+        "wifi_rate_mbps": None if wifi_rate is None else int(wifi_rate),
+        "slow": slow,
+        "text": _connection_text(kind, speed, duplex, wifi_rate, reason),
+    }
+
+
+def _connection_text(kind: str | None, speed: float | None, duplex: str | None,
+                     wifi_rate: float | None, reason: str | None) -> str:
+    """The one sentence the Fleet page draws, built once so every reader says the same thing."""
+    if kind == "ethernet":
+        if speed is None:
+            # The port is the primary link but states no negotiated media: a cable out, or a port
+            # forcing a media nothing answers. Never drawn as a speed of 0.
+            return "Ethernet · speed not reported"
+        return f"Ethernet {int(speed)} Mb/s" + (f" {duplex}" if duplex else "")
+    if kind == "wifi":
+        return "Wi-Fi" + (f" {int(wifi_rate)} Mb/s" if wifi_rate else "")
+    if kind == "other":
+        return "Other connection" + (f" {int(speed)} Mb/s" if speed else "")
+    return reason or "—"
+
+
+def _connection_summary(machines: list[dict]) -> dict:
+    """The fleet-wide line: how many Macs are on a slow Ethernet link, on Wi-Fi, and unknown.
+
+    Counted from the machine rows the page draws, so the headline and the table can never
+    disagree about how many Macs there are — the mistake `_summarise` records for online/offline.
+    A Mac whose Hub does not publish the block is **not** counted as fine: it is `unmeasured`, and
+    the page says how many of those there are rather than leaving them out of the total.
+    """
+    slow: list[str] = []
+    wifi: list[str] = []
+    ethernet = 0
+    unmeasured = 0
+    for machine in machines:
+        connection = machine.get("connection")
+        if not isinstance(connection, dict):
+            unmeasured += 1
+            continue
+        if connection.get("status") != "measured":
+            unmeasured += 1
+        elif connection.get("kind") == "wifi":
+            wifi.append(str(machine.get("label") or machine.get("machine") or ""))
+        elif connection.get("kind") == "ethernet":
+            ethernet += 1
+            if connection.get("slow"):
+                slow.append(str(machine.get("label") or machine.get("machine") or ""))
+    return {"slow_ethernet": len(slow), "slow_machines": slow, "wifi": len(wifi),
+            "wifi_machines": wifi, "ethernet": ethernet, "unmeasured": unmeasured,
+            "total": len(machines)}
 
 
 def _location_disk_stopped(row: dict) -> bool:
@@ -2949,6 +3059,10 @@ def machines_flat(rows: list[dict]) -> list[dict]:
                 "disk_total_gb": machine.get("disk_total_gb"),
                 "disk": machine_disk(machine),
                 "health": machine.get("health"),
+                # How this Mac is actually connected (see `machine_connection`): the interface, its
+                # kind and, for Ethernet, the media the OS says it negotiated. `None` from a Hub
+                # older than 0.6.206 — unknown, never read as a healthy gigabit link.
+                "connection": machine_connection(machine),
                 "modalities": machine.get("modalities") or {},
                 **node_fields(mid),
                 "startup": startup,
@@ -2980,6 +3094,9 @@ def machines_flat(rows: list[dict]) -> list[dict]:
                 "median_runtime_s": entry.get("median_runtime_s"),
                 "chip": None, "memory_gb": None, "available_gb": None,
                 "disk_free_gb": None, "disk_total_gb": None, "disk": None, "health": None,
+                # A machine known only from the activity list carries no host snapshot, so its
+                # link is unknown rather than borrowed from another Mac.
+                "connection": None,
                 "modalities": {},
                 **node_fields(mid),
                 "startup": _startup_fact({}, nodes.get(mid) or {}),

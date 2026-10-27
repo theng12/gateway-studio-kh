@@ -3991,11 +3991,18 @@ function fleetMac(m) {
     `${m.completed ?? 0} done · ${m.failed ?? 0} failed`,
     !m.reachable && m.node_last_seen_at ? 'seen ' + ago(m.node_last_seen_at) : '',
   ].filter(Boolean);
+  // **How this Mac is wired**, from its own Hub (the Gateway's sentence, so every surface agrees).
+  // A slow Ethernet link is the one fault that looks healthy everywhere else, so it gets its own
+  // amber line naming the fix. A Hub that does not publish the block reads "—" — unknown, never fine.
+  const conn = m.connection || null;
+  const connText = conn && conn.status === 'measured' ? (conn.text || '—') : '—';
+  const connTitle = conn ? (conn.reason || conn.media || '') : "This Mac's Hub did not report its link.";
   return `<div class="fleet-mac">
     <div class="row"><span class="name">${esc(m.label || m.machine)}</span><span class="badge ${cls}">${esc(word)}</span></div>
     ${doing ? `<div class="cat">${esc(doing)}</div>` : ''}
     ${m.attention ? `<div class="msg bad">${esc(m.attention)}</div>` : ''}
-    <div class="hint">${esc(facts.join(' · '))}</div>
+    ${conn && conn.slow ? `<div class="msg bad">Slow link — check cable/port (${esc(connText)})</div>` : ''}
+    <div class="hint" title="${esc(connTitle)}">${esc([`Network: ${connText}`, ...facts].join(' · '))}</div>
   </div>`;
 }
 
@@ -4012,6 +4019,10 @@ async function loadFleet() {
     `<span><b>${s.locations_up ?? '?'}</b> of ${s.locations ?? '?'} locations up</span>`,
     `<span>Queue <b>${q.waiting ?? 0}</b> waiting, <b>${q.running ?? 0}</b> running</span>`,
     `<span>Updated ${ago(d.generated_at)}</span>`,
+    // "3 Macs on slow Ethernet": counted by the Gateway from the rows below, and named where it can.
+    (s.connections && s.connections.slow_ethernet > 0)
+      ? `<span class="badge warn" title="${esc((s.connections.slow_machines || []).join(', '))}">` +
+        `${s.connections.slow_ethernet} on slow Ethernet</span>` : '',
   ].join('');
   const issues = d.issues || [];
   // Folded by default: on a phone a dozen warnings would push every Mac off the first screen.

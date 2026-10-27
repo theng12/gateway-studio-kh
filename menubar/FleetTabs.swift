@@ -1407,6 +1407,28 @@ final class FleetMachinesTab: NSView {
                                           tooltip: row.memoryGb.map { "Total \(FleetFormat.gb($0)). Free is what the Hub's own admission counts." })
                 }
             ),
+            // **How this Mac is wired** (FleetConnection): the interface's kind and, for Ethernet, the
+            // media its own OS says the port negotiated. Amber below 1 Gb/s or at half duplex, because
+            // the fix is a cable or a switch port, not the Mac — the owner measured 1301 at
+            // `100baseTX` on an old cable and nothing on this page could say so. A Hub that predates
+            // the block reports nothing, and that draws "—" (unknown), never a healthy gigabit link.
+            FleetColumn(
+                id: "network", title: "Network", width: 152, minWidth: 124, hideBelow: 700,
+                text: { machine($0)?.connection?.display ?? "—" },
+                sortValue: { row in
+                    // Slow links first when sorted ascending: those are the cables to replace.
+                    guard let connection = machine(row)?.connection else { return .number(4) }
+                    if !connection.measured { return .number(3) }
+                    if connection.slow == true { return .number(0) }
+                    if (connection.kind ?? "") == "wifi" { return .number(2) }
+                    return .number(1)
+                },
+                cell: { any in
+                    guard let row = machine(any) else { return NSView() }
+                    guard let connection = row.connection else { return fleetTwoLineCell("—", nil) }
+                    return fleetBadgeCell(connection.display, connection.health, tooltip: connection.tooltip)
+                }
+            ),
             // Startup control: what this Mac starts when it starts, with a "…" menu to change it, in one
             // compact column. Self-contained in FleetStartup.swift; the Groups view reuses it.
             FleetColumn(
@@ -1543,6 +1565,11 @@ final class FleetMachinesTab: NSView {
                          + " · last seen \(row.nodeLastSeenText)")
         }
         if let why = row.attention { lines.append("Needs attention: " + why) }
+        // How it is wired, in the Mac's own words: the sentence and then every fact behind it.
+        if let connection = row.connection {
+            lines.append("Network: " + connection.display)
+            if connection.measured, !connection.tooltip.isEmpty { lines.append(connection.tooltip) }
+        }
         if let version = row.hubVersion {
             let badge = row.versionBadge(latest: summary?.hubLatest)
             lines.append("Studio Hub \(version)" + (badge.map { " · \($0.text)" } ?? ""))
@@ -1583,6 +1610,22 @@ final class FleetMachinesTab: NSView {
                              .foregroundColor: behind ? Health.warn.text : NSColor.secondaryLabelColor]))
         }
         statusLabel.attributedStringValue = text
+        // **The fleet-wide link line**: "3 Macs on slow Ethernet — check the cable: 1301, 1207, 1304."
+        // Counted by the Gateway from the same rows this table draws, so the two cannot disagree. The
+        // Macs are named because the figure's whole purpose is which cable to go and replace; a Mac
+        // whose Hub does not report its link is counted separately, never as healthy.
+        if let connections = summary?.connections, let line = connections.slowLine {
+            text.append(NSAttributedString(
+                string: " " + line,
+                attributes: [.font: TextRole.secondary.font, .foregroundColor: Health.warn.text]))
+        } else if let connections = summary?.connections,
+                  let unknown = connections.unmeasured, unknown > 0, (connections.total ?? 0) > 0 {
+            // Said out loud rather than left blank: a Mac nobody can read is not a Mac known to be fine.
+            text.append(NSAttributedString(
+                string: " \(unknown) of \(connections.total ?? 0) Mac\(connections.total == 1 ? "" : "s") "
+                    + "did not report a network link.",
+                attributes: [.font: TextRole.secondary.font, .foregroundColor: NSColor.secondaryLabelColor]))
+        }
         // The warnings are about the whole fleet, so they ignore the filter: a Mac that is filling up must
         // not disappear because a search hid it. One line per kind; the area scrolls past ~5 lines.
         warningList.set(FleetWarnings.build(machines: machines, hidden: hiddenWarningKinds))
