@@ -584,6 +584,72 @@ def install_model(controller_id: str, machine_id: str, package_id: str, *, sourc
     )
 
 
+MODEL_PRESETS_TOO_OLD = ("This controller's Studio Hub cannot show or set a model preset yet. It needs "
+                          "Studio Hub 0.6.205: update it first (Fleet > Release).")
+
+MODEL_REMOVE_TOO_OLD = ("This controller's Studio Hub cannot remove a model from a Mac yet. It needs Studio Hub "
+                        "0.6.205: update it first (Fleet > Release).")
+
+
+def model_presets(controller_id: str, machine_id: str, *, client: httpx.Client | None = None) -> dict[str, Any]:
+    """One Mac's install screen as its Hub answers it: memory, disk, four presets, every model.
+
+    A read through the same node path as everything else (`GET .../fleet/nodes/{id}/model-presets`).
+    The answer is the Hub's own projection - a preset's count is the Hub's verified receipts and a
+    model's floor is its manifest's - so the Gateway shows what the Mac computed rather than a
+    second opinion.
+    """
+    if not _MACHINE_ID.fullmatch(machine_id or ""):
+        raise StartupError(400, {"ok": False, "code": "BAD_MACHINE", "detail": "machine id is not valid"})
+    return _node_post(
+        controller_id, machine_id, "model-presets", None, event="model_presets",
+        too_old=MODEL_PRESETS_TOO_OLD,
+        refused="The controller refused this gateway's credential for reading model presets.",
+        audit_fields={}, client=client, method="GET",
+    )
+
+
+def set_model_preset(controller_id: str, machine_id: str, preset_id: str, *, requested_by: str,
+                     client: httpx.Client | None = None) -> dict[str, Any]:
+    """Set one Mac's preset (owner decision 2026-10-28): one of the four the Shop's Hub ships.
+
+    `requested_by` is required and recorded on that Mac, exactly as the unqualified-render grant is:
+    a preset decides what a Mac installs and what the one-time cleanup moves, so "who asked" is a
+    fact worth keeping. The Hub refuses an unknown id by name rather than choosing one.
+    """
+    if not _MACHINE_ID.fullmatch(machine_id or ""):
+        raise StartupError(400, {"ok": False, "code": "BAD_MACHINE", "detail": "machine id is not valid"})
+    who = str(requested_by or "").strip()
+    if not who:
+        raise StartupError(400, {"ok": False, "code": "APPROVER_REQUIRED",
+                                 "detail": "Name who set this preset."})
+    if not isinstance(preset_id, str) or not preset_id.strip():
+        raise StartupError(400, {"ok": False, "code": "BAD_PRESET", "detail": "A preset id is required."})
+    return _node_post(
+        controller_id, machine_id, "model-preset", {"preset_id": preset_id.strip(), "requested_by": who},
+        event="model_preset", too_old=MODEL_PRESETS_TOO_OLD,
+        refused="The controller refused this gateway's credential for setting a model preset.",
+        audit_fields={"preset": preset_id.strip(), "requested_by": who}, client=client,
+    )
+
+
+def remove_model(controller_id: str, machine_id: str, package_id: str, *,
+                 client: httpx.Client | None = None) -> dict[str, Any]:
+    """Remove one model from one Mac: the Hub moves it into that library's trash, never deletes.
+
+    Refused on that Mac in exactly the cases its own Models screen refuses (a running job, a paused
+    model, a package another one needs), and the Mac's sentence passes through unchanged.
+    """
+    if not _MACHINE_ID.fullmatch(machine_id or "") or not _MACHINE_ID.fullmatch(package_id or ""):
+        raise StartupError(400, {"ok": False, "code": "BAD_MACHINE", "detail": "machine or model id is not valid"})
+    return _node_post(
+        controller_id, machine_id, f"model-packages/{package_id}", None, event="model_remove",
+        too_old=MODEL_REMOVE_TOO_OLD,
+        refused="The controller refused this gateway's credential for removing models.",
+        audit_fields={"package": package_id}, client=client, method="DELETE",
+    )
+
+
 def share_model(controller_id: str, machine_id: str, package_id: str, *,
                 client: httpx.Client | None = None) -> dict[str, Any]:
     """Ask a Mac that holds a model to lend it to another Mac on its network (Studio Hub 0.6.146).
