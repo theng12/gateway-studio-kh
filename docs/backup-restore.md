@@ -15,10 +15,11 @@ Only what cannot be recreated (about 186 MB today, 178 MB as the archive; almost
 | `gateway/data/credentials.json` | provider API keys and the controllers' fleet tokens |
 | `gateway/data/fleet.json` | fleet roster: controller ids, labels, addresses |
 | `gateway/data/voices.json`, `gateway/data/voice-library/` | the Gateway's voice catalogue, reference clips, transcripts |
+| `gateway/data/providers.local.json`, `pools.json`, `provider-concurrency.local.json`, `model-limits.local.json`, `telegram.json`, `render_optin.json`, `fleet_warnings.json`, `voices_state.json`, `models_cache.json`, `retention.json` | local settings and limits |
 | `hub/voice/voices/` | this Mac's Studio Hub voices (`~/Library/Application Support/StudioHub Standalone/voice/voices/`) |
 | `manifest.json`, `SHA256SUMS` | file list, sizes, sha256, Gateway version, host, date |
 
-Not included: job history, analytics, generated audio/images, caches, settings, models, apps.
+Not included: job history (`gateway.sqlite3`), analytics, generated audio/images, artifacts, apps.
 
 The file is **not encrypted**. It is created readable only by you (mode 600). Treat it like the
 keys it holds: do not share it or post it anywhere.
