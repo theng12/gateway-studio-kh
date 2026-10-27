@@ -64,7 +64,8 @@ _IMAGE_PACKAGE = {"package_id": "flux", "model_id": "mock-hub/image-model", "eng
                   "dispatch_state": "eligible"}
 #: The Gemma text encoder as the real Hub publishes it once LTX no longer lists it: a `model` on
 #: the retired video engine whose worker is absent. The Hub's catalogue does not describe it.
-#: Gemma 3 12B is itself retired (owner, 2026-10-02), so it is withheld by name, not only by shape.
+#: Gemma 3 12B is **not** retired by name any more (owner, 2026-10-27), so this row is withheld by
+#: shape alone - a Hub video model that publishes no lane contract cannot be described.
 _GEMMA_PACKAGE = {"package_id": "gemma-3-12b-it-4bit", "model_id": GEMMA, "engine": "video-ltx",
                   "modality": "video", "type": "model", "worker_id": "video",
                   "worker_state": "unavailable", "dispatch_state": "ineligible",
@@ -162,26 +163,41 @@ class RetiredModelTests(unittest.TestCase):
         ):
             self.assertIn("retired", inventory.withhold_reason(HUB, model) or "", model)
 
-    def test_gemma_ids_are_retired_in_any_case_and_under_any_modality(self) -> None:
+    def test_gemma_is_not_retired_by_name_any_more(self) -> None:
+        """The owner removed the family lock on 2026-10-27; only the video products stay retired.
+
+        "They are models we can run so we should have them installable. Able to run on the machine
+        or not is based off its RAM. We no longer block or lock any model." A Gemma row is now
+        judged by what it is - its modality, whether this gateway serves it, and whether the Hub
+        says it can run there - and not by its name.
+        """
         inventory = _inventory("gemma-case.json")
         for model in (
             {"model_id": GEMMA, "modality": "chat", "raw": {}},
-            {"model_id": GEMMA.upper(), "modality": "video", "raw": {}},
+            {"model_id": GEMMA.upper(), "modality": "chat", "raw": {}},
             {"model_id": "something-else", "modality": "chat",
              "raw": {"package_id": "Gemma-3-12B-IT-4bit"}},
         ):
+            self.assertNotIn("retired", inventory.withhold_reason(HUB, model) or "", model)
+        # The video products are untouched: they are retired, not merely unserved.
+        for model in (
+            {"model_id": LTX, "modality": "video", "raw": {}},
+            {"model_id": LTX.upper(), "modality": "video", "raw": {}},
+            {"model_id": "something-else", "modality": "video",
+             "raw": {"package_id": "LTX-2-3-22B-RAM-12GB-MLX"}},
+        ):
             self.assertIn("retired", inventory.withhold_reason(HUB, model) or "", model)
-        # Gemma 4 and the like are different models and are not caught by it.
-        other = {"model_id": "google/gemma-4-26b", "modality": "chat", "raw": {}}
-        self.assertNotIn("retired", inventory.withhold_reason(HUB, other) or "")
 
     def test_gemma_on_the_real_hub_row_is_never_published_as_a_video_model(self) -> None:
         inventory = self._inventory("gemma.json")
         gemma = next(m for m in inventory.models_for(HUB.id) if m["model_id"] == GEMMA)
-        # Discovery placed it where the Hub says it is; the retirement list now names it.
+        # Discovery placed it where the Hub says it is - a video-engine row. The retirement list no
+        # longer names it, so shape alone has to keep it off every Create page: a Studio Hub video
+        # model with no lane contract cannot be described, so it is withheld rather than offered.
         self.assertEqual(gemma["modality"], "video")
         reason = inventory.withhold_reason(HUB, gemma)
-        self.assertIn("retired", reason or "")
+        self.assertIsNotNone(reason, "a video row with no lane contract was offered")
+        self.assertNotIn("retired", reason or "")
         self.assertIn(GEMMA, {m["model_id"] for m in inventory.models_for(HUB.id)})
         self.assertNotIn(GEMMA, [m["model_id"] for _d, m in inventory.enabled_models("video")])
         # Installed, with the worker still absent: still withheld (no lane contract, not catalogued).
