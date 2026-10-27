@@ -11,9 +11,12 @@
   the controllers' fleet tokens);
 * the fleet roster `fleet.json` (controller ids, labels, addresses) when that option is on;
 * the voices library: the Gateway's catalogue `voices.json` + `voice-library/` (reference clips,
-  transcripts) and this Mac's Studio Hub voices (`StudioHub Standalone/voice/voices/`).
+  transcripts) and this Mac's Studio Hub voices (`StudioHub Standalone/voice/voices/`);
+* the local settings files: `providers.local.json`, `pools.json`, `provider-concurrency.local.json`,
+  `model-limits.local.json`, `telegram.json`, `render_optin.json`, `fleet_warnings.json`,
+  `voices_state.json`, `models_cache.json`, `retention.json`.
 
-Nothing else - job history, analytics, artifacts, caches and settings are recreatable or
+Nothing else - job history, analytics, artifacts and transient caches are recreatable or
 disposable (owner's call). Not encrypted, by owner decision: the archive is mode 0600, like the
 originals.
 
@@ -113,6 +116,16 @@ def sources() -> list[tuple[str, Path]]:
         ("gateway/data/voices.json", Path(config.WRITABLE_VOICES_PATH)),
         ("gateway/data/voice-library", data / "voice-library"),
         ("hub/voice/voices", HUB_DIR / "voice" / "voices"),
+        ("gateway/data/providers.local.json", data / "providers.local.json"),
+        ("gateway/data/pools.json", data / "pools.json"),
+        ("gateway/data/provider-concurrency.local.json", data / "provider-concurrency.local.json"),
+        ("gateway/data/model-limits.local.json", data / "model-limits.local.json"),
+        ("gateway/data/telegram.json", data / "telegram.json"),
+        ("gateway/data/render_optin.json", data / "render_optin.json"),
+        ("gateway/data/fleet_warnings.json", data / "fleet_warnings.json"),
+        ("gateway/data/voices_state.json", data / "voices_state.json"),
+        ("gateway/data/models_cache.json", data / "models_cache.json"),
+        ("gateway/data/retention.json", data / "retention.json"),
     ]
 
 

@@ -28,6 +28,7 @@ from gateway import admin, backup, config  # noqa: E402
 
 
 _REAL_NOTIFY = backup.notify
+_REAL_SOURCES = backup.sources
 
 
 class BackupTests(unittest.TestCase):
@@ -333,6 +334,58 @@ class BackupTests(unittest.TestCase):
         saved = admin.set_backup({"nightly": True, "time": "4:30", "keep": 500})
         self.assertEqual((saved["settings"]["time"], saved["settings"]["keep"]), ("04:30", 100))
         self.assertEqual(os.stat(self.state_dir / "backup.json").st_mode & 0o777, 0o600)
+
+    def test_backup_and_restore_carries_local_settings(self) -> None:
+        expected_settings = [
+            "providers.local.json",
+            "pools.json",
+            "provider-concurrency.local.json",
+            "model-limits.local.json",
+            "telegram.json",
+            "render_optin.json",
+            "fleet_warnings.json",
+            "voices_state.json",
+            "models_cache.json",
+            "retention.json",
+        ]
+        # Inspect real sources to verify the 10 local settings files are declared
+        real_sources = _REAL_SOURCES()
+        roles_dict = dict(real_sources)
+        for filename in expected_settings:
+            role = f"gateway/data/{filename}"
+            self.assertIn(role, roles_dict)
+            self.assertEqual(roles_dict[role], Path(config.DATA_DIR) / filename)
+        # Verify target_for rejects gateway.sqlite3
+        with self.assertRaises(backup.BackupError):
+            backup.target_for("gateway/data/gateway.sqlite3")
+
+        # Test pack and restore with the settings files present
+        settings_data = self.live / "data"
+        for filename in expected_settings:
+            path = settings_data / filename
+            path.write_text(f'{{"setting": "{filename}"}}\n', encoding="utf-8")
+
+        custom_roles = list(self.files.items()) + [
+            (f"gateway/data/{fn}", settings_data / fn) for fn in expected_settings
+        ]
+        with patch.object(backup, "sources", lambda: list(custom_roles)):
+            raw = io.BytesIO()
+            manifest = backup.pack(raw)
+            for fn in expected_settings:
+                self.assertIn(f"gateway/data/{fn}", {e["path"] for e in manifest["files"]})
+
+            archive = self.root / "settings_test.tar.gz"
+            archive.write_bytes(raw.getvalue())
+
+            # Mutate a setting on disk to verify restore replaces it and moves original to trash
+            (settings_data / "pools.json").write_text('{"setting": "mutated"}\n')
+
+            result = backup.restore(archive)
+            self.assertEqual((settings_data / "pools.json").read_text(), '{"setting": "pools.json"}\n')
+            self.assertEqual(os.stat(settings_data / "pools.json").st_mode & 0o777, 0o600)
+            safety = Path(result["safety_copy"])
+            self.assertEqual((safety / "gateway/data/pools.json").read_text(), '{"setting": "mutated"}\n')
+
 
 
 class HubVoicesSkippedNote(unittest.TestCase):
