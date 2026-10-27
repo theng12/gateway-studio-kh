@@ -62,9 +62,19 @@ def referenced_archives(source: Path, data_root: Path) -> list[tuple[str, Path]]
         raise BackupError("Authority state could not be read for its releases.") from exc
     archives: list[tuple[str, Path]] = []
     seen: set[str] = set()
+    removed_digests = {
+        item.get("archive_sha256") or item.get("sha256")
+        for item in (state.get("removed") or [])
+        if isinstance(item, dict)
+    }
     for release in state.get("releases") or []:
         digest_value = release.get("archive_sha256") if isinstance(release, dict) else None
         if not isinstance(digest_value, str) or digest_value in seen:
+            continue
+        # Retired packs keep their archive on disk and are backed up like any other. A removed
+        # pack is recorded in `removed` and its archive was moved to the Gateway trash on
+        # purpose, so it is recorded there rather than demanded here.
+        if digest_value in removed_digests:
             continue
         seen.add(digest_value)
         path = data_root / ARCHIVE_DIR / digest_value / ARCHIVE_NAME
@@ -151,8 +161,17 @@ def main() -> int:
         print(f"Backup failed: {exc}", file=sys.stderr)
         return 1
     archives = sum(1 for name in copied if name.startswith("archives/"))
-    print(f"Backed up {len(copied) - archives} authority file(s) and {archives} release archive(s) "
-          f"to {destination}")
+    removed_count = 0
+    try:
+        state = json.loads((source / "authority.json").read_text(encoding="utf-8"))
+        removed_count = len(state.get("removed") or [])
+    except Exception:
+        pass
+    msg = f"Backed up {len(copied) - archives} authority file(s) and {archives} release archive(s)"
+    if removed_count:
+        msg += f" ({removed_count} removed pack(s) recorded in trash)"
+    msg += f" to {destination}"
+    print(msg)
     print("Keep this copy on local, encrypted storage — never a cloud folder or Git.")
     return 0
 

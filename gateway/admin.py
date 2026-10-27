@@ -3304,6 +3304,127 @@ def export_content_archive(digest: str) -> Any:
     })
 
 
+@router.post("/api/content-shelf/retire", dependencies=[Depends(require_admin)])
+async def content_shelf_retire(request: Request) -> Any:
+    from . import content_delivery
+    from .content_packs import _json, PackError
+
+    if request.headers.get("content-type", "").split(";", 1)[0].strip().lower() != "application/json":
+        return _error(415, "This request requires Content-Type: application/json.")
+    try:
+        body = _json(await request.body())
+    except PackError:
+        return _error(422, "Send one unambiguous JSON object.")
+    if not isinstance(body, dict):
+        return _error(422, "Request body must be a JSON object.")
+
+    pack_id = body.get("pack_id")
+    version = body.get("version")
+    confirm_latest = bool(body.get("confirm_latest", False))
+    release_id = body.get("release_id")
+
+    if not pack_id and not release_id:
+        return _error(422, "pack_id or release_id is required.")
+
+    try:
+        if release_id and not pack_id:
+            status = content_delivery.status()
+            target = next((r for r in status.get("releases", []) if r["release_id"] == release_id), None)
+            if not target:
+                return _error(404, f"No release found with release_id '{release_id}'.", "CONTENT_RELEASE_NOT_FOUND")
+            pack_id = target["pack_id"]
+            version = target["version"]
+
+        return await run_in_threadpool(
+            content_delivery.retire_pack,
+            str(pack_id),
+            str(version) if version else None,
+            confirm_latest=confirm_latest,
+        )
+    except content_delivery.DeliveryError as exc:
+        return _error(exc.status, str(exc), exc.code)
+
+
+@router.post("/api/content-shelf/unretire", dependencies=[Depends(require_admin)])
+async def content_shelf_unretire(request: Request) -> Any:
+    from . import content_delivery
+    from .content_packs import _json, PackError
+
+    if request.headers.get("content-type", "").split(";", 1)[0].strip().lower() != "application/json":
+        return _error(415, "This request requires Content-Type: application/json.")
+    try:
+        body = _json(await request.body())
+    except PackError:
+        return _error(422, "Send one unambiguous JSON object.")
+    if not isinstance(body, dict):
+        return _error(422, "Request body must be a JSON object.")
+
+    pack_id = body.get("pack_id")
+    version = body.get("version")
+    release_id = body.get("release_id")
+
+    if not pack_id and not release_id:
+        return _error(422, "pack_id or release_id is required.")
+
+    try:
+        if release_id and not pack_id:
+            status = content_delivery.status()
+            target = next((r for r in status.get("releases", []) if r["release_id"] == release_id), None)
+            if not target:
+                return _error(404, f"No release found with release_id '{release_id}'.", "CONTENT_RELEASE_NOT_FOUND")
+            pack_id = target["pack_id"]
+            version = target["version"]
+
+        return await run_in_threadpool(
+            content_delivery.unretire_pack,
+            str(pack_id),
+            str(version) if version else None,
+        )
+    except content_delivery.DeliveryError as exc:
+        return _error(exc.status, str(exc), exc.code)
+
+
+@router.post("/api/content-shelf/remove", dependencies=[Depends(require_admin)])
+async def content_shelf_remove(request: Request) -> Any:
+    from . import content_delivery
+    from .content_packs import _json, PackError
+
+    if request.headers.get("content-type", "").split(";", 1)[0].strip().lower() != "application/json":
+        return _error(415, "This request requires Content-Type: application/json.")
+    try:
+        body = _json(await request.body())
+    except PackError:
+        return _error(422, "Send one unambiguous JSON object.")
+    if not isinstance(body, dict):
+        return _error(422, "Request body must be a JSON object.")
+
+    pack_id = body.get("pack_id")
+    version = body.get("version")
+    confirm = bool(body.get("confirm", False))
+    release_id = body.get("release_id")
+
+    if not pack_id and not release_id:
+        return _error(422, "pack_id or release_id is required.")
+
+    try:
+        if release_id and not pack_id:
+            status = content_delivery.status()
+            target = next((r for r in status.get("releases", []) if r["release_id"] == release_id), None)
+            if not target:
+                return _error(404, f"No release found with release_id '{release_id}'.", "CONTENT_RELEASE_NOT_FOUND")
+            pack_id = target["pack_id"]
+            version = target["version"]
+
+        return await run_in_threadpool(
+            content_delivery.remove_pack,
+            str(pack_id),
+            str(version) if version else None,
+            confirm=confirm,
+        )
+    except content_delivery.DeliveryError as exc:
+        return _error(exc.status, str(exc), exc.code)
+
+
 # --------------------------------------------------------------------------
 # Content shelf request bodies
 
