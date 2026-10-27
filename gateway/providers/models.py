@@ -41,12 +41,13 @@ from .discovery import DiscoveryResult, DiscoveredModel, discover
 
 #: Models the owner has retired. Matched case-insensitively against a row's model id and the
 #: Hub's `package_id`, so a Hub that has not yet dropped one still has it withheld here.
-#: LTX-2.3 (local video), retired 2026-10-01; Gemma 3 12B 4-bit (LTX's text encoder, whatever modality a
-#: Hub files it under), retired 2026-10-02 by the owner. Keep this list the same as the Hub's
-#: `components/retired_models.py`.
+#: Retiring a model is one line here *and* one line in the Hub's `components/retired_models.py`;
+#: keep the two lists equal, because a Mac in the field may still be running the older of them.
 RETIRED_MODEL_IDS: tuple[str, ...] = (
+    # The local video pack, retired 2026-10-01.
     "ltx-2-3-22b-ram-12gb-mlx",
     "baa-ai/ltx-2.3-22b-ram-12gb-mlx",
+    # Its text encoder, retired 2026-10-02, under whatever modality a Hub files it.
     "gemma-3-12b-it-4bit",
     "mlx-community/gemma-3-12b-it-4bit",
 )

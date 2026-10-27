@@ -519,10 +519,10 @@ _HUB_ENGINE_MODALITY = {
     # The Hub's own engine->worker table, and the one the brief names.
     "music-mlx": "music",
     "subtitle-mlx": "transcription",
-    # No video engine here. The two local video runners (`video-lance`, retired in Hub 0.6.120,
-    # and `video-ltx`, retired 2026-10-01) are gone, so a package that still names one and
-    # states no modality of its own is reported as unrecognised rather than offered. A video
-    # model the Hub states a modality for is still placed by that statement.
+    # No video engine here. A local video engine the Hub no longer ships is absent from this
+    # table, so a package that still names one and states no modality of its own is reported as
+    # unrecognised rather than offered. A video model the Hub states a modality for is still
+    # placed by that statement.
 }
 
 #: The Hub's **stated** modality for a model, in this gateway's vocabulary.

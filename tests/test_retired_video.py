@@ -1,10 +1,15 @@
 #!/usr/bin/env python3
-"""The local video models (LTX-2.3, Lance) are retired: a Hub that publishes none is a clean result.
+"""A Hub that publishes no video model is a clean result, and a retired model is never offered.
 
-Retirement reaches this gateway through the Hub's own package list -- there is no gateway-side
-retired list, and none was added (ACE-Step 1.5 and Lance went the same way). What this pins is the
-other half: once a Hub stops publishing a video model, nothing here keeps offering it, and the
-Video lane with no model at all answers with an empty list rather than an error.
+Retirement reaches this gateway through the Hub's own package list; `RETIRED_MODEL_IDS` is this
+gateway's own backstop for a Hub that has not yet dropped one. What these tests pin is behaviour,
+never a model's name: once a Hub stops publishing a video model nothing here keeps offering it, an
+unrecognised video engine is reported rather than offered, every id on the retired list is withheld
+whatever modality or casing a stale Hub gives it, and the Video lane with no model at all answers
+with an empty list rather than an error.
+
+The ids come from `RETIRED_MODEL_IDS` itself. A test that wrote them out would keep passing after
+the list changed, and would be the one place a retired product was still named.
 
 Run with::
 
@@ -47,10 +52,14 @@ from gateway.providers.definitions import (  # noqa: E402
     KIND_STUDIO_HUB,
     ProviderDefinition,
 )
-from gateway.providers.models import ModelInventory  # noqa: E402
+from gateway.providers.models import RETIRED_MODEL_IDS, ModelInventory  # noqa: E402
 
-LTX = "baa-ai/LTX-2.3-22B-RAM-12GB-MLX"
-GEMMA = "mlx-community/gemma-3-12b-it-4bit"
+#: Read from the retirement list, never written here (see the module docstring).
+RETIRED_PACKAGE_ID = RETIRED_MODEL_IDS[0]
+RETIRED_MODEL_ID = RETIRED_MODEL_IDS[1]
+#: A video engine no Hub release ships: `_HUB_ENGINE_MODALITY` has no video entry at all, so a
+#: package naming one and stating no modality of its own cannot be placed.
+RETIRED_ENGINE = "video-retired-engine"
 
 HUB = ProviderDefinition(
     id="studio-hub-test", display_name="Test Hub", category="multi", kind=KIND_STUDIO_HUB,
@@ -62,27 +71,21 @@ HUB = ProviderDefinition(
 _IMAGE_PACKAGE = {"package_id": "flux", "model_id": "mock-hub/image-model", "engine": "image-mflux",
                   "modality": "image", "type": "model", "files_state": "files_verified",
                   "dispatch_state": "eligible"}
-#: The Gemma text encoder as the real Hub publishes it once LTX no longer lists it: a `model` on
-#: the retired video engine whose worker is absent. The Hub's catalogue does not describe it.
-#: Gemma 3 12B is itself retired (owner, 2026-10-02), so it is withheld by name, not only by shape.
-_GEMMA_PACKAGE = {"package_id": "gemma-3-12b-it-4bit", "model_id": GEMMA, "engine": "video-ltx",
-                  "modality": "video", "type": "model", "worker_id": "video",
-                  "worker_state": "unavailable", "dispatch_state": "ineligible",
-                  "files_state": "not_installed"}
-_LTX_CONTRACT = {"schema": "studiohub.lane-contract.v1", "modality": "video",
-                 "modes": ["image-to-video", "text-to-video"]}
-#: A Hub 0.6.126 that still publishes LTX as an eligible, catalogued video model.
-_LTX_PACKAGE = {"package_id": "ltx-2-3-22b-ram-12gb-mlx", "model_id": LTX, "engine": "video-ltx",
-                "modality": "video", "type": "model", "files_state": "files_verified",
-                "dispatch_state": "eligible", "lane_contract": _LTX_CONTRACT}
-_LTX_CATALOGUE = {"repo": LTX, "hub_modality": "video", "type": "model",
-                  "memory_eligible": True, "lane_contract": _LTX_CONTRACT}
+_LANE_CONTRACT = {"schema": "studiohub.lane-contract.v1", "modality": "video",
+                  "modes": ["image-to-video", "text-to-video"]}
+#: A Hub that has not yet dropped a retired model: it still publishes it as an eligible video row.
+_RETIRED_PACKAGE = {"package_id": RETIRED_PACKAGE_ID, "model_id": RETIRED_MODEL_ID,
+                    "engine": RETIRED_ENGINE, "modality": "video", "type": "model",
+                    "files_state": "files_verified", "dispatch_state": "eligible",
+                    "lane_contract": _LANE_CONTRACT}
+_RETIRED_CATALOGUE = {"repo": RETIRED_MODEL_ID, "hub_modality": "video", "type": "model",
+                      "memory_eligible": True, "lane_contract": _LANE_CONTRACT}
 _IMAGE_CATALOGUE = {"repo": "mock-hub/image-model", "hub_modality": "image", "type": "model"}
 
 #: What a Hub on a release that has dropped the Video worker publishes: no video package at all.
-_RETIRED_PACKAGES = [_IMAGE_PACKAGE]
-#: The same Hub as it still runs on the fleet: LTX published, Gemma beside it.
-_STALE_PACKAGES = [_IMAGE_PACKAGE, _GEMMA_PACKAGE, _LTX_PACKAGE]
+_NO_VIDEO_PACKAGES = [_IMAGE_PACKAGE]
+#: The same Hub as it still runs on the fleet, with the retired model still published.
+_STALE_PACKAGES = [_IMAGE_PACKAGE, _RETIRED_PACKAGE]
 
 
 class _Response:
@@ -122,96 +125,91 @@ def _inventory(name: str) -> ModelInventory:
 
 class HubWithoutVideoTests(unittest.TestCase):
     def test_a_hub_that_publishes_no_video_model_discovers_cleanly(self) -> None:
-        with _hub_answering(_RETIRED_PACKAGES):
+        with _hub_answering(_NO_VIDEO_PACKAGES):
             result = discovery.discover(HUB, {"base_url": "http://hub.invalid"})
         self.assertIsNone(result.error)
         self.assertEqual(result.skipped, [])
         self.assertEqual({m.model_id for m in result.models}, {"mock-hub/image-model"})
 
-    def test_a_retired_video_engine_with_no_stated_lane_is_reported_not_offered(self) -> None:
-        bare = {k: v for k, v in _LTX_PACKAGE.items() if k not in ("modality", "lane_contract")}
+    def test_an_unrecognised_video_engine_with_no_stated_lane_is_reported_not_offered(self) -> None:
+        bare = {k: v for k, v in _RETIRED_PACKAGE.items() if k not in ("modality", "lane_contract")}
         with _hub_answering([_IMAGE_PACKAGE, bare]):
             result = discovery.discover(HUB, {"base_url": "http://hub.invalid"})
-        self.assertNotIn(LTX, {m.model_id for m in result.models})
-        self.assertEqual([row["engine"] for row in result.skipped], ["video-ltx"])
+        self.assertNotIn(RETIRED_MODEL_ID, {m.model_id for m in result.models})
+        self.assertEqual([row["engine"] for row in result.skipped], [RETIRED_ENGINE])
 
 
 class RetiredModelTests(unittest.TestCase):
     def _inventory(self, name: str) -> ModelInventory:
         inventory = _inventory(name)
-        with _hub_answering(_STALE_PACKAGES, (_IMAGE_CATALOGUE, _LTX_CATALOGUE)):
+        with _hub_answering(_STALE_PACKAGES, (_IMAGE_CATALOGUE, _RETIRED_CATALOGUE)):
             result = inventory.refresh(HUB.id)
         self.assertIsNone(result.error)
         return inventory
 
-    def test_a_hub_still_publishing_ltx_is_not_published_and_shows_withheld(self) -> None:
+    def test_a_hub_still_publishing_a_retired_model_is_not_published_and_shows_withheld(self) -> None:
         inventory = self._inventory("stale-hub.json")
-        ltx = next(m for m in inventory.models_for(HUB.id) if m["model_id"] == LTX)
-        self.assertTrue(ltx["enabled"], "setup: the Hub's own auto-enable is on")
-        reason = inventory.withhold_reason(HUB, ltx)
+        row = next(m for m in inventory.models_for(HUB.id) if m["model_id"] == RETIRED_MODEL_ID)
+        self.assertTrue(row["enabled"], "setup: the Hub's own auto-enable is on")
+        reason = inventory.withhold_reason(HUB, row)
         self.assertIn("retired", reason or "")
-        self.assertFalse(inventory.can_publish(HUB, ltx))
+        self.assertFalse(inventory.can_publish(HUB, row))
         self.assertEqual(inventory.enabled_models("video"), [])
 
-    def test_the_retirement_matches_either_id_in_any_case(self) -> None:
-        inventory = _inventory("case.json")
-        for model in (
-            {"model_id": LTX.upper(), "modality": "video", "raw": {}},
-            {"model_id": "something-else", "modality": "video",
-             "raw": {"package_id": "LTX-2-3-22B-RAM-12GB-MLX"}},
-        ):
-            self.assertIn("retired", inventory.withhold_reason(HUB, model) or "", model)
+    def test_every_retired_id_is_withheld_in_any_case_and_under_any_modality(self) -> None:
+        inventory = _inventory("retired-ids.json")
+        for retired_id in RETIRED_MODEL_IDS:
+            for modality in ("chat", "video"):
+                for model in (
+                    {"model_id": retired_id, "modality": modality, "raw": {}},
+                    {"model_id": retired_id.upper(), "modality": modality, "raw": {}},
+                    {"model_id": "something-else", "modality": modality,
+                     "raw": {"package_id": retired_id}},
+                ):
+                    self.assertIn("retired", inventory.withhold_reason(HUB, model) or "",
+                                  (retired_id, modality, model))
 
-    def test_gemma_ids_are_retired_in_any_case_and_under_any_modality(self) -> None:
-        inventory = _inventory("gemma-case.json")
-        for model in (
-            {"model_id": GEMMA, "modality": "chat", "raw": {}},
-            {"model_id": GEMMA.upper(), "modality": "video", "raw": {}},
-            {"model_id": "something-else", "modality": "chat",
-             "raw": {"package_id": "Gemma-3-12B-IT-4bit"}},
-        ):
-            self.assertIn("retired", inventory.withhold_reason(HUB, model) or "", model)
-        # Gemma 4 and the like are different models and are not caught by it.
-        other = {"model_id": "google/gemma-4-26b", "modality": "chat", "raw": {}}
+    def test_a_lookalike_id_is_not_caught_by_the_retirement(self) -> None:
+        inventory = _inventory("lookalike.json")
+        other = {"model_id": f"{RETIRED_MODEL_ID}-successor", "modality": "chat", "raw": {}}
         self.assertNotIn("retired", inventory.withhold_reason(HUB, other) or "")
 
-    def test_gemma_on_the_real_hub_row_is_never_published_as_a_video_model(self) -> None:
-        inventory = self._inventory("gemma.json")
-        gemma = next(m for m in inventory.models_for(HUB.id) if m["model_id"] == GEMMA)
+    def test_a_retired_model_on_the_real_hub_row_is_never_published_as_a_video_model(self) -> None:
+        inventory = self._inventory("stale-row.json")
+        row = next(m for m in inventory.models_for(HUB.id) if m["model_id"] == RETIRED_MODEL_ID)
         # Discovery placed it where the Hub says it is; the retirement list now names it.
-        self.assertEqual(gemma["modality"], "video")
-        reason = inventory.withhold_reason(HUB, gemma)
-        self.assertIn("retired", reason or "")
-        self.assertIn(GEMMA, {m["model_id"] for m in inventory.models_for(HUB.id)})
-        self.assertNotIn(GEMMA, [m["model_id"] for _d, m in inventory.enabled_models("video")])
+        self.assertEqual(row["modality"], "video")
+        self.assertIn("retired", inventory.withhold_reason(HUB, row) or "")
+        self.assertIn(RETIRED_MODEL_ID, {m["model_id"] for m in inventory.models_for(HUB.id)})
+        self.assertNotIn(RETIRED_MODEL_ID,
+                         [m["model_id"] for _d, m in inventory.enabled_models("video")])
         # Installed, with the worker still absent: still withheld (no lane contract, not catalogued).
-        installed = dict(gemma, raw=dict(gemma["raw"], files_state="files_verified"))
+        installed = dict(row, raw=dict(row["raw"], files_state="files_verified"))
         self.assertIsNotNone(inventory.withhold_reason(HUB, installed))
         # Not on any Create page either.
         with patch.object(registry, "models", inventory), patch.object(admin, "catalog", Catalog()):
             payload = admin.create_models()
         for rows in payload["by_modality"].values():
-            self.assertNotIn(GEMMA, [row["model_id"] for row in rows])
-            self.assertNotIn(LTX, [row["model_id"] for row in rows])
+            self.assertNotIn(RETIRED_MODEL_ID, [row["model_id"] for row in rows])
         self.assertEqual(payload["counts"]["video"], 0)
 
 
 class VideoLaneWithNoModelTests(unittest.TestCase):
-    def test_ltx_leaves_the_inventory_once_the_hub_stops_publishing_it(self) -> None:
+    def test_a_retired_model_leaves_the_inventory_once_the_hub_stops_publishing_it(self) -> None:
         inventory = _inventory("stale-then-updated.json")
-        with _hub_answering(_STALE_PACKAGES, (_IMAGE_CATALOGUE, _LTX_CATALOGUE)):
+        with _hub_answering(_STALE_PACKAGES, (_IMAGE_CATALOGUE, _RETIRED_CATALOGUE)):
             inventory.refresh(HUB.id)
-        self.assertIn(LTX, {m["model_id"] for m in inventory.models_for(HUB.id)})
+        self.assertIn(RETIRED_MODEL_ID, {m["model_id"] for m in inventory.models_for(HUB.id)})
         # The owner had switched it on; that decision is still on file after the Hub drops it.
-        inventory.set_model_enabled(HUB.id, LTX, True)
-        with _hub_answering(_RETIRED_PACKAGES):
+        inventory.set_model_enabled(HUB.id, RETIRED_MODEL_ID, True)
+        with _hub_answering(_NO_VIDEO_PACKAGES):
             inventory.refresh(HUB.id)
-        self.assertNotIn(LTX, {m["model_id"] for m in inventory.models_for(HUB.id)})
+        self.assertNotIn(RETIRED_MODEL_ID, {m["model_id"] for m in inventory.models_for(HUB.id)})
         self.assertEqual(inventory.enabled_models("video"), [])
 
     def test_the_create_picker_answers_an_empty_video_lane_not_an_error(self) -> None:
         inventory = _inventory("no-video.json")
-        with _hub_answering(_RETIRED_PACKAGES):
+        with _hub_answering(_NO_VIDEO_PACKAGES):
             inventory.refresh(HUB.id)
         # A catalogue of its own: the shared one holds a job store another test may have closed.
         with patch.object(registry, "models", inventory), \
