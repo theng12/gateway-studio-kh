@@ -68,6 +68,13 @@ is no hard delete. The content-authority backup understands both states, so a re
 reported missing and a removed pack is recorded as being in the Trash. A one-off migration script
 records the September 21 Wars archive as removed without moving or rewriting anything.
 
+### Backups carry your local settings and limits
+Settings → Backup now includes the ten local configuration and limits files: `providers.local.json`,
+`pools.json`, `provider-concurrency.local.json`, `model-limits.local.json`, `telegram.json`,
+`render_optin.json`, `fleet_warnings.json`, `voices_state.json`, `models_cache.json` and
+`retention.json`. Moving the Gateway to another Mac or restoring a backup preserves all configured
+settings without having to re-enter pools, model limits or retention rules by hand.
+
 ## 0.2.203 — 2026-10-26
 
 ### SFX: a sound source with a key you can save
