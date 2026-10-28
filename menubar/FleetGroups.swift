@@ -1071,6 +1071,11 @@ final class FleetGroupsTab: NSView, NSSearchFieldDelegate {
         let liteOff = machine.liteOff == true
         let longOff = group.issues.first { $0.code == "lite_mode_long_off" && $0.subject == machine.machine }?.message
         let notes = [sentence.map { noteRow(.bad, $0, caption: true) },
+                     // **A thin Ethernet cable is a fault this row would otherwise look healthy under.**
+                     // Amber, naming the speed and the fix; a Mac on Wi-Fi is not a fault and gets no line.
+                     machine.connection?.slow == true
+                        ? noteRow(.warn, "Slow network link — \(machine.connection?.display ?? "—") · check the cable or switch port",
+                                  caption: true) : nil,
                      liteOff ? noteRow(.off, longOff ?? FleetOffline.liteOffNote, caption: true) : nil,
                      FleetUpdateFailure.rowLine(machine).map { noteRow(.warn, $0, caption: true) },
                      machine.liteModePending.map { noteRow(liteOff ? .off : .warn, "Lite Mode: \($0.line)", caption: true) }].compactMap { $0 }

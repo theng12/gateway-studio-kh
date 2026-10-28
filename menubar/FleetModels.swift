@@ -132,6 +132,31 @@ struct FleetSummary: Decodable {
     /// The Hub's own per-state machine counts. Kept because the pulse line is
     /// read verbatim from the gateway rather than re-derived here.
     var pulse: [String: Int]?
+    /// **How the fleet is wired**, in one line the Machines tab draws above the table: how many Macs
+    /// sit on a slow Ethernet link, on Wi-Fi, or cannot be read at all (see `fleet._connection_summary`).
+    var connections: FleetConnections?
+}
+
+/// The fleet-wide link line: `slow_ethernet` Macs (named) under 1 Gb/s or at half duplex,
+/// `wifi` Macs, and `unmeasured` ones whose Hub does not publish the block.
+struct FleetConnections: Decodable {
+    var slowEthernet: Int?
+    var slowMachines: [String]?
+    var wifi: Int?
+    var wifiMachines: [String]?
+    var ethernet: Int?
+    var unmeasured: Int?
+    var total: Int?
+
+    /// "3 Macs on slow Ethernet — check the cable: A, B, C." `nil` when no Mac is slow, so the line
+    /// takes no room. The Macs are named because the point of the figure is which cable to replace.
+    var slowLine: String? {
+        let count = slowEthernet ?? 0
+        guard count > 0 else { return nil }
+        let named = (slowMachines ?? []).filter { !$0.isEmpty }
+        return "\(count) Mac\(count == 1 ? "" : "s") on slow Ethernet — check the cable"
+            + (named.isEmpty ? "." : ": " + named.joined(separator: ", ") + ".")
+    }
 }
 
 // MARK: - Install on every Mac (LAN model sharing, FleetModelSpread.swift)
@@ -785,6 +810,82 @@ struct FleetCurrentJob: Decodable {
     var startedAt: Double?
 }
 
+/// One Mac's network link as its own Hub reported it (gateway `fleet.machine_connection`).
+///
+/// **Why this exists.** A failing cable does not take a Mac offline: it *negotiates*, and a Mac
+/// linked at 100 Mb/s — or 10 — answers every other field on this page as a healthy machine while
+/// its work crawls. The owner measured 1301 at `100baseTX` on an old cable, `10baseT` before that,
+/// and nothing here could show it. `kind` is the hardware port the Mac's own OS names for the
+/// interface carrying its default route, `speedMbps`/`duplex` are the media that port says it
+/// negotiated, and `text` is the Gateway's own sentence so every surface says the same thing.
+///
+/// **Unknown is not fine.** A Hub older than the block publishes none of it and this is `nil`, which
+/// draws as an em dash — never as a gigabit link.
+struct FleetConnection: Decodable {
+    /// `measured` or `unmeasured`. Anything but `measured` means the Mac's Hub could not read its
+    /// link, and `reason` says why in its own words.
+    var status: String?
+    var reason: String?
+    var interface: String?
+    /// `ethernet`, `wifi`, `other` — or nil when the Mac could not be read.
+    var kind: String?
+    var speedMbps: Int?
+    /// `full` or `half`; nil when the OS stated none.
+    var duplex: String?
+    var media: String?
+    var linkUp: Bool?
+    var wifiUp: Bool?
+    var wifiRateMbps: Int?
+    /// Ethernet below 1000 Mb/s, or at half duplex: a cable or a port to look at, not a slow Mac.
+    var slow: Bool?
+    /// The Gateway's one-line sentence: "Ethernet 100 Mb/s half", "Wi-Fi 432 Mb/s", "—".
+    var text: String?
+
+    /// The reading could not be made — a different fact from a link whose speed is unknown.
+    var measured: Bool { (status ?? "") == "measured" }
+
+    /// What the Network cell draws: the sentence when the link was read, and an em dash when it was
+    /// not. Never a number the Mac did not state.
+    var display: String {
+        guard measured else { return "—" }
+        let text = (self.text ?? "").trimmingCharacters(in: .whitespaces)
+        return text.isEmpty || text == "—" ? "—" : text
+    }
+
+    /// Amber on a slow Ethernet link, grey when the reading is missing, green otherwise. Wi-Fi is
+    /// **not** amber: a Mac on Wi-Fi is a different fact and the cell says so instead of warning
+    /// about a cable that is not there.
+    var health: Health {
+        guard measured else { return .off }
+        if slow == true { return .warn }
+        if (kind ?? "") == "wifi" { return .off }
+        return .ok
+    }
+
+    /// The hover text: every fact the Mac stated, and the reason when it stated none.
+    var tooltip: String {
+        guard measured else {
+            return reason ?? "This Mac's Hub did not report its link."
+        }
+        var lines: [String] = []
+        if let kind, let interface {
+            lines.append("\(kind == "ethernet" ? "Ethernet" : kind == "wifi" ? "Wi-Fi" : "Connection") on \(interface).")
+        }
+        if let speedMbps, let kind, kind == "ethernet" {
+            lines.append("The port negotiated \(speedMbps) Mb/s" + (duplex.map { " \($0) duplex" } ?? "") + ".")
+        }
+        if let media { lines.append("Media: \(media).") }
+        if let reason { lines.append(reason) }
+        if wifiUp == true, (kind ?? "") != "wifi" {
+            lines.append("Wi-Fi is up as well" + (wifiRateMbps.map { " (\($0) Mb/s)" } ?? "") + ".")
+        }
+        if slow == true {
+            lines.append("Below 1000 Mb/s on Ethernet or at half duplex — check the cable and the switch port.")
+        }
+        return lines.isEmpty ? "The Mac reported a link with no details." : lines.joined(separator: "\n")
+    }
+}
+
 struct FleetMachine: Decodable {
     var locationId: String?
     var location: String?
@@ -814,6 +915,9 @@ struct FleetMachine: Decodable {
     /// The Mac's disk state and top consumers (see `FleetDisk`); nil from a gateway that
     /// predates the field, in which case `diskFreeGb` still draws.
     var disk: FleetDisk?
+    /// How this Mac is connected — its interface, its kind and the media its Ethernet negotiated
+    /// (see `FleetConnection`). `nil` from a Hub older than 0.6.206, which is unknown, never "fine".
+    var connection: FleetConnection?
     var health: String?
     /// The node roster's own facts, when this machine is a node of a controller.
     /// `nodeDetail` is the controller's sentence about why it cannot reach the
