@@ -126,100 +126,210 @@ _MAX_UPLOAD_BODY = _MAX_UPLOAD_BYTES_HUB + (2 * 1024 * 1024)
 
 
 class _UploadTooLarge(Exception):
-    """The body crossed `_MAX_UPLOAD_BODY` while being read. Answered as 413, never a 500."""
+    """The body crossed its ceiling while being read. Answered as 413, never a 500."""
+
+
+class _SpoolBudgetBusy(Exception):
+    """More uploads are being spooled at once than this process will hold."""
+
+
+#: **Every door that takes a body has a ceiling**, and the ones that take a file say theirs
+#: explicitly. Everything else gets `_BODY_CEILING_DEFAULT`; the render-blob door is exempt
+#: because it carries a whole video and is bounded by its own declared size instead.
+#:
+#: **Not a hand-kept list of "the upload routes"** (review 2026-10-29, finding A): the first
+#: version guarded two paths, and three more multipart doors — an image door, a video door and
+#: a fleet transcription door — spooled 120 MB unauthenticated before answering 401. The table
+#: names the routes that accept a *file*; `tests/test_body_ceiling.py` walks the app's own route
+#: table and fails if a file route is not listed here, so one added tomorrow cannot slip through.
+_UPLOAD_CEILINGS: tuple[tuple["re.Pattern[str]", int, str], ...] = (
+    (re.compile(r"^/v1/images/source-images$"), _MAX_UPLOAD_BYTES, "a source image"),
+    (re.compile(r"^/v1/videos/source-images$"), _MAX_UPLOAD_BYTES, "a source image"),
+    (re.compile(r"^/admin/api/create/transcription$"), _MAX_UPLOAD_BODY, "a transcription upload"),
+    (re.compile(r"^/v1/audio/transcriptions/quotes$"), _MAX_UPLOAD_BODY, "a transcription upload"),
+    (re.compile(r"^/admin/api/fleet/controllers/[^/]+/machines/[^/]+/transcribe$"),
+     _MAX_UPLOAD_BODY, "a transcription upload"),
+)
+
+#: Any other request with a body: JSON and small forms. Comfortably above every admin or
+#: customer JSON body (the render lane bounds its own at 1 MiB) and far below a file upload.
+_BODY_CEILING_DEFAULT = 2 * 1024 * 1024
+
+#: A private render blob is a whole video, streamed by its own route against a size the caller
+#: declares and `render_service` checks. Capping it here would refuse real renders.
+_BODY_CEILING_EXEMPT = (re.compile(r"^/v1/final-renders/blobs/[^/]+$"),)
+
+#: What this process will hold in spool files at once, and how many uploads may be spooling
+#: together (review 2026-10-29, finding B). The guard runs before the per-client in-flight cap,
+#: so without a budget 40 parallel chunked uploads from one host produced 40 spool files.
+#: Peak held ≈ `_SPOOL_BUDGET_BYTES` plus one chunk per upload in flight.
+_SPOOL_BUDGET_BYTES = 64 * 1024 * 1024
+_SPOOL_MAX_IN_FLIGHT = 8
+_spool_state = {"bytes": 0, "in_flight": 0}
+_SPOOL_LOCK = threading.Lock()
+
+
+def body_ceiling_for(path: str) -> tuple[int, str] | None:
+    """`(ceiling, 'route' | 'default')` for this path, or `None` when it is exempt.
+
+    The second element is what the walking test reads: a route that accepts a file must be
+    named in `_UPLOAD_CEILINGS`, so "covered by the default" is not good enough for one.
+    """
+    for pattern, ceiling, _what in _UPLOAD_CEILINGS:
+        if pattern.match(path):
+            return ceiling, "route"
+    for pattern in _BODY_CEILING_EXEMPT:
+        if pattern.match(path):
+            return None
+    return _BODY_CEILING_DEFAULT, "default"
+
+
+def _spool_begin() -> bool:
+    with _SPOOL_LOCK:
+        if _spool_state["in_flight"] >= _SPOOL_MAX_IN_FLIGHT:
+            return False
+        _spool_state["in_flight"] += 1
+        return True
+
+
+def _spool_end() -> None:
+    with _SPOOL_LOCK:
+        _spool_state["in_flight"] = max(0, _spool_state["in_flight"] - 1)
+        _spool_state["bytes"] = max(0, _spool_state["bytes"])
+
+
+def _spool_grow(count: int) -> bool:
+    with _SPOOL_LOCK:
+        if _spool_state["bytes"] + count > _SPOOL_BUDGET_BYTES:
+            return False
+        _spool_state["bytes"] += count
+        return True
+
+
+def _spool_shrink(count: int) -> None:
+    with _SPOOL_LOCK:
+        _spool_state["bytes"] = max(0, _spool_state["bytes"] - count)
 
 
 class BoundedUploadBody:
-    """**Refuse an oversize upload while it is still a stream** (review 2026-10-29).
+    """**Bound every request that carries a body, before anything reads it.**
 
     An ASGI middleware, not a dependency, because **FastAPI parses the form before it solves
     dependencies** — a `Depends` guard runs after Starlette has already read (and spooled) the
     whole multipart body, which is the defect. Wrapping `receive` is the only place genuinely
-    before the parser: the declared `Content-Length` is refused on the header alone (so a
-    caller declaring 512 MB and sending a little does not hang), and a body without one
-    (chunked) is counted as it arrives and cut at the ceiling.
+    before the parser.
 
-    The same shape as `_bounded_render_json`: a bounded read, refused rather than buffered.
-    `_MAX_UPLOAD_BODY` is the ceiling for *any* model; each route still applies its exact
-    per-model limit afterwards, so a caller under the ceiling gets the precise number.
+    * A declared `Content-Length` over the ceiling is refused **on the header alone**, so a
+      caller declaring 512 MB and sending a little does not hang, and an unauthenticated one
+      is refused before 120 MB is spooled.
+    * A body without a declared length (chunked) is counted as it arrives, spooled only up to
+      its ceiling, and cut there.
+    * The spool is a **shared budget**: bytes and concurrent uploads are reserved before they
+      are read (`_SPOOL_BUDGET_BYTES`, `_SPOOL_MAX_IN_FLIGHT`), so parallel uploads cannot turn
+      into one file each.
     """
 
-    #: The two doors that take an audio upload. Nothing else here has a body worth capping
-    #: this way (JSON bodies are bounded where they are decoded).
-    PATHS = frozenset({
-        "/admin/api/create/transcription",
-        "/v1/audio/transcriptions/quotes",
-    })
+    #: Only these can carry a body; a GET is never spooled.
+    METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 
     def __init__(self, app: Any) -> None:
         self.app = app
 
     @staticmethod
-    def _refusal(limit: int, size: int | None) -> JSONResponse:
-        what = (f"{size // (1024 * 1024)} MB" if size
+    def _refusal(limit: int, size: int | None, what: str) -> JSONResponse:
+        said = (f"{size // (1024 * 1024)} MB" if size
                 else f"larger than {limit // (1024 * 1024)} MB")
         return JSONResponse(
             status_code=413,
             content={
-                "detail": (f"That upload is {what}. This gateway accepts at most "
-                           f"{limit // (1024 * 1024)} MB for any transcription, and the model "
-                           f"you chose may take less."),
+                "detail": (f"That request body is {said}. This door takes at most "
+                           f"{limit // (1024 * 1024)} MB for {what}."),
                 "code": "UPLOAD_TOO_LARGE",
             },
         )
 
+    @staticmethod
+    def _busy() -> JSONResponse:
+        return JSONResponse(
+            status_code=503,
+            content={
+                "detail": (f"{_SPOOL_MAX_IN_FLIGHT} uploads are already being received "
+                           f"(up to {_SPOOL_BUDGET_BYTES // (1024 * 1024)} MB held). Try again "
+                           f"in a moment."),
+                "code": "UPLOAD_BUDGET_BUSY",
+            },
+            headers={"Retry-After": "1"},
+        )
+
     async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
-        if scope.get("type") != "http" or scope.get("path") not in self.PATHS:
+        if scope.get("type") != "http" or scope.get("method") not in self.METHODS:
             await self.app(scope, receive, send)
             return
-        limit = _MAX_UPLOAD_BODY
+        resolved = body_ceiling_for(scope.get("path") or "")
+        if resolved is None:
+            await self.app(scope, receive, send)
+            return
+        limit, _source = resolved
+        what = next((w for pattern, _c, w in _UPLOAD_CEILINGS
+                     if pattern.match(scope.get("path") or "")), "this request")
         headers = {key.lower(): value for key, value in (scope.get("headers") or [])}
         declared = (headers.get(b"content-length") or b"").decode("latin-1").strip()
         if declared.isdigit():
             if int(declared) > limit:
-                # Answered from the header alone: a caller that declares 512 MB and sends a
-                # little is refused at once instead of being waited on.
-                await self._refusal(limit, int(declared))(scope, receive, send)
+                await self._refusal(limit, int(declared), what)(scope, receive, send)
                 return
             # A declared length the server already enforces (h11 will not hand over more):
             # nothing to count, so the route reads the body exactly as it did before.
             await self.app(scope, receive, send)
             return
-        await self._bounded_stream(scope, receive, send, limit)
+        await self._bounded_stream(scope, receive, send, limit, what)
 
-    async def _bounded_stream(self, scope: Any, receive: Any, send: Any, limit: int) -> None:
+    async def _bounded_stream(self, scope: Any, receive: Any, send: Any, limit: int,
+                              what: str) -> None:
         """No declared length (a chunked upload): count as it arrives, spool what is kept.
 
-        **Spooled, not held.** A legit Hub upload can be 100 MB, so the kept bytes go to a
-        temporary file past 1 MB — the same place Starlette would have put them. The point is
-        that nothing beyond the ceiling is *ever* read into this process, and the answer is a
-        413 as soon as the limit is crossed rather than after the whole body has landed.
+        **Spooled, not held, and against a budget.** A legit Hub upload can be 100 MB, so the
+        kept bytes go to a temporary file past 1 MB — the same place Starlette would have put
+        them — while the process-wide budget and the in-flight count decide whether this upload
+        may proceed at all.
         """
+        if not _spool_begin():
+            await self._busy()(scope, receive, send)
+            return
         received = 0
-        with tempfile.SpooledTemporaryFile(max_size=1 << 20) as spool:
-            while True:
-                message = await receive()
-                if message.get("type") != "http.request":
-                    # The client went away mid-upload; let the app see the disconnect.
-                    await self.app(scope, _empty_receive(message), send)
-                    return
-                body = message.get("body") or b""
-                received += len(body)
-                if received > limit:
-                    await self._refusal(limit, None)(scope, receive, send)
-                    return
-                spool.write(body)
-                if not message.get("more_body"):
-                    break
-            spool.seek(0)
+        held = 0
+        try:
+            with tempfile.SpooledTemporaryFile(max_size=1 << 20) as spool:
+                while True:
+                    message = await receive()
+                    if message.get("type") != "http.request":
+                        # The client went away mid-upload; let the app see the disconnect.
+                        await self.app(scope, _empty_receive(message), send)
+                        return
+                    body = message.get("body") or b""
+                    received += len(body)
+                    if received > limit:
+                        await self._refusal(limit, None, what)(scope, receive, send)
+                        return
+                    if body and not _spool_grow(len(body)):
+                        await self._busy()(scope, receive, send)
+                        return
+                    held += len(body)
+                    spool.write(body)
+                    if not message.get("more_body"):
+                        break
+                spool.seek(0)
 
-            async def replay() -> dict[str, Any]:
-                chunk = spool.read(64 * 1024)
-                if chunk:
-                    return {"type": "http.request", "body": chunk, "more_body": True}
-                return {"type": "http.request", "body": b"", "more_body": False}
+                async def replay() -> dict[str, Any]:
+                    chunk = spool.read(64 * 1024)
+                    if chunk:
+                        return {"type": "http.request", "body": chunk, "more_body": True}
+                    return {"type": "http.request", "body": b"", "more_body": False}
 
-            await self.app(scope, replay, send)
+                await self.app(scope, replay, send)
+        finally:
+            _spool_shrink(held)
+            _spool_end()
 
 
 def _empty_receive(message: dict[str, Any]):

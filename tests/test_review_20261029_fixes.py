@@ -57,6 +57,17 @@ ORIGIN = {"Origin": "http://testserver"}
 PASSWORD = "correct horse battery"
 
 
+def small_ceiling(limit: int = 16 * 1024):
+    """The same doors, with a small ceiling, so a test body can cross it cheaply.
+
+    The ceiling table captures its numbers at import, so patching `_MAX_UPLOAD_BODY` no longer
+    reaches it — the table is what the middleware reads.
+    """
+    return patch.object(api, "_UPLOAD_CEILINGS",
+                        tuple((pattern, limit, what)
+                              for pattern, _ceiling, what in api._UPLOAD_CEILINGS))
+
+
 def fresh() -> None:
     with admin_session._lock:
         admin_session._write(admin_session._guests_path(), {"guests": []})
@@ -165,7 +176,7 @@ class UploadGuard(unittest.TestCase):
                 "Content-Type": f"multipart/form-data; boundary={self.BOUNDARY}"}
 
     def test_a_chunked_body_is_cut_at_the_ceiling(self) -> None:
-        with patch.object(api, "_MAX_UPLOAD_BODY", 16 * 1024):
+        with small_ceiling():
             response = self.client.post("/admin/api/create/transcription", cookies=self.cookies,
                                         headers={**ORIGIN, **self.multipart_headers()},
                                         content=self.chunked(chunks=64))
@@ -176,7 +187,7 @@ class UploadGuard(unittest.TestCase):
     def test_a_declared_oversize_is_refused_on_the_header_alone(self) -> None:
         # Nothing is streamed: the answer comes from `Content-Length`, so a caller that
         # declares 512 MB and sends a byte does not hang the request.
-        with patch.object(api, "_MAX_UPLOAD_BODY", 16 * 1024):
+        with small_ceiling():
             response = self.client.post(
                 "/admin/api/create/transcription", cookies=self.cookies,
                 headers={**ORIGIN, "Content-Length": str(512 * 1024 * 1024)}, content=b"x")
@@ -186,7 +197,7 @@ class UploadGuard(unittest.TestCase):
     def test_a_body_under_the_ceiling_still_reaches_the_route(self) -> None:
         # The guard must not be a wall: a small upload is answered by the route (which then
         # refuses the empty model or the paid lane — anything but 413).
-        with patch.object(api, "_MAX_UPLOAD_BODY", 4 * 1024 * 1024):
+        with small_ceiling(4 * 1024 * 1024):
             response = self.client.post(
                 "/admin/api/create/transcription", cookies=self.cookies, headers=ORIGIN,
                 files={"file": ("a.wav", b"RIFF" + b"\x00" * 64, "audio/wav")},
@@ -199,7 +210,7 @@ class UploadGuard(unittest.TestCase):
         # mangled the bytes would break every legitimate chunked upload, so the route must
         # see the same body it would have without the guard — here, a real multipart upload
         # that gets as far as the catalogue and is refused for the model, never for its body.
-        with patch.object(api, "_MAX_UPLOAD_BODY", 4 * 1024 * 1024):
+        with small_ceiling(4 * 1024 * 1024):
             response = self.client.post(
                 "/admin/api/create/transcription", cookies=self.cookies,
                 headers={**ORIGIN, **self.multipart_headers()},
@@ -209,7 +220,7 @@ class UploadGuard(unittest.TestCase):
 
     def test_the_v1_quote_door_is_guarded_the_same_way(self) -> None:
         headers = {**ORIGIN, "Authorization": f"Bearer {os.environ['GATEWAY_API_KEY']}"}
-        with patch.object(api, "_MAX_UPLOAD_BODY", 16 * 1024):
+        with small_ceiling():
             chunked = self.client.post("/v1/audio/transcriptions/quotes",
                                        headers={**headers, **self.multipart_headers()},
                                        content=self.chunked(chunks=64, field="model"))
@@ -222,7 +233,7 @@ class UploadGuard(unittest.TestCase):
 
     def test_the_v1_quote_door_still_takes_a_small_upload(self) -> None:
         headers = {"Authorization": f"Bearer {os.environ['GATEWAY_API_KEY']}"}
-        with patch.object(api, "_MAX_UPLOAD_BODY", 4 * 1024 * 1024):
+        with small_ceiling(4 * 1024 * 1024):
             response = self.client.post(
                 "/v1/audio/transcriptions/quotes", headers=headers,
                 files={"file": ("a.mp3", b"ID3" + b"\x00" * 32, "audio/mpeg")},
@@ -244,6 +255,18 @@ class ConfusableNames(unittest.TestCase):
             with self.subTest(name=name):
                 with self.assertRaises(ValueError):
                     admin_session.add_guest(name, PASSWORD)
+
+    def test_lookalikes_from_other_scripts_are_folded_too(self) -> None:
+        # Finding C: Armenian "OH", Coptic "O" and the small-capital "W" were not in the
+        # hand-written table. They fold now through the character's own Unicode name, so a
+        # whole family of scripts is covered rather than three more entries.
+        for name in ("Օwner", "օwner", "Ⲟwner", "ⲟwner"):
+            with self.subTest(name=name):
+                with self.assertRaises(ValueError):
+                    admin_session.add_guest(name, PASSWORD)
+        self.assertEqual(admin_session.folded_name("ᴡill"), "will")
+        self.assertEqual(admin_session.folded_name("ﬁle"), "file", "a compatibility form")
+        self.assertEqual(admin_session.folded_name("é"), "e", "an accented Latin letter")
 
     def test_two_guests_cannot_differ_only_by_a_lookalike(self) -> None:
         admin_session.add_guest("Maria", PASSWORD)
@@ -394,6 +417,33 @@ class AnnotationAcrossTheFleet(unittest.TestCase):
             voice_import._run_annotation(self.pending, "whisper-1", self.targets())
         self.assertEqual(self.stored()["reference_segments"], before)
         self.assertFalse(voice_import.annotation_state()["results"][0]["ok"])
+
+    def test_a_hub_that_answers_done_with_no_segments_writes_nothing(self) -> None:
+        # Finding D: `done` with an empty segment list used to be treated as a success, so it
+        # overwrote good segments with `[]`. It is a failure now, and the disk is untouched.
+        before = self.stored()["reference_segments"]
+
+        def transcribe(client, base, headers, audio, model):
+            return []
+
+        with patch.object(voice_import, "_transcribe", transcribe):
+            voice_import._run_annotation(self.pending, "whisper-1", self.targets())
+        self.assertEqual(self.stored()["reference_segments"], before)
+        result = voice_import.annotation_state()["results"][0]
+        self.assertFalse(result["ok"])
+        self.assertIn("no timed segments", result["detail"])
+
+    def test_an_empty_answer_falls_through_to_the_next_hub(self) -> None:
+        def transcribe(client, base, headers, audio, model):
+            if base == "http://local":
+                return []
+            return [{"start": 0.0, "end": 2.0, "text": "hello"}]
+
+        with patch.object(voice_import, "_transcribe", transcribe):
+            voice_import._run_annotation(self.pending, "whisper-1", self.targets())
+        self.assertEqual(self.stored()["reference_segments"],
+                         [{"start": 0.0, "end": 2.0, "text": "hello"}])
+        self.assertEqual(voice_import.annotation_state()["results"][0]["location"], "Mac Studio")
 
     def test_a_clipless_voice_is_reported_and_its_segments_left_alone(self) -> None:
         self.pending[0]["reference_path"] = str(self.clip) + ".gone"

@@ -386,15 +386,52 @@ _CONFUSABLES = str.maketrans({
 _RESERVED_FOLDED = {name.casefold() for name in RESERVED_NAMES}
 
 
+#: Named shapes whose last Unicode-name word is not the letter itself. Small, and only where a
+#: script names the letter after its sound: Armenian "OH", Greek "OMICRON".
+_NAMED_LOOKALIKES = {"oh": "o", "omicron": "o"}
+
+
+def _fold_char(ch: str) -> str:
+    """One character reduced to the Latin letter it reads as, or itself.
+
+    Three steps, in order — the third is what makes this a *skeleton* rather than a list:
+
+    1. the curated table (Cyrillic and Greek letters, `0` for `o`);
+    2. `NFKD` minus combining marks, which folds an accented Latin letter to its base (`é`→`e`)
+       and a compatibility form to its plain one (`ﬁ`→`fi`);
+    3. otherwise the character's own Unicode name: `COPTIC CAPITAL LETTER O` and
+       `LATIN LETTER SMALL CAPITAL W` end in the Latin letter, so they fold to it. A handful of
+       scripts name the letter after its sound instead (`ARMENIAN … LETTER OH`,
+       `GREEK … OMICRON`), and those are the small exception map above.
+
+    Anything else stays itself: unfolding is honest, and a name that is not a reserved one in
+    any script is not reserved.
+    """
+    mapped = ch.translate(_CONFUSABLES)
+    if mapped != ch:
+        return mapped
+    if ch.isascii():
+        return ch
+    base = "".join(c for c in unicodedata.normalize("NFKD", ch)
+                   if not unicodedata.combining(c))
+    if base and base.isascii():
+        return base
+    name = unicodedata.name(ch, "")
+    tail = name.rsplit(" ", 1)[-1].casefold() if name else ""
+    if len(tail) == 1 and tail.isascii() and tail.isalpha():
+        return tail
+    return _NAMED_LOOKALIKES.get(tail, ch)
+
+
 def folded_name(name: str) -> str:
     """A name reduced to what it *looks like*, for the reserved list and for uniqueness.
 
     `"Ownеr"` with a Cyrillic `е` is not `"Owner"` to `str.lower`, but it is to a reader —
     and the Requested-by column is read by a person. `NFKC` first (compatibility forms,
-    fullwidth digits), then casefold, then the lookalike table.
+    fullwidth digits), then casefold, then `_fold_char` on every character.
     """
     text = unicodedata.normalize("NFKC", str(name or ""))
-    return " ".join(text.split()).casefold().translate(_CONFUSABLES)
+    return "".join(_fold_char(ch) for ch in " ".join(text.split()).casefold())
 
 
 def _clean_name(name: str) -> str:

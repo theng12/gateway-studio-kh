@@ -1513,13 +1513,23 @@ def _run_annotation(pending: list[dict], model: str, targets: list[dict] | None 
                     failure = "the reference clip is missing"
                 else:
                     for target in targets:
+                        label = str(target.get("label") or target["base"])
                         try:
-                            segments = _transcribe(client, target["base"], target["headers"],
-                                                   audio, model)
-                            where = str(target.get("label") or target["base"])
-                            break
+                            found = _transcribe(client, target["base"], target["headers"],
+                                                audio, model)
                         except Exception as exc:  # noqa: BLE001 - try the next Hub, report the last
                             failure = f"{type(exc).__name__}: {exc}"[:200]
+                            continue
+                        if not found:
+                            # **`done` with no segments is not a success.** The Hub answered,
+                            # but there is nothing to write — and writing it would erase the
+                            # good segments already on disk (review 2026-10-29, finding D).
+                            failure = (f"{label} answered with no timed segments, so nothing "
+                                       f"was written")
+                            continue
+                        segments = found
+                        where = label
+                        break
                     if segments is not None:
                         results.append({"id": voice.get("id"), "name": name, "ok": True,
                                         "location": where,
@@ -1530,10 +1540,11 @@ def _run_annotation(pending: list[dict], model: str, targets: list[dict] | None 
                 payload = _read_catalog()
                 for entry in payload.get("voices") or []:
                     if entry.get("id") == voice.get("id"):
-                        # **Only a success writes segments.** A forced re-annotation whose
-                        # transcription fails must leave the good segments that are already
-                        # on disk exactly as they are — writing this back unconditionally
-                        # would have erased them the first time a fleet went quiet.
+                        # **Only a success writes segments**, and an empty answer is not one:
+                        # a forced re-annotation whose transcription fails — or comes back with
+                        # no timed segments — must leave the good segments already on disk
+                        # exactly as they are. Writing this back unconditionally erased them
+                        # the first time a fleet went quiet.
                         if segments is not None:
                             entry["reference_segments"] = segments
                             # Written here too: the segments are what makes the voice

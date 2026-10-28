@@ -111,7 +111,12 @@ class RefusalTests(_Case):
         too_big = png(body=b"\0" * (image_assets.MAX_SOURCE_IMAGE_BYTES + 1))
         response = self.upload(too_big)
         self.assertEqual(response.status_code, 413, response.text[:200])
-        self.assertEqual(response.json()["code"], "PAYLOAD_TOO_LARGE")
+        # **Answered one layer earlier since 2026-10-29.** The gateway bounds every body at
+        # the door (`BoundedUploadBody`), so an oversize upload is refused before the route
+        # runs; the route keeps its own 413 for the boundary case and for a caller that
+        # reaches it another way.
+        self.assertEqual(response.json()["code"], "UPLOAD_TOO_LARGE")
+        self.assertIn("at most", response.json()["detail"])
 
     def test_a_media_type_outside_the_set_is_named(self) -> None:
         response = self.upload(b"just text", "text/plain")
