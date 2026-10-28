@@ -2144,7 +2144,51 @@ def list_voices(
     q: str | None = None,
     source: str | None = None,
     only_enabled: bool = False,
+    model_id: str | None = None,
 ) -> dict[str, Any]:
+    """The voice library, or — with `model_id` — the voices one model can actually use.
+
+    **`model_id` is the Create page's question, and it is answered by the same rule the
+    customer surface uses.** The page showed every voice in the library for every model,
+    so a picker could offer a voice the lane would refuse; `voices_for_model` is the one
+    implementation of "which voices match this model" (a local clip against the model's
+    own cloning statement, a provider voice against its provider), and asking it here
+    keeps the console from answering a different question than `/v1/voices` does.
+
+    The scoped rows are `story_row`-shaped, which is why they carry `display_name` and
+    `provider` rather than this route's own field spellings: those are the published
+    names, and the console prints the published name.
+    """
+    if model_id:
+        from .voices import voices_for_model
+
+        rows = voices_for_model(model_id)
+        if q:
+            needle = q.strip().lower()
+            rows = [
+                r
+                for r in rows
+                if needle in (r.get("display_name") or "").lower()
+                or needle in (r.get("description") or "").lower()
+                or needle in (r.get("language") or "").lower()
+            ]
+        discovered = voice_registry().voices(provider_id=provider_id)
+        return {
+            "voices": rows,
+            "matched": len(rows),
+            "model_id": model_id,
+            # Library-wide figures, labelled as such: the scoped list above is the answer
+            # to "for this model", and these are not it.
+            "total": len(discovered),
+            "enabled": sum(1 for v in discovered if voice_registry().is_enabled(v)),
+            "summary": voice_registry().summary(),
+            "providers": [
+                {"id": d.id, "name": d.display_name, "kind": d.kind}
+                for d in registry.definitions()
+                if d.kind in {"elevenlabs", "fish", "studio_hub"}
+            ],
+        }
+
     voices = voice_registry()
     rows = [
         voice.as_dict() | {"enabled": voices.is_enabled(voice)}

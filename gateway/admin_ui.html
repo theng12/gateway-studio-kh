@@ -3652,7 +3652,13 @@ const CREATE_FIELDS = {
 
 let createTab = 'image';
 let createCatalogue = null;
-let createVoices = [];
+//: The voices **this model** can use, and which model that answer was for. A voice list is
+//: per-model, not per-library: the page used to draw the whole library for every lane, so a
+//: picker could offer a voice the model would refuse. Fetched on every model change rather
+//: than once, and keyed so a stale answer cannot be drawn against a newer model.
+let createVoices = { modelId: '', rows: [], error: '' };
+//: The job whose result is on screen, so a Download reads exactly what is shown.
+let createShownJob = null;
 const createTimers = {};
 let activeCreateJobId = null;
 let pendingCreateAttempt = null;
@@ -3699,14 +3705,8 @@ async function loadCreate() {
       createCatalogue = await api('/create/models');
     } catch (e) { createCatalogue = { by_modality: {}, counts: {} }; }
   }
-  if (!createVoices.length) {
-    // Best effort: a voice is required by every TTS lane here (the gateway refuses
-    // to invent one), so offer what the library has and let it be typed otherwise.
-    try {
-      const v = await api('/voices');
-      createVoices = (v.voices || []).map(x => ({ id: x.id, name: x.name || x.id }));
-    } catch (e) { createVoices = []; }
-  }
+  // Voices are **not** loaded here: which voices a lane may use is the model's answer, so
+  // they are fetched per model in `loadCreateVoices` and re-fetched on every change.
   renderCreateForm();
   renderCreateRecent();
 }
@@ -3721,10 +3721,17 @@ function renderCreateForm() {
         <textarea id="cf-${f.k}" rows="${f.rows || 5}" placeholder="${esc(f.placeholder || '')}"></textarea></div>`;
     }
     if (f.type === 'voice') {
-      const opts = createVoices.map(v => `<option value="${esc(v.id)}">${esc(v.name)}</option>`).join('');
+      // A `<select>`, not an input with a suggestion list: a suggestion list shows its *value*,
+      // and the value here is a provider-side id (`studio-hub-local::voice-ba75c0a0aa4f`), which
+      // is what the owner saw instead of a name. A select can carry the id as the value and the
+      // published name as what is read. Typing an id stays possible — the page always intended
+      // that — as an explicit last option, because a voice known from a share link is not in the
+      // library.
       return `<div style="margin-bottom:12px"><label>${esc(f.label)}</label>
-        <input type="text" id="cf-${f.k}" list="cf-voices" placeholder="a voice id">
-        <datalist id="cf-voices">${opts}</datalist></div>`;
+        <select id="cf-${f.k}" onchange="createVoiceChoice(this)"></select>
+        <input type="text" id="cf-${f.k}_manual" placeholder="a voice id"
+               style="display:none;margin-top:6px">
+        <div class="hint" id="cf-voice-hint"></div></div>`;
     }
     if (f.type === 'number') {
       return `<div style="margin-bottom:12px"><label>${esc(f.label)}</label>
@@ -3742,9 +3749,12 @@ function renderCreateForm() {
          <input type="text" id="cf-language" placeholder="leave blank to detect"></div>`
     : '';
 
+  // Which voices a lane may offer is the model's answer, so the picker asks again whenever the
+  // model changes. Only a lane that has a voice field needs the handler at all.
+  const voiceLane = fields.some(f => f.type === 'voice');
   const picker = rows.length
     ? `<div style="margin-bottom:12px"><label>Model</label>
-         <select id="cf-model">${rows.map(m =>
+         <select id="cf-model"${voiceLane ? ' onchange="createModelChanged(this.value)"' : ''}>${rows.map(m =>
            `<option value="${esc(m.id)}">${esc(m.provider_name)} — ${esc(m.display_name)}${m.free_lane ? ' · free' : ''}</option>`
          ).join('')}</select></div>`
     : `<div class="msg bad" style="margin-bottom:12px">No model is switched on for this lane.
@@ -3755,6 +3765,116 @@ function renderCreateForm() {
      ${picker}${upload}${body}
      <div class="row"><button class="primary" id="cf-go" onclick="submitCreate(this)">Generate</button>
        <span class="msg" id="cf-msg"></span></div>`;
+  if (voiceLane && rows.length) loadCreateVoices();
+}
+
+// ---------------------------------------------------------------------------
+// Voices on the Create page.
+//
+// **The published name is what the owner reads; the id is what is sent.** Three answers, never
+// two: a voice the library names, a voice whose name was never published (the catalogue's
+// fallback makes `display_name` equal the raw id, and printing that as if it were a name is how
+// an id ends up looking like a person), and a model whose voice list could not be read.
+// ---------------------------------------------------------------------------
+function createVoiceRawId(v) { return String(v.id || '').split('::').pop(); }
+
+function createVoiceName(v) {
+  const raw = createVoiceRawId(v);
+  const stated = String(v.display_name || '').trim();
+  if (stated && stated !== raw) return stated;
+  // Honest, not invented: say it has no published name and show the part that identifies it.
+  const tail = raw.replace(/^voice-/, '').slice(0, 6) || raw.slice(0, 6) || 'unknown';
+  return `Unnamed voice · ${tail}`;
+}
+
+function createVoiceLabel(v) {
+  const provider = String(v.provider || v.engine_name || '').trim();
+  const name = createVoiceName(v);
+  return provider && provider !== name ? `${name} · ${provider}` : name;
+}
+
+function createVoiceChoice(select) {
+  const manual = document.getElementById('cf-voice_id_manual');
+  if (!manual) return;
+  const typing = select.value === '__manual__';
+  manual.style.display = typing ? '' : 'none';
+  if (typing) manual.focus();
+}
+
+function createVoiceValue() {
+  const select = document.getElementById('cf-voice_id');
+  const manual = document.getElementById('cf-voice_id_manual');
+  const typed = manual ? manual.value.trim() : '';
+  if (!select || select.value === '__manual__') return typed;
+  return select.value;
+}
+
+function createModelChanged() {
+  createVoices = { modelId: '', rows: [], error: '' };
+  loadCreateVoices();
+}
+
+function fillCreateVoices(rows, error) {
+  const select = document.getElementById('cf-voice_id');
+  if (!select) return;
+  const manual = document.getElementById('cf-voice_id_manual');
+  const hint = document.getElementById('cf-voice-hint');
+  const say = (text, bad) => {
+    if (!hint) return;
+    hint.className = bad ? 'hint bad' : 'hint';
+    hint.textContent = text;
+  };
+  if (error) {
+    select.innerHTML = '<option value="__manual__">Enter a voice id…</option>';
+    if (manual) manual.style.display = '';
+    say(`Could not read this model's voices: ${error}. Type an id instead.`, true);
+    return;
+  }
+  if (!rows.length) {
+    select.innerHTML = '<option value="__manual__">Enter a voice id…</option>';
+    if (manual) manual.style.display = '';
+    say('No voice in the library can be used with this model. Type an id if you know one.');
+    return;
+  }
+  select.innerHTML =
+    '<option value="">Choose a voice…</option>' +
+    rows.map(v => `<option value="${esc(v.id)}">${esc(createVoiceLabel(v))}</option>`).join('') +
+    '<option value="__manual__">Enter a voice id…</option>';
+  if (manual) manual.style.display = 'none';
+  say(`${rows.length} voice${rows.length === 1 ? '' : 's'} this model can use.`);
+}
+
+async function loadCreateVoices() {
+  const modelEl = document.getElementById('cf-model');
+  const select = document.getElementById('cf-voice_id');
+  if (!select) return;
+  const modelId = modelEl ? modelEl.value : '';
+  if (!modelId) { fillCreateVoices([], ''); return; }
+  if (createVoices.modelId === modelId) {
+    fillCreateVoices(createVoices.rows, createVoices.error);
+    return;
+  }
+  select.innerHTML = '<option value="">Loading voices…</option>';
+  let rows = [], error = '';
+  try {
+    const answer = await api('/voices?model_id=' + encodeURIComponent(modelId));
+    rows = answer.voices || [];
+  } catch (e) {
+    error = e.message || 'the gateway did not answer';
+  }
+  createVoices = { modelId, rows, error };
+  // The model can change while that request is in flight; only the answer for the model on
+  // screen may be drawn, or a picker shows another model's voices.
+  const now = document.getElementById('cf-model');
+  if ((now ? now.value : '') !== modelId) return;
+  fillCreateVoices(rows, error);
+}
+
+function showCreateMessage(text, bad) {
+  const msg = document.getElementById('cf-msg');
+  if (!msg) return;
+  msg.className = bad ? 'msg bad' : 'msg';
+  msg.textContent = text;
 }
 
 function cfValue(k) { const el = document.getElementById('cf-' + k); return el ? el.value.trim() : ''; }
@@ -3794,11 +3914,17 @@ async function submitCreate(btn) {
       if (!modelEl) throw new Error('no model is switched on for this lane');
       const params = {};
       (CREATE_FIELDS[t.key] || []).forEach(f => {
-        const v = cfValue(f.k);
+        // The voice field sends the **id**, whether it came from the list or was typed.
+        const v = f.type === 'voice' ? createVoiceValue() : cfValue(f.k);
         if (v === '') return;
         if (f.type === 'number') params[f.k] = parseInt(v, 10);
         else params[f.k] = v;
       });
+      // The gateway refuses to invent a voice, so a missing one is refused here with the
+      // sentence that says what to do rather than as a provider error after a round trip.
+      if ((CREATE_FIELDS[t.key] || []).some(f => f.type === 'voice') && !params.voice_id) {
+        throw new Error('choose a voice first');
+      }
       if (t.modality === 'chat') params.messages = [{ role: 'user', content: params.prompt || '' }];
       attempt.path = '/create';
       attempt.options = {
@@ -3884,7 +4010,7 @@ function artifactsHtml(modality, outs, jobId) {
     else preview = '<audio data-preview controls></audio>';
     return `<div class="artifact" id="art-${jobId}-${o.asset_id}">${preview}
       <div class="row">
-        <button class="sm" data-save>Save…</button>
+        <button class="sm" onclick="downloadArtifact('${jobId}','${o.asset_id}')">Download</button>
         <button class="sm" onclick="keepArtifact('${jobId}','${o.asset_id}',this)">Keep</button>
         <span class="hint" id="keep-msg-${jobId}-${o.asset_id}"></span>
       </div></div>`;
@@ -3894,6 +4020,34 @@ function artifactsHtml(modality, outs, jobId) {
   return html;
 }
 
+// **Download, not Save-via-blob, and never a link to a bare URL.** Three things had to be true
+// at once: the bytes need the page's own authentication (a header in the app, a cookie in a
+// browser on another device), the file needs a real name and extension, and it must not depend
+// on the app's web view honouring `<a download>`. So the route's own `?download=1` answer is
+// fetched (it is the one that sets `Content-Disposition: attachment`), its filename is read
+// back, and the bytes are handed to the downloader. The filename comes from the route rather
+// than from the page so the two cannot disagree about the extension.
+function filenameFromDisposition(header) {
+  const match = /filename\*?=(?:UTF-8'')?"?([^";]+)"?/i.exec(String(header || ''));
+  return match ? match[1] : '';
+}
+
+async function downloadArtifact(jobId, assetId) {
+  const url = '/admin/api/artifacts/' + encodeURIComponent(jobId) + '/outputs/'
+    + encodeURIComponent(assetId) + '?download=1';
+  const res = await fetch(url, { headers: adminHeaders() });
+  if (res.status === 401 || res.status === 403) {
+    showTokenPrompt('This gateway needs its API key to download artifacts.');
+    showCreateMessage('this gateway needs its API key to download', true);
+    return;
+  }
+  if (!res.ok) { showCreateMessage(`could not download: HTTP ${res.status}`, true); return; }
+  const blob = await res.blob();
+  const name = filenameFromDisposition(res.headers.get('Content-Disposition'))
+    || `artifact-${String(jobId).slice(0, 8)}-${assetId}`;
+  downloadBlob(URL.createObjectURL(blob), name);
+}
+
 function hydrateArtifact(modality, jobId, assetId) {
   apiBlob(`/artifacts/${jobId}/outputs/${assetId}`).then(blob => {
     const url = URL.createObjectURL(blob);
@@ -3901,8 +4055,6 @@ function hydrateArtifact(modality, jobId, assetId) {
     if (!box) return;
     const media = box.querySelector('[data-preview]');
     if (media) media.src = url;
-    const save = box.querySelector('[data-save]');
-    if (save) save.onclick = () => downloadBlob(url, `${modality}-${jobId.slice(0, 8)}-${assetId}`);
   }).catch(e => {
     const box = document.getElementById(`art-${jobId}-${assetId}`);
     if (box) box.insertAdjacentHTML('afterbegin', `<div class="msg bad">${esc(e.message)}</div>`);
@@ -3937,6 +4089,7 @@ function renderCreateResult(job) {
   const box = document.getElementById('create-result');
   const modality = job.modality || currentTab().modality;
   const outs = job.outputs || [];
+  createShownJob = job;
   if (job.state === 'failed') {
     box.innerHTML = `<div class="msg bad">${esc(job.failure_reason || 'the generation failed')}
       ${job.failure_code ? ` <span class="mid">${esc(job.failure_code)}</span>` : ''}</div>`;
@@ -3953,7 +4106,8 @@ function renderCreateResult(job) {
     return;
   }
   if (modality === 'chat') {
-    box.innerHTML = `<pre class="out">${esc(job.output_text || '')}</pre>`;
+    box.innerHTML = `<pre class="out">${esc(job.output_text || '')}</pre>
+      <div class="row"><button class="sm" onclick="downloadChatText()">Download .txt</button></div>`;
     return;
   }
   if (modality === 'transcription') {
@@ -3961,12 +4115,9 @@ function renderCreateResult(job) {
     // rather than the /v1 route, which wants the Story Studio key.
     box.innerHTML = '<div class="empty">reading transcript…</div>';
     apiBlob('/artifacts/' + job.id + '/outputs/0').then(blob => {
-      const url = URL.createObjectURL(blob);
       return blob.text().then(t => {
         box.innerHTML = `<pre class="out">${esc(t)}</pre>
-          <div class="row"><button class="sm" id="srt-save">Save .srt…</button></div>`;
-        const save = document.getElementById('srt-save');
-        if (save) save.onclick = () => downloadBlob(url, `subtitle-${job.id.slice(0, 8)}.srt`);
+          <div class="row"><button class="sm" onclick="downloadArtifact('${job.id}','0')">Download .srt</button></div>`;
       });
     }).catch(e => {
       box.innerHTML = `<div class="msg bad">${esc(e.message)}</div>`;
@@ -3974,6 +4125,15 @@ function renderCreateResult(job) {
     return;
   }
   box.innerHTML = artifactsHtml(modality, outs, job.id);
+}
+
+// A chat answer is text on the job, not an artifact, so it is downloaded from the job the page
+// is showing rather than fetched again — what you read is what is saved.
+function downloadChatText() {
+  const job = createShownJob;
+  if (!job || !job.id) { showCreateMessage('there is no chat answer on screen to download', true); return; }
+  const blob = new Blob([job.output_text || ''], { type: 'text/plain;charset=utf-8' });
+  downloadBlob(URL.createObjectURL(blob), `chat-${String(job.id).slice(0, 8)}.txt`);
 }
 
 // One state -> colour mapping, the same as the menubar app's `Health(state:)`: running and everything in flight
@@ -4001,8 +4161,27 @@ async function renderCreateRecent() {
         ${j.defer_reason ? `<span class="badge warn" title="${esc(j.defer_reason)}">waiting${j.queue_position ? ' #' + j.queue_position : ''}</span>` : ''}
         <span class="hint">${esc(j.model_name || j.model_id || '')}</span>
         <button class="sm" onclick="openCreateJob('${j.id}')">Open</button>
+        <button class="sm" onclick="downloadCreateJob('${j.id}')" title="Download the first result">Download</button>
       </div>`).join('');
   } catch (e) { box.innerHTML = ''; }
+}
+
+// The Recent list is compact, so it saves the **first** result of a finished job; every result
+// of the job that is open is downloadable from the panel above, one button each.
+async function downloadCreateJob(id) {
+  try {
+    const job = await api('/create/status/' + encodeURIComponent(id));
+    if (!job || job.detail) throw new Error(job && job.detail ? job.detail : 'the gateway did not return that job');
+    if (job.state !== 'succeeded') throw new Error(`this job is ${job.state || 'not finished'} — there is no result to download`);
+    activeCreateJobId = id;
+    renderCreateResult(job);
+    if ((job.modality || currentTab().modality) === 'chat') { downloadChatText(); return; }
+    const first = (job.outputs || [])[0];
+    if (!first) throw new Error('this job produced no artifact');
+    await downloadArtifact(job.id, first.asset_id);
+  } catch (e) {
+    showCreateMessage(e.message, true);
+  }
 }
 
 async function openCreateJob(id) {
