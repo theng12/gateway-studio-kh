@@ -355,6 +355,25 @@ class PageTests(Case):
         plain = worker("mac-b", accepted=ACCEPTING)
         self.assertNotIn(render_optin.PAUSED_RENDER_KEY, fleet._trim_worker(plain))
 
+    def test_a_mac_that_switched_render_off_in_its_work_order_is_never_sent_a_render(self) -> None:
+        """Owner, 2026-10-28: a kind switched off in the work order is not taken by that Mac."""
+        row = location({
+            "mac-off": {"worker": worker("mac-off", production=True, render_while_paused=True)},
+            "mac-on": {"worker": worker("mac-on", production=True)},
+        })
+        row["machines"][0]["function_enabled"] = {"render": False}
+        # Another function switched off on `mac-on`, and a malformed value, leave render ON.
+        row["machines"][1]["function_enabled"] = {"image": False, "render": "false"}
+        with Fleet(row):
+            self.assertEqual([c["node_id"] for c in fleet.render_candidates(base.PROFILE)],
+                             ["mac-on"])
+        # The same when the switch arrives on the node row instead of the overview row.
+        row["machines"][0].pop("function_enabled")
+        row["nodes"][0]["function_enabled"] = {"render": False}
+        with Fleet(row):
+            self.assertEqual([c["node_id"] for c in fleet.render_candidates(base.PROFILE)],
+                             ["mac-on"])
+
 
 class RelayTests(unittest.TestCase):
     def test_the_exemption_switch_is_relayed_through_the_controller(self) -> None:

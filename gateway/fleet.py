@@ -2474,6 +2474,33 @@ def _machine_priority_order(machine: dict, node: dict) -> list[str]:
     return _priority_order(node)
 
 
+def _function_enabled(machine: dict) -> dict[str, bool]:
+    """One Mac's saved on/off switches (`function_enabled`), cut to real booleans on known functions.
+
+    **Absent = on, and only a real boolean `false` is off** (owner, 2026-10-28: "each generation
+    should actually have a cross to switch them on or off. but defaults to on."). A malformed or
+    non-boolean value is dropped rather than guessed, so a damaged row keeps taking work.
+    """
+    value = machine.get("function_enabled")
+    if not isinstance(value, dict):
+        return {}
+    allowed = _PRIORITY_FUNCTIONS | {"vision", "embeddings"}
+    return {kind: on for kind, on in value.items()
+            if isinstance(kind, str) and kind in allowed and type(on) is bool}
+
+
+def _machine_function_enabled_map(machine: dict, node: dict) -> dict[str, bool]:
+    """The switch map this Mac stated, preferring the overview machine row over the node row."""
+    if "function_enabled" in machine:
+        return _function_enabled(machine)
+    return _function_enabled(node)
+
+
+def _machine_function_enabled(machine: dict, node: dict, kind: str) -> bool:
+    """Whether this Mac takes `kind` at all (owner, 2026-10-28). Absent = ON; only `False` is off."""
+    return _machine_function_enabled_map(machine, node).get(kind) is not False
+
+
 def workstation_resting(row: dict) -> bool:
     """A workstation Mac that is the shop's for now (standing by, stepped aside, quiet hours), freshly reported.
 
@@ -2962,6 +2989,7 @@ def machines_flat(rows: list[dict]) -> list[dict]:
                 "workstation": (workstation := _workstation_fact(machine, nodes.get(mid) or {})),
                 "priority_order": priority_order,
                 "chat_priority": bool(priority_order and priority_order[0] == "chat"),
+                "function_enabled": _machine_function_enabled_map(machine, node),
                 "current": _current_job(machine, entry),
                 "installable_models": installable_models(row, mid, machine.get("memory_gb")),
                 **health_fields(mid, machine, entry, startup, workstation),
@@ -2993,6 +3021,7 @@ def machines_flat(rows: list[dict]) -> list[dict]:
                 "workstation": (workstation := _workstation_fact({}, nodes.get(mid) or {})),
                 "priority_order": (priority_order := _machine_priority_order({}, nodes.get(mid) or {})),
                 "chat_priority": bool(priority_order and priority_order[0] == "chat"),
+                "function_enabled": _machine_function_enabled_map({}, nodes.get(mid) or {}),
                 "current": _current_job({}, entry),
                 **health_fields(mid, {}, entry, _startup_fact({}, nodes.get(mid) or {}), workstation),
             })
@@ -4370,6 +4399,9 @@ def render_candidates(required_profile_digest: str | None, *,
                     or disk_free_gb <= 0 or machine.get("current_job") is not None
                     or "current_job" not in machine
                     or not isinstance(node, dict) or node.get("state") != "reachable"
+                    # **The work order's own on/off switch** (owner, 2026-10-28): a Mac that
+                    # switched final render off takes no render at all, pause-exemption or not.
+                    or not _machine_function_enabled(machine, node, "render")
                     # `paused` is the controller's own machine pause; the exemption is that same
                     # pause, for render only, so it is the one flag it may overrule.
                     or (node.get("paused") is not False and not exempt)
@@ -4556,9 +4588,50 @@ def _eligible_macs(row: dict, model_id: str, modality: str) -> dict[str, dict]:
             node = nodes.get(machine) or {}
             workstation = _workstation_fact(fact, node)
             if (fact.get("reachable") is not False and fact.get("enabled") is not False
+                    and _machine_function_enabled(fact, node, function)
                     and not (workstation and workstation_resting({"workstation": workstation}))):
                 eligible[machine] = model
     return eligible
+
+
+def _function_off_at_site(row: dict, model_id: str, modality: str) -> bool:
+    """True when the Macs at `row` that serve `(model_id, modality)` have switched that kind off.
+
+    **Owner, 2026-10-28: a kind that is off is not taken by that Mac at all.** When every Mac at a
+    site that can run `model_id` for `modality` has switched that function off (or is paused/drained
+    beside one that switched it off), the site itself cannot take that kind of job and must not be
+    offered as a candidate — while every other function on the same site stays unaffected.
+    """
+    function = _PRIORITY_FUNCTION_BY_MODALITY.get(modality, modality)
+    machines = {str(m.get("machine") or ""): m for m in row.get("machines") or []
+                if isinstance(m, dict) and m.get("machine")}
+    nodes = {str(n.get("id") or ""): n for n in row.get("nodes") or []
+             if isinstance(n, dict) and n.get("id")}
+    paused = {mid for mid, n in nodes.items() if n.get("paused") is True}
+    serving = [
+        str(m.get("machine") or "") for m in row.get("local_models") or []
+        if isinstance(m, dict) and model_id in (m.get("model_id"), m.get("model"))
+        and m.get("memory_eligible") is not False
+        and _PRIORITY_FUNCTION_BY_MODALITY.get(str(m.get("modality") or modality),
+                                               str(m.get("modality") or modality)) == function
+        and m.get("machine")
+    ]
+    if not serving:
+        unfit = {str(m.get("machine")) for m in row.get("local_models") or []
+                 if isinstance(m, dict) and model_id in (m.get("model_id"), m.get("model"))
+                 and m.get("memory_eligible") is False}
+        serving = [str(w.get("machine")) for w in row.get("workers") or []
+                   if isinstance(w, dict) and model_id in (w.get("models") or [])
+                   and w.get("machine") and str(w.get("machine")) not in unfit
+                   and w.get("drained") is not True]
+    if not serving:
+        serving = list(machines or nodes)
+    if not serving:
+        return False
+    switched_off = {mid for mid in serving
+                    if not _machine_function_enabled(machines.get(mid) or {},
+                                                     nodes.get(mid) or {}, function)}
+    return bool(switched_off) and all(mid in switched_off or mid in paused for mid in serving)
 
 
 def _as_optional_int(value: object) -> int | None:
@@ -4839,6 +4912,10 @@ def routing_candidates(
             continue
         # Every Mac here that could run this model is paused: as good as unreachable for it.
         if no_free_mac(row, model_id):
+            continue
+        # **Every Mac here that could run this model switched this kind off** (owner, 2026-10-28):
+        # never dispatch that kind to this site.
+        if _function_off_at_site(row, model_id, modality):
             continue
         # **A location installing an update is not a candidate until it is back** (Kind I). It
         # said so itself, deliberately, and re-offering it is what turned one job into 126

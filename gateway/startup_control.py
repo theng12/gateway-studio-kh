@@ -295,6 +295,32 @@ def set_node_work_policy(controller_id: str, machine_id: str, priority_order: ob
     return policy if isinstance(policy, dict) else answered
 
 
+def set_node_function_enabled(controller_id: str, machine_id: str, function_enabled: object, *,
+                              client: httpx.Client | None = None) -> dict[str, Any]:
+    """Switch one or more functions on or off in one Mac's work order (owner, 2026-10-28)."""
+    allowed = WORK_PRIORITY_FUNCTIONS | {"vision", "embeddings"}
+    valid = (isinstance(function_enabled, dict) and bool(function_enabled)
+             and all(isinstance(kind, str) and kind in allowed and type(on) is bool
+                     for kind, on in function_enabled.items()))
+    if not valid:
+        raise StartupError(400, {
+            "ok": False, "code": "BAD_FUNCTION_ENABLED",
+            "detail": "function_enabled must map rankable function ids to true or false.",
+        })
+    if not _MACHINE_ID.fullmatch(machine_id or ""):
+        raise StartupError(400, {"ok": False, "code": "BAD_MACHINE", "detail": "machine id is not valid"})
+    answered = _node_post(
+        controller_id, machine_id, "work-policy", {"function_enabled": dict(function_enabled)},
+        event="work_priority",
+        too_old=("This controller's Studio Hub cannot switch individual functions in this Mac's "
+                 "work order yet. Update Studio Hub first (Fleet > Release)."),
+        refused="The controller refused this gateway's credential for changing work priorities.",
+        audit_fields={"function_enabled": dict(function_enabled)}, client=client,
+    )
+    policy = answered.get("work_policy")
+    return policy if isinstance(policy, dict) else answered
+
+
 def set_node_workstation(controller_id: str, machine_id: str, settings: object, *,
                          client: httpx.Client | None = None) -> dict[str, Any]:
     """Change one Mac's Lite Mode (internally "workstation"; owner request 2026-10-03), through its controller.
