@@ -2884,13 +2884,21 @@ uvicorn.run("gateway.api:app", host="127.0.0.1", port=int(sys.argv[2]), log_leve
                 # first (`voices` reads the clip length through it), so it is patched too.
                 _vi_base = _vi.hub_base_url
                 _vi.hub_base_url = _hub.hub_base_url
+                # **No Hub anywhere**, which is the case this check is about. Since
+                # 2026-10-29 annotation also asks the joined locations, and this sandbox has
+                # one (the mock controller), so the fleet is emptied to make the scenario the
+                # check names real rather than passing for the wrong reason.
+                from gateway import fleet as _fleet_mod
+                _fleet_locations = _fleet_mod.locations
                 try:
+                    _fleet_mod.locations = lambda: []
                     _refused = _vi.start_annotation()
                 finally:
                     _vi.hub_base_url = _vi_base
+                    _fleet_mod.locations = _fleet_locations
                 check("and the annotation pass refuses once, with the actionable reason",
                       _refused.get("running") is False
-                      and "not reachable" in str(_refused.get("error")),
+                      and "No Studio Hub that can transcribe is reachable" in str(_refused.get("error")),
                       f"running={_refused.get('running')} error={_refused.get('error')}")
             finally:
                 _hub.hub_base_url = _real_base
@@ -3308,12 +3316,20 @@ uvicorn.run("gateway.api:app", host="127.0.0.1", port=int(sys.argv[2]), log_leve
             voice_import.hub_base_url = lambda: ""
             from gateway import hub as _hub
             _hub._PROBE_CACHE["result"] = None
-            guard = voice_import.start_annotation()
-            voice_import.hub_base_url = real_base_url
+            # No joined location either — see the check above: the fleet would otherwise be
+            # asked, and this sandbox has a mock controller to ask.
+            from gateway import fleet as _fleet_mod
+            _fleet_locations = _fleet_mod.locations
+            _fleet_mod.locations = lambda: []
+            try:
+                guard = voice_import.start_annotation()
+            finally:
+                _fleet_mod.locations = _fleet_locations
+                voice_import.hub_base_url = real_base_url
             _hub._PROBE_CACHE["result"] = None
             check("with no Hub it refuses to pretend the voices are usable",
                   guard.get("running") is False
-                  and "not reachable" in str(guard.get("error"))
+                  and "No Studio Hub that can transcribe is reachable" in str(guard.get("error"))
                   and "no hub-ready.json" in str(guard.get("error")),
                   f"running={guard.get('running')} error={guard.get('error')}")
 
