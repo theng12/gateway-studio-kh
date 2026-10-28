@@ -14,6 +14,30 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.207 — 2026-10-28
+
+### Voices have names in Create, and only the ones the model can use
+The Audio page's Voice field showed the provider's own id — `studio-hub-local::voice-ba75c0a0aa4f`
+— instead of the name the library publishes. It now reads **Christian · Gateway voice library**,
+and a voice nobody named says so plainly ("Unnamed voice · ba75c0") rather than presenting an id
+as a person. The list is also **the chosen model's**, re-read every time the model changes: a
+voice the lane would refuse is no longer offered. Typing an id by hand is still there, for a voice
+known from a share link.
+
+### Download, with a real filename, on everything Create makes
+Audio, subtitles, images, music, video and chat answers — and every row of the Recent list — now
+have a **Download** that saves the file with its own extension (`tts-5417efcd-0.wav`,
+`transcription-f0ff45a9-0.srt`), from the same authenticated door the page already uses, so it
+works from a browser on another device.
+
+### Guests: share Create without handing over the Gateway
+A friend can now sign in with a **name and password** and use the Create page, and nothing else.
+Every other page and every other route refuses them on the server; they see and download only
+their own jobs; and removing an account retires it rather than deleting its history. By default a
+guest may use **free and local models only** — paid models are one switch per guest, off unless
+you turn it on. Every job now says **Requested by**: you, Story Studio, or the guest's name, and
+"not recorded" for jobs from before this release.
+
 ## 0.2.206 — 2026-10-28
 
 ### Final renders follow each Mac's own work order, fastest Mac first

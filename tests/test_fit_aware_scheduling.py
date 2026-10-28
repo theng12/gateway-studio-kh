@@ -28,6 +28,10 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+#: The route reads the caller's session to scope a guest's list. These are the owner's own calls
+#: from inside the process, so the stand-in carries no cookie.
+_ANON_REQUEST = types.SimpleNamespace(cookies={})
+
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from test_studio_hub_contract import _TEMP_ROOT  # noqa: E402,F401  (sets the isolated test profile)
@@ -317,12 +321,12 @@ class SchedulingObservabilityTest(_Case):
         seen, before = [], None
         with patch.object(admin, "store", self.store):
             while True:
-                page = admin.list_jobs(limit=2, state=None, modality=None, since=None, before=before)
+                page = admin.list_jobs(_ANON_REQUEST, limit=2, state=None, modality=None, since=None, before=before)
                 seen += [row["id"] for row in page["jobs"]]
                 before = page["next_before"]
                 if before is None:
                     break
-            recent = admin.list_jobs(limit=50, state=None, modality=None, since=1003.0, before=None)
+            recent = admin.list_jobs(_ANON_REQUEST, limit=50, state=None, modality=None, since=1003.0, before=None)
         self.assertEqual(seen, [job["id"] for job in reversed(made)], "every job once, newest first")
         self.assertEqual([row["id"] for row in recent["jobs"]], [made[4]["id"], made[3]["id"]])
 

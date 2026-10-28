@@ -8,6 +8,10 @@ import subprocess
 import sys
 import tempfile
 import time
+from types import SimpleNamespace
+
+#: Owner-only page read straight from the process; there is no session cookie to scope by.
+_ANON_REQUEST = SimpleNamespace(cookies={})
 import unittest
 from unittest.mock import patch
 
@@ -135,10 +139,10 @@ class HandoffAPI(unittest.TestCase):
              patch.object(admin.registry.credentials, "is_enabled", return_value=True), \
              patch.object(admin.registry.credentials, "is_configured", return_value=False):
             admin.catalog._built_at = 0
-            self.assertEqual(admin.create_models()["by_modality"]["chat"], [])
+            self.assertEqual(admin.create_models(_ANON_REQUEST)["by_modality"]["chat"], [])
             with patch.object(admin.registry.credentials, "is_configured", return_value=True):
                 admin.catalog._built_at = 0
-                rows = admin.create_models()["by_modality"]["chat"]
+                rows = admin.create_models(_ANON_REQUEST)["by_modality"]["chat"]
                 self.assertEqual([row["id"] for row in rows], ["openai-direct::mock-model"])
                 self.assertIn("context_window_tokens", rows[0])
 

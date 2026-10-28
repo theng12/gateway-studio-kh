@@ -51,6 +51,7 @@ from .config import is_loopback, request_is_loopback
 from .hub import hub_status
 from .providers import definitions, registry
 from .runtime import STARTED_AT, store, worker
+from .store import artifacts_of, requested_by_label, requested_by_of
 from .voices import search_library, voice_registry
 
 router = APIRouter(prefix="/admin")
@@ -59,9 +60,12 @@ _UI_PATH = Path(__file__).resolve().parent / "admin_ui.html"
 
 
 class AdminError(Exception):
-    def __init__(self, status: int, detail: str) -> None:
+    def __init__(self, status: int, detail: str, code: str | None = None) -> None:
         self.status = status
         self.detail = detail
+        # A machine-readable reason when the caller may have to branch on it — a guest
+        # refused the console and a guest refused a paid model must not read the same.
+        self.code = code
 
 
 def _key_matches(candidate: str) -> bool:
@@ -79,11 +83,21 @@ def require_admin(
     The session is the cookie `/admin/login` sets (`admin_session`). SameSite=Strict
     keeps other sites from sending it, and a write carried by it must also name this
     origin, so a cross-site form cannot act with it.
+
+    **A guest session is refused here, always.** This is the owner's door, and every route
+    that has not explicitly opted into guests uses it — so a route added tomorrow is
+    owner-only by default rather than by anybody remembering. The handful of routes a guest
+    may use take `Depends(require_guest_or_admin)` instead, and the app's `/admin`
+    middleware repeats the same allowlist as a backstop.
     """
+    identity = admin_session.session(request.cookies.get(admin_session.COOKIE))
+    if identity is not None and identity.get("role") == "guest":
+        raise AdminError(403, "A guest account may only use the Create page.",
+                         "GUEST_NOT_ALLOWED")
     if is_loopback() and request_is_loopback(request):
         return
     if not authorization or not authorization.lower().startswith("bearer "):
-        if admin_session.valid_session(request.cookies.get(admin_session.COOKIE)):
+        if identity is not None:
             if request.method not in ("GET", "HEAD", "OPTIONS") and not admin_session.same_origin(request):
                 raise AdminError(403, "Cross-site request refused.")
             return
@@ -94,6 +108,30 @@ def require_admin(
         raise AdminError(503, "Set GATEWAY_API_KEY before using the gateway beyond loopback.")
     if not _key_matches(authorization[7:].strip()):
         raise AdminError(403, "Invalid API key.")
+
+
+def guest_identity(request: Request) -> dict[str, Any] | None:
+    """The guest behind this request, or `None` for the owner, the key and this Mac."""
+    identity = admin_session.session(request.cookies.get(admin_session.COOKIE))
+    return identity if identity is not None and identity.get("role") == "guest" else None
+
+
+def require_guest_or_admin(
+    request: Request, authorization: str | None = Header(default=None)
+) -> None:
+    """The same door, plus guests — for the Create page's own routes and nothing else.
+
+    A guest is still *authenticated here*: the same cookie, the same origin rule on a write.
+    What a guest may reach is decided by which routes take this dependency; what a guest may
+    *see* (their own jobs, their own files) is decided inside each of them.
+    """
+    identity = admin_session.session(request.cookies.get(admin_session.COOKIE))
+    if identity is not None and identity.get("role") == "guest":
+        if request.method not in ("GET", "HEAD", "OPTIONS") and not admin_session.same_origin(request):
+            raise AdminError(403, "Cross-site request refused.")
+        return
+    require_admin(request, authorization)
+
 
 
 def require_local_app(
@@ -121,11 +159,36 @@ def require_owner(request: Request, authorization: str | None = Header(default=N
     """
     if request_is_loopback(request):
         return require_local_app(request, authorization)
+    # A guest session is not the owner's, whatever route is asking.
+    if guest_identity(request) is not None:
+        raise AdminError(403, "Only the owner can change this: use the Gateway app, or sign in to the Gateway in a browser.")
     if admin_session.valid_session(request.cookies.get(admin_session.COOKIE)):
         if request.method not in ("GET", "HEAD", "OPTIONS") and not admin_session.same_origin(request):
             raise AdminError(403, "Cross-site request refused.")
         return
     raise AdminError(403, "Only the owner can change this: use the Gateway app, or sign in to the Gateway in a browser.")
+
+
+def requested_by(request: Request) -> dict[str, Any]:
+    """Who asked, as the Gateway knows it — the owner, the key, or a named guest.
+
+    Three labels and no guessing: a guest session is the guest's name; a browser session is
+    the owner's; the gateway key from another machine is the client that named itself or
+    "Story Studio"; anything left is **this Mac** — the app's own window, or a script beside
+    the gateway. "This Mac" is used rather than "owner" because a script holding the key is
+    not a person, and a wrong name on a job is worse than a plain one.
+    """
+    guest = guest_identity(request)
+    if guest is not None:
+        return {"role": "guest", "guest_id": guest.get("guest_id"),
+                "label": str(guest.get("name") or "Guest")}
+    if admin_session.session(request.cookies.get(admin_session.COOKIE)) is not None:
+        return {"role": "owner", "label": "Owner"}
+    if request_is_loopback(request):
+        return {"role": "owner", "label": "This Mac"}
+    from .api import caller_hint
+
+    return {"role": "key", "label": caller_hint(request) or "Story Studio"}
 
 
 def require_owner_console(request: Request) -> None:
@@ -166,7 +229,8 @@ def admin_ui(request: Request) -> HTMLResponse:
     # authenticates on its own — so this Mac (the app's window) always gets it. A
     # browser elsewhere signs in first, so it lands on a page that works.
     token = request.cookies.get(admin_session.COOKIE)
-    signed_in = admin_session.valid_session(token)
+    identity = admin_session.session(token)
+    signed_in = identity is not None
     if not (request_is_loopback(request) or signed_in):
         return _login_page()
     if not _UI_PATH.exists():
@@ -176,10 +240,21 @@ def admin_ui(request: Request) -> HTMLResponse:
     # WKWebView, so without it a reload after an edit can serve the previous page and
     # a fix looks like it did not apply — which is exactly how a styling change gets
     # reported as broken twice.
-    page = HTMLResponse(
-        _UI_PATH.read_text(encoding="utf-8"),
-        headers={"Cache-Control": "no-store, must-revalidate"},
-    )
+    html = _UI_PATH.read_text(encoding="utf-8")
+    if identity is not None and identity.get("role") == "guest":
+        # The page draws itself from this. It hides the owner's views so a guest is not shown
+        # doors that will refuse them — but **the refusal is server-side**, in `require_admin`
+        # and the `/admin` middleware; this only keeps the page honest about what it offers.
+        guest = admin_session.get_guest(str(identity.get("guest_id") or "")) or {}
+        html = html.replace(
+            "</head>",
+            "<script>window.__GATEWAY_GUEST__ = "
+            + json.dumps({"name": identity.get("name") or "",
+                          "paid_allowed": bool(guest.get("paid_allowed"))})
+            + ";</script></head>",
+            1,
+        )
+    page = HTMLResponse(html, headers={"Cache-Control": "no-store, must-revalidate"})
     if signed_in:
         _set_session_cookie(page, token)  # sliding: 30 days from the last visit
     return page
@@ -211,7 +286,7 @@ _LOGIN_HTML = """<!DOCTYPE html>
   <p>__NOTE__</p>
   __ERROR__
   <form method="post" action="/admin/login">
-    <input type="text" name="username" value="gateway-kh" autocomplete="username" hidden>
+    <input type="text" name="username" placeholder="Your name — guests only, leave blank if you are the owner" autocomplete="username">
     <input type="password" name="password" placeholder="__PLACEHOLDER__" autocomplete="current-password" autofocus required>
     <button type="submit">Sign In</button>
   </form>
@@ -256,6 +331,20 @@ async def admin_login(request: Request) -> Response:
         return _login_page(f"Too many attempts. Try again in {wait} seconds.", 429)
     form = parse_qs((await request.body()).decode("utf-8", "replace"))
     secret = (form.get("password") or [""])[0]
+    name = (form.get("username") or [""])[0].strip()
+    if name:
+        # **A name means a guest, and only a guest.** The gateway key is not accepted on this
+        # path: a guest session must never be minted for a holder of the owner's key, or the
+        # name on a job would say "Maria" while the access was the owner's.
+        guest = await run_in_threadpool(admin_session.check_guest, name, secret)
+        if guest is None:
+            admin_session.note_failure(address)
+            return _login_page("That name and password do not match a guest account.", 401)
+        admin_session.note_success(address)
+        response = RedirectResponse("/admin", status_code=303)
+        _set_session_cookie(response, admin_session.create_session(
+            role="guest", guest_id=str(guest["id"]), name=str(guest["name"])))
+        return response
     ok = await run_in_threadpool(admin_session.check_password, secret) or _key_matches(secret.strip())
     if not ok:
         admin_session.note_failure(address)
@@ -1609,8 +1698,8 @@ def list_kept_artifacts() -> dict[str, Any]:
     return {"artifacts": retention.kept()}
 
 
-@router.post("/api/artifacts/keep", dependencies=[Depends(require_admin)])
-def set_artifact_kept(payload: dict[str, Any]) -> Any:
+@router.post("/api/artifacts/keep", dependencies=[Depends(require_guest_or_admin)])
+def set_artifact_kept(request: Request, payload: dict[str, Any]) -> Any:
     """Pin or release one artifact of one job.
 
     Addressed by **job and asset id**, not by path: a path is an implementation
@@ -1624,8 +1713,8 @@ def set_artifact_kept(payload: dict[str, Any]) -> Any:
     job_id = str(payload.get("job_id") or "")
     asset_id = str(payload.get("asset_id", "0"))
     job = store.get(job_id)
-    if job is None:
-        return _error(404, f"no job '{job_id}'")
+    if job is None or not _guest_owns(request, job):
+        return _no_such_job(job_id)
     rows = artifacts_of(job)
     chosen = next((r for r in rows if str(r.get("asset_id")) == asset_id), None)
     if chosen is None:
@@ -1642,10 +1731,10 @@ def set_artifact_kept(payload: dict[str, Any]) -> Any:
 
 @router.get(
     "/api/artifacts/{job_id}/outputs/{asset_id}",
-    dependencies=[Depends(require_admin)],
+    dependencies=[Depends(require_guest_or_admin)],
 )
 def download_artifact(
-    job_id: str, asset_id: str, download: bool = Query(default=False)
+    request: Request, job_id: str, asset_id: str, download: bool = Query(default=False)
 ) -> Any:
     """Serve one artifact's bytes to the console, so preview and Save both work.
 
@@ -1661,8 +1750,10 @@ def download_artifact(
     from .store import artifacts_of
 
     job = store.get(job_id)
-    if job is None:
-        return _error(404, f"no job '{job_id}'")
+    # **Someone else's file is not yours to fetch.** A guest gets the same "no job" answer
+    # they get for an id that never existed, so the refusal cannot be used to discover ids.
+    if job is None or not _guest_owns(request, job):
+        return _no_such_job(job_id)
     rows = artifacts_of(job)
     chosen = next((r for r in rows if str(r.get("asset_id")) == asset_id), None)
     if chosen is None:
@@ -1685,6 +1776,90 @@ def download_artifact(
 
 
 # ---------------------------------------------------------------------------
+# Guests — sharing the Create page without handing over the console.
+#
+# Every route here is `require_admin`, i.e. owner-only: a guest cannot create, reset, disable
+# or remove a guest, and cannot read this list. The account store lives in `admin_session`
+# beside the owner's own password (same scrypt parameters, same 0600 file, same file format
+# family); removal is a **soft retire** — the record and its history stay and the account can
+# never sign in again.
+# ---------------------------------------------------------------------------
+@router.get("/api/guests", dependencies=[Depends(require_admin)])
+def list_guests() -> dict[str, Any]:
+    """Every guest, with the one number that says whether they are using it.
+
+    **Spend is reported as not recorded, not as zero.** This gateway keeps no per-job money
+    record, so `spend_recorded` is `false` and the page says "not recorded" — a `0` there
+    would read as "this guest cost nothing", which nothing here can know.
+    """
+    counts = store.requested_by_counts()
+    rows = []
+    for row in admin_session.guests():
+        bucket = counts.get(str(row["id"]), {})
+        rows.append({
+            **row,
+            "jobs": int(bucket.get("jobs", 0)),
+            "unfinished": int(bucket.get("unfinished", 0)),
+            "spend_recorded": False,
+            "spend": None,
+        })
+    return {"guests": rows,
+            "password_min_length": admin_session.MIN_LENGTH,
+            "spend_recorded": False}
+
+
+@router.post("/api/guests", dependencies=[Depends(require_admin)])
+def create_guest(payload: dict[str, Any]) -> Any:
+    try:
+        row = admin_session.add_guest(
+            str(payload.get("name") or ""), str(payload.get("password") or ""),
+            paid_allowed=bool(payload.get("paid_allowed")),
+        )
+    except ValueError as exc:
+        return _error(422, str(exc))
+    return {"guest": row, "guests": list_guests()["guests"]}
+
+
+@router.post("/api/guests/{guest_id}", dependencies=[Depends(require_admin)])
+def update_guest(guest_id: str, payload: dict[str, Any]) -> Any:
+    """Rename, allow paid models, or disable. Only the fields the body names are touched."""
+    try:
+        row = admin_session.update_guest(
+            guest_id,
+            name=None if payload.get("name") is None else str(payload.get("name") or ""),
+            paid_allowed=None if "paid_allowed" not in payload else bool(payload.get("paid_allowed")),
+            disabled=None if "disabled" not in payload else bool(payload.get("disabled")),
+        )
+    except KeyError:
+        return _error(404, f"no guest '{guest_id}'")
+    except ValueError as exc:
+        return _error(422, str(exc))
+    return {"guest": row, "guests": list_guests()["guests"]}
+
+
+@router.post("/api/guests/{guest_id}/password", dependencies=[Depends(require_admin)])
+def reset_guest_password(guest_id: str, payload: dict[str, Any]) -> Any:
+    """A reset signs that guest out everywhere: the session they hold is not the new password's."""
+    try:
+        row = admin_session.set_guest_password(guest_id, str(payload.get("password") or ""))
+    except KeyError:
+        return _error(404, f"no guest '{guest_id}'")
+    except ValueError as exc:
+        return _error(422, str(exc))
+    return {"guest": row, "guests": list_guests()["guests"]}
+
+
+@router.delete("/api/guests/{guest_id}", dependencies=[Depends(require_admin)])
+def remove_guest(guest_id: str) -> Any:
+    """Remove = retire. The account stops working; the record and its job count stay."""
+    try:
+        row = admin_session.retire_guest(guest_id)
+    except KeyError:
+        return _error(404, f"no guest '{guest_id}'")
+    return {"guest": row, "guests": list_guests()["guests"]}
+
+
+# ---------------------------------------------------------------------------
 # Create — the console's own door to generation.
 #
 # The customer routes under `/v1` need the Story Studio API key, which a browser
@@ -1701,13 +1876,67 @@ def download_artifact(
 CREATE_MODALITIES = ("chat", "image", "video", "music", "tts")
 
 
-@router.get("/api/create/models", dependencies=[Depends(require_admin)])
-def create_models() -> dict[str, Any]:
+def _guest_paid_allowed(request: Request) -> bool:
+    """Whether this guest may use paid models. The owner and the key always may."""
+    guest = guest_identity(request)
+    if guest is None:
+        return True
+    row = admin_session.get_guest(str(guest.get("guest_id") or "")) or {}
+    return bool(row.get("paid_allowed"))
+
+
+def _guest_model_refusal(request: Request, modality: str, model_id: str) -> str | None:
+    """The sentence a guest gets for a model they may not use, or `None`.
+
+    **Read from the published row, not from the model's name or provider.** `chargeable` is
+    the same field Story Studio prices against, so a guest is offered exactly what the
+    anywhere-else answer says is free; an id that is not in the catalogue is left to the
+    ordinary resolution refusal, which already names it.
+    """
+    if _guest_paid_allowed(request):
+        return None
+    row = next((r for r in catalog.rows(modality) if r.get("id") == model_id), None)
+    if row is None or row.get("chargeable") is not True:
+        return None
+    name = row.get("display_name") or model_id
+    return (f"{name} is a paid model. This guest account may use free and local models only; "
+            f"the owner can allow paid models for it in Guests.")
+
+
+def _guest_owns(request: Request, job: dict[str, Any]) -> bool:
+    """Is this job the guest's own? The owner's answer is always yes.
+
+    Identity comes from the **stored** `requested_by`, never from anything the client sends.
+    """
+    guest = guest_identity(request)
+    if guest is None:
+        return True
+    data = requested_by_of(job) or {}
+    return data.get("role") == "guest" and data.get("guest_id") == guest.get("guest_id")
+
+
+def _no_such_job(job_id: str) -> JSONResponse:
+    """The same answer for "there is no such job" and "that job is not yours".
+
+    A guest must not be able to learn which job ids exist by the shape of the refusal, so the
+    owner's 404 and the guest's refusal are byte-identical.
+    """
+    return _error(404, f"no job '{job_id}'")
+
+
+
+@router.get("/api/create/models", dependencies=[Depends(require_guest_or_admin)])
+def create_models(request: Request) -> dict[str, Any]:
     """What Create may pick, per modality — the offered, switched-on catalogue.
 
     Reuses the published catalogue and its configured/enabled eligibility rule.
     Keep the merged fleet identity and capabilities instead of listing each site.
+
+    **A guest is offered free and local models only** unless the owner allowed paid models
+    for that guest. The filter is here and enforced again on submit, because a picker is a
+    convenience and the refusal is the rule.
     """
+    paid = _guest_paid_allowed(request)
     wanted = set(CREATE_MODALITIES) | {"transcription"}
     by_modality: dict[str, list[dict[str, Any]]] = {m: [] for m in wanted}
     for modality in wanted:
@@ -1722,17 +1951,20 @@ def create_models() -> dict[str, Any]:
             }
         for row in catalog.rows(modality):
             if row["id"] in metadata:
+                if not paid and row.get("chargeable") is True:
+                    continue
                 by_modality[modality].append({**row, **metadata[row["id"]]})
     for rows in by_modality.values():
         rows.sort(key=lambda m: (m["provider_name"].lower(), m["model_id"]))
     return {
         "by_modality": by_modality,
         "counts": {k: len(v) for k, v in by_modality.items()},
+        "paid_models": paid,
     }
 
 
-@router.post("/api/create", dependencies=[Depends(require_admin)])
-def create_submit(payload: dict[str, Any]) -> Any:
+@router.post("/api/create", dependencies=[Depends(require_guest_or_admin)])
+def create_submit(request: Request, payload: dict[str, Any]) -> Any:
     """Queue one generation. Returns the job envelope, which is also how it polls."""
     from .api import GatewayError, _job_envelope, _submit
 
@@ -1744,6 +1976,11 @@ def create_submit(payload: dict[str, Any]) -> Any:
     model_id = str(payload.get("model_id") or "").strip()
     if not model_id:
         return _error(422, "model_id is required")
+    # **The picker is a convenience; this is the rule.** A guest is offered free and local
+    # models, and a paid one is refused here even if the field was typed by hand.
+    refusal = _guest_model_refusal(request, modality, model_id)
+    if refusal:
+        return _error(403, refusal, "GUEST_PAID_MODEL")
     params = payload.get("params")
     if not isinstance(params, dict):
         params = {}
@@ -1754,14 +1991,16 @@ def create_submit(payload: dict[str, Any]) -> Any:
     # reattaches to the job it already made rather than making a second one.
     key = str(payload.get("idempotency_key") or "").strip() or str(uuid4())
     try:
-        job, created = _submit(modality, model_id, params, key)
+        job, created = _submit(modality, model_id, params, key,
+                               requested_by=requested_by(request))
     except GatewayError as exc:
         return _error(exc.status, exc.detail, exc.code)
     return {"created": created, **_job_envelope(job, native=True)}
 
 
-@router.post("/api/create/transcription", dependencies=[Depends(require_admin)])
+@router.post("/api/create/transcription", dependencies=[Depends(require_guest_or_admin)])
 async def create_transcription(
+    request: Request,
     model_id: str = Form(...),
     file: UploadFile = File(...),
     language: str = Form(default=""),
@@ -1781,6 +2020,9 @@ async def create_transcription(
     content = await file.read()
     if not content:
         return _error(422, "the uploaded file is empty")
+    refusal = _guest_model_refusal(request, "transcription", model_id)
+    if refusal:
+        return _error(403, refusal, "GUEST_PAID_MODEL")
     # **413, never 402**, and with the number in it: every cloud transcription API
     # on this gateway caps one upload at 25 MB, so a bigger file is refused here
     # rather than staged, queued, and failed after the bytes have travelled.
@@ -1806,20 +2048,25 @@ async def create_transcription(
     if language.strip():
         params["language"] = language.strip()
     try:
-        job, created = _submit("transcription", model_id, params, key)
+        job, created = _submit("transcription", model_id, params, key,
+                               requested_by=requested_by(request))
     except GatewayError as exc:
         return _error(exc.status, exc.detail, exc.code)
     return {"created": created, **_job_envelope(job, native=True)}
 
 
-@router.get("/api/create/status/{job_id}", dependencies=[Depends(require_admin)])
-def create_status(job_id: str) -> Any:
-    """Poll any modality the console started, through one route."""
+@router.get("/api/create/status/{job_id}", dependencies=[Depends(require_guest_or_admin)])
+def create_status(request: Request, job_id: str) -> Any:
+    """Poll any modality the console started, through one route.
+
+    A guest sees their own jobs only, and is told the same thing for a job that is not
+    theirs as for one that does not exist.
+    """
     from .api import _job_envelope
 
     job = store.get(job_id)
-    if job is None:
-        return _error(404, f"no job '{job_id}'")
+    if job is None or not _guest_owns(request, job):
+        return _no_such_job(job_id)
     return {**_job_envelope(job, native=True), "outputs": _admin_outputs(job)}
 
 
@@ -2062,14 +2309,14 @@ def job_review_candidate_audio(job_id: str) -> Any:
         "Content-Disposition": f'inline; filename="{job_id}-rejected-section.wav"'})
 
 
-@router.post("/api/create/status/{job_id}/cancel", dependencies=[Depends(require_admin)])
-def create_cancel(job_id: str) -> Any:
+@router.post("/api/create/status/{job_id}/cancel", dependencies=[Depends(require_guest_or_admin)])
+def create_cancel(request: Request, job_id: str) -> Any:
     from .api import _job_envelope
     from .worker import cancel_upstream
 
     job = store.get(job_id)
-    if job is None:
-        return _error(404, f"no job '{job_id}'")
+    if job is None or not _guest_owns(request, job):
+        return _no_such_job(job_id)
     store.cancel(job_id)
     # **Reach the work, not just the row.** This is the route the menu-bar Jobs window and the
     # Create page both call, and it only stamped the cancel locally: a job already dispatched to a
@@ -2138,7 +2385,7 @@ def resolve_all_recovery(before: float | None = Query(None, ge=0)) -> dict[str, 
 # purpose: ElevenLabs' public library holds tens of thousands of voices and the
 # owner wants a handful, so browsing is a query rather than a download.
 # ---------------------------------------------------------------------------
-@router.get("/api/voices", dependencies=[Depends(require_admin)])
+@router.get("/api/voices", dependencies=[Depends(require_guest_or_admin)])
 def list_voices(
     provider_id: str | None = None,
     q: str | None = None,
@@ -2903,8 +3150,9 @@ def daily_analytics(days: int = Query(7, ge=1, le=31)) -> dict[str, Any]:
     return {"since": since, "days": days, "rows": store.daily_by_model(since)}
 
 
-@router.get("/api/jobs", dependencies=[Depends(require_admin)])
+@router.get("/api/jobs", dependencies=[Depends(require_guest_or_admin)])
 def list_jobs(
+    request: Request,
     limit: int = Query(50, ge=1, le=500),
     state: str | None = None,
     modality: str | None = None,
@@ -2935,8 +3183,13 @@ def list_jobs(
     TERMINAL = {"succeeded", "failed", "cancelled"}
     rows: list[dict[str, Any]] = []
     as_of = time.time()
+    guest = guest_identity(request)
     for job in store.list_jobs(limit=limit, state=state, modality=modality, since=since, before=before,
-                               hide_dismissed=not include_removed):
+                               hide_dismissed=not include_removed,
+                               # A guest's list is their own, narrowed before the limit is cut.
+                               requested_by_guest=(guest or {}).get("guest_id")):
+        if guest is not None and not _guest_owns(request, job):
+            continue  # the page filter is a substring match; this one is the rule
         provider_id = str(job.get("provider_id") or "")
         model_id = str(job.get("model_id") or "")
         definition = registry.definition(provider_id)
@@ -2987,6 +3240,12 @@ def list_jobs(
                 # reads did not, which is the same defect as a control wired to
                 # nothing. `None` means the request said nothing about itself.
                 "caller": job.get("caller"),
+                # **Who asked, as an identity.** `caller` is what the client *said* about
+                # itself; this is what the Gateway knew — the owner, the key, or a named
+                # guest. `null` for a job recorded before the field existed, and the page
+                # prints "not recorded" for it rather than falling back to "owner".
+                "requested_by": requested_by_of(job),
+                "requested_by_label": requested_by_label(job),
                 "job_group": job.get("job_group"),
                 "priority": job.get("priority") or "normal",
                 # Why a job is queued rather than running. `accepted` alone cannot

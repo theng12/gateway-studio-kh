@@ -13,6 +13,14 @@ door for a phone browser over Tailscale:
 * A session ends after 30 days without use, on Sign out, or when the password is
   changed or removed.
 * Failed attempts back off per client address: five free, then 30 s doubling to 15 min.
+
+**Guests (2026-10-28).** The owner can share the Gateway with a friend without handing
+over the console. A guest is a *named* account with its own password, the same scrypt
+storage, the same cookie, the same session lifetime and the same per-address backoff —
+and a session role that the admin routes read. A guest session reaches the Create page
+and its own jobs only; `admin.require_admin` refuses it everywhere else, and the app's
+`/admin` middleware carries the same allowlist as a backstop, so a route added tomorrow
+is owner-only until somebody says otherwise.
 """
 
 from __future__ import annotations
@@ -22,6 +30,7 @@ import hmac
 import json
 import math
 import os
+import re
 import secrets
 import sys
 import threading
@@ -38,9 +47,13 @@ FREE_ATTEMPTS = 5
 _LOCK_BASE_S = 30
 _LOCK_MAX_S = 15 * 60
 _SCRYPT = {"n": 2**15, "r": 8, "p": 1}
+GUEST_NAME_MAX = 60
 
-_lock = threading.Lock()
-_sessions: dict[str, float] | None = None  # sha256(token) -> last used
+#: **Re-entrant on purpose.** Sessions and guest records share one critical section, and a
+#: session check asks whether its guest is still enabled — so one function calls another that
+#: takes the same lock. A plain `Lock` deadlocks there; an `RLock` does not.
+_lock = threading.RLock()
+_sessions: dict[str, dict] | None = None  # sha256(token) -> {"seen", "role", "guest_id", "name"}
 # ponytail: in-memory per-address counters, reset by a restart; enough behind Tailscale.
 _failures: dict[str, tuple[int, float]] = {}  # address -> (failures, locked until)
 
@@ -90,7 +103,7 @@ def set_password(password: str) -> None:
         "algorithm": "scrypt", **_SCRYPT, "salt": salt.hex(),
         "hash": _scrypt(password, salt, **_SCRYPT).hex(), "set_at": time.time(),
     })
-    end_all_sessions()
+    end_owner_sessions()
 
 
 def remove_password() -> None:
@@ -98,7 +111,7 @@ def remove_password() -> None:
         _password_path().unlink()
     except FileNotFoundError:
         pass
-    end_all_sessions()
+    end_owner_sessions()
 
 
 def check_password(password: str) -> bool:
@@ -144,45 +157,83 @@ def _digest(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
-def _loaded() -> dict[str, float]:
+def _loaded() -> dict[str, dict]:
+    """Every session, old and new.
+
+    **A bare number is a pre-guest session and it is the owner's.** The file this reads was
+    `{digest: last_used}`; rewriting it on upgrade would sign the owner out of every browser
+    for a change that did not touch their access, so the old shape is read as what it meant.
+    """
     global _sessions
     if _sessions is None:
-        raw = _read(_sessions_path())
-        _sessions = {k: float(v) for k, v in raw.items() if isinstance(v, (int, float))}
+        loaded: dict[str, dict] = {}
+        for key, value in _read(_sessions_path()).items():
+            if isinstance(value, dict):
+                loaded[key] = {
+                    "seen": float(value.get("seen") or 0.0),
+                    "role": str(value.get("role") or "owner"),
+                    "guest_id": value.get("guest_id"),
+                    "name": str(value.get("name") or ""),
+                }
+            elif isinstance(value, (int, float)):
+                loaded[key] = {"seen": float(value), "role": "owner", "guest_id": None, "name": ""}
+        _sessions = loaded
     return _sessions
 
 
-def create_session() -> str:
+def create_session(*, role: str = "owner", guest_id: str | None = None,
+                   name: str = "") -> str:
     token = secrets.token_urlsafe(32)
     now = time.time()
     with _lock:
         sessions = _loaded()
-        for key in [k for k, seen in sessions.items() if now - seen > IDLE_SECONDS]:
+        for key in [k for k, record in sessions.items() if now - record["seen"] > IDLE_SECONDS]:
             del sessions[key]
-        sessions[_digest(token)] = now
+        sessions[_digest(token)] = {
+            "seen": now, "role": "guest" if role == "guest" else "owner",
+            "guest_id": guest_id if role == "guest" else None,
+            "name": str(name or ""),
+        }
         _write(_sessions_path(), sessions)
     return token
 
 
-def valid_session(token: str | None) -> bool:
+def session(token: str | None) -> dict | None:
+    """The identity behind a session token, or `None`.
+
+    **A guest's session is checked against the guest's own record on every request**, not only
+    when it was minted: disabling or retiring a guest ends their access at once, without
+    anyone having to remember to sweep a session file.
+    """
     if not token:
-        return False
+        return None
     key = _digest(token)
     now = time.time()
     with _lock:
         sessions = _loaded()
-        seen = sessions.get(key)
-        if seen is None:
-            return False
-        if now - seen > IDLE_SECONDS:
+        record = sessions.get(key)
+        if record is None:
+            return None
+        if now - record["seen"] > IDLE_SECONDS:
             del sessions[key]
             _write(_sessions_path(), sessions)
-            return False
+            return None
+        if record["role"] == "guest":
+            guest = _guest_record(str(record.get("guest_id") or ""))
+            if guest is None or guest.get("removed_at") or guest.get("disabled_at"):
+                del sessions[key]
+                _write(_sessions_path(), sessions)
+                return None
+            record["name"] = guest["name"]
         # Written at most hourly: idle expiry is measured in days, not requests.
-        if now - seen > 3600:
-            sessions[key] = now
+        if now - record["seen"] > 3600:
+            record["seen"] = now
             _write(_sessions_path(), sessions)
-    return True
+        return dict(record)
+
+
+def valid_session(token: str | None) -> bool:
+    return session(token) is not None
 
 
 def end_session(token: str | None) -> None:
@@ -198,6 +249,225 @@ def end_all_sessions() -> None:
     with _lock:
         _loaded().clear()
         _write(_sessions_path(), {})
+
+
+def end_owner_sessions() -> None:
+    """Change the owner's password, and only the owner is signed out.
+
+    `set_password` used to clear the file, which was the same thing while the owner was the
+    only kind of session. Now it would silently revoke every guest as a side effect of an
+    action about the owner's own password — a change nobody asked for.
+    """
+    with _lock:
+        sessions = _loaded()
+        doomed = [k for k, record in sessions.items() if record["role"] != "guest"]
+        for key in doomed:
+            del sessions[key]
+        if doomed:
+            _write(_sessions_path(), sessions)
+
+
+def end_guest_sessions(guest_id: str) -> None:
+    """Drop every session belonging to one guest. The owner's own sessions are never touched."""
+    with _lock:
+        sessions = _loaded()
+        doomed = [k for k, record in sessions.items()
+                  if record["role"] == "guest" and record.get("guest_id") == guest_id]
+        for key in doomed:
+            del sessions[key]
+        if doomed:
+            _write(_sessions_path(), sessions)
+
+
+# ---------------------------------------------------------------------------
+# Guest accounts
+#
+# Stored beside the owner's password, `0600`, scrypt only — the same parameters and the
+# same refusal of a short password as the owner's own. **Removal is a soft retire**: the
+# record and its history stay, and the account simply can never sign in again.
+# ---------------------------------------------------------------------------
+_GUEST_NAME = re.compile(r"^[\w .'’-]{1,%d}$" % GUEST_NAME_MAX)
+
+
+def _guests_path() -> Path:
+    return APP_SUPPORT / "admin-guests.json"
+
+
+def _guest_rows() -> list[dict]:
+    raw = _read(_guests_path()).get("guests")
+    return [row for row in raw if isinstance(row, dict) and row.get("id")] if isinstance(raw, list) else []
+
+
+def _save_guest_rows(rows: list[dict]) -> None:
+    _write(_guests_path(), {"guests": rows})
+
+
+def _guest_record(guest_id: str) -> dict | None:
+    return next((row for row in _guest_rows() if str(row.get("id")) == str(guest_id)), None)
+
+
+def _hash(password: str) -> dict:
+    salt = secrets.token_bytes(16)
+    return {"algorithm": "scrypt", **_SCRYPT, "salt": salt.hex(),
+            "hash": _scrypt(password, salt, **_SCRYPT).hex()}
+
+
+def _matches(record: dict, password: str) -> bool:
+    if not record.get("hash") or not isinstance(password, str) or not password:
+        return False
+    try:
+        got = _scrypt(password, bytes.fromhex(str(record["salt"])),
+                      int(record["n"]), int(record["r"]), int(record["p"]))
+    except (KeyError, ValueError, TypeError):
+        return False
+    return hmac.compare_digest(got.hex(), str(record["hash"]))
+
+
+def public_guest(row: dict) -> dict:
+    """One guest, without anything secret and without inventing an answer.
+
+    `spend_recorded` is `false` for every guest because **this gateway keeps no per-job money
+    record**; the page says so rather than printing 0, which would read as "this guest cost
+    nothing" (the owner's rule: "no data" is never $0).
+    """
+    return {
+        "id": row.get("id"),
+        "name": row.get("name"),
+        "paid_allowed": bool(row.get("paid_allowed")),
+        "created_at": row.get("created_at"),
+        "updated_at": row.get("updated_at"),
+        "last_login_at": row.get("last_login_at"),
+        "disabled": bool(row.get("disabled_at")),
+        "removed": bool(row.get("removed_at")),
+        "spend_recorded": False,
+    }
+
+
+def guests(*, include_retired: bool = True) -> list[dict]:
+    rows = _guest_rows()
+    if not include_retired:
+        rows = [row for row in rows if not row.get("removed_at")]
+    return [public_guest(row) for row in sorted(rows, key=lambda r: str(r.get("created_at") or 0))]
+
+
+def get_guest(guest_id: str) -> dict | None:
+    row = _guest_record(guest_id)
+    return public_guest(row) if row else None
+
+
+def _clean_name(name: str) -> str:
+    value = " ".join(str(name or "").split())
+    if not _GUEST_NAME.match(value):
+        raise ValueError(f"Use a name of 1 to {GUEST_NAME_MAX} characters.")
+    return value
+
+
+def _name_taken(rows: list[dict], name: str, *, except_id: str | None = None) -> bool:
+    needle = name.strip().lower()
+    return any(str(row.get("name") or "").strip().lower() == needle
+               and not row.get("removed_at") and str(row.get("id")) != str(except_id)
+               for row in rows)
+
+
+def add_guest(name: str, password: str, *, paid_allowed: bool = False) -> dict:
+    clean = _clean_name(name)
+    if not isinstance(password, str) or len(password) < MIN_LENGTH:
+        raise ValueError(f"Use at least {MIN_LENGTH} characters.")
+    with _lock:
+        rows = _guest_rows()
+        if _name_taken(rows, clean):
+            raise ValueError(f"There is already a guest called {clean}.")
+        now = time.time()
+        row = {"id": "guest-" + secrets.token_hex(6), "name": clean,
+               "paid_allowed": bool(paid_allowed), "created_at": now, "updated_at": now,
+               "last_login_at": None, "disabled_at": None, "removed_at": None, **_hash(password)}
+        rows.append(row)
+        _save_guest_rows(rows)
+        return public_guest(row)
+
+
+def update_guest(guest_id: str, *, name: str | None = None, paid_allowed: bool | None = None,
+                 disabled: bool | None = None) -> dict:
+    """Rename, allow paid models, or disable. Never touches the password or the history."""
+    with _lock:
+        rows = _guest_rows()
+        row = next((r for r in rows if str(r.get("id")) == str(guest_id)), None)
+        if row is None:
+            raise KeyError(guest_id)
+        if row.get("removed_at"):
+            raise ValueError("That guest was removed; add a new one instead.")
+        if name is not None:
+            clean = _clean_name(name)
+            if _name_taken(rows, clean, except_id=str(guest_id)):
+                raise ValueError(f"There is already a guest called {clean}.")
+            row["name"] = clean
+        if paid_allowed is not None:
+            row["paid_allowed"] = bool(paid_allowed)
+        if disabled is not None:
+            row["disabled_at"] = time.time() if disabled else None
+        row["updated_at"] = time.time()
+        _save_guest_rows(rows)
+        if disabled:
+            end_guest_sessions(str(guest_id))
+        return public_guest(row)
+
+
+def set_guest_password(guest_id: str, password: str) -> dict:
+    """A reset signs that guest out everywhere: a new password means the old session is not theirs."""
+    if not isinstance(password, str) or len(password) < MIN_LENGTH:
+        raise ValueError(f"Use at least {MIN_LENGTH} characters.")
+    with _lock:
+        rows = _guest_rows()
+        row = next((r for r in rows if str(r.get("id")) == str(guest_id)), None)
+        if row is None:
+            raise KeyError(guest_id)
+        if row.get("removed_at"):
+            raise ValueError("That guest was removed; add a new one instead.")
+        row.update(_hash(password))
+        row["updated_at"] = time.time()
+        _save_guest_rows(rows)
+        end_guest_sessions(str(guest_id))
+        return public_guest(row)
+
+
+def retire_guest(guest_id: str) -> dict:
+    """Remove: a soft retire. The row and its job count stay; the account can never sign in."""
+    with _lock:
+        rows = _guest_rows()
+        row = next((r for r in rows if str(r.get("id")) == str(guest_id)), None)
+        if row is None:
+            raise KeyError(guest_id)
+        row["removed_at"] = row.get("removed_at") or time.time()
+        row["disabled_at"] = row.get("disabled_at") or row["removed_at"]
+        row["updated_at"] = time.time()
+        _save_guest_rows(rows)
+        end_guest_sessions(str(guest_id))
+        return public_guest(row)
+
+
+_DUMMY_SALT = secrets.token_bytes(16)
+
+
+def check_guest(name: str, password: str) -> dict | None:
+    """The guest a name and password belong to, or `None`.
+
+    **An unknown name still pays for a scrypt.** Otherwise "no such guest" answers in
+    microseconds and a real name takes ~100 ms, which turns the login page into a way to
+    enumerate who the owner has invited.
+    """
+    with _lock:
+        rows = _guest_rows()
+        row = next((r for r in rows
+                    if str(r.get("name") or "").strip().lower() == str(name or "").strip().lower()
+                    and not r.get("removed_at") and not r.get("disabled_at")), None)
+        if row is None:
+            _scrypt(str(password or "x"), _DUMMY_SALT, **_SCRYPT)
+            return None
+        if not _matches(row, password):
+            return None
+        row["last_login_at"] = time.time()
+        _save_guest_rows(rows)
+        return public_guest(row)
 
 
 # ---------------------------------------------------------------------------

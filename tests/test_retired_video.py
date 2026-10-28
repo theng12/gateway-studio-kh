@@ -25,6 +25,10 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+
+#: Owner-only page read straight from the process; there is no session cookie to scope by.
+_ANON_REQUEST = SimpleNamespace(cookies={})
 from unittest.mock import patch
 
 _TEMP_ROOT = Path(tempfile.mkdtemp(prefix="gateway-retired-video-"))
@@ -229,7 +233,7 @@ class RetiredModelTests(unittest.TestCase):
         self.assertIsNotNone(inventory.withhold_reason(HUB, installed))
         # Not on any Create page either.
         with patch.object(registry, "models", inventory), patch.object(admin, "catalog", Catalog()):
-            payload = admin.create_models()
+            payload = admin.create_models(_ANON_REQUEST)
         for rows in payload["by_modality"].values():
             self.assertNotIn(_TEXT_ENCODER, [m["model_id"] for m in rows])
             self.assertNotIn(RETIRED_MODEL_ID, [m["model_id"] for m in rows])
@@ -249,7 +253,7 @@ class RetiredModelTests(unittest.TestCase):
         self.assertIsNotNone(inventory.withhold_reason(HUB, installed))
         # Not on any Create page either.
         with patch.object(registry, "models", inventory), patch.object(admin, "catalog", Catalog()):
-            payload = admin.create_models()
+            payload = admin.create_models(_ANON_REQUEST)
         for rows in payload["by_modality"].values():
             self.assertNotIn(RETIRED_MODEL_ID, [row["model_id"] for row in rows])
         self.assertEqual(payload["counts"]["video"], 0)
@@ -275,7 +279,7 @@ class VideoLaneWithNoModelTests(unittest.TestCase):
         # A catalogue of its own: the shared one holds a job store another test may have closed.
         with patch.object(registry, "models", inventory), \
                 patch.object(admin, "catalog", Catalog()):
-            payload = admin.create_models()
+            payload = admin.create_models(_ANON_REQUEST)
         self.assertEqual(payload["by_modality"]["video"], [])
         self.assertEqual(payload["counts"]["video"], 0)
 

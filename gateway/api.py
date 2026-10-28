@@ -69,7 +69,8 @@ from .render_service import (
     _UUID, AuthenticatedPrivateRender, PrivateRenderUnavailable, RenderServiceError,
 )
 from .render_hash_v1 import decode_render_json
-from .store import BACKGROUND, HOLD_CLOSED, NORMAL, PRIORITIES, TERMINAL_STATES, artifacts_of
+from .store import (BACKGROUND, HOLD_CLOSED, NORMAL, PRIORITIES, TERMINAL_STATES, artifacts_of,
+                   requested_by_of)
 from .worker import cancel_upstream
 from .voices import story_row, tts_output_container, voice_registry, voices_for_model
 
@@ -980,6 +981,9 @@ def _job_envelope(job: dict[str, Any], *, native: bool = False) -> dict[str, Any
         else 1000,
         **_lifecycle_fields(job),
         **_contract_fields(job),
+        # **Who asked**, or `null` for a job recorded before the Gateway knew. The page prints
+        # "not recorded" for null; it never falls back to "owner", which would be a claim.
+        "requested_by": requested_by_of(job),
         **ZERO_SETTLEMENT,
     }
 
@@ -1413,6 +1417,7 @@ def _submit(
     params: dict[str, Any],
     idempotency_key: str,
     caller: str | None = None,
+    requested_by: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any], bool]:
     """Resolve a catalogue id and queue a job.
 
@@ -1512,6 +1517,12 @@ def _submit(
         params=params,
         idempotency_key=idempotency_key,
         caller=caller,
+        requested_by=requested_by or {
+            # Every `/v1` job is the gateway key's: there is one key and Story Studio holds it.
+            # A client that names itself (`X-Caller`) is quoted; otherwise it is Story Studio.
+            "role": "key",
+            "label": (caller or "").strip() or "Story Studio",
+        },
         job_group=job_group,
         priority=priority,
     )
@@ -3976,6 +3987,55 @@ from .admin import router as admin_router  # noqa: E402
 app.include_router(admin_router)
 
 
+#: What a **guest** session may reach under `/admin`, and nothing more.
+#:
+#: **Deny by default, twice.** The dependencies are the rule — every route that has not
+#: asked for `admin.require_guest_or_admin` takes `admin.require_admin`, which refuses a
+#: guest before it looks at anything else. This list is the backstop underneath it: a page,
+#: a path or a route mounted later without either one is still refused to a guest, because
+#: reaching it has to be written here first. A test walks every registered admin route and
+#: asserts the refusal, so the two cannot drift apart quietly.
+_GUEST_ALLOWED = re.compile(
+    r"^/admin/?$"                                             # the page itself (it hides what it may not use)
+    r"|^/admin/(login|logout)$"
+    r"|^/admin/api/create/models$"
+    r"|^/admin/api/create$"
+    r"|^/admin/api/create/transcription$"
+    r"|^/admin/api/create/status/[^/]+(/cancel)?$"
+    r"|^/admin/api/voices$"
+    r"|^/admin/api/jobs$"
+    r"|^/admin/api/artifacts/keep$"
+    r"|^/admin/api/artifacts/[^/]+/outputs/[^/]+$"
+)
+
+
+@app.middleware("http")
+async def guest_scope(request: Request, call_next):
+    """A guest is confined to Create, whatever route is asked for.
+
+    Only a *guest* is filtered here. The owner, the app's window and the gateway key pass
+    through untouched — their access is decided by the routes themselves.
+    """
+    path = request.url.path
+    if not path.startswith("/admin"):
+        return await call_next(request)
+    from . import admin_session
+
+    identity = admin_session.session(request.cookies.get(admin_session.COOKIE))
+    if identity is not None and identity.get("role") == "guest":
+        if not _GUEST_ALLOWED.match(path):
+            return JSONResponse(
+                status_code=403,
+                content={"detail": "A guest account may only use the Create page.",
+                         "code": "GUEST_NOT_ALLOWED"},
+            )
+    return await call_next(request)
+
+
+
 @app.exception_handler(AdminError)
 async def _admin_error_handler(_: Request, exc: AdminError) -> JSONResponse:
-    return JSONResponse(status_code=exc.status, content={"detail": exc.detail})
+    body: dict[str, Any] = {"detail": exc.detail}
+    if getattr(exc, "code", None):
+        body["code"] = exc.code
+    return JSONResponse(status_code=exc.status, content=body)

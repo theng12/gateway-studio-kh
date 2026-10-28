@@ -413,6 +413,7 @@
     <option value="providers">Providers</option>
     <option value="create">Create</option>
     <option value="packs">Content Packs</option>
+    <option value="guests">Guests</option>
   </select>
   <span class="spacer"></span>
   <button class="sm" onclick="signOut()">Sign Out</button>
@@ -823,6 +824,31 @@
     </section>
 
   </section>
+  <!-- GUESTS (owner only; a guest never sees this page and the server refuses it) -->
+  <section id="view-guests" style="display:none">
+    <div class="heading">
+      <h1>Guests</h1>
+      <p>A guest can use <b>Create</b> and see their own results. Nothing else in this console
+        is theirs: every other page and route refuses them. By default they may use free and
+        local models only — switch paid models on per guest if you want to.</p>
+    </div>
+    <section class="card">
+      <div class="body">
+        <h2>Invite someone</h2>
+        <div class="row" style="gap:8px;flex-wrap:wrap;align-items:flex-end">
+          <label style="flex:1;min-width:160px">Name
+            <input type="text" id="guest-name" placeholder="Maria" maxlength="60" autocomplete="off">
+          </label>
+          <label style="flex:1;min-width:160px">Password
+            <input type="password" id="guest-password" placeholder="at least 8 characters" autocomplete="new-password">
+          </label>
+          <button class="primary" id="guest-add" onclick="addGuest(this)">Add Guest</button>
+        </div>
+        <div class="msg" id="guest-msg" role="status" aria-live="polite"></div>
+      </div>
+    </section>
+    <div id="guests-body"><div class="empty">Reading guests…</div></div>
+  </section>
 </main>
 
 <script>
@@ -861,6 +887,12 @@ const ago = (t) => { if (!t) return 'never'; const s = Date.now()/1000 - t;
 // In a plain browser the session cookie from `/admin/login` carries identity instead,
 // so a stale pasted key cannot override it.
 const IN_APP = !!window.__GATEWAY_IN_APP__;
+
+// **Who is looking.** The server injects this only for a guest session — a named account that
+// may use Create and its own results. Every other page and route refuses a guest server-side
+// (`require_admin` and the `/admin` middleware); this constant only stops the page drawing
+// doors that will not open.
+const GUEST = window.__GATEWAY_GUEST__ || null;
 
 function adminToken() {
   const injected = window.__GATEWAY_ADMIN_TOKEN__;
@@ -990,6 +1022,7 @@ function setView(view) {
   // for one thing. The Providers page carries its own strip for a different reason —
   // it stacks four unrelated subjects, and splitting them is not a decision the
   // sidebar can express.
+  if (GUEST && view !== 'create') view = 'create';
   state.view = view;
   const pick = document.getElementById('web-page');
   if (pick) pick.value = view;
@@ -999,7 +1032,10 @@ function setView(view) {
   document.getElementById('view-providers').style.display = view === 'providers' ? '' : 'none';
   document.getElementById('view-create').style.display = view === 'create' ? '' : 'none';
   document.getElementById('view-packs').style.display = view === 'packs' ? '' : 'none';
-  if (view === 'models') { loadModels(); loadFreshness(); }
+  const guests = document.getElementById('view-guests');
+  if (guests) guests.style.display = view === 'guests' ? '' : 'none';
+  if (view === 'guests') loadGuests();
+  else if (view === 'models') { loadModels(); loadFreshness(); }
   else if (view === 'providers') { loadProviders(); loadConcurrency(); loadMeasured(); loadQueue(); }
   else if (view === 'packs') { loadContentShelf(); loadPreservedArchives(); }
   else if (view === 'fleet') loadFleet();
@@ -3579,6 +3615,9 @@ document.getElementById('key-filter').addEventListener('change', renderProviders
 // one opens this console already on its own view. Without the hash they would all
 // land on Models and two of the three would look wrong.
 function viewFromHash() {
+  // A guest has one page. The hash is still read so a stale bookmark opens Create rather than
+  // an owner's view it would be refused anyway.
+  if (GUEST) return 'create';
   const hash = (location.hash || '').replace(/^#/, '');
   if (hash.startsWith('providers')) return 'providers';
   // The Queue is a section of the Providers page — the live half of the same
@@ -3590,6 +3629,7 @@ function viewFromHash() {
   if (hash.startsWith('sfx')) return 'providers';
   if (hash.startsWith('create')) return 'create';
   if (hash.startsWith('packs')) return 'packs';
+  if (hash.startsWith('guests')) return 'guests';
   if (hash.startsWith('fleet')) return 'fleet';
   if (hash.startsWith('jobs')) return 'jobs';
   if (hash.startsWith('models')) return 'models';
@@ -3757,8 +3797,9 @@ function renderCreateForm() {
          <select id="cf-model"${voiceLane ? ' onchange="createModelChanged(this.value)"' : ''}>${rows.map(m =>
            `<option value="${esc(m.id)}">${esc(m.provider_name)} — ${esc(m.display_name)}${m.free_lane ? ' · free' : ''}</option>`
          ).join('')}</select></div>`
-    : `<div class="msg bad" style="margin-bottom:12px">No model is switched on for this lane.
-         Enable one on the Models page and it appears here.</div>`;
+    : `<div class="msg bad" style="margin-bottom:12px">${
+        (typeof GUEST !== 'undefined' && GUEST) ? 'No free or local model is switched on for this lane. A guest account may use free and local models only — ask the owner to allow paid models for you.'
+              : 'No model is switched on for this lane. Enable one on the Models page and it appears here.'}</div>`;
 
   document.getElementById('create-form').innerHTML =
     `<h2>${esc(t.title)}</h2><div class="hint" style="margin:-4px 0 12px">${esc(t.blurb)}</div>
@@ -4136,6 +4177,13 @@ function downloadChatText() {
   downloadBlob(URL.createObjectURL(blob), `chat-${String(job.id).slice(0, 8)}.txt`);
 }
 
+// **Who asked.** The Gateway's own answer, or an honest "not recorded" for a job that
+// predates the field — never a blank and never a guess of "owner".
+function requesterLabel(job) {
+  const row = (job && job.requested_by) || null;
+  return (job && job.requested_by_label) || (row && row.label) || 'not recorded';
+}
+
 // One state -> colour mapping, the same as the menubar app's `Health(state:)`: running and everything in flight
 // is amber (warn), a failure is red (bad), a finished good result is green (ok), and cancelled or paused is
 // neutral grey (no class). An unrecognised word is grey.
@@ -4160,6 +4208,7 @@ async function renderCreateRecent() {
         <span class="badge ${stateBadgeClass(j.state)}">${esc(j.state)}</span>
         ${j.defer_reason ? `<span class="badge warn" title="${esc(j.defer_reason)}">waiting${j.queue_position ? ' #' + j.queue_position : ''}</span>` : ''}
         <span class="hint">${esc(j.model_name || j.model_id || '')}</span>
+        <span class="hint">by ${esc(requesterLabel(j))}</span>
         <button class="sm" onclick="openCreateJob('${j.id}')">Open</button>
         <button class="sm" onclick="downloadCreateJob('${j.id}')" title="Download the first result">Download</button>
       </div>`).join('');
@@ -4289,15 +4338,139 @@ async function loadJobs() {
   if (state.view !== 'jobs') return;
   const rows = d.jobs || [];
   box.innerHTML = rows.length ? `<div class="tablewrap"><table><thead><tr>
-      <th>Job</th><th>State</th><th>Model</th><th>Where</th><th>Caller</th><th class="num">Created</th>
+      <th>Job</th><th>State</th><th>Model</th><th>Where</th><th>Requested by</th><th>Caller</th><th class="num">Created</th>
     </tr></thead><tbody>${rows.map(j => `<tr>
       <td class="mid">${esc(j.short_id || String(j.id).slice(0, 8))}</td>
       <td><span class="badge ${stateBadgeClass(j.state)}">${esc(j.state)}</span></td>
       <td>${esc(j.modality)} · ${esc(j.model_name || j.model_id)}</td>
       <td>${esc(j.provider_name || '')}</td>
+      <td>${esc(requesterLabel(j))}</td>
       <td>${esc(j.caller || '')}</td>
       <td class="num">${ago(j.created_at)}</td>
     </tr>`).join('')}</tbody></table></div>` : '<div class="empty">No jobs yet.</div>';
+}
+
+// ---------------------------------------------------------------------------
+// Guests — the owner's side of sharing the Create page.
+//
+// The server is the boundary (`require_admin` refuses a guest everywhere but Create); this is
+// only the page that makes an invitation possible. Every number here is the Gateway's: a job
+// count is real, and **spend is "not recorded"** because this Gateway keeps no per-job money
+// record — printing 0 would read as "this guest cost nothing", which nothing here knows.
+// ---------------------------------------------------------------------------
+let guestsState = { rows: [], minLength: 8 };
+
+function guestMessage(text, bad) {
+  const node = document.getElementById('guest-msg');
+  if (!node) return;
+  node.className = bad ? 'msg bad' : 'msg';
+  node.textContent = text;
+}
+
+async function loadGuests() {
+  const box = document.getElementById('guests-body');
+  if (!box) return;
+  try {
+    const d = await api('/guests');
+    guestsState = { rows: d.guests || [], minLength: d.password_min_length || 8 };
+  } catch (e) {
+    box.innerHTML = `<div class="empty">Could not read guests: ${esc(e.message)}</div>`;
+    return;
+  }
+  const rows = guestsState.rows;
+  box.innerHTML = rows.length ? `<div class="tablewrap"><table><thead><tr>
+      <th>Guest</th><th>State</th><th class="num">Jobs</th><th>Paid models</th><th>Spend</th><th></th>
+    </tr></thead><tbody>${rows.map(g => `<tr>
+      <td>${esc(g.name)}${g.removed ? '' : ''}</td>
+      <td><span class="badge ${g.removed ? '' : g.disabled ? 'warn' : 'ok'}">${
+        g.removed ? 'removed' : g.disabled ? 'disabled' : 'active'}</span></td>
+      <td class="num" title="${g.unfinished ? esc(`${g.unfinished} unfinished`) : 'none unfinished'}">${g.jobs}</td>
+      <td>${g.removed ? esc(g.paid_allowed ? 'on' : 'off') : `<label class="check"><input type="checkbox" ${
+        g.paid_allowed ? 'checked' : ''} onchange="setGuestPaid('${esc(g.id)}', this.checked)"> paid models</label>`}</td>
+      <td>${g.spend_recorded ? esc(g.spend == null ? 'not recorded' : String(g.spend)) : 'not recorded'}</td>
+      <td>${g.removed ? '' : `
+        <button class="sm" onclick="resetGuestPassword('${esc(g.id)}','${esc(g.name)}')">Reset password</button>
+        <button class="sm" onclick="setGuestDisabled('${esc(g.id)}', ${g.disabled ? 'false' : 'true'})">${g.disabled ? 'Enable' : 'Disable'}</button>
+        <button class="sm" onclick="removeGuestAccount('${esc(g.id)}','${esc(g.name)}')">Remove</button>`}</td>
+    </tr>`).join('')}</tbody></table></div>`
+    : '<div class="empty">No guests yet. A guest signs in with their name and password and gets the Create page.</div>';
+}
+
+function guestRowsFrom(answer) {
+  if (answer && Array.isArray(answer.guests)) guestsState.rows = answer.guests;
+  return guestsState.rows;
+}
+
+async function addGuest(btn) {
+  const name = (document.getElementById('guest-name') || {}).value || '';
+  const password = (document.getElementById('guest-password') || {}).value || '';
+  if (btn) btn.disabled = true;
+  try {
+    await api('/guests', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: name.trim(), password }),
+    });
+    document.getElementById('guest-name').value = '';
+    document.getElementById('guest-password').value = '';
+    guestMessage(`Added ${name.trim()}. Give them the name and password; they sign in at /admin/login.`);
+    loadGuests();
+  } catch (e) {
+    guestMessage(e.message, true);
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+async function updateGuest(id, body, done) {
+  try {
+    const answer = await api('/guests/' + encodeURIComponent(id), {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    guestRowsFrom(answer);
+    guestMessage(done || 'Saved.');
+    loadGuests();
+  } catch (e) {
+    guestMessage(e.message, true);
+  }
+}
+
+function setGuestPaid(id, allowed) {
+  return updateGuest(id, { paid_allowed: !!allowed },
+    allowed ? 'Paid models are now available to this guest.' : 'This guest is back to free and local models.');
+}
+
+function setGuestDisabled(id, disabled) {
+  return updateGuest(id, { disabled: !!disabled },
+    disabled ? 'Disabled. Their sessions have ended.' : 'Enabled again.');
+}
+
+async function resetGuestPassword(id, name) {
+  const password = prompt(`New password for ${name} (at least ${guestsState.minLength} characters):`);
+  if (password === null) return;
+  try {
+    const answer = await api('/guests/' + encodeURIComponent(id) + '/password', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ password }),
+    });
+    guestRowsFrom(answer);
+    guestMessage(`Password reset for ${name}. They have been signed out everywhere.`);
+    loadGuests();
+  } catch (e) {
+    guestMessage(e.message, true);
+  }
+}
+
+async function removeGuestAccount(id, name) {
+  if (!confirm(`Remove ${name}? Their account stops working and their session ends. The record and its job count stay.`)) return;
+  try {
+    const answer = await api('/guests/' + encodeURIComponent(id), { method: 'DELETE' });
+    guestRowsFrom(answer);
+    guestMessage(`${name} removed. The record and its job count are kept.`);
+    loadGuests();
+  } catch (e) {
+    guestMessage(e.message, true);
+  }
 }
 
 async function signOut() {
@@ -4309,6 +4482,17 @@ async function signOut() {
   if (!IN_APP) {
     document.getElementById('web-nav').hidden = false;
     localStorage.removeItem('gatewayAdminToken');
+  }
+  if (GUEST) {
+    // One page, and no status line to poll: `/admin/api/status` is the owner's and refuses a
+    // guest, so asking would draw an error nobody can act on. The server is the boundary; this
+    // keeps the page from offering what it has not got.
+    const pick = document.getElementById('web-page');
+    if (pick) pick.innerHTML = '<option value="create">Create</option>';
+    const title = document.querySelector('.web-title');
+    if (title) title.textContent = `Gateway · ${GUEST.name || 'Guest'}`;
+    await setView('create');
+    return;
   }
   await loadStatus();
   await setView(viewFromHash());

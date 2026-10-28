@@ -652,13 +652,16 @@ final class JobsSection: NSObject, AppSection, NSTableViewDataSource, NSTableVie
         if let took = job["duration_s"] as? Double { times.append("took \(Self.shortDuration(Int(took.rounded())))") }
         if !times.isEmpty { detailStack.addArrangedSubview(PageKit.help(times.joined(separator: " · "))) }
 
-        // **Who asked.** Not an identity — one API key, shared by every caller — but
-        // the difference between Story Studio and a script, which is the question
-        // actually asked when a batch fails. Omitted when the request said nothing,
-        // rather than drawn as an empty row: "the caller said nothing" and "the
-        // caller called itself something" must not look alike here either.
-        if let caller = string(job["caller"]), !caller.isEmpty {
-            detailStack.addArrangedSubview(PageKit.help("Requested by \(caller)"))
+        // **Who asked**, from the Gateway's own record: the owner, the gateway key, or a named
+        // guest (2026-10-28). The server sends `requested_by_label`, or "not recorded" for a job
+        // that predates the field — a job is never left saying nothing and never guessed as the
+        // owner. The client's own `caller` hint follows when it named itself, because "the caller
+        // said nothing" and "the caller called itself something" must not look alike either.
+        let requester = string(job["requested_by_label"]) ?? "not recorded"
+        if let caller = string(job["caller"]), !caller.isEmpty, caller != requester {
+            detailStack.addArrangedSubview(PageKit.help("Requested by \(requester) (client said \(caller))"))
+        } else {
+            detailStack.addArrangedSubview(PageKit.help("Requested by \(requester)"))
         }
         // **Which Mac actually ran the job.** The site controller routes the work,
         // but the Hub picks a node. This shows the node, or nothing if the Hub

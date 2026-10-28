@@ -107,6 +107,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     late_error_code  TEXT,
     late_error_detail TEXT,
     caller           TEXT,
+    requested_by     TEXT,
     defer_reason     TEXT
 );
 CREATE INDEX IF NOT EXISTS jobs_state_next ON jobs(state, next_action_at);
@@ -302,6 +303,13 @@ _ADDED_COLUMNS: tuple[tuple[str, str], ...] = (
     # asks at 2am when a batch failed. Absent means the caller said nothing, and
     # that stays distinguishable from a caller that named itself.
     ("caller", "TEXT"),
+    # **Who asked, as an identity rather than a hint** (2026-10-28): the owner at this
+    # Gateway, the gateway key (a client label such as Story Studio), or a named guest.
+    # JSON `{"role", "guest_id", "label"}`. `caller` above stays what the client *said*;
+    # this is what the Gateway *knew*, and it is what a guest's own-access scoping reads.
+    # **NULL is every job recorded before this column**, published as "not recorded" —
+    # never blank, and never guessed as "owner".
+    ("requested_by", "TEXT"),
     # Which project run this job belongs to (`<project-slug>/<episode-id | project>`, D6), so the
     # dispatcher can give projects turns. Advisory: never sent to a Hub, never part of idempotency;
     # absent means the job is its own group, which is the order every job had before.
@@ -454,6 +462,52 @@ def _loads_list(value: Any) -> list[Any]:
     except (TypeError, ValueError):
         return []
     return loaded if isinstance(loaded, list) else []
+
+
+ROLES = ("owner", "key", "guest")
+
+
+def _requested_by_json(value: dict[str, Any] | None) -> str | None:
+    """The stored form of "who asked", or `None` when the caller did not say.
+
+    A role outside the three the Gateway knows is **dropped**, not stored as-is: this field
+    decides a guest's access, and a value nothing understands must not become a fourth kind
+    of identity by being written down.
+    """
+    if not isinstance(value, dict):
+        return None
+    role = str(value.get("role") or "").strip()
+    label = str(value.get("label") or "").strip()
+    if role not in ROLES or not label:
+        return None
+    row: dict[str, Any] = {"role": role, "label": label[:80]}
+    if role == "guest":
+        guest_id = str(value.get("guest_id") or "").strip()
+        if not guest_id:
+            return None
+        row["guest_id"] = guest_id
+    return json.dumps(row, separators=(",", ":"))
+
+
+def requested_by_of(job: dict[str, Any]) -> dict[str, Any] | None:
+    """Who asked, read back. `None` for every job recorded before the field existed."""
+    raw = job.get("requested_by")
+    if not raw:
+        return None
+    try:
+        data = json.loads(raw)
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(data, dict) or data.get("role") not in ROLES:
+        return None
+    return {"role": data["role"], "label": str(data.get("label") or ""),
+            "guest_id": data.get("guest_id")}
+
+
+def requested_by_label(job: dict[str, Any]) -> str:
+    """What the operator reads: the name, or an honest "not recorded" — never a blank or a guess."""
+    data = requested_by_of(job)
+    return str(data.get("label") or "").strip() or "not recorded" if data else "not recorded"
 
 
 def artifacts_of(job: dict[str, Any]) -> list[dict[str, Any]]:
@@ -2005,6 +2059,7 @@ class JobStore:
         caller: str | None = None,
         job_group: str | None = None,
         priority: str | None = None,
+        requested_by: dict[str, Any] | None = None,
     ) -> tuple[dict[str, Any], bool]:
         """Create a job, or return the existing one for a repeated key.
 
@@ -2026,8 +2081,8 @@ class JobStore:
                 """
                 INSERT INTO jobs (id, idempotency_key, modality, model_id, provider_id,
                                   state, params, created_at, updated_at, next_action_at, caller,
-                                  job_group, priority)
-                VALUES (?, ?, ?, ?, ?, 'accepted', ?, ?, ?, ?, ?, ?, ?)
+                                  job_group, priority, requested_by)
+                VALUES (?, ?, ?, ?, ?, 'accepted', ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     job_id,
@@ -2042,6 +2097,7 @@ class JobStore:
                     (caller or "").strip()[:200] or None,
                     job_group or None,
                     priority if priority == BACKGROUND else None,
+                    _requested_by_json(requested_by),
                 ),
             )
             self._conn.commit()
@@ -2600,6 +2656,36 @@ class JobStore:
         return [{"caller": row["caller"], "jobs": int(row["n"]), "last_used_at": row["last"]}
                 for row in rows]
 
+    def requested_by_counts(self) -> dict[str, dict[str, Any]]:
+        """Per guest: every job they asked for, and how many are still unfinished.
+
+        Read by the Guests page so the owner can see whether an invitation is being used. **A
+        full walk of the jobs table on purpose** — this is one owner-triggered page, not a poll,
+        and adding an index for it would be an index maintained on every job write for a number
+        read once a week. `requested_by` is a small JSON column, so the parse is cheap.
+        """
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT requested_by, state FROM jobs WHERE requested_by IS NOT NULL"
+            ).fetchall()
+        finished = {"succeeded", "failed", "cancelled"}
+        counts: dict[str, dict[str, Any]] = {}
+        for row in rows:
+            try:
+                data = json.loads(row["requested_by"] or "null")
+            except (TypeError, ValueError):
+                continue
+            if not isinstance(data, dict) or data.get("role") != "guest":
+                continue
+            guest_id = str(data.get("guest_id") or "")
+            if not guest_id:
+                continue
+            bucket = counts.setdefault(guest_id, {"jobs": 0, "unfinished": 0})
+            bucket["jobs"] += 1
+            if row["state"] not in finished:
+                bucket["unfinished"] += 1
+        return counts
+
     def active_counts_by_caller(self, column: str = "caller") -> dict[str, dict[str, int]]:
         """`{caller: {"waiting", "running"}}` over every unfinished job (or by `job_group`).
 
@@ -2900,9 +2986,16 @@ class JobStore:
         since: float | None = None,
         before: float | None = None,
         hide_dismissed: bool = False,
+        requested_by_guest: str | None = None,
     ) -> list[dict[str, Any]]:
         """Recent jobs, newest first, optionally filtered; `since`/`before` bound `created_at` so a
-        reader can page past one answer by passing the last row's `created_at` as `before`."""
+        reader can page past one answer by passing the last row's `created_at` as `before`.
+
+        `requested_by_guest` narrows the page **before** the limit is applied, so a guest's own
+        list is their own last N jobs rather than whatever survives a cut of the owner's. The
+        substring match is a page filter only: the route re-checks each row's `guest_id`
+        exactly, so a match on a fragment can never become access.
+        """
         clauses: list[str] = []
         params: list[Any] = []
         if hide_dismissed:
@@ -2919,6 +3012,9 @@ class JobStore:
         if modality:
             clauses.append("modality = ?")
             params.append(modality)
+        if requested_by_guest:
+            clauses.append("requested_by LIKE ?")
+            params.append(f"%{requested_by_guest}%")
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         with self._lock:
             rows = self._conn.execute(
