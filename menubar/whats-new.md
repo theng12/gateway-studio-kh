@@ -14,6 +14,19 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.206 — 2026-10-28
+
+### Final renders follow each Mac's own work order, fastest Mac first
+A render is no longer a rule that jumps ahead of everything: it is one entry in each Mac's work
+order, which the owner can rearrange. Among the Macs that will take a render, the Gateway prefers
+the one whose measured render times are fastest, and uses chip type only when a Mac has no
+measurements yet.
+
+### An on/off switch for every kind of work
+Each Mac can switch any kind of work off, render included, and every kind is on by default. The
+Gateway never sends a Mac a kind it has switched off, and the Fleet page relays the switch to the
+Mac's Studio Hub.
+
 ## 0.2.205 — 2026-10-28
 
 ### A Mac's model preset, an added model and a removed one, from the Fleet page
