@@ -5,6 +5,20 @@
 
 import AppKit
 
+/// The one place a rankable function gets a name when its Studio Hub has not supplied one.
+///
+/// `render` is final video assembly and has no worker row, so there is no title to read from a
+/// Studio. Every other id is the Hub's own title, and a Hub that predates a function simply never
+/// lists it. Kept here rather than inlined into "the".capitalized: "render" capitalised is not
+/// the words the owner asked for (owner, 2026-10-28: plain words, "Final render").
+enum FleetPriorityNames {
+    static func title(for id: String, from hub: String?) -> String {
+        let given = hub?.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let given, !given.isEmpty { return given }
+        return id == "render" ? "Final render" : id.capitalized
+    }
+}
+
 struct FleetPriorityFunction: Equatable {
     let id: String
     let title: String
@@ -29,7 +43,7 @@ struct FleetWorkPriorityPolicy {
             let enabled = matching.isEmpty ? nil : matching.contains { ($0["enabled"] as? Bool) == true }
             return FleetPriorityFunction(
                 id: id,
-                title: (title?.isEmpty == false ? title : nil) ?? id.capitalized,
+                title: FleetPriorityNames.title(for: id, from: title),
                 enabled: enabled
             )
         }
@@ -192,7 +206,9 @@ enum FleetWorkPriority {
                     FleetStartup.show("Work Priorities unavailable", error.localizedDescription)
                 case .success(let payload):
                     guard let policy = FleetWorkPriorityPolicy(payload) else {
-                        let saved = (machine.priorityOrder ?? []).map { $0.capitalized }.joined(separator: ", ")
+                        let saved = (machine.priorityOrder ?? [])
+                            .map { FleetPriorityNames.title(for: $0, from: nil) }
+                            .joined(separator: ", ")
                         FleetStartup.show(
                             "Work Priorities are read-only",
                             "This Mac needs a newer Studio Hub before the Gateway can edit its function order."

@@ -3891,6 +3891,35 @@ def fleet_machine_workstation(controller_id: str, machine_id: str, payload: dict
         return JSONResponse(status_code=error.status, content=error.body)
 
 
+@router.post(
+    "/api/fleet/controllers/{controller_id}/machines/{machine_id}/render-while-paused",
+    # Owner's switch, like the render opt-in above: the app on its Mac or the owner's signed-in
+    # browser, never the key Story Studio also holds.
+    dependencies=[Depends(require_owner)],
+)
+def fleet_machine_render_while_paused(
+    controller_id: str, machine_id: str, payload: dict[str, Any]
+) -> Any:
+    """Let (or stop letting) ONE Mac's own pause exempt final rendering. Body `{"enabled": true|false}`.
+
+    Owner, 2026-10-28. Off by default, and off is the behaviour every Mac had before it existed: a
+    paused Mac renders nothing. On, a paused Mac still assembles the final videos it is already
+    allowed to render, while every other function stays refused. It does not touch the pause, the
+    render opt-in, Lite Mode, drain, maintenance or quarantine — it only answers whether the pause
+    itself stops final render. Relayed through the Mac's controller
+    (`startup_control.set_node_render_while_paused`); the answer says whether it was taken.
+    """
+    if set(payload) != {"enabled"}:
+        return _error(400, "provide only enabled", "BAD_RENDER_WHILE_PAUSED")
+    if not isinstance(payload.get("enabled"), bool):
+        return _error(400, "enabled must be true or false", "BAD_RENDER_WHILE_PAUSED")
+    try:
+        return startup_control.set_node_render_while_paused(
+            controller_id, machine_id, payload["enabled"])
+    except startup_control.StartupError as error:
+        return JSONResponse(status_code=error.status, content=error.body)
+
+
 @router.get("/api/fleet/remote-rendering", dependencies=[Depends(require_admin)])
 def fleet_remote_rendering() -> Any:
     """The Remote final rendering page: every Mac publishing `video.final_render`, same network first.

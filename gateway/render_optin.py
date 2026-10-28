@@ -49,6 +49,14 @@ log = logging.getLogger("gateway.render_optin")
 #: measured qualification, and the one provenance string that key may carry.
 OPT_IN_KEY = "accepted_unqualified"
 PROVENANCE = "owner-opt-in-unqualified"
+#: The optional key a Hub may add beside it (owner, 2026-10-28): whether the owner let this Mac's
+#: own pause exempt final rendering. Absent on any Hub that has not been updated, which is exactly
+#: the worker row 0.6.195 sends. Validated where it is read.
+#:
+#: Measured render speed is a **machine-row** fact (`machines[].render_speed`, from the Hub's own
+#: `render_history`), not a key on this worker row: the worker row's key set is the mixed-fleet
+#: contract, and an older controller drops a row that carries a key it does not know.
+PAUSED_RENDER_KEY = "render_while_paused"
 #: The label a routed render carries (`authority`) when it went to such a Mac.
 ACCEPTED = "accepted_unqualified"
 FORMAT = "gateway.render-optin.v1"
@@ -265,6 +273,18 @@ def classify_machine(machine: object, address: object, networks: list | None = N
 
 # --- the page's picture of the fleet --------------------------------------------------------------------
 
+def _measured_speed(machine: dict[str, Any]) -> dict[str, Any] | None:
+    """One Mac's own measured render speed from its Hub's machine row, or None. Never 0."""
+    value = machine.get("render_speed")
+    if not isinstance(value, dict):
+        return None
+    speed, renders = value.get("speed"), value.get("renders")
+    if (not isinstance(speed, (int, float)) or isinstance(speed, bool) or speed <= 0
+            or not isinstance(renders, int) or isinstance(renders, bool) or renders < 1):
+        return None
+    return {"speed": float(speed), "renders": renders}
+
+
 def _num(value: object) -> float | None:
     return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) \
         and value == value and abs(value) != float("inf") else None
@@ -319,6 +339,16 @@ def workers(view: dict[str, Any], *, networks: list | None = None) -> list[dict[
                 idle = "idle"
             else:
                 idle = "not_ready"
+            # What this Mac's own Hub measured about its rendering, from the machine row its Hub
+            # publishes (never the render worker row, whose key set is the mixed-fleet contract).
+            # A Hub that has not measured it says nothing, and the page shows "Not measured yet"
+            # rather than inventing a number.
+            measured = _measured_speed(machine)
+            ratio = measured.get("speed") if measured else None
+            measured_renders = measured.get("renders") if measured else None
+            # The other half of "this Mac renders": its own pause does not stop final render.
+            # Optional, so an older Hub's row simply has no such key and reads as off.
+            render_while_paused = worker.get(PAUSED_RENDER_KEY) is True
             rows.append({
                 "controller_id": controller,
                 "location": location.get("label"),
@@ -327,6 +357,15 @@ def workers(view: dict[str, Any], *, networks: list | None = None) -> list[dict[
                 "chip": machine.get("chip"),
                 "memory_gb": _num(machine.get("memory_gb")),
                 "available_gb": _num(machine.get("available_gb")),
+                # Measured evidence, or None — never 0. `renders` is how many timed renders the
+                # ratio rests on, so one lucky render reads differently from forty.
+                "render_speed": (_num(ratio) if _num(ratio) is not None and _num(ratio) > 0 else None),
+                "render_speed_renders": (measured_renders
+                                         if isinstance(measured_renders, int)
+                                         and not isinstance(measured_renders, bool)
+                                         and measured_renders > 0 else None),
+                # The owner's per-Mac exemption: its own pause does not stop it rendering.
+                "render_while_paused": render_while_paused,
                 "hub_version": node.get("version") if isinstance(node.get("version"), str) else None,
                 "idle_state": idle,
                 "network": klass,
@@ -387,14 +426,84 @@ def recent_jobs(store: Any, limit: int = 20) -> list[dict[str, Any]]:
     return out
 
 
+#: How the page names the reason one Mac sorts ahead of another (`rank.reason`). Each string is a
+#: fact this Gateway knows, never a guess about silicon it has not measured.
+RANK_MEASURED = "measured"
+RANK_HARDWARE = "hardware"
+
+
+def rank_view(profile_digest: str | None = None) -> dict[str, Any]:
+    """The order this Gateway would actually send a render in, and why — for the page.
+
+    **Read from `fleet.render_candidates`, never recomputed.** A ranking the page draws from its own
+    copy of the rule is free to disagree with the one that dispatches, and the disagreement would
+    stay invisible until a render went somewhere the page did not name.
+
+    `profile_digest` is the render profile the order is for; omitted, it is the one this
+    installation dispatches with, which is what the page must show. It is a parameter only so a
+    test can ask the same function about a profile it built.
+
+    A Mac's `reason` is `measured` when its own Hub timed a render and that ratio is what placed
+    it, `hardware` when it was placed by chip and memory because it has no measurement yet.
+    `basis` states the whole ordering in one sentence, so the section prints it once rather than
+    repeating it per Mac.
+    """
+    from . import fleet   # late: fleet imports this module
+    profile = profile_digest
+    if profile is None:
+        try:
+            from . import runtime   # late: runtime imports fleet and this module
+            profile = runtime.render_service.profile_digest
+        except Exception:   # noqa: BLE001 - no runtime means no rendering to order
+            profile = None
+    try:
+        candidates = fleet.render_candidates(profile) if profile else []
+    except Exception:   # a page must still draw its Macs when the ranking cannot be computed
+        log.warning("render candidates could not be ranked", exc_info=True)
+        candidates = []
+    order: list[dict[str, Any]] = []
+    for position, item in enumerate(candidates, start=1):
+        machine = item.get("selected_machine") or {}
+        measured = item.get("measured_render_speed")
+        ratio = _num(measured.get("output_seconds_per_wall_second")) \
+            if isinstance(measured, dict) else None
+        renders = measured.get("renders") if isinstance(measured, dict) else None
+        order.append({
+            "position": position,
+            "controller_id": item.get("roster_controller_id"),
+            "machine_id": item.get("node_id"),
+            "machine": machine.get("label") or item.get("node_id"),
+            "chip": machine.get("chip"),
+            "memory_gb": _num(machine.get("memory_gb")),
+            "hardware_class": item.get("hardware_class"),
+            "render_speed": ratio if ratio is not None and ratio > 0 else None,
+            "render_speed_renders": (renders if isinstance(renders, int)
+                                     and not isinstance(renders, bool) and renders > 0 else None),
+            "authority": "accepted_unqualified" if item.get("authority") else "production",
+            "reason": RANK_MEASURED if ratio is not None and ratio > 0 else RANK_HARDWARE,
+        })
+    return {
+        "order": order,
+        "basis": (
+            "Fastest first, from each Mac's own measured render speed where its Studio Hub has "
+            "timed a render. A Mac with no measurement yet follows the measured ones and is "
+            "ordered by chip, then memory. Nothing is picked by hand."
+        ),
+        "measured_macs": sum(1 for row in order if row["reason"] == RANK_MEASURED),
+        "hardware_macs": sum(1 for row in order if row["reason"] == RANK_HARDWARE),
+    }
+
+
 def listing(store: Any = None) -> dict[str, Any]:
-    """The Remote final rendering page: its Macs (same network first) and the newest routed jobs."""
+    """The Remote final rendering page: its Macs (same network first), the send order, newest jobs."""
     from . import fleet   # late: fleet imports this module
 
     view = fleet.snapshot(allow_stale=True)
     return {
         "workers": workers(view),
         "recent_jobs": recent_jobs(store) if store is not None else [],
+        # The ranking and its reason, for this page's Remote final rendering section.
+        "rank": rank_view(),
         "untested": True,
     }
 

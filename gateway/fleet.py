@@ -1573,6 +1573,12 @@ def _trim_worker(row: object) -> dict | None:
         # Hub sent it, so a 0.6.195 row (and the capability snapshot made from it) is exactly what it was.
         if render_optin.OPT_IN_KEY in row:
             result[render_optin.OPT_IN_KEY] = row[render_optin.OPT_IN_KEY]
+        # The newer optional key (owner, 2026-10-28), copied only when the Hub sent it so a
+        # 0.6.195 row and the snapshot made from it stay byte-identical to before. The measured
+        # speed is NOT copied here: it travels on the machine row, because this row's key set is
+        # the mixed-fleet contract an older controller checks.
+        if render_optin.PAUSED_RENDER_KEY in row:
+            result[render_optin.PAUSED_RENDER_KEY] = row[render_optin.PAUSED_RENDER_KEY]
         result["available_capacity"] = dict(capacity)
     return result
 
@@ -4209,6 +4215,67 @@ def _render_candidate_shape(value: object, *, qualification: bool) -> dict | Non
     return value
 
 
+def _measured_render_speed(machine: dict) -> dict[str, Any] | None:
+    """This Mac's own measured final-render speed, or `None` when its Hub stated none.
+
+    The shape is what the Hub's `fleet_overview` machine row publishes from its
+    `render_history.speed_by_machine`: `{"speed": output_seconds_per_wall_second, "renders": N}`.
+    Read with a first-non-`None` lookup and a positive check, never an `or` chain: a stated `0`
+    would be a claim ("measured as infinitely slow"), and absence is the honest different fact.
+    """
+    value = machine.get("render_speed")
+    if not isinstance(value, dict):
+        return None
+    speed = value.get("speed")
+    renders = value.get("renders")
+    if (not isinstance(speed, (int, float)) or isinstance(speed, bool)
+            or not math.isfinite(float(speed)) or speed <= 0
+            or not isinstance(renders, int) or isinstance(renders, bool) or renders < 1):
+        return None
+    return {"output_seconds_per_wall_second": float(speed), "renders": renders}
+
+
+def _render_candidate_order(item: dict) -> tuple:
+    """**Fastest first, and every step of the reasoning is a published fact** (owner, 2026-10-28).
+
+    When several opted-in render Macs are eligible the render goes to the fastest one; only a busy
+    or ineligible one sends it down the list, which `candidates[0]` in `runtime._render_destination`
+    already does by taking the head.
+
+    * **Measured first.** A Mac whose own Hub has timed a render publishes
+      `measured_render_speed` (output seconds per wall second, from `render_history`), and a
+      higher ratio sorts ahead. That is evidence from this fleet, not a claim about silicon.
+    * **Unmeasured Macs follow measured ones**, which is the honest order rather than a guess:
+      there is nothing to compare, and putting an unmeasured M4 ahead of a measured M1 would be
+      inventing a number the Mac never stated. Among the unmeasured, hardware is the stated
+      fallback — chip generation, then memory — and the Fleet page says so.
+    * **No machine list anywhere.** Nothing here names a Mac.
+    * Qualified Macs and owner-accepted ones keep their existing tiers, and the Mac's own saved
+      `video` rank still breaks a tie, exactly as before.
+    """
+    hardware = str(item.get("hardware_class") or "").upper()
+    chip = 0 if "M4" in hardware else 1 if "M2" in hardware else 2 if "M1" in hardware else 3
+    measured = item.get("measured_render_speed")
+    ratio = measured.get("output_seconds_per_wall_second") if isinstance(measured, dict) else None
+    measured_ratio = (float(ratio) if isinstance(ratio, (int, float))
+                      and not isinstance(ratio, bool) and ratio > 0 else None)
+    # Measured Macs first, best first; then the unmeasured by hardware. One tuple key, so the
+    # reason the page names and the value the sort uses cannot come from two different readings.
+    by_speed = (0, -measured_ratio) if measured_ratio is not None else (1, 0.0)
+    machine = item.get("selected_machine") if isinstance(item.get("selected_machine"), dict) else {}
+    memory = -(machine.get("memory_gb") or 0.0)
+    # Qualified (and one-use qualification) Macs keep their order; an unqualified Mac comes after
+    # them, the ones on this Mac's own network ahead of the rest.
+    tier = (1 + render_optin.network_rank(item["network"]) if item.get("authority") else 0)
+    return (tier, by_speed, chip, memory, item.get("priority_rank"),
+            item["site_id"], item["node_id"])
+
+
+def _render_candidates_order(candidates: list[dict]) -> list[dict]:
+    """`render_candidates`' rows in send order. Named so the page and a test read the same function."""
+    return sorted(candidates, key=_render_candidate_order)
+
+
 def render_candidates(required_profile_digest: str | None, *,
                       qualification: bool = False) -> list[dict]:
     """Qualified physical final-render candidates, independent of model catalogue rows.
@@ -4235,12 +4302,18 @@ def render_candidates(required_profile_digest: str | None, *,
         if (not isinstance(location, dict) or location.get("local") is not False
                 or str(location.get("id") or "") not in configured
                 or location.get("reachable") is not True or location.get("ready") is not True
-                or location.get("drained") is not False or location.get("paused_at") is not None
+                or location.get("drained") is not False
                 or not location.get("site_id") or not location.get("controller_id")
                 or "paused_at" not in location or "members_stale_seconds" not in location
                 or location.get("members_from") is not None
                 or location.get("members_stale_seconds") is not None):
             continue
+        # **A paused location still offers the render Macs whose own pause says render is
+        # exempt** (owner, 2026-10-28). That is the whole of the exemption: the pause, for final
+        # render only, on a Mac switched on in this section and at its own Hub. Every other
+        # condition above and below still applies — an unreachable, drained, stale or unavailable
+        # location, and every other function, are refused exactly as before.
+        location_paused = location.get("paused_at") is not None
         machines = {str(item.get("physical_machine_id") or item.get("machine")
                         or item.get("id") or ""): item
                     for item in (location.get("machines") or []) if isinstance(item, dict)}
@@ -4257,6 +4330,9 @@ def render_candidates(required_profile_digest: str | None, *,
             raw: object = worker
             qualifying = False
             machine_id = str(worker.get("physical_machine_id") or worker.get("machine") or "")
+            exempt = worker.get(render_optin.PAUSED_RENDER_KEY) is True
+            if location_paused and not exempt:
+                continue
             production_shaped = (worker.get("production_enabled") is True
                                  and worker.get("production_eligible") is True)
             claim = render_optin.unqualified_claim(worker)
@@ -4294,7 +4370,10 @@ def render_candidates(required_profile_digest: str | None, *,
                     or disk_free_gb <= 0 or machine.get("current_job") is not None
                     or "current_job" not in machine
                     or not isinstance(node, dict) or node.get("state") != "reachable"
-                    or node.get("paused") is not False or "current_job" not in node
+                    # `paused` is the controller's own machine pause; the exemption is that same
+                    # pause, for render only, so it is the one flag it may overrule.
+                    or (node.get("paused") is not False and not exempt)
+                    or "current_job" not in node
                     or node.get("current_job") is not None
                     or node.get("on_previous_token") is not False):
                 continue
@@ -4322,6 +4401,13 @@ def render_candidates(required_profile_digest: str | None, *,
                 "profile_digest": capability["profile_digest"],
                 "qualification_vector_id": capability.get("vector_id"),
                 "available_slots": slots,
+                # **What this Mac's own render history measured, or None** (owner, 2026-10-28).
+                # Output seconds per wall second, from the Hub's `render_history`, on the machine
+                # row rather than the render worker row (that row's key set is the mixed-fleet
+                # contract). `None` means "not measured yet", never zero, so the ordering can tell
+                # evidence from absence and the page can say which it is showing.
+                "measured_render_speed": _measured_render_speed(machine),
+                "render_while_paused": capability.get("render_while_paused") is True,
                 "available_memory_source": {
                     "field": "available_gb", "unit_bytes": 1_000_000_000,
                     "decimal_places": 2, "conservative_bytes": available_memory,
@@ -4343,14 +4429,8 @@ def render_candidates(required_profile_digest: str | None, *,
                     "network": render_optin.classify_machine(machine, node.get("address"), networks)[0]}
                    if unqualified else {}),
             })
-    def order(item: dict) -> tuple[int, int, float, str, str]:
-        hardware = item["hardware_class"].upper()
-        rank = 0 if "M4" in hardware else 1 if "M2" in hardware else 2 if "M1" in hardware else 3
-        # Qualified (and one-use qualification) Macs keep their order; an unqualified Mac comes after
-        # them, the ones on this Mac's own network ahead of the rest.
-        tier = (1 + render_optin.network_rank(item["network"]) if item.get("authority") else 0)
-        return tier, rank, item["priority_rank"], item["site_id"], item["node_id"]
-    return sorted(candidates, key=order)
+    # The one ordering function, module level so the page and the dispatcher cannot drift.
+    return _render_candidates_order(candidates)
 
 
 #: The Hub's operation names for this gateway's modalities, read from the Hub's own
@@ -4378,7 +4458,10 @@ _HUB_OPERATION_BY_MODALITY = HUB_OPERATION_BY_MODALITY
 
 # Studio Hub names the local Voice function `voice`; the public Gateway lane is `tts`.
 _PRIORITY_FUNCTION_BY_MODALITY = {**{name: name for name in HUB_OPERATION_BY_MODALITY}, "tts": "voice"}
-_PRIORITY_FUNCTIONS = frozenset(_PRIORITY_FUNCTION_BY_MODALITY.values())
+# Final render is a rankable function with no operation of its own (owner, 2026-10-28): it is
+# settled by `render_candidates`, not by catalogue routing, but it is named in the same saved
+# order a Mac publishes, so reading that order must accept it.
+_PRIORITY_FUNCTIONS = frozenset(_PRIORITY_FUNCTION_BY_MODALITY.values()) | {"render"}
 _NEUTRAL_PRIORITY = float(len(_PRIORITY_FUNCTIONS))
 _UNLISTED_PRIORITY = _NEUTRAL_PRIORITY + 1.0
 
