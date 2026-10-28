@@ -1223,6 +1223,88 @@ class PoolHoldSettleTests(_TempEnv):
         self.assertIn("no discard route", answer["reason"])
 
 
+class StoryLlmPoolFallthroughTests(PoolPaidLastResortTests):
+    """Owner, 2026-10-28: the writing pool must keep working when the magpie relay is off.
+
+    The live pool is strict order: magpie group(s) first, then Claude Haiku 5.5, then GPT-6 Luna.
+    A relay that is switched off refuses the connection; the send has already been counted, so
+    this pins that the walk still moves on rather than holding the job.
+    """
+
+    def _refused(self, outcome):
+        from gateway.adapters.base import note_request_started
+
+        class _Refused(_FakeAdapter):
+            def generate(self, request):
+                import httpx
+
+                note_request_started()  # httpx counts the send before the connect is refused
+                try:
+                    raise httpx.ConnectError("[Errno 61] Connection refused")
+                except httpx.ConnectError as exc:
+                    raise self.outcome from exc
+        return _Refused(outcome)
+
+    def test_a_paid_member_that_may_have_been_reached_still_holds_the_job(self):
+        """The fix is only for a connection that never opened; a lost response still holds."""
+        from gateway.adapters.base import BackendError, BackendResult, note_request_started
+
+        class _Lost(_FakeAdapter):
+            def generate(self, request):
+                note_request_started()
+                return super().generate(request)
+
+        self.pools.create("mix", ["p-magpie::x", "haiku::x"], routing_policy="strict_order")
+        backend, adapters = self._backend({
+            "p-magpie::x": BackendError("network: read timed out", code="PROVIDER_UNAVAILABLE"),
+            "haiku::x": BackendResult(text="from haiku"),
+        })
+        adapters["p-magpie::x"] = _Lost(adapters["p-magpie::x"].outcome)
+        with self.assertRaises(BackendError) as caught:
+            backend.generate(self._request())
+        self.assertEqual("PROVIDER_SUBMISSION_UNCERTAIN", caught.exception.code)
+
+    def test_a_refused_free_relay_falls_through_to_haiku(self):
+        from gateway.adapters.base import BackendError, BackendResult
+
+        self.pools.create("mix", ["f-magpie::x", "haiku::x", "luna::x"], routing_policy="strict_order")
+        backend, adapters = self._backend({
+            "f-magpie::x": BackendError("network: [Errno 61] Connection refused",
+                                        code="PROVIDER_UNAVAILABLE", retryable=True),
+            "haiku::x": BackendResult(text="from haiku"),
+            "luna::x": BackendResult(text="from luna"),
+        })
+        adapters["f-magpie::x"] = self._refused(adapters["f-magpie::x"].outcome)
+        self.assertEqual("from haiku", backend.generate(self._request()).text)
+
+    def test_haiku_failing_too_falls_through_to_luna(self):
+        from gateway.adapters.base import BackendError, BackendResult
+
+        self.pools.create("mix", ["f-magpie::x", "haiku::x", "luna::x"], routing_policy="strict_order")
+        backend, adapters = self._backend({
+            "f-magpie::x": BackendError("network: [Errno 61] Connection refused",
+                                        code="PROVIDER_UNAVAILABLE", retryable=True),
+            "haiku::x": BackendError("HTTP 529: overloaded", code="PROVIDER_UNAVAILABLE",
+                                     status=529, upstream_accepted=False),
+            "luna::x": BackendResult(text="from luna"),
+        })
+        adapters["f-magpie::x"] = self._refused(adapters["f-magpie::x"].outcome)
+        self.assertEqual("from luna", backend.generate(self._request()).text)
+
+    def test_a_refused_paid_relay_falls_through_to_haiku(self):
+        """story-llm-premium is a paid magpie group; a switched-off relay never received the job."""
+        from gateway.adapters.base import BackendError, BackendResult
+
+        self.pools.create("mix", ["p-magpie::x", "haiku::x"], routing_policy="strict_order")
+        backend, adapters = self._backend({
+            "p-magpie::x": BackendError("network: [Errno 61] Connection refused",
+                                        code="PROVIDER_UNAVAILABLE", retryable=True),
+            "haiku::x": BackendResult(text="from haiku"),
+        })
+        adapters["p-magpie::x"] = self._refused(adapters["p-magpie::x"].outcome)
+        self.assertEqual("from haiku", backend.generate(self._request()).text)
+
+
 class PoolResolverWiringTests(unittest.TestCase):
     """The resolver the live pool backend is attached to must be the catalogue's own.
 
