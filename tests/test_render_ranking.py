@@ -294,6 +294,20 @@ class PageTests(Case):
         self.assertIn("chip, then memory", rank["basis"], "the fallback is stated, not implied")
         self.assertNotIn("chosen by hand", rank["basis"].replace("picked by hand", ""))
 
+    def test_the_listing_carries_the_rank_so_the_sheet_has_it(self) -> None:
+        """The sheet reads `rank` off this one route; a field nothing returns is a dead section."""
+        with Fleet(render_location({
+            "timed": spec(worker("timed", accepting=ACCEPTING),
+                          machine_row(speed=2.5, renders=4), "http://192.168.1.30:1"),
+        })), \
+                mock.patch.object(render_optin, "local_networks", return_value=LAN):
+            page = render_optin.listing(store=None, profile_digest=DIGEST)
+        self.assertIn("rank", page)
+        self.assertTrue(page["workers"], "the Macs are still listed")
+        self.assertEqual([row["machine_id"] for row in page["rank"]["order"]], ["timed"],
+                         "the sheet can draw the order from this one route")
+        self.assertEqual(page["rank"]["order"][0]["reason"], render_optin.RANK_MEASURED)
+
     def test_the_order_is_the_dispatchers_own_list(self) -> None:
         """The page cannot describe a ranking the dispatcher does not use."""
         with Fleet(render_location({

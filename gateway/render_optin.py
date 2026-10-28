@@ -494,8 +494,12 @@ def rank_view(profile_digest: str | None = None) -> dict[str, Any]:
     }
 
 
-def listing(store: Any = None) -> dict[str, Any]:
-    """The Remote final rendering page: its Macs (same network first), the send order, newest jobs."""
+def listing(store: Any = None, *, profile_digest: str | None = None) -> dict[str, Any]:
+    """The Remote final rendering page: its Macs (same network first), the send order, newest jobs.
+
+    `profile_digest` is only for a test that has no installed profile to dispatch with; the page
+    itself leaves it out and gets the one this installation really uses.
+    """
     from . import fleet   # late: fleet imports this module
 
     view = fleet.snapshot(allow_stale=True)
@@ -503,7 +507,7 @@ def listing(store: Any = None) -> dict[str, Any]:
         "workers": workers(view),
         "recent_jobs": recent_jobs(store) if store is not None else [],
         # The ranking and its reason, for this page's Remote final rendering section.
-        "rank": rank_view(),
+        "rank": rank_view(profile_digest),
         "untested": True,
     }
 
