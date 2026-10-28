@@ -82,6 +82,16 @@ _RETIRED_CATALOGUE = {"repo": RETIRED_MODEL_ID, "hub_modality": "video", "type":
                       "memory_eligible": True, "lane_contract": _LANE_CONTRACT}
 _IMAGE_CATALOGUE = {"repo": "mock-hub/image-model", "hub_modality": "image", "type": "model"}
 
+#: A text-encoder row as the real Hub publishes it once LTX no longer lists it: a `model` on the
+#: retired video engine whose worker is absent. The Hub's catalogue does not describe it. Gemma 3
+#: 12B is **not** retired by name any more (owner, 2026-10-27), so this row has to be withheld by
+#: shape alone - a Hub video model that publishes no lane contract cannot be described.
+_TEXT_ENCODER = "mlx-community/gemma-3-12b-it-4bit"
+_ENCODER_PACKAGE = {"package_id": "gemma-3-12b-it-4bit", "model_id": _TEXT_ENCODER,
+                    "engine": "video-ltx", "modality": "video", "type": "model",
+                    "worker_id": "video", "worker_state": "unavailable",
+                    "dispatch_state": "ineligible", "files_state": "not_installed"}
+
 #: What a Hub on a release that has dropped the Video worker publishes: no video package at all.
 _NO_VIDEO_PACKAGES = [_IMAGE_PACKAGE]
 #: The same Hub as it still runs on the fleet, with the retired model still published.
@@ -173,6 +183,57 @@ class RetiredModelTests(unittest.TestCase):
         inventory = _inventory("lookalike.json")
         other = {"model_id": f"{RETIRED_MODEL_ID}-successor", "modality": "chat", "raw": {}}
         self.assertNotIn("retired", inventory.withhold_reason(HUB, other) or "")
+
+    def test_a_text_encoder_is_not_retired_by_name_any_more(self) -> None:
+        """The owner removed the family lock on 2026-10-27; only the video products stay retired.
+
+        "They are models we can run so we should have them installable. Able to run on the machine
+        or not is based off its RAM. We no longer block or lock any model." A row is judged by what
+        it is - its modality, whether this gateway serves it, and whether the Hub says it can run
+        there - and not by its name. Named here rather than read from the list, because this test's
+        whole point is that these two ids are **absent** from it.
+        """
+        inventory = _inventory("encoder-case.json")
+        for model in (
+            {"model_id": "mlx-community/gemma-3-12b-it-4bit", "modality": "chat", "raw": {}},
+            {"model_id": "MLX-COMMUNITY/GEMMA-3-12B-IT-4BIT", "modality": "chat", "raw": {}},
+            {"model_id": "something-else", "modality": "chat",
+             "raw": {"package_id": "Gemma-3-12B-IT-4bit"}},
+        ):
+            self.assertNotIn("retired", inventory.withhold_reason(HUB, model) or "", model)
+        # The video products are untouched: they are retired, not merely unserved.
+        for model in (
+            {"model_id": RETIRED_MODEL_ID, "modality": "video", "raw": {}},
+            {"model_id": RETIRED_PACKAGE_ID.upper(), "modality": "video", "raw": {}},
+        ):
+            self.assertIn("retired", inventory.withhold_reason(HUB, model) or "", model)
+
+    def test_a_text_encoder_on_the_real_hub_row_is_never_published_as_a_video_model(self) -> None:
+        inventory = _inventory("encoder-row.json")
+        with _hub_answering([_IMAGE_PACKAGE, _ENCODER_PACKAGE]):
+            result = inventory.refresh(HUB.id)
+        self.assertIsNone(result.error)
+        row = next(m for m in inventory.models_for(HUB.id) if m["model_id"] == _TEXT_ENCODER)
+        # Discovery placed it where the Hub says it is - a video-engine row. The retirement list no
+        # longer names it, so shape alone has to keep it off every Create page: a Studio Hub video
+        # model with no lane contract cannot be described, so it is withheld rather than offered.
+        self.assertEqual(row["modality"], "video")
+        reason = inventory.withhold_reason(HUB, row)
+        self.assertIsNotNone(reason, "a video row with no lane contract was offered")
+        self.assertNotIn("retired", reason or "")
+        self.assertIn(_TEXT_ENCODER, {m["model_id"] for m in inventory.models_for(HUB.id)})
+        self.assertNotIn(_TEXT_ENCODER,
+                         [m["model_id"] for _d, m in inventory.enabled_models("video")])
+        # Installed, with the worker still absent: still withheld (no lane contract, not catalogued).
+        installed = dict(row, raw=dict(row["raw"], files_state="files_verified"))
+        self.assertIsNotNone(inventory.withhold_reason(HUB, installed))
+        # Not on any Create page either.
+        with patch.object(registry, "models", inventory), patch.object(admin, "catalog", Catalog()):
+            payload = admin.create_models()
+        for rows in payload["by_modality"].values():
+            self.assertNotIn(_TEXT_ENCODER, [m["model_id"] for m in rows])
+            self.assertNotIn(RETIRED_MODEL_ID, [m["model_id"] for m in rows])
+        self.assertEqual(payload["counts"]["video"], 0)
 
     def test_a_retired_model_on_the_real_hub_row_is_never_published_as_a_video_model(self) -> None:
         inventory = self._inventory("stale-row.json")

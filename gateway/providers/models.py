@@ -43,13 +43,18 @@ from .discovery import DiscoveryResult, DiscoveredModel, discover
 #: Hub's `package_id`, so a Hub that has not yet dropped one still has it withheld here.
 #: Retiring a model is one line here *and* one line in the Hub's `components/retired_models.py`;
 #: keep the two lists equal, because a Mac in the field may still be running the older of them.
+#:
+#: LTX-2.3 (local video), retired 2026-10-01.
+#:
+#: Gemma 3 12B 4-bit was here from 2026-10-02 (LTX's text encoder) and left on 2026-10-27 with
+#: the rest of the name-based blocks: the owner removed the family lock ("They are models we can
+#: run so we should have them installable. Able to run on the machine or not is based off its
+#: RAM. We no longer block or lock any model."). Video itself stays retired, which is what these
+#: two entries are for. Do not put the Gemma name back here.
 RETIRED_MODEL_IDS: tuple[str, ...] = (
     # The local video pack, retired 2026-10-01.
     "ltx-2-3-22b-ram-12gb-mlx",
     "baa-ai/ltx-2.3-22b-ram-12gb-mlx",
-    # Its text encoder, retired 2026-10-02, under whatever modality a Hub files it.
-    "gemma-3-12b-it-4bit",
-    "mlx-community/gemma-3-12b-it-4bit",
 )
 
 
