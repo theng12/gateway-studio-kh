@@ -3670,6 +3670,10 @@ const CREATE_FIELDS = {
   audio: [
     { k: 'text', label: 'Script', type: 'textarea', rows: 7, placeholder: 'Write what should be spoken…' },
     { k: 'voice_id', label: 'Voice', type: 'voice' },
+    // Shown only when the chosen model publishes the `delivery_instruction` control — the
+    // engine's own note on how the line should be read. `applyCreateModelControls` decides.
+    { k: 'delivery_instruction', label: 'Delivery / emotion', type: 'text',
+      placeholder: 'e.g. warm, calm, slightly amused', optional: true },
   ],
   subtitle: [],
   image: [
@@ -3778,6 +3782,15 @@ function renderCreateForm() {
         <input type="number" id="cf-${f.k}" value="${f.value}" min="${f.min}" max="${f.max}" style="width:110px">
         ${f.hint ? `<div class="hint">${esc(f.hint)}</div>` : ''}</div>`;
     }
+    if (f.optional) {
+      // **Optional and model-gated.** The box is drawn hidden and revealed only for a model
+      // whose row publishes the control; its container also carries the Hub's own guidance,
+      // which is printed as sent and left out entirely when the Hub published none.
+      return `<div id="cf-${f.k}-box" style="display:none;margin-bottom:12px">
+        <label>${esc(f.label)} <span class="hint">(optional)</span></label>
+        <input type="text" id="cf-${f.k}" placeholder="${esc(f.placeholder || '')}">
+        <div class="hint" id="cf-${f.k}-help"></div></div>`;
+    }
     return `<div style="margin-bottom:12px"><label>${esc(f.label)}</label>
       <input type="text" id="cf-${f.k}" placeholder="${esc(f.placeholder || '')}"></div>`;
   }).join('');
@@ -3811,6 +3824,7 @@ function renderCreateForm() {
        <span class="msg" id="cf-msg"></span></div>`;
   if (voiceLane && rows.length) loadCreateVoices();
   showUploadLimit();
+  applyCreateModelControls();
 }
 
 // **The selected model's own upload limit, where the file is chosen.** The row publishes it
@@ -3830,6 +3844,72 @@ function showUploadLimit() {
     ? `This model accepts up to ${Math.round(limit / (1024 * 1024))} MB per recording.`
     : '';
 }
+
+// ---------------------------------------------------------------------------
+// Per-model controls on the Create page.
+//
+// A control is published by the model's own catalogue row, which the gateway builds from the
+// Hub's capability list — never from a list here. So the page asks the row it already has:
+// an absent control hides the box (no field that would be ignored), and a present one shows
+// whatever guidance the Hub sent, unchanged.
+// ---------------------------------------------------------------------------
+function createModelRow(modelId) {
+  const tab = currentTab();
+  const rows = (createCatalogue && createCatalogue.by_modality && createCatalogue.by_modality[tab.modality]) || [];
+  return rows.find(row => row.id === modelId) || null;
+}
+
+function createControl(modelId, name) {
+  const row = createModelRow(modelId);
+  const controls = (row && row.controls) || [];
+  return controls.find(control => control && control.name === name) || null;
+}
+
+/// The Hub's guidance, printed as given. A string is shown as text; an object shows the fields
+/// it actually carries. **Nothing is invented for a field the Hub did not send** — an absent
+/// guidance leaves the help line empty.
+function deliveryGuidanceHtml(guidance) {
+  if (guidance == null || guidance === '') return '';
+  if (typeof guidance === 'string') return esc(guidance);
+  if (typeof guidance !== 'object') return '';
+  const lines = [];
+  const text = guidance.text || guidance.summary || guidance.description;
+  if (text) lines.push(esc(String(text)));
+  const examples = Array.isArray(guidance.examples) ? guidance.examples
+    : (typeof guidance.examples === 'string' ? [guidance.examples] : []);
+  if (examples.length) {
+    lines.push('Examples: ' + examples.map(e => esc(typeof e === 'string' ? e : JSON.stringify(e))).join(' · '));
+  }
+  const rule = guidance.language_rule || guidance.language;
+  if (rule) lines.push(esc(typeof rule === 'string' ? rule : JSON.stringify(rule)));
+  const events = guidance.events || guidance.inline_events || guidance.vocal_events;
+  if (Array.isArray(events) && events.length) {
+    lines.push('Inline events: ' + events.map(e => esc(typeof e === 'string' ? e : JSON.stringify(e))).join(' · '));
+  }
+  if (guidance.source_url) {
+    lines.push(`<a href="${esc(guidance.source_url)}" target="_blank" rel="noreferrer">${esc(guidance.source_url)}</a>`);
+  }
+  return lines.join('<br>');
+}
+
+function applyCreateModelControls() {
+  const box = document.getElementById('cf-delivery_instruction-box');
+  if (!box) return;
+  const modelEl = document.getElementById('cf-model');
+  const control = createControl(modelEl ? modelEl.value : '', 'delivery_instruction');
+  const field = document.getElementById('cf-delivery_instruction');
+  box.style.display = control ? '' : 'none';
+  if (!control) {
+    // Hide the box **and clear it**, so text typed against one model can never be sent to a
+    // model that does not take it after the model changes.
+    if (field) field.value = '';
+    return;
+  }
+  if (field && control.max_length) field.maxLength = control.max_length;
+  const help = document.getElementById('cf-delivery_instruction-help');
+  if (help) help.innerHTML = deliveryGuidanceHtml(control.guidance);
+}
+
 
 // ---------------------------------------------------------------------------
 // Voices on the Create page.
@@ -3880,6 +3960,7 @@ function createVoiceValue() {
 function createModelChanged() {
   createVoices = { modelId: '', rows: [], error: '' };
   showUploadLimit();
+  applyCreateModelControls();
   loadCreateVoices();
 }
 

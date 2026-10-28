@@ -1950,6 +1950,12 @@ def _generate_image_or_voice(request: BackendRequest) -> BackendResult:
     else:
         item["text"] = str(request.params.get("text") or "")
         for key in ("speed", "voice_id", "language", "temperature", "seed", "output_format",
+                    # Delivery / emotion (owner, 2026-10-29): the Hub reads it as the engine's
+                    # own instruction on `/api/generate/txt2speech` and on
+                    # `/api/generate/txt2speech/reference` — the same field, so both the plain
+                    # and the cloned path carry it from this one list. Whether a model takes it
+                    # is decided by its own published capability, and refused before this runs.
+                    "delivery_instruction",
                     # Join pauses (Hub-validated, 0-3 s); a node that predates them drops them.
                     "paragraph_pause_sec", "sentence_pause_sec"):
             if request.params.get(key) is not None:

@@ -250,6 +250,63 @@ test('the Subtitle tab says what this model accepts, read from its row', () => {
   assert.equal(nodes['cf-upload-limit'].textContent, '');
 });
 
+test('the delivery box follows the model, with the Hub\'s own guidance and nothing invented', () => {
+  // Owner, 2026-10-29: `delivery_instruction` is an optional "Delivery / emotion" box, shown
+  // **only** for models whose catalogue row publishes the control. The guidance beside it is
+  // whatever the Hub sent; when the Hub sent none, the line is empty rather than filled in.
+  const nodes = {
+    'cf-model': element({ value: 'hub::breeze' }),
+    'cf-delivery_instruction-box': element({ style: { display: 'none' } }),
+    'cf-delivery_instruction': element(),
+    'cf-delivery_instruction-help': element(),
+  };
+  const { context } = harness(nodes);
+  const guidance = {
+    text: 'Free text the engine reads as its own instruction.',
+    examples: ['warm and unhurried'],
+    language_rule: 'Write it in English.',
+    inline_events: ['[laugh]'],
+    source_url: 'https://example.invalid/breeze',
+  };
+  const catalogue = { by_modality: { tts: [
+    { id: 'hub::breeze', display_name: 'Breeze', provider_name: 'Studio Hub',
+      controls: [{ name: 'temperature', type: 'number' },
+                 { name: 'delivery_instruction', type: 'text', max_length: 500, guidance }] },
+    { id: 'hub::plain', display_name: 'Plain', provider_name: 'Studio Hub',
+      controls: [{ name: 'temperature', type: 'number' }] },
+  ] } };
+  vm.runInContext(`createTab = 'audio'; createCatalogue = ${JSON.stringify(catalogue)};`,
+    context);
+  vm.runInContext('applyCreateModelControls()', context);
+  assert.equal(nodes['cf-delivery_instruction-box'].style.display, '', 'shown for the model that has it');
+  assert.equal(nodes['cf-delivery_instruction'].maxLength, 500);
+  const help = nodes['cf-delivery_instruction-help'].innerHTML;
+  assert.ok(help.includes('Free text the engine reads as its own instruction.'), help);
+  assert.ok(help.includes('warm and unhurried'), help);
+  assert.ok(help.includes('Write it in English.'), help);
+  assert.ok(help.includes('[laugh]'), help);
+  assert.ok(help.includes('https://example.invalid/breeze'), help);
+
+  nodes['cf-delivery_instruction'].value = 'typed for the wrong model';
+  nodes['cf-model'].value = 'hub::plain';
+  vm.runInContext('applyCreateModelControls()', context);
+  assert.equal(nodes['cf-delivery_instruction-box'].style.display, 'none', 'hidden');
+  assert.equal(nodes['cf-delivery_instruction'].value, '',
+    'and cleared, so text typed for one model is never sent to another');
+
+  // A model that publishes the control but whose Hub sent no guidance: the box shows, the
+  // help line stays empty. Nothing is invented for it.
+  const bare = { by_modality: { tts: [
+    { id: 'hub::breeze', display_name: 'Breeze', provider_name: 'Studio Hub',
+      controls: [{ name: 'delivery_instruction', type: 'text' }] },
+  ] } };
+  vm.runInContext(`createCatalogue = ${JSON.stringify(bare)};`, context);
+  nodes['cf-model'].value = 'hub::breeze';
+  vm.runInContext('applyCreateModelControls()', context);
+  assert.equal(nodes['cf-delivery_instruction-box'].style.display, '');
+  assert.equal(nodes['cf-delivery_instruction-help'].innerHTML, '');
+});
+
 test('the download name is read from the route, not rebuilt in the page', () => {
   const { context } = harness({});
   const filename = vm.runInContext('filenameFromDisposition', context);
