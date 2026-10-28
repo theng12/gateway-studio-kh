@@ -353,9 +353,15 @@ class SchedulingObservabilityTest(_Case):
         fleet.note_memory_refusal(_pid("b"), LIGHT, REFUSAL.format(mac="mac-8"))
         self.job(LIGHT, "a")
         self.job("eleven", provider="fal-ai")
+        # **The catalogue is not what this test is about.** `queue_view` reads `all_rows()`
+        # for each lane's own deadline, and that read rebuilds the catalogue — under the two
+        # fake definitions above (plain `SimpleNamespace`s with an `id` and nothing else), the
+        # rebuild fails on `.description`. It passed while a neighbouring test's catalogue
+        # happened to be warm; the isolation it relied on was never written down (2026-10-29).
         with patch.object(admin, "store", self.store), \
                 patch.object(registry.models, "enabled_models", lambda modality: rows), \
-                patch.object(fleet, "_takes_customer_jobs", lambda row: True):
+                patch.object(fleet, "_takes_customer_jobs", lambda row: True), \
+                patch.object(admin.catalog, "all_rows", lambda: []):
             jobs = {row["provider_id"]: row for row in admin.queue_view(limit=10)["jobs"]}
         self.assertEqual(jobs[_pid("a")]["eligible_macs"], 4, "3 at a, plus b's 2 less the one resting")
         self.assertIsNone(jobs["fal-ai"]["eligible_macs"], "a cloud lane has no Macs to count")
