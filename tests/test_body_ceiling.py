@@ -194,6 +194,17 @@ class EveryDoorIsNamed(unittest.TestCase):
         self.assertGreater(ceiling, api.VISION_MAX_IMAGE_BYTES * 4 / 3,
                            "it publishes a 12 MB image limit and must admit one")
 
+    def test_an_upload_is_budgeted_and_a_picture_in_a_chat_turn_is_not(self) -> None:
+        # A chat turn with a picture is parsed into memory and dropped; an upload holds bytes for
+        # as long as it runs. Budgeting both would make a batch of image chats compete with
+        # eight parallel uploads for the same slots.
+        self.assertFalse(api.upload_door("/v1/chat/completions")[2])
+        self.assertFalse(api.upload_door("/v1/vision/analyze")[2])
+        for door in ("/admin/api/create/transcription", "/v1/images/source-images",
+                     "/admin/api/content-library/import"):
+            with self.subTest(door=door):
+                self.assertTrue(api.upload_door(door)[2])
+
     def test_the_default_is_at_least_the_largest_json_reader(self) -> None:
         # `admin._json_body` accepts 4 MiB on its own; a lower default would refuse a body that
         # route was written to take, before that route ever saw it.

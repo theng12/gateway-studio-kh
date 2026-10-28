@@ -159,20 +159,27 @@ class _UploadTooLarge(Exception):
 #: The list is checked, not trusted: `tests/test_body_ceiling.py` walks the app's own route table
 #: and fails when a file route or a raw-stream reader is not named (review 2026-10-29c, finding 1
 #: — a 4.26 MiB `.sspack` was refused by a 2 MiB default nobody had thought about).
-_UPLOAD_CEILINGS: tuple[tuple["re.Pattern[str]", int, str], ...] = (
-    (re.compile(r"^/v1/images/source-images$"), _MAX_UPLOAD_BYTES, "a source image"),
-    (re.compile(r"^/v1/videos/source-images$"), _MAX_UPLOAD_BYTES, "a source image"),
-    (re.compile(r"^/admin/api/create/transcription$"), _MAX_UPLOAD_BODY, "a transcription upload"),
-    (re.compile(r"^/v1/audio/transcriptions/quotes$"), _MAX_UPLOAD_BODY, "a transcription upload"),
+#: `(pattern, ceiling, what, kind)`. **`kind` decides whether the body is budgeted**: an
+#: `upload` holds bytes for as long as it runs, so it reserves. A `body` is parsed into memory
+#: and dropped (a chat turn with a picture, a vision image) — bounded, but not competing for
+#: the upload pool, or a batch of image chats would meet the same cap as 8 parallel uploads.
+_UPLOAD_CEILINGS: tuple[tuple["re.Pattern[str]", int, str, str], ...] = (
+    (re.compile(r"^/v1/images/source-images$"), _MAX_UPLOAD_BYTES, "a source image", "upload"),
+    (re.compile(r"^/v1/videos/source-images$"), _MAX_UPLOAD_BYTES, "a source image", "upload"),
+    (re.compile(r"^/admin/api/create/transcription$"), _MAX_UPLOAD_BODY, "a transcription upload",
+     "upload"),
+    (re.compile(r"^/v1/audio/transcriptions/quotes$"), _MAX_UPLOAD_BODY, "a transcription upload",
+     "upload"),
     (re.compile(r"^/admin/api/fleet/controllers/[^/]+/machines/[^/]+/transcribe$"),
-     _MAX_UPLOAD_BODY, "a transcription upload"),
+     _MAX_UPLOAD_BODY, "a transcription upload", "upload"),
     # A Content Pack is an archive up to 50 MiB, streamed straight to disk by its route.
-    (re.compile(r"^/admin/api/content-library/import$"), _MAX_PACK_BODY, "a Content Pack"),
-    (re.compile(r"^/admin/api/content-library/import-and-publish$"), _MAX_PACK_BODY, "a Content Pack"),
+    (re.compile(r"^/admin/api/content-library/import$"), _MAX_PACK_BODY, "a Content Pack", "upload"),
+    (re.compile(r"^/admin/api/content-library/import-and-publish$"), _MAX_PACK_BODY,
+     "a Content Pack", "upload"),
     # Pictures in a chat turn arrive as base64 data URIs inside the JSON.
-    (re.compile(r"^/v1/chat/completions$"), _CHAT_BODY_CEILING, "a chat turn"),
-    (re.compile(r"^/v1/chat/responses$"), _CHAT_BODY_CEILING, "a chat turn"),
-    (re.compile(r"^/v1/vision/analyze$"), _VISION_BODY_CEILING, "a vision image"),
+    (re.compile(r"^/v1/chat/completions$"), _CHAT_BODY_CEILING, "a chat turn", "body"),
+    (re.compile(r"^/v1/chat/responses$"), _CHAT_BODY_CEILING, "a chat turn", "body"),
+    (re.compile(r"^/v1/vision/analyze$"), _VISION_BODY_CEILING, "a vision image", "body"),
 )
 
 #: Any other request with a body: JSON and small forms. Four MiB, because the largest
@@ -187,7 +194,7 @@ _BODY_CEILING_EXEMPT = (re.compile(r"^/v1/final-renders/blobs/[^/]+$"),)
 #: What this process will hold in spool files at once, and how many uploads may be held.
 #: **One upload of the largest ceiling always fits** (finding 4): a budget below a legitimate
 #: 102 MiB transcription would answer 503 to the very upload the door exists for.
-_LARGEST_CEILING = max(ceiling for _pattern, ceiling, _what in _UPLOAD_CEILINGS)
+_LARGEST_CEILING = max(ceiling for _pattern, ceiling, _what, _kind in _UPLOAD_CEILINGS)
 _SPOOL_BUDGET_BYTES = _LARGEST_CEILING + (16 * 1024 * 1024)
 _SPOOL_MAX_IN_FLIGHT = 8
 #: One host may not take the whole budget — except that one maximum upload must still fit, so
@@ -210,13 +217,21 @@ def body_ceiling_for(path: str) -> tuple[int, str] | None:
     own stream, must be named in `_UPLOAD_CEILINGS`, so "covered by the default" is not good
     enough for one.
     """
-    for pattern, ceiling, _what in _UPLOAD_CEILINGS:
+    for pattern, ceiling, _what, _kind in _UPLOAD_CEILINGS:
         if pattern.match(path):
             return ceiling, "route"
     for pattern in _BODY_CEILING_EXEMPT:
         if pattern.match(path):
             return None
     return _BODY_CEILING_DEFAULT, "default"
+
+
+def upload_door(path: str) -> tuple[int, str, bool]:
+    """`(ceiling, what, is_upload)` for a named door, or the default for anything else."""
+    for pattern, ceiling, what, kind in _UPLOAD_CEILINGS:
+        if pattern.match(path):
+            return ceiling, what, kind == "upload"
+    return _BODY_CEILING_DEFAULT, "this request", False
 
 
 def _spool_take(host: str, count: int) -> bool:
@@ -380,8 +395,7 @@ class BoundedUploadBody:
             await self.app(scope, receive, send)
             return
         limit, source = resolved
-        what = next((w for pattern, _c, w in _UPLOAD_CEILINGS if pattern.match(path)),
-                    "this request")
+        limit, what, is_upload = upload_door(path)
         host = ((scope.get("client") or ("", 0))[0]) or "?"
         headers = {key.lower(): value for key, value in (scope.get("headers") or [])}
         declared = (headers.get(b"content-length") or b"").decode("latin-1").strip()
@@ -397,18 +411,21 @@ class BoundedUploadBody:
             await self._unauthenticated()(scope, receive, send)
             return
         if declared.isdigit():
-            await self._declared(scope, receive, send, int(declared), host)
+            await self._declared(scope, receive, send, int(declared), host, is_upload)
             return
-        await self._bounded_stream(scope, receive, send, limit, what, host)
+        await self._bounded_stream(scope, receive, send, limit, what, host, is_upload)
 
-    async def _declared(self, scope: Any, receive: Any, send: Any, size: int, host: str) -> None:
+    async def _declared(self, scope: Any, receive: Any, send: Any, size: int, host: str,
+                        budgeted: bool) -> None:
         """A body whose length is known: reserve it, then let the route read it.
 
         The reservation is what stops a burst of large uploads from all being in flight: the
         bytes are held for the duration of the request, not just while a copy is made. A body
         under `_SPOOL_BUDGET_MIN_BYTES` is not an upload and takes nothing.
         """
-        if size < _SPOOL_BUDGET_MIN_BYTES:
+        if not budgeted or size < _SPOOL_BUDGET_MIN_BYTES:
+            # Parsed into memory and dropped, or too small to be an upload: bounded by the
+            # ceiling above, but not competing for the upload pool.
             await self.app(scope, receive, send)
             return
         if not _spool_slot(host):
@@ -424,7 +441,7 @@ class BoundedUploadBody:
             _spool_release(host, size)
 
     async def _bounded_stream(self, scope: Any, receive: Any, send: Any, limit: int,
-                              what: str, host: str) -> None:
+                              what: str, host: str, budgeted: bool) -> None:
         """No declared length (a chunked upload): count as it arrives, spool what is kept."""
         received = 0
         reserved = 0
@@ -450,7 +467,7 @@ class BoundedUploadBody:
                         if not slot:
                             # **The slot is taken when the body becomes an upload**, not when a
                             # request opens: a chunked JSON call must not compete with one.
-                            if received >= _SPOOL_BUDGET_MIN_BYTES:
+                            if budgeted and received >= _SPOOL_BUDGET_MIN_BYTES:
                                 if not _spool_slot(host):
                                     await self._busy()(scope, receive, send)
                                     return

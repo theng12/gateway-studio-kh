@@ -64,8 +64,8 @@ def small_ceiling(limit: int = 16 * 1024):
     reaches it — the table is what the middleware reads.
     """
     return patch.object(api, "_UPLOAD_CEILINGS",
-                        tuple((pattern, limit, what)
-                              for pattern, _ceiling, what in api._UPLOAD_CEILINGS))
+                        tuple((pattern, limit, what, kind)
+                              for pattern, _ceiling, what, kind in api._UPLOAD_CEILINGS))
 
 
 def fresh() -> None:
