@@ -56,7 +56,12 @@ _PNG = (
 
 
 def _staged(name: str = "scene.png", content: bytes = _PNG, media_type: str = "image/png") -> Path:
-    directory = Path(tempfile.mkdtemp(prefix="staged-", dir=_TEMP_ROOT))
+    # **Inside the artifact store**, because that is the only place the Gateway stages a
+    # reference and the adapters refuse anything else (review 2026-10-28). A fixture that
+    # writes beside the profile was testing a shape the gateway never produces.
+    artifacts = Path(os.environ["GATEWAY_ARTIFACTS"])
+    artifacts.mkdir(parents=True, exist_ok=True)
+    directory = Path(tempfile.mkdtemp(prefix="staged-", dir=artifacts))
     path = directory / name
     path.write_bytes(content)
     path.touch()
@@ -247,7 +252,10 @@ class FalRequestMappingTests(unittest.TestCase):
         self.assertIn("at least one reference image", str(caught.exception))
 
     def test_a_staged_file_that_has_gone_is_named_not_silently_dropped(self) -> None:
-        missing = _TEMP_ROOT / "gone" / "scene.png"
+        # Gone, not "outside": the file was staged inside the artifact store and then removed,
+        # which is the case this names. A path outside the store is a different refusal now.
+        missing = _staged("gone.png")
+        missing.unlink()
         with self.assertRaises(BackendError) as caught:
             fal_video_input(_request(
                 "fal-ai", "alibaba/wan-3.0/image-to-video", prompt="x",

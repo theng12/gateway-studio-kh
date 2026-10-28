@@ -52,6 +52,18 @@ os.environ.update(
     }
 )
 
+def _artifact_path(name: str) -> Path:
+    """A staged upload where the Gateway really stages one — inside ARTIFACT_DIR.
+
+    The adapters now refuse a path outside the artifact store (review 2026-10-28), because a
+    params dict can name any file; a fixture writing beside the profile was testing a shape
+    the gateway never produces.
+    """
+    artifacts = Path(os.environ["GATEWAY_ARTIFACTS"])
+    artifacts.mkdir(parents=True, exist_ok=True)
+    return artifacts / name
+
+
 from gateway.adapters import studio_hub as hub_module  # noqa: E402
 from gateway.adapters.base import BackendError, BackendRequest, BackendResult  # noqa: E402
 from gateway.store import JobStore  # noqa: E402
@@ -387,7 +399,7 @@ class DeliveryReceiptTests(_HubCase):
         self.assertTrue(result.payload["delivery_ack"]["ok"])
 
     def test_transcription_delivery_is_acknowledged_on_its_own_route(self) -> None:
-        upload = _TEMP_ROOT / "audio.wav"
+        upload = _artifact_path("audio.wav")
         upload.write_bytes(b"audio")
         hub = _Hub()
         result = self.generate_then_deliver(
@@ -587,13 +599,15 @@ class SubmitConnectFailureTests(_HubCase):
         self.assertIs(exc.upstream_accepted, False)
 
     def test_the_same_applies_to_the_transcription_route(self) -> None:
+        _artifact_path("a.mp3").write_bytes(b"audio")
         hub = _Hub(connect_error=True)
         with self.assertRaises(hub_module.BackendError) as caught:
             self.generate(hub, self.request(
                 modality="transcription",
-                # Any existing file will do: the connection is refused before a
-                # byte of it matters.
-                params={"_upload_path": __file__, "_upload_name": "a.mp3"},
+                # A real staged upload inside the artifact store: the connection is
+                # refused before a byte of it matters, but the path the Gateway would have
+                # written is the only kind an adapter reads at all (review 2026-10-28).
+                params={"_upload_path": str(_artifact_path("a.mp3")), "_upload_name": "a.mp3"},
             ))
         self.assertEqual(caught.exception.code, "LOCATION_UNREACHABLE")
         self.assertIs(caught.exception.upstream_accepted, False)
@@ -1927,7 +1941,7 @@ class HubContractHardeningTests(_HubCase):
             self.addCleanup(patcher.stop)
 
     def _transcribe(self, hub: _Hub, **params: Any) -> BackendResult:
-        upload = _TEMP_ROOT / "harden.wav"
+        upload = _artifact_path("harden.wav")
         upload.write_bytes(b"audio")
         params = {"_upload_path": str(upload), "_upload_name": "same-name.wav", **params}
         return self.generate(hub, self.request(modality="transcription", params=params))
@@ -2743,7 +2757,11 @@ class ImageReferenceDispatchTests(_HubCase):
     """
 
     def staged(self, count: int = 2) -> dict:
-        directory = _TEMP_ROOT / f"refs-{time.time_ns()}"
+        # Inside the artifact store, which is the only place the Gateway stages a reference
+        # and the only place the adapters will read one (review 2026-10-28).
+        artifacts = Path(os.environ["GATEWAY_ARTIFACTS"])
+        artifacts.mkdir(parents=True, exist_ok=True)
+        directory = artifacts / f"refs-{time.time_ns()}"
         directory.mkdir(parents=True, exist_ok=True)
         paths = []
         for index in range(count):
