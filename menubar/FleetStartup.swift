@@ -163,6 +163,13 @@ extension FleetStartup {
                 menu.addItem(ClosureMenuItem("Remote Final Rendering…") { FleetRemoteRender.show(done: done) })
             }
             FleetModelInstall.menuItems(for: machine, done: done).forEach(menu.addItem)
+            // This Mac's preset, and removing a model from it (owner decision 2026-10-28). Both are
+            // offers, not assertions about its Hub version: an older Hub refuses in its own words
+            // naming the version it needs, which is more use than an entry that is silently absent.
+            FleetModelPreset.menuItems(for: machine, done: done).forEach(menu.addItem)
+            if let remove = FleetModelPreset.removeItem(for: machine, done: done) {
+                menu.addItem(remove)
+            }
             if !actions.isEmpty {
                 if renamable || pausable || configurable { menu.addItem(.separator()) }
                 let heading = NSMenuItem(title: FleetStartup.badge(machine.startup), action: nil, keyEquivalent: "")

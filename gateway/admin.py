@@ -4062,6 +4062,64 @@ def fleet_machine_install_model(controller_id: str, machine_id: str, package_id:
 
 
 @router.get(
+    "/api/fleet/controllers/{controller_id}/machines/{machine_id}/model-presets",
+    dependencies=[Depends(require_admin)],
+)
+def fleet_machine_model_presets(controller_id: str, machine_id: str) -> Any:
+    """One Mac's install screen, as its own Hub computed it (owner decision 2026-10-28).
+
+    The answer is relayed unchanged: `memoryGb`, the free space on the models' own volume, the four
+    presets with each one's installed count and cost, and every model grouped by job. The Gateway
+    does not compute a second projection - a preset's "9 of 10" is the Hub's count of its own
+    verified receipts, and a model's floor is its manifest's. An offline Mac answers
+    `NODE_UNREACHABLE` in its own words, so one sleeping Mac never blanks the page.
+    """
+    try:
+        return startup_control.model_presets(controller_id, machine_id)
+    except startup_control.StartupError as error:
+        return JSONResponse(status_code=error.status, content=error.body)
+
+
+@router.post(
+    "/api/fleet/controllers/{controller_id}/machines/{machine_id}/model-preset",
+    # Owner-only: a preset decides what a Mac installs and what its one-time cleanup moves.
+    dependencies=[Depends(require_owner)],
+)
+def fleet_machine_set_model_preset(controller_id: str, machine_id: str, payload: dict[str, Any]) -> Any:
+    """Set one Mac's preset. Body `{"preset_id": str, "requested_by": str}`.
+
+    `requested_by` is required and recorded on that Mac, like the unqualified-render grant. An
+    unknown preset id is refused by name; nothing is ever swapped for another.
+    """
+    extra = set(payload) - {"preset_id", "requested_by"}
+    if extra:
+        return _error(400, f"provide only preset_id and requested_by, not {sorted(extra)}", "BAD_REQUEST")
+    try:
+        return startup_control.set_model_preset(
+            controller_id, machine_id, str(payload.get("preset_id") or ""),
+            requested_by=str(payload.get("requested_by") or ""))
+    except startup_control.StartupError as error:
+        return JSONResponse(status_code=error.status, content=error.body)
+
+
+@router.delete(
+    "/api/fleet/controllers/{controller_id}/machines/{machine_id}/model-packages/{package_id}",
+    dependencies=[Depends(require_owner)],
+)
+def fleet_machine_remove_model(controller_id: str, machine_id: str, package_id: str) -> Any:
+    """Remove one model from one Mac (owner decision 2026-10-28).
+
+    The Hub **moves** the package into that library's trash - never a delete - and refuses while a
+    job, a paused model or a dependent package is using it, in its own words. Owner-only: removing a
+    model changes what a Mac can run.
+    """
+    try:
+        return startup_control.remove_model(controller_id, machine_id, package_id)
+    except startup_control.StartupError as error:
+        return JSONResponse(status_code=error.status, content=error.body)
+
+
+@router.get(
     "/api/fleet/controllers/{controller_id}/machines/{machine_id}/model-downloads/{run_id}",
     dependencies=[Depends(require_admin)],
 )
