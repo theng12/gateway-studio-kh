@@ -182,6 +182,50 @@ test('a stated gender is shown, and an unstated one prints nothing', () => {
     'an unrecognised value prints nothing rather than the raw word');
 });
 
+test('changing the model re-reads the voices and calls nothing that is not there', async () => {
+  // **A regression this file was blind to.** Splitting the deferred delivery feature onto its
+  // own branch deleted `applyCreateModelControls` and left `createModelChanged` calling it —
+  // a ReferenceError on every model change of the Create page. No suite drove that function.
+  const nodes = {
+    'cf-model': element({ value: 'a::b' }),
+    'cf-voice_id': element(),
+    'cf-voice_id_manual': element({ style: { display: 'none' } }),
+    'cf-voice-hint': element(),
+  };
+  const { context, calls } = harness(nodes, { '/voices?model_id=a%3A%3Ab': { voices: [] } });
+  vm.runInContext('createTab = "audio";', context);
+  assert.doesNotThrow(() => vm.runInContext('createModelChanged()', context),
+    'a model change must not throw');
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(calls, ['/voices?model_id=a%3A%3Ab'], 'and re-asks for that model\'s voices');
+});
+
+test('the Subtitle tab says what this model accepts, read from its row', () => {
+  const nodes = {
+    'cf-model': element({ value: 'hub::whisper' }),
+    'cf-upload-limit': element(),
+  };
+  const { context } = harness(nodes);
+  const catalogue = { by_modality: { transcription: [
+    { id: 'hub::whisper', upload_limit_bytes: 100 * 1024 * 1024 },
+    { id: 'cloud::whisper', upload_limit_bytes: 25 * 1024 * 1024 },
+    { id: 'quiet::whisper' },
+  ] } };
+  vm.runInContext(`createTab = 'subtitle'; createCatalogue = ${JSON.stringify(catalogue)};`,
+    context);
+  vm.runInContext('showUploadLimit()', context);
+  assert.equal(nodes['cf-upload-limit'].textContent,
+    'This model accepts up to 100 MB per recording.');
+  nodes['cf-model'].value = 'cloud::whisper';
+  vm.runInContext('showUploadLimit()', context);
+  assert.equal(nodes['cf-upload-limit'].textContent,
+    'This model accepts up to 25 MB per recording.');
+  // A row that states no limit says nothing: never a number we invented.
+  nodes['cf-model'].value = 'quiet::whisper';
+  vm.runInContext('showUploadLimit()', context);
+  assert.equal(nodes['cf-upload-limit'].textContent, '');
+});
+
 test('the download name is read from the route, not rebuilt in the page', () => {
   const { context } = harness({});
   const filename = vm.runInContext('filenameFromDisposition', context);

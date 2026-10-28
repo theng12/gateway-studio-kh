@@ -1955,6 +1955,8 @@ def create_models(request: Request) -> dict[str, Any]:
     convenience and the refusal is the rule.
     """
     paid = _guest_paid_allowed(request)
+    from .api import upload_limit_bytes
+
     wanted = set(CREATE_MODALITIES) | {"transcription"}
     by_modality: dict[str, list[dict[str, Any]]] = {m: [] for m in wanted}
     for modality in wanted:
@@ -1967,6 +1969,13 @@ def create_models(request: Request) -> dict[str, Any]:
                 "provider_name": fleet.FLEET_DISPLAY_NAME if fleet.is_location_provider(definition.id) else definition.display_name,
                 "free_lane": _is_free_lane(definition, model["model_id"]), "data_use": definition.data_use,
             }
+            if modality == "transcription":
+                # **The number the upload door will enforce, published where the file is
+                # picked** (§1: a limit that is enforced must also be shown). Read from the same
+                # function the route refuses with, so the page and the refusal cannot disagree;
+                # a Hub takes 100 MiB and a cloud API 25 MiB, which a constant on either side
+                # got wrong in one direction or the other (review 2026-10-29d, finding 4).
+                metadata[compound]["upload_limit_bytes"] = upload_limit_bytes(compound)
         for row in catalog.rows(modality):
             if row["id"] in metadata:
                 if not paid and row.get("chargeable") is True:

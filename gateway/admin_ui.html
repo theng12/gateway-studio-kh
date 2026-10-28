@@ -3784,7 +3784,8 @@ function renderCreateForm() {
 
   const upload = t.modality === 'transcription'
     ? `<div style="margin-bottom:12px"><label>Recording</label>
-         <input type="file" id="cf-file" accept="audio/*,video/*"></div>
+         <input type="file" id="cf-file" accept="audio/*,video/*">
+         <div class="hint" id="cf-upload-limit"></div></div>
        <div style="margin-bottom:12px"><label>Language</label>
          <input type="text" id="cf-language" placeholder="leave blank to detect"></div>`
     : '';
@@ -3807,6 +3808,25 @@ function renderCreateForm() {
      <div class="row"><button class="primary" id="cf-go" onclick="submitCreate(this)">Generate</button>
        <span class="msg" id="cf-msg"></span></div>`;
   if (voiceLane && rows.length) loadCreateVoices();
+  showUploadLimit();
+}
+
+// **The selected model's own upload limit, where the file is chosen.** The row publishes it
+// from the same function the door refuses with (`upload_limit_bytes`), so the sentence here
+// and the 413 there cannot disagree — and a model that states none says nothing rather than
+// showing a number we invented.
+function showUploadLimit() {
+  const note = document.getElementById('cf-upload-limit');
+  if (!note) return;
+  const model = document.getElementById('cf-model');
+  const tab = currentTab();
+  const rows = (createCatalogue && createCatalogue.by_modality
+    && createCatalogue.by_modality[tab.modality]) || [];
+  const row = rows.find(entry => entry.id === (model ? model.value : '')) || null;
+  const limit = row && typeof row.upload_limit_bytes === 'number' ? row.upload_limit_bytes : null;
+  note.textContent = limit
+    ? `This model accepts up to ${Math.round(limit / (1024 * 1024))} MB per recording.`
+    : '';
 }
 
 // ---------------------------------------------------------------------------
@@ -3857,7 +3877,7 @@ function createVoiceValue() {
 
 function createModelChanged() {
   createVoices = { modelId: '', rows: [], error: '' };
-  applyCreateModelControls();
+  showUploadLimit();
   loadCreateVoices();
 }
 

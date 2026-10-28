@@ -283,8 +283,20 @@ final class CreateWorkspace: NSView {
     private var fileURL: URL?
     /// Why the chosen file cannot be sent, said before it is read rather than after the upload.
     private var fileProblem: String?
-    /// The gateway refuses a transcription upload past this (api.py `_MAX_UPLOAD_BYTES`).
-    private static let maxUploadBytes = 25 * 1024 * 1024
+    /// **The selected model's own upload limit, published by the gateway.**
+    ///
+    /// `/admin/api/create/models` carries `upload_limit_bytes` for every transcription row, read
+    /// from the same function the upload door refuses with (`upload_limit_bytes()`), so this
+    /// sentence and the door's 413 cannot disagree. It used to be a constant 25 MiB, which is a
+    /// cloud API's cap: the owner's own long narration on a local Hub takes 100 MiB and was
+    /// refused before it was read (§1: nothing about a model is hardcoded here).
+    /// `nil` when the row states none — then nothing is guessed and the gateway decides.
+    private var maxUploadBytes: Int? {
+        guard let row = selectedModelRow() else { return nil }
+        if let number = row["upload_limit_bytes"] as? NSNumber { return number.intValue }
+        if let number = row["upload_limit_bytes"] as? Int { return number }
+        return nil
+    }
     private var capabilityLabel: NSTextField?
     private var cancelButton: NSButton?
     private var retryAttemptButton: NSButton?
@@ -846,10 +858,12 @@ final class CreateWorkspace: NSView {
     /// Show the path, or say the file is too big — from its size on disk, without reading it.
     private func showFile(_ url: URL) {
         let size = (try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0
-        fileProblem = size > Self.maxUploadBytes
-            ? "This file is \(size / (1024 * 1024)) MB; the gateway accepts at most "
-                + "\(Self.maxUploadBytes / (1024 * 1024)) MB. Choose a shorter or compressed recording."
-            : nil
+        if let limit = maxUploadBytes, size > limit {
+            fileProblem = "This file is \(size / (1024 * 1024)) MB; this model accepts at most "
+                + "\(limit / (1024 * 1024)) MB. Choose a shorter or compressed recording."
+        } else {
+            fileProblem = nil
+        }
         fileHelp?.stringValue = fileProblem ?? url.path
     }
 
@@ -939,7 +953,8 @@ final class CreateWorkspace: NSView {
     private func readUpload(_ url: URL, then done: @escaping (Data?, String?) -> Void) {
         DispatchQueue.global(qos: .userInitiated).async {
             let size = (try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0
-            let data = size > Self.maxUploadBytes ? nil : try? Data(contentsOf: url)
+            let overLimit = self.maxUploadBytes.map { size > $0 } ?? false
+            let data = overLimit ? nil : try? Data(contentsOf: url)
             let hash = data.map { self.digest($0) }
             DispatchQueue.main.async { done(data?.isEmpty == false ? data : nil, hash) }
         }

@@ -201,7 +201,12 @@ _SPOOL_MAX_IN_FLIGHT = 8
 #: the share can never be below the largest ceiling (finding 5, resolved against finding 4).
 _SPOOL_PER_HOST_BYTES = max(_SPOOL_BUDGET_BYTES // 4, _LARGEST_CEILING)
 #: A sender that opens an upload and then dribbles (or stops) must not hold a slot for ever.
+#: **Both paths are watched** (review 2026-10-29d, finding 1): no message for this long, *or*
+#: fewer than `_SPOOL_MIN_PROGRESS_BYTES` inside one window, is a stall. 64 KiB per 30 s is
+#: about 2 KB/s — far below any real upload on a LAN or over Tailscale, and far above the one
+#: byte a minute a stuck or abandoned client sends.
 _SPOOL_IDLE_TIMEOUT_S = 30.0
+_SPOOL_MIN_PROGRESS_BYTES = 64 * 1024
 #: Bodies below this never take a slot or a reservation: ordinary JSON is a few kilobytes and
 #: making every admin POST compete for the upload pool would turn a burst of small calls into
 #: 503s. An upload is what this pool is for.
@@ -235,10 +240,15 @@ def upload_door(path: str) -> tuple[int, str, bool]:
 
 
 def _spool_take(host: str, count: int) -> bool:
-    """Reserve `count` bytes for `host`, or `False` when a budget or the slot count is full."""
+    """Reserve `count` bytes for `host`, or `False` when the budget has no room.
+
+    **The slot count is not checked here.** `_spool_slot` already incremented it, so testing
+    `in_flight >= _SPOOL_MAX_IN_FLIGHT` again refused the *eighth* upload on every run —
+    the slot that had just been granted was the one that failed the test (review 2026-10-29d,
+    finding 2). Story sends reference images with `Promise.all` and does not retry, so a
+    spurious 503 fails a scene.
+    """
     with _SPOOL_LOCK:
-        if _spool_state["in_flight"] >= _SPOOL_MAX_IN_FLIGHT:
-            return False
         held = _spool_state["hosts"].get(host, 0)
         if _spool_state["bytes"] + count > _SPOOL_BUDGET_BYTES:
             return False
@@ -275,6 +285,25 @@ def _spool_release(host: str, count: int, *, slot: bool = True) -> None:
 _PROXY_HEADERS = (b"forwarded", b"x-forwarded-for", b"x-forwarded-host", b"x-forwarded-proto")
 
 
+def _cross_origin(scope: Any) -> bool:
+    """Was this request sent by a page that is not this Gateway's own?
+
+    A browser always sends `Origin` on a cross-origin POST. No header at all means a
+    non-browser client (Story Studio, a script), which is not this question. A header is
+    compared against the request's own `Host`, the same way `admin_session.same_origin` does.
+    """
+    from urllib.parse import urlsplit
+
+    headers = {key.lower(): value for key, value in (scope.get("headers") or [])}
+    origin = (headers.get(b"origin") or b"").decode("latin-1").strip()
+    if not origin:
+        return False
+    host = (headers.get(b"host") or b"").decode("latin-1").strip()
+    if not host:
+        return True
+    return urlsplit(origin).netloc.lower() != host.lower()
+
+
 def _upload_credentials_ok(scope: Any) -> bool:
     """A bearer key or a valid session cookie, read from the headers alone.
 
@@ -288,19 +317,24 @@ def _upload_credentials_ok(scope: Any) -> bool:
     from .config import gateway_api_key
 
     headers = {key.lower(): value for key, value in (scope.get("headers") or [])}
-    # **A direct loopback peer counts, and only a direct one.** `require_admin` has always
-    # trusted this Mac's own window and a browser on this Mac without a token; a door that
-    # refused them would break the owner's own pack import while stopping nothing (a local
-    # process can read the files anyway). A proxied request is not loopback: the same header
-    # test `request_is_loopback` uses.
-    if not any(name in headers for name in _PROXY_HEADERS):
+    # **`require_admin`'s rule, exactly** (review 2026-10-29d, finding 3). It trusts a
+    # loopback *peer* only while the gateway is itself **bound** to loopback: on a fleet bind
+    # (0.0.0.0) a request from 127.0.0.1 is an ordinary unauthenticated caller, and trusting
+    # it here had the body read before the route answered 401.
+    from .config import is_loopback
+
+    if is_loopback() and not any(name in headers for name in _PROXY_HEADERS):
         peer = (scope.get("client") or ("", 0))[0]
         try:
             address = ipaddress.ip_address(peer)
             if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped:
                 address = address.ipv4_mapped
             if address.is_loopback:
-                return True
+                # **A cross-site form is still refused.** A browser sends `Origin`; an upload
+                # from a page that is not this Gateway's own is not the owner's window, even
+                # when it is running on this Mac.
+                if not _cross_origin(scope):
+                    return True
         except ValueError:
             pass
     authorization = (headers.get(b"authorization") or b"").decode("latin-1").strip()
@@ -314,6 +348,43 @@ def _upload_credentials_ok(scope: Any) -> bool:
         if name == admin_session.COOKIE and admin_session.session(value) is not None:
             return True
     return False
+
+
+class _Stalled(Exception):
+    """The body stopped arriving, or arrived too slowly. Answered as 408."""
+
+
+class _BodyWatch:
+    """Idle and progress watchdog for one request body.
+
+    Wraps `receive`: silence longer than `_SPOOL_IDLE_TIMEOUT_S`, or a window in which fewer
+    than `_SPOOL_MIN_PROGRESS_BYTES` arrived, raises `_Stalled`. **Both upload paths use it** —
+    the chunked one catches the raise directly, the declared one (where the raise happens
+    inside FastAPI's parser) marks a flag and lets the middleware answer instead.
+    """
+
+    def __init__(self, receive: Any, on_stall: Any) -> None:
+        self._receive = receive
+        self._on_stall = on_stall
+        self.total = 0
+        self._window_start = time.monotonic()
+        self._window_bytes = 0
+
+    async def __call__(self) -> dict[str, Any]:
+        try:
+            message = await asyncio.wait_for(self._receive(), _SPOOL_IDLE_TIMEOUT_S)
+        except asyncio.TimeoutError:
+            self._on_stall()
+            raise _Stalled() from None
+        if message.get("type") == "http.request":
+            self.total += len(message.get("body") or b"")
+            now = time.monotonic()
+            if now - self._window_start >= _SPOOL_IDLE_TIMEOUT_S:
+                if self.total - self._window_bytes < _SPOOL_MIN_PROGRESS_BYTES:
+                    self._on_stall()
+                    raise _Stalled()
+                self._window_start, self._window_bytes = now, self.total
+        return message
 
 
 class BoundedUploadBody:
@@ -351,6 +422,15 @@ class BoundedUploadBody:
                            f"{limit // (1024 * 1024)} MB for {what}."),
                 "code": "UPLOAD_TOO_LARGE",
             },
+        )
+
+    @staticmethod
+    def _cross_site() -> JSONResponse:
+        return JSONResponse(
+            status_code=403,
+            content={"detail": "This upload came from another site. Send it from this "
+                               "Gateway's own page or with the gateway API key.",
+                     "code": "CROSS_SITE_UPLOAD"},
         )
 
     @staticmethod
@@ -404,6 +484,11 @@ class BoundedUploadBody:
         if declared.isdigit() and int(declared) > limit:
             await self._refusal(limit, int(declared), what)(scope, receive, send)
             return
+        if source == "route" and _cross_origin(scope):
+            # Checked even with credentials: a page on another origin must not upload with the
+            # operator's cookie, and the answer must come before the body.
+            await self._cross_site()(scope, receive, send)
+            return
         if source == "route" and not _upload_credentials_ok(scope):
             # **Then credentials, still before the body** (finding 3): FastAPI would otherwise
             # parse the whole multipart before it solved `require_auth`, and an unauthenticated
@@ -435,10 +520,26 @@ class BoundedUploadBody:
             _spool_release(host, 0)  # the slot, not the bytes: nothing was reserved
             await self._busy()(scope, receive, send)
             return
+        stalled = {"hit": False}
+
+        def note_stall() -> None:
+            stalled["hit"] = True
+
+        async def guarded_send(message: dict[str, Any]) -> None:
+            # FastAPI turns an exception from its parser into a 400; when the watchdog fired,
+            # that answer is replaced by the 408 below, so nothing reaches the client twice.
+            if stalled["hit"]:
+                return
+            await send(message)
+
         try:
-            await self.app(scope, receive, send)
+            await self.app(scope, _BodyWatch(receive, note_stall), guarded_send)
+        except _Stalled:
+            pass
         finally:
             _spool_release(host, size)
+        if stalled["hit"]:
+            await self._stalled()(scope, receive, send)
 
     async def _bounded_stream(self, scope: Any, receive: Any, send: Any, limit: int,
                               what: str, host: str, budgeted: bool) -> None:
@@ -448,10 +549,11 @@ class BoundedUploadBody:
         slot = False
         try:
             with tempfile.SpooledTemporaryFile(max_size=1 << 20) as spool:
+                watched = _BodyWatch(receive, lambda: None)
                 while True:
                     try:
-                        message = await asyncio.wait_for(receive(), _SPOOL_IDLE_TIMEOUT_S)
-                    except asyncio.TimeoutError:
+                        message = await watched()
+                    except _Stalled:
                         await self._stalled()(scope, receive, send)
                         return
                     if message.get("type") != "http.request":

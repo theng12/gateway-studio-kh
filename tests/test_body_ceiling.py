@@ -26,9 +26,11 @@ import json
 import os
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -129,6 +131,18 @@ def concrete(path: str) -> str:
                .replace("{quote_id}", "q1").replace("{sha256}", "a" * 64)
 
 
+class _PoolCase(unittest.TestCase):
+    """Resets the upload pool around every test: a leaked reservation would refuse the next."""
+
+    def setUp(self) -> None:
+        with api._SPOOL_LOCK:
+            api._spool_state.update({"bytes": 0, "in_flight": 0, "hosts": {}})
+
+    def tearDown(self) -> None:
+        with api._SPOOL_LOCK:
+            api._spool_state.update({"bytes": 0, "in_flight": 0, "hosts": {}})
+
+
 class EveryDoorIsNamed(unittest.TestCase):
     def test_the_walk_finds_the_routes_that_take_a_file(self) -> None:
         found = file_and_form_routes()
@@ -218,7 +232,7 @@ class EveryDoorIsNamed(unittest.TestCase):
         self.assertIsNone(api.body_ceiling_for("/v1/final-renders/blobs/" + "a" * 64))
 
 
-class TheBudgetFitsRealWork(unittest.TestCase):
+class TheBudgetFitsRealWork(_PoolCase):
     def test_one_upload_of_the_largest_ceiling_always_fits(self) -> None:
         with api._SPOOL_LOCK:
             api._spool_state.update({"bytes": 0, "in_flight": 0, "hosts": {}})
@@ -338,7 +352,200 @@ class CredentialsBeforeTheBody(unittest.TestCase):
         self.assertEqual(response.json()["code"], "UPLOAD_BUDGET_BUSY")
 
 
-class TheSpoolBudget(unittest.TestCase):
+class TheWatchdog(_PoolCase):
+    """Finding 1: a declared-length upload is watched too, and dribbling is not progress."""
+
+    def middleware(self, declared: str, receive):
+        sent: list[dict] = []
+
+        async def send(message: dict) -> None:
+            sent.append(message)
+
+        scope = {"type": "http", "method": "POST", "path": "/v1/images/source-images",
+                 "headers": [(b"authorization", b"Bearer " + os.environ["GATEWAY_API_KEY"].encode()),
+                             (b"content-length", declared.encode())],
+                 "client": ("127.0.0.1", 1234)}
+
+        async def drain(_scope: dict, read: Any, _send: Any) -> None:
+            # The route reads its body — that is what the watchdog guards. An app that never
+            # read would never stall, and the test would pass for the wrong reason.
+            while True:
+                message = await read()
+                if not message.get("more_body"):
+                    return
+
+        asyncio.run(api.BoundedUploadBody(drain)(scope, receive, send))
+        return [m for m in sent if m["type"] == "http.response.start"]
+
+    def test_a_declared_upload_that_goes_silent_is_dropped(self) -> None:
+        # Content-Length 5 MB, one byte sent, then nothing. Before the fix this held its slot
+        # and its reservation for ever.
+        calls = {"n": 0}
+
+        async def receive() -> dict:
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return {"type": "http.request", "body": b"x", "more_body": True}
+            await asyncio.sleep(1.0)
+            return {"type": "http.request", "body": b"", "more_body": False}
+
+        with api._SPOOL_LOCK:
+            api._spool_state.update({"bytes": 0, "in_flight": 0, "hosts": {}})
+        with patch.object(api, "_SPOOL_IDLE_TIMEOUT_S", 0.05), \
+                patch.object(api, "is_loopback", lambda: True, create=True):
+            started = self.middleware(str(5 * MB), receive)
+        self.assertEqual(started[0]["status"], 408, started)
+        self.assertEqual(api._spool_state["in_flight"], 0)
+        self.assertEqual(api._spool_state["bytes"], 0)
+
+    def test_a_dribbling_upload_is_dropped_even_though_it_never_goes_silent(self) -> None:
+        # One byte every 30 ms: never a timeout on a single read, but far below the window's
+        # minimum progress. Silence is not the only shape of a stalled upload.
+        seen = {"n": 0}
+
+        async def receive() -> dict:
+            # **Bounded**, so a build without the watchdog ends instead of looping: 60 bytes
+            # at 30 ms is well under a second, and the fix must stop it long before that.
+            seen["n"] += 1
+            await asyncio.sleep(0.03)
+            return {"type": "http.request", "body": b"x", "more_body": seen["n"] < 60}
+
+        with api._SPOOL_LOCK:
+            api._spool_state.update({"bytes": 0, "in_flight": 0, "hosts": {}})
+        with patch.object(api, "_SPOOL_IDLE_TIMEOUT_S", 0.05), \
+                patch.object(api, "is_loopback", lambda: True, create=True):
+            started = self.middleware(str(5 * MB), receive)
+        self.assertEqual(started[0]["status"], 408, started)
+        self.assertEqual(api._spool_state["in_flight"], 0)
+
+
+class EightAtOnce(_PoolCase):
+    """Finding 2: the eighth concurrent upload was refused by an off-by-one."""
+
+    def setUp(self) -> None:
+        with api._SPOOL_LOCK:
+            api._spool_state.update({"bytes": 0, "in_flight": 0, "hosts": {}})
+
+    def test_eight_slots_are_eight_and_the_ninth_is_refused(self) -> None:
+        for index in range(api._SPOOL_MAX_IN_FLIGHT):
+            self.assertTrue(api._spool_slot(f"host-{index}"), f"slot {index + 1} of 8")
+        # The bug: `_spool_take` re-tested the count the slot had just reached.
+        self.assertTrue(api._spool_take("host-0", 1 << 20), "the eighth upload must reserve")
+        self.assertFalse(api._spool_slot("host-8"), "the ninth is refused")
+        api._spool_release("host-0", 1 << 20)
+        for index in range(api._SPOOL_MAX_IN_FLIGHT):
+            api._spool_release(f"host-{index}", 0)
+
+    def test_eight_parallel_one_megabyte_uploads_all_reach_the_route(self) -> None:
+        # Story sends reference images with `Promise.all` and does not retry: a spurious 503
+        # fails the scene. Each upload is a real 1 MiB body from the same host.
+        barrier = threading.Barrier(8)
+        results: list[int] = []
+        lock = threading.Lock()
+
+        def one() -> None:
+            client = TestClient(api.app, client=FRIEND)
+            body = b"\x89PNG\r\n\x1a\n" + b"x" * ((1 * MB) - 8)
+            barrier.wait(timeout=10)
+            response = client.post("/v1/images/source-images", headers=KEY,
+                                   files={"upload": ("scene.png", body, "image/png")})
+            with lock:
+                results.append(response.status_code)
+            client.close()
+
+        threads = [threading.Thread(target=one) for _ in range(8)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=30)
+        self.assertEqual(len(results), 8, results)
+        self.assertNotIn(503, results, f"a spurious 503 fails Story's scene: {results}")
+
+
+class TheLoopbackRule(unittest.TestCase):
+    """Finding 3: the pre-body check uses `require_admin`'s rule, exactly, plus Origin."""
+
+    def setUp(self) -> None:
+        # A loopback peer, no credentials at all.
+        self.client = TestClient(api.app, client=("127.0.0.1", 5555))
+        self.addCleanup(self.client.close)
+
+    def upload(self, headers: dict | None = None):
+        body = b"\x89PNG\r\n\x1a\n" + b"x" * 64
+        return self.client.post("/v1/images/source-images", headers=headers or {},
+                                files={"upload": ("a.png", body, "image/png")})
+
+    def test_a_loopback_peer_is_trusted_only_on_a_loopback_bind(self) -> None:
+        # `require_admin` trusts loopback only while the gateway is *bound* to loopback. On a
+        # fleet bind (0.0.0.0) this same request is an ordinary unauthenticated caller, and
+        # trusting it here read the body before the route answered 401.
+        with patch("gateway.config.is_loopback", lambda: False):
+            response = self.upload()
+        self.assertEqual(response.status_code, 401, response.text)
+        self.assertEqual(response.json()["code"], "UNAUTHENTICATED_UPLOAD")
+
+    def test_on_a_loopback_bind_the_owners_own_window_still_works(self) -> None:
+        with patch("gateway.config.is_loopback", lambda: True):
+            response = self.upload()
+        # The route still wants its own credential (`/v1/...` needs the key) — what must not
+        # happen is the *door* refusing a loopback peer it is supposed to trust.
+        self.assertNotEqual(response.json().get("code"), "UNAUTHENTICATED_UPLOAD", response.text)
+
+    def test_a_cross_site_origin_is_refused_even_with_the_key(self) -> None:
+        # A page on another site must not upload with the operator's key or cookie.
+        response = self.upload({**KEY, "Origin": "http://evil.example"})
+        self.assertEqual(response.status_code, 403, response.text)
+        self.assertEqual(response.json()["code"], "CROSS_SITE_UPLOAD")
+
+    def test_this_gateways_own_origin_is_accepted(self) -> None:
+        response = self.upload({**KEY, "Origin": "http://testserver"})
+        self.assertNotIn(response.status_code, (401, 403), response.text)
+
+
+class ThePublishedUploadLimit(unittest.TestCase):
+    """Finding 4: each transcription model publishes what it accepts, and the page shows it."""
+
+    def test_a_transcription_row_publishes_the_limit_its_door_enforces(self) -> None:
+        from gateway import admin
+        from gateway.providers import definitions as defs
+
+        definition = SimpleNamespace(id="studio-hub-x", display_name="Studio Hub",
+                                     kind=defs.KIND_STUDIO_HUB, data_use="", free_tier=None)
+        model = {"model_id": "whisper-x", "display_name": "Whisper X"}
+        row = {"id": "studio-hub::whisper-x", "model_id": "whisper-x",
+               "display_name": "Whisper X", "chargeable": False}
+        with patch.object(admin.registry.models, "enabled_models",
+                          lambda modality: [(definition, model)] if modality == "transcription" else []), \
+                patch.object(admin.catalog, "rows",
+                             lambda modality: [dict(row)] if modality == "transcription" else []), \
+                patch.object(api.catalog, "resolve", lambda *a, **k: (definition, model)):
+            payload = admin.create_models(SimpleNamespace(cookies={}))
+            # Read inside the patch: it is the same function the door refuses with, which is
+            # the point — the published number and the enforced number are one call.
+            expected = api.upload_limit_bytes("studio-hub::whisper-x")
+        published = payload["by_modality"]["transcription"][0]["upload_limit_bytes"]
+        self.assertEqual(published, expected)
+        self.assertGreaterEqual(published, api._MAX_UPLOAD_BYTES_HUB,
+                                "a Hub row must publish the Hub's ceiling, not a cloud 25 MB")
+
+    def test_other_lanes_publish_nothing_they_do_not_have(self) -> None:
+        from gateway import admin
+        from gateway.providers import definitions as defs
+
+        definition = SimpleNamespace(id="openai-direct", display_name="OpenAI",
+                                     kind="openai_compatible", data_use="", free_tier=None)
+        model = {"model_id": "mock-chat", "display_name": "Mock Chat"}
+        row = {"id": "openai-direct::mock-chat", "model_id": "mock-chat",
+               "display_name": "Mock Chat", "chargeable": True}
+        with patch.object(admin.registry.models, "enabled_models",
+                          lambda modality: [(definition, model)] if modality == "chat" else []), \
+                patch.object(admin.catalog, "rows",
+                             lambda modality: [dict(row)] if modality == "chat" else []):
+            payload = admin.create_models(SimpleNamespace(cookies={}))
+        self.assertNotIn("upload_limit_bytes", payload["by_modality"]["chat"][0])
+
+
+class TheSpoolBudget(_PoolCase):
     """Findings B/4/5: parallel and dribbling uploads cannot hold the process."""
 
     def setUp(self) -> None:
