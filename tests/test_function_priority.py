@@ -462,6 +462,17 @@ func capture(_ view: NSView, to url: URL) {
             "priority_order": ["voice", "image"]
         ])!)
         assert(full.priorityOrder == ["voice", "image"])
+
+        // **Final render in the ranking, plain words** (owner, 2026-10-28).
+        assert(FleetPriorityNames.title(for: "render", from: nil) == "Final render")
+        assert(FleetPriorityNames.title(for: "render", from: "Final render") == "Final render")
+        let withRender = FleetWorkPriorityForm(FleetWorkPriorityPolicy([
+            "priority_functions": [["id": "chat", "title": "Chat Studio"],
+                                   ["id": "render"]],
+            "priority_order": ["chat", "render"]
+        ])!)
+        assert(withRender.priorityOrder == ["chat", "render"])
+        assert(buttons(withRender.view).contains { $0.title == "Final render" && $0.state == .on })
         full.view.frame = NSRect(x: 0, y: 0, width: 480, height: full.view.fittingSize.height)
         full.view.layoutSubtreeIfNeeded()
         let long = buttons(full.view).first { $0.title.hasPrefix("A very long") }!

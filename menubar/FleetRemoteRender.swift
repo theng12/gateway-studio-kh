@@ -105,7 +105,7 @@ struct FleetRenderWorker: Equatable {
         parts.append(idleText)
         parts.append(networkText + (address.map { " (\($0))" } ?? ""))
         parts.append(statusText)
-        if let speedText { parts.append(speedText) } else { parts.append("Not measured yet") }
+        if let speedText { parts.append(speedText) }
         if renderWhilePaused { parts.append("Your pause does not stop its rendering") }
         return parts.joined(separator: " · ")
     }
@@ -193,8 +193,8 @@ final class FleetRemoteRenderForm: NSObject {
     private let pauseBoxes: [NSButton]
     let view: NSView
 
-    init(workers: [FleetRenderWorker], jobs: [FleetRenderJob], rank: [FleetRenderRankRow],
-         basis: String?) {
+    init(workers: [FleetRenderWorker], jobs: [FleetRenderJob], rank: [FleetRenderRankRow] = [],
+         basis: String? = nil) {
         let explanation = PageKit.label(
             "Untested. A Mac you allow here is asked to render final videos without a qualification record. "
                 + "If a render on it fails, that one episode waits for recovery - it is not rendered on this Mac "

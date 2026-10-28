@@ -157,10 +157,10 @@ class EligibleFallthroughTests(Case):
     """The real candidate list: eligibility, fastest-first, and busy fallthrough."""
 
     def test_the_fastest_idle_mac_heads_the_list(self) -> None:
-        with Fleet(render_location({
-            "slow": spec(worker("slow", accepting=ACCEPTING),
+        with Fleet(location({
+            "slow": spec(worker("slow", accepted=ACCEPTING),
                          machine_row(speed=0.8, renders=4), "http://192.168.1.11:1"),
-            "fast": spec(worker("fast", accepting=ACCEPTING),
+            "fast": spec(worker("fast", accepted=ACCEPTING),
                          machine_row(chip="Apple M2", speed=2.9, renders=2),
                          "http://192.168.1.12:1"),
         })):
@@ -169,10 +169,10 @@ class EligibleFallthroughTests(Case):
                          "measured speed outranks chip generation")
 
     def test_a_busy_fastest_mac_falls_through_to_the_next(self) -> None:
-        busy = render_location({
-            "fast": spec(worker("fast", accepting=ACCEPTING),
+        busy = location({
+            "fast": spec(worker("fast", accepted=ACCEPTING),
                          machine_row(speed=2.9, renders=2), "http://192.168.1.12:1"),
-            "next-best": spec(worker("next-best", accepting=ACCEPTING),
+            "next-best": spec(worker("next-best", accepted=ACCEPTING),
                               machine_row(speed=1.4, renders=5), "http://192.168.1.13:1"),
         })
         # The busy Mac's own worker says so, which is how the Hub reports a running render.
@@ -185,8 +185,8 @@ class EligibleFallthroughTests(Case):
                          "an ineligible Mac is not a candidate at all, so the next best takes it")
 
     def test_an_unmeasured_mac_still_renders_when_it_is_the_only_one(self) -> None:
-        with Fleet(render_location({
-            "only": spec(worker("only", accepting=ACCEPTING),
+        with Fleet(location({
+            "only": spec(worker("only", accepted=ACCEPTING),
                          machine_row(chip="Apple M1"), "http://192.168.1.14:1"),
         })):
             rows = fleet.render_candidates(DIGEST)
@@ -201,8 +201,8 @@ class EligibleFallthroughTests(Case):
             self.assertIsNone(fleet._measured_render_speed(machine), f"{bad!r} must read as absent")
 
     def test_the_measured_speed_reaches_the_candidate(self) -> None:
-        with Fleet(render_location({
-            "timed": spec(worker("timed", accepting=ACCEPTING),
+        with Fleet(location({
+            "timed": spec(worker("timed", accepted=ACCEPTING),
                           machine_row(speed=1.75, renders=7), "http://192.168.1.15:1"),
         })):
             row = fleet.render_candidates(DIGEST)[0]
@@ -214,7 +214,7 @@ class PauseExemptionTests(Case):
     """A paused location offers only the Macs whose own pause exempts final render."""
 
     def paused(self, macs: dict[str, dict]) -> dict:
-        row = render_location(macs)
+        row = location(macs)
         row["paused_at"] = NOW - 60
         row["paused_by"] = "owner"
         for node in row["nodes"]:
@@ -223,13 +223,13 @@ class PauseExemptionTests(Case):
 
     def test_a_paused_location_offers_nothing_by_default(self) -> None:
         with Fleet(self.paused({
-            "mac-a": spec(worker("mac-a", accepting=ACCEPTING),
+            "mac-a": spec(worker("mac-a", accepted=ACCEPTING),
                           machine_row(), "http://192.168.1.20:1"),
         })):
             self.assertEqual(fleet.render_candidates(DIGEST), [])
 
     def test_a_paused_location_offers_a_mac_whose_own_pause_exempts_render(self) -> None:
-        mac = spec({**worker("mac-a", accepting=ACCEPTING),
+        mac = spec({**worker("mac-a", accepted=ACCEPTING),
                     render_optin.PAUSED_RENDER_KEY: True},
                    machine_row(), "http://192.168.1.21:1")
         with Fleet(self.paused({"mac-a": mac})):
@@ -238,7 +238,7 @@ class PauseExemptionTests(Case):
 
     def test_the_exemption_covers_only_the_pause(self) -> None:
         """A drained or unreachable location, and an ineligible Mac, are refused as before."""
-        mac = spec({**worker("mac-a", accepting=ACCEPTING),
+        mac = spec({**worker("mac-a", accepted=ACCEPTING),
                     render_optin.PAUSED_RENDER_KEY: True},
                    machine_row(), "http://192.168.1.22:1")
         drained = self.paused({"mac-a": mac})
@@ -258,10 +258,13 @@ class PauseExemptionTests(Case):
             self.assertEqual(fleet.render_candidates(DIGEST), [], "a busy Mac is still busy")
 
     def test_an_unpaused_location_is_unaffected_by_the_exemption(self) -> None:
-        plain = spec(worker("mac-a", accepting=ACCEPTING),
+        """Two Macs, one exempt and one not: both eligible, so the switch changes nothing here."""
+        plain = spec(worker("mac-a", accepted=ACCEPTING),
                      machine_row(), "http://192.168.1.23:1")
-        exempt = {**plain, "worker": {**plain["worker"], render_optin.PAUSED_RENDER_KEY: True}}
-        with Fleet(render_location({"mac-a": plain, "mac-b": exempt})):
+        exempt = spec({**worker("mac-b", accepted=ACCEPTING),
+                       render_optin.PAUSED_RENDER_KEY: True},
+                      machine_row(), "http://192.168.1.24:1")
+        with Fleet(location({"mac-a": plain, "mac-b": exempt})):
             rows = fleet.render_candidates(DIGEST)
         self.assertEqual(sorted(row["node_id"] for row in rows), ["mac-a", "mac-b"])
 
@@ -275,11 +278,11 @@ class PageTests(Case):
             return render_optin.rank_view(DIGEST)
 
     def test_the_page_publishes_the_order_and_why_each_mac_is_where_it_is(self) -> None:
-        with Fleet(render_location({
-            "timed": spec(worker("timed", accepting=ACCEPTING),
+        with Fleet(location({
+            "timed": spec(worker("timed", accepted=ACCEPTING),
                           machine_row(chip="Apple M1", speed=2.5, renders=4),
                           "http://192.168.1.30:1"),
-            "fresh": spec(worker("fresh", accepting=ACCEPTING),
+            "fresh": spec(worker("fresh", accepted=ACCEPTING),
                           machine_row(chip="Apple M4"), "http://192.168.1.31:1"),
         })):
             rank = self.rank()
@@ -296,8 +299,8 @@ class PageTests(Case):
 
     def test_the_listing_carries_the_rank_so_the_sheet_has_it(self) -> None:
         """The sheet reads `rank` off this one route; a field nothing returns is a dead section."""
-        with Fleet(render_location({
-            "timed": spec(worker("timed", accepting=ACCEPTING),
+        with Fleet(location({
+            "timed": spec(worker("timed", accepted=ACCEPTING),
                           machine_row(speed=2.5, renders=4), "http://192.168.1.30:1"),
         })), \
                 mock.patch.object(render_optin, "local_networks", return_value=LAN):
@@ -310,10 +313,10 @@ class PageTests(Case):
 
     def test_the_order_is_the_dispatchers_own_list(self) -> None:
         """The page cannot describe a ranking the dispatcher does not use."""
-        with Fleet(render_location({
-            "slow": spec(worker("slow", accepting=ACCEPTING),
+        with Fleet(location({
+            "slow": spec(worker("slow", accepted=ACCEPTING),
                          machine_row(speed=0.7, renders=2), "http://192.168.1.35:1"),
-            "fast": spec(worker("fast", accepting=ACCEPTING),
+            "fast": spec(worker("fast", accepted=ACCEPTING),
                          machine_row(speed=2.2, renders=2), "http://192.168.1.36:1"),
         })):
             rank = self.rank()
@@ -322,8 +325,8 @@ class PageTests(Case):
                          [row["node_id"] for row in dispatched])
 
     def test_a_mac_with_no_measurement_has_none_rather_than_zero(self) -> None:
-        with Fleet(render_location({
-            "fresh": spec(worker("fresh", accepting=ACCEPTING), machine_row(chip="Apple M4"),
+        with Fleet(location({
+            "fresh": spec(worker("fresh", accepted=ACCEPTING), machine_row(chip="Apple M4"),
                           "http://192.168.1.32:1"),
         })):
             rank = self.rank()
@@ -331,11 +334,11 @@ class PageTests(Case):
         self.assertEqual(rank["order"][0]["reason"], render_optin.RANK_HARDWARE)
 
     def test_each_mac_row_says_its_speed_and_its_exemption(self) -> None:
-        timed = spec({**worker("mac-a", accepting=ACCEPTING),
+        timed = spec({**worker("mac-a", accepted=ACCEPTING),
                       render_optin.PAUSED_RENDER_KEY: True},
                      machine_row(speed=1.5, renders=3), "http://192.168.1.33:1")
-        plain = spec(worker("mac-b", accepting=ACCEPTING), machine_row(), "http://192.168.1.34:1")
-        with Fleet(render_location({"mac-a": timed, "mac-b": plain})):
+        plain = spec(worker("mac-b", accepted=ACCEPTING), machine_row(), "http://192.168.1.34:1")
+        with Fleet(location({"mac-a": timed, "mac-b": plain})):
             rows = render_optin.workers(fleet.snapshot(allow_stale=True), networks=LAN)
         by_id = {row["machine_id"]: row for row in rows}
         self.assertEqual(by_id["mac-a"]["render_speed"], 1.5)
@@ -346,10 +349,10 @@ class PageTests(Case):
 
     def test_the_exemption_survives_the_workers_snapshot_trim(self) -> None:
         """`_trim_worker` copies the key only when the Hub sent it, so an older row is unchanged."""
-        sent = worker("mac-a", accepting=ACCEPTING)
+        sent = worker("mac-a", accepted=ACCEPTING)
         sent[render_optin.PAUSED_RENDER_KEY] = True
         self.assertIs(fleet._trim_worker(sent)[render_optin.PAUSED_RENDER_KEY], True)
-        plain = worker("mac-b", accepting=ACCEPTING)
+        plain = worker("mac-b", accepted=ACCEPTING)
         self.assertNotIn(render_optin.PAUSED_RENDER_KEY, fleet._trim_worker(plain))
 
 
