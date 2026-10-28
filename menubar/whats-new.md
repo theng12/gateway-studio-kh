@@ -14,6 +14,58 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.205 — 2026-10-28
+
+### A Mac's model preset, an added model and a removed one, from the Fleet page
+A joined Mac's install screen is now reachable from its "…" menu without opening that Mac.
+**Model Preset…** reads the Mac first and then offers *that Mac's own* presets with *that Mac's
+own* counts — "9 of 14" is its count of its own verified receipts, read live each time, never a
+list held here. Setting one records who asked, on that Mac, and an unknown preset id is the Hub's
+own refusal naming the presets it does have; nothing is swapped for another. **Remove a Model…**
+offers the models that Mac reports as installed and moves the chosen one into that library's trash,
+never a delete, and the Hub refuses while a job, a paused model or a dependent package is using it,
+in its own words. Both writes are owner-only, because a preset decides what a Mac installs. An
+older Hub answers `HUB_TOO_OLD` naming 0.6.205 rather than hiding the entry, and a sleeping Mac is
+reported as unreachable in its own words instead of failing the page.
+
+### A thin cable is named before it wastes a day
+Mac 1301 was linked at 100 Mbit/s on an old cable (10 Mbit/s before that). A thin link does not
+fail — it negotiates — so the Mac stayed reachable, ready and taking work while everything it did
+crawled, and nothing said so. The Fleet page now shows every Mac's **Network**: the connection
+type from that Mac's own OS hardware port, the speed and duplex its Ethernet negotiated, and
+whether Wi-Fi is also up. Anything the Gateway cannot read is `unmeasured` with its reason and
+draws "—"; a Hub that predates the field publishes nothing, which reads as unknown, never as
+"fine". The one verdict that matters is **slow** — Ethernet under 1 Gbit/s or at half duplex — and
+it is drawn as an amber Network cell on the Machines tab (slow links first when sorted), an amber
+note under any node on a slow link in Groups, and an amber "Slow link — check cable/port" line on
+the web console's Mac tiles, with a summary that names the Macs: "3 Macs on slow Ethernet — check
+the cable: 1301, 1304". Wi-Fi is shown as Wi-Fi and is never called a slow cable. Read-only: no
+admin action, no routing change, nothing is sent to any Mac.
+
+### A Hub's own vision flag is what publishes image input
+A Studio Hub model that reads images published `supports_vision: null`, because the catalogue
+derived it from a field only OpenRouter rows carry, and Story's bake-off then refused the model as
+"does not publish image input". A Hub states the fact per model on its catalogue row — and on the
+package row when it can — and the Gateway now reads that, publishes it, and fills
+`input_modalities` to match. Nothing is inferred from a model id or a name: a row the Hub does not
+describe still publishes `null`, and a stated `false` keeps the image input off.
+
+### Gemma is no longer withheld by name
+The owner removed the family lock: *"They are models we can run so we should have them installable.
+Able to run on the machine or not is based off its RAM. We no longer block or lock any model."*
+Gemma 3 12B 4-bit came off the retirement list, so it is judged by what it is — its modality,
+whether this gateway serves it, and whether the Hub says it can run on that Mac — and not by its
+name. The two LTX video products stay retired, and a text encoder's row on a Hub that still files
+it under the retired video engine is still withheld, by shape: a video model that publishes no lane
+contract cannot be described, so it is not offered.
+
+### A pool advances past a connection that was never made
+A pool member whose connection is refused — a relay that is switched off answers before a single
+byte leaves — used to stop the chain, because the send had been counted. Nothing can have been
+accepted or charged when nothing was transmitted, so the pool now moves to the next member, a paid
+one included. A submission whose outcome is genuinely unknown is still a durable recovery hold and
+is never retried.
+
 ## 0.2.204 — 2026-10-27
 
 ### Reference to Image: your characters and a prompt, on the edit lane
