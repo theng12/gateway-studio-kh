@@ -556,5 +556,23 @@ class TtsStatusAfterSubmitTimeoutsTest(_Base):
         self.assertEqual(body["failure_code"], by_key["failure_code"])
 
 
+class PoolMemberBusyDefersTest(_Base):
+    def test_a_busy_member_puts_the_job_back_in_the_queue_with_its_reason(self) -> None:
+        """`POOL_MEMBER_BUSY` is a fact about this minute, and nothing was sent, so the job waits
+        in the Gateway's own queue with the reason published — never a failure."""
+        worker = Worker(self.store, interval_s=10.0, pool_size=0)
+        job_id = self.job(IMAGE_MODEL)
+        current = self.store.get(job_id)
+        error = BackendError("Pool 'mix': Magpie had no free slot after 15 min.",
+                             code="POOL_MEMBER_BUSY", retryable=True,
+                             upstream_accepted=False, upstream_settled=True)
+        self.assertTrue(worker_module._defer_if_transient(
+            self.store, job_id, error, current, unknown=False))
+        row = self.store.get(job_id)
+        self.assertEqual("accepted", row["state"])
+        self.assertIn("no free slot", row["defer_reason"])
+        self.assertIsNone(row["recovery_state"], "a wait is not a hold")
+
+
 if __name__ == "__main__":
     unittest.main()
