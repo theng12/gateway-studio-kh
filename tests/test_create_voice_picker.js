@@ -261,11 +261,17 @@ test('the delivery box follows the model, with the Hub\'s own guidance and nothi
     'cf-delivery_instruction-help': element(),
   };
   const { context } = harness(nodes);
+  // The Hub's own guidance shape (`controls.delivery_instruction`), unchanged.
   const guidance = {
-    text: 'Free text the engine reads as its own instruction.',
+    kind: 'free_text',
+    engine_form: 'instruct',
+    max_characters: 500,
+    note: 'Voice Direction, from the model card.',
     examples: ['warm and unhurried'],
     language_rule: 'Write it in English.',
-    inline_events: ['[laugh]'],
+    inline_events: [{ syntax: '[laugh]', event: 'a short laugh', where: 'text' }],
+    directed_cfg_scale: 4,
+    directed_cfg_parameter: 'breeze_cfg_scale',
     source_url: 'https://example.invalid/breeze',
   };
   const catalogue = { by_modality: { tts: [
@@ -281,10 +287,11 @@ test('the delivery box follows the model, with the Hub\'s own guidance and nothi
   assert.equal(nodes['cf-delivery_instruction-box'].style.display, '', 'shown for the model that has it');
   assert.equal(nodes['cf-delivery_instruction'].maxLength, 500);
   const help = nodes['cf-delivery_instruction-help'].innerHTML;
-  assert.ok(help.includes('Free text the engine reads as its own instruction.'), help);
+  assert.ok(help.includes('Voice Direction, from the model card.'), help);
   assert.ok(help.includes('warm and unhurried'), help);
   assert.ok(help.includes('Write it in English.'), help);
   assert.ok(help.includes('[laugh]'), help);
+  assert.ok(help.includes('a short laugh'), help);
   assert.ok(help.includes('https://example.invalid/breeze'), help);
 
   nodes['cf-delivery_instruction'].value = 'typed for the wrong model';

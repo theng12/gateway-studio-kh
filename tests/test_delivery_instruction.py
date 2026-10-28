@@ -38,6 +38,7 @@ os.environ.update({
     "GATEWAY_HOST": "127.0.0.1", "GATEWAY_API_KEY": "delivery-key",
 })
 
+import httpx
 from fastapi.testclient import TestClient  # noqa: E402
 
 from gateway import api, catalog  # noqa: E402
@@ -47,13 +48,45 @@ from gateway.runtime import store  # noqa: E402
 HUB_DEFINITION = SimpleNamespace(id="studio-hub-test", display_name="Studio Hub",
                                  kind=defs.KIND_STUDIO_HUB)
 
-GUIDANCE = {
-    "text": "Free text. Breeze reads it as the engine's own instruction.",
-    "examples": ["warm and unhurried", "a little amused"],
+#: **The Hub's own guidance shape** (`components/hub/backend/capabilities.py`
+#: `_delivery_instruction`), unchanged in every field — this is what the Gateway must forward.
+BREEZE_GUIDANCE = {
+    "kind": "free_text",
+    "engine_form": "instruct",
+    "max_characters": 500,
+    "examples": ["Speak slowly and sadly, voice close to breaking.",
+                 "Cheerful and brisk, like good news."],
     "language_rule": "Write the instruction in English, whatever the script's language.",
-    "inline_events": ["[laugh]", "[sigh]"],
-    "source_url": "https://example.invalid/breeze-tts-2",
+    "inline_events": [],
+    "directed_cfg_scale": 4.0,
+    "directed_cfg_parameter": "breeze_cfg_scale",
+    "source_url": "https://huggingface.co/mlx-community/Breeze-TTS-2-mlx-4bit",
+    "note": "Voice Direction, from the model card.",
 }
+VOXCPM_GUIDANCE = {
+    "kind": "free_text",
+    "engine_form": "text_prefix",
+    "max_characters": 500,
+    "examples": ["(slightly faster, cheerful tone)"],
+    "language_rule": None,
+    "inline_events": [{"syntax": "[laugh]", "event": "a short laugh", "where": "text"}],
+    "directed_cfg_scale": None,
+    "directed_cfg_parameter": None,
+    "source_url": "https://huggingface.co/mlx-community/VoxCPM2-4bit",
+    "note": "Controllable Cloning: a (style) prefix in front of the text.",
+}
+
+
+def hub_model(capabilities=("tts", "voice-cloning", "delivery-instruction"),
+              guidance=BREEZE_GUIDANCE) -> dict:
+    """One Studio Hub model's raw record: catalogue capabilities + the snapshot's controls."""
+    raw = {"capabilities": list(capabilities)}
+    if guidance is not None:
+        raw["hub_controls"] = {
+            "capabilities": ["voice-cloning", "delivery-instruction"],
+            "delivery_instruction": dict(guidance),
+        }
+    return raw
 
 
 def tts_row(raw: dict, model_id: str = "breeze-tts-2") -> dict:
@@ -65,37 +98,111 @@ def tts_row(raw: dict, model_id: str = "breeze-tts-2") -> dict:
 
 class TheControl(unittest.TestCase):
     def test_it_is_published_only_where_the_hub_says_so(self) -> None:
-        with_capability = tts_row({"capabilities": ["tts", "delivery-instruction"]})
+        with_capability = tts_row(hub_model())
         without = tts_row({"capabilities": ["tts", "voice-cloning"]})
-        names = [c["name"] for c in with_capability.get("controls") or []]
-        self.assertIn("delivery_instruction", names)
+        self.assertIn("delivery_instruction",
+                      [c["name"] for c in with_capability.get("controls") or []])
         self.assertNotIn("delivery_instruction",
                          [c["name"] for c in (without.get("controls") or [])])
 
-    def test_either_spelling_of_the_capability_counts(self) -> None:
-        for spelling in ("delivery-instruction", "delivery_instruction"):
-            with self.subTest(spelling=spelling):
-                row = tts_row({"capabilities": ["tts", spelling]})
+    def test_either_published_place_is_enough(self) -> None:
+        # The catalogue token, the snapshot token, or both: the Hub may publish it in either,
+        # and the Gateway derives nothing from a model id or a family name.
+        for raw in ({"capabilities": ["tts", "delivery-instruction"]},
+                    {"capabilities": ["tts"], "hub_controls": {
+                        "capabilities": ["delivery-instruction"]}},
+                    hub_model()):
+            with self.subTest(raw=sorted(raw)):
+                row = tts_row(raw)
                 self.assertIn("delivery_instruction",
                               [c["name"] for c in row.get("controls") or []])
 
-    def test_the_hubs_guidance_is_forwarded_unchanged(self) -> None:
-        row = tts_row({"capabilities": ["tts", "delivery-instruction"],
-                       "capability_guidance": {"delivery-instruction": GUIDANCE}})
+    def test_breeze_publishes_the_hubs_guidance_unchanged(self) -> None:
+        row = tts_row(hub_model())
         control = next(c for c in row["controls"] if c["name"] == "delivery_instruction")
-        self.assertEqual(control["guidance"], GUIDANCE, "byte for byte, not reshaped")
+        self.assertEqual(control["guidance"], BREEZE_GUIDANCE, "byte for byte, not reshaped")
+        self.assertEqual(control["guidance"]["engine_form"], "instruct")
+        self.assertEqual(control["guidance"]["directed_cfg_scale"], 4.0)
         self.assertEqual(control["max_length"], 500)
 
-    def test_guidance_on_the_capability_entry_itself_is_read_too(self) -> None:
-        row = tts_row({"capabilities": ["tts",
-                                        {"name": "delivery-instruction", "guidance": GUIDANCE}]})
+    def test_voxcpm2_publishes_its_own_form(self) -> None:
+        # The other engine form: a `(style)` prefix, no directed cfg, and inline vocal events.
+        row = tts_row(hub_model(guidance=VOXCPM_GUIDANCE), model_id="voxcpm2-4bit")
         control = next(c for c in row["controls"] if c["name"] == "delivery_instruction")
-        self.assertEqual(control["guidance"], GUIDANCE)
+        self.assertEqual(control["guidance"], VOXCPM_GUIDANCE)
+        self.assertEqual(control["guidance"]["engine_form"], "text_prefix")
+        self.assertIsNone(control["guidance"]["directed_cfg_scale"])
+        self.assertEqual(control["guidance"]["inline_events"][0]["syntax"], "[laugh]")
 
     def test_no_published_guidance_means_no_guidance_field(self) -> None:
         row = tts_row({"capabilities": ["tts", "delivery-instruction"]})
         control = next(c for c in row["controls"] if c["name"] == "delivery_instruction")
         self.assertNotIn("guidance", control, "nothing is invented for a Hub that said nothing")
+
+    def test_a_model_with_no_token_publishes_no_control(self) -> None:
+        # Qwen3-TTS Base clones and samples and takes no direction; its row must say nothing.
+        row = tts_row({"capabilities": ["tts", "voice-cloning"]}, model_id="qwen3-base")
+        self.assertNotIn("delivery_instruction",
+                         [c["name"] for c in row.get("controls") or []])
+
+
+class DiscoveryCarriesTheControls(unittest.TestCase):
+    """The guidance is read from `/api/hub/capabilities` live, at discovery (§1)."""
+
+    SNAPSHOT = {"models": [
+        {"model_id": "mlx-community/Breeze-TTS-2-mlx-4bit",
+         "repo": "mlx-community/Breeze-TTS-2-mlx-4bit", "hub_modality": "voice",
+         "controls": {"capabilities": ["voice-cloning", "delivery-instruction"],
+                      "delivery_instruction": BREEZE_GUIDANCE}},
+    ]}
+
+    def test_the_snapshot_is_indexed_by_model_id_and_repo(self) -> None:
+        from gateway.providers import discovery
+
+        with patch.object(discovery.httpx, "get",
+                          return_value=httpx.Response(200, json=self.SNAPSHOT)):
+            index = discovery._hub_controls("http://hub.test", "tok", local=False)
+        self.assertIsNotNone(index)
+        for key in ("mlx-community/Breeze-TTS-2-mlx-4bit",):
+            self.assertEqual(index[key]["delivery_instruction"], BREEZE_GUIDANCE)
+
+    def test_an_unanswered_snapshot_is_unread_not_empty(self) -> None:
+        from gateway.providers import discovery
+
+        with patch.object(discovery.httpx, "get", side_effect=httpx.ConnectError("no")):
+            self.assertIsNone(discovery._hub_controls("http://hub.test", "tok", local=False))
+        with patch.object(discovery.httpx, "get", return_value=httpx.Response(404)):
+            self.assertIsNone(discovery._hub_controls("http://hub.test", "tok", local=False))
+
+    def test_a_discovered_model_carries_its_controls(self) -> None:
+        from gateway.providers import discovery
+
+        packages = {"packages": [{
+            "package_id": "breeze", "model_id": "mlx-community/Breeze-TTS-2-mlx-4bit",
+            "engine": "voice-mlx", "files_state": "files_verified",
+            "dispatch_state": "eligible", "type": "model"}]}
+        catalogue = {"models": [{
+            "repo": "mlx-community/Breeze-TTS-2-mlx-4bit", "hub_modality": "voice",
+            "capabilities": ["tts", "voice-cloning", "delivery-instruction"]}]}
+
+        def router(url, **_kwargs):
+            if str(url).endswith("/api/hub/model-packages"):
+                return httpx.Response(200, json=packages)
+            if str(url).endswith("/api/hub/catalog"):
+                return httpx.Response(200, json=catalogue)
+            if str(url).endswith("/api/hub/capabilities"):
+                return httpx.Response(200, json=self.SNAPSHOT)
+            return httpx.Response(404)
+
+        definition = SimpleNamespace(id="studio-hub-test", display_name="Studio Hub",
+                                     kind=defs.KIND_STUDIO_HUB, base_url="http://hub.test")
+        with patch.object(discovery.httpx, "get", side_effect=router):
+            result = discovery._studio_hub(definition, {"hub_token": "tok"})
+        model = next(m for m in result.models
+                     if m.model_id == "mlx-community/Breeze-TTS-2-mlx-4bit")
+        self.assertEqual(model.raw["hub_controls"]["delivery_instruction"], BREEZE_GUIDANCE,
+                         "the guidance must ride the model's own record")
+        self.assertTrue(catalog.takes_delivery_instruction(model.raw))
 
 
 class TheRefusal(unittest.TestCase):

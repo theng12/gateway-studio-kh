@@ -629,6 +629,49 @@ def _hub_catalog(base: str, token: str, *, local: bool = False) -> dict[str, dic
     return indexed or None
 
 
+def _hub_controls(base: str, token: str, *, local: bool = False) -> dict[str, dict[str, Any]] | None:
+    """Per-model `controls` from the Hub's capability snapshot (`/api/hub/capabilities`).
+
+    **This is where a model's delivery-instruction guidance lives.** The catalogue says *that*
+    a model takes a per-request direction (`capabilities` carries `delivery-instruction`); the
+    snapshot says *how* — the engine form, the card's examples, its language rule, the inline
+    vocal events and the source link — under the model's `controls.delivery_instruction`. The
+    gateway forwards that object unchanged, so the page shows the Hub's own words.
+
+    Indexed by the snapshot's canonical `model_id` **and** by `repo`, because the package list
+    spells a model `repo` while the snapshot publishes a canonical id.
+
+    `None` when the read did not answer — "unread" is not "publishes nothing". A Hub without the
+    route (or an older one) leaves every model's guidance absent, and the catalogue then
+    publishes the control with no guidance rather than an invented one.
+    """
+    from ..hub import hub_headers  # local import: avoids a cycle
+
+    try:
+        response = httpx.get(
+            f"{base.rstrip('/')}/api/hub/capabilities",
+            headers=hub_headers(token, local=local),
+            timeout=TIMEOUT,
+        )
+    except httpx.HTTPError:
+        return None
+    if response.status_code >= 400:
+        return None
+    payload = response.json() or {}
+    index: dict[str, dict[str, Any]] = {}
+    for row in payload.get("models") or []:
+        if not isinstance(row, dict):
+            continue
+        controls = row.get("controls")
+        if not isinstance(controls, dict):
+            continue
+        for key in (row.get("model_id"), row.get("repo")):
+            name = str(key or "").strip()
+            if name:
+                index.setdefault(name, controls)
+    return index or None
+
+
 def mac_ready(row: dict[str, Any]) -> bool:
     """One Mac's catalogue row says that Mac can run the model: installed, runtime ready, fits.
 
@@ -766,6 +809,9 @@ def _studio_hub(definition: ProviderDefinition, values: dict[str, str]) -> Disco
     catalog = _hub_catalog(base, values.get("hub_token", ""), local=local)
     catalogue_missing = catalog is None
     catalog = catalog or {}
+    # The snapshot's per-model `controls`: the one place a model states *how* it takes a
+    # delivery instruction. Read live on every discovery, never cached past it (§1).
+    controls_by_model = _hub_controls(base, values.get("hub_token", ""), local=local) or {}
 
     models: list[DiscoveredModel] = []
     #: engine -> {count, model_ids} for packages this gateway cannot classify.
@@ -865,6 +911,12 @@ def _studio_hub(definition: ProviderDefinition, values: dict[str, str]) -> Disco
         # a package row may too. Carried unread; `catalog._tts_characters` decides what it means.
         raw["maximum_input_characters"] = (facts or {}).get("maximum_input_characters") \
             or package.get("maximum_input_characters")
+        hub_controls = controls_by_model.get(model_id) or controls_by_model.get(
+            str(package.get("package_id") or "")) or {}
+        if hub_controls:
+            # Carried verbatim: the catalogue's `_tts_controls` reads the capability and the
+            # guidance from here, and publishes the guidance unchanged.
+            raw["hub_controls"] = hub_controls
         if facts:
             raw["capabilities"] = facts.get("capabilities") or []
             raw["reference_audio"] = facts.get("reference_audio") or {}

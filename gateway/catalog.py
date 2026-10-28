@@ -1168,64 +1168,55 @@ def _delivery_names() -> set[str]:
     return {DELIVERY_INSTRUCTION_CAPABILITY, DELIVERY_INSTRUCTION_CAPABILITY.replace("-", "_")}
 
 
-def _delivery_entry(raw: Any) -> Any:
-    """The Hub's own entry for the capability, wherever it put it. `None` when unstated.
+def _hub_controls(raw: Any) -> dict[str, Any]:
+    """The Hub's per-model `controls` block, as `/api/hub/capabilities` published it.
 
-    The Hub publishes the capability **with** its per-model guidance, and the exact container
-    is the Hub's to choose, so this looks for the capability-plus-guidance in the shapes a
-    capability list takes: the name in the list (guidance elsewhere on the record), or an
-    object entry carrying both. Whatever is found is forwarded **unchanged** — this function
-    never builds guidance of its own.
+    Carried onto the model's raw record by discovery
+    (`providers/discovery._hub_controls`), re-read on every refresh.
     """
-    if not isinstance(raw, dict):
-        return None
-    wanted = _delivery_names()
-    capabilities = raw.get("capabilities")
-    if isinstance(capabilities, (list, tuple)):
-        for item in capabilities:
-            if isinstance(item, dict):
-                name = str(item.get("name") or item.get("id") or item.get("capability") or "")
-                if name in wanted:
-                    return item
-    return None
+    controls = (raw or {}).get("hub_controls") if isinstance(raw, dict) else None
+    return controls if isinstance(controls, dict) else {}
 
 
 def takes_delivery_instruction(raw: Any) -> bool:
-    """Does this model's own record publish the delivery-instruction capability?"""
-    if _delivery_entry(raw) is not None:
-        return True
-    capabilities = (raw or {}).get("capabilities") if isinstance(raw, dict) else None
-    if not isinstance(capabilities, (list, tuple, set)):
+    """Does this model publish the delivery-instruction capability?
+
+    **Two places, both the Hub's own, and either is enough:** the catalogue row's
+    `capabilities` (the Voice catalogue derives the token from the family's engine, so it is
+    stated per model) and the capability snapshot's `controls.capabilities`. A Hub that
+    publishes it in only one of the two still publishes it — and nothing here derives support
+    from a model id, a family name or a repo (§1).
+    """
+    if not isinstance(raw, dict):
         return False
     wanted = _delivery_names()
-    return any(str(item) in wanted for item in capabilities)
+    for block in (raw.get("capabilities"), _hub_controls(raw).get("capabilities")):
+        if isinstance(block, (list, tuple, set)):
+            for item in block:
+                name = (str(item.get("name") or item.get("id") or "")
+                        if isinstance(item, dict) else str(item))
+                if name in wanted:
+                    return True
+    return False
 
 
 def delivery_guidance(raw: Any) -> Any:
     """The Hub's guidance for the capability, **exactly as it sent it**, or `None`.
 
-    Read from, in order: the capability entry itself; a record key named for the capability;
-    a `capability_guidance` block keyed by it. A value that is not there is `None`, and the
-    control is published without a `guidance` field — the caller shows nothing rather than
-    something this file made up.
+    The one source is the snapshot's `controls.delivery_instruction`
+    (`components/hub/backend/capabilities.py`): `kind`, `engine_form` (`instruct` for Breeze
+    TTS 2, `text_prefix` for VoxCPM2), `max_characters`, up to three `examples`, the
+    `language_rule`, the `inline_events` the engine documents, a directed `cfg_scale` and the
+    parameter it belongs to, the card's `source_url` and a `note`. Forwarded without a field
+    changed — a consumer that reshaped it would be describing an engine it has not read.
+
+    `None` when the Hub published none, and the control is then published without a `guidance`
+    field: nothing is invented for a Hub that said nothing.
     """
-    if not isinstance(raw, dict):
+    guidance = _hub_controls(raw).get("delivery_instruction")
+    if guidance in (None, "", [], {}):
         return None
-    entry = _delivery_entry(raw)
-    if isinstance(entry, dict):
-        for key in ("guidance", "detail", "details", "help", "text"):
-            if entry.get(key) not in (None, "", [], {}):
-                return entry[key]
-    for key in ("delivery_instruction", "delivery-instruction"):
-        if raw.get(key) not in (None, "", [], {}):
-            return raw[key]
-    for parent in ("capability_guidance", "capabilities_guidance", "capabilities_detail"):
-        block = raw.get(parent)
-        if isinstance(block, dict):
-            for key in ("delivery_instruction", "delivery-instruction"):
-                if block.get(key) not in (None, "", [], {}):
-                    return block[key]
-    return None
+    return guidance
 
 
 def _delivery_control(raw: Any = None) -> dict[str, Any]:

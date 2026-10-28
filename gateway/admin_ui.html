@@ -3872,19 +3872,22 @@ function deliveryGuidanceHtml(guidance) {
   if (guidance == null || guidance === '') return '';
   if (typeof guidance === 'string') return esc(guidance);
   if (typeof guidance !== 'object') return '';
+  // **The Hub's own shape, field for field** (`controls.delivery_instruction`): a `note` in the
+  // card's words, up to three `examples`, the `language_rule`, the `inline_events` the engine
+  // documents (`{syntax, event, where}`) and the card it came from. An absent field prints
+  // nothing; nothing here is composed for a field the Hub did not send.
   const lines = [];
-  const text = guidance.text || guidance.summary || guidance.description;
-  if (text) lines.push(esc(String(text)));
-  const examples = Array.isArray(guidance.examples) ? guidance.examples
-    : (typeof guidance.examples === 'string' ? [guidance.examples] : []);
+  if (guidance.note) lines.push(esc(String(guidance.note)));
+  const examples = Array.isArray(guidance.examples) ? guidance.examples : [];
   if (examples.length) {
-    lines.push('Examples: ' + examples.map(e => esc(typeof e === 'string' ? e : JSON.stringify(e))).join(' · '));
+    lines.push('Examples: ' + examples.slice(0, 3).map(e => esc(String(e))).join(' · '));
   }
-  const rule = guidance.language_rule || guidance.language;
-  if (rule) lines.push(esc(typeof rule === 'string' ? rule : JSON.stringify(rule)));
-  const events = guidance.events || guidance.inline_events || guidance.vocal_events;
-  if (Array.isArray(events) && events.length) {
-    lines.push('Inline events: ' + events.map(e => esc(typeof e === 'string' ? e : JSON.stringify(e))).join(' · '));
+  if (guidance.language_rule) lines.push(esc(String(guidance.language_rule)));
+  const events = Array.isArray(guidance.inline_events) ? guidance.inline_events : [];
+  if (events.length) {
+    lines.push('Inline events: ' + events.map(e => (e && e.syntax
+      ? `${esc(String(e.syntax))} — ${esc(String(e.event || ''))}`
+      : esc(String(e)))).join(' · '));
   }
   if (guidance.source_url) {
     lines.push(`<a href="${esc(guidance.source_url)}" target="_blank" rel="noreferrer">${esc(guidance.source_url)}</a>`);
