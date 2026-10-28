@@ -1022,7 +1022,7 @@ function setView(view) {
   // for one thing. The Providers page carries its own strip for a different reason —
   // it stacks four unrelated subjects, and splitting them is not a decision the
   // sidebar can express.
-  if (GUEST && view !== 'create') view = 'create';
+  if (typeof GUEST !== 'undefined' && GUEST && view !== 'create') view = 'create';
   state.view = view;
   const pick = document.getElementById('web-page');
   if (pick) pick.value = view;
@@ -3617,7 +3617,7 @@ document.getElementById('key-filter').addEventListener('change', renderProviders
 function viewFromHash() {
   // A guest has one page. The hash is still read so a stale bookmark opens Create rather than
   // an owner's view it would be refused anyway.
-  if (GUEST) return 'create';
+  if (typeof GUEST !== 'undefined' && GUEST) return 'create';
   const hash = (location.hash || '').replace(/^#/, '');
   if (hash.startsWith('providers')) return 'providers';
   // The Queue is a section of the Providers page — the live half of the same
@@ -4483,7 +4483,7 @@ async function signOut() {
     document.getElementById('web-nav').hidden = false;
     localStorage.removeItem('gatewayAdminToken');
   }
-  if (GUEST) {
+  if (typeof GUEST !== 'undefined' && GUEST) {
     // One page, and no status line to poll: `/admin/api/status` is the owner's and refuses a
     // guest, so asking would draw an error nobody can act on. The server is the boundary; this
     // keeps the page from offering what it has not got.

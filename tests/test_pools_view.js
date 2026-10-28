@@ -85,7 +85,13 @@ function response(body, status = 200) {
   return { status, ok: status >= 200 && status < 300, text: async () => JSON.stringify(body) };
 }
 
-const SOON = Math.floor(Date.now() / 1000) + 3600;
+// **A time today, not "an hour from now".** `+ 3600` crosses midnight in the last hour of
+// the evening, and `poolBackAt` then prints the weekday ("Thu 00:24") — so this test failed
+// every night after 23:00 and passed every morning. Measured 2026-10-28 at 23:2x. The claim
+// under test is 'a cooling member says when it returns', which has nothing to do with the
+// clock, so the fixture is pinned to a time that is always today.
+const SOON = (() => { const d = new Date(); d.setHours(23, 59, 0, 0);
+  return Math.floor(d.getTime() / 1000); })();
 
 function pool(overrides = {}) {
   return {
