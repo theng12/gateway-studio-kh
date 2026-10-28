@@ -110,6 +110,14 @@ def _stops_chain(error: BackendError) -> bool:
     return error.code in {"INVALID_REQUEST", "POLICY_REFUSAL"}
 
 
+def _never_connected(error: BaseException) -> bool:
+    """True when the failure is a refused or unreachable connection (nothing was transmitted)."""
+    import httpx
+
+    cause = error.__cause__
+    return isinstance(cause, (httpx.ConnectError, httpx.ConnectTimeout))
+
+
 def _outcome_known(error: BackendError, sent: bool) -> bool:
     """Whether this member's failure leaves nothing outstanding upstream.
 
@@ -118,6 +126,11 @@ def _outcome_known(error: BackendError, sent: bool) -> bool:
     """
     if error.code == "PROVIDER_SUBMISSION_UNCERTAIN":
         return False
+    # A connection that was never established carried nothing upstream: a relay that is switched
+    # off answers "Connection refused" before a single byte of the request leaves. The send was
+    # counted (httpx counts at `send`), but nothing can have been accepted or charged.
+    if _never_connected(error):
+        return True
     if error.upstream_settled:
         return True
     if error.upstream_accepted is True:
