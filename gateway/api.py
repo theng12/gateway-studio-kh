@@ -32,6 +32,7 @@ import logging
 import os
 import re
 import signal
+import tempfile
 import threading
 import time
 import uuid
@@ -115,6 +116,117 @@ _MAX_UPLOAD_BYTES = 25 * 1024 * 1024
 #: narration past about 35 minutes at Story's 96 kbps MP3 could never be subtitled by the local
 #: Whisper that handles it easily — a 413 Story does not retry (audit 2026-10-01).
 _MAX_UPLOAD_BYTES_HUB = 100 * 1024 * 1024
+
+
+#: The largest multipart body either upload door will even *receive*, before the model — which
+#: lives inside the body — is known: the Hub's 100 MiB ceiling plus room for the envelope. The
+#: exact per-model limit is still applied afterwards, and is the number the caller is told when
+#: the body fits under this.
+_MAX_UPLOAD_BODY = _MAX_UPLOAD_BYTES_HUB + (2 * 1024 * 1024)
+
+
+class _UploadTooLarge(Exception):
+    """The body crossed `_MAX_UPLOAD_BODY` while being read. Answered as 413, never a 500."""
+
+
+class BoundedUploadBody:
+    """**Refuse an oversize upload while it is still a stream** (review 2026-10-29).
+
+    An ASGI middleware, not a dependency, because **FastAPI parses the form before it solves
+    dependencies** — a `Depends` guard runs after Starlette has already read (and spooled) the
+    whole multipart body, which is the defect. Wrapping `receive` is the only place genuinely
+    before the parser: the declared `Content-Length` is refused on the header alone (so a
+    caller declaring 512 MB and sending a little does not hang), and a body without one
+    (chunked) is counted as it arrives and cut at the ceiling.
+
+    The same shape as `_bounded_render_json`: a bounded read, refused rather than buffered.
+    `_MAX_UPLOAD_BODY` is the ceiling for *any* model; each route still applies its exact
+    per-model limit afterwards, so a caller under the ceiling gets the precise number.
+    """
+
+    #: The two doors that take an audio upload. Nothing else here has a body worth capping
+    #: this way (JSON bodies are bounded where they are decoded).
+    PATHS = frozenset({
+        "/admin/api/create/transcription",
+        "/v1/audio/transcriptions/quotes",
+    })
+
+    def __init__(self, app: Any) -> None:
+        self.app = app
+
+    @staticmethod
+    def _refusal(limit: int, size: int | None) -> JSONResponse:
+        what = (f"{size // (1024 * 1024)} MB" if size
+                else f"larger than {limit // (1024 * 1024)} MB")
+        return JSONResponse(
+            status_code=413,
+            content={
+                "detail": (f"That upload is {what}. This gateway accepts at most "
+                           f"{limit // (1024 * 1024)} MB for any transcription, and the model "
+                           f"you chose may take less."),
+                "code": "UPLOAD_TOO_LARGE",
+            },
+        )
+
+    async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
+        if scope.get("type") != "http" or scope.get("path") not in self.PATHS:
+            await self.app(scope, receive, send)
+            return
+        limit = _MAX_UPLOAD_BODY
+        headers = {key.lower(): value for key, value in (scope.get("headers") or [])}
+        declared = (headers.get(b"content-length") or b"").decode("latin-1").strip()
+        if declared.isdigit():
+            if int(declared) > limit:
+                # Answered from the header alone: a caller that declares 512 MB and sends a
+                # little is refused at once instead of being waited on.
+                await self._refusal(limit, int(declared))(scope, receive, send)
+                return
+            # A declared length the server already enforces (h11 will not hand over more):
+            # nothing to count, so the route reads the body exactly as it did before.
+            await self.app(scope, receive, send)
+            return
+        await self._bounded_stream(scope, receive, send, limit)
+
+    async def _bounded_stream(self, scope: Any, receive: Any, send: Any, limit: int) -> None:
+        """No declared length (a chunked upload): count as it arrives, spool what is kept.
+
+        **Spooled, not held.** A legit Hub upload can be 100 MB, so the kept bytes go to a
+        temporary file past 1 MB — the same place Starlette would have put them. The point is
+        that nothing beyond the ceiling is *ever* read into this process, and the answer is a
+        413 as soon as the limit is crossed rather than after the whole body has landed.
+        """
+        received = 0
+        with tempfile.SpooledTemporaryFile(max_size=1 << 20) as spool:
+            while True:
+                message = await receive()
+                if message.get("type") != "http.request":
+                    # The client went away mid-upload; let the app see the disconnect.
+                    await self.app(scope, _empty_receive(message), send)
+                    return
+                body = message.get("body") or b""
+                received += len(body)
+                if received > limit:
+                    await self._refusal(limit, None)(scope, receive, send)
+                    return
+                spool.write(body)
+                if not message.get("more_body"):
+                    break
+            spool.seek(0)
+
+            async def replay() -> dict[str, Any]:
+                chunk = spool.read(64 * 1024)
+                if chunk:
+                    return {"type": "http.request", "body": chunk, "more_body": True}
+                return {"type": "http.request", "body": b"", "more_body": False}
+
+            await self.app(scope, replay, send)
+
+
+def _empty_receive(message: dict[str, Any]):
+    """A receive that hands the app the one non-request message it already got."""
+    async def replay() -> dict[str, Any]:
+        return message
+    return replay
 
 
 def upload_limit_bytes(model_id: str | None) -> int:
@@ -4082,6 +4194,11 @@ async def guest_scope(request: Request, call_next):
                          "code": "GUEST_NOT_ALLOWED"},
             )
     return await call_next(request)
+
+
+# Added last, so it is the outermost of the app's own middleware: the body is counted before
+# anything else in this process reads it.
+app.add_middleware(BoundedUploadBody)
 
 
 

@@ -303,9 +303,12 @@ def _login_page(error: str = "", status: int = 200) -> HTMLResponse:
         note = "Sign in with the browser password set in the Gateway app."
         placeholder = "Password"
     else:
+        # **The key is not a way in here.** It used to be offered as the fallback, and it
+        # minted an owner session; it stays a bearer token for API clients.
         note = ("No browser password is set yet. Set one in the Gateway app on the Mac: "
-                "Settings, Browser password. Until then, sign in with the gateway API key.")
-        placeholder = "Gateway API key"
+                "Settings, Browser password. The gateway key is a bearer token for API "
+                "clients, not a browser password.")
+        placeholder = "Password"
     body = (_LOGIN_HTML.replace("__NOTE__", html.escape(note))
             .replace("__PLACEHOLDER__", html.escape(placeholder))
             .replace("__ERROR__", f'<p class="bad">{html.escape(error)}</p>' if error else ""))
@@ -349,7 +352,18 @@ async def admin_login(request: Request) -> Response:
         _set_session_cookie(response, admin_session.create_session(
             role="guest", guest_id=str(guest["id"]), name=str(guest["name"])))
         return response
-    ok = await run_in_threadpool(admin_session.check_password, secret) or _key_matches(secret.strip())
+    # **The browser password and nothing else.** This also accepted the gateway key, which
+    # minted an *owner* session — and `require_owner` deliberately allows a signed-in browser
+    # while refusing the bare key, because Story Studio holds that key. Accepting it here
+    # handed the distinction back: any Story client (or any process that read `.env`) could
+    # sign in to the console and flip owner-only switches. The key stays a bearer token, which
+    # is exactly what it was for (review 2026-10-29).
+    if not admin_session.password_set():
+        return _login_page(
+            "No browser password is set, so there is nothing to sign in with. Set one in the "
+            "Gateway app on its own Mac: Settings, Browser password. The gateway key is a "
+            "bearer token for API clients, not a browser password.", 403)
+    ok = await run_in_threadpool(admin_session.check_password, secret)
     if not ok:
         admin_session.note_failure(address)
         return _login_page("That is not the password.", 401)
@@ -2737,12 +2751,16 @@ def set_voice_settings(payload: dict[str, Any]) -> Any:
     include = payload.get("include")
     transcript = payload.get("transcript")
     language = payload.get("language")
+    gender = payload.get("gender")
     if (not voice_id or (include is not None and not isinstance(include, bool))
             or (transcript is not None and not isinstance(transcript, str))
-            or (language is not None and not isinstance(language, str))):
-        return _error(422, "expected {'voice_id': str, 'language'?: str, 'include'?: bool, 'transcript'?: str}")
+            or (language is not None and not isinstance(language, str))
+            or (gender is not None and not isinstance(gender, str))):
+        return _error(422, "expected {'voice_id': str, 'language'?: str, 'include'?: bool, "
+                           "'transcript'?: str, 'gender'?: 'm'|'f'|'n'}")
     try:
-        return voice_import.update_voice(voice_id, language=language, include=include, transcript=transcript)
+        return voice_import.update_voice(voice_id, language=language, include=include,
+                                         transcript=transcript, gender=gender)
     except KeyError:
         return _error(404, f"no voice {voice_id!r} on this Mac")
     except ValueError as exc:

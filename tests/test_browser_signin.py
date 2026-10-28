@@ -84,10 +84,21 @@ class BrowserSignIn(unittest.TestCase):
         self.assertEqual(self.phone.post("/admin/logout", headers=SAME).status_code, 200)
         self.assertFalse(admin_session.valid_session(token))
 
-    def test_key_still_works_and_signs_in_without_password(self):
-        self.assertEqual(self.phone.get("/admin/api/status", headers=KEY).status_code, 200)
-        self.assertEqual(self.login(self.phone, "signin-fixture-key").status_code, 303)
-        self.assertEqual(self.phone.get("/admin/api/status").status_code, 200)
+    def test_the_key_is_a_bearer_token_and_never_a_browser_password(self):
+        """**Changed 2026-10-29.** The login form used to accept the gateway key, which minted
+        an *owner* session — while `require_owner` deliberately refuses the bare key because
+        Story Studio holds it. Any holder of the key could sign in and flip owner-only
+        switches. The key stays a bearer token; the browser password is the only way in.
+        """
+        self.assertEqual(self.phone.get("/admin/api/status", headers=KEY).status_code, 200,
+                         "the key still opens the API")
+        # No password set: there is nothing to sign in with, and the page says so.
+        self.assertEqual(self.login(self.phone, "signin-key-here").status_code, 403)
+        self.assertNotIn(admin_session.COOKIE, self.phone.cookies)
+        # With a password set, the key is simply the wrong password.
+        admin_session.set_password("correct horse")
+        self.assertEqual(self.login(self.phone, "signin-key-here").status_code, 401)
+        self.assertNotIn(admin_session.COOKIE, self.phone.cookies)
 
     def test_cross_site_login_refused(self):
         self.assertEqual(self.login(self.phone, "signin-fixture-key",
@@ -95,12 +106,14 @@ class BrowserSignIn(unittest.TestCase):
         self.assertEqual(self.login(self.phone, "signin-fixture-key", headers={}).status_code, 403)
 
     def test_failed_attempts_back_off_even_for_the_right_secret(self):
+        admin_session.set_password("correct horse")
         for _ in range(admin_session.FREE_ATTEMPTS):
             self.assertEqual(self.login(self.phone, "nope").status_code, 401)
-        self.assertEqual(self.login(self.phone, "signin-fixture-key").status_code, 429)
+        self.assertEqual(self.login(self.phone, "correct horse").status_code, 429)
 
     def test_changing_the_password_signs_everyone_out(self):
-        self.login(self.phone, "signin-fixture-key")
+        admin_session.set_password("correct horse")
+        self.assertEqual(self.login(self.phone, "correct horse").status_code, 303)
         token = self.phone.cookies.get(admin_session.COOKIE)
         self.assertTrue(admin_session.valid_session(token))
         self.mac.put("/admin/api/settings/browser-password", json={"password": "another pass"}, headers=KEY)

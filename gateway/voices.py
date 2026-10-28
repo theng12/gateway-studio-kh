@@ -966,6 +966,9 @@ def story_row(voice: Voice) -> dict[str, Any]:
         # `multilingual` for the same voices, so `"en"` was both a false claim
         # and a regression against the known-good contract.
         "language": voice.language or "multilingual",
+        # **`""` when nothing was stated**, never "neutral": the catalogue stores nothing for
+        # an unstated voice, and the picker prints only what is there.
+        "gender": voice.gender or "",
         "description": voice.description or "",
         "provider": GATEWAY_VOICE_LIBRARY if held else (
             definition.display_name if definition else voice.provider_id),

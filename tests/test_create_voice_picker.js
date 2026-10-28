@@ -165,6 +165,23 @@ test('the id is what is submitted, whether picked or typed', () => {
   assert.equal(vm.runInContext('createVoiceValue()', context), 'studio-hub-local::voice-x');
 });
 
+test('a stated gender is shown, and an unstated one prints nothing', () => {
+  // The owner asked for `gender` (m/f/n) on a local voice (2026-10-29). The picker prints it
+  // beside the name; **an unstated voice prints nothing**, because "neutral" is a real answer
+  // and must not be the default for one nobody stated.
+  const { context } = harness({});
+  const label = vm.runInContext('createVoiceLabel', context);
+  assert.equal(label({ id: 'a::b', display_name: 'Christian', gender: 'm',
+    provider: 'Gateway voice library' }), 'Christian · male · Gateway voice library');
+  assert.equal(label({ id: 'a::b', display_name: 'Christian', gender: 'f' }), 'Christian · female');
+  assert.equal(label({ id: 'a::b', display_name: 'Christian', gender: 'n' }), 'Christian · neutral');
+  assert.equal(label({ id: 'a::b', display_name: 'Christian', gender: '',
+    provider: 'P' }), 'Christian · P');
+  assert.equal(label({ id: 'a::b', display_name: 'Christian', provider: 'P' }), 'Christian · P');
+  assert.equal(label({ id: 'a::b', display_name: 'Christian', gender: 'robot' }), 'Christian',
+    'an unrecognised value prints nothing rather than the raw word');
+});
+
 test('the download name is read from the route, not rebuilt in the page', () => {
   const { context } = harness({});
   const filename = vm.runInContext('filenameFromDisposition', context);

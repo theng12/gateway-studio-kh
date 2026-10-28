@@ -98,7 +98,11 @@ class OptionalTranscriptTests(unittest.TestCase):
         on = self._add("Mark", transcript=True)
         self._add("Yim Mengly", transcript=False, tone=2)
         started: list = []
+        # A Hub that answers *and* an address to post to: `annotation_targets` asks both, because
+        # a probe with no base URL has nowhere to send the clip (2026-10-29).
         with patch.object(voice_import, "hub_probe", return_value={"running": True, "detail": ""}), \
+             patch.object(voice_import, "hub_base_url", return_value="http://hub.test"), \
+             patch("gateway.fleet.locations", lambda: []), \
              patch.object(voice_import.threading, "Thread") as thread:
             thread.side_effect = lambda target, args, daemon: started.append(args[0]) or unittest.mock.Mock()
             voice_import.start_annotation("whisper")
@@ -111,8 +115,10 @@ class OptionalTranscriptTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             voice_import.update_voice(entry["id"], include=True, transcript="   ")
         saved = voice_import.update_voice(entry["id"], include=True, transcript="សួស្តី")
-        self.assertEqual(saved, {"id": entry["id"], "language": "", "include_reference_transcript": True,
-                                 "reference_transcript": "សួស្តី"})
+        self.assertEqual(saved, {"id": entry["id"], "language": "", "gender": "",
+                                 "include_reference_transcript": True,
+                                 "reference_transcript": "សួស្តី"},
+                         "gender is published empty when nothing was stated, never 'neutral'")
         self.assertEqual(self._reference(entry["id"])["transcript"], "សួស្តី")
         voice_import.update_voice(entry["id"], include=False)
         self.assertEqual(self._reference(entry["id"])["transcript"], "")

@@ -3828,10 +3828,15 @@ function createVoiceName(v) {
   return `Unnamed voice · ${tail}`;
 }
 
+//: The three the catalogue stores, spelled for a person. Nothing stated prints nothing —
+//: "neutral" is a real answer and must not be the default for an unstated voice.
+const VOICE_GENDERS = { m: 'male', f: 'female', n: 'neutral' };
+
 function createVoiceLabel(v) {
   const provider = String(v.provider || v.engine_name || '').trim();
+  const gender = VOICE_GENDERS[String(v.gender || '').trim().toLowerCase()] || '';
   const name = createVoiceName(v);
-  return provider && provider !== name ? `${name} · ${provider}` : name;
+  return [name, gender, provider && provider !== name ? provider : ''].filter(Boolean).join(' · ');
 }
 
 function createVoiceChoice(select) {
@@ -3852,6 +3857,7 @@ function createVoiceValue() {
 
 function createModelChanged() {
   createVoices = { modelId: '', rows: [], error: '' };
+  applyCreateModelControls();
   loadCreateVoices();
 }
 

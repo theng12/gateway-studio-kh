@@ -276,8 +276,21 @@ def reference_words(entry: dict) -> tuple[str, list]:
 LANGUAGE_RE = re.compile(r"[A-Za-z][A-Za-z0-9 _()-]{0,39}")
 
 
+#: The three the owner asked for (`m`/`f`/`n`), plus the words a person types. Stored as the
+#: letter so one field cannot hold "male" for one voice and "m" for another.
+GENDERS = {"m": "m", "male": "m", "f": "f", "female": "f", "n": "n", "neutral": "n", "": ""}
+
+
+def clean_gender(value: str) -> str:
+    """`m`, `f`, `n` or empty — anything else is refused rather than silently dropped."""
+    text = str(value or "").strip().lower()
+    if text not in GENDERS:
+        raise ValueError("A voice's gender is m, f or n (or blank to clear it).")
+    return GENDERS[text]
+
+
 def update_voice(voice_id: str, *, language: str | None = None, include: bool | None = None,
-                 transcript: str | None = None) -> dict:
+                 transcript: str | None = None, gender: str | None = None) -> dict:
     """Change a voice's language label and/or its reference transcript. `None` leaves a field alone.
 
     Transcript on needs words to send: the text given here, a transcript already saved, or
@@ -303,9 +316,16 @@ def update_voice(voice_id: str, *, language: str | None = None, include: bool | 
             entry["reference_transcript"] = text
         if label is not None:
             entry["language"] = label
+        if gender is not None:
+            # **Blank clears it.** "Not stated" and "neutral" are different answers, and the
+            # catalogue stores nothing for the first (the rule every other field follows).
+            entry["gender"] = clean_gender(gender)
+            if not entry["gender"]:
+                entry.pop("gender", None)
         write_voice_files(entry)
         _write_catalog(payload)
         return {"id": wanted, "language": str(entry.get("language") or ""),
+                "gender": str(entry.get("gender") or ""),
                 "include_reference_transcript": transcript_included(entry),
                 "reference_transcript": str(entry.get("reference_transcript") or "")}
     raise KeyError(voice_id)
@@ -1434,10 +1454,50 @@ def annotation_state() -> dict:
         return json.loads(json.dumps(_state))
 
 
-def _run_annotation(pending: list[dict], model: str) -> None:
+def annotation_targets() -> list[dict]:
+    """Every Hub that could transcribe a clip, **this Mac's first**.
+
+    Segments come from a Hub's own transcription worker, and that worker is per-Mac. On
+    2026-10-28 every transcription Mac behind this Gateway's own Hub was paused, so
+    annotation answered `NO_AVAILABLE_MACHINE` — and a voice added here could never get the
+    aligned segments that make it shareable, even though other Hubs in the fleet have a
+    transcription worker free. The fleet is already how the Gateway reaches those Macs, so
+    this is a list of the same places work is dispatched to, tried in order.
+
+    Each target carries the credential **belonging to that Hub**: the local one uses the
+    operator token through `local_hub_headers()`, a controller uses its own stored Hub token
+    (`fleet.admin_token_for`, the same one the shared-voice routes need). A controller with
+    no token is skipped rather than sent this Mac's operator token — that fallback is the
+    mistake `hub_headers` was fixed to refuse.
+    """
+    from . import fleet
+    from .hub import hub_headers
+
+    targets: list[dict] = []
     base = hub_base_url()
-    # Annotation is inherently local: it reads this Mac's own Hub base URL above.
-    headers = local_hub_headers()
+    try:
+        probe = hub_probe(base=base)
+    except Exception:  # noqa: BLE001 - an unreadable Hub is "no local target", not a crash
+        probe = {"running": False}
+    if probe.get("running") and base:
+        targets.append({"label": "this Mac", "base": base, "headers": local_hub_headers()})
+    try:
+        for location in fleet.locations():
+            if location.get("local") or not location.get("reachable"):
+                continue
+            url = str(location.get("url") or "").rstrip("/")
+            token = fleet.admin_token_for(str(location.get("id") or ""))
+            if not url or not token:
+                continue
+            targets.append({"label": str(location.get("label") or location.get("id") or url),
+                            "base": url, "headers": hub_headers(token, local=False)})
+    except Exception:  # noqa: BLE001 - the fleet is a convenience here, never a gate
+        pass
+    return targets
+
+
+def _run_annotation(pending: list[dict], model: str, targets: list[dict] | None = None) -> None:
+    targets = targets if targets is not None else annotation_targets()
     results: list[dict] = []
     try:
         with httpx.Client(timeout=httpx.Timeout(180.0, connect=10.0)) as client:
@@ -1446,26 +1506,40 @@ def _run_annotation(pending: list[dict], model: str) -> None:
                 with _state_lock:
                     _state["current"] = name
                 audio = Path(str(voice.get("reference_path") or ""))
+                segments: list[dict] | None = None
+                where = ""
+                failure = ""
                 if not audio.exists():
-                    results.append({"id": voice.get("id"), "name": name,
-                                    "ok": False, "detail": "the reference clip is missing"})
+                    failure = "the reference clip is missing"
                 else:
-                    try:
-                        segments = _transcribe(client, base, headers, audio, model)
-                        voice["reference_segments"] = segments
+                    for target in targets:
+                        try:
+                            segments = _transcribe(client, target["base"], target["headers"],
+                                                   audio, model)
+                            where = str(target.get("label") or target["base"])
+                            break
+                        except Exception as exc:  # noqa: BLE001 - try the next Hub, report the last
+                            failure = f"{type(exc).__name__}: {exc}"[:200]
+                    if segments is not None:
                         results.append({"id": voice.get("id"), "name": name, "ok": True,
-                                        "detail": f"{len(segments)} segments"})
-                    except Exception as exc:  # noqa: BLE001 - one voice must not stop the rest
+                                        "location": where,
+                                        "detail": f"{len(segments)} segments from {where}"})
+                    else:
                         results.append({"id": voice.get("id"), "name": name, "ok": False,
-                                        "detail": f"{type(exc).__name__}: {exc}"[:200]})
+                                        "detail": failure or "no Hub could transcribe it"})
                 payload = _read_catalog()
                 for entry in payload.get("voices") or []:
                     if entry.get("id") == voice.get("id"):
-                        entry["reference_segments"] = voice.get("reference_segments")
-                        # Written here too: the segments are the thing that makes
-                        # the voice clonable, so they belong beside the clip and not
-                        # only in a catalogue that can be lost.
-                        write_voice_files(entry)
+                        # **Only a success writes segments.** A forced re-annotation whose
+                        # transcription fails must leave the good segments that are already
+                        # on disk exactly as they are — writing this back unconditionally
+                        # would have erased them the first time a fleet went quiet.
+                        if segments is not None:
+                            entry["reference_segments"] = segments
+                            # Written here too: the segments are what makes the voice
+                            # clonable, so they belong beside the clip and not only in a
+                            # catalogue that can be lost.
+                            write_voice_files(entry)
                 _write_catalog(payload)
                 with _state_lock:
                     _state["done"] += 1
@@ -1496,11 +1570,22 @@ def start_annotation(model: str = "", *, force: bool = False) -> dict:
     # "refuses without a reachable Hub". With a stale ready-file the pass started
     # and every voice failed one at a time with a network error, burying the one
     # actionable sentence under N of them.
-    probe = hub_probe(base=hub_base_url())
-    if not probe["running"]:
+    targets = annotation_targets()
+    if not targets:
+        # **"Nothing can transcribe" is a different sentence from "this Mac's Hub is down".**
+        # The old gate refused on the local probe alone, so a Gateway whose own Hub had every
+        # transcription Mac paused could never annotate, even with a free worker elsewhere in
+        # the fleet.
+        why = ""
+        try:
+            why = str(hub_probe(base=hub_base_url()).get("detail") or "")
+        except Exception:  # noqa: BLE001 - the sentence below stands without it
+            pass
         return {
             **annotation_state(),
-            "error": f"Studio Hub is not reachable, so there is nothing to transcribe with. {probe['detail']}.",
+            "error": ("No Studio Hub that can transcribe is reachable: this Mac's Hub is not "
+                      "answering and no joined location offers a Hub token to ask. "
+                      + (why or "")).strip(),
         }
 
     pending = [
@@ -1526,5 +1611,5 @@ def start_annotation(model: str = "", *, force: bool = False) -> dict:
             "started_at": time.time(),
             "finished_at": None,
         })
-    threading.Thread(target=_run_annotation, args=(pending, chosen), daemon=True).start()
+    threading.Thread(target=_run_annotation, args=(pending, chosen, targets), daemon=True).start()
     return annotation_state()

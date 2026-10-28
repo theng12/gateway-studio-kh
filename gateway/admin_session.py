@@ -35,6 +35,7 @@ import secrets
 import sys
 import threading
 import time
+import unicodedata
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -370,12 +371,39 @@ def get_guest(guest_id: str) -> dict | None:
 #: in exactly the field that exists to tell them apart.
 RESERVED_NAMES = {"owner", "this mac", "story studio", "guest"}
 
+#: Lookalikes folded before a name is compared with the reserved list **and with the other
+#: guests**. Student-of-an-impostor material: Cyrillic "О"/"е" and Greek "Ο" render as Latin
+#: letters, and "0" is how "0wner" reads. `NFKC` has already turned fullwidth "０" into "0".
+#: Folding for *comparison* only — the display name keeps the owner's own spelling.
+_CONFUSABLES = str.maketrans({
+    "а": "a", "в": "b", "г": "r", "е": "e", "ё": "e", "з": "3", "к": "k", "м": "m",
+    "н": "h", "о": "o", "п": "n", "р": "p", "с": "c", "т": "t", "у": "y", "х": "x",
+    "і": "i", "ї": "i", "ј": "j", "ѕ": "s", "ԁ": "d", "ԛ": "q", "ԝ": "w",
+    "α": "a", "β": "b", "ε": "e", "ι": "i", "κ": "k", "ν": "v", "ο": "o", "ρ": "p",
+    "τ": "t", "υ": "u", "χ": "x",
+    "0": "o",
+})
+_RESERVED_FOLDED = {name.casefold() for name in RESERVED_NAMES}
+
+
+def folded_name(name: str) -> str:
+    """A name reduced to what it *looks like*, for the reserved list and for uniqueness.
+
+    `"Ownеr"` with a Cyrillic `е` is not `"Owner"` to `str.lower`, but it is to a reader —
+    and the Requested-by column is read by a person. `NFKC` first (compatibility forms,
+    fullwidth digits), then casefold, then the lookalike table.
+    """
+    text = unicodedata.normalize("NFKC", str(name or ""))
+    return " ".join(text.split()).casefold().translate(_CONFUSABLES)
+
 
 def _clean_name(name: str) -> str:
-    value = " ".join(str(name or "").split())
+    # NFKC for what is *stored* too: a fullwidth or decomposed spelling is the same name,
+    # and keeping both spellings would make two "identical" guests that are not equal.
+    value = " ".join(unicodedata.normalize("NFKC", str(name or "")).split())
     if not _GUEST_NAME.match(value):
         raise ValueError(f"Use a name of 1 to {GUEST_NAME_MAX} characters.")
-    if value.strip().lower() in RESERVED_NAMES:
+    if folded_name(value) in _RESERVED_FOLDED:
         raise ValueError(
             f"'{value}' is reserved: it is what this Gateway calls itself or one of its own "
             f"clients. Pick a name that cannot be mistaken for the owner."
@@ -384,8 +412,11 @@ def _clean_name(name: str) -> str:
 
 
 def _name_taken(rows: list[dict], name: str, *, except_id: str | None = None) -> bool:
-    needle = name.strip().lower()
-    return any(str(row.get("name") or "").strip().lower() == needle
+    # Folded, for the same reason the reserved list is: "Маria" and "Maria" are one name to
+    # a reader, and two guests who differ only by a lookalike character are indistinguishable
+    # in the Requested-by column.
+    needle = folded_name(name)
+    return any(folded_name(str(row.get("name") or "")) == needle
                and not row.get("removed_at") and str(row.get("id")) != str(except_id)
                for row in rows)
 
