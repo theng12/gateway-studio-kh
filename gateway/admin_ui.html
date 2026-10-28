@@ -3790,12 +3790,14 @@ function renderCreateForm() {
          <input type="text" id="cf-language" placeholder="leave blank to detect"></div>`
     : '';
 
-  // Which voices a lane may offer is the model's answer, so the picker asks again whenever the
-  // model changes. Only a lane that has a voice field needs the handler at all.
+  // **Every lane re-reads the model on a change**, not only the voice ones: the Subtitle tab's
+  // upload limit, and anything else a model states, belongs to the model. Binding this only
+  // when the lane had a voice field left its limit note showing the first model's number for
+  // ever (review 2026-10-29e, finding 1).
   const voiceLane = fields.some(f => f.type === 'voice');
   const picker = rows.length
     ? `<div style="margin-bottom:12px"><label>Model</label>
-         <select id="cf-model"${voiceLane ? ' onchange="createModelChanged(this.value)"' : ''}>${rows.map(m =>
+         <select id="cf-model" onchange="createModelChanged(this.value)">${rows.map(m =>
            `<option value="${esc(m.id)}">${esc(m.provider_name)} — ${esc(m.display_name)}${m.free_lane ? ' · free' : ''}</option>`
          ).join('')}</select></div>`
     : `<div class="msg bad" style="margin-bottom:12px">${

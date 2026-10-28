@@ -2077,9 +2077,16 @@ async def create_transcription(
     # the 413 arrived after it (review 2026-10-28). The declared length is checked before a
     # byte is read, and a body without one (a chunked upload) is streamed and stopped at the
     # limit — never held beyond it.
+    # **Compared with the envelope allowed**, because `Content-Length` is the whole multipart
+    # body and the limit is the *file's*: the boundary, the part headers and the other fields
+    # pushed a file of exactly the published size past it. The file's own size is measured
+    # below and decides; this early check only refuses a body that cannot be one file of the
+    # limit at all (review 2026-10-29e, finding 4).
+    from .api import UPLOAD_ENVELOPE_BYTES
+
     declared = (request.headers.get("content-length") or "").strip()
-    if declared.isdigit() and int(declared) > limit:
-        return too_big(int(declared))
+    if declared.isdigit() and int(declared) > limit + UPLOAD_ENVELOPE_BYTES:
+        return too_big(None)
     content = bytearray()
     while True:
         chunk = await file.read(1 << 20)

@@ -462,6 +462,33 @@ class EightAtOnce(_PoolCase):
         self.assertNotIn(503, results, f"a spurious 503 fails Story's scene: {results}")
 
 
+class TheFileSizeIsWhatCounts(unittest.TestCase):
+    """Finding 4: a file of exactly the published size was refused for its envelope."""
+
+    def test_a_file_of_exactly_the_limit_reaches_the_route(self) -> None:
+        client = TestClient(api.app, client=FRIEND)
+        self.addCleanup(client.close)
+        # A small limit, so a real file can be exactly at it. The multipart envelope pushes
+        # the body past the file's size by a few hundred bytes — that was the refusal.
+        with patch.object(api, "upload_limit_bytes", lambda model_id: 4096):
+            response = client.post(
+                "/admin/api/create/transcription", headers=KEY,
+                files={"file": ("exact.wav", b"x" * 4096, "audio/wav")},
+                data={"model_id": "no-such-model"})
+        self.assertNotEqual(response.status_code, 413, response.text[:300])
+        self.assertIn(response.status_code, (404, 422), response.text[:300])
+
+    def test_a_file_over_the_limit_is_still_refused(self) -> None:
+        client = TestClient(api.app, client=FRIEND)
+        self.addCleanup(client.close)
+        with patch.object(api, "upload_limit_bytes", lambda model_id: 4096):
+            response = client.post(
+                "/admin/api/create/transcription", headers=KEY,
+                files={"file": ("big.wav", b"x" * 8192, "audio/wav")},
+                data={"model_id": "no-such-model"})
+        self.assertEqual(response.status_code, 413, response.text[:300])
+
+
 class TheLoopbackRule(unittest.TestCase):
     """Finding 3: the pre-body check uses `require_admin`'s rule, exactly, plus Origin."""
 
@@ -543,6 +570,83 @@ class ThePublishedUploadLimit(unittest.TestCase):
                              lambda modality: [dict(row)] if modality == "chat" else []):
             payload = admin.create_models(SimpleNamespace(cookies={}))
         self.assertNotIn("upload_limit_bytes", payload["by_modality"]["chat"][0])
+
+
+class ReleasedWhenTheBodyIsIn(_PoolCase):
+    """Finding 3: the pool is freed when the body has been received, not when the reply is sent."""
+
+    def test_the_pool_is_free_while_the_route_is_still_running(self) -> None:
+        # The route has read every byte and is busy answering. Before the fix its slot and its
+        # reservation were still held, so the next upload in a back-to-back batch met 503.
+        seen: dict = {}
+
+        async def slow_route(_scope: dict, read: Any, _send: Any) -> None:
+            await read()                      # the whole body, one message
+            with api._SPOOL_LOCK:
+                seen["in_flight"] = api._spool_state["in_flight"]
+                seen["bytes"] = api._spool_state["bytes"]
+            await asyncio.sleep(0.2)          # "answering" — the pool must already be free
+
+        sent: list[dict] = []
+
+        async def send(message: dict) -> None:
+            sent.append(message)
+
+        async def receive() -> dict:
+            return {"type": "http.request", "body": b"x" * 100, "more_body": False}
+
+        scope = {"type": "http", "method": "POST", "path": "/alright/anywhere",
+                 "headers": [(b"content-length", b"100")], "client": ("host-a", 1)}
+        with patch.object(api, "body_ceiling_for", lambda path: (4096, "route")), \
+                patch.object(api, "upload_door", lambda path: (4096, "an upload", True)), \
+                patch.object(api, "_upload_credentials_ok", lambda scope: True), \
+                patch.object(api, "_SPOOL_BUDGET_MIN_BYTES", 64):
+            asyncio.run(api.BoundedUploadBody(slow_route)(scope, receive, send))
+        self.assertEqual(seen, {"in_flight": 0, "bytes": 0},
+                         "the slot must be released when the body is in, not when the reply is out")
+
+    def test_ten_rounds_of_eight_parallel_uploads_never_meet_503(self) -> None:
+        # Story sends references with `Promise.all` and does not retry, so a spurious 503 fails
+        # a scene. No pause between rounds: the previous round's routes are still answering.
+        statuses: list[int] = []
+        lock = threading.Lock()
+        for _round in range(10):
+            barrier = threading.Barrier(8)
+            threads = []
+            for _index in range(8):
+                def one() -> None:
+                    client = TestClient(api.app, client=FRIEND)
+                    body = b"\x89PNG\r\n\x1a\n" + b"x" * ((1 * MB) - 8)
+                    barrier.wait(timeout=10)
+                    response = client.post("/v1/images/source-images", headers=KEY,
+                                           files={"upload": ("scene.png", body, "image/png")})
+                    with lock:
+                        statuses.append(response.status_code)
+                    client.close()
+                thread = threading.Thread(target=one)
+                threads.append(thread)
+                thread.start()
+            for thread in threads:
+                thread.join(timeout=60)
+        self.assertEqual(len(statuses), 80, len(statuses))
+        self.assertNotIn(503, statuses, f"a spurious 503 fails Story's scene: {statuses}")
+
+    def test_two_large_declared_uploads_back_to_back(self) -> None:
+        client = TestClient(api.app, client=FRIEND)
+        self.addCleanup(client.close)
+        body = b"x" * (90 * MB)
+        with patch.object(api, "upload_limit_bytes", lambda model_id: 100 * MB):
+            first = client.post("/admin/api/create/transcription", headers=KEY,
+                                files={"file": ("a.wav", body, "audio/wav")},
+                                data={"model_id": "no-such-model"})
+            second = client.post("/admin/api/create/transcription", headers=KEY,
+                                 files={"file": ("b.wav", body, "audio/wav")},
+                                 data={"model_id": "no-such-model"})
+        for response in (first, second):
+            # The body was read and the route answered (the model does not exist): what is
+            # under test is that the second upload was admitted, not answered 503.
+            self.assertNotEqual(response.status_code, 503, response.text[:200])
+            self.assertIn(response.status_code, (404, 422), response.text[:200])
 
 
 class TheSpoolBudget(_PoolCase):

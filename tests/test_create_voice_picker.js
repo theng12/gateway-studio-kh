@@ -200,6 +200,30 @@ test('changing the model re-reads the voices and calls nothing that is not there
   assert.deepEqual(calls, ['/voices?model_id=a%3A%3Ab'], 'and re-asks for that model\'s voices');
 });
 
+test('the model picker is bound on every lane, so a change reaches every reader of it', () => {
+  // **Finding 1 of the 2026-10-29e review.** `onchange` was added only when the lane had a
+  // voice field, so the Subtitle tab's model select had no handler and its upload-limit note
+  // showed the first model's number for ever. Driven through the real `renderCreateForm`.
+  for (const [tab, modality, row] of [
+    ['subtitle', 'transcription', { id: 'hub::w', provider_name: 'Studio Hub',
+      display_name: 'Whisper', upload_limit_bytes: 100 * 1024 * 1024 }],
+    ['audio', 'tts', { id: 'hub::v', provider_name: 'Studio Hub', display_name: 'Voice' }],
+  ]) {
+    const form = { innerHTML: '' };
+    const context = vm.createContext({
+      document: { getElementById: id => (id === 'create-form' ? form : { innerHTML: '', style: {}, textContent: '' }) },
+      esc,
+      api: async () => ({ voices: [] }),
+    });
+    vm.runInContext(SECTION, context);
+    vm.runInContext(`createTab = ${JSON.stringify(tab)};
+      createCatalogue = { by_modality: { ${JSON.stringify(modality)}: [${JSON.stringify(row)}] } };
+      renderCreateForm();`, context);
+    assert.ok(form.innerHTML.includes('onchange="createModelChanged(this.value)"'),
+      `${tab} must re-read the model on a change: ${form.innerHTML.slice(0, 300)}`);
+  }
+});
+
 test('the Subtitle tab says what this model accepts, read from its row', () => {
   const nodes = {
     'cf-model': element({ value: 'hub::whisper' }),

@@ -135,6 +135,12 @@ from .content_packs import MAX_ARCHIVE as _PACK_MAX_ARCHIVE  # noqa: E402 - a co
 #: the door has to allow the archive *and* whatever the request carries beside it.
 _MAX_PACK_BODY = _PACK_MAX_ARCHIVE + (2 * 1024 * 1024)
 
+#: What a multipart envelope costs around one file: boundaries, part headers, the other fields.
+#: **A declared `Content-Length` is the whole body, never the file**, so a route that compares
+#: it with a file limit refuses a file of exactly the published size (review 2026-10-29e,
+#: finding 4). 64 KiB is far more than any envelope here and far less than a real file.
+UPLOAD_ENVELOPE_BYTES = 64 * 1024
+
 #: **A chat turn with pictures, and the number is this gateway's own.** No chat provider here
 #: publishes a per-image limit or an images-per-message count, so this is not a model's figure:
 #: it is the largest image this gateway tells a caller it may send (the 12 MiB vision limit it
@@ -521,9 +527,33 @@ class BoundedUploadBody:
             await self._busy()(scope, receive, send)
             return
         stalled = {"hit": False}
+        released = {"done": False}
+
+        def release() -> None:
+            """**The pool is freed when the body has been received, not when the reply is sent.**
+            A route can take seconds after its last byte (a transcription upload is queued,
+            parsed and answered), and holding the slot through that made back-to-back batches
+            of eight meet 503 on most rounds — Story's image upload does not retry
+            (review 2026-10-29e, finding 3). Idempotent, so the `finally` still covers a body
+            that was never read.
+            """
+            if released["done"]:
+                return
+            released["done"] = True
+            _spool_release(host, size)
 
         def note_stall() -> None:
             stalled["hit"] = True
+
+        received = {"n": 0}
+
+        async def counting() -> dict[str, Any]:
+            message = await receive()
+            if message.get("type") == "http.request":
+                received["n"] += len(message.get("body") or b"")
+                if received["n"] >= size or not message.get("more_body"):
+                    release()
+            return message
 
         async def guarded_send(message: dict[str, Any]) -> None:
             # FastAPI turns an exception from its parser into a 400; when the watchdog fired,
@@ -533,11 +563,11 @@ class BoundedUploadBody:
             await send(message)
 
         try:
-            await self.app(scope, _BodyWatch(receive, note_stall), guarded_send)
+            await self.app(scope, _BodyWatch(counting, note_stall), guarded_send)
         except _Stalled:
             pass
         finally:
-            _spool_release(host, size)
+            release()
         if stalled["hit"]:
             await self._stalled()(scope, receive, send)
 
@@ -589,6 +619,11 @@ class BoundedUploadBody:
                     spool.write(body)
                     if not message.get("more_body"):
                         break
+                # **Freed here, before the route runs**: the body is complete, and the route
+                # reading its copy from the spool is not an upload any more.
+                _spool_release(host, reserved, slot=slot)
+                reserved = 0
+                slot = False
                 spool.seek(0)
 
                 async def replay() -> dict[str, Any]:

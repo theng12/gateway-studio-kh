@@ -719,6 +719,10 @@ final class CreateWorkspace: NSView {
                 }
                 self.modelPopup?.isEnabled = !rows.isEmpty
                 self.updateCapabilities()
+                // **A restored draft is judged before any model has loaded**, so the file it
+                // remembers has never been checked against the limit the model now in the
+                // popup publishes. Re-judge it here, once, as the models land.
+                if let url = self.fileURL { self.showFile(url) }
                 if let modelID = self.selectedModelID(), self.lane.modality == "tts" {
                     self.refreshVoices(modelID: modelID)
                 }
@@ -732,6 +736,13 @@ final class CreateWorkspace: NSView {
         selectedModelIDHint = modelPopup?.selectedItem?.representedObject as? String
         persistState()
         updateCapabilities()
+        // **The limit belongs to the model, so the verdict must be re-made with it.** Without
+        // this, Generate stayed disabled (or enabled) on the limit of the model that was
+        // chosen when the file was picked — a Hub takes 100 MiB and a cloud API 25 MiB
+        // (review 2026-10-29e, finding 2).
+        if let url = fileURL {
+            showFile(url)
+        }
         if let modelID = selectedModelID(), lane.modality == "tts" {
             refreshVoices(modelID: modelID)
         }
@@ -951,9 +962,13 @@ final class CreateWorkspace: NSView {
     /// Read and hash a recording off the main thread: it can be tens of megabytes.
     /// `data` is nil when the file is unreadable, empty or past the upload limit.
     private func readUpload(_ url: URL, then done: @escaping (Data?, String?) -> Void) {
+        // **Captured on the main thread.** `maxUploadBytes` reads the popup's selected row,
+        // which is AppKit state; reading it inside the background block was a main-thread
+        // violation that happened to work (review 2026-10-29e, finding 5).
+        let limit = maxUploadBytes
         DispatchQueue.global(qos: .userInitiated).async {
             let size = (try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0
-            let overLimit = self.maxUploadBytes.map { size > $0 } ?? false
+            let overLimit = limit.map { size > $0 } ?? false
             let data = overLimit ? nil : try? Data(contentsOf: url)
             let hash = data.map { self.digest($0) }
             DispatchQueue.main.async { done(data?.isEmpty == false ? data : nil, hash) }
@@ -1060,6 +1075,10 @@ final class CreateWorkspace: NSView {
                 statusLabel.stringValue = "Choose a recording first."
                 return
             }
+            // **Judged again here, against the model chosen now.** A file picked under one
+            // model and generated under another must be told *this* model's number, in the
+            // same sentence the picker would have shown.
+            showFile(url)
             if let problem = fileProblem {
                 statusLabel.stringValue = problem
                 return
