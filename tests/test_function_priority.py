@@ -181,6 +181,38 @@ class PlacementTests(unittest.TestCase):
         self.assertEqual(candidates([row], "image")[0]["preference"],
                          float(len(startup_control.WORK_PRIORITY_FUNCTIONS)))
 
+    def test_a_site_whose_mac_switched_a_kind_off_is_never_dispatched_that_kind(self) -> None:
+        """Owner, 2026-10-28: a kind switched off in the work order is not taken by that Mac."""
+        off = location("image-off", ["image", "chat"])
+        off["machines"][0]["function_enabled"] = {"image": False}
+        on = location("image-on", ["chat"])
+        # For image, `image-off` is never a candidate at all; for chat, `image-off` still is.
+        self.assertEqual([c["location_id"] for c in candidates([off, on], "image")], ["image-on"])
+        self.assertEqual({c["location_id"] for c in candidates([off, on], "chat")},
+                         {"image-off", "image-on"})
+        # Absent or malformed values read as ON (only a real boolean `False` turns a kind off).
+        for benign in ({}, {"image": True}, {"image": "false"}, {"image": 0}, "off", None):
+            off["machines"][0]["function_enabled"] = benign
+            self.assertEqual({c["location_id"] for c in candidates([off, on], "image")},
+                             {"image-off", "image-on"}, f"{benign!r} must read as on")
+
+    def test_a_switched_off_mac_on_a_multi_mac_site_is_excluded_from_eligible_macs(self) -> None:
+        row = location("mixed", ["image"], available=1)
+        row["machines"] = [
+            {"machine": "preferred-off", "priority_order": ["image"],
+             "function_enabled": {"image": False}},
+            {"machine": "neutral-on", "priority_order": []},
+        ]
+        row["local_models"] = [
+            {"model_id": MODEL, "machine": "preferred-off", "memory_eligible": True,
+             "available": True},
+            {"model_id": MODEL, "machine": "neutral-on", "memory_eligible": True,
+             "available": True},
+        ]
+        self.assertEqual(set(fleet._eligible_macs(row, MODEL, "image")), {"neutral-on"})
+        self.assertEqual(candidates([row], "image")[0]["preference"],
+                         float(len(startup_control.WORK_PRIORITY_FUNCTIONS)))
+
 
 class QueueOrderingTests(unittest.TestCase):
     @staticmethod
@@ -370,6 +402,25 @@ class AdminRouteTests(unittest.TestCase):
         self.assertEqual(response.status_code, 400, response.text)
         save.assert_not_called()
 
+    def test_admin_relays_and_validates_per_function_switches(self) -> None:
+        client = TestClient(api.app, client=("127.0.0.1", 41001))
+        with patch.object(startup_control, "_node_post",
+                          return_value={"ok": True, "work_policy": {"priority_order": []}}) as post, \
+                patch.object(startup_control, "audit"):
+            response = client.post(
+                "/admin/api/fleet/controllers/site/machines/mac/work-policy",
+                json={"function_enabled": {"image": False, "render": False}},
+            )
+            self.assertEqual(response.status_code, 200, response.text)
+            self.assertEqual(post.call_args.args[3],
+                             {"function_enabled": {"image": False, "render": False}})
+            for bad in ({}, "image", {"image": 0}, {"image": "false"}, {"nope": False}):
+                bad_resp = client.post(
+                    "/admin/api/fleet/controllers/site/machines/mac/work-policy",
+                    json={"function_enabled": bad},
+                )
+                self.assertEqual(bad_resp.status_code, 400, f"{bad!r} must be refused")
+
 
 class NativeEditorTests(unittest.TestCase):
     def test_native_editor_preserves_partial_order_and_has_button_reordering(self) -> None:
@@ -462,6 +513,17 @@ func capture(_ view: NSView, to url: URL) {
             "priority_order": ["voice", "image"]
         ])!)
         assert(full.priorityOrder == ["voice", "image"])
+
+        // **Final render in the ranking, plain words** (owner, 2026-10-28).
+        assert(FleetPriorityNames.title(for: "render", from: nil) == "Final render")
+        assert(FleetPriorityNames.title(for: "render", from: "Final render") == "Final render")
+        let withRender = FleetWorkPriorityForm(FleetWorkPriorityPolicy([
+            "priority_functions": [["id": "chat", "title": "Chat Studio"],
+                                   ["id": "render"]],
+            "priority_order": ["chat", "render"]
+        ])!)
+        assert(withRender.priorityOrder == ["chat", "render"])
+        assert(buttons(withRender.view).contains { $0.title == "Final render" && $0.state == .on })
         full.view.frame = NSRect(x: 0, y: 0, width: 480, height: full.view.fittingSize.height)
         full.view.layoutSubtreeIfNeeded()
         let long = buttons(full.view).first { $0.title.hasPrefix("A very long") }!

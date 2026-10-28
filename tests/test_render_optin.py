@@ -73,6 +73,9 @@ def location(macs: dict[str, dict[str, object]], *, location_id: str = "roster-a
             "machine": mid, "reachable": True, "label": spec.get("label", mid),
             "chip": spec.get("chip", "Apple M4"), "memory_gb": 16.0, "available_gb": 8.0,
             "disk_free_gb": 100.0, "current_job": None,
+            # Additive, for the ranking tests' own fixtures: a Hub that has timed a render states
+            # it here. Absent from every row whose spec omits it, which is every existing test.
+            **({"render_speed": spec["render_speed"]} if "render_speed" in spec else {}),
             **({"network": spec["network"]} if "network" in spec else {}),
         } for mid, spec in macs.items()],
         "nodes": [{

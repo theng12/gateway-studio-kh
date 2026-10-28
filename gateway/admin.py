@@ -3984,9 +3984,16 @@ def fleet_machine_work_policy(controller_id: str, machine_id: str) -> Any:
 def fleet_machine_set_work_policy(
     controller_id: str, machine_id: str, payload: dict[str, Any]
 ) -> Any:
-    """Replace one Mac's ranked work order; an empty order means no preference."""
+    """Replace one Mac's ranked work order or switch one of its functions on or off."""
+    if set(payload) == {"function_enabled"}:
+        try:
+            return startup_control.set_node_function_enabled(
+                controller_id, machine_id, payload.get("function_enabled")
+            )
+        except startup_control.StartupError as error:
+            return JSONResponse(status_code=error.status, content=error.body)
     if set(payload) != {"priority_order"}:
-        return _error(400, "provide only priority_order", "BAD_PRIORITY_ORDER")
+        return _error(400, "provide only priority_order or function_enabled", "BAD_PRIORITY_ORDER")
     try:
         return startup_control.set_node_work_policy(
             controller_id, machine_id, payload.get("priority_order")
@@ -4008,6 +4015,35 @@ def fleet_machine_workstation(controller_id: str, machine_id: str, payload: dict
     """
     try:
         return startup_control.set_node_workstation(controller_id, machine_id, payload)
+    except startup_control.StartupError as error:
+        return JSONResponse(status_code=error.status, content=error.body)
+
+
+@router.post(
+    "/api/fleet/controllers/{controller_id}/machines/{machine_id}/render-while-paused",
+    # Owner's switch, like the render opt-in above: the app on its Mac or the owner's signed-in
+    # browser, never the key Story Studio also holds.
+    dependencies=[Depends(require_owner)],
+)
+def fleet_machine_render_while_paused(
+    controller_id: str, machine_id: str, payload: dict[str, Any]
+) -> Any:
+    """Let (or stop letting) ONE Mac's own pause exempt final rendering. Body `{"enabled": true|false}`.
+
+    Owner, 2026-10-28. Off by default, and off is the behaviour every Mac had before it existed: a
+    paused Mac renders nothing. On, a paused Mac still assembles the final videos it is already
+    allowed to render, while every other function stays refused. It does not touch the pause, the
+    render opt-in, Lite Mode, drain, maintenance or quarantine — it only answers whether the pause
+    itself stops final render. Relayed through the Mac's controller
+    (`startup_control.set_node_render_while_paused`); the answer says whether it was taken.
+    """
+    if set(payload) != {"enabled"}:
+        return _error(400, "provide only enabled", "BAD_RENDER_WHILE_PAUSED")
+    if not isinstance(payload.get("enabled"), bool):
+        return _error(400, "enabled must be true or false", "BAD_RENDER_WHILE_PAUSED")
+    try:
+        return startup_control.set_node_render_while_paused(
+            controller_id, machine_id, payload["enabled"])
     except startup_control.StartupError as error:
         return JSONResponse(status_code=error.status, content=error.body)
 

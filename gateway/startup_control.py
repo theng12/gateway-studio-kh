@@ -248,7 +248,10 @@ WORKSTATION_SETTINGS = ("enabled", "idle_only", "idle_minutes", "step_aside", "r
 
 # The wire vocabulary is Studio Hub's registered local function vocabulary. Gateway's public `tts`
 # lane maps to `voice` before placement; the per-Mac policy itself always uses these Hub tokens.
-WORK_PRIORITY_FUNCTIONS = frozenset({"voice", "transcription", "chat", "image", "music", "video"})
+# `render` is final video assembly: it has no worker and no registry row, but since owner
+# 2026-10-28 it is an ordinary entry in the same saved order beside the rest.
+WORK_PRIORITY_FUNCTIONS = frozenset({"voice", "transcription", "chat", "image", "music", "video",
+                                     "render"})
 
 
 def get_node_work_policy(controller_id: str, machine_id: str, *,
@@ -287,6 +290,32 @@ def set_node_work_policy(controller_id: str, machine_id: str, priority_order: ob
                  "Update Studio Hub first (Fleet > Release); the saved order was not changed."),
         refused="The controller refused this gateway's credential for changing work priorities.",
         audit_fields={"priority_order": priority_order}, client=client,
+    )
+    policy = answered.get("work_policy")
+    return policy if isinstance(policy, dict) else answered
+
+
+def set_node_function_enabled(controller_id: str, machine_id: str, function_enabled: object, *,
+                              client: httpx.Client | None = None) -> dict[str, Any]:
+    """Switch one or more functions on or off in one Mac's work order (owner, 2026-10-28)."""
+    allowed = WORK_PRIORITY_FUNCTIONS | {"vision", "embeddings"}
+    valid = (isinstance(function_enabled, dict) and bool(function_enabled)
+             and all(isinstance(kind, str) and kind in allowed and type(on) is bool
+                     for kind, on in function_enabled.items()))
+    if not valid:
+        raise StartupError(400, {
+            "ok": False, "code": "BAD_FUNCTION_ENABLED",
+            "detail": "function_enabled must map rankable function ids to true or false.",
+        })
+    if not _MACHINE_ID.fullmatch(machine_id or ""):
+        raise StartupError(400, {"ok": False, "code": "BAD_MACHINE", "detail": "machine id is not valid"})
+    answered = _node_post(
+        controller_id, machine_id, "work-policy", {"function_enabled": dict(function_enabled)},
+        event="work_priority",
+        too_old=("This controller's Studio Hub cannot switch individual functions in this Mac's "
+                 "work order yet. Update Studio Hub first (Fleet > Release)."),
+        refused="The controller refused this gateway's credential for changing work priorities.",
+        audit_fields={"function_enabled": dict(function_enabled)}, client=client,
     )
     policy = answered.get("work_policy")
     return policy if isinstance(policy, dict) else answered
@@ -381,6 +410,34 @@ def set_node_render_authority(controller_id: str, machine_id: str, accept_unqual
         event="render_authority", too_old=RENDER_AUTHORITY_TOO_OLD,
         refused="The controller refused this gateway's credential for changing remote rendering.",
         audit_fields={"accept_unqualified": accept_unqualified}, client=client,
+    )
+
+
+#: The setting this relay carries, as Studio Hub names it (`render_while_paused`).
+RENDER_WHILE_PAUSED_TOO_OLD = (
+    "This controller's Studio Hub cannot exempt a paused Mac's final rendering yet. "
+    "Update it first (Fleet > Release); the Mac stays out of rendering until then.")
+
+
+def set_node_render_while_paused(controller_id: str, machine_id: str, render_while_paused: object, *,
+                                 client: httpx.Client | None = None) -> dict[str, Any]:
+    """Tell one Mac's Studio Hub whether its own pause exempts final rendering (owner, 2026-10-28).
+
+    The same controller relay as the remote-rendering switch: the body is closed, the Mac records
+    who asked, and nothing here writes a file on the Mac. Off by default, so a Mac whose owner has
+    not switched it on behaves exactly as it did.
+    """
+    if not isinstance(render_while_paused, bool):
+        raise StartupError(400, {"ok": False, "code": "VALUE_REQUIRED",
+                                 "detail": "render_while_paused must be true or false"})
+    if not _MACHINE_ID.fullmatch(machine_id or ""):
+        raise StartupError(400, {"ok": False, "code": "BAD_MACHINE", "detail": "machine id is not valid"})
+    return _node_post(
+        controller_id, machine_id, "render-while-paused",
+        {"render_while_paused": render_while_paused, "requested_by": "gateway-admin"},
+        event="render_while_paused", too_old=RENDER_WHILE_PAUSED_TOO_OLD,
+        refused="The controller refused this gateway's credential for changing remote rendering.",
+        audit_fields={"render_while_paused": render_while_paused}, client=client,
     )
 
 

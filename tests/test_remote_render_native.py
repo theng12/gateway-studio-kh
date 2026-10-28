@@ -92,7 +92,38 @@ func buttons(_ view: NSView) -> [NSButton] {
         assert(form.changes.map { $0.worker.machineId } == ["tail"], "moving it back is no change")
 
         let empty = FleetRemoteRenderForm(workers: [], jobs: [])
-        assert(empty.changes.isEmpty)
+        assert(empty.changes.isEmpty && empty.pauseChanges.isEmpty)
+
+        // **The send order, measured speed, and the pause-exemption switch** (owner, 2026-10-28).
+        let timed = FleetRenderWorker(["controller_id": "shop", "machine_id": "near",
+                                       "machine": "Near Mini", "chip": "Apple M4", "memory_gb": 16.0,
+                                       "idle_state": "idle", "network": "same_network",
+                                       "authority": "accepted_unqualified", "opted_in": true,
+                                       "hub_accepting": true, "render_speed": 2.4,
+                                       "render_speed_renders": 5, "render_while_paused": true])!
+        assert(timed.detailLine.contains("2.40× realtime measured over 5 renders"), timed.detailLine)
+        assert(timed.detailLine.contains("Your pause does not stop its rendering"), timed.detailLine)
+        let ranked = [
+            FleetRenderRankRow(["position": 1, "machine": "Near Mini", "reason": "measured",
+                                "render_speed": 2.4, "render_speed_renders": 5])!,
+            FleetRenderRankRow(["position": 2, "machine": "Tail Mac", "reason": "hardware"])!,
+        ]
+        assert(ranked[0].line == "1. Near Mini · 2.40× realtime over 5 renders · Measured fastest first",
+               ranked[0].line)
+        assert(ranked[1].line == "2. Tail Mac · Not measured yet — ordered by chip, then memory",
+               ranked[1].line)
+        let withRank = FleetRemoteRenderForm(workers: workers, jobs: jobs, rank: ranked,
+                                             basis: "Fastest first.")
+        let pauseBoxes = buttons(withRank.view).filter {
+            $0.title == "Keep rendering final videos while this Mac is paused"
+        }
+        assert(pauseBoxes.count == 3, "one pause-exemption switch per Mac, off by default")
+        assert(pauseBoxes.allSatisfy { $0.state == .off } && withRank.pauseChanges.isEmpty)
+        pauseBoxes[0].performClick(nil)
+        assert(withRank.pauseChanges.map { $0.worker.machineId } == ["near"]
+               && withRank.pauseChanges[0].enabled)
+        pauseBoxes[0].performClick(nil)
+        assert(withRank.pauseChanges.isEmpty, "moving it back is no change")
         print("PASS: native remote rendering sheet")
     }
 }
