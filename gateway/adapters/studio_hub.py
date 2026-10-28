@@ -41,6 +41,7 @@ from .base import (
     expected_output_header,
     note_request_started,
     require_json_answer,
+    staged_path,
     unusable_answer,
 )
 
@@ -461,9 +462,9 @@ def _video_reference(request: BackendRequest) -> list[dict[str, Any]] | None:
     """
     from .. import video_assets
 
-    staged = str(request.params.get("_reference_path") or "")
-    if staged and Path(staged).exists():
-        return [{"b64": base64.b64encode(Path(staged).read_bytes()).decode("ascii"),
+    staged = staged_path(request.params.get("_reference_path"))
+    if staged is not None and staged.exists():
+        return [{"b64": base64.b64encode(staged.read_bytes()).decode("ascii"),
                  "mime": str(request.params.get("_reference_type") or "image/png")}]
     asset_id = str(request.params.get("reference_asset_id") or "").strip()
     if not asset_id:
@@ -502,8 +503,8 @@ def _image_reference(request: BackendRequest) -> list[dict[str, Any]] | None:
     entries: list[dict[str, Any]] = []
     missing: list[str] = []
     for index, path in enumerate(paths):
-        staged = Path(str(path))
-        if not staged.exists():
+        staged = staged_path(path)
+        if staged is None or not staged.exists():
             missing.append(f"{index + 1} of {len(paths)}")
             continue
         media_type = str(types[index]) if index < len(types) and types[index] else "image/png"
@@ -2193,11 +2194,11 @@ def _generate_transcription(request: BackendRequest) -> BackendResult:
     base = _resolve_base(request)
     headers = _headers(request)
 
-    audio_path = request.params.get("_upload_path")
-    if not audio_path or not Path(audio_path).exists():
+    audio_path = staged_path(request.params.get("_upload_path"))
+    if audio_path is None or not audio_path.exists():
         raise BackendError("transcription needs an uploaded audio file", code="PROVIDER_FAILED",
                            upstream_accepted=False)
-    audio = Path(audio_path).read_bytes()
+    audio = audio_path.read_bytes()
 
     # Field names are `files` / `item_ids`, NOT `files[]` / `item_ids[]`. The
     # Hub declares `files: list[UploadFile]` and `item_ids: list[str]` as

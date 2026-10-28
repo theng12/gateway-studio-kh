@@ -180,8 +180,12 @@ def requested_by(request: Request) -> dict[str, Any]:
     """
     guest = guest_identity(request)
     if guest is not None:
+        # **" (guest)" is not decoration.** A guest called "Maria" and an owner-side job both
+        # read as a name; the column exists to tell them apart, so the label says which it is.
+        # Reserved names are refused at sign-up as well, because a guest called "Owner" would
+        # still be a lie with the suffix on.
         return {"role": "guest", "guest_id": guest.get("guest_id"),
-                "label": str(guest.get("name") or "Guest")}
+                "label": f"{str(guest.get('name') or 'Guest')} (guest)"}
     if admin_session.session(request.cookies.get(admin_session.COOKIE)) is not None:
         return {"role": "owner", "label": "Owner"}
     if request_is_loopback(request):
@@ -1984,6 +1988,21 @@ def create_submit(request: Request, payload: dict[str, Any]) -> Any:
     params = payload.get("params")
     if not isinstance(params, dict):
         params = {}
+    # **No client names an internal field.** A leading `_` marks a key the *Gateway* fills
+    # in — a staged upload's path, the staged reference clip, the pool a job was assigned to —
+    # and the adapters read several of them straight off disk and send the bytes to a
+    # provider. `{"params": {"_reference_path": "/Users/…/.env"}}` was enough to have the
+    # Gateway read any file this process can and ship it upstream (review 2026-10-28). Only
+    # server code writes these (the transcription route below, `_stage_video_reference`, the
+    # image pool), so anything starting with `_` from a client is refused rather than
+    # silently dropped: a caller should be told its field did nothing.
+    internal = sorted(str(key) for key in params if str(key).startswith("_"))
+    if internal:
+        return _error(
+            422,
+            f"{', '.join(internal)} is not a field this page sets; it is the Gateway's own.",
+            "INTERNAL_PARAM",
+        )
     # The model id belongs in the params the adapter reads; the console sends the
     # rest of the fields and never has to know which of them a lane wants.
     params = {**params, "model_id": model_id}
@@ -2017,9 +2036,6 @@ async def create_transcription(
     from .config import ARTIFACT_DIR
     from pathlib import Path
 
-    content = await file.read()
-    if not content:
-        return _error(422, "the uploaded file is empty")
     refusal = _guest_model_refusal(request, "transcription", model_id)
     if refusal:
         return _error(403, refusal, "GUEST_PAID_MODEL")
@@ -2027,12 +2043,30 @@ async def create_transcription(
     # on this gateway caps one upload at 25 MB, so a bigger file is refused here
     # rather than staged, queued, and failed after the bytes have travelled.
     limit = upload_limit_bytes(model_id)
-    if len(content) > limit:
-        return _error(
-            413,
-            f"That file is {len(content) // (1024 * 1024)} MB; this model accepts "
-            f"{limit // (1024 * 1024)} MB per request.",
-        )
+    size_text = (f"{limit // (1024 * 1024)} MB" if limit >= 1024 * 1024 else f"{limit} bytes")
+
+    def too_big(size: int | None) -> JSONResponse:
+        what = f"{size // (1024 * 1024)} MB" if size else "larger than this model accepts"
+        return _error(413, f"That file is {what}; this model accepts {size_text} per request.")
+
+    # **Read against the number, never into memory first.** `await file.read()` held the
+    # whole body before the limit was looked at, so a 5 GB POST was a 5 GB allocation and
+    # the 413 arrived after it (review 2026-10-28). The declared length is checked before a
+    # byte is read, and a body without one (a chunked upload) is streamed and stopped at the
+    # limit — never held beyond it.
+    declared = (request.headers.get("content-length") or "").strip()
+    if declared.isdigit() and int(declared) > limit:
+        return too_big(int(declared))
+    content = bytearray()
+    while True:
+        chunk = await file.read(1 << 20)
+        if not chunk:
+            break
+        content.extend(chunk)
+        if len(content) > limit:
+            return too_big(None)
+    if not content:
+        return _error(422, "the uploaded file is empty")
     name = file.filename or "upload.bin"
     upload_dir = Path(str(ARTIFACT_DIR)) / "uploads"
     upload_dir.mkdir(parents=True, exist_ok=True)
@@ -3296,6 +3330,14 @@ def list_jobs(
     next_before = rows[-1]["created_at"] if len(rows) == limit else None
     # The two bulk actions' counts, and the instant they were read: the window passes `as_of` back
     # as `before`, so a press touches only what the confirmation counted.
+    if guest is not None:
+        # **A guest is not shown the owner's counters.** `stats` is a gateway-wide tally of
+        # every job by state and lane, and `bulk` counts everyone's failed and held work — a
+        # guest's own list needs neither, and it is a picture of the owner's activity that no
+        # page they can reach draws (review 2026-10-28). Omitted, not zeroed: an empty tally
+        # would be a claim that nothing has ever run.
+        return {"jobs": rows, "stats": None, "next_before": next_before, "bulk": None,
+                "scope": "guest"}
     bulk = {
         "as_of": as_of,
         "removable_failed": store.dismissable_failed_count(as_of),

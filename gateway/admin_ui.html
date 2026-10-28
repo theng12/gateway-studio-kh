@@ -4389,9 +4389,9 @@ async function loadGuests() {
         g.paid_allowed ? 'checked' : ''} onchange="setGuestPaid('${esc(g.id)}', this.checked)"> paid models</label>`}</td>
       <td>${g.spend_recorded ? esc(g.spend == null ? 'not recorded' : String(g.spend)) : 'not recorded'}</td>
       <td>${g.removed ? '' : `
-        <button class="sm" onclick="resetGuestPassword('${esc(g.id)}','${esc(g.name)}')">Reset password</button>
+        <button class="sm" onclick="resetGuestPassword('${esc(g.id)}')">Reset password</button>
         <button class="sm" onclick="setGuestDisabled('${esc(g.id)}', ${g.disabled ? 'false' : 'true'})">${g.disabled ? 'Enable' : 'Disable'}</button>
-        <button class="sm" onclick="removeGuestAccount('${esc(g.id)}','${esc(g.name)}')">Remove</button>`}</td>
+        <button class="sm" onclick="removeGuestAccount('${esc(g.id)}')">Remove</button>`}</td>
     </tr>`).join('')}</tbody></table></div>`
     : '<div class="empty">No guests yet. A guest signs in with their name and password and gets the Create page.</div>';
 }
@@ -4445,7 +4445,16 @@ function setGuestDisabled(id, disabled) {
     disabled ? 'Disabled. Their sessions have ended.' : 'Enabled again.');
 }
 
-async function resetGuestPassword(id, name) {
+// **Actions name the id and nothing else.** The buttons used to carry the guest's name inside
+// an `onclick` attribute, where `esc()` turns an apostrophe into `&#39;` — which the HTML
+// parser hands to JavaScript as a real `'`, ending the string and breaking every button on
+// that row for anybody called O'Brien. The name is read from the state the page already has.
+function guestById(id) {
+  return guestsState.rows.find(row => row.id === id) || { id, name: 'this guest' };
+}
+
+async function resetGuestPassword(id) {
+  const name = guestById(id).name;
   const password = prompt(`New password for ${name} (at least ${guestsState.minLength} characters):`);
   if (password === null) return;
   try {
@@ -4461,7 +4470,8 @@ async function resetGuestPassword(id, name) {
   }
 }
 
-async function removeGuestAccount(id, name) {
+async function removeGuestAccount(id) {
+  const name = guestById(id).name;
   if (!confirm(`Remove ${name}? Their account stops working and their session ends. The record and its job count stay.`)) return;
   try {
     const answer = await api('/guests/' + encodeURIComponent(id), { method: 'DELETE' });

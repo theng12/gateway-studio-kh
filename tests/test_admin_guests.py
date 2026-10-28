@@ -49,6 +49,7 @@ os.environ.update({
 from fastapi.testclient import TestClient  # noqa: E402
 
 from gateway import admin, admin_session, api  # noqa: E402
+from gateway.api import idempotency_scope, scoped_idempotency_key  # noqa: E402
 from gateway.runtime import store  # noqa: E402
 
 FRIEND = ("100.100.1.1", 5555)   # a phone over Tailscale: not loopback, no key
@@ -421,14 +422,17 @@ class RequestedBy(_Base):
             "modality": "chat", "model_id": "ui-fixture::mock-chat-1",
             "params": {"prompt": "hi"}, "idempotency_key": "guest-asked",
         }).json()
-        stored = store.find_by_idempotency_key("guest-asked")
+        # The key is stored under the guest's own scope (review 2026-10-28): one flat key
+        # namespace let a guest replay the owner's job.
+        stored = store.find_by_idempotency_key(scoped_idempotency_key(
+            idempotency_scope({"role": "guest", "guest_id": row["id"]}), "guest-asked"))
         self.assertIsNotNone(stored, f"the guest's job was refused: {answer}")
         self.made.append(stored["id"])
         from gateway.store import requested_by_label, requested_by_of
         self.assertEqual(requested_by_of(stored)["role"], "guest")
-        self.assertEqual(requested_by_of(stored)["label"], "Maria")
+        self.assertEqual(requested_by_of(stored)["label"], "Maria (guest)")
         self.assertEqual(requested_by_of(stored)["guest_id"], row["id"])
-        self.assertEqual(requested_by_label(stored), "Maria")
+        self.assertEqual(requested_by_label(stored), "Maria (guest)")
 
     def test_an_owner_job_is_labelled_and_a_key_job_is_story_studio(self) -> None:
         from gateway.store import requested_by_label, requested_by_of

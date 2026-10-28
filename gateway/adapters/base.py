@@ -347,6 +347,40 @@ STAGED_INPUT_GONE = (
 )
 
 
+def staged_path(value: Any) -> Path | None:
+    """A staged input's path, **refused unless it lives in the Gateway's artifact store**.
+
+    The adapter is the last door, and it is the only one that reads bytes. `_reference_path`,
+    `_reference_paths`, `_end_reference_path` and `_upload_path` name files the *Gateway*
+    staged — but a params dict is client JSON on more than one route, and a value naming
+    `~/.ssh/id_rsa` was enough to have an adapter read it and send it to a provider (review
+    2026-10-28). The admin create routes now refuse every ``_``-prefixed key from a client;
+    this confines the read itself, so no future route, replay or stored job can turn the
+    adapters into a file reader. `None` when the request names no file at all.
+    """
+    text = str(value or "").strip()
+    if not text:
+        return None
+    from ..config import ARTIFACT_DIR
+
+    path = Path(text)
+    try:
+        resolved = path.resolve()
+        root = Path(str(ARTIFACT_DIR)).resolve()
+    except OSError as exc:  # a path that cannot even be resolved is not a staged input
+        raise BackendError(
+            f"the staged input for this job could not be read: {exc}",
+            code="INVALID_PARAMS", upstream_accepted=False,
+        ) from exc
+    if not resolved.is_relative_to(root):
+        raise BackendError(
+            "the staged input for this job is outside the Gateway's artifact store; "
+            "it is refused rather than sent to a provider",
+            code="INVALID_PARAMS", upstream_accepted=False,
+        )
+    return path
+
+
 def staged_bytes(request: "BackendRequest", path_key: str, type_key: str) -> tuple[bytes, str] | None:
     """One staged upload this job carries, or `None` when the request names none.
 
@@ -358,10 +392,9 @@ def staged_bytes(request: "BackendRequest", path_key: str, type_key: str) -> tup
     image: a video generated without the scene image is a video of something else, and nothing
     downstream can tell it apart from the one that was asked for.
     """
-    path = str(request.params.get(path_key) or "")
-    if not path:
+    staged = staged_path(request.params.get(path_key))
+    if staged is None:
         return None
-    staged = Path(path)
     if not staged.exists():
         raise BackendError(STAGED_INPUT_GONE, code="INVALID_PARAMS", upstream_accepted=False)
     media_type = str(request.params.get(type_key) or "image/png")
@@ -390,8 +423,8 @@ def staged_data_uris(request: "BackendRequest", paths_key: str, types_key: str) 
     types = types if isinstance(types, list) else []
     uris: list[str] = []
     for index, path in enumerate(paths):
-        staged = Path(str(path))
-        if not staged.exists():
+        staged = staged_path(path)
+        if staged is None or not staged.exists():
             raise BackendError(STAGED_INPUT_GONE, code="INVALID_PARAMS", upstream_accepted=False)
         media_type = str(types[index]) if index < len(types) and types[index] else "image/png"
         uris.append(f"data:{media_type};base64,"

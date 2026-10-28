@@ -85,6 +85,43 @@ function guestPageHarness(answer) {
   return { context, nodes };
 }
 
+test('a guest\'s own actions never carry their name into an attribute', async () => {
+  // **An apostrophe ended the string.** The buttons used to be
+  // `onclick="removeGuestAccount('guest-9','O'Brien')"` — `esc()` writes `&#39;`, the HTML
+  // parser hands JavaScript a real `'`, and every button on that row was dead code for
+  // anybody called O'Brien. Actions name the id; the name is looked up from the state.
+  const calls = [];
+  const nodes = { 'guests-body': element(), 'guest-msg': element() };
+  const context = vm.createContext({
+    document: { getElementById: id => nodes[id] || null },
+    esc,
+    api: async (path, options) => {
+      calls.push([path, options && options.method]);
+      if (path === '/guests' && !options) {
+        return { guests: [{ id: 'guest-9', name: "O'Brien", paid_allowed: false, disabled: false,
+                            removed: false, jobs: 1, unfinished: 0, spend_recorded: false,
+                            spend: null }], password_min_length: 8 };
+      }
+      return {};
+    },
+    confirm: () => true,
+    prompt: () => null,
+  });
+  vm.runInContext(between('let guestsState', 'async function signOut()'), context);
+  await vm.runInContext('loadGuests()', context);          // the page's own render, not a copy
+  const html = nodes['guests-body'].innerHTML;
+  assert.ok(html.includes('Brien'), 'the name is drawn in its own cell');
+  assert.ok(!/onclick="[^"]*Brien/.test(html),
+    `the name must not be inside an attribute: ${html}`);
+  assert.equal(vm.runInContext('guestById("guest-9").name', context), "O'Brien",
+    'the name comes from the state instead');
+  assert.equal(vm.runInContext('guestById("nobody").name', context), 'this guest',
+    'an unknown id degrades to a sentence, never to undefined');
+  calls.length = 0;
+  await vm.runInContext('setGuestDisabled("guest-9", true)', context);
+  assert.deepEqual(calls[0], ['/guests/guest-9', 'POST'], 'the action posts by id alone');
+});
+
 test('the Guests page draws what the server said, including what it does not know', async () => {
   const { context, nodes } = guestPageHarness({ guests: [
     { id: 'guest-1', name: 'Maria', paid_allowed: false, disabled: false, removed: false,

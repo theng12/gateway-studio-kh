@@ -250,7 +250,13 @@ class AdapterCheckpointTests(unittest.TestCase):
     def _studio_hub_scenario(self, modality: str) -> _Scenario:
         events: list[str] = []
         submits: list[str] = []
-        upload = _TEMP_ROOT / f"{modality}.wav"
+        # **Staged where the Gateway really stages.** The adapters now refuse a path outside
+        # `ARTIFACT_DIR` (review 2026-10-28), because a params dict can name any file; a
+        # fixture that writes beside the profile instead of inside the artifact store was
+        # testing a shape the gateway never produces.
+        artifacts = Path(os.environ["GATEWAY_ARTIFACTS"])
+        artifacts.mkdir(parents=True, exist_ok=True)
+        upload = artifacts / f"{modality}.wav"
         upload.write_bytes(b"test audio")
 
         def handler(request: httpx.Request) -> httpx.Response:

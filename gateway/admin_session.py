@@ -313,10 +313,20 @@ def _hash(password: str) -> dict:
 
 
 def _matches(record: dict, password: str) -> bool:
-    if not record.get("hash") or not isinstance(password, str) or not password:
+    """Does this password match the stored hash? **Every answer costs one scrypt.**
+
+    `not password` used to return immediately, so an empty password on a *real* name
+    answered in microseconds while a *fake* name paid for the dummy hash — the login page
+    became a way to ask "does this guest exist?", which the dummy hash in `check_guest`
+    was added to prevent. An empty or non-string password is now hashed like any other
+    (it simply never matches), so the two answers take the same time.
+    """
+    if not record.get("hash"):
+        _scrypt(str(password if isinstance(password, str) else ""), _DUMMY_SALT, **_SCRYPT)
         return False
     try:
-        got = _scrypt(password, bytes.fromhex(str(record["salt"])),
+        got = _scrypt(str(password if isinstance(password, str) else ""),
+                      bytes.fromhex(str(record["salt"])),
                       int(record["n"]), int(record["r"]), int(record["p"]))
     except (KeyError, ValueError, TypeError):
         return False
@@ -355,10 +365,21 @@ def get_guest(guest_id: str) -> dict | None:
     return public_guest(row) if row else None
 
 
+#: Names a guest may not take, because they are what an owner-side job says in the
+#: "Requested by" column. A guest called "Owner" would be indistinguishable from the owner
+#: in exactly the field that exists to tell them apart.
+RESERVED_NAMES = {"owner", "this mac", "story studio", "guest"}
+
+
 def _clean_name(name: str) -> str:
     value = " ".join(str(name or "").split())
     if not _GUEST_NAME.match(value):
         raise ValueError(f"Use a name of 1 to {GUEST_NAME_MAX} characters.")
+    if value.strip().lower() in RESERVED_NAMES:
+        raise ValueError(
+            f"'{value}' is reserved: it is what this Gateway calls itself or one of its own "
+            f"clients. Pick a name that cannot be mistaken for the owner."
+        )
     return value
 
 

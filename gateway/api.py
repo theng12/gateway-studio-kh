@@ -1411,6 +1411,45 @@ def _replay_marked(envelope: dict[str, Any], created: bool) -> dict[str, Any]:
     return envelope
 
 
+def idempotency_scope(requested_by: dict[str, Any] | None) -> str:
+    """The prefix an idempotency key is stored under, so one caller's key is their own.
+
+    **A key identifies a request, and a request belongs to somebody.** One flat keyspace let
+    a guest that guessed (or read) a key be handed the owner's job — its envelope, its model
+    and, once finished, its output text — and let the same guess sit on a key that an owner
+    or Story Studio submission would later land on. Keys are now stored per requester:
+
+      * `guest:<guest id>` for a guest — the only untrusted caller;
+      * *nothing* for the owner and the gateway key, which is what every row written before
+        this change holds, so a retry of an in-flight key still finds its job across the
+        upgrade.
+
+    A guest can therefore neither read nor block anyone else's key, and their own retries
+    still work.
+    """
+    data = requested_by or {}
+    if data.get("role") == "guest":
+        return f"guest:{data.get('guest_id') or ''}"
+    return ""
+
+
+def scoped_idempotency_key(scope: str, key: str) -> str:
+    return f"{scope}:{key}" if scope and key else key
+
+
+def _replay_is_theirs(job: dict[str, Any], requested_by: dict[str, Any]) -> bool:
+    """Is this stored job the one *this* caller may be handed back?
+
+    A guest's answer must never be somebody else's job, so a row that names a different
+    guest (or no guest at all) is not a replay for them. The owner and the key are trusted
+    with every job, which is what they already have.
+    """
+    data = requested_by_of(job) or {}
+    if requested_by.get("role") == "guest":
+        return data.get("role") == "guest" and data.get("guest_id") == requested_by.get("guest_id")
+    return True
+
+
 def _submit(
     modality: str,
     compound_id: str,
@@ -1439,6 +1478,19 @@ def _submit(
     job_group = params.pop("job_group", None) if isinstance(params, dict) else None
     job_group = job_group if isinstance(job_group, str) and _JOB_GROUP.fullmatch(job_group) else None
     priority = _pop_priority(params)
+    requester = requested_by or {
+        # Every `/v1` job is the gateway key's: there is one key and Story Studio holds it.
+        # A client that names itself (`X-Caller`) is quoted; otherwise it is Story Studio.
+        "role": "key",
+        "label": (caller or "").strip() or "Story Studio",
+    }
+    # **The key belongs to the requester** (see `idempotency_scope`), and a replay is only ever
+    # the caller's own job. Both are needed: the scope keeps a guest out of everyone else's
+    # keyspace, and the check keeps a row that somehow carries a foreign name from being
+    # handed over anyway.
+    scope = idempotency_scope(requester)
+    if idempotency_key:
+        idempotency_key = scoped_idempotency_key(scope, idempotency_key)
     # **A replay is not a new submission, so it is answered before anything can refuse it.** A
     # caller whose 202 was lost re-POSTs the same key; the job already exists, and a full queue,
     # a model that went offline since, or an unresolvable id must not turn "here is the job you
@@ -1446,6 +1498,11 @@ def _submit(
     # cross-modality guard as below applies.
     if idempotency_key:
         already = store.find_by_idempotency_key(idempotency_key)
+        if already is not None and not _replay_is_theirs(already, requester):
+            # Unreachable by construction — a guest's scope is theirs alone — but if it ever
+            # happens, the answer is a job of their own, never somebody else's row.
+            idempotency_key = f"{idempotency_key}:{uuid.uuid4().hex[:8]}"
+            already = None
         if already is not None:
             if already["modality"] != modality:
                 raise GatewayError(
@@ -1517,12 +1574,7 @@ def _submit(
         params=params,
         idempotency_key=idempotency_key,
         caller=caller,
-        requested_by=requested_by or {
-            # Every `/v1` job is the gateway key's: there is one key and Story Studio holds it.
-            # A client that names itself (`X-Caller`) is quoted; otherwise it is Story Studio.
-            "role": "key",
-            "label": (caller or "").strip() or "Story Studio",
-        },
+        requested_by=requester,
         job_group=job_group,
         priority=priority,
     )

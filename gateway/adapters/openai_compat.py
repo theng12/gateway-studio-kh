@@ -31,6 +31,7 @@ from .base import (
     expected_output_header,
     quota_hints,
     require_json_answer,
+    staged_path,
     unusable_answer,
 )
 
@@ -457,12 +458,14 @@ def _tts(request: BackendRequest) -> BackendResult:
 
 
 def _transcription(request: BackendRequest) -> BackendResult:
-    upload_path = request.params.get("_upload_path")
-    if not upload_path or not Path(upload_path).exists():
+    # `staged_path` refuses anything outside the Gateway's artifact store, so a params dict
+    # that names a real system file cannot become an upload (review 2026-10-28).
+    upload_path = staged_path(request.params.get("_upload_path"))
+    if upload_path is None or not upload_path.exists():
         raise BackendError(
             "transcription needs an uploaded audio file", code="PROVIDER_FAILED"
         )
-    audio = Path(upload_path).read_bytes()
+    audio = upload_path.read_bytes()
     files = {
         "file": (
             request.params.get("_upload_name") or "audio.mp3",
