@@ -840,7 +840,7 @@
             <input type="text" id="guest-name" placeholder="Maria" maxlength="60" autocomplete="off">
           </label>
           <label style="flex:1;min-width:160px">Password
-            <input type="password" id="guest-password" placeholder="at least 8 characters" autocomplete="new-password">
+            <span class="secret"><input type="password" id="guest-password" placeholder="at least 8 characters" autocomplete="new-password"><button type="button" class="eye" title="Show" aria-label="Show" onclick="toggleSecret(this)"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg></button></span>
           </label>
           <button class="primary" id="guest-add" onclick="addGuest(this)">Add Guest</button>
         </div>
