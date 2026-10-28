@@ -258,9 +258,13 @@ for (const isNew of [true, false]) {
     assert.equal(opts.headers['Content-Type'], 'application/json');
     assert.equal(opts.headers.Authorization, 'Bearer test-token');
     assert.equal(typeof opts.body, 'string', 'fetch must receive encoded JSON, not a raw object');
+    // The body carries the pool's modality too, and `tier_models` is null for a chat pool: an image
+    // pool is the only thing that fills it (`poolEdit`'s own 'chat' default is what is sent).
     assert.deepEqual(JSON.parse(opts.body), isNew
-      ? { name: 'openrouter free', display_name: 'My free models', members: ['o::claude', 'g::flash'] }
-      : { display_name: 'My free models', members: ['g::spent', 'g::flash', 'g::off'] });
+      ? { name: 'openrouter free', display_name: 'My free models', members: ['o::claude', 'g::flash'],
+          modality: 'chat', tier_models: null }
+      : { display_name: 'My free models', members: ['g::spent', 'g::flash', 'g::off'],
+          modality: 'chat', tier_models: null });
     assert.equal(ctx.__p.state(), null, 'successful saving closes the editor');
   });
 }
