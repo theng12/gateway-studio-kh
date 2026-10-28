@@ -277,6 +277,50 @@ class ChatLaneTests(unittest.TestCase):
                 StudioHubBackend().generate(_request())
         self.assertIn("empty", str(caught.exception).lower())
 
+    def test_image_content_parts_forwarded_to_hub_messages(self) -> None:
+        parts = [
+            {"type": "text", "text": "describe this image"},
+            {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,abc123=="}},
+        ]
+        result = StudioHubBackend().generate(_request({
+            "input": [{"role": "user", "content": parts}],
+        }))
+        self.assertEqual(len(CHAT_CALLS), 1)
+        body = CHAT_CALLS[0]["body"]
+        self.assertEqual(body["messages"][0]["content"], parts)
+        self.assertIn("mock hub reply", result.text)
+
+    def test_hub_published_vision_flag_sets_supports_vision(self) -> None:
+        from gateway import catalog
+
+        definition = ProviderDefinition(
+            id="studio-hub-site", display_name="Site Hub", category="multi",
+            kind=KIND_STUDIO_HUB, base_url="http://127.0.0.1:47873",
+            modalities=("chat",), discovery=DISCOVERY_STUDIO_HUB,
+        )
+        # Vision flag published as True
+        v_model = {"model_id": "mlx-community/gemma-4-26B-A4B-it-qat-4bit", "raw": {"supports_vision": True}}
+        v_row = catalog._chat_row(v_model["model_id"], definition, v_model)
+        self.assertIs(v_row["supports_vision"], True)
+        self.assertEqual(v_row["input_modalities"], ["text", "image"])
+
+        # Vision flag via capabilities
+        cap_model = {"model_id": "any-vendor/model", "raw": {"capabilities": ["chat.completion", "vision"]}}
+        cap_row = catalog._chat_row(cap_model["model_id"], definition, cap_model)
+        self.assertIs(cap_row["supports_vision"], True)
+        self.assertEqual(cap_row["input_modalities"], ["text", "image"])
+
+        # Vision flag explicitly False
+        f_model = {"model_id": "mlx-community/text-model", "raw": {"supports_vision": False}}
+        f_row = catalog._chat_row(f_model["model_id"], definition, f_model)
+        self.assertIs(f_row["supports_vision"], False)
+
+        # Unstated: falls back to None, never inferred from name
+        u_model = {"model_id": "mlx-community/gemma-4-26B-A4B-it-qat-4bit", "raw": {}}
+        u_row = catalog._chat_row(u_model["model_id"], definition, u_model)
+        self.assertIsNone(u_row["supports_vision"])
+        self.assertIsNone(u_row["input_modalities"])
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

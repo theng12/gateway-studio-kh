@@ -829,6 +829,8 @@ def _studio_hub(definition: ProviderDefinition, values: dict[str, str]) -> Disco
             # question this gateway otherwise infers from the catalogue.
             "package_type": package.get("type"),
         }
+        if isinstance(package.get("supports_vision"), bool):
+            raw["supports_vision"] = package["supports_vision"]
         # The Hub states these per model, so read them rather than deriving
         # either from the engine name: Qwen3's Base tiers clone and its
         # CustomVoice tiers do not, and they share an engine.
@@ -867,6 +869,11 @@ def _studio_hub(definition: ProviderDefinition, values: dict[str, str]) -> Disco
             raw["capabilities"] = facts.get("capabilities") or []
             raw["reference_audio"] = facts.get("reference_audio") or {}
             raw["family"] = facts.get("family")
+            # The Hub states vision support per model, read from its published flag, never the name.
+            if isinstance(facts.get("supports_vision"), bool):
+                raw["supports_vision"] = facts["supports_vision"]
+            elif "vision" in (facts.get("capabilities") or []):
+                raw["supports_vision"] = True
             # The Hub's own limit for a chat model, each value with the sentence
             # saying where it came from (`model/config.json …` vs `worker
             # default: …`). Carried so the catalogue publishes the model's number
