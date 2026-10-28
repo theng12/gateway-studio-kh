@@ -514,6 +514,84 @@ def retry_policy_wording() -> str:
     ).format(n=retry_policy()["max_attempts"])
 
 
+#: **How long a pool job waits for a busy member, and how long one cloud member call may take.**
+#:
+#: Measured on the live Gateway, 2026-10-29: `adapters.pool._acquire_member` waited with **no
+#: deadline at all** while `magpie`'s cloud budget was the default 1, and one member call could take
+#: up to four hours (`CHAT_TIMEOUT` is the Hub's own ceiling, applied to a cloud lane). A pool job
+#: could therefore sit `running` with no upstream id and no published reason for hours — the
+#: generic liveness watchdog (`worker._check_running_liveness`) now says so, and these two numbers
+#: are what stop it happening in the first place:
+#:
+#:   * `member_wait_seconds` bounds the wait for a free slot at a member and publishes
+#:     "waiting for <member> slot" through the job's own `waiting` field; past it the member is
+#:     refused with the retryable `POOL_MEMBER_BUSY`, so the job returns to the queue with a reason
+#:     instead of occupying a worker thread for ever.
+#:   * `chat_member_deadline_seconds` is what one **cloud** chat member call gets. A silent member
+#:     then advances the walk under the pool's existing rules (a free member's silence is not the
+#:     job's unknown outcome; a paid one's still is). A Studio Hub member keeps the Hub's ceiling:
+#:     its own queue legitimately runs multi-hour jobs.
+#:
+#: Editable live beside the pool size, like `queue` and `retry`:
+#:
+#:     {"pool": {"member_wait_seconds": 900, "chat_member_deadline_seconds": 600}}
+DEFAULT_POOL_MEMBER_WAIT_S = 15 * 60.0
+DEFAULT_POOL_CHAT_MEMBER_DEADLINE_S = 600.0
+
+#: **How long a `running` job may say nothing at all.** A job with no upstream id and no published
+#: waiting reason used to be indistinguishable from a healthy one: the Gateway had a liveness
+#: field for the *dispatcher* (`worker_alive`, `last_pass_at`) and nothing for the work. After this
+#: many seconds it publishes why it is waiting; past the lane's own call ceiling (the reader's
+#: number, not a second copy here) it fails retryably rather than staying silent for ever.
+DEFAULT_LIVENESS_WAITING_AFTER_S = 120.0
+
+
+def _positive_seconds(value: Any) -> float | None:
+    """A stated number of seconds, or `None` — a zero, a bool and a string are all "not stated"."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0:
+        return None
+    return float(value)
+
+
+def pool_member_budget() -> dict[str, Any]:
+    """`member_wait_seconds` and `chat_member_deadline_seconds`, and where they came from.
+
+    Read live from the same file as the pool size, so an owner who raises a cloud limit or wants a
+    longer wait can change it without a restart. Every answer names its source beside the number.
+    """
+    entry = _read_file().get("pool")
+    entry = entry if isinstance(entry, dict) else {}
+    wait = _positive_seconds(entry.get("member_wait_seconds"))
+    deadline = _positive_seconds(entry.get("chat_member_deadline_seconds"))
+    return {
+        "member_wait_seconds": wait if wait is not None else DEFAULT_POOL_MEMBER_WAIT_S,
+        "chat_member_deadline_seconds": (
+            deadline if deadline is not None else DEFAULT_POOL_CHAT_MEMBER_DEADLINE_S),
+        "source": SOURCE_CURATED if (wait is not None or deadline is not None)
+                  else SOURCE_GATEWAY,
+        "path": str(SETTINGS_PATH),
+    }
+
+
+def liveness_budget() -> dict[str, Any]:
+    """How long a silent `running` job waits before it says so (`worker._check_running_liveness`).
+
+    Only the "start saying something" number lives here; the *failing* deadline is the lane's own
+    call ceiling plus a grace, read from the adapters themselves, so there is no second copy of it:
+
+        {"liveness": {"waiting_after_seconds": 120}}
+    """
+    entry = _read_file().get("liveness")
+    entry = entry if isinstance(entry, dict) else {}
+    stated = _positive_seconds(entry.get("waiting_after_seconds"))
+    return {
+        "waiting_after_seconds": (
+            stated if stated is not None else DEFAULT_LIVENESS_WAITING_AFTER_S),
+        "source": SOURCE_CURATED if stated is not None else SOURCE_GATEWAY,
+        "path": str(SETTINGS_PATH),
+    }
+
+
 def live_capacity(*, worker: Any = None, rows: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     """**What the fleet can actually do right now**, per modality and in total.
 

@@ -4205,6 +4205,57 @@ def location_has_no_free_mac(provider_id: str, model_id: str) -> bool:
     return any(str(row.get("id")) == location_id and no_free_mac(row, model_id) for row in rows)
 
 
+def publishes_model(row: dict, model_id: str) -> bool | None:
+    """Whether this location states that it has the model at all — **not** whether it is free now.
+
+    The question a job bound to a location must answer before it is sent there again. Measured on
+    the live Gateway, 2026-10-29: seven normal Breeze-TTS jobs stayed bound to a site that does not
+    publish the model in its `model_supply`, and replayed "hub submit failed: timed out" for 6–29
+    attempts, because nothing asked this. The location-level "does the catalogue offer it" question
+    is a different one (`execute_job` answers that with `MODEL_NOT_OFFERABLE`); this is the Hub's
+    own per-model reduction, the same evidence `_model_supply` budgets from.
+
+    Three answers, never two:
+
+      * `True` — the Hub names eligible Macs for it, or a Mac at the site lists it;
+      * `False` — the Hub publishes a per-model supply that leaves it out with no Mac listing it,
+        or gives it no eligible Mac: the site cannot run it and a submit would be refused;
+      * `None` — the location publishes no per-model evidence at all (an older Hub). Unstated is
+        unknown, and unknown never becomes "cannot" (§6 of the house rules).
+
+    A Mac that lists the model rescues a model missing from the reduction, because `model_supply`
+    is a reduction of the Hub's own rows and a companion model the Hub does not reduce as a row is
+    still runnable there.
+    """
+    supply = row.get("model_supply")
+    if not isinstance(supply, dict) or not supply:
+        return None
+    entry = supply.get(str(model_id))
+    if isinstance(entry, dict):
+        return _as_int(entry.get("eligible")) > 0
+    named = [m for m in row.get("local_models") or []
+             if isinstance(m, dict) and model_id in (m.get("model_id"), m.get("model"))]
+    if any(m.get("memory_eligible") is not False for m in named):
+        return True
+    if any(model_id in (w.get("models") or []) for w in row.get("workers") or []
+           if isinstance(w, dict)):
+        return True
+    return False
+
+
+def location_publishes_model(provider_id: str, model_id: str) -> bool | None:
+    """`publishes_model` for a provider id, from the warm snapshot. No row at all is unknown."""
+    location_id = controller_id_from(provider_id)
+    try:
+        rows = snapshot(allow_stale=True).get("locations") or []
+    except Exception:  # noqa: BLE001 - a routing hint must never break a job
+        return None
+    for row in rows:
+        if str(row.get("id")) == location_id or str(row.get("provider_id") or "") == provider_id:
+            return publishes_model(row, model_id)
+    return None
+
+
 def usable_location_ids() -> set[str]:
     """Locations that can actually take work right now, by id.
 

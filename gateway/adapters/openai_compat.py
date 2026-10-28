@@ -45,6 +45,42 @@ from .base import (
 CHAT_TIMEOUT = httpx.Timeout(CHAT_DEADLINE_CEILING_S, connect=10.0, read=CHAT_DEADLINE_CEILING_S)
 MEDIA_TIMEOUT = httpx.Timeout(600.0, connect=10.0, read=600.0)
 
+
+def chat_timeout(request: BackendRequest) -> httpx.Timeout:
+    """`CHAT_TIMEOUT`, or the tighter bound the caller gave (`request.deadline_seconds`).
+
+    **Only the pool sets one** (`concurrency.pool_member_budget`): a silent cloud member must not
+    hold the whole pool for four hours, because the walk cannot advance to the next member until it
+    answers. `min` is the rule — a caller can tighten this lane's ceiling, never extend it past the
+    Hub's own. A plain chat job carries no deadline and gets exactly the timeout it always had.
+    """
+    if request.deadline_seconds is None:
+        return CHAT_TIMEOUT
+    seconds = max(1.0, min(float(CHAT_DEADLINE_CEILING_S), float(request.deadline_seconds)))
+    return httpx.Timeout(seconds, connect=min(10.0, seconds), read=seconds)
+
+
+def refuse_if_cancelled(request: BackendRequest) -> None:
+    """Stop before sending when the owner has asked to cancel, where that costs nothing.
+
+    A cancel cannot interrupt a POST already on the wire from here (the socket is inside `httpx`,
+    and the call's own `timeout` is what bounds it), but it can stop the *next* request an adapter
+    would make — a retry after a refused temperature, a second member — which is the cheap half of
+    "cancel reaches in flight". `upstream_accepted=False` is the honest half: nothing was sent.
+    """
+    check = request.cancelled
+    if check is None:
+        return
+    try:
+        cancelled = bool(check())
+    except Exception:  # noqa: BLE001 - an unreadable cancel flag must not fail the request
+        return
+    if cancelled:
+        raise BackendError(
+            f"{request.provider_id}: cancelled before the request was sent",
+            code="CANCELLED", upstream_accepted=False, upstream_settled=True,
+        )
+
 #: How many images one request may ask for. No provider here *publishes* a maximum
 #: (`n` is documented as an integer and the real cap differs per model), so this is
 #: a gateway ceiling rather than a provider fact — which is why crossing it refuses
@@ -209,13 +245,14 @@ def _chat(request: BackendRequest) -> BackendResult:
         body["response_format"] = response_format
 
     def send() -> httpx.Response:
+        refuse_if_cancelled(request)
         try:
             return httpx.post(
                 f"{_base(request)}/chat/completions",
                 headers={**_auth(request.values), "Content-Type": "application/json",
                          **expected_output_header(request.params)},
                 json=body,
-                timeout=CHAT_TIMEOUT,
+                timeout=chat_timeout(request),
             )
         except httpx.HTTPError as exc:
             raise BackendError(

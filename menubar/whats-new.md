@@ -14,6 +14,36 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.208 — 2026-10-29
+
+### Background work no longer waits on a job it cannot use
+The Gateway held **all** background work at a site while any normal job anywhere was waiting for a
+model that site could run — whatever lane that job was in. On 2026-10-29 that became a three-and-a-half
+hour freeze: seven narration jobs were stuck on a site that could not run them, and every image site
+also lists the narration model, so **132 background image jobs** were refused while the image Macs sat
+idle. Production now reserves only the lane it competes in.
+
+### A job bound to a place that cannot run it moves
+A job was re-sent to its location over and over — "hub submit failed: timed out", 6 to 29 attempts —
+because nothing checked that the location actually has its model before admitting it again. Admission
+now asks the location's own per-model supply, and a job whose location does not publish its model, or
+is unreachable, is re-bound to one that does. A location that states nothing stays unknown, so an
+older Hub is never second-guessed.
+
+### A pool job says what it is waiting for, and never waits for ever
+Waiting for a free slot at one model behind a pool had no deadline and no reason: with a cloud limit
+of 1 and one call that could run for hours, a job could sit "running" with nothing published. It now
+says **"waiting for a <model> slot"**, gives up retryably after 15 minutes so the job returns to the
+queue with that reason, and a cloud model that goes silent is given 10 minutes before the pool moves
+to the next one. Both numbers are editable in `provider-concurrency.local.json` under `pool`.
+
+### Nothing runs silently any more
+A running job with no job id from the provider and no progress used to look exactly like a healthy
+one. After two minutes it publishes what it is waiting for; past the lane's own time limit it fails
+retryably instead of staying silent.
+
+---
+
 ## 0.2.207 — 2026-10-28
 
 ### Voices have names in Create, and only the ones the model can use

@@ -329,6 +329,15 @@ class BackendRequest:
     #: the number the caller was told instead of its own private default. A value in `params`
     #: always wins: this is only the answer to "the caller asked for nothing".
     max_output_tokens: int | None = None
+    #: **The longest this one call may take**, when the caller knows a tighter bound than the
+    #: lane's own ceiling. Only the pool sets it: a silent cloud member must not hold the whole
+    #: pool for the Hub's four-hour chat ceiling (`concurrency.pool_member_budget`). `None` means
+    #: the lane's own timeout applies, unchanged.
+    deadline_seconds: float | None = None
+    #: Whether the owner has asked to cancel the durable job this request runs for. Checked before
+    #: each request an adapter sends, which is where a cancel can be honoured for free: a single
+    #: blocked POST cannot be interrupted from here, and is bounded by `deadline_seconds` instead.
+    cancelled: Callable[[], bool] | None = None
 
 
 #: The names a caller may use for "how long may the answer be". `max_output_tokens` is this

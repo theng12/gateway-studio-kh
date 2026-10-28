@@ -48,7 +48,7 @@ from gateway.providers import registry  # noqa: E402
 from gateway.store import JobStore  # noqa: E402
 from gateway.worker import Worker, scarcest_first  # noqa: E402
 
-MUSIC, IMAGE = "stable-audio-3", "flux-klein"
+MUSIC, IMAGE, SONG2 = "stable-audio-3", "flux-klein", "yue2"
 OPS = {"music": "music.generation", "image": "image.text_to_image"}
 
 
@@ -64,7 +64,8 @@ def _site(location_id: str, macs: int, idle: dict[str, int]) -> dict:
         "capacity": {"queue_depth": 0, "by_operation": {op: {
             "eligible_physical_machine_slots_total": macs,
             "available_physical_machine_slots": macs} for op in OPS.values()}},
-        "model_supply": {model: {"eligible": macs, "available": idle.get(model, 0)} for model in (MUSIC, IMAGE)},
+        "model_supply": {model: {"eligible": macs, "available": idle.get(model, 0)}
+                         for model in set(idle) | {MUSIC, IMAGE}},
     }
 
 
@@ -93,11 +94,23 @@ class _Base(unittest.TestCase):
         self.addCleanup(self.store.close)
         self._n = 0
 
+    def normal(self, modality: str, model: str, *, site: str = "g") -> str:
+        """A normal job of any lane, waiting and due now (nothing is dispatched for it here)."""
+        self._n += 1
+        row, _ = self.store.submit(
+            modality=modality, model_id=model, params={}, idempotency_key=f"n{self._n}",
+            provider_id=_pid(site))
+        with self.store._lock:
+            self.store._conn.execute("UPDATE jobs SET next_action_at = 0, created_at = ? WHERE id = ?",
+                                     (time.time() - 60 + self._n, row["id"]))
+            self.store._conn.commit()
+        return row["id"]
+
     def job(self, model: str = MUSIC, *, background: bool = False, group: str | None = None,
             site: str = "g") -> str:
         self._n += 1
         row, _ = self.store.submit(
-            modality="music" if model == MUSIC else "image", model_id=model, params={},
+            modality="image" if model == IMAGE else "music", model_id=model, params={},
             idempotency_key=f"k{self._n}", provider_id=_pid(site), job_group=group,
             priority="background" if background else None)
         # Due now, in arrival order (the 0.8 s first-dispatch delay is not what is tested here).
@@ -175,20 +188,36 @@ class SchedulingTest(_Base):
             self.assertEqual(run.settle(), songs[:4])
 
     def test_a_site_with_an_idle_mac_a_waiting_normal_job_could_use_takes_no_background(self) -> None:
-        # The image lane here is full by our books (one image running per Mac) so an image job
-        # waits, while the Hub shows a Mac idle that could run it: that Mac is the image job's.
-        self.sites = [_site("g", macs=1, idle={MUSIC: 1, IMAGE: 1})]
+        # A normal job waiting **in this lane** for a model this site has an idle Mac for: that Mac
+        # is the normal job's, and no background job of that lane is sent here.
+        self.sites = [_site("g", macs=2, idle={MUSIC: 1, SONG2: 1})]
         worker = Worker(self.store, interval_s=10.0, pool_size=0)
-        with worker._budget_lock:
-            worker._per_lane[(_pid("g"), "image")] = 1
-            worker._per_model[(_pid("g"), "image", IMAGE)] = 1
-        self.job(IMAGE)
-        song = self.store.get(self.job(background=True))
+        self.job(MUSIC)  # a normal music job, waiting (the worker is not running)
+        song = self.store.get(self.job(SONG2, background=True))
         self.assertFalse(worker._admit(song))
-        # Once no Mac that could run the image job is idle, the song may take the music Mac.
-        self.sites = [_site("g", macs=1, idle={MUSIC: 1, IMAGE: 0})]
+        # Once no Mac that could run the normal job is idle, the song may take its own Mac.
+        self.sites = [_site("g", macs=2, idle={MUSIC: 0, SONG2: 1})]
         worker._normal_waiting = None  # a new pass reads the waiting work again
         self.assertTrue(worker._admit(song))
+
+    def test_a_normal_job_in_another_lane_does_not_reserve_this_lane_s_idle_macs(self) -> None:
+        """Live, 2026-10-29: seven normal Breeze-TTS jobs stranded on a site that did not publish
+        Breeze made all six image sites refuse **132 background image jobs for 3.5 hours** while
+        their image Macs sat idle, because each image site also lists Breeze.
+
+        Capacity is published per model and per lane (`model_supply[model]`,
+        `capacity.by_operation`), so a waiting narration job does not reserve an image Mac: it
+        cannot run there and no image job competes with it for one.
+        """
+        self.sites = [_site("g", macs=2, idle={MUSIC: 1, IMAGE: 1, "breeze-tts": 1})]
+        worker = Worker(self.store, interval_s=10.0, pool_size=0)
+        self.normal("tts", "breeze-tts", site="h")  # stranded on another site, as it was live
+        self.assertIn(("breeze-tts", "tts"), self.store.waiting_normal_shapes())
+        self.assertTrue(worker._admit(self.store.get(self.job(MUSIC, background=True))))
+        # A second worker is a site that has not already spent `_JUST_SENT_S` on the admission
+        # above: `_background_room` discounts every send at the site, whatever its lane.
+        image_worker = Worker(self.store, interval_s=10.0, pool_size=0)
+        self.assertTrue(image_worker._admit(self.store.get(self.job(IMAGE, background=True))))
 
     def test_no_preemption_then_the_mac_takes_normal_work_next(self) -> None:
         self.sites = [_site("g", macs=1, idle={MUSIC: 1})]

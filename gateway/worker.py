@@ -61,7 +61,12 @@ _HUB_OPERATION_BY_MODALITY = fleet.HUB_OPERATION_BY_MODALITY
 #: `_defer_if_transient` still requires `upstream_accepted is False`, so a
 #: `SITE_CAPACITY_UNAVAILABLE` that may have left the building (a submit that timed out) is
 #: an unknown outcome and gets a recovery hold - or, for a free Studio Hub job, a replay.
-_TRANSIENT_SITE_CODES = {"LOCATION_NOT_READY", "LOCATION_UNREACHABLE", "SITE_CAPACITY_UNAVAILABLE"}
+_TRANSIENT_SITE_CODES = {"LOCATION_NOT_READY", "LOCATION_UNREACHABLE", "SITE_CAPACITY_UNAVAILABLE",
+                         # A pool member that had no free slot inside `pool.member_wait_seconds`
+                         # (`adapters.pool._acquire_member`): a fact about this minute, nothing was
+                         # sent, so the job waits in our queue with its reason published rather
+                         # than failing or occupying a thread for ever.
+                         "POOL_MEMBER_BUSY"}
 
 #: How long a job will wait for a busy fleet before it is reported as failed.
 #: ponytail: a flat eight deferrals with a backoff capped at a minute — about four
@@ -152,6 +157,55 @@ def _defer_delay(attempts: int, cap_s: float | None = None) -> float:
 
 #: How often the hold reconciliation asks the Hub about its outstanding holds.
 _HOLD_SWEEP_S = 60.0
+
+#: How often the running jobs are asked whether they have said anything (`_check_running_liveness`).
+#: Cheap: one row read per job in flight, and nothing when nothing is running.
+_LIVENESS_SWEEP_S = 30.0
+#: What is added to a lane's own call ceiling before a silent job is called dead: a grace for the
+#: adapter to notice its own timeout and settle the row itself.
+_LANE_DEADLINE_GRACE_S = 120.0
+
+
+def _where(row: dict[str, Any], job: dict[str, Any]) -> str:
+    """The owner's own name for the place a job is running, or an honest fallback.
+
+    Never the controller id: Story's rule is that it never shows one, and `api.scrub` would replace
+    it anyway -- saying the label here keeps the sentence readable before it is scrubbed. The roster
+    name wins; a location the roster has not named uses the label its own row publishes.
+    """
+    provider_id = str(row.get("provider_id") or job.get("provider_id") or "")
+    try:
+        label = fleet.label_for_provider(provider_id)
+        if label:
+            return label
+    except Exception:  # noqa: BLE001 - a sentence must never fail a sweep
+        pass
+    try:
+        for site in fleet.snapshot(allow_stale=True).get("locations") or []:
+            if str(site.get("provider_id") or "") == provider_id and site.get("label"):
+                return str(site["label"])
+    except Exception:  # noqa: BLE001 - an unreadable fleet is not a missing name
+        pass
+    return "the provider"
+
+
+def lane_deadline_s(modality: str) -> float:
+    """The longest one call on this lane can legitimately take, from **the lane's own ceiling**.
+
+    A job with no upstream id is not waiting for a *batch*: it is one call that has not answered
+    yet, so the honest bound is the ceiling that call was given, not a number of ours.
+    `adapters.base.CHAT_DEADLINE_CEILING_S` is the Hub's own four-hour chat ceiling (restated there
+    because this gateway must outwait it), and every media lane is one HTTP request bounded by
+    `adapters.openai_compat.MEDIA_TIMEOUT`. A Hub media submit returns its batch id long before
+    that, so a job still without an id past it is wedged rather than busy.
+    """
+    from .adapters import base, openai_compat
+
+    if str(modality or "") == "chat":
+        ceiling = float(base.CHAT_DEADLINE_CEILING_S)
+    else:
+        ceiling = float(getattr(openai_compat.MEDIA_TIMEOUT, "read", None) or 600.0)
+    return ceiling + _LANE_DEADLINE_GRACE_S
 
 
 def reconcile_holds(store: JobStore, *, now: float | None = None) -> dict[str, int]:
@@ -1428,6 +1482,10 @@ class Worker:
         #: When the hold reconciliation last ran, and what it found (Q8).
         self._last_hold_sweep = 0.0
         self._sweeping = threading.Event()
+        #: When the running jobs were last asked whether they have said anything (see
+        #: `_check_running_liveness`), and the last sweep's count, kept for an operator.
+        self._last_liveness = 0.0
+        self.liveness_sweep: dict[str, int] = {"checked": 0, "said_something": 0, "failed": 0}
         #: `(model, modality)` shapes for which a late rebind found no site with room this
         #: pass, so the rest of the queue behind them does not repeat the search. Cleared each pass.
         self._nowhere: set[tuple[str, str]] = set()
@@ -1665,14 +1723,20 @@ class Worker:
         background reads only for background work. `_background_reads` keeps the per-pass cache
         of `waiting_normal_shapes`, so the store is still asked once a pass rather than once a
         background job.
+
+        `site` is the location's own row reduced to what admission needs: its per-model supply,
+        whether it is reachable, and the row itself, so `fleet.publishes_model` can be asked about
+        this job's model without a second fleet read, which the lock forbids.
         """
         modality = str(job.get("modality") or "")
         model_id = str(job.get("model_id") or "")
+        site = self._site_facts(provider_id)
         reads: dict[str, Any] = {
             "budget": self._provider_budget(provider_id, modality, model_id),
-            "supply": self._model_supply(provider_id),
+            "supply": site["supply"],
             "pending": 0,
             "background": None,
+            "site": site,
         }
         if modality == "chat" and concurrency.stated_provider_limit(provider_id) is None:
             reads["pending"] = int(studio_hub.chat_queue_wait_seconds(provider_id, model_id) > 0)
@@ -1764,21 +1828,38 @@ class Worker:
         return sum(self._in_flight.values()) - fleet_jobs
 
     @staticmethod
-    def _model_supply(provider_id: str) -> dict[str, int]:
-        """`model -> eligible Macs` at one location, from the Hub's `model_supply` in the snapshot."""
+    def _site_facts(provider_id: str) -> dict[str, Any]:
+        """One location's row, reduced: `model -> usable Macs`, reachability, and the row itself.
+
+        **One fleet read, three answers.** `_room` needs the per-model supply, admission now also
+        needs to know whether the location is reachable and whether it states the model at all,
+        and asking the snapshot three times per job is what the lock-order rule on `_budget_lock`
+        exists to prevent. `supply` is `fleet.usable_slots` per model (models with no eligible Mac
+        stay out, as before: they are bounded by the operation total, and the same reduction is
+        what `routing_candidates` ranks by); `row` is the raw row so `fleet.publishes_model` can be
+        asked about one particular model without another read.
+        """
+        facts: dict[str, Any] = {"supply": {}, "reachable": None, "row": None}
         if not provider_id.startswith(fleet.PROVIDER_PREFIX):
-            return {}
+            return facts
         try:
             for row in fleet.snapshot(allow_stale=True).get("locations") or []:
                 if str(row.get("provider_id") or "") == provider_id:
-                    # Models with no eligible Mac stay out (bounded by the operation total, as
-                    # before); the rest count only reachable Macs not resting after a memory refusal.
-                    return {str(model): fleet.usable_slots(row, str(model), int(entry.get("eligible") or 0))
-                            for model, entry in (row.get("model_supply") or {}).items()
-                            if isinstance(entry, dict) and int(entry.get("eligible") or 0) > 0}
+                    facts["row"] = row
+                    facts["reachable"] = row.get("reachable") is not False
+                    facts["supply"] = {
+                        str(model): fleet.usable_slots(row, str(model), int(entry.get("eligible") or 0))
+                        for model, entry in (row.get("model_supply") or {}).items()
+                        if isinstance(entry, dict) and int(entry.get("eligible") or 0) > 0}
+                    return facts
         except Exception:  # noqa: BLE001 - no supply reading falls back to the operation total
             pass
-        return {}
+        return facts
+
+    @staticmethod
+    def _model_supply(provider_id: str) -> dict[str, int]:
+        """`model -> eligible Macs` at one location (see `_site_facts`, which reads it once)."""
+        return Worker._site_facts(provider_id)["supply"]
 
     def _room(self, provider_id: str, modality: str, model_id: str = "",
               budget: concurrency.Budget | None = None, supply: dict[str, int] | None = None,
@@ -1832,6 +1913,20 @@ class Worker:
 
         `reads` is `_admission_reads`'s bundle. A caller holding `_budget_lock` must pass one; a
         caller that is not (`_rebind`) gets it built here, where the fleet may be read.
+
+        **A site that cannot run this model gets no room for it, whatever the budget says.** The
+        operation budget is a count of slots, not of Macs that have the model: at a location whose
+        `model_supply` leaves the model out (or gives it no eligible Mac) the budget still answered
+        "yes", so a job stayed bound there and replayed "hub submit failed: timed out" until its
+        queue ceiling. An unreachable location is the same answer for the same reason (`fleet.
+        routing_candidates` never offers one), and both refusals let `_rebind` look elsewhere.
+        Unstated supply stays unknown and changes nothing (§6: a zero that means "not stated" must
+        not read as "none").
+
+        **A pool job is exempt, and that is not a hole.** Its `model_id` is the member it is bound
+        to, while `fleet.pool_candidates` picks the next site through **any** member of the pool, so
+        asking this site about that one member would refuse a site that is a correct answer through
+        another.
         """
         if reads is None:
             reads = self._admission_reads(job, provider_id)
@@ -1840,6 +1935,12 @@ class Worker:
         room = self._room(provider_id, modality, model_id,
                           reads["budget"], reads["supply"], reads["pending"])
         fleet_site = provider_id.startswith(fleet.PROVIDER_PREFIX)
+        if room > 0 and fleet_site and not _job_params(job).get("_pool_id"):
+            site = reads.get("site") or {}
+            if site.get("reachable") is False:
+                return 0
+            if site.get("row") is not None and fleet.publishes_model(site["row"], model_id) is False:
+                return 0
         cap = concurrency.model_fleet_cap(model_id) if fleet_site else None
         if room > 0 and cap is not None:
             with self._budget_lock:
@@ -1847,7 +1948,8 @@ class Worker:
                               if m == model_id and p.startswith(fleet.PROVIDER_PREFIX))
             room = min(room, cap - running + int(job.get("id") in self._running))
         if room > 0 and fleet_site and is_background(job):
-            room = min(room, self._background_room(provider_id, model_id, reads["background"]))
+            room = min(room, self._background_room(provider_id, model_id, modality,
+                                                   reads["background"]))
         return room
 
     def _background_reads(self, provider_id: str) -> dict[str, Any]:
@@ -1867,7 +1969,7 @@ class Worker:
             "normal_waiting": self._normal_waiting,
         }
 
-    def _background_room(self, provider_id: str, model_id: str,
+    def _background_room(self, provider_id: str, model_id: str, modality: str = "",
                          reads: dict[str, Any] | None = None) -> int:
         """Macs at this site a background job may take now: idle ones no normal job is waiting for.
 
@@ -1876,10 +1978,20 @@ class Worker:
         bound is the Hub's own count of idle Macs for this model (`model_supply[model].available`),
         less our sends there the snapshot may not show yet. A site that does not state it gets none.
 
-        **Production first.** While a normal job waits (due or deferred) for a model this site has an
-        idle Mac for, that Mac is the normal job's: no background job is sent here (the Hub picks the
-        Mac, so the whole site waits). Background work already running is never stopped; it finishes
-        and the Mac takes normal work next.
+        **Production first, in the lane it competes in.** While a normal job waits (due or deferred)
+        in **this job's own lane** for a model this site has an idle Mac for, that Mac is the normal
+        job's: no background job of that lane is sent here. Background work already running is never
+        stopped; it finishes and the Mac takes normal work next.
+
+        **The lane is the bound, and it was the whole site** (measured live, 2026-10-29). One
+        wait shape of any lane used to hold every background job at every site: seven normal
+        Breeze-TTS jobs stranded on an unreachable site that did not publish Breeze made all six
+        image sites refuse **132 background image jobs for 3.5 hours** while their image Macs sat
+        idle, because each site also lists Breeze. Capacity is published per model and per lane
+        (`model_supply[model]`, `capacity.by_operation`), so a Mac that is idle for a model in this
+        lane is what a job in this lane competes for; a waiting narration job does not reserve an
+        image Mac, because it cannot run there.
+
         ponytail: idle Macs from a snapshot up to one refresh old, less every send in `_JUST_SENT_S`
         (any lane) — it under-fills for a few seconds after a burst rather than over-fill.
 
@@ -1890,7 +2002,9 @@ class Worker:
         if reads is None:
             reads = self._background_reads(provider_id)
         idle: dict[str, int] = reads["idle"]
-        if any(idle.get(str(model), 0) > 0 for model, _lane in reads["normal_waiting"]):
+        held = {str(model) for model, lane in reads["normal_waiting"]
+                if not modality or str(lane) == modality}
+        if any(idle.get(model, 0) > 0 for model in held):
             return 0
         now = time.monotonic()
         with self._budget_lock:
@@ -2131,6 +2245,16 @@ class Worker:
                 threading.Thread(target=self._sweep_holds, name="gateway-hold-sweep",
                                  daemon=True).start()
 
+            # **A running job that has said nothing gets asked** (`_check_running_liveness`). It is
+            # row reads only, on this thread, so it cannot park dispatch behind a network call --
+            # and it is what makes a pool wait or a wedged call visible instead of silent.
+            if time.time() - self._last_liveness >= _LIVENESS_SWEEP_S:
+                self._last_liveness = time.time()
+                try:
+                    self._check_running_liveness()
+                except Exception:  # noqa: BLE001 - the watchdog never ends dispatch
+                    log.exception("running-job liveness sweep failed")
+
             # **When the last pass finished, successful or not.** `worker_alive` alone is a
             # boolean an operator cannot date; this is the number that says whether dispatch is
             # moving. Written every pass, so a stalled loop shows a stale timestamp rather than a
@@ -2138,6 +2262,71 @@ class Worker:
             self.last_pass_at = time.time()
 
             self._stop.wait(self.interval_s)
+
+    def _check_running_liveness(self, now: float | None = None) -> dict[str, int]:
+        """**A running job that says nothing is indistinguishable from a healthy one.**
+
+        `liveness()` says whether the *dispatcher* is alive; nothing said whether the *work* was.
+        Measured live, 2026-10-29: jobs sat `running` with no `upstream_job_id` and no progress for
+        hours — a pool job waiting for a member slot with no deadline, a call that never answered —
+        and every operator-visible field read like a job that was simply working.
+
+        Two thresholds, both honest:
+
+          * past `liveness.waiting_after_seconds` (two minutes by default) a job with **no upstream
+            id** and no published reason publishes one (`waiting.reason`), so Story and the console
+            can say "waiting for <location> to accept it" instead of showing a silent row. The reason
+            clears itself when the adapter reports real waiting, or `_dispatch` starts a new attempt.
+          * past the **lane's own call ceiling** (`lane_deadline_s`: the number that call was given,
+            plus a grace) the call is wedged rather than busy: the job is failed **retryable**,
+            naming how long it waited and what was not seen, rather than left silent for ever. A
+            late answer is still kept — `store.succeed` records it as `late_result_state` beside
+            the verdict rather than rewriting it.
+
+        Never raises: a job that cannot be read is looked at again next sweep.
+        """
+        moment = time.time() if now is None else float(now)
+        waiting_after = float(concurrency.liveness_budget()["waiting_after_seconds"])
+        out = {"checked": 0, "said_something": 0, "failed": 0}
+        for job_id, job in list(self._running.items()):
+            try:
+                row = self.store.get(job_id) if hasattr(self.store, "get") else None
+                if not row or row.get("state") != "running" or row.get("upstream_job_id"):
+                    continue
+                out["checked"] += 1
+                started = row.get("dispatch_started_at") or row.get("updated_at")
+                if not isinstance(started, (int, float)):
+                    continue
+                age = moment - float(started)
+                modality = str(row.get("modality") or job.get("modality") or "")
+                where = _where(row, job)
+                if age > lane_deadline_s(modality):
+                    out["failed"] += 1
+                    _fail(
+                        self.store, job_id, code="PROVIDER_TIMEOUT", retryable=True,
+                        detail=(f"{where} did not answer within {int(age // 60)} min and never "
+                                f"reported a job id, so the wait was ended rather than left "
+                                f"silent. The Gateway could not tell whether the provider took "
+                                f"it, so any late answer is kept beside this failure rather than "
+                                f"overwriting it; run it again if nothing arrives."),
+                    )
+                    continue
+                if age <= waiting_after or row.get("waiting"):
+                    continue
+                record_waiting = getattr(self.store, "record_waiting", None)
+                if record_waiting is not None:
+                    record_waiting(job_id, {
+                        "reason": f"waiting for {where} to accept the job - no job id yet "
+                                  f"({int(age // 60)} min)"
+                                  if age >= 60 else
+                                  f"waiting for {where} to accept the job - no job id yet",
+                        "since": float(started),
+                    })
+                    out["said_something"] += 1
+            except Exception:  # noqa: BLE001 - a watchdog must never end the dispatch loop
+                log.debug("liveness: could not read %s", job_id, exc_info=True)
+        self.liveness_sweep = out
+        return out
 
     def _stranded_on_paused(self, job: dict[str, Any]) -> bool:
         """End a queued job whose voice exists only on a location the owner has since paused."""
@@ -2205,6 +2394,9 @@ class Worker:
             "in_flight": self.active(),
             "dispatch_paused": self.dispatch_paused(),
             "hold_sweep": dict(self.hold_sweep),
+            # What the running-job watchdog last saw: how many silent jobs it asked, how many it
+            # told, and how many it had to end. Zeroes mean "nothing running", not "not checked".
+            "running_sweep": dict(self.liveness_sweep),
             "render_in_flight": render.active() if render is not None else 0,
             "render_unsettled": render.unsettled() if render is not None else [],
         }

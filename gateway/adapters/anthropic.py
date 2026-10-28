@@ -27,7 +27,13 @@ from .base import (
     require_json_answer,
     unusable_answer,
 )
-from .openai_compat import ANTHROPIC_STOP_MAP, CHAT_TIMEOUT, _temperature_refused
+from .openai_compat import (
+    ANTHROPIC_STOP_MAP,
+    CHAT_TIMEOUT,
+    _temperature_refused,
+    chat_timeout,
+    refuse_if_cancelled,
+)
 
 #: `max_tokens` is **required** by the Messages API, so a number has to be sent
 #: whether or not the caller supplied one. The caller's number wins; otherwise the
@@ -309,6 +315,7 @@ class AnthropicBackend:
         base = (request.values.get("base_url") or request.base_url).rstrip("/")
 
         def send() -> httpx.Response:
+            refuse_if_cancelled(request)
             try:
                 return httpx.post(
                     f"{base}/messages",
@@ -318,7 +325,7 @@ class AnthropicBackend:
                         "Content-Type": "application/json",
                     },
                     json=body,
-                    timeout=CHAT_TIMEOUT,
+                    timeout=chat_timeout(request),
                 )
             except httpx.HTTPError as exc:
                 raise BackendError(

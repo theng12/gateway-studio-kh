@@ -58,6 +58,8 @@ WAIT_STEP_S = 1.0
 
 #: Replaced in tests.
 _sleep = time.sleep
+#: Replaced in tests, so a bounded wait is testable without spending the bound.
+_clock = time.monotonic
 
 
 #: How many pool calls are in flight at each member provider, so concurrent pool jobs respect
@@ -70,17 +72,64 @@ _member_calls: dict[str, int] = {}
 _member_cond = threading.Condition()
 
 
-def _acquire_member(provider_id: str, request: BackendRequest) -> None:
+def _member_budget() -> dict[str, Any]:
     from .. import concurrency
 
-    with _member_cond:
-        while _member_calls.get(provider_id, 0) >= concurrency.cloud_budget(provider_id).limit:
+    return concurrency.pool_member_budget()
+
+
+def _acquire_member(definition: Any, request: BackendRequest) -> None:
+    """Take this member's free slot, or say why we are waiting and give up honestly.
+
+    **The wait had no deadline at all** (measured on the live Gateway, 2026-10-29): the cloud budget
+    for `magpie` is the default 1 and one member call can run for up to four hours (`CHAT_TIMEOUT` is
+    the Hub's ceiling), so a pool job could hold a worker thread and a `running` row with no upstream
+    id and no reason for hours. Three things happen now:
+
+      * while it waits, the job's own `waiting` field says **"waiting for <member> slot"**, so Story
+        and the console show a wait rather than silence;
+      * past `pool.member_wait_seconds` (15 min by default, editable) the member is refused with the
+        **retryable `POOL_MEMBER_BUSY`**, which nothing was sent for, so the worker puts the job back
+        in its queue with that reason instead of failing it or blocking for ever;
+      * the owner's live limit is re-read every second, so raising it on the Providers page is felt
+        by a wait already in progress.
+
+    The condition is released between steps: publishing the reason writes the job row, and holding
+    a member lock across a store write would park every other pool job behind it.
+    """
+    from .. import concurrency
+
+    provider_id = str(definition.id)
+    label = str(getattr(definition, "display_name", "") or provider_id)
+    ceiling_s = float(_member_budget()["member_wait_seconds"])
+    started = _clock()
+    deadline = started + ceiling_s
+    announced = False
+    try:
+        while True:
+            with _member_cond:
+                if _member_calls.get(provider_id, 0) < concurrency.cloud_budget(provider_id).limit:
+                    _member_calls[provider_id] = _member_calls.get(provider_id, 0) + 1
+                    return
             if _cancel_requested(request):
                 raise BackendError(
                     f"Pool '{request.model_id}': cancelled while waiting for {provider_id}.",
                     code="POOL_WAIT_CANCELLED", upstream_accepted=False, upstream_settled=True)
-            _member_cond.wait(WAIT_STEP_S)  # re-read the limit: the owner may raise it live
-        _member_calls[provider_id] = _member_calls.get(provider_id, 0) + 1
+            left = deadline - _clock()
+            if left <= 0:
+                raise BackendError(
+                    f"Pool '{request.model_id}': {label} had no free slot after "
+                    f"{int(ceiling_s // 60)} min.",
+                    code="POOL_MEMBER_BUSY", retryable=True,
+                    upstream_accepted=False, upstream_settled=True)
+            if request.on_wait is not None and not announced:
+                request.on_wait({"reason": f"waiting for a {label} slot", "since": started})
+                announced = True
+            with _member_cond:
+                _member_cond.wait(min(WAIT_STEP_S, left))  # re-read the limit: the owner may raise it live
+    finally:
+        if announced and request.on_wait is not None:
+            request.on_wait(None)
 
 
 def _release_member(provider_id: str) -> None:
@@ -207,6 +256,7 @@ class PoolBackend(Backend):
                 cancelled.evidence = {"pool_attempts": attempts}
                 raise cancelled
             walk["tried"] += 1
+            gated = definition.kind != KIND_STUDIO_HUB  # a Hub has its own queue
             member_request = BackendRequest(
                 provider_id=definition.id,
                 model_id=model["model_id"],
@@ -216,17 +266,40 @@ class PoolBackend(Backend):
                 base_url=definition.base_url,
                 display_name=definition.display_name,
                 checkpoint=request.checkpoint,
+                # **A member's own wait is the job's wait**, so the job's `waiting` field says
+                # "waiting for a free Mac" instead of nothing (see `_acquire_member`).
+                on_wait=request.on_wait,
+                # **One member call is bounded, and cancelled where that is cheap.** A cloud member
+                # that goes silent must not hold the whole pool for the Hub's four-hour chat
+                # ceiling: past `pool.chat_member_deadline_seconds` it is silent, and the walk
+                # advances under the rules at the top of this file. A Hub member keeps the Hub's
+                # own ceiling, because its queue legitimately runs long jobs. `cancelled` is
+                # checked between the requests one adapter sends; a single blocked POST is bounded
+                # by the deadline instead.
+                deadline_seconds=(_member_budget()["chat_member_deadline_seconds"]
+                                  if gated else None),
+                cancelled=(lambda: _cancel_requested(request)),
                 # Each member has its own published allowance: a member that must state a
                 # `max_tokens` gets its own, not the pool's (a pool row publishes none).
                 max_output_tokens=published_output_cap(definition, model["model_id"], model),
             )
-            gated = definition.kind != KIND_STUDIO_HUB  # a Hub has its own queue
-            if gated:
-                _acquire_member(definition.id, request)
             sends_before = requests_started()
+            acquired = False
             try:
+                # **Inside the try, because a member with no free slot is a member failure, not the
+                # job's verdict.** `POOL_MEMBER_BUSY` means nothing was sent, so the walk advances
+                # to the next member exactly as it does past any other pre-send refusal; only a
+                # cancellation stops it (`POOL_WAIT_CANCELLED`), which is the owner's decision.
+                if gated:
+                    _acquire_member(definition, request)
+                    acquired = True
                 result = self._adapter_for(definition).generate(member_request)
             except BackendError as exc:
+                if exc.code == "POOL_WAIT_CANCELLED":
+                    # **The owner's own decision, not a member's failure.** Nothing was sent, so
+                    # there is nothing to advance past: the walk ends here exactly as it did when
+                    # the cancel was noticed outside this `try`.
+                    raise
                 walk["accepted_settled"] = (
                     walk["accepted_settled"]
                     or (exc.upstream_accepted is True and exc.upstream_settled)
@@ -292,7 +365,7 @@ class PoolBackend(Backend):
                 walk["last"] = BackendError(str(exc), code="BACKEND_ERROR", status=502)
                 return None
             finally:
-                if gated:
+                if acquired:
                     _release_member(definition.id)
 
             pool_cooldowns.clear(member)
